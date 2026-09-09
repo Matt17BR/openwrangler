@@ -1,5 +1,6 @@
 source("r/tests/kernel_agent_support.R", local = FALSE)
 kernel_agent_cases <- c(
+  "numeric-portability",
   "lifecycle-and-structure",
   "text-fill-and-cast",
   "rows-numeric-datetime-and-by-example",
@@ -31,6 +32,52 @@ fill_step <- function(id, column_id, column_name, replacement) {
     kind = "fillMissingValues",
     params = list(column = list(id = column_id, name = column_name), replacement = replacement)
   )
+}
+
+formula_step <- function(
+  id,
+  operator,
+  new_column,
+  left_position = 1L,
+  left_name = "left",
+  right_position = NULL,
+  right_name = NULL,
+  value = NULL
+) {
+  params <- list(
+    leftColumn = list(id = sprintf("r:c:%d", left_position - 1L), name = left_name),
+    operator = operator,
+    newColumn = new_column
+  )
+  if (!is.null(right_position)) {
+    params$rightColumn <- list(id = sprintf("r:c:%d", right_position - 1L), name = right_name)
+  }
+  if (!is.null(value)) params$value <- value
+  list(id = id, kind = "formula", params = params)
+}
+
+adversarial_reference <- function(position) {
+  list(id = sprintf("r:c:%d", position - 1L), name = sprintf("source_%02d", position))
+}
+adversarial_valid_step <- function(id = "by-example-adversarial-valid", new_column = "valid output") {
+  list(
+    id = id,
+    kind = "byExample",
+    params = list(
+      sourceColumns = I(list(adversarial_reference(1L))),
+      newColumn = new_column,
+      examples = I(list(
+        list(inputs = I(list("alpha")), output = "fixed"),
+        list(inputs = I(list("beta")), output = "fixed")
+      ))
+    )
+  )
+}
+
+if (identical(selected_kernel_agent_case, "numeric-portability")) {
+  kernel_agent_case_run_count <- kernel_agent_case_run_count + 1L
+  source("r/tests/kernel_agent_numeric_portability.R", local = FALSE)
+  agent$dispose()
 }
 
 if (identical(selected_kernel_agent_case, "lifecycle-and-structure")) {
@@ -2948,126 +2995,6 @@ assert_identical(clone_table_closed$kind, "closed", "the R data.table clone sess
 if (identical(selected_kernel_agent_case, "text-fill-and-cast")) {
 kernel_agent_case_run_count <- kernel_agent_case_run_count + 1L
 
-# Scalar and grouped Mean Fill share exact cancellation and one helper set across repeated steps.
-local({
-  sources <- new.env(parent = baseenv())
-  sources$exact_fill <- data.frame(group = rep.int("g", 5L), value = c(-1e308, 1e308, 3, NA, NaN),
-    row.names = paste0("exact-", 1:5))
-  before <- serialize(sources$exact_fill, NULL, version = 3L)
-  expected <- sources$exact_fill
-  expected$value[4:5] <- 1
-  agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, sources)
-  on.exit(agent$dispose(), add = TRUE)
-  session <- "77777777-7676-4676-8676-777777777777"
-  for (grouped in c(FALSE, TRUE)) {
-    opened <- dispatch_with(agent, "openSession", list(sessionId = session, variableName = "exact_fill", page = page_window()))
-    revision <- 0L
-    for (iteration in 1:2) {
-      replacement <- if (grouped) list(kind = "groupedStatistic", statistic = "mean",
-        keys = list(list(id = "r:c:0", name = "group"))) else list(kind = "mean")
-      preview <- dispatch_with(agent, "previewStep", list(sessionId = session, revision = revision, page = page_window(),
-        step = fill_step(paste0("exact-fill-", iteration), "r:c:1", "value", replacement)))
-      assert_identical(preview$kind, "stepPreview", "exact Mean Fill did not preview")
-      assert_identical(vapply(preview$page$page$rows[4:5], function(row) row$values[[2L]]$raw, character(1L)),
-        c("1", "1"), "public Mean Fill lost finite cancellation")
-      assert_identical(preview$diff$changedCells, if (iteration == 1L) 2L else 0L, "exact Mean Fill changed its diff")
-      applied <- dispatch_with(agent, "applyDraft", list(sessionId = session, revision = preview$revision, page = page_window()))
-      assert_identical(applied$page, preview$page, "exact Mean Fill changed on Apply")
-      lines <- strsplit(applied$code, "\n", fixed = TRUE)[[1L]]
-      for (name in names(openwrangler_r_frame_contract$exact_mean_helpers)) {
-        assert_identical(sum(lines == paste0("  ", name, " <-")), 1L, paste("repeated Fill duplicated", name))
-      }
-      copied <- new.env(parent = baseenv())
-      copied$exact_fill <- unserialize(before)
-      copied$exact_binary64_mean <- function(...) stop("caller mean ran")
-      eval(parse(text = applied$code), envir = copied)
-      assert_identical(copied$open_wrangler_result, expected, "copied Mean Fill changed exact values, class or row names")
-      assert_identical(serialize(copied$exact_fill, NULL, version = 3L), before, "copied Mean Fill changed source")
-      revision <- applied$revision
-    }
-    for (donor in c(-abs(0), -0x0.0000000000001p-1022)) {
-      copied$exact_fill <- unserialize(before)
-      copied$exact_fill$value <- c(donor, NA, NA, NA, NaN)
-      singleton_before <- serialize(copied$exact_fill, NULL, version = 3L)
-      singleton_expected <- copied$exact_fill
-      singleton_expected$value[2:5] <- if (donor == 0) 0 else donor
-      singleton_live <- if (grouped) {
-        openwrangler_r_frame_contract$fill_missing_grouped_statistic_at(copied$exact_fill, 2L, "value", 1L, "group", "mean")
-      } else {
-        openwrangler_r_frame_contract$fill_missing_column_at(copied$exact_fill, 2L, "value", list(kind = "mean"))
-      }
-      eval(parse(text = applied$code), envir = copied)
-      assert_identical(singleton_live, singleton_expected, "single-donor Mean Fill changed values or metadata")
-      assert_identical(copied$open_wrangler_result, singleton_expected, "copied single-donor Mean Fill changed values or metadata")
-      for (result in list(singleton_live, copied$open_wrangler_result)) {
-        assert_identical(writeBin(result$value, raw(), size = 8L, endian = "little"),
-          writeBin(singleton_expected$value, raw(), size = 8L, endian = "little"),
-          "single-donor Mean Fill changed zero or subnormal bits")
-      }
-      assert_identical(serialize(copied$exact_fill, NULL, version = 3L), singleton_before, "single-donor Mean Fill changed source")
-    }
-    for (iteration in 1:2) {
-      undone <- dispatch_with(agent, "undoStep", list(sessionId = session, revision = revision, page = page_window()))
-      revision <- undone$revision
-    }
-    assert_identical(undone$page, opened$page, "Mean Fill Undo did not restore source metadata and rows")
-    assert_identical(serialize(sources$exact_fill, NULL, version = 3L), before, "Mean Fill changed source")
-    invisible(dispatch_with(agent, "closeSession", list(sessionId = session)))
-  }
-})
-
-local({
-  sources <- new.env(parent = baseenv())
-  sources$literal_fill <- data.frame(large = c(0.5, NA, NaN), maximum = c(0.5, NA, NaN),
-    tiny = c(0.5, NA, NaN), zero = c(0.5, NA, NaN), integer_text = c(0.5, NA, NaN),
-    label = c("keep", NA, "word"), row.names = c("present", "null", "nan"))
-  before <- serialize(sources$literal_fill, NULL, version = 3L)
-  expected <- sources$literal_fill
-  agent <- openwrangler_r_kernel_agent$new_agent(instrumented_frame_contract, sources)
-  on.exit(agent$dispose(), add = TRUE)
-  session <- "86868686-8686-4686-8686-868686868686"
-  opened <- dispatch_with(agent, "openSession", list(sessionId = session, variableName = "literal_fill", page = page_window()))
-  revision <- 0L
-  cases <- list(
-    list(kind = "float", value = "1e308", expected = 0x1.1ccf385ebc8a0p+1023),
-    list(kind = "float", value = "1.7976931348623157e308", expected = 0x1.fffffffffffffp+1023),
-    list(kind = "float", value = "-4.9406564584124654e-324", expected = -0x0.0000000000001p-1022),
-    list(kind = "float", value = "-0", expected = -abs(0)),
-    list(kind = "integer", value = "9223372036854775807", expected = 0x1p+63),
-    list(kind = "string", value = "1e308", expected = "1e308")
-  )
-  for (index in seq_along(cases)) {
-    case <- cases[[index]]
-    replacement <- case[c("kind", "value")]
-    expected[[index]][is.na(expected[[index]])] <- case$expected
-    latest_full_capture <<- NULL
-    preview <- dispatch_with(agent, "previewStep", list(sessionId = session, revision = revision, page = page_window(),
-      step = fill_step(paste0("literal-", index), paste0("r:c:", index - 1L), names(expected)[[index]], replacement)))
-    assert_identical(preview$kind, "stepPreview", "an exact decimal Fill did not preview")
-    assert_identical(serialize(get("snapshot", envir = latest_full_capture, inherits = FALSE), NULL, version = 3L),
-      serialize(expected, NULL, version = 3L), "live decimal Fill changed bits, missing replacement or text")
-    applied <- dispatch_with(agent, "applyDraft", list(sessionId = session, revision = preview$revision, page = page_window()))
-    assert_identical(applied$page, preview$page, "applying decimal Fill changed its confirmed page")
-    copied <- new.env(parent = baseenv()); copied$literal_fill <- unserialize(before)
-    eval(parse(text = applied$code), envir = copied)
-    assert_identical(serialize(copied$open_wrangler_result, NULL, version = 3L), serialize(expected, NULL, version = 3L),
-      "complete generated decimal/text Fill changed native bits or types")
-    compiled <- compiler::cmpfun(eval(parse(text = paste("function(literal_fill) {", applied$code,
-      "open_wrangler_result\n}", sep = "\n")), envir = new.env(parent = baseenv())))
-    assert_identical(serialize(compiled(unserialize(before)), NULL, version = 3L), serialize(expected, NULL, version = 3L),
-      "compiled decimal/text Fill changed native bits or types")
-    assert_identical(serialize(copied$literal_fill, NULL, version = 3L), before, "generated decimal Fill mutated its source")
-    revision <- applied$revision
-  }
-  for (index in seq_along(cases)) {
-    undone <- dispatch_with(agent, "undoStep", list(sessionId = session, revision = revision, page = page_window()))
-    revision <- undone$revision
-  }
-  assert_identical(undone$page, opened$page, "decimal/text Fill Undo did not restore the original source view")
-  assert_identical(serialize(sources$literal_fill, NULL, version = 3L), before, "decimal/text Fill mutated its source")
-  invisible(dispatch_with(agent, "closeSession", list(sessionId = session)))
-})
-
 source("r/tests/kernel_agent_text.R", local = FALSE)
 assert_fill_helpers <- function(code, expected) {
   lines <- strsplit(code, "\n", fixed = TRUE)[[1L]]
@@ -3193,78 +3120,12 @@ fill_noop_discard <- dispatch(
 )
 assert_identical(fill_noop_discard$action, "discard", "R factor no-op draft did not discard")
 
-fill_datetime_preview <- dispatch(
-  "previewStep",
-  list(
-    sessionId = fill_session_id,
-    revision = 6L,
-    step = fill_step(
-      "fill-datetime",
-      "r:c:2",
-      "instant",
-      list(kind = "datetime", value = "2026-03-29T02:30:00")
-    ),
-    page = page_window()
-  )
-)
-assert_identical(fill_datetime_preview$kind, "stepPreview", "R datetime Fill Missing Values did not preview in UTC")
-fill_datetime_environment <- new.env(parent = baseenv())
-fill_datetime_environment$fill_frame <- fill_source_before
-eval(parse(text = fill_datetime_preview$code), envir = fill_datetime_environment)
-assert_identical(
-  fill_datetime_environment$open_wrangler_result,
-  get("snapshot", envir = latest_full_capture, inherits = FALSE),
-  "generated scalar datetime fill lost its parser dependency or diverged from live"
-)
-assert_identical(fill_datetime_environment$fill_frame, fill_source_before, "generated datetime fill mutated its source")
-fill_datetime_compiled <- compiler::cmpfun(eval(parse(text = paste("function(fill_frame) {", fill_datetime_preview$code,
-  "open_wrangler_result\n}", sep = "\n")), envir = new.env(parent = baseenv())))
-assert_identical(fill_datetime_compiled(fill_source_before), get("snapshot", envir = latest_full_capture, inherits = FALSE),
-  "compiled datetime Fill changed the native parsed instant or frame metadata")
-assert_identical(fill_datetime_environment$fill_frame, fill_source_before, "compiled datetime Fill mutated its source")
-generated_dst_source <- fill_source_before
-attr(generated_dst_source$instant, "tzone") <- "Europe/Berlin"
-assign("fill_frame", generated_dst_source, envir = .GlobalEnv)
-generated_dst_error <- tryCatch(
-  {
-    eval(parse(text = fill_datetime_preview$code), envir = .GlobalEnv)
-    NULL
-  },
-  error = function(error) error
-)
-if (
-  !inherits(generated_dst_error, "error") ||
-    !conditionMessage(generated_dst_error) %in% c(
-      "Open Wrangler expected a valid ISO datetime",
-      "Open Wrangler received an invalid local datetime in Europe/Berlin"
-    )
-) {
-  stop(sprintf(
-    "generated R Fill Missing Values reused a stale timezone or normalized a DST gap; actual: %s",
-    if (is.null(generated_dst_error)) "<no error>" else substr(conditionMessage(generated_dst_error), 1L, 256L)
-  ), call. = FALSE)
-}
-assert_identical(
-  get("fill_frame", envir = .GlobalEnv, inherits = FALSE),
-  generated_dst_source,
-  "the generated R datetime guard mutated its source"
-)
-rm("fill_frame", envir = .GlobalEnv)
-if (exists("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)) {
-  rm("open_wrangler_result", envir = .GlobalEnv)
-}
-fill_datetime_discard <- dispatch(
-  "discardDraft",
-  list(sessionId = fill_session_id, revision = 7L, page = page_window())
-)
-assert_identical(fill_datetime_discard$action, "discard", "R datetime fill draft did not discard")
-
-fill_inspection <- inspect_step(fill_session_id, 8L, "fill-label", page_window())
+fill_inspection <- inspect_step(fill_session_id, 6L, "fill-label", page_window())
 assert_identical(fill_inspection$kind, "stepInspection", "applied R Fill Missing Values was not inspectable")
 assert_identical(fill_inspection$diff$changedCells, 1L, "R Fill Missing Values inspection lost its diff")
 fill_undo <- dispatch(
   "undoStep",
-  list(sessionId = fill_session_id, revision = 8L, page = page_window())
+  list(sessionId = fill_session_id, revision = 6L, page = page_window())
 )
 assert_identical(fill_undo$action, "undo", "R Fill Missing Values did not undo")
 assert_identical(fill_undo$page$schema[[2L]]$nullable, TRUE, "undo did not restore R factor nullability")
@@ -5475,28 +5336,6 @@ assert_identical(
 )
 rm("scale_generated_integer64", "open_wrangler_result", envir = .GlobalEnv)
 
-formula_step <- function(
-  id,
-  operator,
-  new_column,
-  left_position = 1L,
-  left_name = "left",
-  right_position = NULL,
-  right_name = NULL,
-  value = NULL
-) {
-  params <- list(
-    leftColumn = list(id = sprintf("r:c:%d", left_position - 1L), name = left_name),
-    operator = operator,
-    newColumn = new_column
-  )
-  if (!is.null(right_position)) {
-    params$rightColumn <- list(id = sprintf("r:c:%d", right_position - 1L), name = right_name)
-  }
-  if (!is.null(value)) params$value <- value
-  list(id = id, kind = "formula", params = params)
-}
-
 datetime_format_step <- function(id, position, name, format, new_column = NULL) {
   params <- list(
     column = list(id = sprintf("r:c:%d", position - 1L), name = name),
@@ -5542,183 +5381,6 @@ formula_open <- dispatch(
   list(sessionId = formula_session_id, variableName = "formula_frame", page = page_window())
 )
 assert_identical(formula_open$kind, "page", "the R Formula session did not open")
-
-# Fixed input bytes keep the literal encoder's oracle independent of decimal parsing.
-local({
-  owner <- environment(openwrangler_r_kernel_agent$new_agent)
-  encode_number <- get("r_number", envir = owner, inherits = FALSE)
-  patterns <- c(
-    "0000000000000000", "0000000000000080", "000000000000f03f", "000000000000f0bf",
-    "010000000000f03f", "000000000000e03f", "9a9999999999b93f",
-    "a0c8eb85f3cce17f", "30058ee42eff2b2b", "0100000000000000", "0100000000000080",
-    "ffffffffffff0f00", "0000000000001000", "ffffffffffffef7f", "ffffffffffffefff"
-  )
-  for (pattern in patterns) {
-    bytes <- as.raw(strtoi(substring(pattern, seq(1L, 15L, 2L), seq(2L, 16L, 2L)), 16L))
-    value <- readBin(bytes, double(), n = 1L, size = 8L, endian = "little")
-    expression <- parse(text = encode_number(value))[[1L]]
-    compiled <- compiler::cmpfun(eval(call("function", pairlist(), expression), baseenv()))
-    for (actual in list(eval(expression, baseenv()), compiled())) {
-      assert_identical(writeBin(actual, raw(), size = 8L, endian = "little"), bytes,
-        sprintf("generated R changed binary64 literal %s", pattern))
-    }
-  }
-  capacity <- get("maximum_operation_output_bytes", envir = owner, inherits = FALSE)
-  assert_identical(eval(parse(text = encode_number(capacity)), baseenv()), capacity,
-    "generated R changed its integer output capacity")
-})
-
-# Canonical integer text stays public text and binds only to an exact native scalar.
-formula_literal_session <- "f9980000-0000-4000-8000-000000000001"
-formula_max_integer_text <- paste0(
-  "179769313486231570814527423731704356798070567525844996598917476803157260780028",
-  "538760589558632766878171540458953514382464234321326889464182768467546703537516",
-  "986049910576551282076245490090389328944075868508455133942304583236903222948165",
-  "808559332123348274797826204144723168738177180919299881250404026184124858368"
-)
-formula_previous_max_integer_text <- paste0(
-  "179769313486231550856124328384506240234343437157459335924404872448581845754556",
-  "114388470639943126220321960804027157371570809852884964511743044087662767600909",
-  "594331927728237078876188760579532563768698654064825262115771015791463983014857",
-  "704008123419459386245141723703148097529108423358883457665451722744025579520"
-)
-formula_literal_cases <- list(
-  list(value = "0", scalar = 0L),
-  list(value = "2", scalar = 2L),
-  list(value = "-2147483647", scalar = -2147483647L),
-  list(value = "2147483647", scalar = 2147483647L, operator = "subtract"),
-  list(value = "-2147483648", scalar = -2147483648),
-  list(value = "2147483648", scalar = 2147483648),
-  list(value = "1152921504606846976", scalar = 2^60),
-  list(value = "-1152921504606846976", scalar = -2^60),
-  list(value = "1267650600228229401496703205376", scalar = 2^100, compiled = TRUE),
-  list(value = "-1267650600228229401496703205376", scalar = -2^100, compiled = TRUE),
-  list(value = "1267650600228229260759214850048", scalar = 0x1.fffffffffffffp+99, compiled = TRUE),
-  list(value = "1267650600228229682971679916032", scalar = 0x1.0000000000001p+100, compiled = TRUE),
-  list(value = "9007199254740992", scalar = 0x1p+53, compiled = TRUE),
-  list(value = "1000000000000000000", scalar = 0x1.bc16d674ec8p+59, compiled = TRUE),
-  list(value = formula_max_integer_text, scalar = 0x1.fffffffffffffp+1023, compiled = TRUE),
-  list(value = paste0("-", formula_max_integer_text), scalar = -0x1.fffffffffffffp+1023, compiled = TRUE),
-  list(value = formula_previous_max_integer_text, scalar = 0x1.ffffffffffffep+1023, compiled = TRUE),
-  list(value = "2", scalar = 2L, wide = TRUE),
-  list(value = "1152921504606846976", scalar = 2^60, wide = TRUE),
-  list(value = 2, scalar = 2L),
-  list(value = 0.5, scalar = 0.5, compiled = TRUE),
-  list(value = 2^60, scalar = 2^60),
-  list(value = jsonlite::fromJSON("1e308"), scalar = jsonlite::fromJSON("1e308"), compiled = TRUE),
-  list(value = jsonlite::fromJSON("1e-100"), scalar = jsonlite::fromJSON("1e-100"), compiled = TRUE)
-)
-for (literal in formula_literal_cases) {
-  source_environment$formula_literal_frame <- data.frame(
-    left = if (isTRUE(literal$wide)) bit64::as.integer64(c("0", "7", NA_character_)) else c(0L, 7L, NA_integer_),
-    row.names = c("zero", "seven", "missing")
-  )
-  formula_literal_before <- serialize(source_environment$formula_literal_frame, NULL, version = 3L)
-  literal_open <- dispatch("openSession", list(
-    sessionId = formula_literal_session, variableName = "formula_literal_frame", page = page_window()
-  ))
-  assert_identical(literal_open$kind, "page", "the R Formula integer-text source did not open")
-  literal_operator <- if (is.null(literal$operator)) "add" else literal$operator
-  literal_step <- formula_step("formula-literal", literal_operator, "result", value = literal$value)
-  literal_preview <- dispatch("previewStep", list(
-    sessionId = formula_literal_session, revision = 0L, step = literal_step, page = page_window()
-  ))
-  assert_identical(
-    literal_preview$kind, "stepPreview",
-    sprintf("R Formula literal %s did not preview: %s", literal$value, literal_preview$message)
-  )
-  expected_left <- source_environment$formula_literal_frame$left
-  if (isTRUE(literal$wide) && is.double(literal$scalar)) expected_left <- as.double(expected_left)
-  expected <- if (identical(literal_operator, "subtract")) {
-    expected_left - literal$scalar
-  } else {
-    expected_left + literal$scalar
-  }
-  expected_frame <- source_environment$formula_literal_frame
-  expected_frame$result <- expected
-  literal_live <- get("snapshot", envir = latest_full_capture, inherits = FALSE)
-  assert_identical(literal_live, expected_frame, "live R Formula changed native values or frame metadata")
-  if (is.double(expected) && !inherits(expected, "integer64")) {
-    present <- !is.na(expected)
-    assert_identical(writeBin(literal_live$result[present], raw(), size = 8L, endian = "little"),
-      writeBin(expected[present], raw(), size = 8L, endian = "little"), "live R Formula changed exact finite scalar bits")
-  }
-  expected_page <- jsonlite::fromJSON(
-    openwrangler_r_frame_contract$encode_page(
-      openwrangler_r_frame_contract$capture_frame(expected_frame), row_limit = 3L, column_limit = 2L
-    ),
-    simplifyVector = FALSE
-  )
-  expected_cells <- lapply(expected_page$page$rows, `[[`, "values")
-  assert_identical(lapply(literal_preview$page$page$rows, `[[`, "values"), expected_cells,
-    "R Formula changed exact literal cells")
-  assert_identical(
-    literal_preview$page$schema[[2L]]$rawType,
-    if (inherits(expected, "integer64")) "integer64" else typeof(expected),
-    "R Formula changed its native scalar type"
-  )
-  generated_environment <- new.env(parent = baseenv())
-  generated_environment$formula_literal_frame <- source_environment$formula_literal_frame
-  eval(parse(text = literal_preview$code), envir = generated_environment)
-  assert_identical(generated_environment$open_wrangler_result$result, expected, "generated R Formula changed an exact literal")
-  if (isTRUE(literal$compiled)) {
-    compiled <- compiler::cmpfun(eval(parse(text = paste(
-      "function(formula_literal_frame) {", literal_preview$code,
-      "list(result = open_wrangler_result, source = formula_literal_frame) }"
-    )), envir = baseenv()))
-    result <- compiled(unserialize(formula_literal_before))
-    assert_identical(result$result, generated_environment$open_wrangler_result,
-      "compiled generated R Formula changed its complete result")
-    assert_identical(serialize(result$source, NULL, version = 3L), formula_literal_before,
-      "compiled generated R Formula mutated its source")
-  }
-  assert_identical(
-    serialize(generated_environment$formula_literal_frame, NULL, version = 3L),
-    formula_literal_before, "generated R Formula mutated its source"
-  )
-  literal_applied <- dispatch("applyDraft", list(sessionId = formula_literal_session, revision = 1L, page = page_window()))
-  assert_identical(literal_applied$action, "apply", "the exact R Formula draft did not apply")
-  assert_identical(lapply(literal_applied$page$page$rows, `[[`, "values"), expected_cells,
-    "applying R Formula changed the exact literal cells")
-  if (identical(literal$value, "1152921504606846976")) {
-    for (invalid_literal in list(
-      "-0", "+2", "02", "2\n", " 2", "2.5", "1e2", "Infinity",
-      paste(rep("9", 309L), collapse = ""), paste(rep("1", 310L), collapse = ""),
-      "9007199254740993", "1152921504606847000", "1267650600228229401496703205377",
-      "1267650600228229401522626226666", "-1267650600228229401522626226666",
-      paste0(substr(formula_max_integer_text, 1L, nchar(formula_max_integer_text) - 1L), "7"),
-      TRUE, Inf, NaN, list(2)
-    )) {
-      rejected <- dispatch("previewStep", list(
-        sessionId = formula_literal_session, revision = 2L,
-        step = formula_step("formula-rejected", "add", "rejected", value = invalid_literal), page = page_window()
-      ))
-      assert_identical(rejected$kind, "error", "R Formula accepted invalid or inexact integer text")
-      assert_identical(rejected$code, "invalid_request", "R Formula integer text returned the wrong refusal")
-      if (is.character(invalid_literal) && invalid_literal %in% c("9007199254740993", "1152921504606847000", "1267650600228229401496703205377",
-        "1267650600228229401522626226666", "-1267650600228229401522626226666",
-        paste0(substr(formula_max_integer_text, 1L, nchar(formula_max_integer_text) - 1L), "7"))) {
-        assert_identical(
-          grepl("represented exactly", rejected$message, fixed = TRUE), TRUE,
-          "R Formula omitted its precision diagnostic"
-        )
-      }
-    }
-    literal_retained <- dispatch("getPage", list(sessionId = formula_literal_session, page = page_window()))
-    assert_identical(literal_retained$kind, "page", "R Formula lost the committed page after rejecting integer text")
-    assert_identical(literal_retained$page, literal_applied$page, "rejecting integer text changed the committed result")
-  }
-  literal_inspection <- inspect_step(formula_literal_session, 2L, "formula-literal", page_window())
-  assert_identical(literal_inspection$kind, "stepInspection", "the retained R Formula literal did not replay")
-  eval(parse(text = literal_inspection$code), envir = generated_environment)
-  assert_identical(generated_environment$open_wrangler_result$result, expected, "replayed R Formula literal code changed")
-  assert_identical(
-    serialize(source_environment$formula_literal_frame, NULL, version = 3L),
-    formula_literal_before,
-    "R Formula literal requests mutated their source"
-  )
-  dispatch("closeSession", list(sessionId = formula_literal_session))
-}
 
 formula_extra_step <- formula_step("formula-extra", "add", "extra", right_position = 2L, right_name = "right")
 formula_extra_step$params$extra <- TRUE
@@ -12770,23 +12432,6 @@ adversarial_open <- dispatch(
   )
 )
 assert_identical(adversarial_open$kind, "page", "the adversarial by-example session did not open")
-adversarial_reference <- function(position) {
-  list(id = sprintf("r:c:%d", position - 1L), name = sprintf("source_%02d", position))
-}
-adversarial_valid_step <- function(id = "by-example-adversarial-valid", new_column = "valid output") {
-  list(
-    id = id,
-    kind = "byExample",
-    params = list(
-      sourceColumns = I(list(adversarial_reference(1L))),
-      newColumn = new_column,
-      examples = I(list(
-        list(inputs = I(list("alpha")), output = "fixed"),
-        list(inputs = I(list("beta")), output = "fixed")
-      ))
-    )
-  )
-}
 expect_adversarial_failure <- function(step, label, expected_code = "invalid_request", revision = 0L) {
   response <- dispatch(
     "previewStep",
@@ -12971,53 +12616,6 @@ max_safe_discard <- dispatch(
   list(sessionId = by_example_adversarial_session, revision = max_safe_preview$revision, page = page_window())
 )
 adversarial_revision <- max_safe_discard$revision
-
-for (precise_text in c("1.2345678901234567", "1e-100", "0.5")) {
-  precise_value <- jsonlite::fromJSON(precise_text)
-  precise_step <- adversarial_valid_step("by-example-precise-double", "precise double")
-  precise_step$params$examples <- I(list(
-    list(inputs = I(list("alpha")), output = precise_value),
-    list(inputs = I(list("beta")), output = precise_value)
-  ))
-  precise_preview <- dispatch(
-    "previewStep",
-    list(
-      sessionId = by_example_adversarial_session,
-      revision = adversarial_revision,
-      step = precise_step,
-      page = page_window()
-    )
-  )
-  assert_identical(precise_preview$kind, "stepPreview", "the precise-double by-example did not preview")
-  assert_identical(
-    precise_preview$retainedStep$params$examples[[1L]]$output,
-    precise_value,
-    "protocol v14 changed a retained by-example double"
-  )
-  live <- get("snapshot", envir = latest_full_capture, inherits = FALSE)
-  assert_identical(live$`precise double`, rep(precise_value, 2L), "live R changed a by-example double")
-  generated_environment <- new.env(parent = baseenv())
-  generated_environment$by_example_adversarial <- by_example_adversarial_before
-  eval(parse(text = precise_preview$code), envir = generated_environment)
-  assert_identical(generated_environment$open_wrangler_result, live,
-    "generated R changed the complete by-example double result")
-  compiled <- compiler::cmpfun(eval(parse(text = paste(
-    "function(by_example_adversarial) {", precise_preview$code,
-    "list(result = open_wrangler_result, source = by_example_adversarial) }"
-  )), envir = baseenv()))
-  result <- compiled(by_example_adversarial_before)
-  assert_identical(result$result, live, "compiled generated R changed the complete by-example double result")
-  for (source in list(generated_environment$by_example_adversarial, result$source,
-                      source_environment$by_example_adversarial)) {
-    assert_identical(serialize(source, NULL, version = 3L), serialize(by_example_adversarial_before, NULL, version = 3L),
-      "R by-example double execution mutated its source")
-  }
-  precise_discard <- dispatch(
-    "discardDraft",
-    list(sessionId = by_example_adversarial_session, revision = precise_preview$revision, page = page_window())
-  )
-  adversarial_revision <- precise_discard$revision
-}
 
 program_null_step <- adversarial_valid_step("by-example-program-null", "program null")
 program_null_step$params["program"] <- list(NULL)

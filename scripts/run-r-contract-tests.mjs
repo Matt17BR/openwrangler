@@ -89,6 +89,7 @@ export const R_FRAME_CONTRACT_CASES = Object.freeze([
 ]);
 
 export const R_KERNEL_AGENT_CASES = Object.freeze([
+  "numeric-portability",
   "lifecycle-and-structure",
   "text-fill-and-cast",
   "rows-numeric-datetime-and-by-example",
@@ -219,7 +220,7 @@ export function createRContractPhases({
       `kernel:${caseId}`,
       `native kernel-agent contract: ${caseId}`,
       "r/tests/kernel_agent.R",
-      KERNEL_AGENT_TIMEOUT_MS,
+      caseId === "numeric-portability" ? 120_000 : KERNEL_AGENT_TIMEOUT_MS,
       {
         environment: rEnvironment,
         phaseEnvironment: { OPEN_WRANGLER_R_KERNEL_CASE: caseId },
@@ -373,14 +374,10 @@ function sleep(milliseconds) {
 }
 
 function observeChild(child) {
-  let exited = false;
   let settled = false;
   let state;
   let spawnError;
   const promise = new Promise((resolveExit) => {
-    child.once("exit", () => {
-      exited = true;
-    });
     child.once("error", (error) => {
       spawnError ??= error;
     });
@@ -392,7 +389,6 @@ function observeChild(child) {
   });
   return Object.freeze({
     promise,
-    hasExited: () => exited,
     isSettled: () => settled,
     state: () => state
   });
@@ -468,7 +464,7 @@ function linuxProcessHasOwner(pid, ownerToken) {
 
 function parsePsProcessIdentity(line, ownerToken) {
   const match =
-    /^\s*([1-9][0-9]*)\s+([0-9]+)\s+([0-9]+)\s+(\S+)\s+(\S+\s+\S+\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+([\s\S]*)$/u.exec(
+    /^\s*([1-9][0-9]*)\s+([0-9]+)\s+([0-9]+)\s+(\S+\s+\S+\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+([\s\S]*)$/u.exec(
       line
     );
   if (!match) return undefined;
@@ -476,10 +472,10 @@ function parsePsProcessIdentity(line, ownerToken) {
     pid: Number(match[1]),
     parentPid: Number(match[2]),
     groupId: Number(match[3]),
-    state: match[4][0],
-    startIdentity: match[5],
-    command: match[6],
-    ownerMarked: typeof ownerToken === "string" && match[6].includes(`${POSIX_OWNER_ENVIRONMENT_KEY}=${ownerToken}`),
+    state: "?",
+    startIdentity: match[4],
+    command: match[5],
+    ownerMarked: typeof ownerToken === "string" && match[5].includes(`${POSIX_OWNER_ENVIRONMENT_KEY}=${ownerToken}`),
     identityResolution: "second"
   });
 }
@@ -487,7 +483,7 @@ function parsePsProcessIdentity(line, ownerToken) {
 export function readPsProcessIdentity(pid, { execute = execFileSync, ownerToken } = {}) {
   let output;
   try {
-    output = execute("ps", ["eww", "-p", String(pid), "-o", "pid=,ppid=,pgid=,state=,lstart=,command="], {
+    output = execute("ps", ["eww", "-p", String(pid), "-o", "pid=,ppid=,pgid=,lstart=,command="], {
       encoding: "utf8",
       maxBuffer: 64 * 1024,
       timeout: POSIX_PROCESS_OBSERVATION_DEADLINE_MS,
@@ -509,7 +505,7 @@ function readPosixProcessIdentity(pid, ownerToken) {
 
 function listPosixProcessIdentities(ownerToken) {
   if (process.platform !== "linux") {
-    const output = execFileSync("ps", ["eww", "-axo", "pid=,ppid=,pgid=,state=,lstart=,command="], {
+    const output = execFileSync("ps", ["eww", "-axo", "pid=,ppid=,pgid=,lstart=,command="], {
       encoding: "utf8",
       maxBuffer: 8 * 1024 * 1024,
       timeout: POSIX_PROCESS_OBSERVATION_DEADLINE_MS,
@@ -552,7 +548,6 @@ export function createPosixProcessTracker(
     readProcessIdentity = readPosixProcessIdentity,
     listProcessIdentities = listPosixProcessIdentities,
     signalVerifiedProcesses,
-    rootHasExited,
     observationIntervalMs = POSIX_PROCESS_OBSERVATION_INTERVAL_MS
   } = {}
 ) {
@@ -576,32 +571,23 @@ export function createPosixProcessTracker(
     observed.delete(expected.pid);
     retiredIdentities.set(processIdentityKey(expected), expected);
   };
-  const coarseIdentityFailure = (expected, current, ownsRootLineage) => {
-    if (expected.identityResolution !== "second" && current.identityResolution !== "second") return undefined;
-    const secondResolution = expected.identityResolution === "second" && current.identityResolution === "second";
-    const parentMatches = expected.parentPid === current.parentPid;
-    const groupMatches = expected.groupId === current.groupId;
-    const commandMatches = expected.command === current.command;
-    const markerBefore = expected.ownerMarked === true;
-    const markerNow = current.ownerMarked === true;
-    const markerOwned = markerBefore && markerNow;
-    const originalRoot = sameProcessIdentity(expected, rootIdentity);
+  const coarseIdentityStillOwned = (expected, current) => {
+    if (expected.identityResolution !== "second" && current.identityResolution !== "second") return true;
+    const markerOwned = expected.ownerMarked === true && current.ownerMarked === true;
     const lineageOwned =
-      parentMatches &&
-      current.parentPid !== expected.pid &&
-      (observed.has(expected.parentPid) ||
-        (!markerOwned && childOwnedRoot && expected.parentPid === rootPid && ownsRootLineage()));
-    if (secondResolution && parentMatches && groupMatches && commandMatches && (markerOwned || lineageOwned)) {
-      return undefined;
-    }
-    return new Error(
-      `process ${expected.pid} did not satisfy the ownership checks for its second-resolution identity ` +
-        `(secondResolution=${secondResolution}, parentMatches=${parentMatches}, groupMatches=${groupMatches}, ` +
-        `commandMatches=${commandMatches}, markerBefore=${markerBefore}, markerNow=${markerNow}, ` +
-        `lineageOwned=${lineageOwned}, root=${originalRoot})`
+      expected.parentPid === current.parentPid &&
+      observed.has(expected.parentPid) &&
+      current.parentPid !== expected.pid;
+    return (
+      expected.identityResolution === "second" &&
+      current.identityResolution === "second" &&
+      expected.parentPid === current.parentPid &&
+      expected.groupId === current.groupId &&
+      expected.command === current.command &&
+      (markerOwned || lineageOwned)
     );
   };
-  const verifiedIdentity = (expected, ownsRootLineage) => {
+  const verifiedIdentity = (expected) => {
     let current;
     try {
       current = readProcessIdentity(expected.pid, ownerToken);
@@ -611,48 +597,20 @@ export function createPosixProcessTracker(
     }
     if (!current || current.state === "Z") return undefined;
     if (!sameProcessIdentity(expected, current)) return undefined;
-    const ownershipFailure = coarseIdentityFailure(expected, current, ownsRootLineage);
-    if (ownershipFailure) {
-      latch(ownershipFailure);
+    if (!coarseIdentityStillOwned(expected, current)) {
+      latch(
+        new Error(
+          `process ${expected.pid} retained only an ambiguous second-resolution identity without its exact owned marker or lineage`
+        )
+      );
       throw failure;
     }
     return current;
   };
   const observe = () => {
     if (failure) throw failure;
-    if (childOwnedRoot && rootHasExited()) {
-      // An exact child exit retires only the original key, never a later PID owner.
-      retiredIdentities.set(processIdentityKey(rootIdentity), rootIdentity);
-    }
-    let rootLineageVerified = false;
-    const ownsRootLineage = () => {
-      if (rootLineageVerified) return true;
-      let current;
-      try {
-        if (!rootHasExited()) current = readProcessIdentity(rootPid, ownerToken);
-      } catch (error) {
-        latch(error);
-        throw failure;
-      }
-      if (
-        rootIdentity.state !== "Z" &&
-        rootIdentity.ownerMarked === true &&
-        current &&
-        current.state !== "Z" &&
-        current.ownerMarked === true &&
-        current.identityResolution === "second" &&
-        sameProcessIdentity(current, rootIdentity) &&
-        current.parentPid === rootIdentity.parentPid &&
-        current.groupId === rootIdentity.groupId
-      ) {
-        rootLineageVerified = true;
-        return true;
-      }
-      latch(new Error(`root process ${rootPid} cannot authenticate unmarked descendants`));
-      throw failure;
-    };
     for (const expected of observed.values()) {
-      if (!verifiedIdentity(expected, ownsRootLineage)) {
+      if (!verifiedIdentity(expected)) {
         retire(expected);
       }
     }
@@ -664,26 +622,19 @@ export function createPosixProcessTracker(
       throw failure;
     }
     const pending = new Map(snapshot.map((identity) => [identity.pid, identity]));
-    if (!childOwnedRoot) {
-      let root;
-      try {
-        root = readProcessIdentity(rootPid, ownerToken);
-      } catch (error) {
-        latch(error);
-        throw failure;
-      }
-      if (root && root.state !== "Z") pending.set(rootPid, root);
+    let root;
+    try {
+      root = readProcessIdentity(rootPid, ownerToken);
+    } catch (error) {
+      latch(error);
+      throw failure;
     }
+    if (root && root.state !== "Z") pending.set(rootPid, root);
     let changed = true;
     while (changed) {
       changed = false;
       for (const identity of pending.values()) {
-        if (
-          identity.state === "Z" ||
-          observed.has(identity.pid) ||
-          (childOwnedRoot && !rootHasExited() && identity.pid === rootPid)
-        )
-          continue;
+        if (observed.has(identity.pid)) continue;
         const retired = retiredIdentities.get(processIdentityKey(identity));
         if (retired) {
           if (retired.identityResolution === "second" || identity.identityResolution === "second") {
@@ -697,10 +648,9 @@ export function createPosixProcessTracker(
           continue;
         }
         const belongs =
-          (!childOwnedRoot && sameProcessIdentity(identity, rootIdentity)) ||
+          sameProcessIdentity(identity, rootIdentity) ||
           identity.ownerMarked === true ||
-          observed.has(identity.parentPid) ||
-          (childOwnedRoot && identity.parentPid === rootPid && ownsRootLineage());
+          observed.has(identity.parentPid);
         if (!belongs) continue;
         let verified;
         try {
@@ -717,37 +667,31 @@ export function createPosixProcessTracker(
     return observed.size;
   };
   let rootIdentity;
-  let childOwnedRoot = false;
   try {
     rootIdentity = readProcessIdentity(rootPid, ownerToken);
-    if (!rootIdentity || (rootIdentity.state === "Z" && rootIdentity.identityResolution !== "second")) {
+    if (!rootIdentity || rootIdentity.state === "Z") {
       throw new Error(`The R contract root process ${rootPid} had no stable identity after spawn.`);
     }
-    if (rootIdentity.identityResolution === "second" && typeof rootHasExited !== "function") {
-      throw new Error("The coarse R contract root requires an exact child exit witness.");
-    }
-    childOwnedRoot = rootIdentity.identityResolution === "second";
-    if (!childOwnedRoot) observed.set(rootPid, rootIdentity);
+    observed.set(rootPid, rootIdentity);
     observe();
   } catch (error) {
     latch(error);
     // The latched failure is surfaced through the phase and settlement paths.
   }
-  const observationTimer = setTimeout(() => {
+  const interval = setInterval(() => {
     try {
       observe();
-      observationTimer.refresh();
     } catch {
-      clearTimeout(observationTimer);
+      clearInterval(interval);
     }
   }, observationIntervalMs);
-  observationTimer.unref?.();
+  interval.unref?.();
   return Object.freeze({
     failure: failurePromise,
     observe,
     isSettled: (observer) => {
       observe();
-      return observed.size === 0 && (!childOwnedRoot || rootHasExited()) && observer.isSettled();
+      return observed.size === 0 && observer.isSettled();
     },
     signal: (signal) => {
       try {
@@ -756,9 +700,7 @@ export function createPosixProcessTracker(
         // Keep the failed observation, but still attempt the retained identities.
         // The signaler revalidates every target through its exact OS identity.
       }
-      const targets = [...observed.values()];
-      if (childOwnedRoot && !rootHasExited()) targets.push(rootIdentity);
-      targets.sort((left, right) => left.pid - right.pid);
+      const targets = [...observed.values()].sort((left, right) => left.pid - right.pid);
       if (targets.length > 0) {
         try {
           if (!signalVerifiedProcesses) {
@@ -772,7 +714,7 @@ export function createPosixProcessTracker(
       if (failure) throw failure;
     },
     stop: () => {
-      clearTimeout(observationTimer);
+      clearInterval(interval);
       observed.clear();
     }
   });
@@ -1237,7 +1179,6 @@ async function runRContractPhaseAsync(
           readProcessIdentity: settlementOptions.readProcessIdentity,
           listProcessIdentities: settlementOptions.listProcessIdentities,
           signalVerifiedProcesses,
-          rootHasExited: observer.hasExited,
           observationIntervalMs: settlementOptions.observationIntervalMs
         });
   const failurePromise = Promise.race([

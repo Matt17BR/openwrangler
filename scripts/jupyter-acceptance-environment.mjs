@@ -649,7 +649,9 @@ const R_ACCEPTANCE_PROBE = [
   "    TRUE",
   "  }, error = function(...) FALSE)",
   "}, logical(1L), USE.NAMES = FALSE)",
-  'if (any(!.ow_loadable)) quit(save = "no", status = 12L)',
+  'if (any(!.ow_loadable)) quit(save = "no", status = 12L)'
+].join("\n");
+const R_ACCEPTANCE_COLLAPSE_PROBE = [
   ".ow_row_count <- 1205L",
   ".ow_collapse_input <- data.frame(",
   "  row_id = seq_len(.ow_row_count),",
@@ -699,8 +701,7 @@ const R_ACCEPTANCE_PROBE = [
   "  suppressMessages(suppressWarnings(collapse::findex_by(.ow_qdf, group, row_id))),",
   "  error = function(...) NULL",
   ")",
-  'if (!inherits(.ow_indexed, "indexed_frame")) quit(save = "no", status = 17L)',
-  'cat(paste(.ow_packages, .ow_versions, sep = "=", collapse = "\\n"), sep = "")'
+  'if (!inherits(.ow_indexed, "indexed_frame")) quit(save = "no", status = 17L)'
 ].join("\n");
 export function rAcceptanceRepositories(platform = process.platform) {
   if (platform === "linux") {
@@ -719,8 +720,9 @@ export function rAcceptanceRepositories(platform = process.platform) {
 }
 
 function rAcceptanceInstall({ repository, supplementalRepository }, platform, packages) {
+  const supplementalPackages = ["collapse", "nanoparquet"].filter((packageName) => packages.includes(packageName));
   const nativeCollapseInstall =
-    platform === "darwin"
+    platform === "darwin" && packages.includes("collapse")
       ? [
           "utils::install.packages(",
           '  "collapse",',
@@ -735,7 +737,7 @@ function rAcceptanceInstall({ repository, supplementalRepository }, platform, pa
   return [
     'Sys.setenv(MAKEFLAGS = "-s")',
     `.ow_packages <- c(${packages.map((packageName) => JSON.stringify(packageName)).join(", ")})`,
-    '.ow_supplemental_packages <- c("collapse", "nanoparquet")',
+    `.ow_supplemental_packages <- c(${supplementalPackages.map((packageName) => JSON.stringify(packageName)).join(", ")})`,
     platform === "darwin"
       ? '.ow_binary_supplemental_packages <- "nanoparquet"'
       : ".ow_binary_supplemental_packages <- .ow_supplemental_packages",
@@ -1968,8 +1970,8 @@ export async function prepareJupyterAcceptanceREnvironment(
   }
 
   const packageEntries = Object.entries(R_ACCEPTANCE_PACKAGE_VERSIONS).filter(([packageName]) => {
-    if (packageName === "bit64") return sourceContracts;
-    if (sourceContracts && packageName === "IRkernel") return false;
+    if (sourceContracts) return ["jsonlite", "nanoparquet", "bit64"].includes(packageName);
+    if (packageName === "bit64") return false;
     return nativeEditorTooling || !["languageserver", "rmarkdown", "knitr"].includes(packageName);
   });
   const packages = Object.freeze(packageEntries.map(([packageName]) => packageName));
@@ -2001,7 +2003,16 @@ export async function prepareJupyterAcceptanceREnvironment(
   const dependencyProbe = freezeRCommandInvocation(
     {
       executable: canonicalRscript,
-      args: ["--vanilla", "-e", `.ow_expected <- c(${expectedVersions})\n${R_ACCEPTANCE_PROBE}`],
+      args: [
+        "--vanilla",
+        "-e",
+        [
+          `.ow_expected <- c(${expectedVersions})`,
+          R_ACCEPTANCE_PROBE,
+          ...(sourceContracts ? [] : [R_ACCEPTANCE_COLLAPSE_PROBE]),
+          'cat(paste(.ow_packages, .ow_versions, sep = "=", collapse = "\\n"), sep = "")'
+        ].join("\n")
+      ],
       environment: commandEnvironment,
       label: "Released-Jupyter private R dependency probe"
     },
