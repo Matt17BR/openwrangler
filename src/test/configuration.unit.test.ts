@@ -30,9 +30,38 @@ describe("runtime request deadlines", () => {
     expect(runtimeRequestTimeoutMs({ kind: "getSummary" })).toBe(12_000);
   });
 
+  it("uses each documented default for invalid configured deadlines", () => {
+    let configured: unknown;
+    vi.spyOn(vscode.workspace, "getConfiguration").mockReturnValue({
+      get: <T>(_key: string, _fallback: T): T => configured as T
+    } as vscode.WorkspaceConfiguration);
+
+    for (const value of [null, "invalid", "60000", false, {}, [], 0, 999, 600_001, 2 ** 31, NaN, Infinity]) {
+      configured = value;
+      expect(runtimeRequestTimeoutMs({ kind: "openSession" })).toBe(DEFAULT_SESSION_OPEN_TIMEOUT_MS);
+      expect(runtimeRequestTimeoutMs({ kind: "getPage" })).toBe(DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS);
+    }
+  });
+
+  it("accepts configured deadline boundaries and fractional milliseconds", () => {
+    let configured = 1_000;
+    vi.spyOn(vscode.workspace, "getConfiguration").mockReturnValue({
+      get: <T>(_key: string, _fallback: T): T => configured as T
+    } as vscode.WorkspaceConfiguration);
+
+    for (const value of [1_000, 1_000.5, 600_000]) {
+      configured = value;
+      expect(runtimeRequestTimeoutMs({ kind: "openSession" })).toBe(value);
+      expect(runtimeRequestTimeoutMs({ kind: "getSummary" })).toBe(value);
+    }
+  });
+
   it("keeps explicit per-call cleanup and test deadlines authoritative", () => {
+    const configuration = vi.spyOn(vscode.workspace, "getConfiguration");
     expect(runtimeRequestTimeoutMs({ kind: "openSession" }, 2_000)).toBe(2_000);
+    expect(runtimeRequestTimeoutMs({ kind: "openSession" }, 25)).toBe(25);
     expect(runtimeRequestTimeoutMs({ kind: "closeSession" }, 0)).toBe(0);
+    expect(configuration).not.toHaveBeenCalled();
   });
 });
 

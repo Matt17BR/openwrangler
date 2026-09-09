@@ -59,7 +59,8 @@ export function runtimeRequestTimeoutMs(
   explicitTimeoutMs?: number
 ): number {
   if (explicitTimeoutMs !== undefined) return explicitTimeoutMs;
-  return request.kind === "openSession"
-    ? getSetting<number>("sessionOpenTimeoutMs", DEFAULT_SESSION_OPEN_TIMEOUT_MS)
-    : getSetting<number>("requestTimeoutMs", DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS);
+  const openingSession = request.kind === "openSession";
+  const key = openingSession ? "sessionOpenTimeoutMs" : "requestTimeoutMs";
+  const fallback = openingSession ? DEFAULT_SESSION_OPEN_TIMEOUT_MS : DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS;
+  return boundedNumber(getSetting<unknown>(key, fallback), fallback, 1_000, 600_000);
 }
