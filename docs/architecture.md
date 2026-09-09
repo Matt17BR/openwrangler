@@ -685,6 +685,11 @@ Native R response encoding stays inside the correlated request error boundary. O
 refused before assembling the escaped response, and the final serialized output retains its complete transport cap.
 Opening and editing still preflight the complete encoded reply before publishing session state.
 
+The host reads private R response and export files through bounded, single-link identity checks. Cleanup moves the
+identified file into a private directory and verifies the same file before and after truncating it to zero bytes.
+Directory identity uses device, inode, ownership and permissions; its link count can change with directory contents.
+Replaced files or cleanup directories are refused and preserved.
+
 R frame validation accepts native compact zero-row metadata while independently checking column lengths. Live and
 generated input/output validation apply the same rule, so native empty subsets do not become malformed frames.
 Mutation and inspection decoders distinguish a known empty schema from missing host context. They retain exact
