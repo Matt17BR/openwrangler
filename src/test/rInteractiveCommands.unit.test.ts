@@ -1057,26 +1057,36 @@ describe("active R session commands", () => {
     const transport = transportMock();
     const { provider, factory } = registerWith([transport], [watcher]);
 
-    provider.startAutomaticDiscovery();
-    await vi.waitFor(() => expect(watcher.readInitial).toHaveBeenCalledOnce(), { timeout: 1_000 });
-    await delay(350);
+    vi.useFakeTimers();
+    try {
+      provider.startAutomaticDiscovery();
+      await vi.advanceTimersToNextTimerAsync();
+      expect(watcher.readInitial).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(350);
 
-    expect(factory.create).not.toHaveBeenCalled();
-    expect(terminal.sendText).not.toHaveBeenCalled();
+      expect(factory.create).not.toHaveBeenCalled();
+      expect(terminal.sendText).not.toHaveBeenCalled();
 
-    pendingMetadata.resolve(discovery(tibble));
-    await vi.waitFor(() => expect(provider.snapshot().state).toBe("ready"), { timeout: 1_000 });
-    const snapshot = provider.snapshot();
-    if (snapshot.state !== "ready") throw new Error("Expected watcher dataframes.");
+      pendingMetadata.resolve(discovery(tibble));
+      await vi.waitFor(() => expect(provider.snapshot().state).toBe("ready"), { timeout: 1_000 });
+      const snapshot = provider.snapshot();
+      if (snapshot.state !== "ready") throw new Error("Expected watcher dataframes.");
 
-    await expect(command(OPEN_CACHED_R_INTERACTIVE_VARIABLE_COMMAND)(snapshot.variables[0]!.handle)).resolves.toBe(
-      true
-    );
+      await expect(command(OPEN_CACHED_R_INTERACTIVE_VARIABLE_COMMAND)(snapshot.variables[0]!.handle)).resolves.toBe(
+        true
+      );
 
-    expect(watcher.verifyCurrent).toHaveBeenCalledOnce();
-    expect(factory.create).toHaveBeenCalledOnce();
-    expect(terminal.sendText).not.toHaveBeenCalled();
-    await provider.shutdown();
+      expect(watcher.verifyCurrent).toHaveBeenCalledOnce();
+      expect(factory.create).toHaveBeenCalledOnce();
+      expect(terminal.sendText).not.toHaveBeenCalled();
+    } finally {
+      try {
+        pendingMetadata.resolve(discovery(tibble));
+        await provider.shutdown();
+      } finally {
+        vi.useRealTimers();
+      }
+    }
   });
 
   it("finishes automatic discovery after focus moves from the pinned R terminal to a shell", async () => {
