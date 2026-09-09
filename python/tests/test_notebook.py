@@ -958,7 +958,8 @@ def test_formatter_registration_prefers_open_wrangler_without_overriding_explici
     assert html_formatter.registered[pd.Series](pd.Series([1])) == "<strong>user formatter</strong>"
 
 
-def test_formatter_reduces_wide_capture_rows_to_the_cell_budget():
+def test_formatter_reduces_wide_capture_rows_to_the_cell_budget(monkeypatch):
+    monkeypatch.setattr(notebook, "MAX_SAVED_CELLS", 1_000)
     formatter = FakeFormatter()
     shell = type(
         "FakeShell",
