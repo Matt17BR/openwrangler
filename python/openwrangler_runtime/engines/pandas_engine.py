@@ -384,6 +384,16 @@ def _pandas_numeric_key_value(value: Any) -> Any:
 def _pandas_numeric_key(series: Any) -> Any:
     import pandas as pd
 
+    if isinstance(series.dtype, pd.ArrowDtype):
+        import pyarrow as pa
+
+        dtype = series.dtype.pyarrow_dtype
+        if not pa.types.is_integer(dtype) and _pandas_arrow_contains_integer(dtype):
+            # Arrow lacks container count/duplicate kernels. NumPy conversion rounds
+            # integer children, so box exact temporary comparison keys natively.
+            return pd.Series(
+                series.array.__arrow_array__().to_pylist(), index=series.index, name=series.name, dtype=object
+            )
     if not pd.api.types.is_object_dtype(series.dtype):
         _pandas_validate_query_values(series)
         return series
@@ -456,6 +466,8 @@ def _pandas_value_counts(series: Any, *, sort: bool = True) -> Any:
     if keys is series:
         return series.value_counts(dropna=True, sort=sort)
     counts = keys.value_counts(dropna=True, sort=sort)
+    if isinstance(series.dtype, pd.ArrowDtype):
+        return counts
     first: dict[Any, Any] = {}
     for original, key in zip(series.array, keys.array, strict=True):
         if (
@@ -4268,6 +4280,20 @@ def _pandas_scalar_export_frame(df: Any, preserve_index: bool) -> Any:
     return result
 
 
+def _pandas_arrow_contains_integer(dtype: Any) -> bool:
+    import pyarrow as pa
+
+    if pa.types.is_integer(dtype):
+        return True
+    if pa.types.is_list(dtype) or pa.types.is_large_list(dtype) or pa.types.is_fixed_size_list(dtype):
+        return _pandas_arrow_contains_integer(dtype.value_type)
+    if pa.types.is_struct(dtype):
+        return any(_pandas_arrow_contains_integer(field.type) for field in dtype)
+    if pa.types.is_map(dtype):
+        return _pandas_arrow_contains_integer(dtype.key_type) or _pandas_arrow_contains_integer(dtype.item_type)
+    return False
+
+
 def _pandas_read_parquet(path: str) -> Any:
     import json
 
@@ -4301,9 +4327,6 @@ def _pandas_read_parquet(path: str) -> Any:
         else:
             frame = pd.read_parquet(source)
         levels = [frame.index.get_level_values(level) for level in range(frame.index.nlevels)]
-        if not has_scalar_fields and not any(pd.api.types.is_float_dtype(level.dtype) for level in levels):
-            return frame
-
         effective_fields: list[Any | None] = []
         index_positions: set[int] = set()
         for item in pandas_metadata.get("index_columns", []):
@@ -4316,8 +4339,23 @@ def _pandas_read_parquet(path: str) -> Any:
                 index = pd.RangeIndex(item["start"], item["stop"], step=item["step"], name=item["name"])
                 if len(index) == len(frame):
                     effective_fields.append(None)
-        if not has_scalar_fields and not any(
-            field is not None and pa.types.is_integer(field.type) for field in effective_fields
+        data_fields = [field for position, field in enumerate(schema) if position not in index_positions]
+        if len(data_fields) != len(frame.columns):
+            raise EngineError("Could not match Parquet column metadata to the loaded frame.")
+        selected_data = [
+            (position, field)
+            for position, field in enumerate(data_fields)
+            if (pa.types.is_integer(field.type) and pd.api.types.is_float_dtype(frame.iloc[:, position].dtype))
+            or (
+                frame.iloc[:, position].dtype == object
+                and not pa.types.is_integer(field.type)
+                and _pandas_arrow_contains_integer(field.type)
+            )
+        ]
+        if (
+            not has_scalar_fields
+            and not selected_data
+            and not any(field is not None and pa.types.is_integer(field.type) for field in effective_fields)
         ):
             return frame
         if effective_fields and len(effective_fields) != len(levels):
@@ -4330,27 +4368,31 @@ def _pandas_read_parquet(path: str) -> Any:
             and pd.api.types.is_float_dtype(levels[level].dtype)
         ]
         changed_index = bool(selected)
-        # Ordinary Pandas decoding loses nullable integer index precision. Read
-        # only those physical fields, keeping normal data-column conversion.
+        # Read affected data and index fields together. Other columns keep
+        # Pandas' native metadata, string options and dtype conversion.
+        selected_fields = [field for _, field in [*selected, *selected_data]]
         table = (
-            pq.read_table(source, columns=[field.name for _, field in selected], use_pandas_metadata=False)
-            if selected
+            pq.read_table(source, columns=[field.name for field in selected_fields], use_pandas_metadata=False)
+            if selected_fields
             else None
         )
-        if (selected or has_scalar_fields) and _source_fingerprint(os.fstat(descriptor), descriptor) != before:
+        if (selected_fields or has_scalar_fields) and _source_fingerprint(os.fstat(descriptor), descriptor) != before:
             raise EngineError("The Parquet source changed while it was being read. Open it again.")
         if table is not None:
             if len(table) != len(frame):
-                raise EngineError("Could not match Parquet index values to the loaded frame.")
+                raise EngineError("Could not match Parquet rows to the loaded frame.")
+            if table.column_names != [field.name for field in selected_fields] or any(
+                actual.type != expected.type for actual, expected in zip(table.schema, selected_fields, strict=True)
+            ):
+                raise EngineError("Could not match the selected Parquet fields to the loaded frame.")
             for level, field in selected:
                 levels[level] = pd.Index(
                     table.column(field.name), dtype=pd.ArrowDtype(field.type), name=frame.index.names[level]
                 )
+            for position, field in selected_data:
+                frame.isetitem(position, pd.arrays.ArrowExtensionArray(table.column(field.name)))
 
         if has_scalar_fields:
-            data_fields = [field for position, field in enumerate(schema) if position not in index_positions]
-            if len(data_fields) != len(frame.columns):
-                raise EngineError("Could not match Parquet column metadata to the loaded frame.")
             for position, field in enumerate(data_fields):
                 if isinstance(field.type, scalar_types):
                     array = pa.array(frame.iloc[:, position], type=field.type, from_pandas=True)
@@ -5764,7 +5806,33 @@ def _generated_pandas_numeric_key_helpers() -> list[str]:
         "    return value",
         "",
         "",
+        "def _open_wrangler_arrow_contains_integer(dtype):",
+        "    import pyarrow as pa",
+        "",
+        "    if pa.types.is_integer(dtype):",
+        "        return True",
+        "    if pa.types.is_list(dtype) or pa.types.is_large_list(dtype) or pa.types.is_fixed_size_list(dtype):",
+        "        return _open_wrangler_arrow_contains_integer(dtype.value_type)",
+        "    if pa.types.is_struct(dtype):",
+        "        return any(_open_wrangler_arrow_contains_integer(field.type) for field in dtype)",
+        "    if pa.types.is_map(dtype):",
+        "        return _open_wrangler_arrow_contains_integer(dtype.key_type) "
+        "or _open_wrangler_arrow_contains_integer(dtype.item_type)",
+        "    return False",
+        "",
+        "",
         "def _open_wrangler_numeric_key(series):",
+        "    if isinstance(series.dtype, pd.ArrowDtype):",
+        "        import pyarrow as pa",
+        "",
+        "        dtype = series.dtype.pyarrow_dtype",
+        "        if not pa.types.is_integer(dtype) and _open_wrangler_arrow_contains_integer(dtype):",
+        "            # Arrow lacks container count/duplicate kernels. NumPy conversion rounds",
+        "            # integer children, so box exact temporary comparison keys natively.",
+        "            return pd.Series(",
+        "                series.array.__arrow_array__().to_pylist(), "
+        "index=series.index, name=series.name, dtype=object",
+        "            )",
         "    if not pd.api.types.is_object_dtype(series.dtype):",
         "        _open_wrangler_validate_query_values(series)",
         "        return series",

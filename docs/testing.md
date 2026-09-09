@@ -457,6 +457,11 @@ Configurable-export and index-fidelity owners exercise native `bool8` and UUID C
 omitted axes, equivalent Boolean labels, and external extension Parquet files. Ordinary conversion settings and
 invalid metadata retain native behavior. Rewrites around schema and data reads must refuse publication and close
 the source stream, including equal-size changes with restored modification times.
+The index-fidelity owner also loads nullable integer data and integer-bearing list, struct and map fields. It checks
+exact pages, complete profiles, value choices, Clone and standalone execution, physical export, Undo, empty and
+missing containers, unchanged metadata and siblings, and a single combined data/index repair projection.
+Container controls compare exact single-column duplicate counts and live/generated Drop and Mark results, including
+repeated empty values and nondefault row indexes, while preserving original Arrow storage.
 Object-UUID controls use actual file writers and public session preview/apply/undo. They check canonical picker
 counts, null/NaN selections, stable physical rows, standalone sort/deduplication, direct-copy identity and unchanged
 unrelated objects. The existing export owner checks canonical CSV/Parquet values and preserved or omitted axes.

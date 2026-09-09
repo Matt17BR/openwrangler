@@ -193,6 +193,11 @@ are rejected.
 Pandas Arrow date columns, including Parquet imports, retain date-range profiles, typed filters and stable sorting.
 Parquet imports preserve exact nullable integer row-index values, including adjacent integers above 2^53. Row labels
 follow filtered and sorted rows; the index-fidelity owner checks these through actual file sessions.
+Nullable integer data and integer children in lists, structs and maps also retain exact values and missingness through
+editing and export. Repaired columns use native Arrow storage; unrelated columns keep ordinary Pandas decoding.
+Profiles, value choices and single-column duplicate comparisons preserve exact nested integer values and missingness.
+Dataset statistics for frames combining nested and other columns retain an existing Pandas limitation
+([#1137](https://github.com/Matt17BR/openwrangler/issues/1137)).
 
 Native Pandas Arrow `bool8` and UUID columns support logical cell values, profiles, value selections, sorting and
 existing compatible cleaning operations. Nonzero `bool8` storage reads as true; UUIDs use canonical strings.

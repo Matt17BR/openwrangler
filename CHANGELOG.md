@@ -28,6 +28,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 ### Fixed
 
 - Native R CSV exports preserve UTF-8 text under the C locale.
+- Pandas Parquet imports preserve nullable integer values and integer children in lists, structs and maps through editing and export.
 - Generated native R Convert Type preserves text output when its duration input has no rows.
 - Native R One-hot encoding no longer creates phantom indicators for empty or all-missing duration columns.
 - Generated native R One-hot encoding groups equivalent text encodings consistently under the C locale.
