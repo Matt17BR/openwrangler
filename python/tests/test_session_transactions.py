@@ -1004,6 +1004,7 @@ def test_arrow_integer_modulo_publishes_exports_and_retains_state_after_zero_ref
         "uint64",
         "uint64-negative-add",
         "uint64-negative-subtract",
+        "uint64-negative-multiply",
         "uint64-negative-column-add",
         "uint64-negative-column-subtract",
         "uint64-mixed-column-add",
@@ -1025,7 +1026,7 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
     pa = pytest.importorskip("pyarrow")
     pq = pytest.importorskip("pyarrow.parquet")
     unsigned = family.startswith("uint64")
-    negative_literal = family in {"uint64-negative-add", "uint64-negative-subtract"}
+    negative_literal = family in {"uint64-negative-add", "uint64-negative-subtract", "uint64-negative-multiply"}
     negative_column = family in {"uint64-negative-column-add", "uint64-negative-column-subtract"}
     signed_left = family.startswith("uint64-reversed-column-")
     mixed_column = family in {"uint64-mixed-column-add", "uint64-mixed-column-subtract"} or signed_left
@@ -1035,6 +1036,8 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
         unsigned_values = [2**64 - 1, 1, None]
     elif family == "uint64-negative-subtract":
         unsigned_values = [3, 2**64 - 2, None]
+    elif family == "uint64-negative-multiply":
+        unsigned_values = [0, 2**63, None]
     elif negative_column:
         unsigned_values = [2**64 - 1, 2, None] if family.endswith("add") else [3, 2**64 - 3, None]
     elif mixed_column:
@@ -1077,7 +1080,7 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
             },
         }
         if negative_literal:
-            operation["params"]["operator"] = "add" if family == "uint64-negative-add" else "subtract"
+            operation["params"]["operator"] = family.removeprefix("uint64-negative-")
             operation["params"]["value"] = "-1"
         elif column_operand:
             operation["params"].pop("value")
@@ -1093,6 +1096,8 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
             unsigned_expected = [2**64 - 2, 0, None]
         elif family == "uint64-negative-subtract":
             unsigned_expected = [4, 2**64 - 1, None]
+        elif family == "uint64-negative-multiply":
+            unsigned_expected = [0, -(2**63), None]
         elif negative_column:
             unsigned_expected = [2**64 - 2, 0, None] if family.endswith("add") else [4, 2**64 - 1, None]
         elif mixed_column:
@@ -1109,7 +1114,7 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
             ),
             index=frame.index,
             name="result",
-            dtype="uint64[pyarrow]"
+            dtype=("int64[pyarrow]" if family == "uint64-negative-multiply" else "uint64[pyarrow]")
             if unsigned
             else pd.ArrowDtype(pa.decimal256(50, 3 if family == "decimal-multiply" else 23)),
         )
@@ -1159,7 +1164,10 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
             }
             if signed_left:
                 invalid["params"]["rightColumn"] = operation["params"]["rightColumn"]
-        with pytest.raises(pa.ArrowInvalid, match="(?i)overflow|divide by zero"):
+        with pytest.raises(
+            pa.ArrowInvalid,
+            match="not in range" if family == "uint64-negative-multiply" else "(?i)overflow|divide by zero",
+        ):
             manager.preview_step(session_id, session.revision, invalid, 0, 1)
         assert session_state(session) == before
         pd.testing.assert_series_equal(session.committed["result"], expected)
@@ -1199,6 +1207,13 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
         pd.testing.assert_index_equal(reopened.index, frame.index)
         pd.testing.assert_frame_equal(frame, original)
         assert frame.attrs == original.attrs
+        if family == "uint64-negative-multiply":
+            undone = manager.undo_step(session_id, session.revision, 0, 1)
+            assert undone["action"] == "undo"
+            assert session.plan == []
+            pd.testing.assert_frame_equal(session.committed.loc[:, original.columns], original)
+            manager.redo_step(session_id, session.revision, 0, 1)
+            pd.testing.assert_series_equal(session.committed["result"], expected)
         if signed_left:
             redone = manager.redo_step(session_id, session.revision, 0, 1)
             assert redone["action"] == "redo"

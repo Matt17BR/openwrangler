@@ -2037,7 +2037,7 @@ def test_pandas_formula_integer_guard_retains_native_refusals(
             execute_generated(runtime, frame, operation) if generated else runtime.apply_transform(frame, operation)
 
 
-@pytest.mark.parametrize("operator,value", [("add", 1), ("multiply", 2), ("power", 2)])
+@pytest.mark.parametrize("operator,value", [("add", 1), ("multiply", 3), ("power", 2)])
 def test_pandas_arrow_other_formula_overflow_stays_checked(operator: str, value: int) -> None:
     pa = pytest.importorskip("pyarrow")
     frame = pd.DataFrame({"value": pd.Series([2**63 - 1, None], dtype="int64[pyarrow]")})
@@ -2159,6 +2159,81 @@ def test_pandas_arrow_formula_capacity_repairs_unsigned_scalars(values, operator
         assert actual["result"].dtype == pd.ArrowDtype(pa.uint64())
         pd.testing.assert_frame_equal(actual.iloc[:, :-1], before)
         pd.testing.assert_frame_equal(frame, before)
+
+
+@pytest.mark.parametrize(
+    "left_dtype,left_values,right_dtype,right_values,output_dtype,expected",
+    [
+        ("uint64[pyarrow]", [0, 2**63, None], None, "-1", "int64[pyarrow]", [0, -(2**63), None]),
+        ("int64[pyarrow]", [-(2**63), -1, None], None, "-1", "uint64[pyarrow]", [2**63, 1, None]),
+        ("int64[pyarrow]", [2**63 - 1, 0, None], None, "2", "uint64[pyarrow]", [2**64 - 2, 0, None]),
+        ("int8[pyarrow]", [-100, 3, None], "int8[pyarrow]", [-2, 2, None], "int64[pyarrow]", [200, 6, None]),
+        ("uint64[pyarrow]", [0, 2**64 - 1, None], "int16", [-1, 1, -2], "uint64[pyarrow]", [0, 2**64 - 1, None]),
+        ("int64", [-1, 1, 0], "uint64[pyarrow]", [0, 2**64 - 1, None], "uint64[pyarrow]", [0, 2**64 - 1, None]),
+        ("UInt64", [0, 2**63, None], "int64[pyarrow]", [-2, -1, None], "int64[pyarrow]", [0, -(2**63), None]),
+        ("uint64", [0, 2**63, 0], "int64[pyarrow]", [-2, -1, None], "int64[pyarrow]", [0, -(2**63), None]),
+        ("uint64[pyarrow]", [0, 2**64 - 1, None], "Int8", [-2, None, -1], "int64[pyarrow]", [0, None, None]),
+        ("uint64[pyarrow]", [3, 2, None], "uint64[pyarrow]", [2, 3, None], "uint64[pyarrow]", [6, 6, None]),
+        ("uint64[pyarrow]", [], None, "-1", "int64[pyarrow]", []),
+        ("uint64[pyarrow]", [None, None], None, "-1", "int64[pyarrow]", [None, None]),
+        ("uint64[pyarrow]", [1, 2**64 - 1], "int64[pyarrow]", [-1, 1], None, None),
+        ("int64[pyarrow]", [0, -(2**63)], None, "2", None, None),
+    ],
+)
+def test_pandas_arrow_integer_products_keep_exact_native_capacity(
+    left_dtype, left_values, right_dtype, right_values, output_dtype, expected
+) -> None:
+    import numpy as np
+
+    pa = pytest.importorskip("pyarrow")
+    frame = pd.DataFrame({"left": pd.Series(left_values, dtype=left_dtype)})
+    if right_dtype is not None:
+        frame["right"] = pd.Series(right_values, dtype=right_dtype)
+    if left_dtype.endswith("[pyarrow]") and len(frame) > 1:
+        array = cast(pd.arrays.ArrowExtensionArray, frame["left"].array).__arrow_array__()
+        frame["left"] = pd.Series(pd.arrays.ArrowExtensionArray(pa.chunked_array([array.slice(0, 1), array.slice(1)])))
+    frame.index = pd.MultiIndex.from_tuples([("same", 2)] * len(frame), names=["group", "row"])
+    frame.attrs = {"source": "retained"}
+    before = frame.copy(deep=True)
+    numpy_source = isinstance(frame["left"].dtype, np.dtype)
+    source_array = frame["left"].to_numpy(copy=False) if numpy_source else frame["left"].array
+    runtime = PandasEngine()
+    schema = runtime.schema(frame)
+    lineage = source_lineage(schema)
+    operation = bind_step(
+        step(
+            "formula",
+            leftColumn=lineage[0],
+            operator="multiply",
+            newColumn="result",
+            **({"rightColumn": lineage[1]} if right_dtype is not None else {"value": right_values}),
+        ),
+        schema,
+        lineage,
+    )
+    runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
+    for run in (
+        lambda: runtime.apply_transform(frame, operation),
+        lambda: execute_generated(runtime, frame, operation),
+    ):
+        if output_dtype is None:
+            with pytest.raises(pa.ArrowInvalid):
+                run()
+        else:
+            actual = run()
+            pd.testing.assert_series_equal(
+                actual["result"],
+                pd.Series(expected, index=frame.index, name="result", dtype=output_dtype),
+                check_exact=True,
+            )
+            actual["result"].array.__arrow_array__().validate(full=True)
+            pd.testing.assert_frame_equal(actual.iloc[:, :-1], before, check_exact=True)
+        pd.testing.assert_frame_equal(frame, before, check_exact=True)
+        assert frame.attrs == before.attrs
+        if numpy_source:
+            assert np.shares_memory(frame["left"].to_numpy(copy=False), source_array)
+        else:
+            assert frame["left"].array is source_array
 
 
 @pytest.mark.parametrize("bits", [8, 16, 32, 64])
@@ -2546,10 +2621,10 @@ def test_pandas_arrow_formula_capacity_retains_native_refusals(family: str) -> N
         pd.testing.assert_frame_equal(frame, before)
 
 
-@pytest.mark.parametrize("signed_value", [1, -1])
+@pytest.mark.parametrize("signed_value,operator", [(1, "add"), (-1, "add"), (-1, "multiply")])
 @pytest.mark.parametrize("signed_left", [False, True])
 def test_pandas_arrow_formula_capacity_does_not_convert_custom_integer_extensions(
-    signed_value: int, signed_left: bool
+    signed_value: int, operator: str, signed_left: bool
 ) -> None:
     import numpy as np
 
@@ -2610,7 +2685,7 @@ def test_pandas_arrow_formula_capacity_does_not_convert_custom_integer_extension
             "formula",
             leftColumn=lineage[1 if signed_left else 0],
             rightColumn=lineage[0 if signed_left else 1],
-            operator="add",
+            operator=operator,
             newColumn="result",
         ),
         schema,
@@ -2618,7 +2693,8 @@ def test_pandas_arrow_formula_capacity_does_not_convert_custom_integer_extension
     )
     runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
     with pytest.raises(pa.ArrowInvalid) as native:
-        _ = frame["domain"] + frame["wide"] if signed_left else frame["wide"] + frame["domain"]
+        left, right = (frame["domain"], frame["wide"]) if signed_left else (frame["wide"], frame["domain"])
+        _ = left + right if operator == "add" else left * right
     assert casts == []
     for run in (
         lambda: runtime.apply_transform(frame, operation),

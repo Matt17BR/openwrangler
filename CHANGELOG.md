@@ -6,6 +6,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Changed
 
+- Pandas Formula accepts more exact Arrow integer products, including signed-minimum negation and results that fit UInt64.
 - Generated native R Group By reuses live exact integer accumulation, including batching for ordinary integer sums.
 - Mark Duplicates flags every row whose selected values occur more than once. It retains all records and their
   order, with matching generated code in Pandas, Polars, DuckDB and native R.

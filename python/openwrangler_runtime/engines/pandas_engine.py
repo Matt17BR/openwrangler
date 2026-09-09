@@ -5189,18 +5189,33 @@ def _pandas_formula_result(left: Any, right: Any, operator: str) -> Any:
         left_type = left.dtype.pyarrow_dtype if isinstance(left.dtype, pd.ArrowDtype) else None
         right_type = right.dtype.pyarrow_dtype if isinstance(getattr(right, "dtype", None), pd.ArrowDtype) else None
 
-        def is_signed_column(value: Any) -> bool:
+        def is_integer_column(value: Any, *, signed_only: bool = True) -> bool:
             if not isinstance(value, pd.Series) or isinstance(value.dtype, pd.SparseDtype):
                 return False
             if isinstance(value.dtype, pd.ArrowDtype):
                 dtype = value.dtype.pyarrow_dtype
-                if not pa.types.is_signed_integer(dtype) or dtype.bit_width > 64:
+                if not pa.types.is_integer(dtype) or dtype.bit_width > 64:
+                    return False
+                if signed_only and not pa.types.is_signed_integer(dtype):
                     return False
             else:
                 dtype = value.dtype
-                if type(dtype) in (pd.Int8Dtype, pd.Int16Dtype, pd.Int32Dtype, pd.Int64Dtype):
+                if type(dtype) in (
+                    pd.Int8Dtype,
+                    pd.Int16Dtype,
+                    pd.Int32Dtype,
+                    pd.Int64Dtype,
+                    pd.UInt8Dtype,
+                    pd.UInt16Dtype,
+                    pd.UInt32Dtype,
+                    pd.UInt64Dtype,
+                ):
                     dtype = cast(Any, dtype).numpy_dtype
-                if not isinstance(dtype, np.dtype) or dtype.kind != "i" or dtype.itemsize > 8:
+                if (
+                    not isinstance(dtype, np.dtype)
+                    or dtype.kind not in ("i" if signed_only else "iu")
+                    or dtype.itemsize > 8
+                ):
                     return False
             return True
 
@@ -5213,10 +5228,10 @@ def _pandas_formula_result(left: Any, right: Any, operator: str) -> Any:
                         left, pa.scalar(-right, type=pa.uint64()), "subtract" if operator == "add" else "add"
                     )
             if isinstance(error, pa.ArrowInvalid):
-                if operator == "add" and right_type == pa.uint64() and is_signed_column(left):
+                if operator == "add" and right_type == pa.uint64() and is_integer_column(left):
                     left, right = right, left
                     left_type, right_type = right_type, left_type
-                if left_type == pa.uint64() and isinstance(right, pd.Series) and is_signed_column(right):
+                if left_type == pa.uint64() and isinstance(right, pd.Series) and is_integer_column(right):
                     minimum = right.min()
                     if pd.isna(minimum) or minimum >= 0:
                         return _pandas_formula(left, right.astype(pd.ArrowDtype(pa.uint64())), operator)
@@ -5240,10 +5255,33 @@ def _pandas_formula_result(left: Any, right: Any, operator: str) -> Any:
                         magnitude = pc.call_function("negate", [bits])
                         right = pd.Series(pd.arrays.ArrowExtensionArray(magnitude), index=right.index, name=right.name)
                         return _pandas_formula(left, right, "subtract" if operator == "add" else "add")
-                if right_type == pa.uint64() and is_signed_column(left):
+                if right_type == pa.uint64() and is_integer_column(left):
                     minimum = left.min()
                     if pd.isna(minimum) or minimum >= 0:
                         return _pandas_formula(left.astype(pd.ArrowDtype(pa.uint64())), right, operator)
+        if (
+            operator == "multiply"
+            and is_integer_column(left, signed_only=False)
+            and (is_integer_column(right, signed_only=False) or type(right) is int and -(2**63) <= right < 2**64)
+        ):
+            import pyarrow.compute as pc
+
+            # Two 64-bit integer operands fit this fixed native intermediate.
+            # Keep an integer result: signed capacity first, then unsigned.
+            decimal = pa.decimal256(20, 0)
+            first = pc.cast(pa.array(left.array), decimal)
+            second = (
+                pc.cast(pa.array(right.array), decimal) if isinstance(right, pd.Series) else pa.scalar(right, decimal)
+            )
+            result = pc.call_function("multiply_checked", [first, second])
+            try:
+                result = pc.cast(result, pa.int64())
+            except pa.ArrowInvalid:
+                try:
+                    result = pc.cast(result, pa.uint64())
+                except pa.ArrowInvalid:
+                    raise error from None
+            return pd.Series(pd.arrays.ArrowExtensionArray(result), index=left.index, name=left.name)
         if isinstance(error, pa.ArrowInvalid) and operator in {"add", "subtract", "multiply", "divide"}:
             left_decimal = left_type if left_type is not None and pa.types.is_decimal128(left_type) else None
             right_decimal = right_type if right_type is not None and pa.types.is_decimal128(right_type) else None
@@ -5430,18 +5468,24 @@ def _generated_pandas_formula_helpers() -> list[str]:
         '        right_type = right.dtype.pyarrow_dtype if isinstance(getattr(right, "dtype", None), '
         "pd.ArrowDtype) else None",
         "",
-        "        def is_signed_column(value):",
+        "        def is_integer_column(value, *, signed_only=True):",
         "            if not isinstance(value, pd.Series) or isinstance(value.dtype, pd.SparseDtype):",
         "                return False",
         "            if isinstance(value.dtype, pd.ArrowDtype):",
         "                dtype = value.dtype.pyarrow_dtype",
-        "                if not pa.types.is_signed_integer(dtype) or dtype.bit_width > 64:",
+        "                if not pa.types.is_integer(dtype) or dtype.bit_width > 64:",
+        "                    return False",
+        "                if signed_only and not pa.types.is_signed_integer(dtype):",
         "                    return False",
         "            else:",
         "                dtype = value.dtype",
-        "                if type(dtype) in (pd.Int8Dtype, pd.Int16Dtype, pd.Int32Dtype, pd.Int64Dtype):",
+        "                if type(dtype) in (",
+        "                    pd.Int8Dtype, pd.Int16Dtype, pd.Int32Dtype, pd.Int64Dtype,",
+        "                    pd.UInt8Dtype, pd.UInt16Dtype, pd.UInt32Dtype, pd.UInt64Dtype,",
+        "                ):",
         "                    dtype = dtype.numpy_dtype",
-        '                if not isinstance(dtype, np.dtype) or dtype.kind != "i" or dtype.itemsize > 8:',
+        '                if not isinstance(dtype, np.dtype) or dtype.kind not in ("i" if signed_only else "iu") '
+        "or dtype.itemsize > 8:",
         "                    return False",
         "            return True",
         "",
@@ -5454,10 +5498,10 @@ def _generated_pandas_formula_helpers() -> list[str]:
         '                        left, pa.scalar(-right, type=pa.uint64()), "subtract" if operator == "add" else "add"',
         "                    )",
         "            if isinstance(error, pa.ArrowInvalid):",
-        '                if operator == "add" and right_type == pa.uint64() and is_signed_column(left):',
+        '                if operator == "add" and right_type == pa.uint64() and is_integer_column(left):',
         "                    left, right = right, left",
         "                    left_type, right_type = right_type, left_type",
-        "                if left_type == pa.uint64() and isinstance(right, pd.Series) and is_signed_column(right):",
+        "                if left_type == pa.uint64() and isinstance(right, pd.Series) and is_integer_column(right):",
         "                    minimum = right.min()",
         "                    if pd.isna(minimum) or minimum >= 0:",
         "                        return _open_wrangler_formula("
@@ -5484,11 +5528,31 @@ def _generated_pandas_formula_helpers() -> list[str]:
         "index=right.index, name=right.name)",
         "                        return _open_wrangler_formula("
         'left, right, "subtract" if operator == "add" else "add")',
-        "                if right_type == pa.uint64() and is_signed_column(left):",
+        "                if right_type == pa.uint64() and is_integer_column(left):",
         "                    minimum = left.min()",
         "                    if pd.isna(minimum) or minimum >= 0:",
         "                        return _open_wrangler_formula("
         "left.astype(pd.ArrowDtype(pa.uint64())), right, operator)",
+        '        if operator == "multiply" and is_integer_column(left, signed_only=False) and (',
+        "            is_integer_column(right, signed_only=False) or type(right) is int and -(2**63) <= right < 2**64",
+        "        ):",
+        "            import pyarrow.compute as pc",
+        "",
+        "            # Two 64-bit integer operands fit this fixed native intermediate.",
+        "            # Keep an integer result: signed capacity first, then unsigned.",
+        "            decimal = pa.decimal256(20, 0)",
+        "            first = pc.cast(pa.array(left.array), decimal)",
+        "            second = pc.cast(pa.array(right.array), decimal) "
+        "if isinstance(right, pd.Series) else pa.scalar(right, decimal)",
+        '            result = pc.call_function("multiply_checked", [first, second])',
+        "            try:",
+        "                result = pc.cast(result, pa.int64())",
+        "            except pa.ArrowInvalid:",
+        "                try:",
+        "                    result = pc.cast(result, pa.uint64())",
+        "                except pa.ArrowInvalid:",
+        "                    raise error from None",
+        "            return pd.Series(pd.arrays.ArrowExtensionArray(result), index=left.index, name=left.name)",
         '        if isinstance(error, pa.ArrowInvalid) and operator in {"add", "subtract", "multiply", "divide"}:',
         "            left_decimal = left_type if left_type is not None and pa.types.is_decimal128(left_type) else None",
         "            right_decimal = right_type if right_type is not None "
