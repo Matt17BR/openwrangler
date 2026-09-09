@@ -66,6 +66,9 @@ verify later successful saves, close/reopen, and unchanged warning and diagnosti
 journey records bounded sort and owner state only on failure; its DOM observation stays pinned to the original
 session and renderer and has a separate one-second diagnostic limit.
 
+The App inspection owner checks that deletion confirmation belongs to the selected step. Switching targets requires
+a fresh confirmation, while paging within that step preserves it; Cancel returns to the ordinary actions.
+
 Installed Pandas journeys with duplicate or non-string column labels execute emitted value, row, structural,
 By Example and Group By plans in fresh namespaces. They compare complete values, physical labels, dtypes and native
 indexes, while retaining source, input, stable-reference and replay assertions.
