@@ -758,6 +758,9 @@ operation per additional native frame flavor, direct-document execution and kern
 windows after Dense Rank Apply check exact ranks, missing cells and row identities. The native kernel owner checks
 all original Mark Duplicates columns, and the real-process owner checks complete page restoration after Undo for
 both operations. Requested code-insertion screenshots keep the same capture owner.
+If the Mark Duplicates Undo wait fails, its diagnostic records bounded session, scheduler and renderer state and
+the visible alert. The diagnostic does not initiate synchronization or retry the action, and its DOM read has a
+separate two-second limit.
 
 The Linux comprehensive journey retains the broader operation catalog, final-page/last-column assertion, separate
 native Viewing opens and both native-flavor operations. These repetitions are omitted on macOS; source and generated
