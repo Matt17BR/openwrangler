@@ -206,6 +206,10 @@ Pandas can refuse to count duplicates across columns containing lists, dictionar
 statistics retain exact missing-value counts for those native unhashable-key failures, and show the duplicate count
 as **Unavailable for these column values**. Other native failures retain their errors; cleaning operations are unchanged.
 
+Nonempty lazy Polars frames with Object columns also retain exact Dataset missing-value counts and show the duplicate
+count as unavailable. Empty frames retain zero counts. Eager statistics keep their native behavior; Object-column
+profiling remains unsupported.
+
 Native Pandas Arrow `bool8` and UUID columns support logical cell values, profiles, value selections, sorting and
 existing compatible cleaning operations. Nonzero `bool8` storage reads as true; UUIDs use canonical strings.
 Selected rows retain their original native arrays. CSV and Parquet exports preserve the logical values, including
