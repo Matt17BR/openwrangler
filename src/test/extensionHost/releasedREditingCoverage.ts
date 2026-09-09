@@ -23,7 +23,7 @@ interface ReleasedREditingCoverageDependencies {
     outputDirectory: string,
     phase: "jupyter-r" | "jupyter-r-remote",
     screenshotOutput: string | undefined,
-    editingCatalog: "core-catalog" | "clone-lifecycle"
+    editingCatalog: "core-catalog" | "platform-lifecycle" | "clone-lifecycle"
   ) => Promise<void>;
   readonly exerciseReleasedRCategoricalEditingJourney: typeof exerciseReleasedRCategoricalEditingJourneyOwner;
   readonly exerciseReleasedRRepresentativeEditingJourney: (
@@ -75,7 +75,11 @@ export function createReleasedREditingCoverage({
     screenshotOutput?: string
   ): Promise<void> {
     recordReleasedRAcceptanceSection(phase, coverage, "editing", "start");
-    if (coverage.editing === "core-catalog" || coverage.editing === "clone-lifecycle") {
+    if (
+      coverage.editing === "core-catalog" ||
+      coverage.editing === "platform-lifecycle" ||
+      coverage.editing === "clone-lifecycle"
+    ) {
       await exerciseReleasedREditingJourney(
         testing,
         workbench,

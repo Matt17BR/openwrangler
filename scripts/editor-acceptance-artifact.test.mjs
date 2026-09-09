@@ -46,7 +46,7 @@ test("R checkpoint timing logs only changed fixed labels without changing phase 
       pollIntervalMs: 10,
       initialProgressCheckpoint: initial,
       progressReader: () => {
-        if (clock >= 1_050) return "released-r:text-length-preview:preview-click:start";
+        if (clock >= 1_050) return "jupyter-r:coverage:platform-lifecycle:document:start";
         if (clock >= 1_040) return "1:2:0:1740000000000:1740000000000";
         if (clock >= 1_030) return "jupyter-r:editing:private-value-must-not-be-logged";
         if (clock >= 1_010) return "jupyter-r:editing:text-length-preview-apply-inspect-undo";
@@ -59,7 +59,7 @@ test("R checkpoint timing logs only changed fixed labels without changing phase 
       scenario.phase === "jupyter-r"
         ? [
             "R editor checkpoint observed at 110 ms: jupyter-r:editing:text-length-preview-apply-inspect-undo",
-            "R editor checkpoint observed at 150 ms: released-r:text-length-preview:preview-click:start"
+            "R editor checkpoint observed at 150 ms: jupyter-r:coverage:platform-lifecycle:document:start"
           ]
         : []
     );
