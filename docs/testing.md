@@ -104,7 +104,10 @@ while its observed PID/start identity, parent, process group and phase marker re
 command continuity, and retired identity keys remain refused. A later marked start identity does not inherit the
 original root's allowance. This is coarse marker-based continuity, not a kernel-held identity; copied markers and
 same-second PID reuse can remain ambiguous. Process-free tracker tests cover these boundaries without claiming
-native macOS settlement.
+native macOS settlement. POSIX observations retain the primary process state, so an explicitly reported zombie
+retires without requiring its former command or environment marker. A listed zombie does not count as a live
+reappearance of a retired identity; a later live identity with that same coarse key remains refused. Live descendants
+and the child observer must still settle before the phase completes.
 
 The Linux contracts exercise actual child and detached-descendant exit for SIGINT, SIGTERM, deadlines, output limits,
 closed output readers and escalation. An unverifiable live target leaves the overall phase unsettled even when other
