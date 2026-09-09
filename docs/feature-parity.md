@@ -355,6 +355,9 @@ An R page that exceeds the transport limit after ASCII escaping returns a reques
 standalone runtime. A smaller page remains available; opening and mutation responses still validate before commit.
 Large R profiles retain exact cheap statistics but sample histograms, categories, and duplicate populations with
 explicit sample labels.
+Native R Mean Fill, ordinary integer/double Group By and numeric profiles retain finite means through cancellation
+and across profile chunks. Live and generated cleaning use the same arithmetic. Integer64 conversion and unrelated
+statistics keep their existing limits.
 
 Drop Duplicates and dataset duplicate counts preserve exact integer64 equality for single and composite keys,
 including both supported signed extrema. All three keep modes preserve original values and native frame metadata; data.table

@@ -6425,7 +6425,7 @@ openwrangler_r_kernel_agent <- local({
         "        .ow_positive_infinity <- any(is.infinite(.ow_present) & .ow_present > 0); .ow_negative_infinity <- any(is.infinite(.ow_present) & .ow_present < 0)",
         "        if (.ow_positive_infinity && .ow_negative_infinity) next",
         "        if (.ow_positive_infinity) { .ow_fill <- Inf } else if (.ow_negative_infinity) { .ow_fill <- -Inf } else {",
-        "          .ow_scale <- max(abs(.ow_present)); .ow_fill <- if (.ow_scale == 0) 0 else max(-1, min(1, base::mean.default(.ow_present / .ow_scale))) * .ow_scale",
+        "          .ow_fill <- exact_binary64_mean(.ow_present)",
         "        }",
         "      } else if (.ow_statistic == \"median\") {",
         "        .ow_ordered <- sort(.ow_present); .ow_present_count <- length(.ow_ordered)",
@@ -6518,8 +6518,7 @@ openwrangler_r_kernel_agent <- local({
         "      } else if (.ow_negative_infinity) {",
         "        .ow_fill <- -Inf",
         "      } else {",
-        "        .ow_scale <- max(abs(.ow_present))",
-        "        .ow_fill <- if (.ow_scale == 0) 0 else max(-1, min(1, base::mean.default(.ow_present / .ow_scale))) * .ow_scale",
+        "        .ow_fill <- exact_binary64_mean(.ow_present)",
         "      }",
         "    } else if (.ow_replacement_kind == \"median\") {",
         "      if (!any(.ow_missing)) return(.ow_values)",
@@ -7236,8 +7235,7 @@ openwrangler_r_kernel_agent <- local({
         if (.ow_positive_infinity && .ow_negative_infinity) return(NaN)
         if (.ow_positive_infinity) return(Inf)
         if (.ow_negative_infinity) return(-Inf)
-        .ow_scale <- max(abs(.ow_numeric))
-        return(if (.ow_scale == 0) 0 else max(-1, min(1, base::mean.default(.ow_numeric / .ow_scale))) * .ow_scale)
+        return(exact_binary64_mean(.ow_numeric))
       }
       if (identical(.ow_operation, "median")) {
         .ow_ordered <- sort(.ow_present)
@@ -7600,7 +7598,8 @@ openwrangler_r_kernel_agent <- local({
     dense_rank_values,
     duplicate_row_mask,
     prepare_find_replace_regex,
-    integer_sum_helpers
+    integer_sum_helpers,
+    exact_mean_helpers
   ) {
     if (length(bound_plan) == 0L) return("")
     result_name <- if (identical(variable_name, "open_wrangler_result")) {
@@ -7863,6 +7862,15 @@ openwrangler_r_kernel_agent <- local({
         "  .ow_safe_float_midpoint <-",
         paste0("  ", deparse(safe_float_midpoint, width.cutoff = 500L))
       )
+    }
+    needs_exact_mean <- any(vapply(bound_plan, function(step) {
+      if (identical(step$kind, "fillMissingValues")) return(identical(step$replacement$kind, "mean") ||
+        (identical(step$replacement$kind, "groupedStatistic") && identical(step$replacement$statistic, "mean")))
+      identical(step$kind, "groupBy") && any(vapply(step$aggregations, function(specification)
+        identical(specification$operation, "mean") && !identical(specification$semanticsKind, "integer64"), logical(1L)))
+    }, logical(1L)))
+    if (needs_exact_mean) for (name in names(exact_mean_helpers)) {
+      lines <- c(lines, sprintf("  %s <-", name), paste0("  ", deparse(exact_mean_helpers[[name]], width.cutoff = 500L)))
     }
     fill_steps <- Filter(function(step) identical(step$kind, "fillMissingValues"), bound_plan)
     if (length(fill_steps) > 0L) {
@@ -9709,7 +9717,8 @@ openwrangler_r_kernel_agent <- local({
         frame_contract$dense_rank_values,
         frame_contract$duplicate_row_mask,
         frame_contract$prepare_find_replace_regex,
-        frame_contract$integer_sum_helpers
+        frame_contract$integer_sum_helpers,
+        frame_contract$exact_mean_helpers
       )
     )
   }
@@ -10049,7 +10058,8 @@ openwrangler_r_kernel_agent <- local({
             frame_contract$dense_rank_values,
             frame_contract$duplicate_row_mask,
             frame_contract$prepare_find_replace_regex,
-            frame_contract$integer_sum_helpers
+            frame_contract$integer_sum_helpers,
+            frame_contract$exact_mean_helpers
           )
         } else {
           NULL
@@ -10107,7 +10117,8 @@ openwrangler_r_kernel_agent <- local({
             frame_contract$dense_rank_values,
             frame_contract$duplicate_row_mask,
             frame_contract$prepare_find_replace_regex,
-            frame_contract$integer_sum_helpers
+            frame_contract$integer_sum_helpers,
+            frame_contract$exact_mean_helpers
           )
         )
         if (!is.null(effective_view)) response$effectiveView <- effective_view
@@ -10186,7 +10197,8 @@ openwrangler_r_kernel_agent <- local({
               frame_contract$dense_rank_values,
               frame_contract$duplicate_row_mask,
               frame_contract$prepare_find_replace_regex,
-              frame_contract$integer_sum_helpers
+              frame_contract$integer_sum_helpers,
+              frame_contract$exact_mean_helpers
             )
           ))
         }

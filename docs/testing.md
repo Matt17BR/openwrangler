@@ -130,6 +130,10 @@ generated execution isolated from caller arithmetic. Existing frame and kernel o
 across multiple integer batches; the profile owner covers the unchanged live consumer of those functions.
 The existing R Fill, Group By, profiling and Custom Code owners register and restore numeric mean methods to check
 built-in isolation and intentional user-code dispatch. Live results and complete generated programs must agree.
+The existing Group By, Fill and profile owners check exact finite means against binary64 reference values, including
+cancellation, midpoint parity, subnormal boundaries, finite maxima, chunk thresholds and multiple chunks. Kernel
+owners execute complete generated programs, preserve source and frame types through Undo, and check once-only helper
+emission for repeated plans and omission from unrelated plans. Integer64 and non-mean profile controls remain.
 Profile controls cover small and chunked even medians, text lengths and unchanged fields; primitive checks retain
 signed-zero and nonfinite median behavior that JSON cannot distinguish.
 R interactive transport tests also execute the real dispatcher in a fresh Linux PTY with canonical input and in a
