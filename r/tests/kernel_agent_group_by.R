@@ -735,12 +735,17 @@ assert_identical(
   c(0.5, 2, same_sign_midpoint),
   "generated integer64 Group By median lost cancellation, odd-count, or same-sign precision"
 )
-preview_precision_values <- lapply(group_by_precision_preview$page$page$rows, function(row) {
-  vapply(row$values[2:3], function(cell) as.double(cell$raw), double(1L))
-})
+group_by_precision_expected_page <- jsonlite::fromJSON(
+  openwrangler_r_frame_contract$encode_page(
+    openwrangler_r_frame_contract$capture_frame(group_by_precision_generated),
+    row_limit = 3L,
+    column_limit = 3L
+  ),
+  simplifyVector = FALSE
+)
 assert_identical(
-  preview_precision_values,
-  list(c(0.5, 0.5), c(1, 2), c(same_sign_midpoint, same_sign_midpoint)),
+  lapply(group_by_precision_preview$page$page$rows, function(row) row$values[2:3]),
+  lapply(group_by_precision_expected_page$page$rows, function(row) row$values[2:3]),
   "live integer64 Group By disagreed with generated cancellation, odd-count, or same-sign results"
 )
 assert_identical(
