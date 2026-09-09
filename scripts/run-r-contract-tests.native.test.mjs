@@ -5,7 +5,7 @@ import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { createLinuxProcessSignaler, runRContractPhase } from "./run-r-contract-tests.mjs";
+import { createLinuxProcessSignaler, createPosixProcessTracker, runRContractPhase } from "./run-r-contract-tests.mjs";
 import { resolveAcceptancePython } from "./packaged-python-preflight.mjs";
 
 const runner = new URL("./run-r-contract-tests.mjs", import.meta.url).href;
@@ -14,6 +14,101 @@ function identityOf(child) {
   const stat = readFileSync(`/proc/${child.pid}/stat`, "utf8");
   return { pid: child.pid, startIdentity: stat.slice(stat.lastIndexOf(")") + 2).split(/\s+/u)[19] };
 }
+
+test("POSIX ownership diagnostics distinguish bounded evidence without exposing process data", async (context) => {
+  const cases = [
+    {
+      name: "command changes despite retained marker and lineage",
+      failingPid: 102,
+      change: (identities) => {
+        identities.set(102, { ...identities.get(102), command: "changed-synthetic-secret" });
+      },
+      flags:
+        "secondResolution=true, parentMatches=true, groupMatches=true, commandMatches=false, markerBefore=true, markerNow=true, lineageOwned=true, root=false"
+    },
+    {
+      name: "root parent, group and marker change",
+      failingPid: 101,
+      change: (identities) => {
+        identities.set(101, {
+          ...identities.get(101),
+          parentPid: 900,
+          groupId: 900,
+          command: "changed-synthetic-secret",
+          ownerMarked: false
+        });
+      },
+      flags:
+        "secondResolution=true, parentMatches=false, groupMatches=false, commandMatches=false, markerBefore=true, markerNow=false, lineageOwned=false, root=true"
+    },
+    {
+      name: "unmarked child loses its tracked parent",
+      failingPid: 102,
+      unmarkedChild: true,
+      change: (identities) => identities.delete(101),
+      flags:
+        "secondResolution=true, parentMatches=true, groupMatches=true, commandMatches=true, markerBefore=false, markerNow=false, lineageOwned=false, root=false"
+    }
+  ];
+  for (const scenario of cases) {
+    await context.test(scenario.name, async () => {
+      const identity = (pid, parentPid) => ({
+        pid,
+        parentPid,
+        groupId: 101,
+        state: "?",
+        startIdentity: "synthetic-secret-start",
+        command: "synthetic-secret-command".repeat(1000),
+        ownerMarked: true,
+        identityResolution: "second"
+      });
+      const identities = new Map([
+        [101, identity(101, 100)],
+        [102, { ...identity(102, 101), ownerMarked: !scenario.unmarkedChild }]
+      ]);
+      const tracker = createPosixProcessTracker(101, "synthetic-secret-owner", {
+        readProcessIdentity: (pid) => identities.get(pid),
+        listProcessIdentities: () => [...identities.values()]
+      });
+      try {
+        assert.equal(tracker.observe(), 2, "the initial marked or lineage-owned tree remains accepted");
+        scenario.change(identities);
+        let failure;
+        assert.throws(
+          () => tracker.observe(),
+          (error) => {
+            failure = error;
+            return error instanceof Error;
+          }
+        );
+        assert.match(failure.message, new RegExp(`process ${scenario.failingPid} `));
+        assert.ok(failure.message.endsWith(`(${scenario.flags})`), failure.message);
+        assert.ok(Buffer.byteLength(failure.message, "utf8") < 512);
+        assert.doesNotMatch(`${failure.message}\n${failure.cause}`, /synthetic-secret/u);
+        assert.equal(failure.processTreeUnsettled, true);
+        assert.equal(await tracker.failure, failure);
+        assert.throws(
+          () => tracker.isSettled({ isSettled: () => true }),
+          (error) => error === failure
+        );
+      } finally {
+        tracker.stop();
+      }
+    });
+  }
+
+  let current = { pid: 101, startIdentity: "tick", identityResolution: "kernel-start-tick" };
+  const tracker = createPosixProcessTracker(101, "synthetic-secret-owner", {
+    readProcessIdentity: () => current,
+    listProcessIdentities: () => [current]
+  });
+  try {
+    current = { ...current, parentPid: 999, groupId: 999, command: "changed-synthetic-secret", ownerMarked: false };
+    assert.equal(tracker.observe(), 1, "precise identities retain the existing non-coarse bypass");
+  } finally {
+    tracker.stop();
+  }
+});
 
 function cancellationProbe(kind) {
   const program = `
