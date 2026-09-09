@@ -578,13 +578,15 @@ export function createPosixProcessTracker(
     const commandMatches = expected.command === current.command;
     const markerBefore = expected.ownerMarked === true;
     const markerNow = current.ownerMarked === true;
+    const markerOwned = markerBefore && markerNow;
+    const originalRoot = sameProcessIdentity(expected, rootIdentity);
     const lineageOwned = parentMatches && observed.has(expected.parentPid) && current.parentPid !== expected.pid;
     if (
       secondResolution &&
       parentMatches &&
       groupMatches &&
-      commandMatches &&
-      ((markerBefore && markerNow) || lineageOwned)
+      (commandMatches || (originalRoot && markerOwned)) &&
+      (markerOwned || lineageOwned)
     ) {
       return undefined;
     }
@@ -592,7 +594,7 @@ export function createPosixProcessTracker(
       `process ${expected.pid} did not satisfy the ownership checks for its second-resolution identity ` +
         `(secondResolution=${secondResolution}, parentMatches=${parentMatches}, groupMatches=${groupMatches}, ` +
         `commandMatches=${commandMatches}, markerBefore=${markerBefore}, markerNow=${markerNow}, ` +
-        `lineageOwned=${lineageOwned}, root=${expected.pid === rootPid})`
+        `lineageOwned=${lineageOwned}, root=${originalRoot})`
     );
   };
   const verifiedIdentity = (expected) => {
