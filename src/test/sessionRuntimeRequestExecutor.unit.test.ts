@@ -597,7 +597,7 @@ describe("SessionRuntimeRequestExecutor", () => {
         expect(response).toMatchObject({
           kind: "error",
           code: "stale_response",
-          message: "Ignored a cancelled or superseded read before live runtime recovery."
+          message: "Ignored a cancelled or superseded read before runtime dispatch or recovery."
         });
         expect(JSON.stringify(response)).not.toContain("PySpark");
       } else {
@@ -880,15 +880,17 @@ describe("SessionRuntimeRequestExecutor", () => {
 
   it("suppresses a settled cancelled ephemeral page without cancelling a visible page", async () => {
     const clipboardRequest = pageRequest("clipboard-page", 0);
-    const clipboardSession = runtimeSession(
-      bridge(requestMock(async () => pageResponse(clipboardRequest, metadata()))),
-      {
-        scheduler: schedulerStub(() => true),
-        activeViewContextId: "view",
-        latestRequestedViewContextId: "view",
-        latestRequestedPageRequestId: "visible-page"
-      }
-    );
+    let cancelled = false;
+    const clipboardDispatch = requestMock(async () => {
+      cancelled = true;
+      return pageResponse(clipboardRequest, metadata());
+    });
+    const clipboardSession = runtimeSession(bridge(clipboardDispatch), {
+      scheduler: schedulerStub(() => cancelled),
+      activeViewContextId: "view",
+      latestRequestedViewContextId: "view",
+      latestRequestedPageRequestId: "visible-page"
+    });
 
     await expect(
       runtimeExecutor().execute(
@@ -898,6 +900,7 @@ describe("SessionRuntimeRequestExecutor", () => {
         hooks()
       )
     ).resolves.toMatchObject({ kind: "error", code: "stale_response", viewRequestId: "clipboard-page" });
+    expect(clipboardDispatch).toHaveBeenCalledOnce();
 
     const visibleRequest = pageRequest("visible-page", 0);
     const visibleSession = runtimeSession(bridge(requestMock(async () => pageResponse(visibleRequest, metadata()))), {

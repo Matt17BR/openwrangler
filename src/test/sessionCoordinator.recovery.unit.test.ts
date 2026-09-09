@@ -34,6 +34,156 @@ import { nativeRKernelChangedResponse, type NativeRRecoveryBridge } from "./nati
 type RecoveryBridge = NativeRRecoveryBridge;
 
 describe("SessionCoordinator", () => {
+  it.each([
+    ["transport", "current"],
+    ["transport", "superseded"],
+    ["unknown", "current"],
+    ["unknown", "superseded"]
+  ] as const)("rechecks clipboard freshness after %s runtime recovery: %s", async (failure, disposition) => {
+    const superseded = disposition === "superseded";
+    const reopenStarted = deferred<void>();
+    const releaseReopen = deferred<void>();
+    const calls: OpenWranglerRequest[] = [];
+    let opens = 0;
+    let originalAttempts = 0;
+    const delegate: OpenWranglerBridge = {
+      request: async (request) => {
+        calls.push(request);
+        if (request.kind === "openSession") {
+          opens += 1;
+          if (opens === 2) {
+            reopenStarted.resolve();
+            await releaseReopen.promise;
+          }
+          return openedResponse(request.requestedSessionId ?? `runtime-${opens}`);
+        }
+        if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+        if (request.kind === "getPage") {
+          if (request.viewRequestId === "clipboard-A" && ++originalAttempts === 1) {
+            if (failure === "transport") throw new Error("Synthetic transport loss");
+            return {
+              kind: "error",
+              code: "unknown_session",
+              message: "Synthetic runtime loss",
+              recoverable: true,
+              sessionId: request.sessionId,
+              viewRequestId: request.viewRequestId
+            };
+          }
+          return pageResponse(request, request.sessionId);
+        }
+        throw new Error(`Unexpected request ${request.kind}`);
+      }
+    };
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge(delegate);
+    try {
+      const opened = await bridge.request(openRequest);
+      if (opened.kind !== "sessionOpened") throw new Error("Expected open");
+      const sessionId = opened.metadata.sessionId;
+      const request = (viewRequestId: string): Extract<OpenWranglerRequest, { kind: "getPage" }> => ({
+        kind: "getPage",
+        sessionId,
+        revision: 0,
+        viewRequestId,
+        offset: 0,
+        limit: 25,
+        ...columnWindow,
+        filterModel: opened.metadata.filterModel
+      });
+      bridge.setViewContext?.(sessionId, "A");
+      const clipboard = bridge.request(request("clipboard-A"), {
+        ephemeralPage: true,
+        viewContextId: "A"
+      });
+      await reopenStarted.promise;
+      const pendingB = superseded ? bridge.request(request("page-B"), { viewContextId: "B" }) : undefined;
+      releaseReopen.resolve();
+      const result = await clipboard;
+      expect(result).toMatchObject(
+        superseded ? { kind: "error", code: "stale_response" } : { kind: "page", viewRequestId: "clipboard-A" }
+      );
+      expect(originalAttempts).toBe(superseded ? 1 : 2);
+      expect(calls.filter((call) => call.kind === "getPage" && call.viewRequestId.startsWith("restore:"))).toHaveLength(
+        1
+      );
+      if (pendingB) await expect(pendingB).resolves.toMatchObject({ kind: "page", viewRequestId: "page-B" });
+    } finally {
+      releaseReopen.resolve();
+      await coordinator.shutdown();
+    }
+  });
+
+  it.each(["current", "superseded", "cancelled", "contextless"])(
+    "rechecks a %s clipboard read after detached runtime settlement",
+    async (disposition) => {
+      const superseded = disposition === "superseded";
+      const stale = superseded || disposition === "cancelled";
+      const settlement = deferred<void>();
+      const calls: string[] = [];
+      const delegate: OpenWranglerBridge = {
+        request: async (request) => {
+          if (request.kind === "openSession") return openedResponse();
+          if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+          if (request.kind === "getPage") {
+            calls.push(request.viewRequestId);
+            if (request.viewRequestId === "detached")
+              throw new DetachedBridgeRequestError("Synthetic detached read", "timeout", true, settlement.promise);
+            return pageResponse(request, request.sessionId);
+          }
+          throw new Error(`Unexpected request ${request.kind}`);
+        }
+      };
+      const coordinator = new SessionCoordinator();
+      const bridge = coordinator.createBridge(delegate);
+      try {
+        const opened = await bridge.request(openRequest);
+        if (opened.kind !== "sessionOpened") throw new Error("Expected open");
+        const sessionId = opened.metadata.sessionId;
+        const request = (viewRequestId: string): Extract<OpenWranglerRequest, { kind: "getPage" }> => ({
+          kind: "getPage",
+          sessionId,
+          revision: 0,
+          viewRequestId,
+          offset: 0,
+          limit: 25,
+          ...columnWindow,
+          filterModel: opened.metadata.filterModel
+        });
+        bridge.setViewContext?.(sessionId, "A");
+        await expect(bridge.request(request("detached"), { viewContextId: "A" })).rejects.toBeInstanceOf(
+          DetachedBridgeRequestError
+        );
+        const clipboard = bridge.request(request("clipboard-after-detach"), {
+          ephemeralPage: true,
+          ...(disposition === "contextless" ? {} : { viewContextId: "A" })
+        });
+        await vi.waitFor(() =>
+          expect(
+            coordinator.testingRequestExecutionCheckpoint(sessionId, "getPage", "clipboard-after-detach")
+          ).toMatchObject({
+            state: "active",
+            lane: "foreground"
+          })
+        );
+        expect(calls).toEqual(["detached"]);
+        const pendingB = superseded ? bridge.request(request("page-B"), { viewContextId: "B" }) : undefined;
+        if (disposition === "cancelled") bridge.cancelViewRequests?.(sessionId, ["clipboard-after-detach"]);
+        settlement.resolve();
+        await expect(clipboard).resolves.toMatchObject(
+          stale ? { kind: "error", code: "stale_response" } : { kind: "page", viewRequestId: "clipboard-after-detach" }
+        );
+        if (pendingB) await expect(pendingB).resolves.toMatchObject({ kind: "page", viewRequestId: "page-B" });
+        expect(calls).toEqual(
+          superseded ? ["detached", "page-B"] : stale ? ["detached"] : ["detached", "clipboard-after-detach"]
+        );
+      } finally {
+        settlement.resolve();
+        await coordinator.shutdown();
+      }
+    }
+  );
+
   it("suspends captured recovery views and reads until a failed mode reopen settles", async () => {
     const notebook = {
       uri: vscode.Uri.parse("file:///workspace/recovery-mode.ipynb"),
