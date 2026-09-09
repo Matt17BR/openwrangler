@@ -398,7 +398,9 @@ integer/Decimal capacity repairs. These cases compare actual operand pairs, pres
 native results and existing refusals. Multiplication cases cover signed and unsigned result capacity, chunked and
 null-paired operands, duplicate indexes, native type retention and custom-extension exclusion. Subtraction cases
 also cover signed/unsigned operand order, negative results, scalar underflow and existing overflow diagnostics.
-The existing public capacity journey checks signed-result Preview, Apply, complete generated code, Parquet readback,
+Even-scalar power cases compare exact UInt64 results, scalar admission bounds, nulls and native-success types with
+standalone generated code.
+The existing public capacity journey checks signed-result and even-power Preview, Apply, complete generated code, Parquet readback,
 Undo and Redo, plus refusal beyond the displayed page. Mixed Formula, By Example and Custom Code programs check helper
 isolation without changing the other operations' behavior.
 

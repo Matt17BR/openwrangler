@@ -7,6 +7,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 ### Changed
 
 - Pandas Formula accepts more exact Arrow integer differences, including negative results from unsigned operands.
+- Pandas Formula accepts exact even scalar powers of signed Arrow integers when repaired results fit UInt64.
 - Pandas Formula accepts more exact Arrow integer products, including signed-minimum negation and results that fit UInt64.
 - Generated native R Group By reuses live exact integer accumulation, including batching for ordinary integer sums.
 - Generated native R One-hot encoding prepares distinct category labels and avoids repeated source searches.
