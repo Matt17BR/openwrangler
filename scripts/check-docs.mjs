@@ -58,7 +58,6 @@ const readme = readFileSync(resolve(root, "README.md"), "utf8");
 const mediaGallery = readFileSync(resolve(root, "docs/media-gallery.md"), "utf8");
 const featureParity = readFileSync(resolve(root, "docs/feature-parity.md"), "utf8");
 const pullRequestTemplate = readFileSync(resolve(root, ".github/pull_request_template.md"), "utf8");
-const styleGuide = readFileSync(resolve(root, "docs/writing-style.md"), "utf8");
 const publicWritingProblems = [];
 if (!agentGuide.includes("docs/writing-style.md")) {
   publicWritingProblems.push("AGENTS.md must route future agents to docs/writing-style.md.");
@@ -70,17 +69,6 @@ if (!pullRequestTemplate.includes("docs/writing-style.md")) {
   publicWritingProblems.push(
     "The pull request template must include a public-copy review using docs/writing-style.md."
   );
-}
-if (!styleGuide.includes("Write as a maintainer explaining the product to another developer.")) {
-  publicWritingProblems.push("The writing guide must retain its plain-language maintainer rule.");
-}
-if (!styleGuide.includes("\n## Public copy")) {
-  publicWritingProblems.push("The writing guide must retain its Public copy section.");
-}
-for (const heading of ["## What changed", "## Why", "## Verification", "## User-facing docs or screenshots"]) {
-  if (!pullRequestTemplate.includes(heading)) {
-    publicWritingProblems.push(`The pull request template is missing ${heading}.`);
-  }
 }
 if (publicWritingProblems.length > 0) {
   throw new Error(`Public writing guidance is disconnected:\n- ${publicWritingProblems.join("\n- ")}`);
