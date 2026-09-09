@@ -5282,19 +5282,13 @@ def _pandas_formula_result(left: Any, right: Any, operator: str) -> Any:
                     return False
             return True
 
-        if (
-            operator == "power"
-            and is_integer_column(left)
-            and type(right) is int
-            and 0 < right < 2**64
-            and right % 2 == 0
-        ):
+        if operator == "power" and is_integer_column(left) and type(right) is int and 0 < right < 2**64:
             import pyarrow.compute as pc
 
-            # Widen narrow signed minima before taking their magnitude.
+            # Widen narrow signed minima before even powers take their magnitude.
             first = pc.cast(pa.array(left.array), pa.int64())
             try:
-                magnitude = pc.cast(pc.call_function("abs_checked", [first]), pa.uint64())
+                magnitude = pc.cast(pc.call_function("abs_checked", [first]) if right % 2 == 0 else first, pa.uint64())
                 result = pc.call_function("power_checked", [magnitude, pa.scalar(right, pa.uint64())])
             except pa.ArrowInvalid:
                 raise error from None
@@ -5599,14 +5593,15 @@ def _generated_pandas_formula_helpers() -> list[str]:
         "            and is_integer_column(left)",
         "            and type(right) is int",
         "            and 0 < right < 2**64",
-        "            and right % 2 == 0",
         "        ):",
         "            import pyarrow.compute as pc",
         "",
-        "            # Widen narrow signed minima before taking their magnitude.",
+        "            # Widen narrow signed minima before even powers take their magnitude.",
         "            first = pc.cast(pa.array(left.array), pa.int64())",
         "            try:",
-        '                magnitude = pc.cast(pc.call_function("abs_checked", [first]), pa.uint64())',
+        "                magnitude = pc.cast(",
+        '                    pc.call_function("abs_checked", [first]) if right % 2 == 0 else first, pa.uint64()',
+        "                )",
         '                result = pc.call_function("power_checked", [magnitude, pa.scalar(right, pa.uint64())])',
         "            except pa.ArrowInvalid:",
         "                raise error from None",

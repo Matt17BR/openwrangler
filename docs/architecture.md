@@ -437,11 +437,12 @@ keep their existing paths. Live Formula and generated code share the same valida
 Arrow-backed Formula preserves successful native results and types. Integer repairs accept 8–64-bit native NumPy,
 built-in Pandas nullable or Arrow integer columns; Sparse and arbitrary extension types are excluded.
 
-After native power fails, a signed Arrow integer column and an exact positive even scalar exponent below 2^64
-can use checked native magnitude and UInt64 power. Repaired results must fit UInt64; native successes retain their
-types, and genuine overflow retains the original refusal. The repair widens selected operands to Int64 before taking
-their magnitude, then uses checked unsigned arithmetic. It adds bounded native temporary storage without selected
-reductions or per-row Python arithmetic. Other exponent and operand families keep their existing paths.
+After native power fails, a signed Arrow integer column and an exact positive scalar exponent below 2^64 can use
+checked UInt64 power. Even exponents take checked magnitudes after widening to Int64; odd exponents require
+nonnegative values through a safe unsigned cast. Repaired results must fit UInt64. Native successes retain their
+types, and overflow or a negative value in an odd-power repair retains the original refusal. The repair adds bounded
+native temporary storage without selected reductions or per-row Python arithmetic. Other exponent and operand
+families keep their existing paths.
 
 After native subtraction fails, eligible integer operands use an exact Decimal128 intermediate. Integer literals
 on this path range from Int64 minimum to UInt64 maximum. The result returns as UInt64 if it fits, otherwise Int64.
