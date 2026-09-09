@@ -425,6 +425,76 @@ assert_identical(
 )
 unlink(configured_csv_target)
 
+
+local({
+  original_locale <- Sys.getlocale("LC_CTYPE")
+  on.exit(Sys.setlocale("LC_CTYPE", original_locale))
+  utf8 <- rawToChar(as.raw(c(0xc3, 0xa9)))
+  Encoding(utf8) <- "UTF-8"
+  latin1 <- rawToChar(as.raw(0xe9))
+  Encoding(latin1) <- "latin1"
+  unmarked <- rawToChar(as.raw(c(0xc3, 0xa9)))
+  source <- data.frame(
+    text = c(utf8, latin1, unmarked, NA_character_, "a\"\nb"),
+    category = structure(c(1L, NA_integer_, 1L, 2L, 3L),
+      levels = c(latin1, "", "a\"\nb", "unused"), class = "factor"),
+    value = 1:5,
+    check.names = FALSE
+  )
+  names(source)[1L] <- "é\"name"
+  expected <- charToRaw(paste0(
+    "\"é\"\"name\"§\"category\"§\"value\"\n",
+    "\"é\"§\"é\"§1\n\"é\"§§2\n\"é\"§\"é\"§3\n§\"\"§4\n",
+    "\"a\"\"\nb\"§\"a\"\"\nb\"§5\n"
+  ))
+  sources <- list(source, tibble::as_tibble(source), data.table::as.data.table(source))
+  write_bytes <- function(value, options = NULL) {
+    before <- serialize(value, NULL, version = 3L)
+    target <- tempfile(fileext = ".csv")
+    on.exit(if (file.exists(target)) unlink(target))
+    result <- openwrangler_r_frame_contract$write_csv(
+      openwrangler_r_frame_contract$capture_frame(value), target, options
+    )
+    bytes <- readBin(target, "raw", n = result$bytes)
+    assert_identical(serialize(value, NULL, version = 3L), before, "CSV preparation changed source storage or encoding")
+    bytes
+  }
+  assert_identical(Sys.setlocale("LC_CTYPE", "C"), "C", "CSV encoding test could not select the C locale")
+  for (value in sources) {
+    assert_identical(
+      write_bytes(value, list(format = "csv", delimiter = "§", quoteChar = "\"", encoding = "utf-8", header = TRUE)),
+      expected,
+      "CSV export changed Unicode, quoting, factor labels, native numbers or LF bytes in the C locale"
+    )
+  }
+  assert_identical(write_bytes(data.frame(text = character())), charToRaw("\"text\"\n"), "empty CSV schema changed")
+  assert_identical(write_bytes(data.frame(text = c(NA_character_, NA_character_))), charToRaw("\"text\"\n\n\n"), "CSV missing values changed")
+  long_text <- strrep("x", 9000L)
+  long_source <- data.frame(text = c("safe", long_text))
+  long_capture <- openwrangler_r_frame_contract$capture_frame(long_source)
+  invisible(openwrangler_r_frame_contract$materialize_page(long_capture, row_limit = 1L))
+  assert_error(openwrangler_r_frame_contract$materialize_page(long_capture, row_offset = 1L, row_limit = 1L), "text-too-large")
+  assert_identical(write_bytes(long_source), charToRaw(paste0("\"text\"\n\"safe\"\n\"", long_text, "\"\n")), "CSV incorrectly applied the page cell size limit")
+  for (encoding in c("UTF-8", "bytes")) {
+    invalid <- rawToChar(as.raw(0xff))
+    Encoding(invalid) <- encoding
+    capture <- openwrangler_r_frame_contract$capture_frame(data.frame(text = c("safe", invalid)))
+    invisible(openwrangler_r_frame_contract$materialize_page(capture, row_limit = 1L))
+    target <- tempfile(fileext = ".csv")
+    on.exit(if (file.exists(target)) unlink(target), add = TRUE)
+    assert_error(openwrangler_r_frame_contract$write_csv(capture, target), "invalid-text")
+    assert_true(!file.exists(target), "invalid off-page CSV text left an artifact")
+  }
+  failing_writer <- openwrangler_r_frame_contract$write_csv
+  failure_scope <- new.env(parent = environment(failing_writer))
+  failure_scope$flush <- function(...) stop("owned CSV flush failure", call. = FALSE)
+  environment(failing_writer) <- failure_scope
+  target <- tempfile(fileext = ".csv")
+  on.exit(if (file.exists(target)) unlink(target), add = TRUE)
+  assert_error(failing_writer(openwrangler_r_frame_contract$capture_frame(source), target), "export-write-failed")
+  assert_true(!file.exists(target), "failed CSV writer left an artifact")
+})
+
 for (invalid_options in list(
   list(format = "csv", delimiter = ";", quoteChar = "'", encoding = "utf-8", header = TRUE),
   list(format = "csv", delimiter = ";", quoteChar = "\"", encoding = "latin-1", header = TRUE),

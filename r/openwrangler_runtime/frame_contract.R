@@ -8976,6 +8976,37 @@ openwrangler_r_frame_contract <- local({
     target_path <- validate_export_target(target_path)
 
     frame <- read_capture_frame(capture, validated = TRUE)
+    csv_text <- function(values, label) {
+      encodings <- Encoding(values)
+      if (any(encodings == "bytes")) abort("invalid-text", paste(label, "uses the bytes encoding"))
+      latin1 <- encodings == "latin1"
+      result <- character(length(values))
+      result[latin1] <- iconv(values[latin1], from = "latin1", to = "UTF-8", sub = NA_character_)
+      result[!latin1] <- iconv(values[!latin1], from = "UTF-8", to = "UTF-8", sub = NA_character_)
+      if (any(!is.na(values) & is.na(result))) abort("invalid-text", paste(label, "is not valid UTF-8"))
+      # The native formatter must write these validated UTF-8 bytes without locale translation.
+      Encoding(result) <- "unknown"
+      result
+    }
+    prepared <- lapply(seq_along(frame), function(index) {
+      column <- frame[[index]]
+      if (is.character(column)) {
+        column <- csv_text(column, "CSV text")
+      } else if (is.factor(column)) {
+        attr(column, "levels") <- csv_text(attr(column, "levels", exact = TRUE), "CSV factor level")
+      }
+      column
+    })
+    csv_names <- vapply(names(frame), bounded_utf8, character(1L),
+      label = "CSV column name", maximum_bytes = maximum_name_bytes, USE.NAMES = FALSE)
+    Encoding(csv_names) <- "unknown"
+    attributes(prepared) <- list(
+      names = csv_names,
+      row.names = attr(frame, "row.names", exact = TRUE),
+      class = "data.frame"
+    )
+    frame <- prepared
+    Encoding(options$delimiter) <- "unknown"
     connection <- NULL
     created <- FALSE
     completed <- FALSE
@@ -8985,7 +9016,7 @@ openwrangler_r_frame_contract <- local({
     }, add = TRUE)
     tryCatch(
       {
-        connection <- file(target_path, open = "wx", encoding = "UTF-8")
+        connection <- file(target_path, open = "wxb")
         created <- TRUE
         utils::write.table(
           frame,

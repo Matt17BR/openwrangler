@@ -591,6 +591,10 @@ R-terminal, and owned `Rscript` transports share the same native frame contract 
 including generated R. The runtime never routes an R frame through Python. The public status remains Preview and
 Partial because of the row-specific limitations recorded in the feature-parity matrix.
 
+Native R CSV export writes validated UTF-8 bytes with LF record separators, independent of the current locale.
+It prepares character values and factor levels in a temporary frame, preserving source storage and native non-text
+columns. Invalid text is refused before creating the artifact; export does not apply the page cell-size limit.
+
 Drop Duplicates and dataset duplicate statistics share an exact integer64 comparison owner. All three frame flavors
 use temporary decimal text keys, including for the two supported signed extrema. A data.table comparison remains a data.table
 so other columns retain their native equality and configured numeric rounding. Original values and metadata remain
