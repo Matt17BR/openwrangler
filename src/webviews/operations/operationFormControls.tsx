@@ -89,6 +89,12 @@ export function ColumnReferenceSelect({
   const fallbackValue =
     defaultValue && columns.some((column) => column.id === defaultValue) ? defaultValue : columns[0]?.id;
   const controlled = value !== undefined;
+  const [internalValue, setInternalValue] = useState(fallbackValue);
+  if (!controlled && internalValue === undefined && fallbackValue !== undefined) {
+    setInternalValue(fallbackValue);
+  }
+  const selectedValue = value ?? internalValue ?? "";
+  const available = columns.some((column) => column.id === selectedValue);
   const optionLabels = useMemo(() => columnOptionLabels(columns), [columns]);
   return (
     <label className="formField">
@@ -96,12 +102,23 @@ export function ColumnReferenceSelect({
       <select
         aria-label={label}
         name={name}
-        {...(controlled ? { value } : { defaultValue: fallbackValue })}
+        value={available ? selectedValue : ""}
         required
         disabled={columns.length === 0}
-        onChange={onChange ? (event) => onChange(event.target.value) : undefined}
+        onChange={(event) => {
+          if (!controlled) setInternalValue(event.target.value);
+          onChange?.(event.target.value);
+        }}
       >
-        {columns.length === 0 && <option value="">No compatible columns</option>}
+        {!available && (
+          <option value="">
+            {columns.length === 0
+              ? "No compatible columns"
+              : selectedValue
+                ? "Selected column is no longer available"
+                : "Choose a column"}
+          </option>
+        )}
         {columns.map((column) => (
           <option key={column.id} value={column.id}>
             {optionLabels.get(column.id)}

@@ -51,6 +51,40 @@ describe("Fill Missing operation fields", () => {
     expect(onPreview).toHaveBeenCalledOnce();
   });
 
+  it("keeps a removed single Fill target unavailable until an explicit target change", () => {
+    const onPreview = vi.fn();
+    const props = {
+      metadata,
+      filterModel: metadata.filterModel,
+      initialKind: "fillMissingValues" as const,
+      onClose: () => undefined,
+      onPreview
+    };
+    const view = render(<OperationBuilder {...props} />);
+    const picker = screen.getByRole("combobox", { name: "Column" });
+    expect(picker).toHaveValue("c:1");
+    expect(screen.getByLabelText("Method")).toHaveValue("median");
+    view.rerender(<OperationBuilder {...props} metadata={{ ...metadata, schema: [metadata.schema[0]] }} />);
+    expect(picker).toHaveValue("");
+    expect(picker).toHaveDisplayValue("Selected column is no longer available");
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).not.toHaveBeenCalled();
+    fireEvent.change(picker, { target: { value: "c:0" } });
+    expect(screen.getByLabelText("Method")).toHaveValue("mostFrequent");
+    fireEvent.change(screen.getByLabelText("Method"), { target: { value: "value" } });
+    expect(screen.getByLabelText("Method")).toHaveValue("value");
+    fireEvent.change(screen.getByLabelText("Replacement value"), { target: { value: "Unknown" } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledWith(
+      {
+        id: expect.any(String),
+        kind: "fillMissingValues",
+        params: { column: { id: "c:0", name: "city" }, replacement: { kind: "string", value: "Unknown" } }
+      },
+      undefined
+    );
+  });
+
   it("offers mean only for float columns and serializes the selected method", () => {
     const onPreview = vi.fn();
     const columns = [
