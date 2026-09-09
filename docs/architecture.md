@@ -145,6 +145,11 @@ clears its preview error.
 A successful accepted plan update also closes an editing dialog whose applied step no longer exists, using the
 existing focus restoration. Failed updates, surviving step targets and ordinary new-operation forms retain their input.
 
+Retained multi-column forms submit unavailable selected IDs to the existing parameter validator instead of silently
+dropping dependencies. An explicit repair action removes those selections; optional forms explain when clearing them
+will select all columns. Toggling another checkbox preserves unavailable IDs, and a nonempty column search remains
+clearable after the schema shrinks.
+
 Redo retains the commands removed by Undo in the exact runtime session. It binds the next saved command to the
 current confirmed input and executes that step once; it does not replay the preceding plan or retain old dataframe
 results. Already-synthesized By Example programs remain part of the saved command. Stable column IDs, captured

@@ -141,13 +141,14 @@ export function ColumnReferencesSelect({
   const validColumnIds = new Set(columns.map((column) => column.id));
   const optionLabels = useMemo(() => columnOptionLabels(columns), [columns]);
   const [searchQuery, setSearchQuery] = useState("");
-  const [internalSelectedIds, setInternalSelectedIds] = useState(defaultValue.filter((id) => validColumnIds.has(id)));
-  const selectedIds = (value ?? internalSelectedIds).filter((id) => validColumnIds.has(id));
+  const [internalSelectedIds, setInternalSelectedIds] = useState(defaultValue);
+  const selectedIds = value ?? internalSelectedIds;
+  const unavailableSelectedIds = selectedIds.filter((id) => !validColumnIds.has(id));
   const updateSelectedIds = (next: string[]) => {
     if (onChange) onChange(next);
     else setInternalSelectedIds(next);
   };
-  const selectedLabels = selectedIds.map((id) => optionLabels.get(id) ?? id);
+  const selectedLabels = selectedIds.filter((id) => validColumnIds.has(id)).map((id) => optionLabels.get(id) ?? id);
   const selectedSummary =
     selectedLabels.length <= 5
       ? selectedLabels.join(", ")
@@ -176,7 +177,7 @@ export function ColumnReferencesSelect({
       {selectedIds.map((id) => (
         <input key={id} type="hidden" name={name} value={id} />
       ))}
-      {searchLabel && columns.length > 1 && (
+      {searchLabel && (columns.length > 1 || searchQuery !== "") && (
         <label className="formField columnSelectionSearch">
           <span>{searchLabel}</span>
           <input
@@ -204,7 +205,10 @@ export function ColumnReferencesSelect({
                   if (current.includes(column.id)) return current;
                   if (preserveSelectionOrder) return [...current, column.id];
                   const selected = new Set([...current, column.id]);
-                  return columns.filter((candidate) => selected.has(candidate.id)).map((candidate) => candidate.id);
+                  return [
+                    ...columns.filter((candidate) => selected.has(candidate.id)).map((candidate) => candidate.id),
+                    ...unavailableSelectedIds
+                  ];
                 })();
                 updateSelectedIds(next);
               }}
@@ -215,6 +219,17 @@ export function ColumnReferencesSelect({
         {columns.length === 0 && <span className="mutedText">No compatible columns are available.</span>}
         {columns.length > 0 && visibleColumns.length === 0 && <span className="mutedText">No matching columns.</span>}
       </div>
+      {unavailableSelectedIds.length > 0 && (
+        <div>
+          <p className="operationCompatibilityNote" role="status">
+            Some selected columns are no longer available.
+            {!required && selectedLabels.length === 0 && " Clearing them will use all columns."}
+          </p>
+          <button type="button" onClick={() => updateSelectedIds(selectedIds.filter((id) => validColumnIds.has(id)))}>
+            Clear unavailable selections
+          </button>
+        </div>
+      )}
       <small id={helpId}>
         {required ? "Select at least one column. " : ""}
         {preserveSelectionOrder

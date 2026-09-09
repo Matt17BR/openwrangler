@@ -1399,6 +1399,109 @@ describe("OperationBuilder", () => {
     );
   });
 
+  it("keeps a nonempty column search editable after the schema shrinks", () => {
+    const onPreview = vi.fn();
+    const props = {
+      metadata,
+      filterModel: { filters: [], sort: [] },
+      initialKind: "selectColumns" as const,
+      onClose: () => undefined,
+      onPreview
+    };
+    const view = render(<OperationBuilder {...props} />);
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search columns to keep" }), {
+      target: { value: "city" }
+    });
+    view.rerender(<OperationBuilder {...props} metadata={{ ...metadata, schema: [metadata.schema[1]] }} />);
+    expect(screen.getByText("No matching columns.")).toBeVisible();
+    const search = screen.getByRole("searchbox", { name: "Search columns to keep" });
+    expect(search).toHaveValue("city");
+    fireEvent.change(search, { target: { value: "" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "sales" }));
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ params: { columns: [{ id: "c:1", name: "sales" }] } }),
+      undefined
+    );
+  });
+
+  it.each([
+    ["dropMissingRows", { how: "any" }],
+    ["dropDuplicates", { keep: "first" }]
+  ] as const)("requires explicit repair of unavailable selections in %s", (kind, defaults) => {
+    const onPreview = vi.fn();
+    const props = {
+      metadata,
+      filterModel: { filters: [], sort: [] },
+      initialKind: kind,
+      onClose: () => undefined,
+      onPreview
+    };
+    const view = render(<OperationBuilder {...props} />);
+    fireEvent.click(screen.getByRole("checkbox", { name: "city" }));
+    view.rerender(<OperationBuilder {...props} metadata={{ ...metadata, schema: [metadata.schema[1]] }} />);
+    const preview = screen.getByRole("button", { name: "Preview changes" });
+    fireEvent.click(preview);
+    expect(onPreview).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent("The selected column is no longer available.");
+    expect(screen.getByText(/Clearing them will use all columns/u)).toBeVisible();
+
+    // Choosing another column must not silently discard the unavailable dependency.
+    fireEvent.click(screen.getByRole("checkbox", { name: "sales" }));
+    fireEvent.click(preview);
+    expect(onPreview).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Clear unavailable selections" }));
+    fireEvent.click(preview);
+    expect(onPreview).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ kind, params: { ...defaults, columns: [{ id: "c:1", name: "sales" }] } }),
+      undefined
+    );
+
+    // Empty still means all when the user deliberately clears the remaining selection.
+    fireEvent.click(screen.getByRole("checkbox", { name: "sales" }));
+    fireEvent.click(preview);
+    expect(onPreview).toHaveBeenLastCalledWith(expect.objectContaining({ kind, params: defaults }), undefined);
+    expect(onPreview).toHaveBeenCalledTimes(2);
+  });
+
+  it("preserves valid selection order and renamed IDs when repairing a removed column", () => {
+    const onPreview = vi.fn();
+    const extra = { ...metadata.schema[0], id: "c:2", name: "region", position: 2 };
+    const props = {
+      metadata: { ...metadata, schema: [...metadata.schema, extra] },
+      filterModel: { filters: [], sort: [] },
+      initialKind: "selectColumns" as const,
+      onClose: () => undefined,
+      onPreview
+    };
+    const view = render(<OperationBuilder {...props} />);
+    for (const name of ["region", "city", "sales"]) fireEvent.click(screen.getByRole("checkbox", { name }));
+    const next = {
+      ...metadata,
+      schema: [
+        { ...metadata.schema[1], name: "revenue", position: 0 },
+        { ...extra, position: 1 }
+      ]
+    };
+    view.rerender(<OperationBuilder {...props} metadata={next} />);
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Clear unavailable selections" }));
+    expect(screen.getByText("Selected order: region → revenue")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        params: {
+          columns: [
+            { id: "c:2", name: "region" },
+            { id: "c:1", name: "revenue" }
+          ]
+        }
+      }),
+      undefined
+    );
+  });
+
   it("preserves an existing select-columns order when previewed unchanged", () => {
     const onPreview = vi.fn();
     render(

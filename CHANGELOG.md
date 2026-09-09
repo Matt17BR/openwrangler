@@ -24,6 +24,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Cleaning forms retain unavailable column selections after schema changes and offer an explicit repair action.
+  Column search remains clearable when only one column remains.
 - DuckDB Multi-label Encoding accepts an input named `label` or an unrelated column with that name.
 - DuckDB Pivot Longer and Pivot Wider preserve requested output columns named like internal ordering helpers.
   Saved Pivot Wider programs reject missing value columns instead of using an internal helper as input.
