@@ -400,6 +400,41 @@ describe("App draft state boundaries", () => {
     }
   });
 
+  it("requires explicit column-selection repair before an open form can preview after Undo", async () => {
+    const saved = formulaPreviewFixture("polars", true);
+    const original = formulaPreviewFixture("polars", false);
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata: saved.metadata, page: saved.page, summaries: [] });
+    dispatch({ kind: "editorAction", action: "openOperation", operationKind: "dropMissingRows" });
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: "saved_result" }));
+    fireEvent.change(within(dialog).getByLabelText("Drop when"), { target: { value: "all" } });
+    dispatch({ kind: "editorAction", action: "undoStep" });
+    expect(dialog).toHaveAttribute("aria-busy", "true");
+    dispatch({ kind: "error", code: "engine_error", message: "Undo failed", recoverable: true });
+    expect(within(dialog).getByRole("checkbox", { name: "saved_result" })).toBeChecked();
+
+    dispatch({ kind: "editorAction", action: "undoStep" });
+    dispatch({
+      kind: "planUpdated",
+      action: "undo",
+      revision: 2,
+      metadata: { ...original.metadata, revision: 2, canRedo: true },
+      page: original.page,
+      code: ""
+    });
+    expect(screen.getByRole("dialog")).toBe(dialog);
+    expect(within(dialog).getByLabelText("Drop when")).toHaveValue("all");
+    postMessage.mockClear();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Preview changes" }));
+    expect(postMessage).not.toHaveBeenCalled();
+    expect(within(dialog).getByRole("alert")).toHaveTextContent("The selected column is no longer available.");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Clear unavailable selections" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Preview changes" }));
+    expect(onlyPreviewRequest().step).toMatchObject({ kind: "dropMissingRows", params: { how: "all" } });
+    expect(onlyPreviewRequest().step.params).not.toHaveProperty("columns");
+  });
+
   it.each(["earlier edit", "new operation"])("retains a %s and its typed input after Undo", async (kind) => {
     const fixture = formulaPreviewFixture("polars", true);
     const original = formulaPreviewFixture("polars", false);

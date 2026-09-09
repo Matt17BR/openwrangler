@@ -247,6 +247,9 @@ confirmed state for a follow-up request. This does not recover a native process 
 Multi-column cleaning forms support search, including Select/Drop columns, Drop missing rows, Drop duplicates, Mark duplicates,
 One-hot encoding, Group keys, and Transform by example. Search retains hidden selections and their required order;
 operation-builder tests verify the exact submitted references, saved selections, and optional full-schema defaults.
+If a schema change removes selected columns, forms retain those dependencies until the user explicitly clears them.
+The repair message explains when this will select all columns. A nonempty search remains clearable after the schema
+shrinks to one or zero available columns.
 
 Visual baselines and axe scans are not exhaustive assistive-technology certification or proof that every virtualized
 cell is simultaneously present in the DOM.

@@ -150,6 +150,10 @@ accessible alert inside the submitting dialog, retained input and confirmed data
 cleanup on operation or session changes. Host Undo errors remain a separate workspace-owned control.
 The same App owner checks that removing an edited step closes its dialog and restores focus while failed Undo,
 surviving edit targets and new-operation forms retain their input.
+Operation Builder and Fill Missing controls check explicit repair of unavailable column selections, optional All
+semantics, retained valid selection order and names, controlled grouping, and search recovery after schema changes.
+The App owner checks that failed Undo retains selection and successful Undo cannot silently broaden a retained
+Drop Missing form to all columns; unrelated form input survives repair.
 The same UI owners check Redo after the last Undo, focus ownership, draft/projection gates and exact attempt
 correlation before success or failure can settle a mutation. Panel controls verify that an empty-history refusal
 also clears the snapshot used on remount. Native session and transaction owners check ordered re-execution,

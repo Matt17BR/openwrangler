@@ -349,6 +349,38 @@ describe("Fill Missing operation fields", () => {
     expect(within(method).getByRole("option", { name: "Most common value within groups" })).toBeInTheDocument();
   });
 
+  it("requires explicit repair of a controlled group key removed by a schema change", () => {
+    const onPreview = vi.fn();
+    const region = { ...metadata.schema[0], id: "c:2", name: "region", position: 2 };
+    const props = {
+      metadata: { ...metadata, schema: [...metadata.schema, region] },
+      filterModel: { filters: [], sort: [] },
+      initialKind: "fillMissingValues" as const,
+      onClose: () => undefined,
+      onPreview
+    };
+    const view = render(<OperationBuilder {...props} />);
+    fireEvent.change(screen.getByLabelText("Method"), { target: { value: "groupedMean" } });
+    expect(screen.getByRole("checkbox", { name: "city" })).toBeChecked();
+    view.rerender(<OperationBuilder {...props} metadata={{ ...metadata, schema: [metadata.schema[1], region] }} />);
+    fireEvent.click(screen.getByRole("checkbox", { name: "region" }));
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent("no longer available");
+    fireEvent.click(screen.getByRole("button", { name: "Clear unavailable selections" }));
+    expect(screen.getByLabelText("Method")).toHaveValue("groupedMean");
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        params: {
+          column: { id: "c:1", name: "sales" },
+          replacement: { kind: "groupedStatistic", statistic: "mean", keys: [{ id: "c:2", name: "region" }] }
+        }
+      }),
+      undefined
+    );
+  });
+
   it("restores grouped keys and prunes a key that becomes the target", () => {
     const columns = [
       { id: "c:0", name: "amount", position: 0, rawType: "Float64", type: "float", nullable: true },
