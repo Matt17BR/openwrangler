@@ -451,8 +451,10 @@ viewing, reported/replayed dtypes and exact Parquet readback. The Polars public-
 owner above.
 
 Native R's `r/tests/kernel_agent.R` and `src/test/rKernelTransport.cross.test.ts` own literal precision and complete
-generated execution, including the finite 309-digit endpoint. The kernel's missing-power
-case compares the captured native vector, wire cell kinds and generated result.
+generated execution, including the finite 309-digit endpoint. The existing
+`kernel:rows-numeric-datetime-and-by-example` phase checks fixed binary64 literal bits, integer capacity, and public
+Formula and By Example results through complete interpreted and compiled programs, retaining nulls, types and source
+values. The kernel's missing-power case compares the captured native vector, wire cell kinds and generated result.
 `src/test/rKernelTransformBinding.unit.test.ts` and `src/test/rKernelMutationSchema.unit.test.ts` own exact text
 retention and type prediction.
 
@@ -694,11 +696,12 @@ roots and IRkernel readiness checks.
 
 The manual macOS and Windows R jobs also prepare a separate library for source contracts through the same package
 owner. This selection includes bit64 and the native-frame prerequisites, without IRkernel or editor tooling.
-Installation, version checks and namespace loading must succeed in that private library before the six existing
+Installation, version checks and namespace loading must succeed in that private library before the seven existing
 phases run: `frame:group-by`, `frame:fill-missing`, `frame:profiling`, `frame:cast-and-structure`,
-`kernel:text-fill-and-cast` and
-`kernel:group-pivot-and-export`. The caller removes its root only after all preparation and phases succeed; any
-failure retains the root. These checks repeat dependency installation, including macOS collapse compilation. They
+`kernel:text-fill-and-cast`, `kernel:group-pivot-and-export` and
+`kernel:rows-numeric-datetime-and-by-example`. The last phase includes finite numeric-literal equality through
+complete generated and compiled programs. The caller removes its root only after all preparation and phases succeed;
+any failure retains the root. These checks repeat dependency installation, including macOS collapse compilation. They
 do not replace the subsequent installed-editor journey or the separate R 4.4 qualification.
 
 `scripts/packaged-r-jupyter.test.mjs` checks actual prepared install/probe/record agreement, private environment

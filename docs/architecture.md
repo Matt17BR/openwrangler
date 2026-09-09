@@ -685,6 +685,11 @@ Mutation and inspection decoders distinguish a known empty schema from missing h
 schema, row-identity and diff checks for zero-column sources. Generated code accepts the same sources; the native
 frame and operation boundaries are defined in [ADR 0001](decisions/0001-native-r-runtime.md).
 
+Generated Formula and By Example code encode finite double literals from their binary64 bytes as bounded
+hexadecimal text, preserving the bound value across platforms. Subnormal and zero spellings use exponent -1022,
+and the emitted conversion preserves signed zero when compiled. Integer literals retain integer storage;
+public admission rules and generated-code limits remain unchanged.
+
 Generated R follows the live operation's native column-metadata behavior at each step. It normalizes element names
 on its already-isolated `data.table` result without making another full data copy; Clone, Dense Rank, Mark Duplicates
 and Custom Code retain their explicit named-input behavior. This keeps later attribute-sensitive custom code consistent

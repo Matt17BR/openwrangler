@@ -5486,6 +5486,31 @@ formula_open <- dispatch(
 )
 assert_identical(formula_open$kind, "page", "the R Formula session did not open")
 
+# Fixed input bytes keep the literal encoder's oracle independent of decimal parsing.
+local({
+  owner <- environment(openwrangler_r_kernel_agent$new_agent)
+  encode_number <- get("r_number", envir = owner, inherits = FALSE)
+  patterns <- c(
+    "0000000000000000", "0000000000000080", "000000000000f03f", "000000000000f0bf",
+    "010000000000f03f", "000000000000e03f", "9a9999999999b93f",
+    "a0c8eb85f3cce17f", "30058ee42eff2b2b", "0100000000000000", "0100000000000080",
+    "ffffffffffff0f00", "0000000000001000", "ffffffffffffef7f", "ffffffffffffefff"
+  )
+  for (pattern in patterns) {
+    bytes <- as.raw(strtoi(substring(pattern, seq(1L, 15L, 2L), seq(2L, 16L, 2L)), 16L))
+    value <- readBin(bytes, double(), n = 1L, size = 8L, endian = "little")
+    expression <- parse(text = encode_number(value))[[1L]]
+    compiled <- compiler::cmpfun(eval(call("function", pairlist(), expression), baseenv()))
+    for (actual in list(eval(expression, baseenv()), compiled())) {
+      assert_identical(writeBin(actual, raw(), size = 8L, endian = "little"), bytes,
+        sprintf("generated R changed binary64 literal %s", pattern))
+    }
+  }
+  capacity <- get("maximum_operation_output_bytes", envir = owner, inherits = FALSE)
+  assert_identical(eval(parse(text = encode_number(capacity)), baseenv()), capacity,
+    "generated R changed its integer output capacity")
+})
+
 # Canonical integer text stays public text and binds only to an exact native scalar.
 formula_literal_session <- "f9980000-0000-4000-8000-000000000001"
 formula_literal_cases <- list(
@@ -5501,8 +5526,10 @@ formula_literal_cases <- list(
   list(value = "2", scalar = 2L, wide = TRUE),
   list(value = "1152921504606846976", scalar = 2^60, wide = TRUE),
   list(value = 2, scalar = 2L),
-  list(value = 0.5, scalar = 0.5),
-  list(value = 2^60, scalar = 2^60)
+  list(value = 0.5, scalar = 0.5, compiled = TRUE),
+  list(value = 2^60, scalar = 2^60),
+  list(value = jsonlite::fromJSON("1e308"), scalar = jsonlite::fromJSON("1e308"), compiled = TRUE),
+  list(value = jsonlite::fromJSON("1e-100"), scalar = jsonlite::fromJSON("1e-100"), compiled = TRUE)
 )
 for (literal in formula_literal_cases) {
   source_environment$formula_literal_frame <- data.frame(
@@ -5540,6 +5567,17 @@ for (literal in formula_literal_cases) {
   generated_environment$formula_literal_frame <- source_environment$formula_literal_frame
   eval(parse(text = literal_preview$code), envir = generated_environment)
   assert_identical(generated_environment$open_wrangler_result$result, expected, "generated R Formula changed an exact literal")
+  if (isTRUE(literal$compiled)) {
+    compiled <- compiler::cmpfun(eval(parse(text = paste(
+      "function(formula_literal_frame) {", literal_preview$code,
+      "list(result = open_wrangler_result, source = formula_literal_frame) }"
+    )), envir = baseenv()))
+    result <- compiled(unserialize(formula_literal_before))
+    assert_identical(result$result, generated_environment$open_wrangler_result,
+      "compiled generated R Formula changed its complete result")
+    assert_identical(serialize(result$source, NULL, version = 3L), formula_literal_before,
+      "compiled generated R Formula mutated its source")
+  }
   assert_identical(
     serialize(generated_environment$formula_literal_frame, NULL, version = 3L),
     formula_literal_before, "generated R Formula mutated its source"
@@ -12832,31 +12870,52 @@ max_safe_discard <- dispatch(
 )
 adversarial_revision <- max_safe_discard$revision
 
-precise_step <- adversarial_valid_step("by-example-precise-double", "precise double")
-precise_step$params$examples <- I(list(
-  list(inputs = I(list("alpha")), output = 1.2345678901234567),
-  list(inputs = I(list("beta")), output = 1.2345678901234567)
-))
-precise_preview <- dispatch(
-  "previewStep",
-  list(
-    sessionId = by_example_adversarial_session,
-    revision = adversarial_revision,
-    step = precise_step,
-    page = page_window()
+for (precise_text in c("1.2345678901234567", "1e-100", "0.5")) {
+  precise_value <- jsonlite::fromJSON(precise_text)
+  precise_step <- adversarial_valid_step("by-example-precise-double", "precise double")
+  precise_step$params$examples <- I(list(
+    list(inputs = I(list("alpha")), output = precise_value),
+    list(inputs = I(list("beta")), output = precise_value)
+  ))
+  precise_preview <- dispatch(
+    "previewStep",
+    list(
+      sessionId = by_example_adversarial_session,
+      revision = adversarial_revision,
+      step = precise_step,
+      page = page_window()
+    )
   )
-)
-assert_identical(precise_preview$kind, "stepPreview", "the precise-double by-example did not preview")
-assert_identical(
-  precise_preview$retainedStep$params$examples[[1L]]$output,
-  1.2345678901234567,
-  "protocol v14 changed a retained by-example double"
-)
-precise_discard <- dispatch(
-  "discardDraft",
-  list(sessionId = by_example_adversarial_session, revision = precise_preview$revision, page = page_window())
-)
-adversarial_revision <- precise_discard$revision
+  assert_identical(precise_preview$kind, "stepPreview", "the precise-double by-example did not preview")
+  assert_identical(
+    precise_preview$retainedStep$params$examples[[1L]]$output,
+    precise_value,
+    "protocol v14 changed a retained by-example double"
+  )
+  live <- get("snapshot", envir = latest_full_capture, inherits = FALSE)
+  assert_identical(live$`precise double`, rep(precise_value, 2L), "live R changed a by-example double")
+  generated_environment <- new.env(parent = baseenv())
+  generated_environment$by_example_adversarial <- by_example_adversarial_before
+  eval(parse(text = precise_preview$code), envir = generated_environment)
+  assert_identical(generated_environment$open_wrangler_result, live,
+    "generated R changed the complete by-example double result")
+  compiled <- compiler::cmpfun(eval(parse(text = paste(
+    "function(by_example_adversarial) {", precise_preview$code,
+    "list(result = open_wrangler_result, source = by_example_adversarial) }"
+  )), envir = baseenv()))
+  result <- compiled(by_example_adversarial_before)
+  assert_identical(result$result, live, "compiled generated R changed the complete by-example double result")
+  for (source in list(generated_environment$by_example_adversarial, result$source,
+                      source_environment$by_example_adversarial)) {
+    assert_identical(serialize(source, NULL, version = 3L), serialize(by_example_adversarial_before, NULL, version = 3L),
+      "R by-example double execution mutated its source")
+  }
+  precise_discard <- dispatch(
+    "discardDraft",
+    list(sessionId = by_example_adversarial_session, revision = precise_preview$revision, page = page_window())
+  )
+  adversarial_revision <- precise_discard$revision
+}
 
 program_null_step <- adversarial_valid_step("by-example-program-null", "program null")
 program_null_step$params["program"] <- list(NULL)
