@@ -753,8 +753,10 @@ keeps its separate environment and lifetime. The separate R 4.4 qualification re
 The macOS default is `platform-lifecycle`. It keeps a paging round trip, Mark Duplicates and Dense Rank forms, compact
 column reveal and focus, and the full Rename lifecycle with inspection, Edit, Undo/Redo, all-row exports, source
 refusal, Save, clipboard and source-bound notebook insertion. It also retains all three collapse-frame opens, one
-operation per additional native frame flavor, direct-document execution and kernel restart/recovery. Requested
-code-insertion screenshots keep the same capture owner.
+operation per additional native frame flavor, direct-document execution and kernel restart/recovery. Three page
+windows after Dense Rank Apply check exact ranks, missing cells and row identities. The native kernel owner checks
+all original Mark Duplicates columns, and the real-process owner checks complete page restoration after Undo for
+both operations. Requested code-insertion screenshots keep the same capture owner.
 
 The Linux comprehensive journey retains the broader operation catalog, final-page/last-column assertion, separate
 native Viewing opens and both native-flavor operations. These repetitions are omitted on macOS; source and generated

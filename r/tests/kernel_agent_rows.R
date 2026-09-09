@@ -28,6 +28,9 @@ for (mark_flavor in c("base", "tibble", "data.table")) {
     mark_expected <- switch(mark_case, special = c(TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, FALSE, FALSE),
       `wide-composite` = c(TRUE, TRUE, FALSE, FALSE, TRUE, TRUE, FALSE, FALSE), empty = logical())
     assert_identical(mark_live[["duplicate flag"]], mark_expected, "Mark Duplicates changed native equality or logical flags")
+    mark_original_columns <- lapply(unserialize(mark_before), identity)
+    assert_identical(lapply(mark_live, identity)[seq_along(mark_original_columns)], mark_original_columns,
+      "Mark Duplicates changed original column values or element metadata")
     assert_identical(mark_preview$page$schema[1:3], mark_open$page$schema, "Mark Duplicates changed original column identities/types")
     assert_identical(mark_preview$page$schema[[4L]]$rawType, "logical", "Mark Duplicates did not publish logical storage")
     assert_identical(mark_preview$page$schema[[4L]]$nullable, FALSE, "Mark Duplicates published missing flags")
