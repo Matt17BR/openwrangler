@@ -350,7 +350,7 @@ A changed source is refused; this guard does not persist beyond the read.
 Profiles and duplicate comparisons use temporary exact Python values for these Arrow containers because native
 Arrow lacks their count and duplicate kernels. Live and generated comparisons share that conversion policy;
 stored arrays and export types remain unchanged. No comparison keys persist between requests.
-For Dataset statistics, native multi-column duplicate counting can refuse unhashable list, dict or NumPy-array
+For Dataset statistics, native multi-column duplicate counting can refuse unhashable list, dict, set or NumPy-array
 values. Those specific native TypeErrors leave the duplicate count unavailable while returning exact missing counts.
 Other failures propagate. The calculation tries the native path first and adds no scan of healthy object columns;
 this policy does not change cleaning operations or their generated code.

@@ -202,7 +202,7 @@ follow filtered and sorted rows; the index-fidelity owner checks these through a
 Nullable integer data and integer children in lists, structs and maps also retain exact values and missingness through
 editing and export. Repaired columns use native Arrow storage; unrelated columns keep ordinary Pandas decoding.
 Profiles, value choices and single-column duplicate comparisons preserve exact nested integer values and missingness.
-Pandas can refuse to count duplicates across columns containing lists, dictionaries or NumPy arrays. Dataset
+Pandas can refuse to count duplicates across columns containing lists, dictionaries, sets or NumPy arrays. Dataset
 statistics retain exact missing-value counts for those native unhashable-key failures, and show the duplicate count
 as **Unavailable for these column values**. Other native failures retain their errors; cleaning operations are unchanged.
 
