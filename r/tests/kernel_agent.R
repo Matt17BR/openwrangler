@@ -1990,6 +1990,63 @@ assert_identical(serialize(source_environment$duration_mixed, NULL, version = 3L
 assert_identical(dispatch("closeSession", list(sessionId = duration_mixed_id))$kind, "closed", "mixed duration session did not close")
 rm("duration_mixed", envir = source_environment)
 
+categorical_locale_before <- Sys.getlocale("LC_CTYPE")
+(function() {
+  on.exit(Sys.setlocale("LC_CTYPE", categorical_locale_before), add = TRUE)
+  assert_identical(Sys.setlocale("LC_CTYPE", "C"), "C", "the categorical locale control could not select C")
+  utf8 <- intToUtf8(233L)
+  Encoding(utf8) <- "UTF-8"
+  latin1 <- rawToChar(as.raw(233L))
+  Encoding(latin1) <- "latin1"
+  unmarked <- rawToChar(as.raw(c(195L, 169L)))
+  Encoding(unmarked) <- "unknown"
+  inputs <- new.env(parent = emptyenv())
+  local_agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, inputs)
+  on.exit(local_agent$dispose(), add = TRUE)
+  id <- "f4f4f4f4-f4f4-44f4-84f4-f4f4f4f4f4f4"
+  signed_zeros <- 1 / c(Inf, -Inf)
+  for (negative_first in c(FALSE, TRUE)) {
+    inputs$encoded_categories <- data.frame(
+      text = c(if (negative_first) unmarked else utf8, latin1, if (negative_first) utf8 else unmarked, "plain", NA_character_),
+      duration = as.difftime(c(if (negative_first) rev(signed_zeros) else signed_zeros, 1.5, NA_real_, 1.5), units = "hours"),
+      tags = c("a|b", "b|b", NA_character_, "", "a")
+    )
+    if (negative_first) inputs$encoded_categories$tags <- factor(inputs$encoded_categories$tags, levels = c("unused", "a|b", "b|b", "", "a"))
+    original <- inputs$encoded_categories
+    source_bytes <- serialize(original, NULL, version = 3L)
+    expected <- openwrangler_r_frame_contract$one_hot_encode_columns_at(original, c(1L, 2L), c("text", "duration"), "_", FALSE)$value
+    zero_name <- if (negative_first) "duration_-0 hours" else "duration_0 hours"
+    assert_identical(expected[[zero_name]], c(1L, 1L, 0L, 0L, 0L), "One-hot changed the first signed-zero representative")
+    assert_identical(expected[[paste0("text_", utf8)]], c(1L, 1L, 1L, 0L, 0L), "One-hot split equivalent encoded categories")
+    opened <- dispatch_with(local_agent, "openSession", list(sessionId = id, variableName = "encoded_categories", page = page_window()))
+    assert_identical(opened$kind, "page", "encoded categorical input did not open")
+    hot <- list(id = "encoded-hot", kind = "oneHotEncode", params = list(
+      columns = I(list(list(id = "r:c:0", name = "text"), list(id = "r:c:1", name = "duration"))), dropOriginal = FALSE
+    ))
+    preview <- dispatch_with(local_agent, "previewStep", list(sessionId = id, revision = 0L, step = hot, page = page_window()))
+    assert_identical(preview$kind, "stepPreview", "encoded categorical input did not preview")
+    assert_identical(vapply(preview$page$schema, `[[`, character(1L), "name"), names(expected), "encoded categorical preview changed output names")
+    applied <- dispatch_with(local_agent, "applyDraft", list(sessionId = id, revision = preview$revision, page = page_window()))
+    scope <- new.env(parent = baseenv())
+    scope$encoded_categories <- original
+    eval(parse(text = applied$code), envir = scope)
+    assert_identical(scope$open_wrangler_result, expected, "generated One-hot changed encoding, signed zero, native types or values")
+    multilabel <- list(id = "encoded-labels", kind = "multiLabelBinarize", params = list(
+      column = list(id = "r:c:2", name = "tags"), delimiter = "|", prefix = "tag_", dropOriginal = FALSE
+    ))
+    preview <- dispatch_with(local_agent, "previewStep", list(sessionId = id, revision = applied$revision, step = multilabel, page = page_window()))
+    assert_identical(preview$kind, "stepPreview", "Multi-label after encoded One-hot did not preview")
+    expected <- openwrangler_r_frame_contract$multi_label_binarize_column_at(expected, 3L, "tags", "|", "tag_", FALSE)$value
+    assert_identical(vapply(preview$page$schema, `[[`, character(1L), "name"), names(expected), "mixed categorical output names changed")
+    eval(parse(text = preview$code), envir = scope)
+    assert_identical(scope$open_wrangler_result, expected, "complete One-hot and Multi-label code diverged from native output")
+    assert_identical(serialize(scope$encoded_categories, NULL, version = 3L), source_bytes, "mixed generated categorical code changed source storage")
+    assert_identical(serialize(inputs$encoded_categories, NULL, version = 3L), source_bytes, "mixed public categorical code changed its source")
+    assert_identical(dispatch_with(local_agent, "closeSession", list(sessionId = id))$kind, "closed", "encoded categorical session did not close")
+  }
+})()
+assert_identical(Sys.getlocale("LC_CTYPE"), categorical_locale_before, "categorical controls did not restore locale")
+
 cleanup_preview <- dispatch(
   "previewStep",
   list(

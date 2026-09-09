@@ -6852,10 +6852,16 @@ openwrangler_r_kernel_agent <- local({
           .ow_column,
           rep.int(NA_character_, .ow_storage_length(.ow_column))
         )
-        return(list(storage = .ow_values, missing = .ow_missing, labels = .ow_values))
+        .ow_categories <- base::unique.default(.ow_values[!.ow_missing])
+        return(list(storage = .ow_values, missing = .ow_missing, categories = .ow_categories, labels = .ow_categories))
       }
       if (identical(.ow_spec$kind, "factor")) {
         .ow_levels <- .ow_utf8(attr(.ow_column, "levels", exact = TRUE))
+        if (identical(.ow_kind, "oneHotEncode")) {
+          .ow_categories <- base::unique.default(.ow_storage[!.ow_missing])
+          return(list(storage = .ow_storage, missing = .ow_missing,
+            categories = .ow_categories, labels = .ow_levels[.ow_categories]))
+        }
         .ow_values <- rep.int(NA_character_, length(.ow_storage))
         .ow_present <- which(!.ow_missing)
         if (length(.ow_present) != 0L) .ow_values[.ow_present] <- .ow_levels[.ow_storage[.ow_present]]
@@ -6869,25 +6875,31 @@ openwrangler_r_kernel_agent <- local({
           stop("Open Wrangler categorical encoding received a fractional Date", call. = FALSE)
         }
       }
+      # Validate every source string before selecting first-seen category values.
+      if (identical(.ow_spec$kind, "character")) .ow_storage <- .ow_utf8(.ow_storage)
+      .ow_label_storage <- if (identical(.ow_kind, "oneHotEncode")) {
+        base::unique.default(.ow_storage[!.ow_missing])
+      } else .ow_storage
+      .ow_label_missing <- if (identical(.ow_kind, "oneHotEncode")) is.na(.ow_label_storage) else .ow_missing
       .ow_labels <- if (identical(.ow_spec$kind, "character")) {
-        .ow_utf8(.ow_storage)
+        .ow_label_storage
       } else if (identical(.ow_spec$kind, "logical")) {
-        ifelse(.ow_storage, "TRUE", "FALSE")
+        ifelse(.ow_label_storage, "TRUE", "FALSE")
       } else if (identical(.ow_spec$kind, "integer")) {
-        sprintf("%d", .ow_storage)
+        sprintf("%d", .ow_label_storage)
       } else if (identical(.ow_spec$kind, "double")) {
-        vapply(.ow_storage, function(.ow_value) {
+        vapply(.ow_label_storage, function(.ow_value) {
           base::format.default(.ow_value, digits = 15L, trim = TRUE, scientific = FALSE, decimal.mark = ".")
         }, character(1L), USE.NAMES = FALSE)
       } else if (identical(.ow_spec$kind, "date")) {
         .ow_displays <- tryCatch(
-          base::format.Date(structure(.ow_storage, class = "Date"), format = "%Y-%m-%d"),
+          base::format.Date(structure(.ow_label_storage, class = "Date"), format = "%Y-%m-%d"),
           error = function(.ow_error) NULL
         )
-        .ow_invalid <- if (!is.character(.ow_displays) || length(.ow_displays) != length(.ow_storage)) {
+        .ow_invalid <- if (!is.character(.ow_displays) || length(.ow_displays) != length(.ow_label_storage)) {
           TRUE
         } else {
-          any(!.ow_missing & (is.na(.ow_displays) | !grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", .ow_displays)))
+          any(!.ow_label_missing & (is.na(.ow_displays) | !grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", .ow_displays)))
         }
         if (.ow_invalid) stop("Open Wrangler categorical encoding received a Date outside the supported ISO range", call. = FALSE)
         .ow_displays
@@ -6897,7 +6909,7 @@ openwrangler_r_kernel_agent <- local({
         } else {
           list(class = c("POSIXct", "POSIXt"), tzone = .ow_spec$timezone)
         }
-        .ow_values <- .ow_storage
+        .ow_values <- .ow_label_storage
         attributes(.ow_values) <- .ow_attributes
         .ow_timezone <- .ow_spec$timezone
         if (is.null(.ow_timezone) || identical(.ow_timezone, "")) .ow_timezone <- "UTC"
@@ -6911,16 +6923,17 @@ openwrangler_r_kernel_agent <- local({
           error = function(.ow_error) NULL
         )
         .ow_invalid <- !is.character(.ow_displays) ||
-          length(.ow_displays) != length(.ow_storage) ||
-          any(!.ow_missing & is.na(.ow_displays))
+          length(.ow_displays) != length(.ow_label_storage) ||
+          any(!.ow_label_missing & is.na(.ow_displays))
         if (.ow_invalid) stop("Open Wrangler categorical encoding received a datetime outside the supported range", call. = FALSE)
         .ow_utf8(.ow_displays)
       } else if (identical(.ow_spec$kind, "difftime")) {
-        paste(vapply(.ow_storage, function(.ow_value) sprintf("%.17g", as.double(.ow_value)), character(1L)), .ow_spec$units)
+        paste(vapply(.ow_label_storage, function(.ow_value) sprintf("%.17g", as.double(.ow_value)), character(1L)), .ow_spec$units, recycle0 = TRUE)
       } else {
         stop("Open Wrangler one-hot encoding received an unsupported R scalar kind", call. = FALSE)
       }
-      list(storage = .ow_storage, missing = .ow_missing, labels = .ow_labels)
+      list(storage = .ow_storage, missing = .ow_missing,
+        categories = .ow_label_storage, labels = .ow_labels)
     }
     .ow_names <- attr(.ow_frame, "names", exact = TRUE)
     if (
@@ -6973,12 +6986,8 @@ openwrangler_r_kernel_agent <- local({
           stop("Open Wrangler column reference is stale", call. = FALSE)
         }
         .ow_domain <- .ow_text(base::.subset2(.ow_frame, .ow_spec$position), .ow_spec)
-        .ow_present <- which(!.ow_domain$missing)
-        .ow_categories <- base::unique.default(.ow_domain$storage[.ow_present])
-        .ow_labels <- vapply(.ow_categories, function(.ow_category) {
-          .ow_match <- base::.subset2(which(!.ow_domain$missing & .ow_domain$storage == .ow_category), 1L)
-          base::.subset2(.ow_domain$labels, .ow_match)
-        }, character(1L), USE.NAMES = FALSE)
+        .ow_categories <- .ow_domain$categories
+        .ow_labels <- .ow_domain$labels
         .ow_keep <- .ow_labels != ""
         .ow_categories <- .ow_categories[.ow_keep]
         .ow_labels <- .ow_labels[.ow_keep]
