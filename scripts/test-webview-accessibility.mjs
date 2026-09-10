@@ -1017,6 +1017,7 @@ async function verifySessionModeDisclosure(browser) {
     let releasing = false;
     let observer;
     const holdPage = (event) => {
+      if (event.origin !== window.location.origin) return;
       if (!holding || releasing || event.data?.kind !== "page") return;
       event.stopImmediatePropagation();
       state.pages.push(event.data);
