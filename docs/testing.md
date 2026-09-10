@@ -218,6 +218,8 @@ before and after renderer acquisition. Other R session acquisitions keep their e
 inspection retains its existing renderer.
 The R journeys omit an explicit refresh when the following app acquisition already performs it.
 They retain separate waits before step inspection, passive acquisition, Code Preview receipt checks and helper completion.
+The R value journey completes both Pivot UI rounds before coordinator-only Lowercase, Uppercase, Strip and Split
+checks. Those direct requests advance session state without publishing a panel snapshot, so no same-session UI action follows them.
 App draft-state tests own failed and cancelled preview feedback for new and edited operations. They assert an
 accessible alert inside the submitting dialog, retained input and confirmed data, correction and resubmission, and
 cleanup on operation or session changes. Host Undo errors remain a separate workspace-owned control.

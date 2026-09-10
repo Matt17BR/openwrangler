@@ -2053,31 +2053,7 @@ async function exerciseReleasedREditingJourney(
     );
   }
 
-  // Coordinator-only checks intentionally follow the final Open Wrangler
-  // renderer mutation so their newer revisions cannot stale a later UI action.
-  if (
-    (phase === "jupyter-r-remote" && editingCatalog === "core-catalog") ||
-    (phase === "jupyter-r" && editingCatalog === "value-operations")
-  ) {
-    await exerciseReleasedRLowercaseOperation({
-      testing,
-      sessionId,
-      phase,
-      catalog: editingCatalog,
-      recordProgress: recordAcceptanceProgress,
-      recordValueOperationBoundary: (boundary) => recordReleasedRValueOperationCheckpoint("lowercase", boundary)
-    });
-  }
   if (phase === "jupyter-r" && editingCatalog === "value-operations") {
-    await exerciseReleasedRValueOperationsAfterLowercase(
-      { testing, workbench, sessionId, phase },
-      releasedRValueOperationDependencies
-    );
-    assert.equal(
-      await testing.ensurePanelSynchronized(sessionId, Date.now() + WORKBENCH_OPERATION_TIMEOUT_MS),
-      true,
-      "Native R coordinator-only value operations must publish their exact revision before later installed UI actions."
-    );
     const pivotApp = await releasedRSessionApp(workbench, testing, sessionId, "the native R Pivot longer session");
     await exercisePivotLongerJourney(
       pivotApp,
@@ -2101,6 +2077,28 @@ async function exerciseReleasedREditingJourney(
       (description) => releasedRSessionApp(workbench, testing, sessionId, description),
       (description) => reacquireAcknowledgedSessionApp(workbench, testing, sessionId, description),
       { recordAcceptanceProgress, waitFor }
+    );
+  }
+
+  // Coordinator-only checks intentionally follow the final Open Wrangler
+  // renderer mutation so their newer revisions cannot stale a later UI action.
+  if (
+    (phase === "jupyter-r-remote" && editingCatalog === "core-catalog") ||
+    (phase === "jupyter-r" && editingCatalog === "value-operations")
+  ) {
+    await exerciseReleasedRLowercaseOperation({
+      testing,
+      sessionId,
+      phase,
+      catalog: editingCatalog,
+      recordProgress: recordAcceptanceProgress,
+      recordValueOperationBoundary: (boundary) => recordReleasedRValueOperationCheckpoint("lowercase", boundary)
+    });
+  }
+  if (phase === "jupyter-r" && editingCatalog === "value-operations") {
+    await exerciseReleasedRValueOperationsAfterLowercase(
+      { testing, workbench, sessionId, phase },
+      releasedRValueOperationDependencies
     );
   }
 
