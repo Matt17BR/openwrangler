@@ -83,17 +83,20 @@ export function createPackagedLinearInterpolationJourney(
     assert.equal(measurementPosition, 2);
     assert.equal(opened.metadata.schema[measurementPosition]?.type, "float");
 
-    const sourcePage = await testing.request({
-      kind: "getPage",
-      sessionId: opened.sessionId,
-      revision: opened.metadata.revision,
-      viewRequestId: "platform-smoke-fill-linear-source",
-      offset: 0,
-      limit: 7,
-      filterModel: opened.viewState.filterModel,
-      columnOffset: 0,
-      columnLimit: 3
-    });
+    const sourcePage = await testing.request(
+      {
+        kind: "getPage",
+        sessionId: opened.sessionId,
+        revision: opened.metadata.revision,
+        viewRequestId: "platform-smoke-fill-linear-source",
+        offset: 0,
+        limit: 7,
+        filterModel: opened.viewState.filterModel,
+        columnOffset: 0,
+        columnLimit: 3
+      },
+      { ephemeralPage: true }
+    );
     assert.equal(sourcePage.kind, "page");
     if (sourcePage.kind !== "page") throw new Error("The linear-interpolation source page did not resolve.");
     assert.deepEqual(sourcePage.page.columnIds, [sourceRow.id, coordinate.id, measurement.id]);
@@ -168,17 +171,20 @@ export function createPackagedLinearInterpolationJourney(
     assert.ok(app, "The linear-interpolation preview must retain its exact renderer.");
     const preview = testing.activeSession();
     assert.ok(preview?.metadata.draftStep?.kind === "fillMissingValues");
-    const previewPage = await testing.request({
-      kind: "getPage",
-      sessionId: opened.sessionId,
-      revision: preview.metadata.revision,
-      viewRequestId: "platform-smoke-fill-linear-preview",
-      offset: 0,
-      limit: 7,
-      filterModel: preview.viewState.filterModel,
-      columnOffset: measurementPosition,
-      columnLimit: 1
-    });
+    const previewPage = await testing.request(
+      {
+        kind: "getPage",
+        sessionId: opened.sessionId,
+        revision: preview.metadata.revision,
+        viewRequestId: "platform-smoke-fill-linear-preview",
+        offset: 0,
+        limit: 7,
+        filterModel: preview.viewState.filterModel,
+        columnOffset: measurementPosition,
+        columnLimit: 1
+      },
+      { ephemeralPage: true }
+    );
     assert.equal(previewPage.kind, "page");
     if (previewPage.kind !== "page") throw new Error("The linear-interpolation preview page did not resolve.");
     assert.deepEqual(previewPage.page.columnIds, [measurement.id]);
@@ -226,17 +232,20 @@ export function createPackagedLinearInterpolationJourney(
     );
     const applied = testing.activeSession();
     assert.ok(applied, "Applying linear interpolation must retain the active session.");
-    const appliedPage = await testing.request({
-      kind: "getPage",
-      sessionId: opened.sessionId,
-      revision: applied.metadata.revision,
-      viewRequestId: "platform-smoke-fill-linear-applied",
-      offset: 0,
-      limit: 7,
-      filterModel: applied.viewState.filterModel,
-      columnOffset: measurementPosition,
-      columnLimit: 1
-    });
+    const appliedPage = await testing.request(
+      {
+        kind: "getPage",
+        sessionId: opened.sessionId,
+        revision: applied.metadata.revision,
+        viewRequestId: "platform-smoke-fill-linear-applied",
+        offset: 0,
+        limit: 7,
+        filterModel: applied.viewState.filterModel,
+        columnOffset: measurementPosition,
+        columnLimit: 1
+      },
+      { ephemeralPage: true }
+    );
     assert.equal(appliedPage.kind, "page");
     if (appliedPage.kind !== "page") throw new Error("The applied linear-interpolation page did not resolve.");
     assert.deepEqual(
@@ -266,17 +275,20 @@ export function createPackagedLinearInterpolationJourney(
     );
     const restored = testing.activeSession();
     assert.ok(restored, "Undoing linear interpolation must retain the active session.");
-    const restoredPage = await testing.request({
-      kind: "getPage",
-      sessionId: opened.sessionId,
-      revision: restored.metadata.revision,
-      viewRequestId: "platform-smoke-fill-linear-restored",
-      offset: 0,
-      limit: 7,
-      filterModel: restored.viewState.filterModel,
-      columnOffset: 0,
-      columnLimit: 3
-    });
+    const restoredPage = await testing.request(
+      {
+        kind: "getPage",
+        sessionId: opened.sessionId,
+        revision: restored.metadata.revision,
+        viewRequestId: "platform-smoke-fill-linear-restored",
+        offset: 0,
+        limit: 7,
+        filterModel: restored.viewState.filterModel,
+        columnOffset: 0,
+        columnLimit: 3
+      },
+      { ephemeralPage: true }
+    );
     assert.equal(restoredPage.kind, "page");
     if (restoredPage.kind !== "page") throw new Error("The undone linear-interpolation page did not resolve.");
     assert.deepEqual(restoredPage.page.columnIds, sourcePage.page.columnIds);

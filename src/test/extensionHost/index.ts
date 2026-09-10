@@ -7659,17 +7659,20 @@ async function previewAndDiscardPreviousRevenue(
   const revenuePosition = active.metadata.schema.findIndex((column) => column.id === revenue.id);
   assert.notEqual(revenuePosition, -1);
   const revenueGapIndex = 84;
-  const sourceGap = await testing.request({
-    kind: "getPage",
-    sessionId,
-    revision: active.metadata.revision,
-    viewRequestId: "platform-smoke-fill-previous-source-gap",
-    offset: revenueGapIndex - 1,
-    limit: 3,
-    filterModel: active.viewState.filterModel,
-    columnOffset: revenuePosition,
-    columnLimit: 1
-  });
+  const sourceGap = await testing.request(
+    {
+      kind: "getPage",
+      sessionId,
+      revision: active.metadata.revision,
+      viewRequestId: "platform-smoke-fill-previous-source-gap",
+      offset: revenueGapIndex - 1,
+      limit: 3,
+      filterModel: active.viewState.filterModel,
+      columnOffset: revenuePosition,
+      columnLimit: 1
+    },
+    { ephemeralPage: true }
+  );
   assert.equal(sourceGap.kind, "page");
   if (sourceGap.kind !== "page") throw new Error("The one-row revenue source gap did not resolve.");
   assert.deepEqual(sourceGap.page.columnIds, [revenue.id]);
@@ -7734,17 +7737,20 @@ async function previewAndDiscardPreviousRevenue(
     sessionId,
     "The previous-value preview must retain the acknowledged Open Wrangler renderer."
   );
-  const previewGap = await testing.request({
-    kind: "getPage",
-    sessionId,
-    revision: preview.metadata.revision,
-    viewRequestId: "platform-smoke-fill-previous-preview-gap",
-    offset: revenueGapIndex - 1,
-    limit: 3,
-    filterModel: preview.viewState.filterModel,
-    columnOffset: revenuePosition,
-    columnLimit: 1
-  });
+  const previewGap = await testing.request(
+    {
+      kind: "getPage",
+      sessionId,
+      revision: preview.metadata.revision,
+      viewRequestId: "platform-smoke-fill-previous-preview-gap",
+      offset: revenueGapIndex - 1,
+      limit: 3,
+      filterModel: preview.viewState.filterModel,
+      columnOffset: revenuePosition,
+      columnLimit: 1
+    },
+    { ephemeralPage: true }
+  );
   assert.equal(previewGap.kind, "page");
   if (previewGap.kind !== "page") throw new Error("The Previous value revenue preview did not resolve.");
   assert.deepEqual(previewGap.page.columnIds, [revenue.id]);
@@ -7873,17 +7879,20 @@ async function previewApplyAndUndoGroupedRevenue(
       ? groupedRevenue[midpoint]!
       : (groupedRevenue[midpoint - 1]! + groupedRevenue[midpoint]!) / 2;
 
-  const sourceGap = await testing.request({
-    kind: "getPage",
-    sessionId,
-    revision: active.metadata.revision,
-    viewRequestId: "platform-smoke-fill-grouped-source-gap",
-    offset: revenueGapIndex,
-    limit: 1,
-    filterModel: active.viewState.filterModel,
-    columnOffset: revenuePosition,
-    columnLimit: 1
-  });
+  const sourceGap = await testing.request(
+    {
+      kind: "getPage",
+      sessionId,
+      revision: active.metadata.revision,
+      viewRequestId: "platform-smoke-fill-grouped-source-gap",
+      offset: revenueGapIndex,
+      limit: 1,
+      filterModel: active.viewState.filterModel,
+      columnOffset: revenuePosition,
+      columnLimit: 1
+    },
+    { ephemeralPage: true }
+  );
   assert.equal(sourceGap.kind, "page");
   if (sourceGap.kind !== "page") throw new Error("The grouped-median source gap did not resolve.");
   assert.deepEqual(sourceGap.page.columnIds, [revenue.id]);
@@ -7943,17 +7952,20 @@ async function previewApplyAndUndoGroupedRevenue(
   assert.ok(refreshedApp, "The grouped-median preview must retain the exact Open Wrangler renderer.");
   const preview = testing.activeSession();
   assert.ok(preview?.metadata.draftStep?.kind === "fillMissingValues");
-  const previewGap = await testing.request({
-    kind: "getPage",
-    sessionId,
-    revision: preview.metadata.revision,
-    viewRequestId: "platform-smoke-fill-grouped-preview-gap",
-    offset: revenueGapIndex,
-    limit: 1,
-    filterModel: preview.viewState.filterModel,
-    columnOffset: revenuePosition,
-    columnLimit: 1
-  });
+  const previewGap = await testing.request(
+    {
+      kind: "getPage",
+      sessionId,
+      revision: preview.metadata.revision,
+      viewRequestId: "platform-smoke-fill-grouped-preview-gap",
+      offset: revenueGapIndex,
+      limit: 1,
+      filterModel: preview.viewState.filterModel,
+      columnOffset: revenuePosition,
+      columnLimit: 1
+    },
+    { ephemeralPage: true }
+  );
   assert.equal(previewGap.kind, "page");
   if (previewGap.kind !== "page") throw new Error("The grouped-median preview gap did not resolve.");
   assert.deepEqual(previewGap.page.columnIds, [revenue.id]);
@@ -7992,18 +8004,47 @@ async function previewApplyAndUndoGroupedRevenue(
   );
   const applied = testing.activeSession();
   assert.ok(applied, "The applied grouped-median step must keep its session active.");
-  const appliedGap = await testing.request({
-    kind: "getPage",
-    sessionId,
-    revision: applied.metadata.revision,
-    viewRequestId: "platform-smoke-fill-grouped-applied-gap",
-    offset: revenueGapIndex,
-    limit: 1,
-    filterModel: applied.viewState.filterModel,
-    columnOffset: revenuePosition,
-    columnLimit: 1
-  });
-  assert.equal(appliedGap.kind, "page");
+  const appliedGap = await testing.request(
+    {
+      kind: "getPage",
+      sessionId,
+      revision: applied.metadata.revision,
+      viewRequestId: "platform-smoke-fill-grouped-applied-gap",
+      offset: revenueGapIndex,
+      limit: 1,
+      filterModel: applied.viewState.filterModel,
+      columnOffset: revenuePosition,
+      columnLimit: 1
+    },
+    { ephemeralPage: true }
+  );
+  assert.equal(
+    appliedGap.kind,
+    "page",
+    JSON.stringify({
+      errorCode:
+        appliedGap.kind === "error"
+          ? [
+              "stale_request",
+              "stale_response",
+              "unknown_session",
+              "engine_error",
+              "invalid_runtime_response",
+              "runtime_recovery_failed",
+              "persistence_unavailable"
+            ].includes(appliedGap.code)
+            ? appliedGap.code
+            : "unclassified"
+          : undefined,
+      recoverable: appliedGap.kind === "error" ? appliedGap.recoverable : undefined,
+      requestedRevision: applied.metadata.revision,
+      currentRevision: testing.activeSession()?.metadata.revision,
+      currentSessionMatches: testing.activeSession()?.sessionId === sessionId,
+      errorSessionMatches: appliedGap.kind === "error" ? appliedGap.sessionId === sessionId : undefined,
+      responseViewMatches:
+        "viewRequestId" in appliedGap && appliedGap.viewRequestId === "platform-smoke-fill-grouped-applied-gap"
+    })
+  );
   if (appliedGap.kind !== "page") throw new Error("The applied grouped-median gap did not resolve.");
   assert.equal(appliedGap.page.rows[0]?.id, sourceRowId);
   assert.ok(Math.abs(Number(appliedGap.page.rows[0]?.values[0]?.raw) - expectedMedian) < 1e-9);
@@ -8024,17 +8065,20 @@ async function previewApplyAndUndoGroupedRevenue(
   );
   const restored = testing.activeSession();
   assert.ok(restored, "Undoing grouped median must keep its session active.");
-  const restoredGap = await testing.request({
-    kind: "getPage",
-    sessionId,
-    revision: restored.metadata.revision,
-    viewRequestId: "platform-smoke-fill-grouped-restored-gap",
-    offset: revenueGapIndex,
-    limit: 1,
-    filterModel: restored.viewState.filterModel,
-    columnOffset: revenuePosition,
-    columnLimit: 1
-  });
+  const restoredGap = await testing.request(
+    {
+      kind: "getPage",
+      sessionId,
+      revision: restored.metadata.revision,
+      viewRequestId: "platform-smoke-fill-grouped-restored-gap",
+      offset: revenueGapIndex,
+      limit: 1,
+      filterModel: restored.viewState.filterModel,
+      columnOffset: revenuePosition,
+      columnLimit: 1
+    },
+    { ephemeralPage: true }
+  );
   assert.equal(restoredGap.kind, "page");
   if (restoredGap.kind !== "page") throw new Error("The undone grouped-median gap did not resolve.");
   assert.equal(restoredGap.page.rows[0]?.id, sourceRowId);
