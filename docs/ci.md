@@ -32,17 +32,17 @@ Source contracts, packaged smoke, and the separate required CodeQL gate run for 
 files must be regular and non-executable.
 
 - Python may be omitted for additions or edits to `.R` files under `r/openwrangler_runtime/` or `r/tests/`, and edits
-  to existing `README.md` or `docs/**/*.md` files. `CHANGELOG.md` still requires Python, including alongside R changes.
+  to existing `README.md`, `CHANGELOG.md` or `docs/**/*.md` files.
 - R source and installed-editor execution may be omitted for additions or edits to `.py` files under
   `python/openwrangler_runtime/` or `python/tests/`, and edits to existing `README.md`, `CHANGELOG.md` or `docs/**/*.md`.
-- Windows execution may be omitted only for edits to existing `README.md` or `docs/**/*.md` files.
+- Windows execution may be omitted only for edits to existing `README.md`, `CHANGELOG.md` or `docs/**/*.md` files.
 
 Mixed Python/R changes require both runtimes. The Python job does not consume the allowed R files. The R checks do
 not execute the allowed Python files; the selected installed R journeys use Python only for Jupyter client readiness
-and exclude the mixed-language literate journey. Source and packaged smoke retain package validation. Shared/host
-code, fixtures, scripts, configuration, dependency locks and other paths outside these scopes require full execution.
-If either runtime's tests or selected runner begins consuming the other runtime's allowed files, update the proof and
-its tests in the same change.
+and exclude the mixed-language literate journey. The Python and Windows contract suites do not read CHANGELOG;
+Source and packaged smoke retain its validation and package-content checks. Shared/host code, fixtures, scripts,
+configuration, dependency locks and other paths outside these scopes require full execution. If a runtime's tests or selected runner begins consuming
+an omitted input, update the proof and its tests in the same change.
 
 This avoids unrelated runtime setup and execution during isolated engine changes. An omission is not a newly
 executed or transferred success; it can delay discovery of unrelated dependency or hosted-environment regressions.

@@ -60,9 +60,9 @@ export function proveRuntimeOmissions({ cwd = process.cwd(), env = process.env }
     if (!modified && !((pythonSource || rSource) && /^:000000 100644 0{40} [0-9a-f]{40} A$/u.test(records[index]))) {
       return required;
     }
-    if (modified && (path === "README.md" || /^docs\/[^\p{Cc}]+\.md$/u.test(path))) continue;
+    if (modified && (path === "README.md" || path === "CHANGELOG.md" || /^docs\/[^\p{Cc}]+\.md$/u.test(path))) continue;
     docsOnly = false;
-    if (path === "CHANGELOG.md" || pythonSource) {
+    if (pythonSource) {
       pythonOmittable = false;
       continue;
     }

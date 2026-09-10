@@ -61,14 +61,26 @@ function merge(cwd, stage = true) {
   };
 }
 
-test("proves existing README and nested Markdown edits against the exact tested merge", (context) => {
-  const cwd = repository(context, ["docs/guides/über view.md"]);
-  for (const file of ["README.md", "docs/testing.md", "docs/guides/über view.md"]) write(cwd, file);
-  const env = merge(cwd);
-  assert.deepEqual(proveRuntimeOmissions({ cwd, env }), { docsOnly: true, rOmittable: true, pythonOmittable: true });
-  const output = join(cwd, "action-output");
-  execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
-  assert.equal(readFileSync(output, "utf8"), "docs_only=true\nr_omittable=true\npython_omittable=true\n");
+test("proves existing Markdown edits against the exact tested merge", async (context) => {
+  for (const files of [
+    ["README.md", "docs/testing.md", "docs/guides/über view.md"],
+    ["CHANGELOG.md"],
+    ["README.md", "CHANGELOG.md", "docs/testing.md"]
+  ]) {
+    await context.test(files.join(", "), (child) => {
+      const cwd = repository(child, files);
+      for (const file of files) write(cwd, file);
+      const env = merge(cwd);
+      assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
+        docsOnly: true,
+        rOmittable: true,
+        pythonOmittable: true
+      });
+      const output = join(cwd, "action-output");
+      execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
+      assert.equal(readFileSync(output, "utf8"), "docs_only=true\nr_omittable=true\npython_omittable=true\n");
+    });
+  }
 });
 
 test("proves existing Python source and Markdown edits only for native R", async (context) => {
@@ -78,7 +90,6 @@ test("proves existing Python source and Markdown edits only for native R", async
     ["python/openwrangler_runtime/session.py"],
     ["python/tests/test_duckdb_engine.py"],
     ["python/tests/conftest.py"],
-    ["CHANGELOG.md"],
     [
       "python/openwrangler_runtime/engines/duckdb_engine.py",
       "python/tests/test_duckdb_engine.py",
@@ -137,9 +148,11 @@ test("proves regular R source additions and edits only for Python", async (conte
     { added: [], modified: ["r/tests/kernel_agent.R"] },
     { added: ["r/openwrangler_runtime/helper.R"], modified: [] },
     { added: ["r/tests/new_contract.R"], modified: [] },
+    { added: [], modified: ["r/tests/kernel_agent.R", "CHANGELOG.md"] },
+    { added: ["r/tests/new_contract.R"], modified: ["CHANGELOG.md"] },
     {
       added: ["r/openwrangler_runtime/nested/helper.R", "r/tests/new_contract.R"],
-      modified: ["r/openwrangler_runtime/kernel_agent.R", "README.md", "docs/testing.md"]
+      modified: ["r/openwrangler_runtime/kernel_agent.R", "README.md", "CHANGELOG.md", "docs/testing.md"]
     }
   ];
   for (const { added, modified } of cases) {
@@ -159,14 +172,15 @@ test("proves regular R source additions and edits only for Python", async (conte
   }
 });
 
-test("keeps Python required for R changes with CHANGELOG, Python source or shared inputs", async (context) => {
+test("keeps both runtimes required for R and CHANGELOG changes with Python source or shared inputs", async (context) => {
   for (const added of [false, true]) {
-    for (const other of ["CHANGELOG.md", "python/tests/test_runtime.py", "src/shared/protocol.ts"]) {
+    for (const other of ["python/tests/test_runtime.py", "src/shared/protocol.ts"]) {
       await context.test(`${other}, added=${added}`, (child) => {
         const rSource = "r/tests/contract.R";
-        const cwd = repository(child, added ? ["CHANGELOG.md"] : [rSource, other]);
+        const cwd = repository(child, added ? ["CHANGELOG.md"] : [rSource, other, "CHANGELOG.md"]);
         write(cwd, rSource);
         write(cwd, other);
+        write(cwd, "CHANGELOG.md");
         assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), {
           docsOnly: false,
           rOmittable: false,
@@ -358,8 +372,9 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
     "r/dependencies/native-r-contract/lock.json"
   ]) {
     await context.test(file, (child) => {
-      const cwd = repository(child, [file]);
+      const cwd = repository(child, [file, "CHANGELOG.md"]);
       write(cwd, "README.md");
+      write(cwd, "CHANGELOG.md");
       write(cwd, file);
       const env = merge(cwd);
       assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
@@ -391,18 +406,20 @@ test("does not hide deletions or renames behind a Markdown destination", async (
 });
 
 test("requires full owners for executable or symlink Markdown entries", async (context) => {
-  for (const mode of ["100755", "120000"]) {
-    await context.test(mode, (child) => {
-      const cwd = repository(child);
-      const blob = git(cwd, "rev-parse", "HEAD:README.md");
-      git(cwd, "update-index", "--cacheinfo", `${mode},${blob},README.md`);
-      const env = merge(cwd, false);
-      assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
-        docsOnly: false,
-        rOmittable: false,
-        pythonOmittable: false
+  for (const file of ["README.md", "CHANGELOG.md"]) {
+    for (const mode of ["100755", "120000"]) {
+      await context.test(`${file}: ${mode}`, (child) => {
+        const cwd = repository(child, [file]);
+        const blob = git(cwd, "rev-parse", `HEAD:${file}`);
+        git(cwd, "update-index", "--cacheinfo", `${mode},${blob},${file}`);
+        const env = merge(cwd, false);
+        assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
+          docsOnly: false,
+          rOmittable: false,
+          pythonOmittable: false
+        });
       });
-    });
+    }
   }
 });
 
