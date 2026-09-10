@@ -3406,7 +3406,9 @@ describe("OpenWranglerPanel retained view state", () => {
       delimiterPrompt.resolve(delimiterChoices.find(({ value }) => value === ";"));
       await expect(Promise.all([command, manualIntent])).resolves.toEqual([true, undefined]);
       expect(reconfigureFileSession).toHaveBeenCalledOnce();
-      expect(panelPromptMocks.showQuickPick).toHaveBeenCalledTimes(3);
+      expect(
+        panelPromptMocks.showQuickPick.mock.calls.filter(([, options]) => options?.title === "Delimiter")
+      ).toHaveLength(1);
 
       await harness.receive({ kind: "changeImportOptions", actionId: rendererRequest.actionId });
       expect(reconfigureFileSession).toHaveBeenCalledOnce();
@@ -3469,7 +3471,9 @@ describe("OpenWranglerPanel retained view state", () => {
     delimiterPrompt.resolve(delimiterChoices.find(({ value }) => value === ";"));
     await expect(Promise.all([manualIntent, command])).resolves.toEqual([undefined, true]);
     expect(reconfigureFileSession).toHaveBeenCalledOnce();
-    expect(panelPromptMocks.showQuickPick).toHaveBeenCalledTimes(3);
+    expect(
+      panelPromptMocks.showQuickPick.mock.calls.filter(([, options]) => options?.title === "Delimiter")
+    ).toHaveLength(1);
   });
 
   it("runs the native import command in the host before the renderer first becomes ready", async () => {
@@ -3514,7 +3518,9 @@ describe("OpenWranglerPanel retained view state", () => {
 
     await expect(OpenWranglerPanel.changeActiveImportOptions()).resolves.toBe(true);
 
-    expect(panelPromptMocks.showQuickPick).toHaveBeenCalledTimes(3);
+    expect(
+      panelPromptMocks.showQuickPick.mock.calls.filter(([, options]) => options?.title === "Delimiter")
+    ).toHaveLength(1);
     expect(panelPromptMocks.showInputBox).toHaveBeenCalledOnce();
     expect(reconfigureFileSession).toHaveBeenCalledOnce();
     expect(reconfigureFileSession.mock.calls[0]?.[2].importOptions).toEqual(configured.metadata.source.importOptions);
@@ -5469,7 +5475,11 @@ describe("OpenWranglerPanel retained view state", () => {
       ...firstOpened.metadata.source,
       importOptions: attempts[1]
     });
-    expect(promptPicksAt(3)[0]).toMatchObject({ value: ";", description: "Current" });
+    const delimiterPrompts = panelPromptMocks.showQuickPick.mock.calls.filter(
+      ([, options]) => options?.title === "Delimiter"
+    );
+    expect(delimiterPrompts).toHaveLength(2);
+    expect(delimiterPrompts[1]?.[0][0]).toMatchObject({ value: ";", description: "Current" });
     expect(harness.posted).not.toContainEqual(firstOpened);
     expect(harness.posted).toContainEqual(secondOpened);
   });
