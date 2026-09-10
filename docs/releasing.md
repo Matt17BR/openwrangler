@@ -168,7 +168,9 @@ still refuse the mismatch. Registry recovery below uses the existing artifacts.
 
 To recover Open VSX publication, dispatch `.github/workflows/open-vsx-promotion.yml` from protected `main` with
 `release_tag` set to the existing release tag. The workflow downloads the GitHub Release files, verifies them, and
-publishes the same VSIX or accepts an exact existing copy.
+publishes the same VSIX or accepts an exact existing copy. Open VSX verification uses the requested version's
+`preRelease` flag and exact package bytes. The extension-wide `preview` label does not determine a historical version's
+channel.
 
 To recover Azure Marketplace publication, run the configured Azure Marketplace pipeline defined by
 `azure-pipelines-marketplace.yml` from current protected `main` with `existingReleaseTag` set to the same tag. It

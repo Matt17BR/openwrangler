@@ -100,7 +100,6 @@ function validateMetadata(metadata, { channel, packageJson, urls, version }) {
     metadata.displayName !== OPEN_VSX_DISPLAY_NAME ||
     metadata.targetPlatform !== "universal" ||
     metadata.preRelease !== (channel === "preview") ||
-    metadata.preview !== (channel === "preview") ||
     metadata.downloadable !== true ||
     metadata.deprecated !== false ||
     publisher.loginName !== OPEN_VSX_NAMESPACE ||
