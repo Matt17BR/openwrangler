@@ -1,13 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { inspectDataWranglerComparisonReview } from "./data-wrangler-comparison-report.mjs";
+import { resolve } from "node:path";
 import { inspectStablePublicCopy } from "./release-documents.mjs";
-import {
-  inspectPerformanceSummary,
-  inspectReleaseDocumentationSource,
-  performanceReportLink
-} from "./release-readiness.mjs";
+import { inspectReleaseDocumentationSource } from "./release-readiness.mjs";
 import { inspectMarketplacePromotionPipeline, inspectMarketplaceVsceLock } from "./marketplace-promotion-workflow.mjs";
 import { inspectOpenVsxPromotionWorkflow } from "./open-vsx-promotion-workflow.mjs";
 import { inspectPublicRepositoryMetadata } from "./public-repository-metadata.mjs";
@@ -92,27 +87,6 @@ const sourceDocumentationProblems = inspectReleaseDocumentationSource({
 });
 if (sourceDocumentationProblems.length > 0) {
   throw new Error(`Source documentation is invalid:\n- ${sourceDocumentationProblems.join("\n- ")}`);
-}
-const linkedComparison = performanceReportLink(readme);
-const performanceSummaryProblems = inspectPerformanceSummary(readme);
-if (performanceSummaryProblems.length > 0) {
-  throw new Error(`README performance summary is stale:\n- ${performanceSummaryProblems.join("\n- ")}`);
-}
-if (linkedComparison !== undefined) {
-  const reviewPath = resolve(root, linkedComparison.path);
-  const reportPath = join(dirname(reviewPath), "report.json");
-  if (existsSync(reportPath)) {
-    const report = parseStrictJson(readFileSync(reportPath, "utf8"));
-    if (report?.provenance?.openWrangler?.version !== linkedComparison.version) {
-      throw new Error(
-        `Data Wrangler comparison report version ${String(report?.provenance?.openWrangler?.version)} does not match its ${linkedComparison.version} directory.`
-      );
-    }
-    const comparisonProblems = inspectDataWranglerComparisonReview(readFileSync(reviewPath, "utf8"), report);
-    if (comparisonProblems.length > 0) {
-      throw new Error(`Data Wrangler comparison review is stale:\n- ${comparisonProblems.join("\n- ")}`);
-    }
-  }
 }
 if (!packageJson.preview) {
   const galleryProblems = inspectStablePublicCopy(mediaGallery, "docs/media-gallery.md");

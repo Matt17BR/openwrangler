@@ -22,7 +22,7 @@ Keep behavior in its owning layer. Change a shared interface explicitly instead 
 - `docs/reference.md` is generated from public interface registries. Never edit it by hand.
 - `docs/testing.md` owns source suites, editor scenarios, artifact rules, and test ownership. `docs/ci.md` describes hosted checks.
 - `docs/releasing.md` owns packaging, versioning, qualification, publication, and recovery.
-- `docs/performance-comparison.md` owns the Data Wrangler comparison method and reviewed results.
+- `docs/performance-comparison.md` preserves the archived Data Wrangler comparison method and reviewed results.
 - `docs/writing-style.md` owns public, issue, pull request, commit, and release prose.
 - `CONTRIBUTING.md` provides setup and contribution commands. `SECURITY.md` defines supported security releases and private reporting.
 
