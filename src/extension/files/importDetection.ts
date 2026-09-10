@@ -14,6 +14,7 @@ const UTF16BE_BOM = [0xfe, 0xff] as const;
 interface ParsedSample {
   readonly rows: readonly (readonly string[])[];
   readonly quotedFields: number;
+  readonly lineEnding?: "cr";
 }
 
 interface DelimiterCandidate {
@@ -21,6 +22,7 @@ interface DelimiterCandidate {
   readonly quoteChar: string;
   readonly rows: readonly (readonly string[])[];
   readonly score: number;
+  readonly lineEnding?: "cr";
 }
 
 export function detectedImportOptionsFromSample(filename: string, sample: Uint8Array): ImportOptions | undefined {
@@ -35,7 +37,8 @@ export function detectedImportOptionsFromSample(filename: string, sample: Uint8A
     delimiter: candidate.delimiter,
     encoding,
     quoteChar: candidate.quoteChar,
-    hasHeader: likelyHasHeader(candidate.rows)
+    hasHeader: likelyHasHeader(candidate.rows),
+    ...(candidate.lineEnding ? { lineEnding: candidate.lineEnding } : {})
   };
 }
 
@@ -82,14 +85,16 @@ function startsWith(sample: Uint8Array, prefix: readonly number[]): boolean {
 function detectDialect(text: string, fallbackDelimiter: string): DelimiterCandidate {
   const candidates = DELIMITERS.map((delimiter) => dialectCandidate(text, delimiter));
   const viable = candidates.filter(({ rows }) => rows.length >= 2 && rows[0]!.length >= 2);
-  return (
-    viable.sort((left, right) => right.score - left.score || delimiterOrder(left, right))[0] ?? {
-      delimiter: fallbackDelimiter,
-      quoteChar: '"',
-      rows: parseDelimitedSample(text, fallbackDelimiter, '"').rows,
-      score: 0
-    }
-  );
+  const selected = viable.sort((left, right) => right.score - left.score || delimiterOrder(left, right))[0];
+  if (selected) return selected;
+  const parsed = parseDelimitedSample(text, fallbackDelimiter, '"');
+  return {
+    delimiter: fallbackDelimiter,
+    quoteChar: '"',
+    rows: parsed.rows,
+    lineEnding: parsed.lineEnding,
+    score: 0
+  };
 }
 
 function dialectCandidate(text: string, delimiter: string): DelimiterCandidate {
@@ -107,6 +112,7 @@ function dialectCandidate(text: string, delimiter: string): DelimiterCandidate {
     delimiter,
     quoteChar,
     rows: parsed.rows,
+    lineEnding: parsed.lineEnding,
     score: sampleScore(parsed.rows) + Math.min(parsed.quotedFields, 20)
   };
 }
@@ -137,6 +143,8 @@ function parseDelimitedSample(text: string, delimiter: string, quoteChar: string
   let inQuotes = false;
   let quotedField = false;
   let quotedFields = 0;
+  let sawCr = false;
+  let sawLf = false;
 
   const finishField = (): void => {
     row.push(field);
@@ -170,9 +178,16 @@ function parseDelimitedSample(text: string, delimiter: string, quoteChar: string
       quotedField = true;
     } else if (character === delimiter) {
       finishField();
-    } else if (character === "\n") {
+    } else if (character === "\n" || character === "\r") {
+      if (character === "\n" || text[index + 1] === "\n") {
+        sawLf = true;
+        if (character === "\r") index += 1;
+      } else if (index + 1 < text.length) {
+        // A final CR may be the first half of CRLF beyond the sampled prefix.
+        sawCr = true;
+      }
       finishRow();
-    } else if (character !== "\r") {
+    } else {
       field += character;
     }
   }
@@ -181,7 +196,7 @@ function parseDelimitedSample(text: string, delimiter: string, quoteChar: string
   // A prefix-truncated record may be inconsistent, which scoring already
   // penalizes without discarding ordinary two-row files.
   if (!inQuotes && (field.length > 0 || row.length > 0)) finishRow();
-  return { rows, quotedFields };
+  return { rows, quotedFields, ...(sawCr && !sawLf ? { lineEnding: "cr" as const } : {}) };
 }
 
 function likelyHasHeader(rows: readonly (readonly string[])[]): boolean {

@@ -31,6 +31,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- CSV/TSV import detection recognizes CR records and gives Polars the matching line ending.
+  Import Options can set it explicitly when the sample is ambiguous.
 - File import detection preserves UTF-8 characters at its sample boundary instead of selecting a legacy encoding.
 - CSV/TSV imports retain empty fields and whitespace values that were incorrectly treated as an empty file.
 - Native R CSV exports keep fractional duration fields intact when `OutDec` uses a comma.

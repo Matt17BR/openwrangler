@@ -96,8 +96,10 @@ names. Custom Code checks lazy output expressions beyond the displayed columns b
 check in generated code. Other operations keep their native lazy evaluation and operation-specific guards. These checks
 do not snapshot inputs or guarantee all later queries will succeed. One-hot encoding, multi-label encoding and Custom
 Code may materialize their results.
-Import inference preserves UTF-8 characters crossing its sample boundary. The selected native reader still owns
-full-file decoding and parsing.
+Import inference preserves UTF-8 characters crossing its sample boundary and recognizes uniform CR records.
+Polars receives the detected line ending; Import Options can override it with **CR** or **LF or CRLF**. Polars requires
+consistent record endings. A sample without complete records may need an explicit choice; inference does not validate
+the full file. Existing LF/CRLF file settings and saved-state keys remain unchanged.
 CSV/TSV imports preserve native empty fields and whitespace values, including headerless all-null TSV records.
 Files with no bytes or only a UTF-8 BOM open with an empty schema; other blank records follow the selected reader.
 Pandas accepts its supported text encodings

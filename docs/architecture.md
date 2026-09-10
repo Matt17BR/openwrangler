@@ -83,6 +83,17 @@ Delimited import detection reads at most 65,539 bytes once: a 64 KiB nominal pre
 its final UTF-8 scalar. A valid nominal prefix ignores later bytes; malformed interior bytes retain the existing
 encoding fallback. This sample does not prove EOF or validate the full file.
 
+CSV/TSV import options may include `lineEnding: "cr" | "lf"`; LF includes CRLF. Polars uses that hint in its native
+scanner, while Pandas and DuckDB retain native line recognition. The selected quote-aware sample parser infers only
+consistent, complete unquoted CR endings. It leaves LF/CRLF, mixed or unobserved endings unspecified; a final CR may
+be a partial CRLF. Import Options can set the value explicitly. Polars still requires consistent record endings.
+Omitted LF defaults preserve existing saved-state keys, including normal file reopen; changing an explicit value
+uses the existing import replacement and persistence owners.
+
+This file-only option stays in protocol v4 because file commands use the owned Python server bundled with the current
+extension. Non-file and non-delimited sources reject it, so it cannot reach a retained notebook runtime. A manually
+mixed older decoder rejects the new key; this is not a compatibility promise for every historical v4 binary.
+
 Changing import options is a host-owned session swap. The coordinator quiesces accepted work, opens a private
 candidate against the same immutable source, replays the confirmed plan, draft, and view, publishes the replacement
 once, and then retires the prior runtime. Failure leaves the prior confirmed session unchanged. The public session

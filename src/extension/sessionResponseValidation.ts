@@ -177,7 +177,15 @@ function canonicalImmutableSource(source: SessionSource): SessionSource {
     delete canonical.importOptions;
   } else {
     const importOptions = { ...canonical.importOptions };
-    for (const key of ["delimiter", "encoding", "quoteChar", "hasHeader", "sheetName", "sheetIndex"] as const) {
+    for (const key of [
+      "delimiter",
+      "encoding",
+      "quoteChar",
+      "hasHeader",
+      "lineEnding",
+      "sheetName",
+      "sheetIndex"
+    ] as const) {
       if (importOptions[key] === undefined) delete importOptions[key];
     }
     canonical.importOptions = importOptions;

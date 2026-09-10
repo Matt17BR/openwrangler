@@ -194,7 +194,11 @@ coverage; timing and retirement behavior is owned by the renderer lifecycle test
 
 `src/test/importDetection.unit.test.ts` and `src/test/importOptions.unit.test.ts` own the
 [import sampling boundary](architecture.md#sources-sessions-and-data-flow), including cut UTF-8 scalars, malformed
-bytes, BOMs and the one-read acquisition bound.
+bytes, BOMs, quote-aware record endings and the one-read acquisition bound. Protocol, confirmed-file and persistence
+owners check optional line-ending admission and old omitted values. Reconfiguration and response owners retain source
+identity, cancellation and rollback checks. The existing `liveImportReconfiguration.ts` editor journey follows the
+complete prompt sequence. Native record parsing belongs to the existing Python reader owners on minimum and current
+dependencies, including the default Polars path; it adds no editor journey.
 
 Native R frame tests own primitive numeric checks. The `kernel:numeric-portability` owner uses independent binary64
 references and raw-bit comparisons, including signed zero, with complete standalone and compiled execution.

@@ -224,6 +224,56 @@ def test_polars_file_scans_treat_glob_metacharacters_as_literal_path_characters(
 
 
 @pytest.mark.parametrize(
+    ("suffix", "delimiter", "record_ending", "line_ending"),
+    [
+        ("csv", ";", "\r", "cr"),
+        ("tsv", "\t", "\r", "cr"),
+        ("csv", ";", "\n", None),
+        ("csv", ";", "\r\n", None),
+        ("csv", ";", "\r\n", "lf"),
+    ],
+    ids=["cr-csv", "cr-tsv", "lf-omitted", "crlf-omitted", "crlf-explicit"],
+)
+@pytest.mark.parametrize("has_header", [True, False], ids=["header", "headerless"])
+def test_polars_delimited_line_endings_preserve_native_records(
+    tmp_path: Path, suffix: str, delimiter: str, record_ending: str, line_ending: str | None, has_header: bool
+) -> None:
+    path = tmp_path / f"records.{suffix}"
+    records = [f'"Milan\n""centre"""{delimiter}1', f'"Berlin\r\nwest"{delimiter}2']
+    if has_header:
+        records.insert(0, f"city{delimiter}value")
+    contents = (record_ending.join(records) + record_ending).encode("utf-8")
+    path.write_bytes(contents)
+    options: dict[str, Any] = {"quoteChar": '"', "hasHeader": has_header}
+    if suffix == "csv":
+        options["delimiter"] = delimiter
+    if line_ending is not None:
+        options["lineEnding"] = line_ending
+    manager = SessionManager()
+    try:
+        opened = manager.open_session(
+            {"kind": "file", "label": path.name, "path": str(path), "importOptions": options},
+            backend="polars",
+            page_size=1,
+        )
+        metadata = opened["metadata"]
+        session_id = metadata["sessionId"]
+        assert metadata["shape"] == {"rows": 2, "columns": 2}
+        assert metadata["source"]["importOptions"] == options
+        assert [column["name"] for column in metadata["schema"]] == (
+            ["city", "value"] if has_header else ["column_1", "column_2"]
+        )
+        assert isinstance(manager.sessions[session_id].original, pl.LazyFrame)
+        assert [cell["raw"] for cell in opened["page"]["rows"][0]["values"]] == ['Milan\n"centre"', 1]
+        later = manager.get_page(session_id, 0, 1, 1, {"filters": [], "sort": []})
+        assert [cell["raw"] for cell in later["page"]["rows"][0]["values"]] == ["Berlin\r\nwest", 2]
+    finally:
+        manager.close_all()
+    assert manager.sessions == {}
+    assert path.read_bytes() == contents
+
+
+@pytest.mark.parametrize(
     ("name", "verbatim"),
     [
         *[

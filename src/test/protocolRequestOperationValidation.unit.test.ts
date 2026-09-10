@@ -630,6 +630,58 @@ describe("protocol-v4 operation request validation", () => {
     expect(isOpenWranglerRequest(requestWithOptions({ sheetIndex: 0 }, "fixture.xls"))).toBe(true);
   });
 
+  it("admits line-ending intent only as a delimited file option in both validators", () => {
+    const admission = (source: Record<string, unknown>) => {
+      const request = {
+        kind: "openSession",
+        source,
+        pageSize: 200,
+        columnOffset: 0,
+        columnLimit: 16,
+        ...(source.kind === "rInteractiveVariable" ? { backend: "r" } : {})
+      };
+      const envelope = { protocolVersion: 4, requestId: "line-ending", priority: "interactive", request };
+      return [isOpenWranglerRequest(request), isRuntimeRequestEnvelope(envelope), validateTransportSchema(envelope)];
+    };
+    const source = { kind: "file", label: "records.csv", path: "/tmp/records.csv" };
+    expect(admission(source)).toEqual([true, true, true]);
+    for (const lineEnding of ["lf", "cr"]) {
+      for (const suffix of ["csv", "tsv"]) {
+        expect(admission({ ...source, path: `/tmp/records.${suffix}`, importOptions: { lineEnding } })).toEqual([
+          true,
+          true,
+          true
+        ]);
+      }
+    }
+    for (const lineEnding of [null, "", "CR", "crlf", "\r", 1, {}, ["cr"]]) {
+      expect(admission({ ...source, importOptions: { lineEnding } }), JSON.stringify(lineEnding)).toEqual([
+        false,
+        false,
+        false
+      ]);
+    }
+    for (const suffix of ["xlsx", "xls", "parquet", "jsonl", "ndjson"]) {
+      expect(admission({ ...source, path: `/tmp/records.${suffix}`, importOptions: { lineEnding: "cr" } })).toEqual([
+        false,
+        false,
+        false
+      ]);
+    }
+    for (const nonfile of [
+      { kind: "notebookVariable", label: "frame.csv", variableName: "frame" },
+      { kind: "notebookOutput", label: "frame.csv" },
+      { kind: "documentVariable", label: "frame.csv", uri: "file:///tmp/source.R", variableName: "frame" },
+      { kind: "rInteractiveVariable", label: "frame.csv", variableName: "frame" }
+    ]) {
+      expect(admission(nonfile)).toEqual([true, true, true]);
+      expect(admission({ ...nonfile, importOptions: { lineEnding: "cr" } })).toEqual([false, false, false]);
+    }
+    for (const selector of [{ sheetName: "Sheet1" }, { sheetIndex: 0 }]) {
+      expect(admission({ ...source, importOptions: { ...selector, lineEnding: "cr" } })).toEqual([false, false, false]);
+    }
+  });
+
   it.each([
     [
       "a literal fragment marker in a raw path",

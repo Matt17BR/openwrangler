@@ -149,12 +149,15 @@ function decodeFormatImportOptions(uri: vscode.Uri, value: unknown): ImportOptio
   const extension = path.extname(uri.path || uri.fsPath).toLowerCase();
   if (extension === ".csv" || extension === ".tsv") {
     if (
-      !hasExactKeys(value, ["delimiter", "encoding", "quoteChar", "hasHeader"]) ||
+      !hasExactKeys(value, ["delimiter", "encoding", "quoteChar", "hasHeader"], ["lineEnding"]) ||
       !isSingleCharacter(value.delimiter) ||
       typeof value.encoding !== "string" ||
       value.encoding.trim().length === 0 ||
       !isSingleCharacter(value.quoteChar) ||
-      typeof value.hasHeader !== "boolean"
+      typeof value.hasHeader !== "boolean" ||
+      (Object.prototype.hasOwnProperty.call(value, "lineEnding") &&
+        value.lineEnding !== "lf" &&
+        value.lineEnding !== "cr")
     ) {
       return undefined;
     }
@@ -162,7 +165,8 @@ function decodeFormatImportOptions(uri: vscode.Uri, value: unknown): ImportOptio
       delimiter: value.delimiter,
       encoding: value.encoding,
       quoteChar: value.quoteChar,
-      hasHeader: value.hasHeader
+      hasHeader: value.hasHeader,
+      ...(value.lineEnding === "lf" || value.lineEnding === "cr" ? { lineEnding: value.lineEnding } : {})
     };
   }
   if (extension === ".xlsx" || extension === ".xls") {

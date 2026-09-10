@@ -1721,6 +1721,42 @@ def test_duckdb_literal_selected_file_windows_anchor_refusal(path: str) -> None:
         duckdb_runtime._literal_file_path(path)
 
 
+@pytest.mark.parametrize(
+    ("record_ending", "line_ending"),
+    [("\n", None), ("\r", "cr"), ("\r\n", "lf")],
+    ids=["lf-omitted", "cr", "crlf"],
+)
+def test_duckdb_delimited_line_options_retain_native_detection(
+    tmp_path: Path, record_ending: str, line_ending: str | None
+) -> None:
+    path = tmp_path / "records.tsv"
+    contents = (
+        record_ending.join(["city\tvalue", '"Milan\ncentre"\t1', '"Berlin\r\nwest"\t2']) + record_ending
+    ).encode("utf-8")
+    path.write_bytes(contents)
+    options = {"lineEnding": line_ending} if line_ending is not None else {}
+    manager = SessionManager()
+    try:
+        opened = manager.open_session(
+            {"kind": "file", "label": path.name, "path": str(path), "importOptions": options},
+            backend="duckdb",
+            page_size=1,
+        )
+        metadata = opened["metadata"]
+        session_id = metadata["sessionId"]
+        assert metadata["shape"] == {"rows": 2, "columns": 2}
+        assert metadata["source"]["importOptions"] == options
+        assert [column["name"] for column in metadata["schema"]] == ["city", "value"]
+        assert isinstance(manager.sessions[session_id].original, DuckDBSqlPlan)
+        assert [cell["raw"] for cell in opened["page"]["rows"][0]["values"]] == ["Milan\ncentre", 1]
+        later = manager.get_page(session_id, 0, 1, 1, {"filters": [], "sort": []})
+        assert [cell["raw"] for cell in later["page"]["rows"][0]["values"]] == ["Berlin\r\nwest", 2]
+    finally:
+        manager.close_all()
+    assert manager.sessions == {}
+    assert path.read_bytes() == contents
+
+
 def test_duckdb_file_readers_are_lazy_hardened_and_export_natively(tmp_path: Path) -> None:
     csv_path = tmp_path / "sample.csv"
     csv_path.write_text('city;value\n"Milan";1\n"Berlin";2\n', encoding="utf-8")

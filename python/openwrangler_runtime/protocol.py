@@ -665,7 +665,7 @@ def _is_non_negative_integer(value: Any) -> bool:
 
 def _validate_import_options(value: Any, source: Mapping[str, Any]) -> dict[str, Any]:
     options = _mapping(value, "source.importOptions")
-    allowed = {"delimiter", "encoding", "quoteChar", "hasHeader", "sheetName", "sheetIndex"}
+    allowed = {"delimiter", "encoding", "quoteChar", "hasHeader", "lineEnding", "sheetName", "sheetIndex"}
     unexpected = set(options) - allowed
     if unexpected:
         raise ProtocolError(f"source.importOptions contains unknown fields: {', '.join(sorted(unexpected))}")
@@ -679,6 +679,10 @@ def _validate_import_options(value: Any, source: Mapping[str, Any]) -> dict[str,
         raise ProtocolError("source.importOptions.encoding must be a non-empty string.")
     if "hasHeader" in options and not isinstance(options["hasHeader"], bool):
         raise ProtocolError("source.importOptions.hasHeader must be a boolean.")
+    if "lineEnding" in options and (
+        not isinstance(options["lineEnding"], str) or options["lineEnding"] not in {"lf", "cr"}
+    ):
+        raise ProtocolError("source.importOptions.lineEnding must be lf or cr.")
     if "sheetName" in options and not _is_non_empty_trimmed_string(options["sheetName"]):
         raise ProtocolError("source.importOptions.sheetName must be a non-empty string.")
     if "sheetIndex" in options and not _is_safe_non_negative_integer(options["sheetIndex"]):
@@ -686,7 +690,7 @@ def _validate_import_options(value: Any, source: Mapping[str, Any]) -> dict[str,
     if "sheetName" in options and "sheetIndex" in options:
         raise ProtocolError("source.importOptions must contain only one of sheetName or sheetIndex.")
     excel_fields = {"sheetName", "sheetIndex"} & options.keys()
-    delimited_fields = {"delimiter", "encoding", "quoteChar", "hasHeader"} & options.keys()
+    delimited_fields = {"delimiter", "encoding", "quoteChar", "hasHeader", "lineEnding"} & options.keys()
     if excel_fields and delimited_fields:
         raise ProtocolError("source.importOptions must not mix Excel selectors with delimited-file options.")
     if not options:

@@ -208,6 +208,7 @@ class PolarsEngine(DataFrameEngine):
                 encoding=encoding,
                 quote_char=options.get("quoteChar", '"'),
                 has_header=options.get("hasHeader", True),
+                eol_char="\r" if options.get("lineEnding") == "cr" else "\n",
             )
         if extension == ".parquet":
             return pl.scan_parquet(path, glob=False)

@@ -536,6 +536,10 @@ export interface SessionSource {
     encoding?: string;
     quoteChar?: string;
     hasHeader?: boolean;
+    /**
+     * Expected record endings for readers that need an explicit setting. lf includes CRLF; omission retains native defaults.
+     */
+    lineEnding?: "lf" | "cr";
     sheetName?: string;
     sheetIndex?: number;
   };

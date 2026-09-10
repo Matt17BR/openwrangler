@@ -143,7 +143,27 @@ export async function promptImportOptions(
   ensureNotCancelled(cancellation);
   if (quoteChar === undefined) throw new ImportCancelledError();
   if (validateCharacter(quoteChar)) throw new Error("Expected a one-character quote character.");
-  return { delimiter, encoding: encodingChoice.value, quoteChar, hasHeader: header.value };
+  const currentLineEnding = currentImportOptions?.lineEnding;
+  const lineEnding = await showImportQuickPick(
+    valueChoices(
+      [
+        { label: "LF or CRLF", value: "lf" as const },
+        { label: "CR", value: "cr" as const }
+      ],
+      currentLineEnding ?? "lf"
+    ),
+    { title: "Line ending", ignoreFocusOut: true },
+    cancellation
+  );
+  ensureNotCancelled(cancellation);
+  if (!lineEnding) throw new ImportCancelledError();
+  return {
+    delimiter,
+    encoding: encodingChoice.value,
+    quoteChar,
+    hasHeader: header.value,
+    ...(currentLineEnding !== undefined || lineEnding.value === "cr" ? { lineEnding: lineEnding.value } : {})
+  };
 }
 
 export class ImportCancelledError extends Error {}

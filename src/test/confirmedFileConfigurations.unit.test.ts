@@ -58,6 +58,45 @@ describe("confirmed file configurations", () => {
     expect(persistenceKey(reloadedSource, "polars")).not.toBe(persistenceKey(confirmedSource, "pandas"));
   });
 
+  it.each(["cr", "lf"] as const)(
+    "round-trips explicit %s record intent without changing registry version",
+    async (lineEnding) => {
+      const workspaceState = new MemoryMemento();
+      const uri = vscode.Uri.file("/workspace/records.csv");
+      const importOptions = { delimiter: ";", encoding: "utf-8", quoteChar: '"', hasHeader: true, lineEnding };
+      await rememberConfirmedFileConfiguration(workspaceState, uri, importOptions, "polars", "auto");
+      expect(confirmedFileConfiguration(workspaceState, uri)).toEqual({
+        backend: "polars",
+        backendPreference: "auto",
+        importOptions
+      });
+      expect(workspaceState.get(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY)).toEqual({
+        version: 2,
+        entries: [{ uri: uri.toString(), backend: "polars", backendPreference: "auto", importOptions }]
+      });
+    }
+  );
+
+  it.each([undefined, null, "CR", "crlf", "", {}, false])(
+    "refuses malformed stored line-ending intent %j",
+    async (lineEnding) => {
+      const workspaceState = new MemoryMemento();
+      const uri = vscode.Uri.file("/workspace/records.csv");
+      await workspaceState.update(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY, {
+        version: 2,
+        entries: [
+          {
+            uri: uri.toString(),
+            backend: "polars",
+            backendPreference: "auto",
+            importOptions: { delimiter: ";", encoding: "utf-8", quoteChar: '"', hasHeader: true, lineEnding }
+          }
+        ]
+      });
+      expect(confirmedFileConfiguration(workspaceState, uri)).toBeUndefined();
+    }
+  );
+
   it("strictly rejects malformed, mixed-format, wrong-version, inconsistent, and other-URI entries", async () => {
     const workspaceState = new MemoryMemento();
     const csv = vscode.Uri.file("/workspace/data.csv");
@@ -121,6 +160,12 @@ describe("confirmed file configurations", () => {
           backend: "pandas",
           backendPreference: "auto",
           importOptions: { sheetName: "Sheet 2", delimiter: "," }
+        },
+        {
+          uri: excel.toString(),
+          backend: "pandas",
+          backendPreference: "auto",
+          importOptions: { sheetName: "Sheet 2", lineEnding: "cr" }
         },
         {
           uri: vscode.Uri.file("/workspace/other.csv").toString(),

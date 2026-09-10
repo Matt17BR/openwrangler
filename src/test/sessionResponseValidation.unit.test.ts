@@ -468,7 +468,13 @@ describe("session response validation", () => {
         kind: "file",
         label: "sales.csv",
         path: "/workspace/sales.csv",
-        importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: undefined, hasHeader: undefined }
+        importOptions: {
+          delimiter: ",",
+          encoding: "utf-8",
+          quoteChar: undefined,
+          hasHeader: undefined,
+          lineEnding: undefined
+        }
       },
       backend: "polars",
       mode: "editing",
@@ -487,6 +493,43 @@ describe("session response validation", () => {
     };
 
     expect(sessionOpenedResponseMismatch(request, response, true)).toBeUndefined();
+    for (const lineEnding of ["lf", "cr"] as const) {
+      const explicitRequest = {
+        ...request,
+        source: { ...request.source, importOptions: { ...request.source.importOptions, lineEnding } }
+      };
+      const explicitResponse = {
+        ...response,
+        metadata: {
+          ...response.metadata,
+          source: JSON.parse(JSON.stringify(explicitRequest.source)) as SessionMetadata["source"]
+        }
+      };
+      expect(sessionOpenedResponseMismatch(explicitRequest, explicitResponse, true)).toBeUndefined();
+      expect(sessionOpenedResponseMismatch(explicitRequest, response, true)).toBe(
+        "metadata reported a different immutable source"
+      );
+      expect(
+        sessionOpenedResponseMismatch(
+          explicitRequest,
+          {
+            ...explicitResponse,
+            metadata: {
+              ...explicitResponse.metadata,
+              source: {
+                ...explicitResponse.metadata.source,
+                importOptions: {
+                  ...explicitResponse.metadata.source.importOptions,
+                  lineEnding: lineEnding === "cr" ? "lf" : "cr"
+                }
+              }
+            }
+          },
+          true
+        )
+      ).toBe("metadata reported a different immutable source");
+    }
+
     expect(
       sessionOpenedResponseMismatch(request, {
         ...response,
