@@ -148,7 +148,7 @@ export function App() {
   const [goToColumnRequest, setGoToColumnRequest] = useState<ColumnRevealRequest | undefined>();
   const goToColumnRequestSequence = useRef(0);
   const goToColumnRequestRef = useRef<ColumnRevealRequest | undefined>(undefined);
-  const [filterColumn, setFilterColumn] = useState("");
+  const [filterPanelTarget, setFilterPanelTarget] = useState({ column: "", openKey: 0 });
   const [diff, setDiff] = useState<DataDiff | undefined>();
   const [remainingMissingCells, setRemainingMissingCells] = useState<number | undefined>();
   const [draftWarnings, setDraftWarnings] = useState<string[]>([]);
@@ -1096,7 +1096,8 @@ export function App() {
             typeof response.column === "string" &&
             currentMetadata?.schema.filter((column) => column.name === response.column).length === 1
           ) {
-            setFilterColumn(response.column);
+            const column = response.column;
+            setFilterPanelTarget((current) => ({ ...current, column }));
           }
           openSidePanel("filters");
         } else if (response.action === "changeViewSort") {
@@ -1338,7 +1339,7 @@ export function App() {
           previousView.sessionId === response.metadata.sessionId
         );
         if (!sameView && !recovery) {
-          resetViewProfiling({ preserveColumnValues: true });
+          resetViewProfiling({ preserveColumnValuesFor: response.metadata.filterModel });
         }
         const previousStats = sameView ? metadataRef.current?.stats : undefined;
         const nextMetadata = previousStats
@@ -1704,7 +1705,7 @@ export function App() {
     storeFailedPageRequest(undefined);
     setForegroundError(undefined);
     if (changesView) {
-      resetViewProfiling({ preserveColumnValues: true });
+      resetViewProfiling({ preserveColumnValuesFor: model });
       if (currentMetadata) storeMetadata(withoutDatasetStats(currentMetadata));
     }
     storeFilterModel(model);
@@ -1933,7 +1934,7 @@ export function App() {
     if (view !== "filters") return;
     const selectedColumn = selectedSummaryColumnId ? schemaById.get(selectedSummaryColumnId) : undefined;
     if (!selectedColumn) return;
-    setFilterColumn(selectedColumn.name);
+    setFilterPanelTarget((current) => ({ column: selectedColumn.name, openKey: current.openKey + 1 }));
     requestValues(selectedColumn.name);
   };
 
@@ -2519,7 +2520,7 @@ export function App() {
                 }}
                 onApplyProfileFilter={(filter) => {
                   if (inspectionMode || !filterSupported) return;
-                  setFilterColumn(filter.column);
+                  setFilterPanelTarget((current) => ({ ...current, column: filter.column }));
                   openSidePanel(
                     "column",
                     document.activeElement instanceof HTMLElement ? document.activeElement : undefined
@@ -2529,7 +2530,7 @@ export function App() {
                 }}
                 onOpenFilter={(column) => {
                   if (inspectionMode || !filterSupported) return;
-                  setFilterColumn(column);
+                  setFilterPanelTarget((current) => ({ column, openKey: current.openKey + 1 }));
                   openSidePanel(
                     "filters",
                     document.activeElement instanceof HTMLElement ? document.activeElement : undefined
@@ -2595,7 +2596,7 @@ export function App() {
                 onShowMoreValues={
                   filterSupported && columnValuesSupported && !mutationPending && !importOptionsPending
                     ? (column) => {
-                        setFilterColumn(column);
+                        setFilterPanelTarget((current) => ({ column, openKey: current.openKey + 1 }));
                         selectSidePanelView("filters");
                         requestValues(column);
                       }
@@ -2611,11 +2612,11 @@ export function App() {
                   aria-labelledby={summaryTabId("filters")}
                 >
                   <FilterPanel
-                    key={JSON.stringify([metadata?.sessionId, filterColumn])}
+                    key={JSON.stringify([metadata?.sessionId, filterPanelTarget.column, filterPanelTarget.openKey])}
                     metadata={metadata}
                     model={filterModel}
                     values={columnValues}
-                    activeColumn={filterColumn}
+                    activeColumn={filterPanelTarget.column}
                     defaultAdvanced={webviewConfig.filterMode === "advanced"}
                     disabled={mutationPending || importOptionsPending}
                     filterSupported={filterSupported}

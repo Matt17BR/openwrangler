@@ -276,6 +276,11 @@ surviving edit targets and new-operation forms retain their input.
 FilterPanel controls retain unavailable column targets and unfinished text while blocking dispatch until explicit
 repair. They preserve initial defaults, deliberate navigation and same-ID rename/return behavior. The App progressive-profiling owner
 replaces a session with reused column IDs to verify fresh draft/search input and continued rejection of old responses.
+That owner also checks that another column's filter clears stale choices, explicit Search uses the current query,
+and overlapping failed view changes restore the original choices. The profiling lifecycle owner checks effective
+query equality, including sort and AND/OR logic; own-column multi-selection retains its choices.
+The App owner also checks that repeated value-filter openings select the requested column and clear old search
+input, with one existing value request per action. Host sort navigation retains its separate no-scan behavior.
 FilterPanel and Operation Builder owners distinguish generated position labels from literal source names and names
 that collapse to the same HTML option text. Viewing selectors retain stable IDs, refuse duplicate raw source names
 and dispatch the original name after a valid selection, including newline and whitespace-only names.

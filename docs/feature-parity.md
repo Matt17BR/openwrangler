@@ -51,6 +51,10 @@ Open Wrangler targets desktop VS Code and editors based on it. Release-candidate
 VS Code. Bounded Linux Cursor platform smoke is one concrete compatibility example. It covers representative grid,
 cleaning, export, and recovery flows, but not the full VS Code qualification matrix.
 
+Filter choices retain their counts while selecting values in the same column. Changes to the other filters, sort
+or AND/OR logic clear affected choices; Search loads the current choices without changing existing selections.
+Opening value filters from a header, the Filters tab or Show More selects the requested column with fresh search input.
+
 A runtime-refused Python viewing page retains its previous query. Editing uses the host's accepted filter and history
 marker even when a successful page was superseded before publication. Spark retains the accepted query's exact
 continuation anchors and known total through superseded pages and failed replacements, including a return to row zero.

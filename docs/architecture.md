@@ -136,6 +136,11 @@ equality is not enough to establish freshness. Pages, summaries, statistics, val
 UI or retained panel state only while their request belongs to the active confirmed view. Cancellation is
 authoritative only when the original correlated request returns. A cancellation acknowledgement may remove queued
 work, but it cannot invent completion for running work or conceal a mutation that may have committed.
+Cached filter choices exclude their own column's filter. A viewing change retains them only when that effective
+query, including sort and AND/OR logic, is unchanged; Search explicitly reloads cleared choices. Sorting can change
+the typed representative of equal values. Failed view changes restore choices from the original confirmed snapshot.
+Header Filter, the Filters tab and Show More start a fresh local form for their explicit default-value request,
+including when the requested column is unchanged. Passive metadata and viewing changes retain local form input.
 Clipboard pages share the foreground queue with ordinary viewing requests. Before dispatch or recovery, and again
 after awaited recovery or detached-execution settlement, the coordinator rejects cancelled clipboard pages and
 those whose logical context is no longer current. This prevents a queued read for an older view from changing

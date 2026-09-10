@@ -1,5 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { FilterModel } from "../shared/filterModel";
 import type { ColumnSummary, SessionMetadata, ValuesResponse } from "../shared/protocol";
 
 const postMessage = vi.hoisted(() => vi.fn());
@@ -259,6 +260,50 @@ describe("progressive profiling lifecycle", () => {
     }
   });
 
+  it.each(["own column", "sort", "global logic"] as const)(
+    "retains cached values only when their full query is unchanged after changing %s",
+    (change) => {
+      const previous: FilterModel = {
+        filters: [
+          { column: "city", type: "string", predicates: [{ kind: "predicate", operator: "equals", value: "Berlin" }] },
+          { column: "sales", type: "float", predicates: [{ kind: "predicate", operator: "gt", value: "10" }] },
+          { column: "region", type: "string", predicates: [{ kind: "predicate", operator: "equals", value: "Europe" }] }
+        ],
+        sort: []
+      };
+      confirmed = confirmedView(
+        {
+          ...metadata,
+          filterModel: previous,
+          shape: { rows: 500, columns: 3 },
+          filteredShape: { rows: 500, columns: 3 },
+          schema: [
+            ...metadata.schema,
+            { id: "c:2", name: "region", position: 2, rawType: "String", type: "string", nullable: false }
+          ]
+        },
+        "view-a"
+      );
+      const { result } = renderLifecycle(closedDrawer);
+      for (const column of ["city", "sales"]) {
+        act(() => result.current.requestValues(column));
+        const request = runtimeEnvelopes("getColumnValues").at(-1)!;
+        act(() =>
+          result.current.settleProfileMessage({ ...valuesResponse(request.request.viewRequestId, column), column })
+        );
+      }
+      const next: FilterModel =
+        change === "own column"
+          ? { ...previous, filters: previous.filters.slice(1) }
+          : change === "sort"
+            ? { ...previous, sort: [{ column: "sales", direction: "asc", nulls: "last" }] }
+            : { ...previous, logic: "or" };
+      act(() => result.current.resetViewProfiling({ preserveColumnValuesFor: next }));
+      expect([...result.current.columnValues.keys()]).toEqual(change === "own column" ? ["city"] : []);
+      expect(runtimeEnvelopes("getColumnValues")).toHaveLength(2);
+    }
+  );
+
   it("keeps automatic profiles quiet after a non-cancellable mutation and prunes removed columns", () => {
     vi.useFakeTimers();
     confirmed = confirmedView({ ...metadata, capabilities: { ...metadata.capabilities, cancel: false } }, "view-a");
@@ -267,8 +312,7 @@ describe("progressive profiling lifecycle", () => {
       act(() => result.current.updateVisibleSummaryColumns(["c:0", "c:1"]));
       act(() =>
         result.current.resetViewProfiling({
-          initialSummaries: [],
-          preserveColumnValues: false
+          initialSummaries: []
         })
       );
       postMessage.mockClear();

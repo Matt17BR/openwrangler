@@ -704,6 +704,9 @@ describe("App progressive profiling and view correlation", () => {
     fireEvent.click(within(drawer).getByRole("button", { name: "More values…" }));
     expect(within(drawer).getByRole("tab", { name: "Filters / Sorts" })).toHaveAttribute("aria-selected", "true");
     expect(onlyRequest("getColumnValues")).toMatchObject({ column: "city", limit: 100 });
+    expect(onlyRequest("getColumnValues").search).toBeUndefined();
+    expect(screen.getByPlaceholderText("Search values")).toHaveValue("");
+    expect(requestsOfKind("getPage")).toHaveLength(0);
   });
 
   it("keeps duplicate labels distinct through out-of-order profiles and selected-column state", async () => {
@@ -1396,6 +1399,89 @@ describe("App progressive profiling and view correlation", () => {
     expect(screen.queryByText("Berlin", { selector: ".valueList span" })).not.toBeInTheDocument();
   });
 
+  it.each(["header", "tab", "keyboard tab"] as const)(
+    "starts a fresh default-values form when the open column is requested again through %s",
+    (entry) => {
+      const model: FilterModel = {
+        filters: [
+          {
+            column: "city",
+            type: "string",
+            valueFilter: { kind: "values", selectedValues: ["Milan"], includeNulls: false, includeNaN: false },
+            predicates: []
+          }
+        ],
+        sort: [{ column: "sales", direction: "asc", nulls: "last" }]
+      };
+      render(<App />);
+      dispatch({
+        kind: "sessionOpened",
+        metadata: { ...metadata, filterModel: model },
+        page: pageWithCity("Milan"),
+        summaries: []
+      });
+      openCityFilter();
+      const search = screen.getByPlaceholderText("Search values");
+      fireEvent.change(search, { target: { value: "mil" } });
+      fireEvent.keyDown(search, { key: "Enter" });
+      const searched = requestsOfKind("getColumnValues").at(-1)!;
+      expect(searched.search).toBe("mil");
+      dispatch({
+        kind: "columnValues",
+        revision: metadata.revision,
+        viewRequestId: viewId(searched),
+        column: "city",
+        values: [{ value: "Milan", count: 3 }],
+        hasMore: false
+      });
+      expect(screen.getByRole("checkbox", { name: /Milan/ })).toBeChecked();
+      fireEvent.change(screen.getByPlaceholderText("Value"), { target: { value: "unfinished predicate" } });
+      expect(requestsOfKind("getColumnValues")).toHaveLength(2);
+
+      if (entry === "header") openCityFilter();
+      else if (entry === "tab") selectInsightsView("Filters / Sorts");
+      else fireEvent.keyDown(screen.getByRole("tab", { name: "Filters / Sorts" }), { key: "End" });
+      expect(requestsOfKind("getColumnValues")).toHaveLength(3);
+      const reopened = requestsOfKind("getColumnValues").at(-1)!;
+      expect(reopened).toMatchObject({ column: "city", limit: 100 });
+      expect(reopened.search).toBeUndefined();
+      expect(filterModelOf(reopened)).toEqual({ ...model, filters: [] });
+      expect(screen.getByPlaceholderText("Search values")).toHaveValue("");
+      expect(screen.getByPlaceholderText("Value")).toHaveValue("");
+      dispatch({
+        kind: "columnValues",
+        revision: metadata.revision,
+        viewRequestId: viewId(reopened),
+        column: "city",
+        values: [
+          { value: "Berlin", count: 10 },
+          { value: "Milan", count: 3 }
+        ],
+        hasMore: false
+      });
+      expect(screen.getByRole("checkbox", { name: /Milan/ })).toBeChecked();
+      expect(screen.getByRole("checkbox", { name: /Berlin/ })).not.toBeChecked();
+      expect(within(screen.getByRole("list", { name: "Active sort order" })).getByRole("listitem")).toHaveTextContent(
+        "salesascending"
+      );
+      expect(requestsOfKind("getPage")).toHaveLength(0);
+    }
+  );
+
+  it("retargets a default-values open after the form selects another column locally", () => {
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+    openCityFilter();
+    fireEvent.change(screen.getByLabelText("Filter column"), { target: { value: "c:1" } });
+    fireEvent.change(screen.getByPlaceholderText("Search values"), { target: { value: "12" } });
+    openCityFilter();
+    expect(requestsOfKind("getColumnValues")).toHaveLength(2);
+    expect(requestsOfKind("getColumnValues").at(-1)).toMatchObject({ column: "city", search: undefined });
+    expect(screen.getByLabelText("Filter column")).toHaveDisplayValue("city");
+    expect(screen.getByPlaceholderText("Search values")).toHaveValue("");
+    expect(requestsOfKind("getPage")).toHaveLength(0);
+  });
+
   it("clears unfinished filter inputs when a replacement session reuses column IDs", async () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
@@ -1950,6 +2036,84 @@ describe("App progressive profiling and view correlation", () => {
     expect((onlyRequest("getColumnValues").filterModel as FilterModel).filters).toEqual([]);
   });
 
+  it("removes stale cross-column value choices until an explicit search refreshes them", () => {
+    const sourceMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: 3, columns: 2 },
+      filteredShape: { rows: 3, columns: 2 }
+    };
+    const sourcePage: GridPage = {
+      ...page,
+      totalRows: 3,
+      rows: (
+        [
+          ["Berlin", 10],
+          ["Berlin", 20],
+          ["Milan", 20]
+        ] as const
+      ).map(([city, sales], index) => ({
+        id: `r:${index}`,
+        rowNumber: index,
+        values: [
+          { kind: "string", raw: city, display: city, isNull: false, isNaN: false },
+          { kind: "number", raw: sales, display: String(sales), isNull: false, isNaN: false }
+        ]
+      }))
+    };
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata: sourceMetadata, page: sourcePage, summaries: [] });
+    openCityFilter();
+    const valuesRequest = onlyRequest("getColumnValues");
+    dispatch({
+      kind: "columnValues",
+      revision: metadata.revision,
+      viewRequestId: viewId(valuesRequest),
+      column: "city",
+      values: [
+        { value: "Berlin", count: 2 },
+        { value: "Milan", count: 1 }
+      ],
+      hasMore: false
+    });
+    expect(screen.getByRole("checkbox", { name: /^Berlin\s*2$/u })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /^Milan\s*1$/u })).not.toBeChecked();
+
+    fireEvent.change(screen.getByLabelText("Filter column"), { target: { value: "c:1" } });
+    fireEvent.change(screen.getByLabelText("Predicate operator"), { target: { value: "equals" } });
+    fireEvent.change(screen.getByPlaceholderText("Value"), { target: { value: "10" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add predicate" }));
+    const pageRequest = onlyRequest("getPage");
+    const salesFilter = filterModelOf(pageRequest);
+    fireEvent.change(screen.getByLabelText("Filter column"), { target: { value: "c:0" } });
+    expect(screen.queryByRole("checkbox", { name: /^Berlin\s*2$/u })).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: /^Milan\s*1$/u })).toBeNull();
+    dispatch({
+      kind: "page",
+      revision: metadata.revision,
+      viewRequestId: viewId(pageRequest),
+      metadata: { ...sourceMetadata, filterModel: salesFilter, filteredShape: { rows: 1, columns: 2 } },
+      page: { ...sourcePage, totalRows: 1, rows: sourcePage.rows.slice(0, 1) }
+    });
+    expect(screen.queryByRole("checkbox", { name: /^Berlin\s*2$/u })).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: /^Milan\s*1$/u })).toBeNull();
+    expect(requestsOfKind("getColumnValues")).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Search values in city" }));
+    const refresh = requestsOfKind("getColumnValues").at(-1)!;
+    expect(filterModelOf(refresh)).toEqual(salesFilter);
+    expect(refresh.search).toBe("");
+    dispatch({
+      kind: "columnValues",
+      revision: metadata.revision,
+      viewRequestId: viewId(refresh),
+      column: "city",
+      values: [{ value: "Berlin", count: 1 }],
+      hasMore: false
+    });
+    expect(screen.getByRole("checkbox", { name: /^Berlin\s*1$/u })).not.toBeChecked();
+    expect(screen.queryByRole("checkbox", { name: /^Milan\s*1$/u })).toBeNull();
+  });
+
   it("rolls overlapping view failures back to the original confirmed profiles and values", async () => {
     const profiledMetadata = { ...metadata, stats: emptyStats() };
     render(<App />);
@@ -1973,7 +2137,9 @@ describe("App progressive profiling and view correlation", () => {
 
     postMessage.mockClear();
     sortCityAscending();
+    expect(screen.queryByText("Confirmed candidate")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
+    expect(screen.queryByText("Confirmed candidate")).toBeNull();
     const pageRequests = requestsOfKind("getPage");
     expect(pageRequests).toHaveLength(2);
     const newest = pageRequests[1];
