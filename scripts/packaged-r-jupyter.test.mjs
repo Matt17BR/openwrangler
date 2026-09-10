@@ -91,11 +91,7 @@ for (const [scope, selection, packages] of [
   ["default", {}, editorPackages],
   ["literate", { purpose: "literate-documents" }, editorPackages],
   ["notebook", { purpose: "notebook" }, notebookPackages],
-  [
-    "terminal",
-    { purpose: "interactive-terminal" },
-    ["jsonlite", "rlang", "languageserver", "knitr", "tibble", "data.table", "nanoparquet"]
-  ]
+  ["terminal", { purpose: "interactive-terminal" }, ["jsonlite", "rlang", "tibble", "data.table", "nanoparquet"]]
 ]) {
   test(`prepared R dependency inputs and receipt agree for ${scope}`, async (t) => {
     const fixture = provisioning(t);

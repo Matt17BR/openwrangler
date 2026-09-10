@@ -1995,7 +1995,10 @@ export async function prepareJupyterAcceptanceREnvironment(
   const packageEntries = Object.entries(R_ACCEPTANCE_PACKAGE_VERSIONS).filter(([packageName]) => {
     if (purpose === "source-contracts") return ["jsonlite", "nanoparquet", "bit64"].includes(packageName);
     if (packageName === "bit64") return false;
-    if (purpose === "interactive-terminal" && ["IRkernel", "Rcpp", "collapse", "rmarkdown"].includes(packageName))
+    if (
+      purpose === "interactive-terminal" &&
+      ["IRkernel", "Rcpp", "collapse", "rmarkdown", "languageserver", "knitr"].includes(packageName)
+    )
       return false;
     return purpose !== "notebook" || !["languageserver", "rmarkdown", "knitr"].includes(packageName);
   });
