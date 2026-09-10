@@ -1195,7 +1195,12 @@ def normalized_numeric_sum(value: Any, semantic_type: str) -> dict[str, Any]:
         return {}
     if isinstance(value, Decimal) and not value.is_finite():
         return {}
-    approximate = _maybe_float(value)
+    try:
+        approximate = _maybe_float(value)
+    except OverflowError:
+        if type(value) is not int:
+            raise
+        approximate = None
     result: dict[str, Any] = {}
     if approximate is not None and isfinite(approximate):
         result["sum"] = approximate
