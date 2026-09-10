@@ -14,19 +14,21 @@ _Explore rows, profiles, filters, and cleaning history in one workbench._
 <!-- open-wrangler-release-status:start -->
 
 <p align="center">
-  <a href="https://github.com/Matt17BR/openwrangler/releases"><img src="https://img.shields.io/github/v/release/Matt17BR/openwrangler?display_name=tag&amp;sort=semver" alt="Latest GitHub release"></a>
+  <a href="https://github.com/Matt17BR/openwrangler/releases/latest"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fapi.github.com%2Frepos%2FMatt17BR%2Fopenwrangler%2Freleases%2Flatest&amp;query=%24.tag_name&amp;label=stable&amp;color=blue" alt="Latest stable GitHub release"></a>
   <a href="https://github.com/Matt17BR/openwrangler/actions/workflows/ci.yml"><img src="https://github.com/Matt17BR/openwrangler/actions/workflows/ci.yml/badge.svg?event=pull_request" alt="Pull request CI status"></a>
-  <a href="https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler"><img src="https://vsmarketplacebadges.dev/version-short/Matt17BR.openwrangler.svg" alt="Visual Studio Marketplace version"></a>
-  <a href="https://open-vsx.org/extension/Matt17BR/openwrangler"><img src="https://img.shields.io/open-vsx/v/Matt17BR/openwrangler?label=Open%20VSX" alt="Open VSX version"></a>
+  <a href="https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler"><img src="https://img.shields.io/badge/VS%20Marketplace-install-blue" alt="Install from Visual Studio Marketplace"></a>
+  <a href="https://open-vsx.org/extension/Matt17BR/openwrangler"><img src="https://img.shields.io/badge/Open%20VSX-install-blue" alt="Install from Open VSX"></a>
   <a href="https://github.com/Matt17BR/openwrangler/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Matt17BR/openwrangler" alt="MIT license"></a>
 </p>
 
 ## Install
 
-- **Stable:** choose **Install** on the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler) or [Open VSX](https://open-vsx.org/extension/Matt17BR/openwrangler),
-  or download the [latest GitHub release](https://github.com/Matt17BR/openwrangler/releases/latest).
+- **Stable:** choose **Install** on the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler), select the newest non-preview
+  version in [Open VSX](https://open-vsx.org/extension/Matt17BR/openwrangler)'s version list, or download the [latest stable GitHub release](https://github.com/Matt17BR/openwrangler/releases/latest).
 - **Preview:** choose **Install Pre-Release Version** on the editor listing, or download a preview from
   [GitHub prereleases](https://github.com/Matt17BR/openwrangler/releases).
+- **From source:** [build and install the current `main` branch](https://github.com/Matt17BR/openwrangler/blob/main/CONTRIBUTING.md).
+  It may contain changes newer than the published preview.
 
 For a downloaded VSIX, open the Extensions view and choose **Views and More Actions → Install from VSIX…**.
 
