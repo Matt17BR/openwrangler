@@ -991,7 +991,6 @@ export async function run(): Promise<void> {
   recordAcceptanceProgress("preflight:complete");
   const focusedReleasedRHandlers = createFocusedReleasedRAcceptanceHandlers({
     testing,
-    testPython,
     platform: process.platform,
     screenshotOutput: process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS,
     assertNativeEditorTooling: assertReleasedNativeREditorTooling,

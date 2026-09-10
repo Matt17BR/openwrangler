@@ -148,7 +148,6 @@ describe("released native R editor tooling", () => {
     );
     const handlers = createFocusedReleasedRAcceptanceHandlers({
       testing: "testing",
-      testPython: "/private/python",
       platform: "linux",
       screenshotOutput: undefined,
       assertNativeEditorTooling,

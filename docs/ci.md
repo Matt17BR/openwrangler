@@ -86,7 +86,9 @@ npm test
 The exact-artifact installed smoke and its environment are documented once in [Testing](testing.md).
 
 Released-Jupyter R editor runs use the [notebook/tooling package selection](testing.md#native-r-editor-dependencies)
-resolved by their existing journey. Private package-version and kernel-readiness checks precede editor launch.
+resolved by their existing journey. Private package-version checks precede editor launch; notebook and literate
+journeys also require IRkernel readiness. The terminal journey retains native R executable and private library checks
+without creating an unrelated kernel or requiring host Python and the Jupyter extension.
 The macOS job supplies system ZeroMQ through Homebrew as described in that dependency section.
 The focused terminal lane uses the pinned R extensions; Quarto extension and CLI qualification remains with the
 literate-documents lane.

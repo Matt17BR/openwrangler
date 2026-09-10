@@ -1963,20 +1963,12 @@ export async function prepareJupyterAcceptanceREnvironment(
     containedBy,
     environment = createEditorAcceptanceEnvironment(),
     platform = process.platform,
-    nativeEditorTooling = true,
-    collapseFixtures = true,
-    sourceContracts = false,
+    purpose = "literate-documents",
     runCommand = runBoundedEditorCommand
   } = {}
 ) {
-  if (typeof nativeEditorTooling !== "boolean") {
-    throw new Error("Released-Jupyter R acceptance requires an explicit native editor tooling decision.");
-  }
-  if (typeof collapseFixtures !== "boolean") {
-    throw new Error("Released-Jupyter R acceptance requires a boolean collapse fixture decision.");
-  }
-  if (typeof sourceContracts !== "boolean" || (sourceContracts && nativeEditorTooling)) {
-    throw new Error("R source-contract preparation requires a boolean scope and excludes native editor tooling.");
+  if (!["notebook", "interactive-terminal", "literate-documents", "source-contracts"].includes(purpose)) {
+    throw new Error("R acceptance requires a known preparation purpose.");
   }
   if (
     typeof directory !== "string" ||
@@ -2001,10 +1993,11 @@ export async function prepareJupyterAcceptanceREnvironment(
   }
 
   const packageEntries = Object.entries(R_ACCEPTANCE_PACKAGE_VERSIONS).filter(([packageName]) => {
-    if (sourceContracts) return ["jsonlite", "nanoparquet", "bit64"].includes(packageName);
+    if (purpose === "source-contracts") return ["jsonlite", "nanoparquet", "bit64"].includes(packageName);
     if (packageName === "bit64") return false;
-    if (!collapseFixtures && ["Rcpp", "collapse"].includes(packageName)) return false;
-    return nativeEditorTooling || !["languageserver", "rmarkdown", "knitr"].includes(packageName);
+    if (purpose === "interactive-terminal" && ["IRkernel", "Rcpp", "collapse", "rmarkdown"].includes(packageName))
+      return false;
+    return purpose !== "notebook" || !["languageserver", "rmarkdown", "knitr"].includes(packageName);
   });
   const packages = Object.freeze(packageEntries.map(([packageName]) => packageName));
   const packageVersions = Object.freeze(Object.fromEntries(packageEntries));
@@ -2071,17 +2064,29 @@ export async function prepareJupyterAcceptanceREnvironment(
     dependencyProbe,
     dependencyInstall
   };
-  if (sourceContracts) return Object.freeze(dependencies);
+  if (purpose === "source-contracts") return Object.freeze(dependencies);
 
   const dataDir = resolve(root, "d");
   const runtimeDir = resolve(root, "r");
   const configDir = resolve(root, "c");
   const pathDir = resolve(root, "p");
+  for (const path of [dataDir, runtimeDir, configDir, pathDir]) mkdirSync(path, { recursive: true, mode: 0o700 });
+  assertEditorAcceptancePrivateRootReceipt(directoryReceipt);
+  const jupyterEnvironment = Object.freeze({
+    dataDir,
+    runtimeDir,
+    configDir,
+    path: pathDir,
+    rscriptPath: canonicalRscript,
+    rLibraryDir: libraryDir
+  });
+  if (purpose === "interactive-terminal") return Object.freeze({ ...dependencies, jupyterEnvironment });
+
   const kernelProbeWorkingDirectory = resolve(root, "Notebook workspace");
   const kernelBootstrapPath = resolve(root, "kernel-bootstrap.R");
   const kernelBootstrapStagePath = resolve(root, "kernel-bootstrap-stage");
   const kernelDirectory = resolve(dataDir, "kernels", R_ACCEPTANCE_KERNEL_ID);
-  for (const path of [dataDir, runtimeDir, configDir, pathDir, kernelProbeWorkingDirectory, kernelDirectory]) {
+  for (const path of [kernelProbeWorkingDirectory, kernelDirectory]) {
     mkdirSync(path, { recursive: true, mode: 0o700 });
   }
   assertEditorAcceptancePrivateRootReceipt(directoryReceipt);
@@ -2129,14 +2134,7 @@ export async function prepareJupyterAcceptanceREnvironment(
     kernelBootstrapPath,
     kernelBootstrapStagePath,
     kernelSpecPath,
-    jupyterEnvironment: Object.freeze({
-      dataDir,
-      runtimeDir,
-      configDir,
-      path: pathDir,
-      rscriptPath: canonicalRscript,
-      rLibraryDir: libraryDir
-    })
+    jupyterEnvironment
   });
   rAcceptanceBootstrapReceipts.set(prepared, {
     directoryReceipt,

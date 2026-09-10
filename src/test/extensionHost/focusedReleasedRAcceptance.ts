@@ -9,7 +9,6 @@ export type FocusedReleasedRAcceptanceHandlers = Pick<
 
 export interface FocusedReleasedRAcceptanceOwners<TTesting, TWorkbench> {
   readonly testing: TTesting;
-  readonly testPython: string | undefined;
   readonly platform: NodeJS.Platform;
   readonly screenshotOutput: string | undefined;
   readonly assertNativeEditorTooling: (literateDocuments?: boolean) => Promise<boolean>;
@@ -32,7 +31,6 @@ export function createFocusedReleasedRAcceptanceHandlers<TTesting, TWorkbench>(
 ): FocusedReleasedRAcceptanceHandlers {
   return {
     focusedRInteractive: async () => {
-      assert.ok(owners.testPython, "Focused active R acceptance requires the runner-selected host Python environment.");
       owners.recordProgress("jupyter-r:interactive:tooling-start");
       assert.equal(
         await owners.assertNativeEditorTooling(false),
