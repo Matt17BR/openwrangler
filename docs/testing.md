@@ -82,6 +82,22 @@ including dependency declarations. Local and CI checks use the same strict webvi
 `npm run check:pr` runs both commands for local and protected-main checks. The release-candidate workflow starts from
 protected main after these checks pass and does not repeat the source suites.
 
+For changes to rendered webview UI, interactions, styles, browser fixtures or screenshot baselines, run local browser
+acceptance. Complete [Clone and install](../CONTRIBUTING.md#clone-and-install), including `python[dev]`, and select the
+fixture generator's interpreter using [Python selection](../CONTRIBUTING.md#python-selection-for-repository-commands).
+Then run:
+
+```bash
+npx --no-install playwright-core install chromium
+npm run test:webview-acceptance
+```
+
+On supported Linux hosts that lack browser system libraries, first run
+`npx --no-install playwright-core install-deps chromium`.
+The suite builds the webview, regenerates browser fixtures, compares screenshots with the checked-in baselines, and
+runs browser interaction and accessibility checks. It is local-only: `npm test`, `check:pr`, and hosted CI, scheduled
+and release workflows do not invoke it.
+
 For stable-channel source, `docs:check` permits incomplete capabilities in the source ledger while validating its
 canonical rows, status and backend availability labels, and tracked evidence. The canonical artifact tests prove that
 the same incomplete ledger still blocks stable qualification. Release requirements are in [Releasing](releasing.md).
