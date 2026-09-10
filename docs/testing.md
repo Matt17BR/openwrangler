@@ -46,9 +46,9 @@ The package owner checks in-place corruption and truncation after staging-name r
 refusal and owned cleanup. Successful publication retains the verified receipt and exact source-manifest bindings.
 The CI scope proof tests use real Git merges to cover exact commit binding, changed paths and modes, shallow history,
 and bounded output. They admit regular runtime source additions while retaining refusal of deletions, renames and unsafe
-paths or modes. They distinguish documentation-only omissions from the independent Python and R scopes, require both
-runtimes for mixed changes, and execute the required-result guards with failed proofs, malformed outputs, and skipped
-or canceled runtime execution.
+paths or modes. They distinguish documentation-only omissions, including existing CHANGELOG edits, from the independent
+Python and R scopes, require both runtimes for mixed changes, and execute the required-result guards with failed proofs,
+malformed outputs, and skipped or canceled runtime execution.
 Dependency guard tests force lock creation between the initial missing-file check and directory enumeration, and
 retain refusal when the lock stays missing. Their real concurrent status pair receives EOF on both inputs before
 either process is awaited; status validation requires EOF before execution. The deterministic cases and real pair run

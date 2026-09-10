@@ -127,7 +127,7 @@ jobs:
           test "$PROOF_RESULT" = success
           case "$PYTHON_OMITTABLE:$RUNTIME_RESULT" in
             true:skipped)
-              echo 'Python checks omitted: the tested merge adds or edits regular R runtime/test source, or edits existing README/docs Markdown. No fresh Python execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
+              echo 'Python checks omitted: the tested merge adds or edits regular R runtime/test source, or edits existing README/CHANGELOG/docs Markdown. No fresh Python execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
               ;;
             false:success) ;;
             *) exit 1 ;;
