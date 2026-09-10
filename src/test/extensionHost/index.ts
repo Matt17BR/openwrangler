@@ -6905,7 +6905,7 @@ async function exercisePackagedPlatformSmoke(
     galleryState = await withBoundedAcceptancePromise(
       installedExtension.evaluateAll((rows) => {
         const row = rows.length === 1 ? rows[0] : undefined;
-        const icons = row?.querySelectorAll(".extension-icon > img.icon");
+        const icons = row?.querySelectorAll("img.icon");
         const icon = (icons?.length === 1 ? icons[0] : undefined) as
           | (NonNullable<typeof row> & {
               complete: boolean;
