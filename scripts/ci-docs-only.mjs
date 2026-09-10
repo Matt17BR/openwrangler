@@ -62,6 +62,7 @@ export function proveRuntimeOmissions({ cwd = process.cwd(), env = process.env }
     }
     if (modified && (path === "README.md" || path === "CHANGELOG.md" || /^docs\/[^\p{Cc}]+\.md$/u.test(path))) continue;
     docsOnly = false;
+    if (modified && /^src\/test\/[^/\p{Cc}]+\.component\.test\.tsx$/u.test(path)) continue;
     if (pythonSource) {
       pythonOmittable = false;
       continue;
@@ -89,10 +90,12 @@ if (process.argv[1] !== undefined && pathToFileURL(resolve(process.argv[1])).hre
   console.log(
     docsOnly
       ? "Verified existing documentation edits only."
-      : rOmittable
-        ? "Verified Python source additions or edits and existing Markdown edits independent of native R."
-        : pythonOmittable
-          ? "Verified R source additions or edits, existing R journey edits and documentation edits independent of Python."
-          : "Full runtime checks required."
+      : rOmittable && pythonOmittable
+        ? "Verified existing component-test and Markdown edits independent of native runtimes."
+        : rOmittable
+          ? "Verified changes independent of native R."
+          : pythonOmittable
+            ? "Verified changes independent of Python."
+            : "Full runtime checks required."
   );
 }

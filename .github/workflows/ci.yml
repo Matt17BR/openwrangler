@@ -149,7 +149,7 @@ jobs:
           test "$PROOF_RESULT" = success
           case "$PYTHON_OMITTABLE:$RUNTIME_RESULT" in
             true:skipped)
-              echo 'Python checks omitted: the tested merge adds or edits regular R runtime/test source, edits the two allowed existing R journey files, or edits existing README/CHANGELOG/docs Markdown. No fresh Python execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
+              echo 'Python checks omitted: the tested merge contains only paths proven independent of Python. No fresh Python execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
               ;;
             false:success) ;;
             *) exit 1 ;;
@@ -270,7 +270,7 @@ jobs:
           test "$PROOF_RESULT" = success
           case "$R_OMITTABLE:$RUNTIME_RESULT:$MACOS_CALL_RESULT:$MACOS_RESULT:$WINDOWS_CALL_RESULT:$WINDOWS_RESULT" in
             true:skipped:skipped::skipped:)
-              echo 'Native R checks omitted: the tested merge adds or edits regular Python runtime/test source, or edits existing Markdown documentation. No fresh R execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
+              echo 'Native R checks omitted: the tested merge contains only paths proven independent of R. No fresh R execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
               ;;
             false:success:success:success:success:success) ;;
             *) exit 1 ;;
@@ -323,7 +323,7 @@ jobs:
   windows-runtime:
     name: Execute Windows contracts
     needs: docs-proof
-    if: ${{ !cancelled() && needs.docs-proof.result == 'success' && needs.docs-proof.outputs.docs_only == 'false' }}
+    if: ${{ !cancelled() && needs.docs-proof.result == 'success' && (needs.docs-proof.outputs.r_omittable == 'false' || needs.docs-proof.outputs.python_omittable == 'false') }}
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
@@ -366,18 +366,19 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Require completed runtime checks or proven documentation edits
+      - name: Require completed runtime checks or proven independent changes
         shell: bash
         env:
           PROOF_RESULT: ${{ needs.docs-proof.result }}
-          DOCS_ONLY: ${{ needs.docs-proof.outputs.docs_only }}
+          R_OMITTABLE: ${{ needs.docs-proof.outputs.r_omittable }}
+          PYTHON_OMITTABLE: ${{ needs.docs-proof.outputs.python_omittable }}
           RUNTIME_RESULT: ${{ needs.windows-runtime.result }}
         run: |
           test "$PROOF_RESULT" = success
-          case "$DOCS_ONLY:$RUNTIME_RESULT" in
-            true:skipped)
-              echo 'Runtime checks omitted: the tested merge only edits existing regular Markdown documentation.' >> "$GITHUB_STEP_SUMMARY"
+          case "$R_OMITTABLE:$PYTHON_OMITTABLE:$RUNTIME_RESULT" in
+            true:true:skipped)
+              echo 'Windows checks omitted: the tested merge only edits existing component tests or Markdown documentation. No fresh Windows execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
               ;;
-            false:success) ;;
+            false:false:success|false:true:success|true:false:success) ;;
             *) exit 1 ;;
           esac
