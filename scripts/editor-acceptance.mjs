@@ -4828,6 +4828,9 @@ export async function runEditorAcceptancePhase(
   }
 
   if (cleanupFailure) throw cleanupFailure;
+  console.log(
+    `${editor.name} ${phase} acceptance: result observed at ${Math.max(0, Math.round(resultContext.elapsedMs))} ms; phase settled at ${Math.max(0, Math.round(now() - startedAt))} ms.`
+  );
   return outcome?.evidence;
 }
 
