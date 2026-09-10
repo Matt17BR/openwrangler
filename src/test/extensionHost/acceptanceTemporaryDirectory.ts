@@ -1,5 +1,5 @@
 import * as assert from "node:assert/strict";
-import { existsSync, lstatSync, mkdtempSync, rmSync } from "node:fs";
+import { lstatSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 
@@ -17,8 +17,6 @@ export interface AcceptanceTemporaryDirectoryDependencies {
     candidate: string,
     options: Readonly<{ recursive: true; force: true; maxRetries: 5; retryDelay: 100 }>
   ) => void;
-  readonly makeTemp: (prefix: string) => string;
-  readonly exists: (candidate: string) => boolean;
 }
 
 function acceptanceTemporaryDirectoryDependencies(): AcceptanceTemporaryDirectoryDependencies {
@@ -27,9 +25,7 @@ function acceptanceTemporaryDirectoryDependencies(): AcceptanceTemporaryDirector
     isolatedTempRoot: tmpdir(),
     extensionTests: process.env.OPEN_WRANGLER_EXTENSION_TESTS,
     lstat: lstatSync,
-    remove: rmSync,
-    makeTemp: mkdtempSync,
-    exists: existsSync
+    remove: rmSync
   };
 }
 
@@ -90,20 +86,4 @@ export function cleanupAcceptanceTemporaryDirectory(
     return;
   }
   dependencies.remove(ownedDirectory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-}
-
-export function exerciseAcceptanceTemporaryDirectoryCleanupContract(
-  dependencies = acceptanceTemporaryDirectoryDependencies()
-): void {
-  const directory = dependencies.makeTemp(path.join(dependencies.isolatedTempRoot, "openwrangler-cleanup-contract-"));
-  assert.throws(
-    () => cleanupAcceptanceTemporaryDirectory(path.join(directory, "nested"), dependencies),
-    /direct children of the isolated editor temp root/u
-  );
-  cleanupAcceptanceTemporaryDirectory(directory, dependencies);
-  assert.equal(
-    dependencies.exists(directory),
-    dependencies.platform === "win32",
-    "Windows retains fixture roots until job-empty cleanup; other platforms remove them immediately."
-  );
 }

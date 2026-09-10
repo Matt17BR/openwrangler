@@ -6,21 +6,13 @@ type ReleasedRLowercaseApi = Pick<TestApi, "activeSession" | "request">;
 export interface ReleasedRLowercaseOperationInput {
   readonly testing: ReleasedRLowercaseApi;
   readonly sessionId: string;
-  readonly phase: "jupyter-r" | "jupyter-r-remote";
-  readonly catalog: "core-catalog" | "value-operations";
+  readonly phase: "jupyter-r-remote";
   readonly recordProgress: (checkpoint: string) => void;
-  readonly recordValueOperationBoundary: (boundary: "start" | "complete") => void;
 }
 
 export async function exerciseReleasedRLowercaseOperation(input: ReleasedRLowercaseOperationInput): Promise<void> {
-  const { testing, sessionId, phase, catalog, recordProgress, recordValueOperationBoundary } = input;
-  assert.ok(
-    (phase === "jupyter-r-remote" && catalog === "core-catalog") ||
-      (phase === "jupyter-r" && catalog === "value-operations"),
-    "The released R Lowercase coordinator accepts only its remote-core or local-value owner."
-  );
-
-  if (catalog === "value-operations") recordValueOperationBoundary("start");
+  const { testing, sessionId, phase, recordProgress } = input;
+  assert.equal(phase, "jupyter-r-remote", "Lowercase qualifies the remote R transport.");
   recordProgress(`${phase}:editing:lowercase-preview-apply-undo`);
   const lowercaseBase = testing.activeSession();
   assert.ok(lowercaseBase, "The restored R session must remain available for Lowercase.");
@@ -70,5 +62,4 @@ export async function exerciseReleasedRLowercaseOperation(input: ReleasedRLowerc
   assert.equal(lowercaseUndo.kind, "planUpdated", "Packaged native R Lowercase must undo.");
   if (lowercaseUndo.kind !== "planUpdated") throw new Error("The packaged R Lowercase undo failed.");
   assert.equal(lowercaseUndo.page.rows[0]?.values[1]?.display, "A");
-  if (catalog === "value-operations") recordValueOperationBoundary("complete");
 }

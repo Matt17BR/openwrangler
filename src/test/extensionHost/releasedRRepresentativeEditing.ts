@@ -44,11 +44,6 @@ export interface ReleasedRRepresentativeEditingDependencies {
     requestId: string,
     limit: number
   ) => Promise<GridPage["rows"]>;
-  readonly requireFreshExactSessionPanelHydration: (
-    testing: TestApi,
-    sessionId: string,
-    expectation: string
-  ) => Promise<void>;
   readonly waitFor: (predicate: () => boolean, timeoutMs: number, expectation: string) => Promise<void>;
 }
 
@@ -71,7 +66,6 @@ export function createReleasedRRepresentativeEditingJourney(
     releasedRFirstVisibleRow,
     releasedRSessionApp,
     releasedRVisibleRows,
-    requireFreshExactSessionPanelHydration,
     waitFor
   } = dependencies;
 
@@ -282,7 +276,8 @@ export function createReleasedRRepresentativeEditingJourney(
       30_000,
       "applying the representative native R rename"
     );
-    await requireFreshExactSessionPanelHydration(
+    await releasedRSessionApp(
+      workbench,
       testing,
       sessionId,
       "The representative applied R rename must be acknowledged before inspection."

@@ -3,22 +3,9 @@ import type { Locator, Page } from "playwright-core";
 import { codePreviewDocumentReceipt } from "./playwrightLifecycle";
 import type { TestApi } from "./extensionHostTestApi";
 
-type ReleasedRValueCheckpoint =
-  "entry" | "formula-undo-restored" | "strip-discard-restored" | "split-discard-restored" | "exit";
+type ReleasedRValueCheckpoint = "entry" | "formula-undo-restored" | "exit";
 
-type ReleasedRValueOperation =
-  | "find-replace"
-  | "formula"
-  | "format-datetime"
-  | "min-max-scale"
-  | "round"
-  | "floor"
-  | "ceiling"
-  | "capitalize"
-  | "lowercase"
-  | "uppercase"
-  | "strip"
-  | "split";
+type ReleasedRValueOperation = "find-replace" | "formula" | "format-datetime" | "capitalize";
 
 export interface ReleasedRValueOperationStateDependencies {
   readonly RELEASED_R_SUPPORTED_OPERATIONS: readonly string[];

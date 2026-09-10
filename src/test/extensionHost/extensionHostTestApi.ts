@@ -1,4 +1,5 @@
 import type * as vscode from "vscode";
+import type { LazyActivationDiagnostics } from "../../extension/lazyActivationOwners";
 import type { OpenWranglerBridge } from "../../extension/dataBridge";
 import type { NotebookCellResultTrackerDiagnostics } from "../../extension/notebooks/notebookCellResult";
 import type { PythonInteractiveDiagnostics } from "../../extension/notebooks/pythonInteractiveCommands";
@@ -90,5 +91,6 @@ export interface TestApi {
 }
 
 export interface ExtensionApi {
-  testing?: TestApi;
+  getTestingApi(): Promise<TestApi>;
+  activationDiagnostics(): LazyActivationDiagnostics;
 }

@@ -23,7 +23,7 @@ interface ReleasedREditingCoverageDependencies {
     outputDirectory: string,
     phase: "jupyter-r" | "jupyter-r-remote",
     screenshotOutput: string | undefined,
-    editingCatalog: "core-catalog" | "platform-lifecycle" | "clone-lifecycle"
+    editingCatalog: "core-catalog" | "platform-lifecycle" | "clone-lifecycle" | "value-operations"
   ) => Promise<void>;
   readonly exerciseReleasedRCategoricalEditingJourney: typeof exerciseReleasedRCategoricalEditingJourneyOwner;
   readonly exerciseReleasedRRepresentativeEditingJourney: (
@@ -34,16 +34,6 @@ interface ReleasedREditingCoverageDependencies {
     phase: "jupyter-r" | "jupyter-r-remote"
   ) => Promise<void>;
   readonly exerciseReleasedRPivotWiderJourney: (testing: TestApi, workbench: Page, sessionId: string) => Promise<void>;
-  readonly exerciseReleasedRValueOperationsJourney: (
-    testing: TestApi,
-    workbench: Page,
-    sessionId: string,
-    notebook: vscode.NotebookDocument,
-    notebookPath: string,
-    outputDirectory: string,
-    phase: "jupyter-r",
-    screenshotOutput?: string
-  ) => Promise<void>;
   readonly recordReleasedRAcceptanceSection: (
     phase: "jupyter-r" | "jupyter-r-remote",
     coverage: ReleasedRAcceptanceCoverageProfile,
@@ -60,7 +50,6 @@ export function createReleasedREditingCoverage({
   exerciseReleasedRCategoricalEditingJourney,
   exerciseReleasedRPivotWiderJourney,
   exerciseReleasedRRepresentativeEditingJourney,
-  exerciseReleasedRValueOperationsJourney,
   recordReleasedRAcceptanceSection
 }: ReleasedREditingCoverageDependencies) {
   return async function exerciseReleasedREditingCoverage(
@@ -102,7 +91,7 @@ export function createReleasedREditingCoverage({
         );
       }
       if (phase === "jupyter-r" && coverage.focusedEditing === "value-operations") {
-        await exerciseReleasedRValueOperationsJourney(
+        await exerciseReleasedREditingJourney(
           testing,
           workbench,
           base.sessionId,
@@ -110,7 +99,8 @@ export function createReleasedREditingCoverage({
           notebookPath,
           directory,
           phase,
-          screenshotOutput
+          screenshotOutput,
+          "value-operations"
         );
       }
     }

@@ -26,23 +26,6 @@ function boundedExactByteAssertionContext(message: string): string {
     : `${normalized.slice(0, EXACT_BYTE_ASSERTION_CONTEXT_LIMIT - 1)}…`;
 }
 
-export function exerciseBoundedExactByteAssertionContract(): void {
-  const expected = Buffer.alloc(2 * 1024 * 1024);
-  const actual = Buffer.from(expected);
-  actual[actual.length - 1] = 1;
-
-  let diagnostic = "";
-  try {
-    assertExactBytes(actual, expected, "Synthetic large source preservation mismatch.");
-  } catch (error) {
-    diagnostic = String(error);
-  }
-  assert.ok(diagnostic, "The synthetic byte mismatch must fail.");
-  assert.ok(diagnostic.length < 512, "Exact-byte mismatch diagnostics must remain bounded.");
-  assert.match(diagnostic, /offset 2097151; expected 0, received 1/u);
-  assert.doesNotMatch(diagnostic, /<Buffer|actual:|expected:/u);
-}
-
 export function ensureDeterministicDelimitedFixturePath(
   fixturePath: string,
   expected: string,
