@@ -1,17 +1,15 @@
 # pyright: strict
 from __future__ import annotations
-import __future__
 
 import ast
 import builtins
 from collections.abc import Iterator, Mapping
+from inspect import getsource
 from types import CodeType, FunctionType
 
 CUSTOM_CODE_FUNCTION_NAME = "_open_wrangler_custom_code"
 _CUSTOM_CODE_FILENAME = "<open-wrangler-custom-code>"
-_CUSTOM_CODE_COMPILER_FLAGS = __future__.annotations.compiler_flag
 _GENERATED_BUILTINS_NAME = "_open_wrangler_builtins"
-_GENERATED_FUTURE_NAME = "_open_wrangler_future"
 _MAX_CUSTOM_CODE_AST_NODES = 262_144
 _MAX_CUSTOM_CODE_AST_DEPTH = 512
 _COMPLEXITY_ERROR = "Custom Code syntax is too complex."
@@ -32,7 +30,7 @@ def validate_custom_code_scope(code: object) -> None:
     if not isinstance(code, str) or not code.strip():
         raise CustomCodeScopeError("Custom Code must be non-empty Python code assigning a dataframe to result.")
     try:
-        tree = ast.parse(_normalized_source(code), filename=_CUSTOM_CODE_FILENAME, mode="exec")
+        tree = ast.parse(code, filename=_CUSTOM_CODE_FILENAME, mode="exec")
     except SyntaxError as error:
         raise CustomCodeScopeError(_syntax_error_message(error)) from error
     except (MemoryError, OverflowError, RecursionError) as error:
@@ -60,7 +58,7 @@ def validate_custom_code_scope(code: object) -> None:
                 )
         _compile_function_source(code)
     except SyntaxError as error:
-        raise CustomCodeScopeError(_syntax_error_message(error, wrapper_line=True)) from error
+        raise CustomCodeScopeError(_syntax_error_message(error)) from error
     except (MemoryError, OverflowError, RecursionError) as error:
         raise CustomCodeScopeError(_COMPLEXITY_ERROR) from error
 
@@ -82,17 +80,18 @@ def custom_code_prelude_lines() -> list[str]:
     """Render imports local to the generated cleaning function."""
 
     return [
-        f"import __future__ as {_GENERATED_FUTURE_NAME}",
         f"import builtins as {_GENERATED_BUILTINS_NAME}",
+        "",
+        *getsource(_compile_function_source).splitlines(),
         "",
     ]
 
 
 def custom_code_definition_lines(code: str, *, index: int, prefix: str = "") -> list[str]:
-    """Retain exact function source without indenting its multiline string contents."""
+    """Retain exact user source without indenting its multiline string contents."""
 
     validate_custom_code_scope(code)
-    source = _function_source(code).replace("\\", "\\\\").replace('"', '\\"')
+    source = code.replace("\\", "\\\\").replace('"', '\\"')
     return [
         f"{prefix}{_custom_code_source_name(index)} = (",
         f'"""{source}"""',
@@ -119,10 +118,8 @@ def custom_code_execution_lines(
                 f"{prefix}{runtime_namespace} = "
                 f"{{{module_name!r}: {module_name}, '__builtins__': {_GENERATED_BUILTINS_NAME}.__dict__}}"
             ),
-            f"{prefix}{_GENERATED_BUILTINS_NAME}.exec({_GENERATED_BUILTINS_NAME}.compile(",
-            f"{prefix}    {source}, {_CUSTOM_CODE_FILENAME!r}, 'exec',",
             (
-                f"{prefix}    flags={_GENERATED_FUTURE_NAME}.annotations.compiler_flag, dont_inherit=True), "
+                f"{prefix}{_GENERATED_BUILTINS_NAME}.exec(_compile_function_source({source}), "
                 f"{runtime_namespace}, {runtime_namespace})"
             ),
             f"{prefix}{result} = {runtime_namespace}[{CUSTOM_CODE_FUNCTION_NAME!r}](df)",
@@ -173,8 +170,6 @@ def custom_code_step_lines(*, prefix: str, engine_name: str, index: int) -> list
 def custom_code_generated_utf8_bytes(
     *,
     code_utf8_bytes: int,
-    separator_utf8_bytes: int,
-    line_count: int,
     literal_escape_bytes: int,
     engine_name: str,
     index: int,
@@ -184,14 +179,13 @@ def custom_code_generated_utf8_bytes(
 
     fixed_definition_lines = [
         f"    {_custom_code_source_name(index)} = (",
-        f'"""def {CUSTOM_CODE_FUNCTION_NAME}(df):\n    return result\n"""',
+        '""""""',
         "    )",
         "",
         "",
     ]
-    user_lines = code_utf8_bytes - separator_utf8_bytes + (line_count * 5)
     return (
-        user_lines
+        code_utf8_bytes
         + literal_escape_bytes
         + (
             _joined_line_bytes([f"    {line}" if line else "" for line in custom_code_prelude_lines()])
@@ -203,30 +197,24 @@ def custom_code_generated_utf8_bytes(
     )
 
 
-def _normalized_source(code: str) -> str:
-    return "\n".join(code.splitlines())
+# This function is emitted without module future imports; annotations must not read caller names.
+def _compile_function_source(code: "str") -> "CodeType":  # noqa: UP037
+    import __future__
 
+    import ast
+    import builtins
+    from typing import cast
 
-def _function_source(code: str) -> str:
-    return "\n".join(_function_lines(code, prefix="")) + "\n"
-
-
-def _compile_function_source(code: str) -> CodeType:
-    return compile(
-        _function_source(code),
-        _CUSTOM_CODE_FILENAME,
-        "exec",
-        flags=_CUSTOM_CODE_COMPILER_FLAGS,
-        dont_inherit=True,
-    )
-
-
-def _function_lines(code: str, *, prefix: str) -> list[str]:
-    return [
-        f"{prefix}def {CUSTOM_CODE_FUNCTION_NAME}(df):",
-        *[f"{prefix}    {line}" for line in code.splitlines()],
-        f"{prefix}    return result",
-    ]
+    filename = "<open-wrangler-custom-code>"
+    user = ast.parse(code, filename=filename, mode="exec")
+    wrapper = ast.parse("def _open_wrangler_custom_code(df):\n    return result\n")
+    function = cast(ast.FunctionDef, wrapper.body[0])
+    final_return = function.body[0]
+    last_line = user.body[-1].end_lineno if user.body else 0
+    final_return.lineno = final_return.end_lineno = (last_line or 0) + 1
+    function.body = [*user.body, final_return]
+    function.end_lineno = final_return.end_lineno
+    return builtins.compile(wrapper, filename, "exec", flags=__future__.annotations.compiler_flag, dont_inherit=True)
 
 
 def _custom_code_source_name(index: int) -> str:
@@ -265,9 +253,7 @@ def _joined_line_bytes(lines: list[str]) -> int:
     return sum(len(line.encode("utf-8")) + 1 for line in lines)
 
 
-def _syntax_error_message(error: SyntaxError, *, wrapper_line: bool = False) -> str:
+def _syntax_error_message(error: SyntaxError) -> str:
     line = error.lineno
-    if wrapper_line and line is not None:
-        line = max(1, line - 1)
     location = f" at line {line}" if line is not None else ""
     return f"Custom Code contains invalid Python syntax{location}: {error.msg}."

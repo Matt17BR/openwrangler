@@ -204,21 +204,39 @@ def test_import_closure_and_multiline_code_matches_executable_generated_output(
 
 
 @pytest.mark.parametrize(
-    ("literal", "expected"),
+    ("source", "expected"),
     [
-        ('"""first\n  \n\t\nlast"""', "first\n      \n    \t\n    last"),
-        (repr('\\""""""\\'), '\\""""""\\'),
-        ("'first' \\\n    + 'last'", "firstlast"),
+        ('text = """first\n  \n\t\nlast"""', "first\n  \n\t\nlast"),
+        ("text = " + repr('\\""""""\\'), '\\""""""\\'),
+        ("text = 'first' \\\n    + 'last'", "firstlast"),
+        ('text = "first\\\nlast"', "firstlast"),
+        (
+            'text = (r"""first\nlast\\end""", b"""first\nlast""", f"""first\n{1 + 1}""")',
+            ("first\nlast\\end", b"first\nlast", "first\n2"),
+        ),
+        ('text = "first"\n# note\u2028text = "changed"', "first"),
+        ('if True:\n    \t\ttext = "first"\n\t    \ttext = "first"', "first"),
     ],
-    ids=["multiline-whitespace", "quote-runs-and-backslashes", "line-continuation"],
+    ids=[
+        "multiline-whitespace",
+        "quote-runs-and-backslashes",
+        "expression-continuation",
+        "string-continuation",
+        "raw-bytes-and-f-string-values",
+        "unicode-separator-in-comment",
+        "same-level-mixed-tab-indentation",
+    ],
 )
-def test_generated_custom_literals_preserve_function_source(
-    engine_and_frame: tuple[str, Any, Any], literal: str, expected: str
+def test_live_and_generated_custom_code_preserve_python_values(
+    engine_and_frame: tuple[str, Any, Any], source: str, expected: object
 ) -> None:
     _backend, engine, frame = engine_and_frame
-    code = f"text = {literal}\nresult = df if text == {expected!r} else None"
+    code = f"{source}\nresult = df if text == {expected!r} else None"
     operation = custom_step(code, "literal")
     original = materialize(frame)
+    ordinary: dict[str, Any] = {"df": frame}
+    exec(compile(code, "<ordinary-python-custom-source>", "exec", dont_inherit=True), ordinary)
+    assert materialize(ordinary["result"]) == original
 
     assert materialize(engine.apply_transform(frame, operation)) == original
     assert materialize(execute_generated(engine, frame, operation)) == original
