@@ -410,6 +410,79 @@ def test_pivot_wider_pandas_live_and_generated_preserve_order_nulls_and_source()
     assert rows(frame) == [("b", "x", 3), ("a", "x", 1), ("b", "y", 4)]
 
 
+@pytest.mark.parametrize("family", ["categorical", "unsigned", "boolean"])
+def test_pandas_pivot_wider_nullable_allocation_preserves_native_storage(family: str) -> None:
+    dtype, values, x_values, y_values = {
+        "categorical": (
+            pd.CategoricalDtype(["unused", "large", "small"], ordered=True),
+            ["large", "small", "large"],
+            ["large", "small"],
+            ["large", None],
+        ),
+        "unsigned": (pd.UInt64Dtype(), [2**63 + 1, 2, 3], [2**63 + 1, 2], [3, None]),
+        "boolean": (pd.BooleanDtype(), [True, False, True], [True, False], [True, None]),
+    }[family]
+    frame = pd.DataFrame(
+        {
+            "group": pd.Series(["b", "a", "b"], dtype="string"),
+            "key": ["x", "x", "y"],
+            "value": pd.Series(values, dtype=dtype),
+        }
+    )
+    frame.index = pd.Index(["same"] * 3, name="source")
+    frame.attrs["annotation"] = "retained"
+    before = frame.copy(deep=True)
+    expected = pd.DataFrame(
+        {
+            "group": pd.Series(["b", "a"], dtype="string"),
+            "x_value": pd.Series(x_values, dtype=dtype),
+            "y_value": pd.Series(y_values, dtype=dtype),
+        }
+    )
+    expected.columns = pd.Index(expected.columns, dtype="object")
+    for actual in _pandas_pivot_results(frame):
+        pd.testing.assert_frame_equal(actual, expected)
+        pd.testing.assert_frame_equal(frame, before)
+        assert frame.attrs == before.attrs
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_pandas_pivot_wider_nullable_allocation_without_identifiers(empty: bool) -> None:
+    frame = pd.DataFrame(
+        {
+            "key": pd.Series([] if empty else ["x"], dtype="string"),
+            "value": pd.Series([] if empty else [2**63 + 1], dtype="uint64"),
+        }
+    )
+    before = frame.copy(deep=True)
+    engine = PandasEngine()
+    step = bind(engine, frame, public_step(names_id="c:source:0", values_id="c:source:1"))
+    expected = pd.DataFrame(
+        {
+            "x_value": pd.Series([] if empty else [2**63 + 1], dtype="UInt64"),
+            "y_value": pd.Series([] if empty else [None], dtype="UInt64"),
+        }
+    )
+    for actual in (engine.apply_transform(frame, step), execute_generated(engine, frame, step)):
+        pd.testing.assert_frame_equal(actual, expected)
+        pd.testing.assert_frame_equal(frame, before)
+
+
+def test_pandas_pivot_wider_generated_allocation_keeps_caller_bindings() -> None:
+    frame = pd.DataFrame({"group": ["a", "a"], "key": ["x", "y"], "value": [1, 2]})
+    before = frame.copy(deep=True)
+    engine = PandasEngine()
+    step = bind(engine, frame)
+    names = ["pd", "np", "_open_wrangler_nullable_pivot_series", "_pandas_nullable_pivot_series"]
+    namespace: dict[str, Any] = dict.fromkeys(names, frame)
+    exec(engine.compile_plan([step]), namespace, namespace)
+    expected = engine.apply_transform(frame, step)
+    for _ in range(2):
+        pd.testing.assert_frame_equal(namespace["clean_data"](frame), expected)
+        assert all(namespace[name] is frame for name in names)
+        pd.testing.assert_frame_equal(frame, before)
+
+
 def test_pivot_wider_duckdb_live_and_generated_preserve_order_nulls_and_source() -> None:
     frame = duckdb.sql(
         "SELECT * FROM (VALUES ('b', 'x', 3::BIGINT), ('a', 'x', 1::BIGINT), "
