@@ -11,10 +11,12 @@ import type {
   ValuesResponse
 } from "../shared/protocol";
 import { supportsViewingCapability } from "../shared/protocol";
+import type { FilterModel } from "../shared/filterModel";
 import {
   backgroundDiagnosticKey,
   cloneBackgroundDiagnostics,
   filterModelForColumnValues,
+  sameFilterModel,
   type BackgroundDiagnostic,
   type ConfirmedView,
   type ConfirmedViewState,
@@ -197,7 +199,7 @@ export function useProgressiveProfilingLifecycle({
   const resetViewProfiling = useCallback(
     (
       options: {
-        preserveColumnValues?: boolean;
+        preserveColumnValuesFor?: FilterModel;
         initialSummaries?: ColumnSummary[];
         clearOwners?: boolean;
       } = {}
@@ -206,10 +208,30 @@ export function useProgressiveProfilingLifecycle({
       suspendProfiling();
       if (options.clearOwners) summaryOwnersByColumnId.current.clear();
       storeSummaries(options.initialSummaries ?? []);
-      if (!options.preserveColumnValues) storeColumnValues(new Map());
+      const current = readConfirmedView();
+      const nextModel = options.preserveColumnValuesFor;
+      storeColumnValues(
+        current && nextModel
+          ? new Map(
+              [...columnValuesRef.current].filter(([column]) =>
+                sameFilterModel(
+                  filterModelForColumnValues(current.metadata.filterModel, column),
+                  filterModelForColumnValues(nextModel, column)
+                )
+              )
+            )
+          : new Map()
+      );
       storeBackgroundDiagnostics(new Map());
     },
-    [cancelMutationProfileRestart, storeBackgroundDiagnostics, storeColumnValues, storeSummaries, suspendProfiling]
+    [
+      cancelMutationProfileRestart,
+      readConfirmedView,
+      storeBackgroundDiagnostics,
+      storeColumnValues,
+      storeSummaries,
+      suspendProfiling
+    ]
   );
 
   const captureProfileState = useCallback(

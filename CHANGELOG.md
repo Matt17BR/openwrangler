@@ -34,6 +34,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Filter choices clear stale counts after another filter or sort changes. Search reloads them for the current view.
+- Reopening value filters selects the requested column and clears old search input to match the fresh choices.
 - Polars profiles and value choices accept supported columns named `count` or matching a temporary count field.
 - Pandas profiles and value choices handle large object-stored integers without failing on floating-point overflow.
   Exact values, counts, extrema and sums remain available.
