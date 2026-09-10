@@ -41,8 +41,9 @@ from ..portable_regex import (
     portable_regex_contract,
 )
 from ..trusted_pickle_to_parquet import _source_fingerprint
-from . import _pandas_arrow_formula_helpers, _pandas_min_max_helpers
+from . import _pandas_arrow_formula_helpers, _pandas_group_sum_helpers, _pandas_min_max_helpers
 from ._pandas_arrow_formula_helpers import _open_wrangler_arrow_formula_repair as _pandas_arrow_formula_repair
+from ._pandas_group_sum_helpers import _open_wrangler_native_int64_sum_is_safe as _pandas_native_int64_sum_is_safe
 from ._pandas_min_max_helpers import _open_wrangler_min_max_scale as _pandas_min_max_scale
 from .base import (
     DEFAULT_STRIP_CHARACTERS,
@@ -1776,6 +1777,12 @@ class PandasEngine(DataFrameEngine):
             )
         if any(step["kind"] == "minMaxScale" for step in plan):
             lines.extend([getsource(_pandas_min_max_helpers), ""])
+        if any(
+            step["kind"] == "groupBy"
+            and any(aggregation["operation"] == "sum" for aggregation in step["params"]["aggregations"])
+            for step in plan
+        ):
+            lines.extend([getsource(_pandas_group_sum_helpers), ""])
         if needs_pivot_longer_helpers:
             lines.extend(
                 [
@@ -2741,7 +2748,10 @@ class PandasEngine(DataFrameEngine):
                                 f"{prefix}    {named_name}[{_alias!r}] = "
                                 f"({value_name!r}, _open_wrangler_exact_decimal_sum)"
                             ),
-                            f"{prefix}if {flag}:",
+                            (
+                                f"{prefix}if {flag} and not "
+                                f"_open_wrangler_native_int64_sum_is_safe({source}[{value_name!r}]):"
+                            ),
                             (
                                 f"{prefix}    {source}.isetitem({value_name!r}, "
                                 f"_open_wrangler_widen_integer({source}[{value_name!r}]))"
@@ -3228,7 +3238,8 @@ def _pandas_group_by_positions(
         semantic_type = _pandas_semantic_type(source[value_name])
         if checked_sum and semantic_type == "integer":
             integer_sum_indexes.append(aggregation_index)
-            source.isetitem(value_name, _pandas_widen_integer(source[value_name]))
+            if not _pandas_native_int64_sum_is_safe(source[value_name]):
+                source.isetitem(value_name, _pandas_widen_integer(source[value_name]))
         elif checked_sum and semantic_type == "decimal":
             decimal_sum_indexes.append(aggregation_index)
             decimal_sum_zeros[aggregation_index] = _pandas_decimal_zero(source[value_name])

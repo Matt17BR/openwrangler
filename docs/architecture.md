@@ -578,6 +578,10 @@ and grouped Fill use the same missing-value and signed-zero equality for Arrow f
 keys use native factorization codes and restore exact scalar labels; Sparse fill values retain native equality,
 including fractional fills accepted by the minimum Pandas version. Sparse Count uses a temporary presence mask
 for that aggregation alone; keys, source storage and other aggregates retain their own behavior.
+Group By sums keep native NumPy int64 accumulation when a whole-column bound proves every group and intermediate
+sum fits signed 64-bit storage. Empty int64 columns need no reductions. Other integer storage and inputs outside
+that sufficient bound retain exact widening; output normalization is unchanged. Live and generated code share
+the same admission helper.
 
 ### Polars
 

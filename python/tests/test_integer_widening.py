@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from math import isinf
 from pathlib import Path
 from typing import Any
@@ -107,6 +108,104 @@ def test_integer_group_sum_widens_before_overflow_in_live_and_generated_code(eng
     assert column_values(compiled, "total") == [2**63]
     assert_integer_surface(engine, live, "total")
     assert_integer_surface(engine, compiled, "total")
+
+
+@pytest.mark.parametrize(
+    ("dtype", "values", "expected", "result_dtype"),
+    [
+        ("int64", [], [], "Int64"),
+        ("int64", [1, -2, 3], [2], "Int64"),
+        ("int64", [2**63 - 1], [2**63 - 1], "Int64"),
+        ("int64", [(2**63 - 1) // 3] * 3, [2**63 - 2], "Int64"),
+        ("int64", [-(2**63)], [-(2**63)], "Int64"),
+        ("int64", [2**63 - 1, 2**63 - 1, -(2**63 - 1)], [2**63 - 1], "Int64"),
+        ("int64", [2**63 - 1, 1], [2**63], "object"),
+        ("Int64", [1, None, 2], [3], "Int64"),
+        ("uint64", [2**64 - 1, 0], [2**64 - 1], "object"),
+        ("int8", [100, 100], [200], "Int64"),
+        ("int64[pyarrow]", [1, None, 2], [3], "Int64"),
+        ("object", [2**70, -(2**70) + 3], [3], "Int64"),
+        (pd.SparseDtype("int64", 0), [1, 0, 2], [3], "Int64"),
+    ],
+)
+def test_pandas_group_sum_preserves_exact_results_and_storage(
+    dtype: Any, values: list[Any], expected: list[int], result_dtype: str
+) -> None:
+    engine = PandasEngine()
+    frame = pd.DataFrame({"group": ["a"] * len(values), "value": pd.Series(values, dtype=dtype)})
+    frame.index = pd.Index([8] * len(frame), name="original")
+    frame.attrs = {"origin": "retained"}
+    snapshot = frame.copy(deep=True)
+    schema = engine.schema(frame)
+    lineage = source_lineage(schema)
+    operation = bind_step(
+        validate_step(
+            {
+                "id": "exact-sum",
+                "kind": "groupBy",
+                "params": {
+                    "keys": [lineage[0]],
+                    "aggregations": [{"column": lineage[1], "operation": "sum", "alias": "total"}],
+                },
+            }
+        ),
+        schema,
+        lineage,
+    )
+
+    live = engine.apply_transform(frame, operation)
+    compiled = generated(engine, frame, [operation])
+
+    pd.testing.assert_frame_equal(live, compiled)
+    assert live["total"].tolist() == expected
+    assert str(live["total"].dtype) == result_dtype
+    pd.testing.assert_frame_equal(frame, snapshot)
+    assert frame.attrs == snapshot.attrs
+
+
+def test_pandas_group_sum_generated_helper_is_local_selected_once_and_reusable() -> None:
+    engine = PandasEngine()
+    frame = pd.DataFrame({"group": [None, "b", None, "a", "b", "a"], "value": [-10, 4, 8, 6, -2, -7]})
+    schema = engine.schema(frame)
+    lineage = source_lineage(schema)
+    operation = bind_step(
+        validate_step(
+            {
+                "id": "repeat-sum",
+                "kind": "groupBy",
+                "params": {
+                    "keys": [lineage[0]],
+                    "aggregations": [{"column": lineage[1], "operation": "sum", "alias": "value"}],
+                },
+            }
+        ),
+        schema,
+        lineage,
+    )
+    helper_name = "_open_wrangler_native_int64_sum_is_safe"
+    repeated = {**operation, "id": "repeat-sum-again"}
+    code = engine.compile_plan([operation, repeated])
+    module = ast.parse(code)
+    assert [node.name for node in module.body if isinstance(node, ast.FunctionDef)] == ["clean_data"]
+    assert sum(isinstance(node, ast.FunctionDef) and node.name == helper_name for node in ast.walk(module)) == 1
+    without_sum = {
+        **operation,
+        "params": {
+            **operation["params"],
+            "aggregations": [{**operation["params"]["aggregations"][0], "operation": "count"}],
+        },
+    }
+    assert helper_name not in engine.compile_plan([])
+    assert helper_name not in engine.compile_plan([without_sum])
+    namespace: dict[str, Any] = {helper_name: frame, "len": object(), "max": object()}
+    exec(compile(code, "<repeated-group-sum>", "exec"), namespace, namespace)
+    assert namespace[helper_name] is frame
+    compiled = namespace["clean_data"](frame)
+    live = engine.apply_transform(engine.apply_transform(frame, operation), repeated)
+    pd.testing.assert_frame_equal(live, compiled)
+    assert pd.isna(live["group"].iloc[0])
+    assert live["group"].iloc[1:].tolist() == ["b", "a"]
+    assert live["value"].tolist() == [-2, 2, -1]
 
 
 @pytest.mark.parametrize(
