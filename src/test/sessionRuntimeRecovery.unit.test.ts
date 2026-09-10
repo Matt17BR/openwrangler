@@ -157,6 +157,7 @@ describe("SessionRuntimeRecovery", () => {
       throw new Error(`Unexpected request: ${request.kind}`);
     });
     const session = runtimeSession(delegate);
+    session.committedPage = { viewRequestId: "retired-page", page: candidate.page! };
     session.viewState = {
       ...session.viewState,
       selectedColumnId: undefined,
@@ -168,6 +169,7 @@ describe("SessionRuntimeRecovery", () => {
     const recoveryHooks = hooks();
 
     await expect(recovery.replay(session, undefined, recoveryHooks)).resolves.toBe(true);
+    expect(session.committedPage).toBeUndefined();
     await cleanup.waitForTracked();
 
     expect(requests[0]).toMatchObject({ kind: "openSession", backend: "polars", mode: "editing" });

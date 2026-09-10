@@ -891,6 +891,7 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
   </style>
   <script>
     const { harnessSummaries, ...sessionPayload } = ${stringifyForInlineScript(sessionPayload)};
+    if (sessionPayload.kind === "sessionOpened") sessionPayload.offeredViewContextId = "snapshot:browser-fixture";
     window.openWranglerSessionPayload = sessionPayload;
     const profileSummaries = harnessSummaries ?? sessionPayload.summaries ?? [];
     const columnValues = ${stringifyForInlineScript(columnValues)};

@@ -31,6 +31,8 @@ export interface RendererSynchronizationCallbacks {
   readonly replaceRenderer: () => void;
   readonly isVisible: () => boolean;
   readonly getSnapshot: () => SessionOpenedResponse | undefined;
+  /** Settle only a page already published by the coordinator before capturing its panel snapshot. */
+  readonly prepareSnapshot?: () => void | Promise<void>;
   readonly getOpenResponse: () => OpenWranglerResponse | undefined;
   /** Recovery has a session, but its replacement is not yet accepted by the renderer. */
   readonly isSnapshotPending?: () => boolean;
@@ -432,6 +434,12 @@ export class RendererSynchronizationCoordinator {
       await this.callbacks.ensureSessionOpen();
     }
     if (this.disposed || !this.ready || generation !== this.generation || this.callbacks.isSnapshotPending?.()) return;
+    if (publishSnapshot) {
+      const preparation = this.callbacks.prepareSnapshot?.();
+      if (preparation) await preparation;
+      if (this.disposed || !this.ready || generation !== this.generation || this.callbacks.isSnapshotPending?.())
+        return;
+    }
     const snapshot = this.callbacks.getSnapshot();
     const openResponse = this.callbacks.getOpenResponse();
     const synchronization: RendererSynchronizationIdentity = snapshot

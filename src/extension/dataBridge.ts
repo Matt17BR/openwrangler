@@ -155,7 +155,8 @@ export interface OpenWranglerBridge {
   /** Moves one queued profile ahead of passive background work without repeating an active request. */
   prioritizeViewRequest?(sessionId: string, viewRequestId: string): void;
   /** Confirms the opaque logical view currently shown by a webview. */
-  setViewContext?(sessionId: string, viewContextId: string): void;
+  setViewContext?(sessionId: string, viewContextId: string | undefined): void;
+  getPagePublication?(sessionId: string): PageResponse | undefined;
   /** Returns the host-owned grid presentation for a live session. */
   getViewState?(sessionId: string): GridViewState | undefined;
   /** Returns generated code and any confirmed draft presentation for panel recreation or runtime replacement. */

@@ -141,9 +141,12 @@ describe("App column projection", () => {
         rows: Array.from({ length: 16 }, (_, row) => projectedPage(row, 16).rows[0])
       };
       acceptPage(projectionRetry, metadata, withinBlockPage, 0);
-      expect(postMessage).toHaveBeenCalledWith(
-        expect.objectContaining({ kind: "setViewContext", lastPageRequestId: projectionRetry.viewRequestId })
-      );
+      expect(
+        postMessage.mock.calls
+          .map(([message]) => message)
+          .filter((message) => message.kind === "setViewContext")
+          .at(-1)
+      ).toMatchObject({ kind: "setViewContext", viewContextId: confirmedContext });
       expect(scroller.scrollTop).toBe(5 * 29);
       expect(scroller.scrollLeft).toBe(20 * 190);
 
@@ -743,13 +746,31 @@ type HostMessage =
     };
 
 function dispatch(data: HostMessage): void {
-  act(() => window.dispatchEvent(new MessageEvent("message", { data, origin: window.location.origin })));
+  act(() =>
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data:
+          data && typeof data === "object" && "kind" in data && data.kind === "sessionOpened"
+            ? { ...data, offeredViewContextId: `snapshot:${crypto.randomUUID()}` }
+            : data,
+        origin: window.location.origin
+      })
+    )
+  );
 }
 
 function dispatchMany(messages: HostMessage[]): void {
   act(() => {
     for (const data of messages) {
-      window.dispatchEvent(new MessageEvent("message", { data, origin: window.location.origin }));
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data:
+            data && typeof data === "object" && "kind" in data && data.kind === "sessionOpened"
+              ? { ...data, offeredViewContextId: `snapshot:${crypto.randomUUID()}` }
+              : data,
+          origin: window.location.origin
+        })
+      );
     }
   });
 }

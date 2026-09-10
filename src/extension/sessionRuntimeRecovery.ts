@@ -248,6 +248,7 @@ export class SessionRuntimeRecovery {
     session.runtimeRevision = candidate.runtimeRevision;
     session.sourceProtection = candidate.sourceProtection;
     session.metadata = candidate.metadata;
+    session.committedPage = undefined;
     session.code = candidate.code;
     session.draftPresentation = candidate.draftPresentation;
     session.draftBaseFilterModel = candidate.draftBaseFilterModel;

@@ -21,12 +21,8 @@ describe("webview message decoding", () => {
     [{ kind: "ready" }, { kind: "ready" }],
     [{ kind: "requestSessionSnapshot" }, { kind: "requestSessionSnapshot" }],
     [
-      { kind: "setViewContext", viewContextId: "view-a", lastPageRequestId: null },
-      { kind: "setViewContext", viewContextId: "view-a", lastPageRequestId: null }
-    ],
-    [
-      { kind: "setViewContext", viewContextId: "view-a", lastPageRequestId: "page-a" },
-      { kind: "setViewContext", viewContextId: "view-a", lastPageRequestId: "page-a" }
+      { kind: "setViewContext", viewContextId: "view-a" },
+      { kind: "setViewContext", viewContextId: "view-a" }
     ],
     [
       { kind: "prioritizeViewRequest", viewRequestId: "summary-a" },
@@ -51,14 +47,6 @@ describe("webview message decoding", () => {
     "rejects malformed top-level and import-action controls %#",
     (message) => expect(decodeWebviewMessage(message, context())).toBeUndefined()
   );
-
-  it("requires an explicit nullable page identity on each view confirmation", () => {
-    const message = { kind: "setViewContext", viewContextId: "view-a" };
-    expect(decodeWebviewMessage(message, context())).toBeUndefined();
-    for (const lastPageRequestId of [undefined, "", 2, false, {}, []]) {
-      expect(decodeWebviewMessage({ ...message, lastPageRequestId }, context())).toBeUndefined();
-    }
-  });
 
   it("requires one exact renderer identity shape", () => {
     expect(
@@ -105,7 +93,7 @@ describe("webview message decoding", () => {
 
   it("accepts validated grid state only on a recovery context receipt", () => {
     const state = { columnWidths: [["c:0", 190]], viewport: { firstVisibleRow: 200, scrollLeft: 90 } };
-    const message = { kind: "setViewContext", viewContextId: "recovery:offered", lastPageRequestId: "page-a", state };
+    const message = { kind: "setViewContext", viewContextId: "recovery:offered", state };
     const decoded = decodeWebviewMessage(message, context());
     expect(decoded).toEqual({ ...message, state: { ...state, columnWidths: new Map([["c:0", 190]]) } });
     if (decoded?.kind !== "setViewContext") throw new Error("Expected a context receipt.");
@@ -154,8 +142,7 @@ describe("webview message decoding", () => {
     } as const;
 
     for (const message of [
-      { kind: "setViewContext", viewContextId: exactId, lastPageRequestId: null },
-      { kind: "setViewContext", viewContextId: "view-a", lastPageRequestId: exactId },
+      { kind: "setViewContext", viewContextId: exactId },
       { kind: "prioritizeViewRequest", viewRequestId: exactId },
       { kind: "cancelViewRequests", viewRequestIds: [exactId] },
       { kind: "runtimeRequest", viewContextId: exactId, request },
@@ -165,8 +152,7 @@ describe("webview message decoding", () => {
     }
 
     for (const message of [
-      { kind: "setViewContext", viewContextId: oversizedId, lastPageRequestId: null },
-      { kind: "setViewContext", viewContextId: "view-a", lastPageRequestId: oversizedId },
+      { kind: "setViewContext", viewContextId: oversizedId },
       { kind: "prioritizeViewRequest", viewRequestId: oversizedId },
       { kind: "cancelViewRequests", viewRequestIds: [oversizedId] },
       { kind: "runtimeRequest", viewContextId: oversizedId, request },

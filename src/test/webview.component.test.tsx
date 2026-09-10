@@ -3197,7 +3197,7 @@ describe("App file import options", () => {
       dispatchAppMessage(recovery);
       expect(
         webviewPostMessage.mock.calls.map(([message]) => message).filter((message) => message.kind === "setViewContext")
-      ).toEqual([{ kind: "setViewContext", viewContextId: "recovery:mode-held", lastPageRequestId: null }]);
+      ).toEqual([{ kind: "setViewContext", viewContextId: "recovery:mode-held" }]);
       expect(
         webviewPostMessage.mock.calls.map(([message]) => message).filter((message) => message.kind === "ready")
       ).toHaveLength(0);
@@ -3928,7 +3928,13 @@ describe("App file import options", () => {
       act(() => {
         window.dispatchEvent(
           new MessageEvent("message", {
-            data: { kind: "sessionOpened", metadata, page, summaries: [] },
+            data: {
+              kind: "sessionOpened",
+              offeredViewContextId: "snapshot:atomic-import",
+              metadata,
+              page,
+              summaries: []
+            },
             origin: window.location.origin
           })
         );
@@ -3947,6 +3953,10 @@ describe("App file import options", () => {
         expect(webviewPostMessage.mock.calls.some(([message]) => message?.kind === "rendererSynchronized")).toBe(true);
       });
 
+      expect(webviewPostMessage).toHaveBeenCalledWith({
+        kind: "setViewContext",
+        viewContextId: "snapshot:atomic-import"
+      });
       expect(document.querySelector("main.app")).toHaveAttribute("data-session-id", metadata.sessionId);
       expect(document.querySelector("main.app")).toHaveAttribute("data-renderer-sync-id", "S".repeat(32));
       expect(webviewPostMessage).toHaveBeenCalledWith({
@@ -4953,7 +4963,17 @@ describe("App file import options", () => {
 });
 
 function dispatchAppMessage(data: unknown): void {
-  act(() => window.dispatchEvent(new MessageEvent("message", { data, origin: window.location.origin })));
+  act(() =>
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data:
+          data && typeof data === "object" && "kind" in data && data.kind === "sessionOpened"
+            ? { ...data, offeredViewContextId: `snapshot:${crypto.randomUUID()}` }
+            : data,
+        origin: window.location.origin
+      })
+    )
+  );
 }
 
 function outboundImportOptionMessages(): unknown[] {

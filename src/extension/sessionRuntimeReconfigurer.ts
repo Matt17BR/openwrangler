@@ -416,6 +416,7 @@ export class SessionRuntimeReconfigurer {
     const previousActiveViewContextId = session.activeViewContextId;
     const previousLatestRequestedViewContextId = session.latestRequestedViewContextId;
     const previousLatestRequestedPageRequestId = session.latestRequestedPageRequestId;
+    const previousCommittedPage = session.committedPage;
     const persistenceResult = await this.responseCommitter.commitRuntimeReplacement(
       publishableCandidate,
       candidateRequest.source,
@@ -444,6 +445,7 @@ export class SessionRuntimeReconfigurer {
           session.activeViewContextId = previousActiveViewContextId;
           session.latestRequestedViewContextId = previousLatestRequestedViewContextId;
           session.latestRequestedPageRequestId = previousLatestRequestedPageRequestId;
+          session.committedPage = previousCommittedPage;
           candidate = publishableCandidate;
           candidateCleanupAttempted = false;
           return true;
@@ -740,6 +742,7 @@ interface RuntimeReplacementSnapshot {
   readonly activeViewContextId: string | undefined;
   readonly latestRequestedViewContextId: string | undefined;
   readonly latestRequestedPageRequestId: string | undefined;
+  readonly committedPage: RuntimeReconfigurationSession["committedPage"];
   readonly hadBackendPreference: boolean;
   readonly backendPreference: DataBackend | undefined;
 }
@@ -753,6 +756,7 @@ function replacementSnapshot(session: RuntimeReconfigurationSession): RuntimeRep
     activeViewContextId: session.activeViewContextId,
     latestRequestedViewContextId: session.latestRequestedViewContextId,
     latestRequestedPageRequestId: session.latestRequestedPageRequestId,
+    committedPage: session.committedPage,
     hadBackendPreference: Object.prototype.hasOwnProperty.call(session, "backendPreference"),
     backendPreference: session.backendPreference
   };
@@ -791,6 +795,7 @@ function restoreReplacement(session: RuntimeReconfigurationSession, snapshot: Ru
   session.activeViewContextId = snapshot.activeViewContextId;
   session.latestRequestedViewContextId = snapshot.latestRequestedViewContextId;
   session.latestRequestedPageRequestId = snapshot.latestRequestedPageRequestId;
+  session.committedPage = snapshot.committedPage;
   if (snapshot.hadBackendPreference) session.backendPreference = snapshot.backendPreference;
   else delete session.backendPreference;
 }
@@ -848,6 +853,7 @@ function publishCandidate(
   session.activeViewContextId = undefined;
   session.latestRequestedViewContextId = undefined;
   session.latestRequestedPageRequestId = undefined;
+  session.committedPage = undefined;
 }
 
 function replacementOpenRequest(

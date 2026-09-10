@@ -345,12 +345,7 @@ export function App() {
       };
       confirmedView.current = confirmed;
       setActiveViewContextId(viewContextId);
-      vscode.postMessage({
-        kind: "setViewContext",
-        viewContextId,
-        lastPageRequestId: lastIssuedPageRequestId.current,
-        ...(state ? { state } : {})
-      });
+      vscode.postMessage({ kind: "setViewContext", viewContextId, ...(state ? { state } : {}) });
       return confirmed;
     },
     []
@@ -1316,7 +1311,7 @@ export function App() {
         setLiveSessionReconnectPending(false);
         setForegroundError(undefined);
         storeFailedPageRequest(undefined);
-        installSessionSnapshot(response, nextViewRequestId(), true);
+        installSessionSnapshot(response, response.offeredViewContextId, true);
         return;
       }
 

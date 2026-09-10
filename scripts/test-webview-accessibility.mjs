@@ -1718,7 +1718,10 @@ async function verifyCompactGridWorkspace(browser) {
           row.rowLabel = `case-${String(index + 1).padStart(4, "0")}`;
         });
         window.dispatchEvent(
-          new MessageEvent("message", { data: { ...payload, kind: "sessionOpened" }, origin: location.origin })
+          new MessageEvent("message", {
+            data: { ...payload, kind: "sessionOpened", offeredViewContextId: "snapshot:accessibility-fixture" },
+            origin: location.origin
+          })
         );
         const column = metadata.schema.at(-1);
         return {

@@ -523,7 +523,17 @@ function inspectionResult(stepId: string, offset: number, response: OpenWrangler
 }
 
 function dispatch(data: HostMessage): void {
-  act(() => window.dispatchEvent(new MessageEvent("message", { data, origin: window.location.origin })));
+  act(() =>
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data:
+          data && typeof data === "object" && "kind" in data && data.kind === "sessionOpened"
+            ? { ...data, offeredViewContextId: `snapshot:${crypto.randomUUID()}` }
+            : data,
+        origin: window.location.origin
+      })
+    )
+  );
 }
 
 function runtimeRequests(kind: string): Record<string, unknown>[] {

@@ -6,6 +6,7 @@ import * as vscode from "vscode";
 import type { NotebookDocument } from "vscode";
 import type { BridgeRequestOptions, OpenWranglerBridge } from "../extension/dataBridge";
 import { RKernelDiagnosticError } from "../extension/r/rKernelTransport";
+import { SESSION_STORAGE_KEY } from "../extension/sessionPersistence";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
 import type { FilterModel } from "../shared/filterModel";
 import type {
@@ -34,6 +35,94 @@ import {
 } from "./rKernelBridgeTestFixtures";
 
 describe("SessionCoordinator", () => {
+  it.each(["runtime", "staged persistence"])(
+    "retires an old filtered page held at %s before a snapshot view is confirmed",
+    async (heldAt) => {
+      const runtimeOpened = openedResponse("runtime-snapshot");
+      runtimeOpened.metadata = {
+        ...runtimeOpened.metadata,
+        shape: { rows: 2, columns: 1 },
+        filteredShape: { rows: 2, columns: 1 },
+        schema: [{ id: "c:city", name: "city", position: 0, rawType: "String", type: "string", nullable: false }]
+      };
+      runtimeOpened.page = { ...runtimeOpened.page, totalRows: 2, columnIds: ["c:city"] };
+      const entered = deferred<void>();
+      const release = deferred<void>();
+      let hold = false;
+      const stored = new Map<string, unknown>([[SESSION_STORAGE_KEY, {}]]);
+      const workspaceState: vscode.Memento = {
+        get: <T>(key: string, fallback?: T): T => (stored.get(key) as T | undefined) ?? (fallback as T),
+        keys: () => [...stored.keys()],
+        update: async (key, value) => {
+          if (hold && heldAt === "staged persistence") {
+            hold = false;
+            entered.resolve();
+            await release.promise;
+          }
+          stored.set(key, value);
+        }
+      };
+      const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+        if (request.kind === "openSession") return runtimeOpened;
+        if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+        if (request.kind !== "getPage") throw new Error(`Unexpected ${request.kind}`);
+        if (hold && heldAt === "runtime") {
+          hold = false;
+          entered.resolve();
+          await release.promise;
+        }
+        return pageResponseForMetadata(request, runtimeOpened.metadata);
+      });
+      const coordinator = new SessionCoordinator(workspaceState);
+      const bridge = coordinator.createBridge({ request: delegateRequest });
+      let pending: Promise<OpenWranglerResponse> | undefined;
+      try {
+        const opened = await bridge.request(openRequest);
+        if (opened.kind !== "sessionOpened") throw new Error("Expected open");
+        const sessionId = opened.metadata.sessionId;
+        bridge.setViewContext?.(sessionId, "original-view");
+        const before = structuredClone([...stored]);
+        const changedFilter: FilterModel = {
+          filters: [],
+          sort: [{ column: "city", direction: "desc", nulls: "last" }]
+        };
+        const request = {
+          kind: "getPage" as const,
+          sessionId,
+          revision: 0,
+          viewRequestId: "old-filter",
+          offset: 0,
+          limit: 2,
+          columnOffset: 0,
+          columnLimit: 1,
+          filterModel: changedFilter
+        };
+        hold = true;
+        pending = bridge.request(request, heldAt === "runtime" ? undefined : { viewContextId: "old-filter-view" });
+        await entered.promise;
+        bridge.setViewContext?.(sessionId, undefined);
+        release.resolve();
+        await expect(pending).resolves.toMatchObject({
+          kind: "error",
+          code: "stale_response",
+          viewRequestId: "old-filter"
+        });
+        expect(coordinator.activeSession()?.metadata.filterModel).toEqual(opened.metadata.filterModel);
+        expect([...stored]).toEqual(before);
+        bridge.setViewContext?.(sessionId, "snapshot:accepted");
+        await expect(
+          bridge.request({ ...request, viewRequestId: "fresh-filter" }, { viewContextId: "fresh-filter-view" })
+        ).resolves.toMatchObject({ kind: "page", metadata: { filterModel: changedFilter } });
+        expect(coordinator.activeSession()?.metadata.filterModel).toEqual(changedFilter);
+      } finally {
+        hold = false;
+        release.resolve();
+        await pending;
+        await coordinator.shutdown();
+      }
+    }
+  );
+
   it.each(["B accepted", "C succeeds", "C fails"] as const)(
     "retains the last confirmed normal R view through Undo: %s",
     async (outcome) => {

@@ -4,6 +4,7 @@ import type {
   FilterModel,
   OpenSessionRequest,
   OpenWranglerResponse,
+  PageResponse,
   SessionBoundRequest,
   SessionMetadata,
   SessionSource,
@@ -27,6 +28,7 @@ export interface SessionResponseState extends RuntimeSessionState {
   activeViewContextId?: string;
   latestRequestedViewContextId?: string;
   latestRequestedPageRequestId?: string;
+  committedPage?: Pick<PageResponse, "viewRequestId" | "page">;
   stepInspection?: StepInspectionResponse;
   latestStepInspectionKey?: string;
   viewChangeEpoch?: number;
@@ -318,8 +320,10 @@ export class SessionResponseCommitter {
           : session.draftBaseViewChangeEpoch;
     const commitState = (viewState: SessionResponseState["viewState"]): void => {
       if (pageRequest) {
+        session.committedPage = { viewRequestId: pageRequest.viewRequestId, page: response.page };
         session.activeViewContextId = options?.viewContextId;
       } else if (planChanged) {
+        session.committedPage = undefined;
         session.activeViewContextId = undefined;
         session.latestRequestedViewContextId = undefined;
         session.latestRequestedPageRequestId = undefined;
@@ -523,6 +527,7 @@ interface SessionPublication {
   readonly activeViewContextId: string | undefined;
   readonly latestRequestedViewContextId: string | undefined;
   readonly latestRequestedPageRequestId: string | undefined;
+  readonly committedPage: SessionResponseState["committedPage"];
   readonly metadata: SessionResponseState["metadata"];
   readonly viewState: SessionResponseState["viewState"];
   readonly viewChangeEpoch: number | undefined;
@@ -540,6 +545,7 @@ function sessionPublication(session: SessionResponseState): SessionPublication {
     activeViewContextId: session.activeViewContextId,
     latestRequestedViewContextId: session.latestRequestedViewContextId,
     latestRequestedPageRequestId: session.latestRequestedPageRequestId,
+    committedPage: session.committedPage,
     metadata: session.metadata,
     viewState: session.viewState,
     viewChangeEpoch: session.viewChangeEpoch,
@@ -558,6 +564,7 @@ function sameSessionPublication(session: SessionResponseState, publication: Sess
     session.activeViewContextId === publication.activeViewContextId &&
     session.latestRequestedViewContextId === publication.latestRequestedViewContextId &&
     session.latestRequestedPageRequestId === publication.latestRequestedPageRequestId &&
+    session.committedPage === publication.committedPage &&
     session.metadata === publication.metadata &&
     session.viewState === publication.viewState &&
     session.viewChangeEpoch === publication.viewChangeEpoch &&
@@ -575,6 +582,7 @@ function restoreSessionPublication(session: SessionResponseState, publication: S
   session.activeViewContextId = publication.activeViewContextId;
   session.latestRequestedViewContextId = publication.latestRequestedViewContextId;
   session.latestRequestedPageRequestId = publication.latestRequestedPageRequestId;
+  session.committedPage = publication.committedPage;
   session.metadata = publication.metadata;
   session.viewState = publication.viewState;
   session.viewChangeEpoch = publication.viewChangeEpoch;
