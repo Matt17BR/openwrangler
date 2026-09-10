@@ -21,6 +21,7 @@ import {
 import { setGridColumnWidth, type GridViewState } from "../../shared/viewState";
 import { createRowScrollModel, gridRowHeight, logicalRowForScrollTop, scrollTopForLogicalRow } from "./rowScrollModel";
 import { GridClipboardControls, useGridClipboard } from "./GridClipboardControls";
+import type { GridCellCoordinate } from "./gridClipboard";
 import type { ProfileValueMode } from "../profileValueMode";
 import { useGridHeaderProfiles } from "./GridHeaderProfileValues";
 import { GridColumnHeader } from "./GridColumnHeader";
@@ -174,7 +175,7 @@ export function DataGrid({
   const logicalViewContext = viewContextId ?? `${metadata.sessionId}:${metadata.revision}`;
   const previousViewContext = useRef(logicalViewContext);
   const appliedViewStateRestoreVersion = useRef<number | undefined>(undefined);
-  const focusRequested = useRef(false);
+  const focusRequested = useRef<boolean | GridCellCoordinate>(false);
   const pointerSelectionFocusRequest = useRef<{ row: number; column: number } | undefined>(undefined);
   const preserveGridFocusAfterScroll = useRef(false);
   const programmaticViewportTarget = useRef<ProgrammaticViewportTarget | undefined>(undefined);
@@ -297,7 +298,6 @@ export function DataGrid({
     cancelPointerDrag(undefined, false);
     cancelColumnResize();
     requestedOffset.current = page.offset;
-    focusRequested.current = false;
     pointerSelectionFocusRequest.current = undefined;
     preserveGridFocusAfterScroll.current = false;
     const column = selectedColumnPosition(metadata.schema, viewStateRef.current.selectedColumnId);
@@ -306,14 +306,19 @@ export function DataGrid({
     const firstVisibleRow = authoritativeRestorePending
       ? Math.max(0, Math.min(viewStateRef.current.viewport.firstVisibleRow, Math.max(0, logicalRowExtent - 1)))
       : page.offset;
-    setFocusedCell({
+    const resetCell = {
       row: authoritativeRestorePending ? firstVisibleRow : (page.rows[0]?.rowNumber ?? page.offset),
       column
-    });
-    resetGridClipboardSelection({
-      row: authoritativeRestorePending ? firstVisibleRow : (page.rows[0]?.rowNumber ?? page.offset),
-      column
-    });
+    };
+    const activeElement = document.activeElement;
+    focusRequested.current =
+      activeElement instanceof HTMLTableCellElement &&
+      activeElement.matches("td[data-grid-row][data-grid-column]") &&
+      scrollerRef.current?.contains(activeElement)
+        ? resetCell
+        : false;
+    setFocusedCell(resetCell);
+    resetGridClipboardSelection(resetCell);
     const scroller = scrollerRef.current;
     if (!scroller) return;
     const scrollTop = scrollTopForLogicalRow(
@@ -364,14 +369,21 @@ export function DataGrid({
     );
     const column = selectedColumnPosition(restoration.metadata.schema, restoration.viewState.selectedColumnId);
     requestedOffset.current = restoration.page.offset;
-    focusRequested.current = false;
     pointerSelectionFocusRequest.current = undefined;
     preserveGridFocusAfterScroll.current = false;
     dismissCellActionMenu();
     cancelPointerDrag(undefined, false);
     cancelColumnResize();
-    setFocusedCell({ row, column });
-    resetGridClipboardSelectionRef.current({ row, column });
+    const resetCell = { row, column };
+    const activeElement = document.activeElement;
+    focusRequested.current =
+      activeElement instanceof HTMLTableCellElement &&
+      activeElement.matches("td[data-grid-row][data-grid-column]") &&
+      scroller.contains(activeElement)
+        ? resetCell
+        : false;
+    setFocusedCell(resetCell);
+    resetGridClipboardSelectionRef.current(resetCell);
     const scrollTop = scrollTopForLogicalRow(createRowScrollModel(restorationRowExtent, scroller.clientHeight), row);
     const scrollLeft = restoration.viewState.viewport.scrollLeft;
     writeProgrammaticViewport(scroller, { firstVisibleRow: row, scrollTop, scrollLeft });
@@ -842,12 +854,20 @@ export function DataGrid({
   }, [busy, loadedColumnSignature, logicalViewContext, page.offset, visibleColumnRange.end, visibleColumnRange.start]);
 
   useEffect(() => {
-    if (!focusRequested.current) return;
+    const requestedFocus = focusRequested.current;
+    if (!requestedFocus) return;
     if (!document.hasFocus()) {
       focusRequested.current = false;
       pointerSelectionFocusRequest.current = undefined;
       return;
     }
+    // A reset's focus request belongs to its new selection, not an earlier
+    // render whose passive effects run before the reset coordinates render.
+    if (
+      requestedFocus !== true &&
+      (requestedFocus.row !== focusedCell.row || requestedFocus.column !== focusedCell.column)
+    )
+      return;
     const selector = `[data-grid-row="${focusedCell.row}"][data-grid-column="${focusedCell.column}"]`;
     const target = scrollerRef.current?.querySelector<HTMLElement>(selector);
     if (!target) return;

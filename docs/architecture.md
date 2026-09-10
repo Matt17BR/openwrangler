@@ -1027,6 +1027,9 @@ support keyboard navigation and selection while the editor's mutation guards rem
 Pending grid navigation yields to a later focus choice, including headers and resize controls. Virtualizing the
 original cell alone does not cancel navigation. A column-resize drag ends when the host restores view state, the
 logical view changes, or its controls become disabled; its own width updates and viewport resizing retain the drag.
+Changing the logical view or restoring view state resets cell selection. If a surviving grid cell has keyboard focus,
+focus follows the reset selection so Copy and keyboard navigation address the same cell. The reset does not acquire grid
+focus from another control.
 
 The grid's existing header measurement reserves space for its compact header, one row and the native scrollbar.
 The profiles panel scrolls within the workspace's height; its contents do not determine that height.
