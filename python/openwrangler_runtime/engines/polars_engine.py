@@ -226,7 +226,9 @@ class PolarsEngine(DataFrameEngine):
                 if any(symbol in checked_path for symbol in "*?["):
                     raise EngineError(
                         "Polars cannot safely open this NDJSON path on Windows "
-                        "because it contains glob characters (*, ?, [)."
+                        "because it contains glob characters (*, ?, [). "
+                        "To use Pandas instead, set openWrangler.defaultBackend to pandas in VS Code Settings, "
+                        "then run Open Wrangler: Open File Path and select this file again."
                     )
                 return pl.scan_ndjson(path)
 

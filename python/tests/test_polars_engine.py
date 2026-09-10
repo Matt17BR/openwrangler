@@ -407,7 +407,13 @@ def test_polars_ndjson_windows_branch_uses_direct_paths_or_refuses_glob_syntax(
     monkeypatch.setattr(polars_engine, "os", SimpleNamespace(name="nt"))
     monkeypatch.setattr(pl, "scan_ndjson", lambda source: calls.append(source))
     if not accepted:
-        with pytest.raises(EngineError):
+        # pathlib versions classify this malformed prefix at different refusal boundaries.
+        message = (
+            None
+            if name == r"\\?\C:plain.jsonl"
+            else r"openWrangler\.defaultBackend.*pandas.*Open Wrangler: Open File Path"
+        )
+        with pytest.raises(EngineError, match=message):
             PolarsEngine().read_file(name)
         assert not calls
     else:

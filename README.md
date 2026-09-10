@@ -79,13 +79,13 @@ records. These additions are not in stable 2.1.0; see the
 
 ## View, edit, and export
 
-| User action                      | File sessions                                                                          | Notebook and interactive sessions                                                                                                    |
-| -------------------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| Open and view                    | CSV, TSV, Parquet, JSONL/NDJSON, and Excel; Open Wrangler selects a compatible backend | Pandas, Polars, DuckDB relations, local PySpark batch dataframes, and R frames                                                       |
-| Filter, sort, profile, and copy  | Available                                                                              | Available                                                                                                                            |
-| Preview and apply cleaning steps | Pandas and Polars; experimental DuckDB file editing                                    | Pandas and Polars; selected R workflows. DuckDB relations and PySpark remain view-only                                               |
-| Copy, save, or insert code       | Copy or save generated Python code                                                     | Sessions supporting cleaning: copy or save generated Python or R code; insert only into the originating notebook or managed document |
-| Export cleaned data              | Write CSV or Parquet to a separate destination                                         | Available from supported editing sessions; view-only sessions cannot export                                                          |
+| User action                      | File sessions                                                               | Notebook and interactive sessions                                                                                                    |
+| -------------------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Open and view                    | CSV, TSV, Parquet, JSONL/NDJSON, and Excel, subject to native reader limits | Pandas, Polars, DuckDB relations, local PySpark batch dataframes, and R frames                                                       |
+| Filter, sort, profile, and copy  | Available                                                                   | Available                                                                                                                            |
+| Preview and apply cleaning steps | Pandas and Polars; experimental DuckDB file editing                         | Pandas and Polars; selected R workflows. DuckDB relations and PySpark remain view-only                                               |
+| Copy, save, or insert code       | Copy or save generated Python code                                          | Sessions supporting cleaning: copy or save generated Python or R code; insert only into the originating notebook or managed document |
+| Export cleaned data              | Write CSV or Parquet to a separate destination                              | Available from supported editing sessions; view-only sessions cannot export                                                          |
 
 The [generated reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md) lists every command,
 setting, operation, and supported parameter in the current source.
@@ -98,6 +98,12 @@ It is not tested across every VS Code feature. Support for other VS Code-based d
 Browser-hosted editors are unsupported, and Remote SSH is outside the current compatibility coverage. Python file
 and notebook workflows use Python 3.10 through 3.14. If a required package is missing, Open Wrangler names it and
 asks before installing anything.
+
+On Windows, Polars cannot open JSONL/NDJSON paths with glob characters such as `[` in a filename or folder name.
+To use Pandas, set `openWrangler.defaultBackend` to `pandas` in Settings, then run **Open Wrangler: Open File Path**
+and select the file again. Auto does not switch engines after a file-read error. Pandas uses its own parser and may
+infer different types. See the [file-reader limits](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md)
+and [#986](https://github.com/Matt17BR/openwrangler/issues/986).
 
 R workflows open `data.frame`, tibble, and `data.table` values. IRkernel works in VS Code on Linux, macOS,
 and Windows, and in Cursor on Linux. Selected R terminal workflows are available on Linux. Direct `.R`, `.Rmd`, and

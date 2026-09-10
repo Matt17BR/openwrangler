@@ -476,7 +476,7 @@ test("incomplete source documentation remains valid while canonical stable autho
   );
   await assert.rejects(
     createCanonicalReleaseArtifact(artifactOptions(fixture).options),
-    /Canonical stable release readiness failed:.*CSV\/TSV\/Parquet\/Excel\/JSONL entry points.*Partial.*Yes\/Partial/su
+    /Canonical stable release readiness failed:.*File entry points; Windows Polars JSONL excludes glob paths.*Partial.*Yes\/Partial/su
   );
   assert.equal(existsSync(fixture.outputDirectory), false);
 });

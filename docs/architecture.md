@@ -79,6 +79,11 @@ cached blocks and returns a recoverable reopen diagnostic. Page caches are sessi
 payload weight, and keyed by both row and column projection. A view, source, plan, draft, or disposal change
 invalidates incompatible entries.
 
+File Auto selection chooses the first available backend in Polars, DuckDB, then Pandas order, restricted by the
+file format and import options. This happens before the native read; a read error does not trigger another engine.
+**Open Wrangler: Open File Path** reads the configured default and creates a fresh panel, including after a failed
+open. Restoring a custom editor instead preserves its previously confirmed backend.
+
 Delimited import detection reads at most 65,539 bytes once: a 64 KiB nominal prefix and up to three bytes to complete
 its final UTF-8 scalar. A valid nominal prefix ignores later bytes; malformed interior bytes retain the existing
 encoding fallback. This sample does not prove EOF or validate the full file.
@@ -637,6 +642,10 @@ buffer read, the reader returns no source bytes and refuses the temporary plan. 
 fingerprint before and after reads. On Windows, JSONL/NDJSON forwards the normalized absolute path unchanged. The glob
 check excludes only the structural `\\?\C:\` local-drive prefix; it still refuses `*`, `?`, or `[` in the remaining
 path and unsupported verbatim prefixes because the supported scanner cannot disable glob expansion.
+Those refused Windows Polars JSONL/NDJSON paths are outside the stable file-entry scope recorded in
+[feature parity](feature-parity.md); [#986](https://github.com/Matt17BR/openwrangler/issues/986) retains the missing
+literal-path capability. A user can explicitly select Pandas through the default-backend setting and a fresh
+Open File Path command; that does not change existing sessions or normalize the engines' parser behavior.
 
 Datetime formatting preserves native Date and Datetime columns, including time zones and nanosecond precision,
 before formatting the result as text. Live execution and generated code parse text only for non-temporal inputs.
