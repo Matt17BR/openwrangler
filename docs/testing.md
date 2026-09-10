@@ -26,7 +26,9 @@ therefore do not prevent concurrent invocations from choosing the same ports.
 
 ## Direct source checks
 
-While iterating, run the smallest relevant test:
+Complete [Clone and install](../CONTRIBUTING.md#clone-and-install), and use
+[Python selection](../CONTRIBUTING.md#python-selection-for-repository-commands) for repository Python commands.
+While iterating, run the smallest relevant owner:
 
 ```bash
 npx --no-install vitest run src/test/configuration.unit.test.ts
@@ -42,43 +44,11 @@ npm run test:ts
 npm run test:python
 ```
 
-Vitest runs `.test.tsx` component files in jsdom. The same DOM project includes the plain TypeScript clipboard,
-notebook-renderer and Code Preview synchronization owners, which use browser APIs. Other TypeScript owners run in
-Node. The projects share aliases and test options in `vite.config.mts`; only the DOM project loads the popover shim.
-The global four-worker limit remains overridable with `--maxWorkers`. Keep new DOM-dependent tests in the DOM
-project rather than adding browser setup to every suite.
-
-`npm run test:scripts` runs the Node tests for release, packaging, licenses, dependency locks, and archives directly
-with `node --test`.
-The R dependency-lock owner exercises the actual `prepare` CLI with a controlled R receipt, preserving cache identity
-across image and supported patch changes, provenance, and refusal before output publication. It also keeps the archive
-and fresh-library validation controls; this source check does not install R packages.
-The editor artifact owner checks that the isolated downloader closes rejected HTTPS response sockets after success
-and failure, preserving its result envelope and allowing pending filesystem work to finish through natural exit.
-The package owner checks in-place corruption and truncation after staging-name retirement, requiring byte mismatch
-refusal and owned cleanup. Successful publication retains the verified receipt and exact source-manifest bindings.
-The CI scope proof tests use real Git merges to cover exact commit binding, changed paths and modes, shallow history,
-and bounded output. They admit regular runtime source additions while retaining refusal of deletions, renames and unsafe
-paths or modes. They distinguish documentation-only omissions, including existing CHANGELOG edits, from the independent
-Python and R scopes, require both runtimes for mixed changes, and execute the required-result guards with failed proofs,
-malformed outputs, and skipped or canceled runtime execution.
-The [CI scope](ci.md#pull-requests) also permits edits to two existing R-only journey files; the same owner retains
-refusal of their additions, moves, unsafe modes, unlisted helpers and mixed Python changes.
-Dependency guard tests force lock creation between the initial missing-file check and directory enumeration, and
-retain refusal when the lock stays missing. Their real concurrent status pair receives EOF on both inputs before
-either process is awaited; status validation requires EOF before execution. The deterministic cases and real pair run
-in ordinary Linux and Windows CI alongside the existing platform filesystem controls.
-Dependency fixtures own their interactive helper processes from creation, before writing or asserting READY. Per-test
-teardown closes input and settles those exact processes before removing journal files, including after pre-GO assertions
-fail. Bounded frame readers settle before pipe closure. Portable `fixture_cleanup` cases also run in the existing Windows
-worker; they preserve no-install behavior on EOF and the original assertion failure.
-The daily-preview tests execute the scheduled source check with controlled GitHub CLI responses, covering unchanged
-and changed commits, missing history, manual dispatches, and lookup failures. Real Git fixtures own daily change-note
-ranges, sibling preview source parents, first-preview and empty output, conservative version-only filtering, merge
-commits, PR grouping with direct-commit fallback, collapsed long lists, Markdown escaping and complete-output limits.
-Publisher tests own bounded PR attribution, published-baseline selection, private draft exclusion, source/provenance
-agreement, frozen retry inputs and exact body/asset refusal. Workflow assertions retain the first-attempt package output
-handoff; a publication retry must not discover a new notes baseline or reread mutable PR metadata.
+Vitest's DOM project runs `.test.tsx` files and the plain TypeScript clipboard, notebook-renderer and Code Preview
+synchronization owners in jsdom. Other TypeScript owners run in Node. The projects share aliases and options in
+[`vite.config.mts`](../vite.config.mts); only the DOM project loads the popover shim. The global four-worker limit
+can be overridden with `--maxWorkers`. Keep browser-dependent owners in the DOM project. Native R cross-process
+owners are selected by the R runner rather than the ordinary TypeScript suite.
 
 Use these checks for changed static boundaries:
 
@@ -90,65 +60,102 @@ npm run typecheck
 npm run protocol:check
 npm run reference:check
 npm run docs:check
+npm run brand:check
 npm run check:remote-jupyter-lock
 npm run check:r-dependency-lock
 npm run license:check
 ```
 
-`npm run typecheck` checks the extension with Node module resolution, then checks the webview, shared and test program
-including dependency declarations. Local and CI checks use the same strict webview configuration.
+`typecheck` checks the extension with Node module resolution, then the strict webview, shared and test program,
+including dependency declarations. `npm run check` runs the static checks sequentially; `npm test` runs the three
+source suites sequentially. `npm run check:pr` runs both. The release-candidate workflow starts from protected main
+after these checks pass and does not repeat the source suites.
 
-`npm run check` runs those static checks sequentially, and `npm test` runs the three source suites sequentially.
-`npm run check:pr` runs both commands for local and protected-main checks. The release-candidate workflow starts from
-protected main after these checks pass and does not repeat the source suites.
+`test:scripts` runs the explicit Node test selection in [`package.json`](../package.json). The
+[package-source owner](../scripts/package-source-manifest.test.mjs) and
+[archive owner](../scripts/vsix-archive.test.mjs) check source bindings, corruption refusal and owned cleanup.
+The [R dependency-lock owner](../scripts/r-dependency-lock.test.mjs) checks the actual prepare CLI, cache identity,
+archive validation and refusal before output publication with a controlled R receipt; it does not install packages.
+The [CI proof owner](../scripts/ci-docs-only.test.mjs) uses real Git histories and executes the workflow guards.
+Its exact scope and omission rules belong in [CI](ci.md#pull-requests), not individual test descriptions here.
 
-For changes to rendered webview UI, interactions, styles, browser fixtures, their generated content or screenshot
-baselines, run local browser acceptance. Complete [Clone and install](../CONTRIBUTING.md#clone-and-install), including
-`python[dev]`, and select the fixture generator's interpreter using
-[Python selection](../CONTRIBUTING.md#python-selection-for-repository-commands).
-Then run:
+The [daily-preview owner](../scripts/daily-preview-artifact.test.mjs) checks source decisions and actual change-note
+ranges; the [publisher owner](../scripts/publish-github-stable-release.test.mjs) checks attribution, published-baseline
+selection, frozen retry inputs and exact body/asset agreement. Publication retries must reuse the first attempt's
+inputs rather than rediscovering release or PR metadata. Follow [Releasing](releasing.md) for artifact and publication
+authority. `docs:check` permits incomplete capabilities in the stable-channel source ledger while validating its
+canonical entries; the canonical artifact owners still refuse stable qualification with an incomplete required ledger.
+
+For rendered webview UI, interactions, styles, browser fixtures, their generated content or screenshot changes, run
+local browser acceptance. Install `python[dev]` through the setup above, then run:
 
 ```bash
 npx --no-install playwright-core install chromium
 npm run test:webview-acceptance
 ```
 
-On supported Linux hosts that lack browser system libraries, first run
-`npx --no-install playwright-core install-deps chromium`.
-The suite builds the webview, regenerates browser fixtures, compares screenshots with the checked-in baselines, and
-runs browser interaction and accessibility checks. It is local-only: `npm test`, `check:pr`, and hosted CI, scheduled
-and release workflows do not invoke it.
+On supported Linux hosts missing browser libraries, first run
+`npx --no-install playwright-core install-deps chromium`. The suite builds the webview, regenerates browser fixtures,
+compares checked-in screenshots, and runs browser interaction and accessibility checks. It is local-only: `npm test`,
+`check:pr`, hosted CI, scheduled workflows and release workflows do not invoke it. jsdom controls do not qualify native
+layout or popup placement. The [Chromium interaction owner](../scripts/test-webview-accessibility.mjs) uses explicit
+viewports and actual keyboard, pointer and focus behavior; Code Preview readiness observes the published editor and
+visible code, because virtualized offscreen text need not exist in the DOM.
 
-For stable-channel source, `docs:check` permits incomplete capabilities in the source ledger while validating its
-canonical rows, status and backend availability labels, and tracked evidence. The canonical artifact tests prove that
-the same incomplete ledger still blocks stable qualification. Release requirements are in [Releasing](releasing.md).
+Use the existing owners to choose a focused source check:
 
-`npm run test:extension-host` builds the development extension and runs persistence seed and verification in separate
-editor processes sharing one private profile. Seed checks same-process close/reopen state and cleanup; verification
-checks persistence after editor restart, rendered recovery, and the remaining file and notebook journeys.
+- **Publication, recovery and persistence:** [response commitment](../src/test/sessionResponseCommitter.unit.test.ts),
+  [coordinator persistence](../src/test/sessionCoordinator.persistence.unit.test.ts),
+  [runtime restoration](../src/test/sessionRuntimeStateRestorer.unit.test.ts) and
+  [panel publication](../src/test/webviewPanel.unit.test.ts) check confirmed state, queued or stale responses,
+  failed saves, replay and exact session/renderer retirement. Initial saved-plan restoration stops further dispatch
+  and fallback when its opening owner retires. Protocol admission and source lifetime rules remain in
+  [Architecture](architecture.md#protocol-and-publication) and its linked runtime owners.
+- **UI state and interactions:** [App draft state](../src/test/appDraftState.component.test.tsx),
+  [operation forms](../src/test/operationBuilder.component.test.tsx),
+  [progressive profiling](../src/test/appProgressiveProfiling.component.test.tsx) and
+  [profiling lifecycle](../src/test/progressiveProfilingLifecycle.unit.test.tsx) check retained input, explicit repair,
+  request correlation and effective-query cache ownership. [Grid clipboard](../src/test/gridClipboard.unit.test.ts)
+  and [renderer lifecycle](../src/test/rendererPresentationLifecycle.unit.test.tsx) own focus and acknowledgement
+  ordering. Browser acceptance supplies the native layout and interaction evidence.
+- **Import and export boundaries:** [import detection](../src/test/importDetection.unit.test.ts) and
+  [import options](../src/test/importOptions.unit.test.ts) own the bounded sample, decoding and dialect intent.
+  [Native reader adaptation](../python/tests/test_empty_delimited_files.py) and the engine owners below check actual
+  file rows, types, options and source bytes. [Pinned native exports](../python/tests/test_configurable_export.py) and
+  [safe file export](../src/test/safeFileExport.unit.test.ts) use real files to check separate destinations, identity
+  changes and cleanup. [R private artifacts](../src/test/rPrivateArtifactBoundary.unit.test.ts) check real reads,
+  quarantine and zero-byte cleanup. Metadata identity checks do not detect every same-size content change.
+- **Python engines and generated programs:** [Pandas](../python/tests/test_pandas_engine.py),
+  [Polars](../python/tests/test_polars_engine.py) and [DuckDB](../python/tests/test_duckdb_engine.py) own native profiles,
+  queries, source preservation and engine-specific evaluation bounds. [Operation edges](../python/tests/test_operation_edges.py),
+  [Fill Missing](../python/tests/test_fill_missing.py) and the existing operation-specific owners compare complete
+  live and generated results, types and indexes. [Session transactions](../python/tests/test_session_transactions.py)
+  cover public Preview/Apply, history, refusal/correction, export and replay. Keep individual numeric, dtype and
+  collision cases in those tests; supported behavior belongs in [engine boundaries](architecture.md#engine-boundaries-and-capabilities).
+- **Generated source and Custom Code:** [helper selection](../python/tests/test_generated_helpers.py),
+  [output columns](../python/tests/test_generated_output_columns.py),
+  [Custom Code scope](../python/tests/test_custom_code_scope.py) and [session plans](../python/tests/test_session_plan.py)
+  check complete executable programs, source-library and caller isolation, stable output binding, native result
+  admission and emitted-byte limits. Adding an operation or helper requires live/generated agreement in every
+  editing engine that supports it; a generated-text assertion alone is insufficient.
+- **Notebook and process boundaries:** kernel, bridge and transport owners check correlated bounded framing,
+  cancellation, execution settlement and cleanup of the original source owner. The
+  [response-framing owner](../python/tests/test_response_framing.py) checks canonical bytes and size limits.
+  Live protocol admission and saved-output normalization are separate contracts; legacy display compatibility does
+  not admit an obsolete live runtime. See [notebook provenance](architecture.md#notebook-kernel-terminal-and-document-provenance)
+  and [bounded transport](architecture.md#schemas-and-bounded-transport).
 
-The persistence store, response committer and coordinator persistence owners control storage ordering to exercise
-presentation saves during publication, late queued saves, rollback and recovery. Coordinator tests also distinguish
-live selection, widths and viewport from durable recovery state after sequential and overlapping failed saves. They
-verify later successful saves, close/reopen, and unchanged warning and diagnostic behavior. The existing installed quick-sort
-journey records bounded sort and owner state only on failure; its DOM observation stays pinned to the original
-session and renderer and has a separate one-second diagnostic limit.
+Qualify changed native engine, reader and generated-code behavior on its minimum and current supported dependencies.
+Keep native controls when versions differ: for example, newline-only Polars schemas may differ while preserving the
+reader's actual rows. Extended-precision cases use the platform's real storage and may skip where it is unavailable.
+Actual Windows local-drive tests do not qualify UNC/network shares; lexical checks or Linux skips are not Windows API
+evidence. Spark Classic and Connect retain their own native bounded-viewing owners and prerequisites; local-engine
+results do not qualify them. Support and release evidence remain governed by [feature parity](feature-parity.md).
 
-The App inspection owner checks that deletion confirmation belongs to the selected step. Switching targets requires
-a fresh confirmation, while paging within that step preserves it; Cancel returns to the ordinary actions.
-
-Generic notebook verification uses a fixture Jupyter API backed by real Python, the production bridge and a real
-editor. Released Jupyter runs in separate acceptance phases. The duplicate/non-string Pandas structural journey
-composes Select, Clone, Drop and Rename, executes the final generated plan once, and compares complete values,
-physical labels, dtypes and native indexes. It retains source/input immutability, exact stable references,
-Preview/Apply publication and complete schema equality after restart. The replay comparison retains every page
-field except session-scoped row IDs. Native operation, binding and lineage owners cover individual operation and
-generated-code semantics. The installed composition omits the nullable-float cast, duplicate-column Formula and
-non-string-label Text Length intersections. The value, row, By Example and Group By journeys retain their
-generated-plan comparisons.
-
-R kernel-restart journeys open an editing session before committing the step whose restart behavior they check.
-Their enclosing configuration owner restores the prior notebook setting on exit.
+The shared [`fixtures/view-literal-contract.json`](../fixtures/view-literal-contract.json) owns filter spellings
+supported by Python and native R. Python-specific extreme offsets remain in Python owners because R retains its own
+parser limits. Live and standalone comparisons use independently constructed native values rather than widening the
+shared fixture to imply unsupported behavior.
 
 For Native R changes, run the full contract suite or the relevant group:
 
@@ -159,532 +166,69 @@ node scripts/run-r-contract-tests.mjs --shard kernel-agent
 npm run test:scripts:native
 ```
 
-The grouped commands separate frame/catalog/transport checks from kernel-agent checks. Each group runs its phases
-serially, with a fresh child process for each phase.
-The native Pivot Longer owner compares retained column descriptors with the input capture and executes complete
-generated programs. A preceding derived-column step covers stable identities and known non-nullable columns.
-Nested Rscript contract programs use the existing warning assertion inside the child process, so an unexpected
-warning fails even when the child handles a later error. Their fresh-process isolation and original assertions remain.
+The [R runner](../scripts/run-r-contract-tests.mjs) separates frame/catalog/transport and kernel-agent checks. Each
+group runs phases serially in fresh children. The full command first runs native process contracts.
+[`test:scripts:native`](../scripts/run-r-contract-tests.native.test.mjs) selects Linux cancellation or Windows Job
+Object behavior on the current platform; ordinary Source execution does not require this native owner. Nested Rscript
+contracts fail on unexpected warnings even if they handle a later error. Preserve caller temporary-directory settings.
 
-The full R command first runs the native process contracts. `test:scripts:native` selects Linux cancellation or
-Windows Job Object behavior on the current platform; ordinary Source tests do not require this native owner.
-Linux R phase supervision uses the selected repository Python's standard library and kernel pidfds. It requires
-Python 3.10–3.14 with pidfd support, but no Python dataframe packages. The runner checks this capability before starting
-a phase and verifies each target's exact phase marker and process identity before signaling through a pidfd.
+The [complete R catalog](../r/tests/complete_catalog_contract.R) compares native live and complete generated frames,
+including source and metadata preservation. Numeric portability uses independent binary64 references and raw-bit
+comparisons through interpreted and compiled programs. Frame, kernel, decoder and process owners separately check
+primitive values, public mutations and correlated transport. Linux interactive transport controls use a real PTY;
+portable parser controls retain one-expression and physical-line byte bounds. Operation semantics and arithmetic policy belong in
+[the native R decision](decisions/0001-native-r-runtime.md); do not repeat the catalog in installed UI journeys.
 
-The Linux contracts exercise actual child and detached-descendant exit for SIGINT, SIGTERM, deadlines, output limits,
-closed output readers and escalation. An unverifiable live target leaves the overall phase unsettled even when other
-verified targets can be stopped. macOS still reports unverified settlement when it lacks a safe signaling mechanism;
-cancellation there remains unresolved. Parent SIGKILL or a runner crash is also outside this shutdown guarantee.
-These limitations are tracked in [#955](https://github.com/Matt17BR/openwrangler/issues/955).
+Linux R phase supervision needs the selected repository Python 3.10–3.14 standard library and kernel pidfd support,
+but no Python dataframe packages. Capability checks precede phase launch; signaling verifies the exact phase marker
+and process identity. Native controls exercise SIGINT, SIGTERM, deadlines, output limits, closed readers, escalation
+and detached descendants. An unverifiable live target leaves settlement unverified. macOS cancellation remains
+unresolved in [#955](https://github.com/Matt17BR/openwrangler/issues/955); parent SIGKILL and runner crashes are outside
+the shutdown guarantee.
 
-The runner handles default stdout and stderr errors through the existing failure and verified cleanup path.
-A destination error or cancellation stops later phases without waiting for other pending output. Successful phases
-drain their output after child settlement and before continuing, retaining normal reader backpressure. Destination
-listeners remain owned until pending callbacks and queued errors settle. This does not bound process exit when a
-reader stays open without consuming output.
+Destination errors or cancellation stop later phases through verified cleanup. Successful phases drain output after
+child settlement and before continuing, with normal backpressure. This does not bound exit when a reader remains
+open without consuming output. Private Spark fixtures use the selected Python temporary directory for native Spark
+storage and refuse comma-containing paths, which Spark treats as multiple roots. Keep the editor environment
+allowlist and [failure-artifact rules](#failure-artifact-allowlist) intact.
 
-The native-view source tests cover lifetime provider registrations, forwarded tree updates, and session-pinned code
-insertion. They also check that unchanged validated generated text avoids another source-validation scan, while
-changed and invalid text still reaches the validator. Lazy-owner tests distinguish pending, loaded and absent
-notebook snapshots; the installed R terminal
-journey checks that closing the terminal restores the idle R action. The existing App component tests retain
-DOM-before-acknowledgement and mismatched-marker integration
-coverage; timing and retirement behavior is owned by the renderer lifecycle tests.
+`npm run test:extension-host` builds the development extension and runs persistence seed and verification in separate
+editor processes sharing one private profile. Seed checks same-process close/reopen; verification checks persistence
+after restart, rendered recovery and the remaining file/notebook interactions. Generic notebook verification uses a
+fixture Jupyter API backed by real Python through the production bridge. Released Jupyter is qualified separately;
+[`python-notebooks`](#focused-python-notebook-checks) is not the generic file-verification profile.
 
-`src/test/importDetection.unit.test.ts` and `src/test/importOptions.unit.test.ts` own the
-[import sampling boundary](architecture.md#sources-sessions-and-data-flow), including cut UTF-8 scalars, malformed
-bytes, BOMs, quote-aware record endings and the one-read acquisition bound. Protocol, confirmed-file and persistence
-owners check optional line-ending admission and old omitted values. Reconfiguration and response owners retain source
-identity, cancellation and rollback checks. The existing `liveImportReconfiguration.ts` editor journey follows the
-complete prompt sequence. Native record parsing belongs to the existing Python reader owners on minimum and current
-dependencies, including the default Polars path; it adds no editor journey.
+The generic verification journey composes Formula then Custom Code in each editing engine, with Custom Code consuming
+the Formula output. It compares Preview/Apply and complete code, then checks the plan, schema and bounded page after
+runtime restart. It retains each engine's edited clipboard/export path, Pandas Save/cancel, source integrity and cleanup.
+The separate Pandas duplicate/non-string structural journey composes Select, Clone, Drop and Rename, comparing full
+values, physical labels, dtypes and indexes through generated replay and restart. Page replay comparisons exclude only
+session-scoped row IDs. Individual operations and native arithmetic remain in their source/generated-code owners.
 
-Native R frame tests own primitive numeric checks. The `kernel:numeric-portability` owner uses independent binary64
-references and raw-bit comparisons, including signed zero, with complete standalone and compiled execution.
-Group By and Fill owners exercise public Preview, Apply and Undo while checking source and frame identity. They check that
-plans with repeated steps emit each helper once and omit unused helpers. Group By also runs complete standalone
-programs in fresh processes without a preloaded bit64 namespace and checks isolation from caller arithmetic.
-Method-dispatch controls register and restore numeric mean methods to distinguish built-in operations from intentional
-Custom Code dispatch. Integer64 and non-mean profile controls
-remain in their existing owners. Arithmetic policy belongs in the [native R decision](decisions/0001-native-r-runtime.md).
+Ordinary installed R actions and picker acquisition observe the exact session/revision and committed renderer receipt
+without forcing another panel publication. [Picker source tests](../src/test/releasedROperationPicker.unit.test.ts)
+check passive success, stale-receipt refusal and the shared ten-second acquisition budget; ordinary session acquisition
+retains its existing thirty-second bound. Dedicated recovery injection, media setup and deliberately synthetic view
+setup retain their explicit synchronization. A missing production publication must fail rather than be repaired by
+the ordinary assertion path.
 
-Profile controls cover small and chunked even medians, text lengths and unchanged fields; primitive checks retain
-signed-zero and nonfinite median behavior that JSON cannot distinguish.
-R interactive transport tests also execute the real dispatcher in a fresh Linux PTY with canonical input and in a
-ready PTY. Portable R tests check one-expression parsing, exact long escaped values and full physical-line byte bounds.
-Native R child fixtures retain the caller's temporary-directory settings. Private Spark notebook fixtures use
-Python's selected temporary directory for native Spark storage too; Java's default may otherwise select a full
-filesystem. Spark fixtures refuse temporary paths containing commas, which Spark interprets as separate roots.
-The editor environment allowlist and native cleanup owners remain unchanged.
+The R value journey retains Find and Replace, Formula's visible precision refusal and correction, Format Datetime,
+Capitalize and both dynamic Pivot forms. Repeated numeric and text catalog checks belong to native owners; remote
+Lowercase remains a separate transport check. R restart scenarios open the editing session before committing the step
+whose restart behavior they inspect and restore their prior notebook setting. Platform and other focused scenario
+coverage remain described in [Native R editor dependencies](#native-r-editor-dependencies).
 
-Grid clipboard, resize-lifecycle and App column-projection component tests own delayed page focus and interrupted
-column drags. They distinguish newer focus from removal of a virtualized cell, and host restoration from a drag
-publishing its own widths. Existing range-selection and column-reveal controls retain their focus behavior.
+[Lazy activation tests](../src/test/lazyActivationOwners.unit.test.ts) own lifetime custom-editor, native-tree and Code
+Preview registrations, exact resolution cancellation, rollback and once-only shutdown. The environment-gated test API
+is acquired explicitly and refuses acquisition that outlives its activation owner. The existing daily-core journey
+delays full API acquisition until its natural file title action, using a controlled profile without notebook or
+visible-view demand; other journeys acquire the same API normally. This fixture does not assert that all activation
+contexts have no demand-loaded owners.
 
-Coordinator tests preserve the confirmed R view through Undo after a stale clipboard read, and reject stale requests
-queued across runtime recovery and detached execution. The executor owner separately checks cancellation
-after dispatch; current and contextless reads retain their existing behavior.
-
-Column-search controls check repeated selection of the current column, outer scrolling at ordinary and doubled zoom,
-empty results, window blur and newer focus.
-The existing webview header-profile owner checks the compact minimum, native scrollbar, expanded-profile fit,
-profile/session updates and observer disposal. The applied-plan browser case in `scripts/test-webview-accessibility.mjs`
-checks compact panes with applied steps, a draft and a viewing filter, including actual suggestion hits, keyboard
-selection and dismissal, exact cell focus, sticky-header clearance and bounded table height. The installed R editing
-case waits for natural cell focus, then checks the full available column lane, complete visible row, actual pointer
-target and focus in one DOM read.
-The existing wide-grid browser case holds correlated pages while the visible column range changes. It checks that
-Undo stays disabled through the corrective projection, then accepts one normal click after the final page settles.
-Browser cases set intended viewports explicitly through the page API, including the clipboard owner.
-Code Preview readiness uses nonempty visible code and its published editor identity, independent of import placement.
-Offscreen generated functions may be absent from CodeMirror's virtualized DOM. Origin, message-shape and read-only
-controls retain their assertions.
-The same owner checks Tab entry and exit, navigation to the end of a long read-only buffer, and keyboard edit refusal.
-The filter keyboard owner checks that a long profiles panel scrolls internally while the wide grid footer remains
-visible, including compact resizing and focus restoration on Close.
-App shortcut and grid clipboard cases cover column-menu Escape precedence, summary focus, and a pending copy that
-finishes after Escape and reopening the menu. The existing column-header Chromium owner also checks visible keyboard
-focus, pointer sorting and close restoration in a 274×348 pane, alongside its 80px columns and zoom controls.
-Component tests stub jsdom's missing popover methods and retain details-owned visibility; native popup placement
-is verified in Chromium.
-
-Native R response tests cover aggregate ASCII string expansion, exact scalar and explicit-array output, and Unicode
-under normal and C locales. Literal wire expectations cover short escapes, control characters, BMP and surrogate-pair
-boundaries, mixed strings and Latin-1 input. The real process owner verifies an oversized valid page returns a correlated error and
-accepts a smaller page in the same process. Existing opening and mutation preflights retain their state assertions.
-
-Panel tests hold Code Preview focus open while forcing another renderer synchronization, discarding the draft,
-changing the reveal setting, deactivating, or disposing. Installed operation journeys acquire the exact acknowledged
-receipt after layout settles and retain its session, revision, and DOM marker checks.
-The Mark Duplicates and Dense Rank preview/apply checks and the applied Rename check observe the mutation's exact
-revision and committed layout without requesting another publication. They retain active-session and revision guards
-before and after renderer acquisition. Other R session acquisitions keep their existing fresh synchronization;
-inspection retains its existing renderer.
-The R journeys leave synchronization to the next app acquisition, operation picker or nested journey when no
-intervening action consumes the current renderer.
-They retain separate waits before step inspection, passive acquisition, Code Preview receipt checks and helper completion.
-The R operation picker passes its remaining acquisition budget to hydration, preventing a late repair request after
-that deadline; other session acquisitions retain their default hydration timeout.
-The R value journey completes both Pivot UI rounds before coordinator-only Lowercase, Uppercase, Strip and Split
-checks. Those direct requests advance session state without publishing a panel snapshot, so no same-session UI action follows them.
-App draft-state tests own failed and cancelled preview feedback for new and edited operations. They assert an
-accessible alert inside the submitting dialog, retained input and confirmed data, correction and resubmission, and
-cleanup on operation or session changes. Host Undo errors remain a separate workspace-owned control.
-The same App owner checks that removing an edited step closes its dialog and restores focus while failed Undo,
-surviving edit targets and new-operation forms retain their input.
-FilterPanel controls retain unavailable column targets and unfinished text while blocking dispatch until explicit
-repair. They preserve initial defaults, deliberate navigation and same-ID rename/return behavior. The App progressive-profiling owner
-replaces a session with reused column IDs to verify fresh draft/search input and continued rejection of old responses.
-[App profiling tests](../src/test/appProgressiveProfiling.component.test.tsx) own explicit value-filter form resets,
-their single value request and confirmed-choice rollback. [Profiling lifecycle tests](../src/test/progressiveProfilingLifecycle.unit.test.tsx)
-own cache reuse against the [effective query](architecture.md#protocol-and-publication).
-[Native sort controls](../src/test/webview.component.test.tsx) own draft-preserving navigation without value requests.
-Unnamed-column tab entry retains its restriction without dispatching an invalid request, while whitespace names remain supported.
-FilterPanel and Operation Builder owners distinguish generated position labels from literal source names and names
-that collapse to the same HTML option text. Viewing selectors retain stable IDs, refuse duplicate raw source names
-and dispatch the original name after a valid selection, including newline and whitespace-only names.
-Operation Builder and Fill Missing controls check explicit repair of unavailable column selections, optional All
-semantics, retained valid selection order and names, controlled grouping, and search recovery after schema changes.
-The App owner checks that failed Undo retains selection and successful Undo cannot silently broaden a retained
-Drop Missing form to all columns; unrelated form input survives repair. Focused repair and repeated-row removal keep
-focus on the surviving labelled group, retain values and leave Escape with the open dialog. The App and Builder owners
-also preserve focus on unrelated controls and retain disabled Remove behavior.
-Single-column cases cover removed targets after Undo, type-incompatible targets, explicit repair, retained input, same-ID
-renames and eligible targets returning. The control owners distinguish a controlled empty value from an uncontrolled
-form receiving its first available default.
-The same UI owners check Redo after the last Undo, focus ownership, draft/projection gates and exact attempt
-correlation before success or failure can settle a mutation. Panel controls verify that an empty-history refusal
-also clears the snapshot used on remount. Native session and transaction owners check ordered re-execution,
-branch clearing, draft retention, current viewing state, stable column binding, generated results and response
-preflight rollback. R's kernel and bridge owners additionally check host/native step identity and fresh dynamic
-output contracts. Runtime replacement is tested separately from failures that retain the original session.
-The existing file reopen journey exercises the registered Redo command after the last Undo. Live Python Formula
-and native R core-editing journeys use the visible button and compare the restored plan, schema, code and bounded
-page. The Pandas By Example owner also executes the redone plan's
-generated code with its existing value, dtype, label and index comparator.
-
-`python/tests/test_generated_output_columns.py` owns static output-name agreement between public binding and
-standalone generated Python across Pandas, Polars and DuckDB. It checks occupied outputs, harmless extra columns,
-replacement of the selected source column, canonical Pandas labels, earlier steps and Custom Code, lazy metadata
-inspection, private-connection Rename chains and long-name code capacity. DuckDB cases cover case-insensitive input
-and intermediate collisions, categorical output pairs, and public Clone or Custom Code plans whose later Formula and
-Select steps could otherwise conceal a wrong-column result. Case-only Rename and case-distinct Pandas/Polars outputs
-remain valid. Existing Regex, Split and Pivot owners retain their stronger validation; session transaction tests retain
-exact generated-size and pre-transform rollback checks.
-
-The Polars Pivot Longer owner checks fresh lazy category mappings in preflight, live and generated execution,
-including nulls, exact output dtype and row order. Preflight must not evaluate the source; separate category spaces,
-physical encodings and Enum orders remain incompatible.
-
-Coordinator recovery controls stop later replay requests after trust changes. Python bridge and transport owners
-retain cancellation correlation before dispatch, including synchronous listener registration, without losing
-request leases or treating unstarted work as an ambiguous mutation.
-Bridge and process transport owners exercise actual Writable error events after failed writes. They check request
-rejection, authoritative Python cancellation responses, late retired-stream errors and exact process cleanup.
-The existing Python server-protocol and kernel-agent owners check native panic error correlation, retained state,
-follow-up requests and close. They distinguish the loaded native exception from caller interrupts and changed
-public aliases, and retain optional-import, cancellation and request-registry cleanup controls.
-The installed R Formula journey verifies a visible precision refusal, retains the input, and corrects that same form
-before continuing its existing preview, apply and undo assertions.
-
-The native R `text-fill-and-cast` contract owns helper selection for mixed Fill plans. Frame interactive and Fill tests
-own scalar input acceptance and refusal. The portability owner also covers public numeric and temporal picker and filter
-requests through Preview and draft discard, preserving source values, row identities and frame metadata.
-Mixed literal and regex Find and Replace steps check independent replacement state, one shared generated regex
-function, complete live/generated results and source isolation despite conflicting caller functions.
-Directional Fill plans include Custom Code, typed and empty columns, named elements, and keyed data tables. Preview,
-apply, and inspection code must preserve complete live results and source frames despite conflicting caller names.
-
-Native R frame export controls check exact C-locale CSV bytes across frame families, including Unicode headers,
-factor labels, quoting, missing values and text beyond the page cell limit. Invalid off-page text and writer failures
-must leave no artifact. The existing kernel export owner verifies the returned UTF-8 chunks and unchanged source.
-Parquet timestamp controls distinguish correct physical microseconds from reader-only rounding, retain native
-bytes for exact values, and refuse precision loss, non-finite values and range overflow. The kernel owner checks
-an invalid value beyond the first validation slice, correlated refusal without an artifact, and successful correction,
-generated execution, export and Undo while preserving the source.
-
-The native R catalog also compares complete live and generated frames with named column elements across supported
-frame families. Mixed cleaning and Custom Code plans verify that metadata differences cannot change later values.
-
-Native R categorical owners check empty and all-missing duration columns with both source-column retention modes.
-Public refusal preserves the session; standalone generated refusal preserves its prior result binding. A mixed
-duration/text case checks Preview, Apply, generated values and Undo against the original source.
-C-locale controls verify equivalent text encodings, first-seen signed-zero duration labels, and mixed One-hot and
-Multi-label plans with character or factor input. They restore the locale and preserve exact source storage.
-
-The existing Cast plan checks duration units, signs and missing values, then executes its complete generated program
-on typed-empty and all-missing-duration inputs. Full-frame comparison includes output types, row names and source storage.
-
-The existing scalar-categorical kernel case verifies that integer64 One-hot Encode omits unused arithmetic code,
-retains primitive validation, and includes the arithmetic dependencies needed by a later Formula's right operand.
-
-Native R frame tests own exact integer64 duplicate masks and bounded profile counts, including supported signed extrema mixed
-with adjacent large values and missing keys. Data.table controls distinguish repeated column labels and retain
-ordinary numeric rounding at settings 0 and 2.
-The existing row kernel owner
-checks single and composite keys through Preview, Apply, inspection, Undo/Redo and standalone generated execution,
-including original row identities, frame metadata and integer64 helper admission.
-
-`python/tests/test_duckdb_engine.py` owns native live and complete generated-code behavior, private-connection and
-catalog lifetimes, and query-evaluation counts. The Pivot Longer/Wider, Mark Duplicates and Fill Missing owners retain
-their operation-specific cases. `python/tests/test_session_transactions.py` owns public Preview/Apply, refusal,
-history and source-preservation checks. Qualify changes to these boundaries on the minimum and current DuckDB versions.
-See [Architecture](architecture.md#duckdb) for result-validation and structural-step scan rules;
-[column binding](architecture.md#engine-boundaries-and-capabilities) defines generated-name admission.
-
-[Polars engine tests](../python/tests/test_polars_engine.py) own native eager/lazy execution and complete generated
-programs. They distinguish deferred ordinary plans from Custom Code validation and bound collected results through
-notebook-variable viewing, editing and export. [Session transactions](../python/tests/test_session_transactions.py)
-check public Preview/Apply/Undo, refusal and correction, generated replay, source preservation and streaming Decimal
-file results. See [Polars](architecture.md#polars) for evaluation limits and the
-[numeric policy](architecture.md#engine-boundaries-and-capabilities) for precision rules and minimum/current coefficient
-qualification.
-
-[Custom Code scope tests](../python/tests/test_custom_code_scope.py) own Pandas/Polars live and complete generated
-result admission; [session-plan tests](../python/tests/test_session_plan.py) own emitted-byte accounting.
-[Architecture](architecture.md#engine-boundaries-and-capabilities) defines result and scope rules. Zero-column viewing
-and row operations retain separate owners.
-
-[Operation tests](../python/tests/test_operation_edges.py) and [Fill Missing tests](../python/tests/test_fill_missing.py)
-own exact Pandas live/generated comparison and directional Fill, including source/index preservation.
-[Pandas engine tests](../python/tests/test_pandas_engine.py) own matching dataset and missing-cell counts; session
-transactions check public Arrow history/export and Sparse count agreement after Custom Code.
-See [Pandas](architecture.md#pandas) for exact comparison, missing-value and storage rules.
-
-Native R frame and catalog owners cover constructor and subset forms of empty tables, operations and Custom Code
-that return no rows, and malformed zero counts with nonempty columns. Generated input and output validation retain
-the same structural assertions.
-
-The existing R process export case also edits its zero-column source through first-column Custom Code, inspection,
-Undo and Redo. Decoder tests distinguish an explicit empty schema from missing context on both inspection sides.
-Native kernel owners compare live and generated first-column results and zero-column row reductions while retaining
-the nonempty Custom Code output requirement and stale-reference and maximum-width refusals.
-
-`python/tests/test_dense_rank.py` owns exact live/generated numeric ranks across the Python editing engines.
-It covers ties, direction, missingness, native integer/decimal boundaries, source and index preservation, and
-DuckDB's current input order. Existing session owners cover stable output identity, viewing-independent population,
-preview/apply, Undo/Redo, retained history after refusal and export/reopen. Native R frame, kernel and process owners
-cover its integer result contract, supported frame flavors, exact integer64 values and a rank-first generated plan.
-Operation-builder and shared-validator owners check duplicate-label selection, direction, saved-step compatibility
-and malformed public parameters through the existing form and admission paths.
-The installed operation-group journey checks ranks after a cleaning sort and runtime replay in each Python engine.
-The default comprehensive R notebook journey's core catalog submits the visible rank form and checks three bounded
-windows after Apply before Undo. The focused `core-operations` selector retains its separate Clone lifecycle scope.
-
-`python/tests/test_mark_duplicates.py` owns live/generated Boolean membership across the Python editing engines,
-including native key equality, empty and missing populations, exact retained values and source/index preservation.
-Existing session owners cover hidden matching rows, output identity, history and export. Native R frame, kernel and
-catalog owners check logical capture, selected integer64 keys and named/keyed frame metadata. Shared and operation-form
-tests cover required selections, stale references, output names and saved-step editing through the existing owners.
-The installed Python operation-group journey checks flags after a cleaning sort and replay. The existing Polars
-first-use journey also previews and applies Mark Duplicates, checks a visible `False` cell, and undoes it before continuing
-the export flow. The default comprehensive R notebook journey submits the form, checks the visible `TRUE` cell,
-column reveal and focus, and verifies Apply and Undo without changing the source notebook.
-
-`python/tests/test_min_max_scale.py` checks live and standalone scaling agreement and source identity across Python editing
-engines; `r/tests/complete_catalog_contract.R` owns native R scaling. See [Architecture](architecture.md#engine-boundaries-and-capabilities) and the
-[native R decision](decisions/0001-native-r-runtime.md) for numeric policy. Export replacement races belong in
-`python/tests/test_configurable_export.py`, where native writers must leave replacement files unchanged.
-
-Export owner tests use actual files to cover source renames and replacements before and during command awaits.
-Coordinator tests cover source identity across initial open, runtime replacement, rollback and live-variable recovery,
-including Python Interactive's originating document. Establishment, recovery and state-restorer owners check retirement
-during replay, stale viewing fallback, and detached execution settling before candidate cleanup. Initial saved plans
-and views retain the same ownership checks as recovery; ordinary replay and invalid-state fallback remain covered.
-Coordinator recovery tests own replacement notifications, bounded viewport reads and retirement on Close. The panel
-and renderer synchronization owners check atomic publication, stale offers, failed or late reads and remounts. App
-progressive profiling, projection and draft-state tests check fresh summaries and statistics, retained failure/Retry
-state, and scroll and page intent; decoder tests reject mismatched identities, result actions and oversized view IDs. The existing R kernel-restart
-journey covers real delegate replacement while retaining the originating kernel-change error.
-Mode-change owners cover recovery suspended from local intent through reopening, then resumed after failure.
-The existing atomic-file tests retain destination and temporary
-identity checks; runtime writers retain their separate output-handle contracts.
-The export-target owner also reserves a file through Node and passes its actual identity receipt to the Python pinned
-writer, checking both writing the reserved file and refusal of a mismatched receipt on each platform.
-DuckDB Parquet owners cover exact 128-bit integer conversion, native overflow, nested-type refusal, null/empty
-inputs and unchanged ordinary fields. The file-session Group By journey exports both committed data and the
-actual generated cleaning result, then checks native readback and source/session preservation. Temporal export
-cases cover interval precision/capacity, nested containers and TIMETZ map lookup identity through native writers at
-both dependency endpoints. They retain correct UTC and `24:00` cases where the selected writer supports them, and
-check refusal after a valid row alongside source, session and pinned-target identity preservation.
-The installed plain R journey checks descriptor-scrubbed, zero-byte private export artifacts and removal of their
-owned process root when the session closes.
-The `rPrivateArtifactBoundary` unit owner covers real reads, quarantine and zero-byte cleanup, directory link counts
-that change with contents, and refusal of a replacement cleanup directory. File link-count and identity checks remain
-intact. Its same-inode rewrite case seeds an old modification time to test metadata-visible changes without relying on
-clock resolution; metadata checks do not detect every same-size content change. The macOS and Windows R jobs run this
-owner before R dependency and editor preparation.
-The R process transport case forces a changed modification time after its real in-place rewrite, then verifies
-refusal, continued session use and cleanup.
-Its detachment case uses a two-row Custom Code request with a short sleep to check dispatched cancellation,
-settlement and process cleanup.
-R notebook source-integrity checks also verify that no active export artifacts remain before the session closes.
-
-`python/tests/test_round_number.py` checks live and standalone Round agreement, native readback, CSV/Parquet export,
-and isolation from the caller's Decimal context. Together with the Min-max owner, it checks source identity and an
-occupied `Any` binding before and after generated execution. Native R's catalog checks its operations under altered display
-options. Session transaction tests own failed-preview rollback to the complete committed plan and data.
-See [Architecture](architecture.md#engine-boundaries-and-capabilities) for type, precision and capacity rules.
-
-Native R frame and catalog owners compare picker raw values with distinct source values before filtering them.
-Adjacent doubles, finite extrema, signed zero and temporal payloads cross actual JSON preview and generated execution.
-Rejected numeric previews must preserve the complete confirmed response. Direct numeric Fill and public text-only
-replacement controls retain their separate boundaries.
-
-Python protocol tests own the request-enum and present-null option matrix, including valid omission and clone controls.
-Live protocol owners reject v2 and v3 traffic and retain correlated recovery with v4. Saved notebook captures retain
-their bounded v2/v3 normalization. Envelope tests admit the host's accepted view on the five editing requests and
-`getPage`, with exact fields, the existing filter validation and a nonnegative safe-integer epoch. Coordinator tests
-attach it only to edits and Spark pages, at actual dispatch and after recovery. Shared schema and response validators
-check explicit unavailable duplicate counts and reject a sample size with that state; R host guards retain numeric
-counts. Pandas statistics owners cover native composite-container refusals, including sets, exact missing counts,
-filtered views, source preservation and unrelated error propagation. Both Dataset displays distinguish unavailable
-from pending data.
-Session and coordinator owners cover successful superseded pages followed by a failed newer query, then Discard,
-Undo and Redo. They retain dropped-column restoration and genuinely newer viewing changes. Recovery and replacement
-owners check the epoch used by replayed edits; native query counters distinguish reused accepted views from an
-exceptional refilter. These checks belong in the existing source owners, without another installed-editor journey.
-The existing Polars statistics owners cover partial counts for lazy Object columns under default and streaming
-affinity, retaining exact missing metrics, empty results, source/view ownership and scalar collection bounds. They
-verify that this path avoids unique grouping while ordinary and eager statistics retain their behavior.
-Kernel and standalone owners check representative `invalid_request` refusals before native dispatch and a valid
-follow-up in the same process. Python protocol and kernel tests also check malformed viewing structures before native
-query work, including correlated errors and retained session state. The native R viewing owner sends raw JSON to distinguish
-objects from arrays, retains a draft after malformed page input, and compares valid Filter Rows output with generated
-code. Python opaque operands and R nullable picker search keep their separate valid-input controls.
-Python operand cases cover depth boundaries, finite wide integers, non-finite numbers and Unicode in values and
-keys. The existing standalone protocol owner checks correlated refusal and a valid follow-up in the same process.
-
-Floor and Ceiling cases in `python/tests/test_operation_edges.py` and `python/tests/test_duckdb_engine.py` compare
-exact native integer/Decimal results, Arrow validity, scalar coercion and nested-type controls with generated code.
-`python/tests/test_operations.py` owns Pandas integer-cast range and coercion checks;
-`python/tests/test_session_transactions.py` verifies confirmed-state rollback after a rejected cast.
-
-Python page-publication tests cover native materialization refusal, metadata and correlated-envelope failure,
-source invalidation, request-scope exit, profile leases and exact row-count discovery. Spark continuation controls
-retain the old view's anchors through a rejected replacement page, including a cached first block followed by a
-native continuation. Native Classic and Connect cases also cover successful superseded queries, restored row-zero
-reads, different terminal totals and accepted-query promotion. Initial opening and fresh recovery bind the host epoch
-to the exact current query; source loss, failed response validation and disposal preserve their existing boundaries.
-Accepted pages retain the existing page and complete-frame allowances.
-Late background invalidation is serialized with page publication, including reentrant cleanup with a queued writer.
-The session-cache and step-inspection owners cover known-total page boundaries across Pandas, Polars and DuckDB,
-including empty results, projection, cache reuse and differently sized inspection sides. Host response-validation
-tests accept only the exact end clamp and preserve unknown-total continuation correlation.
-
-Formula's arithmetic limits and engine-specific behavior are defined in [Engine boundaries and
-capabilities](architecture.md#engine-boundaries-and-capabilities). The owners below compare live and generated
-execution, exact values and native types, missing operands, source preservation and expected refusals.
-
-`python/tests/test_formula_literals.py` owns canonical integer text and file-session Preview, Apply, saved-plan replay
-and standalone execution across Pandas, Polars and DuckDB. Text entry and request validation belong to
-`operationBuilder.component.test.tsx`, `operationParams.unit.test.ts` and
-`protocolRequestOperationValidation.unit.test.ts` under `src/test/`.
-
-`python/tests/test_polars_engine.py` owns scalar capacity, integer and Boolean operand checks, eager/lazy behavior,
-helper isolation and bounded validation. Its public-session cases cover hidden-row refusal and saved plans replayed
-after a source type change. Its UInt128 column arithmetic cases distinguish correct execution on the current version
-from refusal before publication on the minimum version. They also check recovery, scalar operations and generated
-code.
-
-`python/tests/test_operation_edges.py` owns checks for exact Pandas integer results, including Boolean companions,
-Sparse storage and native power identities with missing operands. The same file owns Arrow integer modulo and eligible
-integer/Decimal capacity repairs. These cases compare actual operand pairs, preserve missing values and retain correct
-native results and existing refusals. Multiplication cases cover signed and unsigned result capacity, chunked and
-null-paired operands, duplicate indexes, native type retention and custom-extension exclusion. Subtraction cases
-also cover signed/unsigned operand order, negative results, scalar underflow and existing overflow diagnostics.
-Scalar power cases compare exact UInt64 results, even and odd exponents, scalar admission bounds, nulls, empty inputs
-and native-success types with standalone generated code.
-The existing public capacity journey checks signed-result and scalar-power Preview, Apply, complete generated code,
-Parquet readback, Undo and Redo, plus negative-value and overflow refusal beyond the displayed page. Mixed Formula,
-By Example and Custom Code programs check helper isolation without changing the other operations' behavior.
-
-`python/tests/test_duckdb_engine.py` owns fixed-width integer promotion checks in both signed/unsigned operand orders
-and protection from caller-defined macros. Its cases with volatile inputs distinguish metadata inspection from
-readiness and later retrieval, checking the operand pair used by each evaluation. Complete generated programs must
-refuse before a later projection can discard an erroneous Formula result. BIGNUM multiplication and modulo cases
-cover both operand positions, the signed 128-bit bounds, unsigned counterparts, native identities, missing values
-and the distinction between precision loss and an unavailable exactness check. They retain native result types and
-compare complete generated programs under the same finite policy; they do not establish general BIGNUM editing.
-
-`python/tests/test_session_transactions.py` owns Pandas and DuckDB refusal for rows beyond the previewed page,
-preservation of confirmed state and Redo history, successful correction and replay. Its Arrow cases also verify
-viewing, reported/replayed dtypes and exact Parquet readback. The Polars public-session cases remain in its engine
-owner above.
-
-Native R's `r/tests/kernel_agent.R` and `src/test/rKernelTransport.cross.test.ts` own literal precision and complete
-generated execution, including the finite 309-digit endpoint. The existing
-`kernel:numeric-portability` phase checks fixed binary64 literal bits, integer capacity, and public
-Formula and By Example results through complete interpreted and compiled programs, retaining nulls, types and source
-values. Formula integer-text cases also compare finite native result bits, accept exact extrema and neighboring
-representable integers, and refuse the inexact spellings admitted by Windows decimal formatting. Failed previews
-retain the committed page and revision. Missing values retain their typed null contract rather than a particular
-native NA payload. The kernel's missing-power case compares the captured native vector, wire cell kinds and generated result.
-`src/test/rKernelTransformBinding.unit.test.ts` and `src/test/rKernelMutationSchema.unit.test.ts` own exact text
-retention and type prediction.
-
-Typed-cell tests check timestamp text, fractions, offsets and exact instants for UTC, minute and second offsets,
-including historical Berlin. They cover native timestamp units, nested values, ordinary datetime subclasses and
-Parquet session pages, profiles and value choices while preserving source values. Search controls retain duration
-representations, equivalent-value spellings and exclusion of unsupported numeric residents.
-
-Typed-cell tests distinguish present Arrow temporal extrema from nulls in projected pages, profiles and value choices,
-including dictionary null entries and chunk boundaries. Fill tests compare exact native donors and directional anchors
-with standalone generated execution. A Pandas Parquet session checks filtering, Preview, Apply, Undo, Redo and retained
-source bytes. Existing object missingness, timezone compatibility and unsupported Fill refusals remain covered.
-
-Pandas engine tests load native Arrow dates from Parquet and check profiles, value selections, viewing and
-standalone Filter Rows/Sort Rows. Empty, missing and distant dates retain native storage, indices and source bytes.
-
-The Pandas filter owner checks native, nullable, Arrow and Sparse integer boundaries through actual value selections,
-viewing and standalone cleaning code. Typed-cell tests cover logical Arrow dictionary profiles and queries, unsigned
-indices, null codebook entries, multiple chunks and encoded source isolation. Operation-edge and Fill tests exercise
-row removal and directional ordering on mixed dictionary/Sparse frames, including exact values in unselected columns.
-The operation owner checks native output dtypes and existing refusals for dictionary casts through session preflight,
-live execution and standalone code, including empty/all-null inputs and unsigned values beyond the signed target.
-Fill tests cover dictionary targets, ordered donors and grouping keys, native Arrow dates, unchanged no-op storage
-and complete-column literal validation. Mixed plans retain source arrays and exercise helper-name collisions.
-Configurable-export tests use real pinned writers for scalar dictionary columns and indexes, compare physical CSV
-and Parquet values with logical controls, reopen exported columns, and check unchanged source storage. Wide integer
-index assertions inspect physical Parquet values separately from Pandas index reconstruction.
-The index-fidelity owner reopens nullable integer indexes through file sessions and checks exact row labels, native
-metadata, unaffected columns and index levels. Real file rewrites between the ordinary and supplemental reads must
-refuse publication and close the descriptor, including equal-size changes with restored modification times.
-Group By, Pivot and Fill owners compare Arrow/nullable floating keys and aggregates with native controls, including
-NaN, nulls, signed zero, infinities, chunks and unrelated missing groups. Half-float Count and Sparse Sum controls
-protect existing finite-value paths. Standalone grouped Fill includes only the floating key helper it needs.
-Sparse Count regressions cover missing values, counts beyond narrow integer storage, shared exact aggregates and
-columns also used as keys. Assertions retain native source values, Sparse positions, axes and attributes.
-Group By, Pivot and Fill owners also check exact Sparse key partitions, restored labels, multi-key missing groups
-and generated execution. Minimum-version fractional fills have explicit native-construction controls on current
-Pandas. Ordinary integer, nullable, Arrow and object keys retain their output-type policy.
-Mixed-object numeric regressions compare picker values with original source scalars before selecting them.
-The typed-cell, grouped numeric, session-transaction and configurable-export owners cover finite NumPy extended
-floating values that cannot round-trip through binary64. They check precision and range refusal, representable and
-nonfinite controls, generated key preparation, confirmed-state rollback, safe projection, exact CSV and explicit
-conversion. Tests use the platform's actual extended precision and skip unsupported native storage cases.
-
-The existing filter, typed-cell, Group By, Pivot and Fill owners cover hash-colliding NumPy floats and wide integers,
-exact ordering and counts, original representative types, joint Pivot identifier rows, missing values, and standalone
-helper closure. Unhashable containers, custom numeric subclasses and ordinary native columns retain their existing
-behavior. Filter UI and shared-protocol tests check exact typed text, restored selections and null/NaN choices.
-Typed-cell tests also compare native Arrow `bool8` and UUID pages, profiles, selections and compatible cleaning
-operations with logical native controls. Executed generated code must preserve source arrays and agree with live
-results, including no-op Fill and direct copies. A one-row page with a large dictionary codebook verifies that
-adding known scalar conversion does not decode unused string payloads.
-Schema nullability controls distinguish null indices, referenced and unused null codebook entries, empty chunks
-and different codebooks while forbidding payload decoding.
-Configurable-export and index-fidelity owners exercise native `bool8` and UUID CSV/Parquet values, preserved and
-omitted axes, equivalent Boolean labels, and external extension Parquet files. Ordinary conversion settings and
-invalid metadata retain native behavior. Rewrites around schema and data reads must refuse publication and close
-the source stream, including equal-size changes with restored modification times.
-The index-fidelity owner also loads nullable integer data and integer-bearing list, struct and map fields. It checks
-exact pages, complete profiles, value choices, Clone and standalone execution, physical export, Undo, empty and
-missing containers, unchanged metadata and siblings, and a single combined data/index repair projection.
-Container controls compare exact single-column duplicate counts and live/generated Drop and Mark results, including
-repeated empty values and nondefault row indexes, while preserving original Arrow storage.
-Object-UUID controls use actual file writers and public session preview/apply/undo. They check canonical picker
-counts, null/NaN selections, stable physical rows, standalone sort/deduplication, direct-copy identity and unchanged
-unrelated objects. The existing export owner checks canonical CSV/Parquet values and preserved or omitted axes.
-
-Polars and DuckDB engine owners exercise misleading enum labels, nested types, fixed-size arrays, profiles, typed
-selections and standalone Filter Rows. Typed-cell controls preserve Arrow scalar wrappers and Pandas Sparse behavior;
-the existing Spark Classic/Connect owner covers native schema, bounded paging, filters, sorts and profiles.
-
-`python/tests/test_empty_delimited_files.py` owns native empty-file adaptation and preservation of delimited records,
-including public pages, statistics, invalid options and source bytes. Qualify changes against minimum and current
-readers; newline-only Polars schemas can differ by version while retaining the native rows.
-
-The DuckDB engine owner checks literal selected-file imports for CSV, TSV, JSONL/NDJSON and Parquet beside matching
-and escaped-looking siblings. It covers native rows and types, import options, ordinary and empty files, generated
-cleaning, source preservation and explicit unsupported-path refusals. The existing Windows job selects these same
-cases for actual local-drive coverage; lexical UNC/device checks do not claim network-share execution.
-
-Polars file owners read actual JSONL/NDJSON files beside misleading encoded siblings and escaped-path directories.
-They check selected rows, native lazy projection, standalone transformations and source replacement refusal. Unix
-tests retain native reads after the Python stream closes and exhaust descriptors only inside isolated child
-processes, where fallback buffering, empty-plan publication, panic diagnostics and leaked handles fail assertions.
-Windows dispatch tests are separate from actual Windows local-drive verbatim reads, live/generated operations,
-source-replacement refusal and explicit glob-path refusal. Glob-path refusals also require actionable Settings
-and Open File Path guidance, with no native scan. File-command tests own explicit backend forwarding and the separate
-confirmed-backend restore behavior; the canonical release owner still rejects incomplete required rows within the
-explicit file-path scope in [feature parity](feature-parity.md).
-
-`python/tests/test_generated_helpers.py` owns canonical helper selection, dependency references, and source-library
-isolation. The existing DuckDB and Fill Missing Values tests execute the selected standalone programs. Polars Fill
-coverage includes eager and lazy mixed plans, transitive dependencies, and Custom Code before and after filling.
-Grouped median cases check native integer widths and Decimal precision on current and minimum Polars, including
-empty and null-key groups, exact refusals, and streaming execution. Plan construction must not collect lazy input.
-Integer-adapter tests synthesize public By Example programs with UInt128 operands, empty/null batches and multiple
-chunks. Live and generated results retain Int128 and existing overflow refusals. Encoder edge tests cover native
-explode behavior on both dependency endpoints, including empty and repeated labels.
-
-Kernel response tests cover split markers and Unicode, exact byte limits, output outside the frame, malformed
-responses and execution settlement after decoding fails. Bridge tests verify that cleanup waits for the original
-execution and that valid noisy responses still publish their correlated state.
-`python/tests/test_response_framing.py` compares canonical bytes and exact sizing and frame limits for string keys
-and values around the writer's chunk boundary, including unescaped ASCII, escaped text and multibyte UTF-8.
-The existing decoder also checks fixed restart guidance for a correlated old-protocol envelope without admitting its
-response. Saved-output and renderer-message owners retain metadata-v2 fixtures, immutable normalization to current
-display metadata, repeated Open/inline receipt handoffs, original bounds and legacy-statistics validation.
-
-Discovery and bridge tests exercise kernel replacement during pickers and initial bootstrap, including retirement
-before a session opens. R command tests cover terminal replacement during previous-transport cleanup. FilterPanel
-component tests own checkbox membership, saved scalar selections, unnamed-column navigation and staged-sort column
-ownership. Sort controls cover schema changes, permanent retirement across Undo, unaffected rules, confirmed-model
-resets, dirty empty orders and Clear/Discard behavior. The production browser suite owns rendered tab hover contrast.
-Release-script tests distinguish interrupted fetches and response bodies from fatal package validation errors.
-`scripts/daily-preview-artifact.test.mjs` executes the workflow's source-decision and package-attempt guards;
-publication recovery remains governed by the [release process](releasing.md).
-
-The shared `fixtures/view-literal-contract.json` owns filter spellings supported by Python and native R, including
-short datetime fractions, compact timezone offsets and malformed-component refusals. Existing Python filter and Fill
-owners compare exact instants with independently constructed values through live and standalone generated execution,
-including Python 3.10. Python-specific extreme offsets remain in those owners because native R retains its parser's
-offset limits. The existing Spark grid-query owner checks portable datetime selections without local conversion.
-Persistence tests retain old bound Filter Rows steps while rejecting obsolete viewing payloads; Python filter and
-native R catalog tests execute the historical infinity selections through live and generated code.
+The two pure acceptance-helper checks live in [Source](../src/test/acceptanceFixtures.unit.test.ts): bounded mismatch
+diagnostics and direct-child temporary-directory ownership/cleanup. They no longer run during installed startup.
+Source tests and the scenario descriptions above define ownership; actual installed qualification requires the
+specified profile, platform and immutable artifact under the rules below.
 
 ## Pull-request CI
 
