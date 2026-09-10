@@ -78,26 +78,44 @@ def test_custom_output_is_captured_without_reaching_process_streams(monkeypatch)
 
 def test_simultaneous_custom_steps_keep_output_request_scoped(monkeypatch) -> None:
     process_stdout, process_stderr = _install_string_streams(monkeypatch)
-    barrier = threading.Barrier(3)
+    barrier = threading.Barrier(3, timeout=5)
     results: dict[str, tuple[str, str]] = {}
+    errors: list[BaseException] = []
 
     def run(label: str) -> None:
-        with capture_custom_code_output() as output:
-            barrier.wait()
-            for index in range(200):
-                sys.stdout.write(f"{label}-out-{index}\n")
-                sys.stderr.write(f"{label}-err-{index}\n")
-            barrier.wait()
-        results[label] = (output.stdout, output.stderr)
+        try:
+            with capture_custom_code_output() as output:
+                barrier.wait()
+                for index in range(200):
+                    sys.stdout.write(f"{label}-out-{index}\n")
+                    sys.stderr.write(f"{label}-err-{index}\n")
+                barrier.wait()
+            results[label] = (output.stdout, output.stderr)
+        except BaseException as error:
+            errors.append(error)
+            barrier.abort()
 
     threads = [threading.Thread(target=run, args=(label,)) for label in ("alpha", "beta")]
-    for thread in threads:
-        thread.start()
-    barrier.wait()
-    barrier.wait()
-    for thread in threads:
-        thread.join(timeout=5)
+    started: list[threading.Thread] = []
+    try:
+        for thread in threads:
+            thread.start()
+            started.append(thread)
+        barrier.wait()
+        barrier.wait()
+    except threading.BrokenBarrierError:
+        if not errors:
+            raise
+    except BaseException:
+        barrier.abort()
+        raise
+    finally:
+        for thread in started:
+            thread.join(timeout=5)
+    for thread in started:
         assert not thread.is_alive()
+    if errors:
+        raise errors[0]
 
     assert "beta-" not in results["alpha"][0]
     assert "beta-" not in results["alpha"][1]
