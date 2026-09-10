@@ -2,6 +2,7 @@ import * as path from "node:path";
 import type { SessionSource } from "../../shared/protocol";
 
 export const IMPORT_DETECTION_SAMPLE_BYTES = 64 * 1024;
+export const IMPORT_DETECTION_READ_BYTES = IMPORT_DETECTION_SAMPLE_BYTES + 3;
 
 type ImportOptions = NonNullable<SessionSource["importOptions"]>;
 
@@ -38,7 +39,8 @@ export function detectedImportOptionsFromSample(filename: string, sample: Uint8A
   };
 }
 
-function decodeSample(sample: Uint8Array): { text: string; encoding: string } {
+function decodeSample(input: Uint8Array): { text: string; encoding: string } {
+  const sample = input.subarray(0, IMPORT_DETECTION_SAMPLE_BYTES);
   if (startsWith(sample, UTF16LE_BOM)) {
     return {
       text: new TextDecoder("utf-16le").decode(sample.subarray(UTF16LE_BOM.length)),
@@ -53,20 +55,24 @@ function decodeSample(sample: Uint8Array): { text: string; encoding: string } {
   }
   const hasBom = UTF8_BOM.every((value, index) => sample[index] === value);
   const bytes = hasBom ? sample.subarray(UTF8_BOM.length) : sample;
-  try {
-    return {
-      text: new TextDecoder("utf-8", { fatal: true }).decode(bytes),
-      encoding: "utf-8"
-    };
-  } catch {
-    // Invalid UTF-8 in delimited business exports is most commonly Windows-1252.
-    // The runtime owns the full decode; this bounded detector only needs the
-    // ASCII structural characters, which have the same byte values.
-    return {
-      text: new TextDecoder("windows-1252").decode(bytes),
-      encoding: "windows-1252"
-    };
+  const maxEnd = Math.min(input.length, IMPORT_DETECTION_READ_BYTES);
+  for (let end = sample.length; end <= maxEnd; end += 1) {
+    try {
+      return {
+        text: new TextDecoder("utf-8", { fatal: true }).decode(input.subarray(hasBom ? UTF8_BOM.length : 0, end)),
+        encoding: "utf-8"
+      };
+    } catch {
+      // Complete only a cut final scalar. A valid nominal prefix must not
+      // inspect later bytes, whose validation still belongs to the runtime.
+    }
   }
+  // Invalid UTF-8 in delimited business exports is most commonly Windows-1252.
+  // Keep fallback inference within the nominal prefix.
+  return {
+    text: new TextDecoder("windows-1252").decode(bytes),
+    encoding: "windows-1252"
+  };
 }
 
 function startsWith(sample: Uint8Array, prefix: readonly number[]): boolean {
