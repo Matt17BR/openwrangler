@@ -382,7 +382,7 @@ export function createLiveImportReconfiguration(
       "the generic Open Wrangler Change Import Options title action"
     );
     await withAcceptanceOperationDeadline(
-      changeTitleAction.click(),
+      changeTitleAction.click({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
       WORKBENCH_OPERATION_TIMEOUT_MS,
       "the generic Open Wrangler Change Import Options title action click"
     );

@@ -12,6 +12,8 @@ or end-to-end tests merely to verify how another test runner, selector, or diagn
 Before adding operations to an installed journey, measure preparation, editor execution and cleanup separately and
 review the remaining phase margin. Keep operation semantics in their source/generated-code owners when the installed
 interaction adds no distinct coverage. Include execution and maintenance cost when proposing new test infrastructure.
+Use the existing Playwright action timeout inside the longer harness guard; `Promise.race` alone can leave a pending
+click able to dispatch after the caller times out.
 
 Run local released-Jupyter invocations one at a time on each host, waiting for cleanup before starting the next.
 The [pinned Jupyter launcher](https://github.com/microsoft/vscode-jupyter/blob/fc61dfe2fd70a3d62d3ce0fef580757e7d64b81c/src/kernels/raw/launcher/kernelLauncher.node.ts)
