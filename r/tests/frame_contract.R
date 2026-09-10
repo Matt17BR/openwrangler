@@ -469,6 +469,54 @@ local({
   }
   assert_identical(write_bytes(data.frame(text = character())), charToRaw("\"text\"\n"), "empty CSV schema changed")
   assert_identical(write_bytes(data.frame(text = c(NA_character_, NA_character_))), charToRaw("\"text\"\n\n\n"), "CSV missing values changed")
+  local({
+    original_options <- options(OutDec = ",")
+    on.exit(options(original_options))
+    units <- c("secs", "mins", "hours", "days", "weeks")
+    durations <- as.data.frame(setNames(lapply(units, function(unit) {
+      structure(c(0.25, -1.5, 0, NA_real_), class = "difftime", units = unit)
+    }), units))
+    durations$number <- c(0.25, -1.5, 0, NA_real_)
+    expected_rows <- c(
+      "0.25,0.25,0.25,0.25,0.25,0.25",
+      "-1.5,-1.5,-1.5,-1.5,-1.5,-1.5",
+      "0,0,0,0,0,0",
+      ",,,,,"
+    )
+    expected <- charToRaw(paste0(
+      "\"secs\",\"mins\",\"hours\",\"days\",\"weeks\",\"number\"\n",
+      paste0(expected_rows, "\n", collapse = "")
+    ))
+    for (value in list(durations, tibble::as_tibble(durations), data.table::as.data.table(durations))) {
+      assert_identical(write_bytes(value), expected, "CSV duration decimals or stored-unit magnitudes changed under OutDec")
+    }
+    assert_identical(
+      write_bytes(durations, list(format = "csv", delimiter = "§", quoteChar = "\"", encoding = "utf-8", header = FALSE)),
+      charToRaw(gsub(",", "§", paste0(expected_rows, "\n", collapse = ""), fixed = TRUE)),
+      "headerless CSV duration export changed the configured delimiter"
+    )
+    assert_identical(write_bytes(durations[FALSE, , drop = FALSE]),
+      charToRaw("\"secs\",\"mins\",\"hours\",\"days\",\"weeks\",\"number\"\n"),
+      "empty CSV duration columns changed")
+    assert_identical(write_bytes(durations[4L, , drop = FALSE]),
+      charToRaw("\"secs\",\"mins\",\"hours\",\"days\",\"weeks\",\"number\"\n,,,,,\n"),
+      "all-missing CSV duration columns changed")
+    assert_identical(
+      write_bytes(data.frame(duration = structure(c(NA_real_, Inf, -Inf), class = "difftime", units = "hours"))),
+      charToRaw("\"duration\"\n\nInf\n-Inf\n"),
+      "CSV duration missing or infinity tokens changed"
+    )
+    invalid_duration <- data.frame(duration = structure(c(rep(0.25, 65536L), NaN), class = "difftime", units = "hours"))
+    before <- serialize(invalid_duration, NULL, version = 3L)
+    capture <- openwrangler_r_frame_contract$capture_frame(invalid_duration)
+    invisible(openwrangler_r_frame_contract$materialize_page(capture, row_limit = 1L))
+    assert_error(openwrangler_r_frame_contract$materialize_page(capture, row_offset = 65536L, row_limit = 1L), "unsupported-cell")
+    target <- tempfile(fileext = ".csv")
+    on.exit(if (file.exists(target)) unlink(target), add = TRUE)
+    assert_error(openwrangler_r_frame_contract$write_csv(capture, target), "export-write-failed")
+    assert_true(!file.exists(target), "off-page duration NaN created a CSV artifact")
+    assert_identical(serialize(invalid_duration, NULL, version = 3L), before, "refused CSV duration export changed its source")
+  })
   long_text <- strrep("x", 9000L)
   long_source <- data.frame(text = c("safe", long_text))
   long_capture <- openwrangler_r_frame_contract$capture_frame(long_source)

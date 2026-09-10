@@ -731,8 +731,12 @@ Native R pivots preserve retained column IDs and nullability from the confirmed 
 must match the host's expected schema before publication; a fresh scan must not narrow retained nullability.
 
 Native R CSV export writes validated UTF-8 bytes with LF record separators, independent of the current locale.
-It prepares character values and factor levels in a temporary frame, preserving source storage and native non-text
-columns. Invalid text is refused before creating the artifact; export does not apply the page cell-size limit.
+It prepares character values and factor levels in a temporary frame. Duration columns use plain numeric storage in
+that frame so fractional values retain a decimal point under caller `OutDec` settings; their stored-unit magnitudes,
+source storage and other non-text columns remain unchanged. Duration storage is checked in slices of at most 65,536
+values; NaN is refused before artifact creation because the numeric writer would otherwise turn it into missing.
+Missing durations and existing infinity tokens remain unchanged. Invalid text is also refused before creating the
+artifact; export does not apply the page cell-size limit.
 
 Native R Parquet export retains nanoparquet's microsecond timestamp representation. Before writing, it scans all
 POSIXct values in bounded slices and refuses non-missing non-finite values, range overflow or precision loss.
