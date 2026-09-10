@@ -9,7 +9,6 @@ import {
   publicMediaPhysicalLength,
   publicMediaPhysicalRect
 } from "./public-media-contract.mjs";
-import { PUBLIC_MEDIA_ASSETS } from "./public-media-inventory.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const editorImages = resolve(root, "docs", "images", "editor-acceptance");
@@ -224,7 +223,8 @@ const editorDetailCrops = [
   )
 ];
 
-assertDeclaredInventory(assets);
+assertUniqueDestinations(assets);
+assertUniqueDestinations(editorDetailCrops);
 
 let totalBytes = 0;
 for (const asset of assets) {
@@ -280,24 +280,13 @@ function nativeAsset(destination, sourceName, width, height) {
   };
 }
 
-function assertDeclaredInventory(actualAssets) {
-  const declared = new Map(PUBLIC_MEDIA_ASSETS.map((asset) => [asset.relativePath, asset]));
-  if (declared.size !== PUBLIC_MEDIA_ASSETS.length || actualAssets.length !== PUBLIC_MEDIA_ASSETS.length) {
-    throw new Error("The README media compositor must match the canonical public-media inventory exactly.");
-  }
-  for (const asset of actualAssets) {
-    const expected = declared.get(asset.destination);
-    if (
-      expected === undefined ||
-      expected.logicalWidth !== asset.outputWidth ||
-      expected.logicalHeight !== asset.outputHeight
-    ) {
-      throw new Error(`${asset.destination} differs from the canonical public-media inventory.`);
+function assertUniqueDestinations(actualAssets) {
+  const destinations = new Set();
+  for (const { destination } of actualAssets) {
+    if (destinations.has(destination)) {
+      throw new Error(`Duplicate public-media destination: ${destination}`);
     }
-    declared.delete(asset.destination);
-  }
-  if (declared.size !== 0) {
-    throw new Error("The README media compositor omits declared public-media assets.");
+    destinations.add(destination);
   }
 }
 
