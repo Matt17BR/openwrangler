@@ -95,17 +95,20 @@ export async function exerciseReleasedRCastOperation(
   const castApplied = testing.activeSession();
   assert.ok(castApplied, "The applied native R Convert type step must retain its session.");
   assertReleasedRCastGeneratedCode(castApplied.code ?? "", "score", "integer");
-  const castPage = await testing.request({
-    kind: "getPage",
-    sessionId,
-    revision: castApplied.metadata.revision,
-    viewRequestId: `${phase}-editing-cast-page`,
-    offset: 0,
-    limit: 1,
-    filterModel: castApplied.viewState.filterModel,
-    columnOffset: scoreColumn.position,
-    columnLimit: 1
-  });
+  const castPage = await testing.request(
+    {
+      kind: "getPage",
+      sessionId,
+      revision: castApplied.metadata.revision,
+      viewRequestId: `${phase}-editing-cast-page`,
+      offset: 0,
+      limit: 1,
+      filterModel: castApplied.viewState.filterModel,
+      columnOffset: scoreColumn.position,
+      columnLimit: 1
+    },
+    { ephemeralPage: true }
+  );
   assert.equal(castPage.kind, "page");
   if (castPage.kind !== "page") throw new Error("The applied R Convert type step did not return its output page.");
   assert.deepEqual(castPage.page.columnIds, [scoreColumn.id]);
@@ -138,17 +141,20 @@ export async function exerciseReleasedRCastOperation(
   );
   const castRestored = testing.activeSession();
   assert.ok(castRestored, "Undoing the R Convert type step must retain the session.");
-  const restoredCastPage = await testing.request({
-    kind: "getPage",
-    sessionId,
-    revision: castRestored.metadata.revision,
-    viewRequestId: `${phase}-editing-cast-restored-page`,
-    offset: 0,
-    limit: 1,
-    filterModel: castRestored.viewState.filterModel,
-    columnOffset: scoreColumn.position,
-    columnLimit: 1
-  });
+  const restoredCastPage = await testing.request(
+    {
+      kind: "getPage",
+      sessionId,
+      revision: castRestored.metadata.revision,
+      viewRequestId: `${phase}-editing-cast-restored-page`,
+      offset: 0,
+      limit: 1,
+      filterModel: castRestored.viewState.filterModel,
+      columnOffset: scoreColumn.position,
+      columnLimit: 1
+    },
+    { ephemeralPage: true }
+  );
   assert.equal(restoredCastPage.kind, "page");
   if (restoredCastPage.kind !== "page") {
     throw new Error("The undone R Convert type step did not return its original page.");

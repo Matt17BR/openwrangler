@@ -23,17 +23,20 @@ export async function exerciseMultiOutputSplitJourney(
   assert.equal(initial.metadata.draftStep, undefined);
   const source = initial.metadata.schema.find((column) => column.name === "market");
   assert.ok(source, "The installed multi-output split journey requires its market text column.");
-  const sourcePage = await testing.request({
-    kind: "getPage",
-    sessionId,
-    revision: initial.metadata.revision,
-    viewRequestId: "platform-smoke-multi-output-split-source",
-    offset: 0,
-    limit: 1,
-    filterModel: initial.viewState.filterModel,
-    columnOffset: source.position,
-    columnLimit: 1
-  });
+  const sourcePage = await testing.request(
+    {
+      kind: "getPage",
+      sessionId,
+      revision: initial.metadata.revision,
+      viewRequestId: "platform-smoke-multi-output-split-source",
+      offset: 0,
+      limit: 1,
+      filterModel: initial.viewState.filterModel,
+      columnOffset: source.position,
+      columnLimit: 1
+    },
+    { ephemeralPage: true }
+  );
   assert.equal(sourcePage.kind, "page");
   if (sourcePage.kind !== "page") throw new Error("The multi-output split source page did not resolve.");
   const sourceValue = sourcePage.page.rows[0]?.values[0];
@@ -79,17 +82,20 @@ export async function exerciseMultiOutputSplitJourney(
   );
   assert.match(preview.code ?? "", /for item, name in enumerate\(\['market_part', 'market_remainder'\]\)/u);
   const previewApp = await synchronizeApp("Multi-output split preview");
-  const previewPage = await testing.request({
-    kind: "getPage",
-    sessionId,
-    revision: preview.metadata.revision,
-    viewRequestId: "platform-smoke-multi-output-split-preview",
-    offset: 0,
-    limit: 1,
-    filterModel: preview.viewState.filterModel,
-    columnOffset: firstOutput.position,
-    columnLimit: 2
-  });
+  const previewPage = await testing.request(
+    {
+      kind: "getPage",
+      sessionId,
+      revision: preview.metadata.revision,
+      viewRequestId: "platform-smoke-multi-output-split-preview",
+      offset: 0,
+      limit: 1,
+      filterModel: preview.viewState.filterModel,
+      columnOffset: firstOutput.position,
+      columnLimit: 2
+    },
+    { ephemeralPage: true }
+  );
   assert.equal(previewPage.kind, "page");
   if (previewPage.kind !== "page") throw new Error("The multi-output split preview page did not resolve.");
   assert.deepEqual(previewPage.page.columnIds, [firstOutput.id, secondOutput.id]);

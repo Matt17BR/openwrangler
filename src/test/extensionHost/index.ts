@@ -5267,16 +5267,19 @@ async function assertReleasedSessionPage(
 ): Promise<Extract<OpenWranglerResponse, { kind: "page" }>> {
   recordAcceptanceProgress(`${viewRequestId}:request`);
   const response = await withBoundedAcceptancePromise(
-    testing.request({
-      kind: "getPage",
-      ...GRID_COLUMN_WINDOW,
-      viewRequestId,
-      sessionId: active.sessionId,
-      revision: active.metadata.revision,
-      offset: 0,
-      limit: 10,
-      filterModel: active.metadata.filterModel
-    }),
+    testing.request(
+      {
+        kind: "getPage",
+        ...GRID_COLUMN_WINDOW,
+        viewRequestId,
+        sessionId: active.sessionId,
+        revision: active.metadata.revision,
+        offset: 0,
+        limit: 10,
+        filterModel: active.metadata.filterModel
+      },
+      { ephemeralPage: true }
+    ),
     SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
     `released-Jupyter page ${viewRequestId}`
   );

@@ -140,17 +140,20 @@ export async function exercisePivotWiderJourney(
   assert.ok(namesFrom && valuesFrom, "The installed Pivot wider journey requires both exact source columns.");
   assert.equal(namesFrom.type, "string", "Pivot wider names-from must be a text or factor column.");
   assert.notEqual(namesFrom.id, valuesFrom.id);
-  const sourceValueResponse = await testing.request({
-    kind: "getPage",
-    sessionId,
-    revision: initial.metadata.revision,
-    viewRequestId: `${checkpoint}:source`,
-    offset: 0,
-    limit: 1,
-    filterModel: initial.viewState.filterModel,
-    columnOffset: valuesFrom.position,
-    columnLimit: 1
-  });
+  const sourceValueResponse = await testing.request(
+    {
+      kind: "getPage",
+      sessionId,
+      revision: initial.metadata.revision,
+      viewRequestId: `${checkpoint}:source`,
+      offset: 0,
+      limit: 1,
+      filterModel: initial.viewState.filterModel,
+      columnOffset: valuesFrom.position,
+      columnLimit: 1
+    },
+    { ephemeralPage: true }
+  );
   assert.equal(sourceValueResponse.kind, "page");
   if (sourceValueResponse.kind !== "page") throw new Error("Pivot wider source value did not resolve.");
   const sourceValue = sourceValueResponse.page.rows[0]?.values[0] as CellValue | undefined;
@@ -520,17 +523,20 @@ export async function exercisePivotWiderJourney(
     "Pivot wider lifecycle did not restore the exact source schema."
   );
   const finalApp = await synchronizeApp("Pivot wider lifecycle complete");
-  const restoredPage = await testing.request({
-    kind: "getPage",
-    sessionId,
-    revision: restored.metadata.revision,
-    viewRequestId: `${checkpoint}:restored-source`,
-    offset: 0,
-    limit: 1,
-    filterModel: initial.viewState.filterModel,
-    columnOffset: valuesFrom.position,
-    columnLimit: 1
-  });
+  const restoredPage = await testing.request(
+    {
+      kind: "getPage",
+      sessionId,
+      revision: restored.metadata.revision,
+      viewRequestId: `${checkpoint}:restored-source`,
+      offset: 0,
+      limit: 1,
+      filterModel: initial.viewState.filterModel,
+      columnOffset: valuesFrom.position,
+      columnLimit: 1
+    },
+    { ephemeralPage: true }
+  );
   assert.equal(restoredPage.kind, "page");
   if (restoredPage.kind !== "page") throw new Error("Restored Pivot wider source page failed.");
   assert.deepEqual(
