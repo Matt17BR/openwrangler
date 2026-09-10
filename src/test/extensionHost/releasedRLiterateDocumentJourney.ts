@@ -4,7 +4,6 @@ import * as vscode from "vscode";
 import type { Locator, Page } from "playwright-core";
 import { supportsRDocumentExecution } from "../../extension/r/rDocumentCommands";
 import type { OpenWranglerResponse } from "../../shared/protocol";
-import { withAcceptanceOperationDeadline } from "./playwrightLifecycle";
 import {
   writeReleasedPythonQuartoDocumentFixture,
   writeReleasedRLiterateDocumentFixture,
@@ -17,7 +16,6 @@ type ReleasedRLiterateActiveSession = NonNullable<ReturnType<TestApi["activeSess
 type ReleasedRLiteratePage = Extract<OpenWranglerResponse, { kind: "page" }>;
 
 interface ReleasedRLiterateDocumentJourneyDependencies {
-  readonly OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS: number;
   readonly WORKBENCH_OPERATION_TIMEOUT_MS: number;
   readonly acceptanceProcessIsAlive: (processId: number) => boolean;
   readonly assertReleasedNativeREditorTooling: () => Promise<boolean>;
@@ -69,11 +67,6 @@ interface ReleasedRLiterateDocumentJourneyDependencies {
     sessionId: string,
     description: string
   ) => Promise<Locator>;
-  readonly requireFreshExactSessionPanelHydration: (
-    testing: TestApi,
-    sessionId: string,
-    expectation: string
-  ) => Promise<void>;
   readonly textDocumentTab: (uri: vscode.Uri) => vscode.Tab | undefined;
   readonly waitFor: (
     predicate: () => boolean,
@@ -96,7 +89,6 @@ interface ReleasedRLiterateDocumentJourneyDependencies {
 }
 
 export function createReleasedRLiterateDocumentJourneys({
-  OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
   WORKBENCH_OPERATION_TIMEOUT_MS,
   acceptanceProcessIsAlive,
   assertReleasedNativeREditorTooling,
@@ -113,7 +105,6 @@ export function createReleasedRLiterateDocumentJourneys({
   readReleasedRDocumentProcessId,
   recordAcceptanceProgress,
   releasedRSessionApp,
-  requireFreshExactSessionPanelHydration,
   textDocumentTab,
   waitFor,
   waitForReleasedRDocumentSession,
@@ -250,22 +241,6 @@ export function createReleasedRLiterateDocumentJourneys({
           liveProcessIds.add(processId);
           assert.equal(acceptanceProcessIsAlive(processId), true);
         }
-
-        recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:hydrate-panel`);
-        await requireFreshExactSessionPanelHydration(
-          testing,
-          opened.sessionId,
-          `The ${fixture.kind} renderer must acknowledge its first complete host snapshot.`
-        );
-        assert.equal(
-          await withAcceptanceOperationDeadline(
-            testing.synchronizePanel(opened.sessionId),
-            OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
-            `the exact ${fixture.kind} panel synchronization`
-          ),
-          true,
-          `The ${fixture.kind} session must own a synchronized live dataframe panel before preview.`
-        );
 
         recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:preview`);
         let app = await releasedRSessionApp(

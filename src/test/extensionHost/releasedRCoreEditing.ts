@@ -123,11 +123,6 @@ export interface ReleasedRCoreEditingDependencies {
     sessionId: string,
     description: string
   ) => Promise<Locator>;
-  readonly requireFreshExactSessionPanelHydration: (
-    testing: TestApi,
-    sessionId: string,
-    expectation: string
-  ) => Promise<void>;
   readonly waitFor: (
     predicate: () => boolean,
     timeoutMs: number,
@@ -185,7 +180,6 @@ export async function exerciseReleasedRCoreEditingCatalog(
     recordAcceptanceProgress,
     reacquireAcknowledgedSessionApp,
     releasedRSessionApp,
-    requireFreshExactSessionPanelHydration,
     waitFor,
     waitForOpenWranglerWebviewAction
   } = dependencies;
@@ -1119,7 +1113,8 @@ export async function exerciseReleasedRCoreEditingCatalog(
     30_000,
     "applying the native R Drop Columns step"
   );
-  await requireFreshExactSessionPanelHydration(
+  await releasedRSessionApp(
+    workbench,
     testing,
     sessionId,
     "The applied R Drop Columns step must be acknowledged before inspection."
@@ -1211,7 +1206,8 @@ export async function exerciseReleasedRCoreEditingCatalog(
     30_000,
     "applying the native R Select Columns step"
   );
-  await requireFreshExactSessionPanelHydration(
+  await releasedRSessionApp(
+    workbench,
     testing,
     sessionId,
     "The applied R Select Columns step must be acknowledged before inspection."

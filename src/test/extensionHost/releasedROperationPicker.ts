@@ -20,12 +20,6 @@ interface OpenWranglerGridTarget {
 
 export interface ReleasedROperationPickerDependencies {
   readonly waitFor: (predicate: () => boolean, timeoutMs: number, expectation: string) => Promise<void>;
-  readonly requireFreshExactSessionPanelHydration: (
-    testing: TestApi,
-    sessionId: string,
-    expectation: string,
-    timeoutMs?: number
-  ) => Promise<void>;
   readonly waitForOpenWranglerGridTarget: (
     workbench: Page,
     testing: TestApi,
@@ -35,7 +29,7 @@ export interface ReleasedROperationPickerDependencies {
 }
 
 export function createReleasedROperationPicker(dependencies: ReleasedROperationPickerDependencies) {
-  const { requireFreshExactSessionPanelHydration, waitFor, waitForOpenWranglerGridTarget } = dependencies;
+  const { waitFor, waitForOpenWranglerGridTarget } = dependencies;
 
   async function openReleasedROperationPicker(
     testing: TestApi,
@@ -44,21 +38,13 @@ export function createReleasedROperationPicker(dependencies: ReleasedROperationP
   ): Promise<Readonly<{ app: Locator; dialog: Locator }>> {
     type RendererReceipt = NonNullable<ReturnType<TestApi["panelSynchronizationReceipt"]>>;
     const acquire = async (timeoutMs: number, expected?: RendererReceipt) => {
-      const app =
-        expected === undefined
-          ? await synchronizedSessionApp(
-              workbench,
-              testing,
-              sessionId,
-              "The native R operation picker requires the acknowledged renderer.",
-              timeoutMs
-            )
-          : await reacquireAcknowledgedSessionApp(
-              workbench,
-              testing,
-              sessionId,
-              "The replacement R operation picker requires its exact acknowledged renderer."
-            );
+      const app = await synchronizedSessionApp(
+        workbench,
+        testing,
+        sessionId,
+        "The native R operation picker requires the acknowledged renderer.",
+        timeoutMs
+      );
       const receipt = testing.panelSynchronizationReceipt(sessionId);
       assert.ok(receipt, "The native R operation picker requires one renderer receipt.");
       assert.equal(
@@ -174,21 +160,12 @@ export function createReleasedROperationPicker(dependencies: ReleasedROperationP
     sessionId: string,
     description: string
   ): Promise<Locator> {
-    // Applied-step inspection is deliberately cleared when a renderer is
-    // regenerated. Confirmed and draft states can be forced to a fresh
-    // generation; an active inspection must render on the existing one.
-    if (testing.activeSession()?.stepInspection === undefined) {
-      return synchronizedSessionApp(
-        workbench,
-        testing,
-        sessionId,
-        `${description} must render the current confirmed session state.`
-      );
-    }
-    const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
-    const app = await exactSessionApp(target.frame, sessionId);
-    assert.ok(app, `${description} requires its exact Open Wrangler renderer.`);
-    return app;
+    return synchronizedSessionApp(
+      workbench,
+      testing,
+      sessionId,
+      `${description} must render the current confirmed session state.`
+    );
   }
 
   async function synchronizedSessionApp(
@@ -198,15 +175,35 @@ export function createReleasedROperationPicker(dependencies: ReleasedROperationP
     expectation: string,
     timeoutMs?: number
   ): Promise<Locator> {
-    await requireFreshExactSessionPanelHydration(testing, sessionId, expectation, timeoutMs);
-    const receipt = testing.panelSynchronizationReceipt(sessionId);
-    assert.ok(receipt, `${expectation} The host must retain its acknowledged renderer receipt.`);
-    return consumeLayoutCommittedRendererValue(testing, sessionId, receipt.revision, waitFor, async (committed) => {
-      const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId, committed);
-      const app = await exactSessionApp(target.frame, sessionId, committed.syncId);
-      assert.ok(app, `${expectation} The acknowledged renderer must expose the exact Open Wrangler session.`);
-      return app;
-    });
+    const active = testing.activeSession();
+    assert.equal(active?.sessionId, sessionId, `${expectation} The original session must remain active.`);
+    assert.ok(active);
+    const revision = active.metadata.revision;
+    // Observe the publication caused by the production action. A test-triggered
+    // snapshot would hide a missing publication and clear applied-step inspection.
+    const app = await consumeLayoutCommittedRendererValue(
+      testing,
+      sessionId,
+      revision,
+      (predicate, _layoutTimeoutMs, description) => waitFor(predicate, timeoutMs ?? 30_000, description),
+      async (committed) => {
+        const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId, committed);
+        const exactApp = await exactSessionApp(target.frame, sessionId, committed.syncId);
+        assert.ok(exactApp, `${expectation} The acknowledged renderer must expose the exact Open Wrangler session.`);
+        return exactApp;
+      }
+    );
+    assert.equal(
+      testing.activeSession()?.sessionId,
+      sessionId,
+      `${expectation} The session changed during acquisition.`
+    );
+    assert.equal(
+      testing.activeSession()?.metadata.revision,
+      revision,
+      `${expectation} The revision changed during acquisition.`
+    );
+    return app;
   }
 
   async function reacquireAcknowledgedSessionApp(

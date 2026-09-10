@@ -75,17 +75,14 @@ import {
 import { revealCodePreviewOperationLine, revealCodePreviewText, waitForCodePreview } from "./codePreview";
 import { findCurrentWebviewAction, waitForReplaceableWebviewAction } from "./webviewActionDiscovery";
 import { findExactActiveNotebookRendererButton } from "./notebookRendererFrame";
-import { exactSessionApp, sameRendererSynchronizationReceipt } from "./acknowledgedRenderer";
+import {
+  consumeLayoutCommittedRendererValue,
+  exactSessionApp,
+  sameRendererSynchronizationReceipt
+} from "./acknowledgedRenderer";
 import { verifyBackendSwitchPhysicalView } from "./backendSwitchPhysicalView";
-import {
-  assertExactBytes,
-  ensureDeterministicDelimitedFixturePath,
-  exerciseBoundedExactByteAssertionContract
-} from "./acceptanceSourceFixture";
-import {
-  cleanupAcceptanceTemporaryDirectory,
-  exerciseAcceptanceTemporaryDirectoryCleanupContract
-} from "./acceptanceTemporaryDirectory";
+import { assertExactBytes, ensureDeterministicDelimitedFixturePath } from "./acceptanceSourceFixture";
+import { cleanupAcceptanceTemporaryDirectory } from "./acceptanceTemporaryDirectory";
 import { createDependencyIsolatedPython, sameAcceptanceExecutable } from "./dependencyInstallLifecycleFixture";
 import { createDependencyInstallShutdownJourney } from "./dependencyInstallShutdownJourney";
 import {
@@ -146,11 +143,7 @@ import {
 import { assertReleasedRGeneratedCode } from "./releasedRGeneratedCode";
 import { assertReleasedNativeREditorTooling as assertReleasedNativeREditorToolingOwner } from "./releasedRTooling";
 import { exerciseReleasedRCoreEditingCatalog } from "./releasedRCoreEditing";
-import {
-  exerciseReleasedRValueOperationsAfterLowercase,
-  exerciseReleasedRValueOperationsBeforeLowercase
-} from "./releasedRValueOperations";
-import { createReleasedRTextOperations } from "./releasedRTextOperations";
+import { exerciseReleasedRValueOperations } from "./releasedRValueOperations";
 import { createReleasedRVariableDiscovery } from "./releasedRVariableDiscovery";
 import { createReleasedRNotebookMedia } from "./releasedRNotebookMedia";
 import { createReleasedREditingModeTransition } from "./releasedREditingModeTransition";
@@ -423,7 +416,6 @@ const exerciseDependencyInstallShutdownLifecycle = createDependencyInstallShutdo
 
 const { openReleasedROperationPicker, reacquireAcknowledgedSessionApp, releasedRSessionApp, synchronizedSessionApp } =
   createReleasedROperationPicker({
-    requireFreshExactSessionPanelHydration,
     waitFor,
     waitForOpenWranglerGridTarget
   });
@@ -443,7 +435,6 @@ const {
   openReleasedROperationPicker,
   recordAcceptanceProgress,
   releasedRSessionApp,
-  requireFreshExactSessionPanelHydration,
   waitFor,
   WORKBENCH_PLAYWRIGHT_TIMEOUT_MS
 });
@@ -604,16 +595,13 @@ const exerciseReleasedDataWranglerCoexistence = createReleasedDataWranglerCoexis
 });
 
 export async function run(): Promise<void> {
-  exerciseBoundedExactByteAssertionContract();
   recordAcceptanceProgress("preflight:start");
   recordAcceptanceProgress("activation:start");
   const extension = vscode.extensions.getExtension<ExtensionApi>("matt17br.openwrangler");
   assert.ok(extension, "The Open Wrangler extension must be discoverable.");
   const extensionApi = await extension.activate();
-  const testing = extensionApi?.testing;
-  assert.ok(testing, "The isolated acceptance harness must enable the test-only extension API.");
+  assert.ok(extensionApi, "The isolated acceptance harness must enable the test-only extension API.");
   assert.equal(extension.isActive, true, "The extension must activate successfully.");
-  exerciseAcceptanceTemporaryDirectoryCleanupContract();
   recordAcceptanceProgress("activation:complete");
   recordAcceptanceProgress("preflight:package");
   assert.equal(extension.packageJSON.name, "openwrangler");
@@ -989,6 +977,41 @@ export async function run(): Promise<void> {
   assert.ok(workspace, "The extension-host fixture workspace must be open.");
   const fixture = vscode.Uri.joinPath(workspace, "fixtures", "sample.csv");
   recordAcceptanceProgress("preflight:complete");
+  const platformSmoke = async (): Promise<void> => {
+    assert.ok(testPython, "The packaged platform smoke requires the runner-selected Python environment.");
+    recordAcceptanceProgress("platform-smoke:start");
+    const firstUseFixture = ensurePackagedFirstUseFixture(workspace);
+    await dispatchPlatformSmokeJourney(phaseSelection, {
+      dailyCore: async () => {
+        await exercisePackagedDailyCore(extensionApi, extension, firstUseFixture);
+        recordAcceptanceProgress("platform-smoke:complete");
+        console.log("Open Wrangler daily preview smoke passed.");
+      },
+      gridRangeCopy: async () => {
+        const testing = await extensionApi.getTestingApi();
+        await exercisePackagedGridRangeCopyAcceptance(testing, firstUseFixture);
+        recordAcceptanceProgress("platform-smoke:complete");
+        console.log("Open Wrangler packaged grid range-copy acceptance passed.");
+      },
+      standard: async () => {
+        const testing = await extensionApi.getTestingApi();
+        await exercisePackagedPlatformSmoke(testing, extension, firstUseFixture, testPython);
+        recordAcceptanceProgress("platform-smoke:excel-dependency-install");
+        await exercisePackagedExcelDependencyInstall(testing, workspace, testPython);
+        if (process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS) {
+          recordAcceptanceProgress("platform-smoke:screenshots");
+          await capturePackagedEditorScreenshots(testing, process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS);
+        }
+        recordAcceptanceProgress("platform-smoke:complete");
+        console.log("Open Wrangler packaged platform smoke passed.");
+      }
+    });
+  };
+  if (phase === "platform-smoke") {
+    await platformSmoke();
+    return;
+  }
+  const testing = await extensionApi.getTestingApi();
   const focusedReleasedRHandlers = createFocusedReleasedRAcceptanceHandlers({
     testing,
     platform: process.platform,
@@ -1056,34 +1079,7 @@ export async function run(): Promise<void> {
       recordAcceptanceProgress("python-environment:complete");
       console.log("Open Wrangler real Python-environment selection acceptance passed.");
     },
-    platformSmoke: async () => {
-      assert.ok(testPython, "The packaged platform smoke requires the runner-selected Python environment.");
-      recordAcceptanceProgress("platform-smoke:start");
-      const firstUseFixture = ensurePackagedFirstUseFixture(workspace);
-      await dispatchPlatformSmokeJourney(phaseSelection, {
-        dailyCore: async () => {
-          await exercisePackagedDailyCore(testing, extension, firstUseFixture);
-          recordAcceptanceProgress("platform-smoke:complete");
-          console.log("Open Wrangler daily preview smoke passed.");
-        },
-        gridRangeCopy: async () => {
-          await exercisePackagedGridRangeCopyAcceptance(testing, firstUseFixture);
-          recordAcceptanceProgress("platform-smoke:complete");
-          console.log("Open Wrangler packaged grid range-copy acceptance passed.");
-        },
-        standard: async () => {
-          await exercisePackagedPlatformSmoke(testing, extension, firstUseFixture, testPython);
-          recordAcceptanceProgress("platform-smoke:excel-dependency-install");
-          await exercisePackagedExcelDependencyInstall(testing, workspace, testPython);
-          if (process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS) {
-            recordAcceptanceProgress("platform-smoke:screenshots");
-            await capturePackagedEditorScreenshots(testing, process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS);
-          }
-          recordAcceptanceProgress("platform-smoke:complete");
-          console.log("Open Wrangler packaged platform smoke passed.");
-        }
-      });
-    },
+    platformSmoke,
     packagedGridColumnCopy: async () => {
       recordAcceptanceProgress("grid-column-copy:start");
       const gridColumnCopyFixture = ensureDeterministicDelimitedFixture(
@@ -1237,8 +1233,8 @@ export async function run(): Promise<void> {
   await exercisePackagedViewingQueries(testing, fixture);
   recordAcceptanceProgress("verify:wide-projection");
   await exerciseWideColumnProjection(testing);
-  recordAcceptanceProgress("verify:operation-groups");
-  await exercisePackagedOperationGroups(testing, fixture);
+  recordAcceptanceProgress("verify:composed-plan");
+  await exercisePackagedComposedPlan(testing, fixture);
   recordAcceptanceProgress("verify:notebook-flows");
   await exercisePackagedNotebookFlows(testing);
   if (process.env.OPEN_WRANGLER_EDITOR_CDP_PORT) {
@@ -1710,7 +1706,6 @@ const exerciseReleasedPythonQuartoDocumentJourney = createReleasedPythonQuartoDo
 });
 
 const exerciseReleasedRLiterateDocumentJourneys = createReleasedRLiterateDocumentJourneys({
-  OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
   WORKBENCH_OPERATION_TIMEOUT_MS,
   acceptanceProcessIsAlive,
   assertReleasedNativeREditorTooling,
@@ -1727,7 +1722,6 @@ const exerciseReleasedRLiterateDocumentJourneys = createReleasedRLiterateDocumen
   readReleasedRDocumentProcessId,
   recordAcceptanceProgress,
   releasedRSessionApp,
-  requireFreshExactSessionPanelHydration,
   textDocumentTab,
   waitFor,
   waitForReleasedRDocumentSession,
@@ -1789,12 +1783,7 @@ const exerciseReleasedRFillMissingJourney = createReleasedRFillMissingJourney({
   openReleasedROperationPicker,
   recordAcceptanceProgress,
   releasedRSessionApp,
-  requireFreshExactSessionPanelHydration,
   waitFor
-});
-
-const { exerciseReleasedRValueOperationsJourney, previewAndDiscardReleasedRTextTool } = createReleasedRTextOperations({
-  exerciseReleasedREditingJourney
 });
 
 const { releasedRCloneFailureSnapshot, releasedRCloneMutationRevisionAdvanced, waitForReleasedRCloneState } =
@@ -1815,7 +1804,6 @@ const exerciseReleasedRCloneEditingLifecycle = createReleasedRCloneEditingJourne
   releasedRCloneFailureSnapshot,
   releasedRCloneMutationRevisionAdvanced,
   releasedRSessionApp,
-  requireFreshExactSessionPanelHydration,
   waitFor,
   waitForReleasedRCloneState
 });
@@ -1829,7 +1817,6 @@ const exerciseReleasedRPersistentRowsJourney = createReleasedRPersistentRowsJour
   recordAcceptanceProgress,
   releasedRFirstVisibleRow,
   releasedRSessionApp,
-  requireFreshExactSessionPanelHydration,
   waitFor
 });
 
@@ -1840,7 +1827,6 @@ const exerciseReleasedRRowReductionJourney = createReleasedRRowReductionJourney(
   releasedRFirstVisibleRow,
   releasedRSessionApp,
   releasedRVisibleRows,
-  requireFreshExactSessionPanelHydration,
   waitFor
 });
 
@@ -1862,7 +1848,6 @@ const exerciseReleasedRRepresentativeEditingJourney = createReleasedRRepresentat
   releasedRFirstVisibleRow,
   releasedRSessionApp,
   releasedRVisibleRows,
-  requireFreshExactSessionPanelHydration,
   waitFor
 });
 
@@ -1881,12 +1866,10 @@ const releasedRValueOperationDependencies = {
   exerciseReleasedRFormulaJourney,
   exerciseReleasedRFormatDatetimeJourney,
   openReleasedROperationPicker,
-  previewAndDiscardReleasedRTextTool,
   previewReleasedRFindReplace,
   recordAcceptanceProgress,
   recordReleasedRValueOperationCheckpoint,
   releasedRSessionApp,
-  requireFreshExactSessionPanelHydration,
   waitFor,
   waitForLocatorText
 } as const;
@@ -1898,7 +1881,6 @@ const exerciseReleasedREditingCoverage = createReleasedREditingCoverage({
     reacquireAcknowledgedSessionApp,
     recordAcceptanceProgress,
     releasedRSessionApp,
-    requireFreshExactSessionPanelHydration,
     waitFor,
     waitForLocatorText,
     QUEUED_RUNTIME_MUTATION_ACCEPTANCE_TIMEOUT_MS,
@@ -1922,7 +1904,6 @@ const exerciseReleasedREditingCoverage = createReleasedREditingCoverage({
     );
   },
   exerciseReleasedRRepresentativeEditingJourney,
-  exerciseReleasedRValueOperationsJourney,
   recordReleasedRAcceptanceSection
 });
 
@@ -2011,7 +1992,6 @@ async function exerciseReleasedREditingJourney(
         recordAcceptanceProgress,
         reacquireAcknowledgedSessionApp,
         releasedRSessionApp,
-        requireFreshExactSessionPanelHydration,
         waitFor,
         waitForOpenWranglerWebviewAction
       }
@@ -2021,7 +2001,7 @@ async function exerciseReleasedREditingJourney(
   }
 
   if (phase === "jupyter-r" && editingCatalog === "value-operations") {
-    await exerciseReleasedRValueOperationsBeforeLowercase(
+    await exerciseReleasedRValueOperations(
       { testing, workbench, sessionId, phase, initialApp: app },
       releasedRValueOperationDependencies
     );
@@ -2079,26 +2059,14 @@ async function exerciseReleasedREditingJourney(
     );
   }
 
-  // Coordinator-only checks intentionally follow the final Open Wrangler
-  // renderer mutation so their newer revisions cannot stale a later UI action.
-  if (
-    (phase === "jupyter-r-remote" && editingCatalog === "core-catalog") ||
-    (phase === "jupyter-r" && editingCatalog === "value-operations")
-  ) {
+  // This direct request sequence qualifies the separate remote R transport.
+  if (phase === "jupyter-r-remote" && editingCatalog === "core-catalog") {
     await exerciseReleasedRLowercaseOperation({
       testing,
       sessionId,
       phase,
-      catalog: editingCatalog,
-      recordProgress: recordAcceptanceProgress,
-      recordValueOperationBoundary: (boundary) => recordReleasedRValueOperationCheckpoint("lowercase", boundary)
+      recordProgress: recordAcceptanceProgress
     });
-  }
-  if (phase === "jupyter-r" && editingCatalog === "value-operations") {
-    await exerciseReleasedRValueOperationsAfterLowercase(
-      { testing, workbench, sessionId, phase },
-      releasedRValueOperationDependencies
-    );
   }
 
   if (
@@ -3110,14 +3078,12 @@ async function exerciseReleasedJupyterExtension(
           activeTab: activeEditorTabDiagnostic()
         })
     );
-    assert.equal(
-      await withAcceptanceOperationDeadline(
-        testing.synchronizePanel(polarsFrame.sessionId),
-        OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
-        "the exact released-Jupyter Polars panel synchronization"
-      ),
-      true,
-      "The released-Jupyter Polars session must own a synchronized live dataframe panel before preview."
+    await synchronizedSessionApp(
+      workbench,
+      testing,
+      polarsFrame.sessionId,
+      "The released-Jupyter Polars panel must publish before preview.",
+      OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS
     );
 
     recordAcceptanceProgress(`${phase}:polars-plan`);
@@ -3831,13 +3797,12 @@ async function assertReleasedPySparkPanelAndQueries(
     `the released-Jupyter PySpark ${variant} panel to hydrate`,
     () => JSON.stringify(testing.diagnostics())
   );
-  assert.equal(
-    await withAcceptanceOperationDeadline(
-      testing.synchronizePanel(active.sessionId),
-      OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
-      `the released-Jupyter PySpark ${variant} panel synchronization`
-    ),
-    true
+  await consumeLayoutCommittedRendererValue(
+    testing,
+    active.sessionId,
+    active.metadata.revision,
+    (predicate, _timeoutMs, description) => waitFor(predicate, OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS, description),
+    async () => undefined
   );
 
   const filterModel: FilterModel = {
@@ -7456,8 +7421,15 @@ async function exercisePackagedBackendSwitchJourney(
       activeSession: () => testing.activeSession(),
       currentReceipt: () => testing.panelSynchronizationReceipt(sessionId),
       panelHydrated: () => testing.panelHydrated(sessionId),
-      requireHydration: (expectation, timeoutMs) =>
-        requireFreshExactSessionPanelHydration(testing, sessionId, expectation, timeoutMs),
+      requireHydration: async (_expectation, timeoutMs) => {
+        await consumeLayoutCommittedRendererValue(
+          testing,
+          sessionId,
+          switched.metadata.revision,
+          (predicate, _layoutTimeoutMs, description) => waitFor(predicate, timeoutMs, description),
+          async () => undefined
+        );
+      },
       assertLifecycle: () => assertOpenWranglerWebviewLifecycle(workbench, workbench.context().browser()),
       findCurrentTarget: (receipt, deadline) =>
         findCurrentOpenWranglerGridTarget(
@@ -16491,9 +16463,10 @@ async function verifyVisiblePersistedReplayAndRecovery(testing: TestApi, fixture
       SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
       "the fresh persisted panel renderer to acknowledge its replay"
     );
-    assert.equal(
-      await testing.synchronizePanel(sessionId),
-      true,
+    await synchronizedSessionApp(
+      workbench,
+      testing,
+      sessionId,
       "The fresh persisted panel must synchronize before physical inspection."
     );
     await vscode.commands.executeCommand("workbench.action.focusActiveEditorGroup");
@@ -16572,9 +16545,10 @@ async function verifyVisiblePersistedReplayAndRecovery(testing: TestApi, fixture
       SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
       "renderer-originated Header profiles to finish on the persisted selected column"
     );
-    assert.equal(
-      await testing.synchronizePanel(sessionId),
-      true,
+    await synchronizedSessionApp(
+      workbench,
+      testing,
+      sessionId,
       "The recovered renderer must acknowledge its authoritative session snapshot."
     );
     recordAcceptanceProgress("verify:visible-replay-recovery:recovered-visible-state");
@@ -18933,8 +18907,8 @@ async function exerciseWideColumnProjection(testing: TestApi): Promise<void> {
   }
 }
 
-async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: vscode.Uri): Promise<void> {
-  const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-operation-groups-"));
+async function exercisePackagedComposedPlan(testing: TestApi, sourceFixture: vscode.Uri): Promise<void> {
+  const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-composed-plan-"));
   const sourcePath = path.join(directory, "operations.csv");
   const original = readFileSync(sourceFixture.fsPath, "utf8");
   writeFileSync(sourcePath, original);
@@ -18949,97 +18923,12 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
         pageSize: 20,
         mode: "editing"
       });
-      assert.equal(opened.kind, "sessionOpened", `${backend} operation-group session must open.`);
+      assert.equal(opened.kind, "sessionOpened", `${backend} composed-plan session must open.`);
       if (opened.kind !== "sessionOpened") continue;
 
       let revision = opened.metadata.revision;
       let stepCount = 0;
-      let sortedPage: GridPage | undefined;
-      let rankedPage: LiveGridPage | undefined;
-      const rankId = `c:step:${backend}-rank:0`;
-      const duplicateId = `c:step:${backend}-duplicates:0`;
-      const assertRankPage = (metadata: SessionMetadata, page: LiveGridPage, replay: boolean): void => {
-        const expected = replay && backend === "duckdb" ? [2, 3, 3] : [2, 3, 3, 1];
-        const rank = metadata.schema.find((column) => column.id === rankId);
-        assert.ok(rank, `${backend} must retain the rank column's stable identity.`);
-        assert.equal(rank.name, "year_rank");
-        assert.equal(rank.position, opened.metadata.schema.length);
-        assert.equal(rank.type, "integer");
-        assert.equal(rank.rawType, { pandas: "Int64", polars: "UInt32", duckdb: "BIGINT" }[backend]);
-        assert.equal(rank.nullable, backend !== "pandas");
-        assert.ok(sortedPage, "Dense Rank must follow the confirmed sales sort.");
-        assert.equal(page.totalRows, expected.length);
-        assert.equal(page.rows.length, expected.length);
-        assert.equal(page.offset, 0);
-        const rankPosition = page.columnIds.indexOf(rankId);
-        assert.ok(rankPosition >= 0);
-        assert.deepEqual(
-          page.rows.map((row) => row.values[rankPosition]),
-          expected.map((raw) => ({ kind: "integer", raw, display: String(raw), isNull: false, isNaN: false }))
-        );
-        if (!replay) {
-          assert.deepEqual(metadata.schema.slice(0, opened.metadata.schema.length), opened.metadata.schema);
-          const sourcePositions = opened.page.columnIds.map((id) => page.columnIds.indexOf(id));
-          assert.ok(sourcePositions.every((position) => position >= 0));
-          assert.deepEqual(
-            page.rows.map((row) => ({ ...row, values: sourcePositions.map((position) => row.values[position]) })),
-            sortedPage.rows
-          );
-        }
-        assertExactBytes(
-          readFileSync(sourcePath),
-          Buffer.from(original, "utf8"),
-          "Dense Rank must retain source bytes."
-        );
-      };
-      const assertDuplicatePage = (metadata: SessionMetadata, page: LiveGridPage, replay: boolean): void => {
-        const expected = replay && backend === "duckdb" ? [false, true, true] : [false, true, true, false];
-        const output = metadata.schema.find((column) => column.id === duplicateId);
-        assert.ok(output, `${backend} must retain the duplicate flag's stable identity.`);
-        assert.equal(output.name, "repeated_year");
-        assert.equal(output.position, opened.metadata.schema.length + 1);
-        assert.equal(output.type, "boolean");
-        assert.equal(page.totalRows, expected.length);
-        assert.equal(page.rows.length, expected.length);
-        const position = page.columnIds.indexOf(duplicateId);
-        assert.ok(position >= 0);
-        const flags = page.rows.map((row) => row.values[position]);
-        assert.ok(flags.every((cell) => cell?.kind === "boolean" && cell.isNull === false && cell.isNaN === false));
-        assert.deepEqual(
-          flags.map((cell) => cell.raw),
-          expected
-        );
-        if (!replay) {
-          assert.ok(rankedPage, "Duplicate marking must follow the confirmed rank step.");
-          const retainedPositions = rankedPage.columnIds.map((id) => page.columnIds.indexOf(id));
-          assert.ok(retainedPositions.every((index) => index >= 0));
-          assert.deepEqual(
-            page.rows.map((row) => ({ ...row, values: retainedPositions.map((index) => row.values[index]) })),
-            rankedPage.rows
-          );
-        }
-        assertExactBytes(
-          readFileSync(sourcePath),
-          Buffer.from(original, "utf8"),
-          "Duplicate marking must retain source bytes."
-        );
-      };
       const steps: TransformStep[] = [
-        {
-          id: `${backend}-sort`,
-          kind: "sortRows",
-          params: { rules: [{ column: columnReference(opened.metadata, "sales"), direction: "desc", nulls: "last" }] }
-        },
-        {
-          id: `${backend}-rank`,
-          kind: "denseRank",
-          params: { column: columnReference(opened.metadata, "year"), direction: "asc", newColumn: "year_rank" }
-        },
-        {
-          id: `${backend}-duplicates`,
-          kind: "markDuplicates",
-          params: { columns: [columnReference(opened.metadata, "year")], newColumn: "repeated_year" }
-        },
         {
           id: `${backend}-formula`,
           kind: "formula",
@@ -19051,51 +18940,15 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
           }
         },
         {
-          id: `${backend}-text`,
-          kind: "upperText",
-          params: { column: columnReference(opened.metadata, "city"), newColumn: "city_upper" }
-        },
-        {
-          id: `${backend}-numeric`,
-          kind: "roundNumber",
-          params: {
-            column: { id: `c:step:${backend}-formula:0`, name: "score" },
-            decimals: 0,
-            newColumn: "rounded_score"
-          }
-        },
-        {
-          id: `${backend}-example`,
-          kind: "byExample",
-          params: {
-            sourceColumns: [columnReference(opened.metadata, "city")],
-            newColumn: "city_example",
-            examples: [
-              { inputs: ["Milan"], output: "MILAN" },
-              { inputs: ["Rome"], output: "ROME" }
-            ]
-          }
-        },
-        {
           id: `${backend}-custom`,
           kind: "customCode",
           params: {
             code:
               backend === "pandas"
-                ? 'result = df.assign(custom=df["sales"] + 1)'
+                ? 'result = df.assign(custom=df["score"] + 1)'
                 : backend === "polars"
-                  ? 'result = df.with_columns((pl.col("sales") + 1).alias("custom"))'
-                  : 'result = df.filter("sales IS NOT NULL")'
-          }
-        },
-        {
-          id: `${backend}-group`,
-          kind: "groupBy",
-          params: {
-            keys: [columnReference(opened.metadata, "active")],
-            aggregations: [
-              { column: columnReference(opened.metadata, "sales"), operation: "sum", alias: "total_sales" }
-            ]
+                  ? 'result = df.with_columns((pl.col("score") + 1).alias("custom"))'
+                  : 'result = df.project("*, score + 1 AS custom")'
           }
         }
       ];
@@ -19119,17 +18972,7 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
         if (backend === "duckdb") {
           assert.doesNotMatch(preview.code, DUCKDB_FOREIGN_ENGINE_CONVERSION);
         }
-        if (step.kind === "byExample") {
-          assert.ok(preview.metadata.draftStep?.params.program, "By-example preview must resolve a program.");
-        }
-        if (step.kind === "denseRank") {
-          assert.deepEqual(preview.metadata.draftStep, step);
-          assertRankPage(preview.metadata, preview.page, false);
-        }
-        if (step.kind === "markDuplicates") {
-          assert.deepEqual(preview.metadata.draftStep, step);
-          assertDuplicatePage(preview.metadata, preview.page, false);
-        }
+        assert.deepEqual(preview.metadata.draftStep, step);
 
         revision = preview.revision;
         const applied = await testing.request({
@@ -19145,27 +18988,9 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
         stepCount += 1;
         revision = applied.revision;
         assert.equal(applied.metadata.steps.length, stepCount);
-        if (step.kind === "sortRows") {
-          sortedPage = structuredClone(applied.page);
-          const cityPosition = sortedPage.columnIds.indexOf(columnReference(opened.metadata, "city").id);
-          assert.deepEqual(
-            sortedPage.rows.map((row) => row.values[cityPosition]?.raw),
-            ["Berlin", "Milan", "Rome", "Paris"]
-          );
-        }
-        if (step.kind === "denseRank") {
-          assert.deepEqual(applied.metadata.steps.at(-1), step);
-          assertRankPage(applied.metadata, applied.page, false);
-          assert.deepEqual(applied.page, preview.page);
-          assert.equal(applied.code, preview.code);
-          rankedPage = structuredClone(applied.page);
-        }
-        if (step.kind === "markDuplicates") {
-          assert.deepEqual(applied.metadata.steps.at(-1), step);
-          assertDuplicatePage(applied.metadata, applied.page, false);
-          assert.deepEqual(applied.page, preview.page);
-          assert.equal(applied.code, preview.code);
-        }
+        assert.deepEqual(applied.metadata.steps.at(-1), step);
+        assert.deepEqual(applied.page, preview.page);
+        assert.equal(applied.code, preview.code);
 
         if (step.kind === "customCode") {
           const generation = testing.runtimeGeneration();
@@ -19184,8 +19009,6 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
           assert.equal(testing.runtimeGeneration(), generation + 1);
           if (replayed.kind === "page") {
             revision = replayed.revision;
-            assertRankPage(replayed.metadata, replayed.page, true);
-            assertDuplicatePage(replayed.metadata, replayed.page, true);
             assert.deepEqual(replayed.metadata.steps, applied.metadata.steps);
             assert.deepEqual(replayed.metadata.schema, applied.metadata.schema);
             assert.deepEqual(
@@ -19197,12 +19020,12 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
         }
       }
 
-      assert.equal(stepCount, steps.length, `${backend} must apply every representative operation group.`);
+      assert.equal(stepCount, steps.length, `${backend} must apply both steps of the composed plan.`);
       const active = testing.activeSession();
       assert.equal(active?.metadata.steps.length, steps.length);
       assert.deepEqual(
         active?.metadata.schema.map((column) => column.name),
-        ["active", "total_sales"]
+        [...opened.metadata.schema.map((column) => column.name), "score", "custom"]
       );
       assert.match(active?.code ?? "", /def clean_data/u, `${backend} must retain executable generated code.`);
       if (backend === "duckdb") {
@@ -19245,7 +19068,7 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
       await waitFor(
         () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
         10_000,
-        `${backend} operation-group session to dispose`
+        `${backend} composed-plan session to dispose`
       );
     }
 

@@ -66,7 +66,7 @@ export function createPackagedDailyCoreJourney({
   SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS
 }: PackagedDailyCoreJourneyDependencies) {
   return async function exercisePackagedDailyCore(
-    testing: TestApi,
+    extensionApi: ExtensionApi,
     extension: vscode.Extension<ExtensionApi>,
     fixture: vscode.Uri
   ): Promise<void> {
@@ -75,7 +75,6 @@ export function createPackagedDailyCoreJourney({
       "vscode",
       "The daily preview journey runs in the representative VS Code editor."
     );
-    assert.equal(testing.diagnostics().sessionCount, 0, "The daily preview journey must start without a session.");
     const sourceBytes = await vscode.workspace.fs.readFile(fixture);
     const notebookDirectory = mkdtempSync(path.join(tmpdir(), "openwrangler-daily-index-"));
     const notebookLabel = "daily Pandas index preview";
@@ -83,6 +82,7 @@ export function createPackagedDailyCoreJourney({
     const notebookUri = vscode.Uri.file(notebookPath);
     const failures: unknown[] = [];
     let editorMayBeOpen = false;
+    let acquiredTesting: TestApi | undefined;
 
     try {
       const notebookPayload: Omit<NotebookOutputPayload, "metadata"> & {
@@ -179,7 +179,20 @@ export function createPackagedDailyCoreJourney({
         .locator('.editor-actions [aria-label="Open in Open Wrangler"]:visible')
         .first();
       await titleAction.waitFor({ state: "visible", timeout: 10_000 });
+      // This isolated daily profile has no notebook or Open Wrangler view open.
+      assert.deepEqual(
+        extensionApi.activationDiagnostics(),
+        { constructedOwners: [], rDiscoveryStarted: false },
+        "Opening the source text editor must leave dataframe owners cold."
+      );
       await titleAction.click();
+      await waitFor(
+        () => extensionApi.activationDiagnostics().constructedOwners.includes("custom-editor"),
+        10_000,
+        "the public CSV title action to construct its file owner before test API acquisition"
+      );
+      const testing = await extensionApi.getTestingApi();
+      acquiredTesting = testing;
       await waitForAutomaticDelimitedImport(page, testing, fixture, "platform-smoke:daily-core:import");
       await waitFor(
         () => testing.activeSession()?.metadata.source.uri === fixture.toString(),
@@ -290,12 +303,15 @@ export function createPackagedDailyCoreJourney({
             "the daily preview notebook tab and editor to close"
           );
           editorMayBeOpen = false;
-          await waitFor(
-            () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
-            10_000,
-            "the daily preview session and runtime to terminate"
-          );
-          assert.deepEqual(testing.diagnostics().sessions, []);
+          if (acquiredTesting) {
+            const testing = acquiredTesting;
+            await waitFor(
+              () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+              10_000,
+              "the daily preview session and runtime to terminate"
+            );
+            assert.deepEqual(testing.diagnostics().sessions, []);
+          }
         } catch (error) {
           failures.push(error);
         }

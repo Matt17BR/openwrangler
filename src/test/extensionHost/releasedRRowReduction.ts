@@ -26,11 +26,6 @@ interface ReleasedRRowReductionDependencies {
     viewRequestId: string,
     limit: number
   ) => Promise<GridPage["rows"]>;
-  readonly requireFreshExactSessionPanelHydration: (
-    testing: TestApi,
-    sessionId: string,
-    expectation: string
-  ) => Promise<void>;
   readonly waitFor: (
     predicate: () => boolean,
     timeoutMs: number,
@@ -46,7 +41,6 @@ export function createReleasedRRowReductionJourney({
   releasedRFirstVisibleRow,
   releasedRSessionApp,
   releasedRVisibleRows,
-  requireFreshExactSessionPanelHydration,
   waitFor
 }: ReleasedRRowReductionDependencies) {
   return async function exerciseReleasedRRowReductionJourney(
@@ -123,7 +117,8 @@ export function createReleasedRRowReductionJourney({
       30_000,
       "applying native R Drop missing rows"
     );
-    await requireFreshExactSessionPanelHydration(
+    await releasedRSessionApp(
+      workbench,
       testing,
       sessionId,
       "The applied R Drop missing rows step must reach its exact renderer before inspection."
@@ -249,7 +244,8 @@ export function createReleasedRRowReductionJourney({
       30_000,
       "applying native R Drop duplicates"
     );
-    await requireFreshExactSessionPanelHydration(
+    await releasedRSessionApp(
+      workbench,
       testing,
       sessionId,
       "The applied R Drop duplicates step must reach its exact renderer before inspection."

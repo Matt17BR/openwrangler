@@ -30,11 +30,6 @@ export interface ReleasedRCategoricalEditingDependencies {
     sessionId: string,
     description: string
   ) => Promise<Locator>;
-  readonly requireFreshExactSessionPanelHydration: (
-    testing: TestApi,
-    sessionId: string,
-    expectation: string
-  ) => Promise<void>;
   readonly waitFor: (predicate: () => boolean, timeoutMs: number, expectation: string) => Promise<void>;
   readonly waitForLocatorText: (
     locator: Locator,
@@ -126,14 +121,8 @@ async function exerciseReleasedROneHotJourney(
   dependencies: ReleasedRCategoricalEditingDependencies
 ): Promise<void> {
   const { testing, workbench, sessionId } = input;
-  const {
-    openReleasedROperationPicker,
-    recordAcceptanceProgress,
-    releasedRSessionApp,
-    requireFreshExactSessionPanelHydration,
-    waitFor,
-    waitForLocatorText
-  } = dependencies;
+  const { openReleasedROperationPicker, recordAcceptanceProgress, releasedRSessionApp, waitFor, waitForLocatorText } =
+    dependencies;
   recordAcceptanceProgress("jupyter-r:editing:one-hot-preview-apply-undo");
   const base = testing.activeSession();
   assert.ok(base, "The restored R session must remain available for One-hot encode.");
@@ -279,7 +268,7 @@ async function exerciseReleasedROneHotJourney(
   const applied = testing.activeSession();
   assert.ok(applied, "The applied R One-hot encode must retain its session.");
   assertReleasedRCategoricalGeneratedCode(applied.code ?? "", generatedExpectation);
-  await requireFreshExactSessionPanelHydration(testing, sessionId, "The applied R One-hot step must settle.");
+  await releasedRSessionApp(workbench, testing, sessionId, "The applied R One-hot step must settle.");
   await undoReleasedRCategoricalStep(
     testing,
     workbench,
@@ -301,14 +290,8 @@ async function exerciseReleasedRMultiLabelJourney(
   dependencies: ReleasedRCategoricalEditingDependencies
 ): Promise<void> {
   const { testing, workbench, sessionId } = input;
-  const {
-    openReleasedROperationPicker,
-    recordAcceptanceProgress,
-    releasedRSessionApp,
-    requireFreshExactSessionPanelHydration,
-    waitFor,
-    waitForLocatorText
-  } = dependencies;
+  const { openReleasedROperationPicker, recordAcceptanceProgress, releasedRSessionApp, waitFor, waitForLocatorText } =
+    dependencies;
   recordAcceptanceProgress("jupyter-r:editing:multi-label-preview-apply-undo");
   const base = testing.activeSession();
   assert.ok(base, "The restored R session must remain available for Multi-label binarize.");
@@ -461,7 +444,7 @@ async function exerciseReleasedRMultiLabelJourney(
   const applied = testing.activeSession();
   assert.ok(applied, "The applied R Multi-label binarize must retain its session.");
   assertReleasedRCategoricalGeneratedCode(applied.code ?? "", generatedExpectation);
-  await requireFreshExactSessionPanelHydration(testing, sessionId, "The applied R Multi-label step must settle.");
+  await releasedRSessionApp(workbench, testing, sessionId, "The applied R Multi-label step must settle.");
   await undoReleasedRCategoricalStep(
     testing,
     workbench,

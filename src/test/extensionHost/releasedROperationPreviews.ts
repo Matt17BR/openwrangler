@@ -38,11 +38,6 @@ export interface ReleasedROperationPreviewDependencies {
     sessionId: string,
     description: string
   ) => Promise<Locator>;
-  readonly requireFreshExactSessionPanelHydration: (
-    testing: TestApi,
-    sessionId: string,
-    expectation: string
-  ) => Promise<void>;
   readonly waitFor: (predicate: () => boolean, timeoutMs: number, description: string) => Promise<void>;
   readonly WORKBENCH_PLAYWRIGHT_TIMEOUT_MS: number;
 }
@@ -52,7 +47,6 @@ export function createReleasedROperationPreviews(dependencies: ReleasedROperatio
     openReleasedROperationPicker,
     recordAcceptanceProgress,
     releasedRSessionApp,
-    requireFreshExactSessionPanelHydration,
     waitFor,
     WORKBENCH_PLAYWRIGHT_TIMEOUT_MS
   } = dependencies;
@@ -86,7 +80,8 @@ export function createReleasedROperationPreviews(dependencies: ReleasedROperatio
       "the native R Sort rows preview"
     );
     await dialog.waitFor({ state: "hidden", timeout: 10_000 });
-    await requireFreshExactSessionPanelHydration(
+    await releasedRSessionApp(
+      workbench,
       testing,
       sessionId,
       "The native R Sort rows preview must reach its exact renderer."
@@ -120,7 +115,8 @@ export function createReleasedROperationPreviews(dependencies: ReleasedROperatio
       "the native R Filter rows preview"
     );
     await dialog.waitFor({ state: "hidden", timeout: 10_000 });
-    await requireFreshExactSessionPanelHydration(
+    await releasedRSessionApp(
+      workbench,
       testing,
       sessionId,
       "The native R Filter rows preview must reach its exact renderer."
@@ -156,7 +152,8 @@ export function createReleasedROperationPreviews(dependencies: ReleasedROperatio
       "the native R Drop missing rows preview"
     );
     await dialog.waitFor({ state: "hidden", timeout: 10_000 });
-    await requireFreshExactSessionPanelHydration(
+    await releasedRSessionApp(
+      workbench,
       testing,
       sessionId,
       "The native R Drop missing rows preview must reach its exact renderer."
@@ -190,7 +187,8 @@ export function createReleasedROperationPreviews(dependencies: ReleasedROperatio
       "the native R Drop duplicates preview"
     );
     await dialog.waitFor({ state: "hidden", timeout: 10_000 });
-    await requireFreshExactSessionPanelHydration(
+    await releasedRSessionApp(
+      workbench,
       testing,
       sessionId,
       "The native R Drop duplicates preview must reach its exact renderer."
@@ -529,7 +527,8 @@ export function createReleasedROperationPreviews(dependencies: ReleasedROperatio
     const expectedCode = active.code ?? "";
     assertReleasedRGeneratedCode(expectedCode, newName, variableName);
     const expectedCodeReceipt = codePreviewDocumentReceipt(expectedCode);
-    await requireFreshExactSessionPanelHydration(
+    await releasedRSessionApp(
+      workbench,
       testing,
       sessionId,
       "The native R rename preview must be acknowledged by its exact renderer."

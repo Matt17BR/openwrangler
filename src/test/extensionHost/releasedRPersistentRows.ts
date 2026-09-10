@@ -28,11 +28,6 @@ interface ReleasedRPersistentRowsDependencies {
     sessionId: string,
     expectation: string
   ) => Promise<Locator>;
-  readonly requireFreshExactSessionPanelHydration: (
-    testing: TestApi,
-    sessionId: string,
-    expectation: string
-  ) => Promise<void>;
   readonly waitFor: (
     predicate: () => boolean,
     timeoutMs: number,
@@ -48,7 +43,6 @@ export function createReleasedRPersistentRowsJourney({
   recordAcceptanceProgress,
   releasedRFirstVisibleRow,
   releasedRSessionApp,
-  requireFreshExactSessionPanelHydration,
   waitFor
 }: ReleasedRPersistentRowsDependencies) {
   return async function exerciseReleasedRPersistentRowsJourney(
@@ -101,7 +95,8 @@ export function createReleasedRPersistentRowsJourney({
       30_000,
       "applying the native R Sort rows step"
     );
-    await requireFreshExactSessionPanelHydration(
+    await releasedRSessionApp(
+      workbench,
       testing,
       sessionId,
       "The applied R Sort rows step must reach its exact renderer before inspection."
@@ -294,7 +289,8 @@ export function createReleasedRPersistentRowsJourney({
       30_000,
       "applying the native R Filter rows step"
     );
-    await requireFreshExactSessionPanelHydration(
+    await releasedRSessionApp(
+      workbench,
       testing,
       sessionId,
       "The applied R Filter rows step must reach its exact renderer before inspection."

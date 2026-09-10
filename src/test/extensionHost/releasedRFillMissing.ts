@@ -16,11 +16,6 @@ interface ReleasedRFillMissingDependencies {
     sessionId: string,
     expectation: string
   ) => Promise<Locator>;
-  readonly requireFreshExactSessionPanelHydration: (
-    testing: TestApi,
-    sessionId: string,
-    expectation: string
-  ) => Promise<void>;
   readonly waitFor: (
     predicate: () => boolean,
     timeoutMs: number,
@@ -33,7 +28,6 @@ export function createReleasedRFillMissingJourney({
   openReleasedROperationPicker,
   recordAcceptanceProgress,
   releasedRSessionApp,
-  requireFreshExactSessionPanelHydration,
   waitFor
 }: ReleasedRFillMissingDependencies) {
   return async function exerciseReleasedRFillMissingJourney(
@@ -268,7 +262,8 @@ export function createReleasedRFillMissingJourney({
       10_000,
       "returning to the first R column after the fill journey"
     );
-    await requireFreshExactSessionPanelHydration(
+    await releasedRSessionApp(
+      workbench,
       testing,
       sessionId,
       "The first R column must be visible before the unrelated rename journey starts."

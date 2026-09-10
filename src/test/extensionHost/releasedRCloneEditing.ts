@@ -27,11 +27,6 @@ interface ReleasedRCloneEditingDependencies {
     sessionId: string,
     expectation: string
   ) => Promise<Locator>;
-  readonly requireFreshExactSessionPanelHydration: (
-    testing: TestApi,
-    sessionId: string,
-    expectation: string
-  ) => Promise<void>;
   readonly waitFor: (
     predicate: () => boolean,
     timeoutMs: number,
@@ -48,7 +43,6 @@ export function createReleasedRCloneEditingJourney({
   releasedRCloneFailureSnapshot,
   releasedRCloneMutationRevisionAdvanced,
   releasedRSessionApp,
-  requireFreshExactSessionPanelHydration,
   waitFor,
   waitForReleasedRCloneState
 }: ReleasedRCloneEditingDependencies) {
@@ -111,7 +105,8 @@ export function createReleasedRCloneEditingJourney({
       },
       "applying the native R Clone Column step"
     );
-    await requireFreshExactSessionPanelHydration(
+    await releasedRSessionApp(
+      workbench,
       testing,
       sessionId,
       "The applied R Clone Column step must be acknowledged before inspection."
