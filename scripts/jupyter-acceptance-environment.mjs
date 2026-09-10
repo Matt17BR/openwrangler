@@ -1964,12 +1964,16 @@ export async function prepareJupyterAcceptanceREnvironment(
     environment = createEditorAcceptanceEnvironment(),
     platform = process.platform,
     nativeEditorTooling = true,
+    collapseFixtures = true,
     sourceContracts = false,
     runCommand = runBoundedEditorCommand
   } = {}
 ) {
   if (typeof nativeEditorTooling !== "boolean") {
     throw new Error("Released-Jupyter R acceptance requires an explicit native editor tooling decision.");
+  }
+  if (typeof collapseFixtures !== "boolean") {
+    throw new Error("Released-Jupyter R acceptance requires a boolean collapse fixture decision.");
   }
   if (typeof sourceContracts !== "boolean" || (sourceContracts && nativeEditorTooling)) {
     throw new Error("R source-contract preparation requires a boolean scope and excludes native editor tooling.");
@@ -1999,6 +2003,7 @@ export async function prepareJupyterAcceptanceREnvironment(
   const packageEntries = Object.entries(R_ACCEPTANCE_PACKAGE_VERSIONS).filter(([packageName]) => {
     if (sourceContracts) return ["jsonlite", "nanoparquet", "bit64"].includes(packageName);
     if (packageName === "bit64") return false;
+    if (!collapseFixtures && ["Rcpp", "collapse"].includes(packageName)) return false;
     return nativeEditorTooling || !["languageserver", "rmarkdown", "knitr"].includes(packageName);
   });
   const packages = Object.freeze(packageEntries.map(([packageName]) => packageName));
@@ -2036,7 +2041,7 @@ export async function prepareJupyterAcceptanceREnvironment(
         [
           `.ow_expected <- c(${expectedVersions})`,
           R_ACCEPTANCE_PROBE,
-          ...(sourceContracts ? [] : [R_ACCEPTANCE_COLLAPSE_PROBE]),
+          ...(packages.includes("collapse") ? [R_ACCEPTANCE_COLLAPSE_PROBE] : []),
           'cat(paste(.ow_packages, .ow_versions, sep = "=", collapse = "\\n"), sep = "")'
         ].join("\n")
       ],

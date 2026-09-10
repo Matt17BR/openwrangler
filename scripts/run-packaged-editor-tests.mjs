@@ -432,7 +432,8 @@ try {
             );
             rAcceptanceEnvironment = await prepareJupyterAcceptanceREnvironment(resolve(temporaryRoot, "rv"), rscript, {
               containedBy: temporaryRoot,
-              nativeEditorTooling: rJupyterSelection.nativeEditorTooling
+              nativeEditorTooling: rJupyterSelection.nativeEditorTooling,
+              collapseFixtures: rJourneySelector !== "interactive-terminal"
             });
             if (acceptanceMode === "r-jupyter") {
               console.log(

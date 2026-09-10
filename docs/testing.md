@@ -767,8 +767,9 @@ PySpark and generic verification. Qualification coverage is determined by the se
 
 The `r-jupyter` notebook journeys prepare their reviewed package subset in a fresh private R library. They omit
 `languageserver`, `rmarkdown`, and `knitr`; interactive-terminal and literate-documents journeys retain all three.
-Shared IRkernel, native-frame and Parquet fixtures keep their dependencies, including collapse and Rcpp.
-On macOS, collapse is built from the pinned source snapshot using two make jobs.
+The terminal journey omits collapse and Rcpp because its native-frame fixtures do not use collapse. It keeps
+nanoparquet for real Parquet export. Notebook and literate journeys retain collapse and its structural probe.
+On macOS, selected collapse fixtures use the pinned source snapshot built with two make jobs.
 Package pins remain in `scripts/jupyter-acceptance-environment.mjs`. Each selected root must resolve from the private
 library at its reviewed version and load successfully before the exact private IRkernel readiness probe runs.
 
@@ -780,8 +781,7 @@ This system dependency follows Homebrew updates; the R package pins stay unchang
 The focused interactive-terminal journey installs the pinned official R and R-syntax extensions. It omits the
 Quarto extension and CLI; the literate-documents journey retains both, including private Pandoc configuration and
 native Quarto media preview checks. Tooling pins remain in `scripts/r-editor-acceptance-tooling.mjs`, and its selected
-extension records drive installation and expected versions. Both tooling scopes keep the same private R package
-roots and IRkernel readiness checks.
+extension records drive installation and expected versions. Both tooling scopes keep IRkernel readiness checks.
 
 The macOS and Windows R jobs first run `kernel:numeric-portability`, the same case included in the canonical
 Linux kernel suite. It owns the platform-sensitive mean, decimal parsing, selection and generated-literal assertions
@@ -814,13 +814,14 @@ absolute deadline; preparation and cleanup add to total wall time.
 
 `scripts/packaged-r-jupyter.test.mjs` checks actual prepared install/probe/record agreement, private environment
 ownership and rejected inputs through the command seam without starting R. Changes to the installed-editor package
-selection also require a fresh notebook core run and a full tooling/literate run against the same supplied VSIX;
-graph size alone does not establish setup-time savings.
+selection require a fresh run of each affected profile against the supplied VSIX and proof that unaffected profiles'
+prepared install/probe inputs remain unchanged. Changes to shared pins or shared selection behavior require notebook
+core and full tooling/literate qualification. Measure setup cost; graph size alone does not establish savings.
 
 `src/test/releasedRTooling.unit.test.ts` checks the actual tooling assertions and focused journey routing, including
-missing or mismatched extensions, commands and CLI configuration. Changes to terminal tooling selection also require
-the focused terminal and full literate journeys against the same supplied VSIX. Fewer selected artifacts alone do
-not establish setup-time savings.
+missing or mismatched extensions, commands and CLI configuration. Tooling selection changes require the affected
+terminal or literate journeys against the same supplied VSIX, with both required for shared changes. Fewer selected
+artifacts alone do not establish setup-time savings.
 
 ## Release-candidate checks
 
