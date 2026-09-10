@@ -33,7 +33,7 @@ for (const scenario of [
   { name: "unchanged source", previous: scheduledSource, build: false },
   { name: "changed source", previous: "b".repeat(40), build: true },
   { name: "no successful history", previous: "", build: true },
-  { name: "manual request", previous: scheduledSource, event: "workflow_dispatch", build: true },
+  { name: "retired manual request", previous: scheduledSource, event: "workflow_dispatch" },
   { name: "history lookup failure", previous: "", apiStatus: 1 },
   { name: "malformed history source", previous: "invalid" },
   { name: "non-main request", previous: scheduledSource, ref: "refs/heads/other" }
@@ -579,7 +579,24 @@ test("the first package attempt freezes notes inputs for publication-only recove
   const baselineIndex = steps.findIndex((step) => step.id === "notes_base");
   assert.ok(baselineIndex > steps.findIndex((step) => step.run === "npm ci --ignore-scripts"));
   assert.ok(baselineIndex < steps.findIndex((step) => step.name === "Package the preview VSIX once"));
-  assert.equal(steps[baselineIndex].if, "${{ github.event_name == 'schedule' }}");
+  assert.deepEqual(Object.keys(workflow.on), ["schedule"]);
+  for (const id of ["utc_date", "daily_source", "notes_base"]) {
+    assert.equal(steps.find((step) => step.id === id).if, undefined);
+  }
+  assert.equal(workflow.jobs.package.outputs["candidate-sha"], "${{ steps.daily_source.outputs.generated_sha }}");
+  assert.equal(workflow.jobs.package.outputs["release-tag"], "${{ steps.daily_source.outputs.release_tag }}");
+  assert.equal(workflow.jobs.release.if, "${{ !cancelled() && needs.package.result == 'success' }}");
+  const reconstruct = workflow.jobs.release.steps.find(
+    (step) => step.name === "Reconstruct the qualified daily source"
+  );
+  assert.equal(reconstruct.if, undefined);
+  assert.equal(reconstruct.run, "node scripts/daily-preview-artifact.mjs prepare");
+  assert.deepEqual(reconstruct.env, {
+    EXPECTED_GENERATED_SHA: "${{ needs.package.outputs.candidate-sha }}",
+    GITHUB_REF: "refs/heads/main",
+    PREVIEW_DATE: "${{ needs.package.outputs.preview-date }}",
+    SOURCE_SHA: "${{ github.sha }}"
+  });
   assert.equal(steps[baselineIndex].run, "node scripts/publish-github-preview-release.mjs --notes-baseline");
   assert.equal(workflow.jobs.package.outputs["notes-base-tag"], "${{ steps.notes_base.outputs.notes_base_tag }}");
   assert.equal(workflow.jobs.package.outputs["notes-base-sha"], "${{ steps.notes_base.outputs.notes_base_sha }}");

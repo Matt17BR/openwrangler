@@ -138,11 +138,11 @@ Windows runtime contracts for this small dependency set. Its package installatio
 The weekly Polars runtime benchmark installs the core Python runtime dependencies and runs the full CSV/Parquet
 measurement with strict thresholds.
 
-The consolidated preview workflow owns both the automatic daily public train and the manual preview fallback:
+The preview workflow owns scheduled daily publication:
 
 - A small check compares protected `main` with the last successful scheduled run before any checkout, dependency
   installation, build, or editor test. An unchanged commit skips packaging and publication with a job-summary reason.
-  Failed runs remain eligible on the next schedule, and manual dispatches always reach the existing preview flow.
+  Failed runs remain eligible on the next schedule.
 - Each scheduled run derives its date from that workflow run's immutable UTC creation timestamp and its series from
   the latest canonical stable release tag reachable from the exact protected-main source commit in the full checkout.
   A pre-v2 stable tag retains the `1.99.YYYYMMDD` compatibility series. For v2 and later, the tag's `major.minor`
@@ -152,10 +152,8 @@ The consolidated preview workflow owns both the automatic daily public train and
   canonical VSIX/checksum/provenance bundle in exact stable VS Code with the existing `daily-core` selector. The
   accepted bytes are then published automatically as a GitHub prerelease. GitHub dispatches Open VSX, while the tag
   triggers Azure Marketplace.
-- A manual run remains available only for the public `v1.99.7` fallback. It qualifies the same canonical bundle, and
-  publication remains explicit through its `publish` input.
-- Packaging admits only a workflow run's first attempt, before checkout or setup. Package failures require a new run;
-  **Publish preview** remains retryable with the recorded package artifact ID and source/date/tag outputs. After its
+- Packaging admits only a workflow run's first attempt, before checkout or setup. If packaging fails, wait for the next
+  scheduled run; **Publish preview** remains retryable with the recorded package artifact ID and source/date/tag outputs. After its
   existing dependency setup, the package job also freezes the latest published preview's verified tag and commit, plus
   merged PR titles and membership, for [daily change notes](releasing.md#daily-preview). Only this job needs
   `pull-requests: read`. Retries retain these outputs and exact notes rather than advancing to a newer publication or
@@ -166,7 +164,7 @@ The consolidated preview workflow owns both the automatic daily public train and
 - Stable publication selects a successful candidate and promotes its already-recorded bytes. Candidate selection uses
   Node built-ins without installing or caching npm dependencies. The separate promotion job installs its publication
   tools and verifies the exact artifact; it does not rebuild the extension. After GitHub publication, a dependent call
-  waits for the shared Open VSX promotion workflow. Preview dispatch and manual recovery use that same publishing owner.
+  waits for the shared Open VSX promotion workflow. Preview publication and manual recovery use that same publishing owner.
   The shared job has its own runner, dependency installation and public artifact download; consolidation removes a
   second publication implementation, without claiming a faster release.
 

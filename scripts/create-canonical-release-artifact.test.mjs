@@ -23,26 +23,18 @@ import {
   CANONICAL_RELEASE_PUBLICATION_MODE,
   CANONICAL_PREVIEW_RELEASE_ARTIFACT_PROTOCOL,
   CANONICAL_RELEASE_ARTIFACT_PROTOCOL,
-  PERFORMANCE_EVIDENCE_ARTIFACT_PROTOCOL,
-  PERFORMANCE_EVIDENCE_ARTIFACT_ROLE,
-  PERFORMANCE_EVIDENCE_PUBLICATION_MODE,
   PREVIEW_RELEASE_PUBLICATION_MODE,
   createCanonicalReleaseArtifact,
   createCanonicalReleaseDependencies,
   parseCanonicalReleaseArtifactArguments,
   validateCanonicalReleaseProvenance,
-  validatePreviewReleaseProvenance,
-  validatePerformanceEvidenceCandidateProvenance
+  validatePreviewReleaseProvenance
 } from "./create-canonical-release-artifact.mjs";
 import {
-  PERFORMANCE_EVIDENCE_README_RELEASE_SECTION,
-  PERFORMANCE_EVIDENCE_PARTIAL_ROWS,
   inspectReleaseDocumentationSource,
   PRIMARY_PARITY_SCOPE,
-  R_PREVIEW_PARITY_SCOPE,
-  STABLE_README_RELEASE_SECTION
+  R_PREVIEW_PARITY_SCOPE
 } from "./release-readiness.mjs";
-import { PREVIEW_README_RELEASE_SECTION } from "./release-documents.mjs";
 import {
   assertReproducibleVsixArchive as assertReproducibleArchive,
   canonicalizeVsixArchive
@@ -51,6 +43,7 @@ import { parseStrictJson } from "./strict-json.mjs";
 import { verifyCanonicalReleaseArtifact } from "./verify-canonical-release-artifact.mjs";
 import { inspectVsixArchive } from "./vsix-archive.mjs";
 
+const readmeCopy = "## Install\n\nCompile and install the current source. Historical preview: v1.99.7.";
 const namespace = "http://schemas.microsoft.com/developer/vsx-schema/2011";
 const vendoredJsYaml = readFileSync(new URL("../node_modules/js-yaml/dist/js-yaml.cjs.js", import.meta.url));
 const stablePackage = Object.freeze({
@@ -67,7 +60,7 @@ const previewPackage = Object.freeze({
 });
 const posixTest = process.platform === "win32" ? test.skip : test;
 
-test("canonical artifact CLI makes preview and evidence publication explicit while stable remains the default", () => {
+test("canonical artifact CLI permits preview and stable authoring but refuses retired evidence authoring", () => {
   assert.deepEqual(parseCanonicalReleaseArtifactArguments(["candidate.vsix", "--out-dir", "release"]), {
     candidatePath: "candidate.vsix",
     outputDirectory: "release",
@@ -81,16 +74,9 @@ test("canonical artifact CLI makes preview and evidence publication explicit whi
       publicationMode: PREVIEW_RELEASE_PUBLICATION_MODE
     }
   );
-  assert.deepEqual(
-    parseCanonicalReleaseArtifactArguments(["candidate.vsix", "--out-dir", "evidence", "--performance-evidence"]),
-    {
-      candidatePath: "candidate.vsix",
-      outputDirectory: "evidence",
-      publicationMode: PERFORMANCE_EVIDENCE_PUBLICATION_MODE
-    }
-  );
   for (const malformed of [
     [],
+    ["candidate.vsix", "--out-dir", "evidence", "--performance-evidence"],
     ["candidate.vsix", "--performance-evidence", "--out-dir", "evidence"],
     ["candidate.vsix", "--out-dir", "evidence", "--performance-evidence", "--performance-evidence"],
     ["candidate.vsix", "--out-dir", "evidence", "--unknown"]
@@ -168,7 +154,7 @@ ${rows}
 `;
 }
 
-function releaseEntries(readmeSection = STABLE_README_RELEASE_SECTION, manifest = stablePackage) {
+function releaseEntries(readmeSection = readmeCopy, manifest = stablePackage) {
   return new Map([
     ["[Content_Types].xml", '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>'],
     ["extension.vsixmanifest", vsixManifest(manifest)],
@@ -202,7 +188,7 @@ function releaseEntries(readmeSection = STABLE_README_RELEASE_SECTION, manifest 
   ]);
 }
 
-function createLegacyVsixBuffer(readmeSection = STABLE_README_RELEASE_SECTION, manifest = stablePackage) {
+function createLegacyVsixBuffer(readmeSection = readmeCopy, manifest = stablePackage) {
   const zip = new ZipFile();
   for (const [name, value] of releaseEntries(readmeSection, manifest)) {
     zip.addBuffer(Buffer.from(value), name, { compress: true, forceDosTimestamp: true });
@@ -220,7 +206,7 @@ function createLegacyVsixBuffer(readmeSection = STABLE_README_RELEASE_SECTION, m
   });
 }
 
-async function createVsixBuffer(readmeSection = STABLE_README_RELEASE_SECTION, manifest = stablePackage) {
+async function createVsixBuffer(readmeSection = readmeCopy, manifest = stablePackage) {
   const legacyBytes = await createLegacyVsixBuffer(readmeSection, manifest);
   return (await canonicalizeVsixArchive(legacyBytes)).bytes;
 }
@@ -237,7 +223,7 @@ async function createFixture(
     manifest = stablePackage,
     parityStatuses = new Map(),
     featureParity = parityMatrix(parityStatuses),
-    readmeSection = STABLE_README_RELEASE_SECTION,
+    readmeSection = readmeCopy,
     tag = true,
     useLegacyVsix = false
   } = {}
@@ -334,8 +320,7 @@ async function createStableV2Fixture(context) {
   const manifest = { ...stablePackage, version };
   return await createFixture(context, {
     featureParity: `${parityMatrix()}\n${nativeRPreviewMatrix()}`,
-    manifest,
-    readmeSection: STABLE_README_RELEASE_SECTION
+    manifest
   });
 }
 
@@ -459,16 +444,18 @@ test("publishes exact stable 2.x bytes with Native R retained as preview", async
 });
 
 test("incomplete source documentation remains valid while canonical stable authoring refuses it", async (context) => {
-  const featureParity = parityMatrix(new Map([[PRIMARY_PARITY_SCOPE[0][0], "Partial"]])).replace(
-    "| Yes | Yes | Partial |",
-    "| Yes | Partial | Partial |"
-  );
+  const featureParity = parityMatrix(
+    new Map([
+      [PRIMARY_PARITY_SCOPE[0][0], "Partial"],
+      ["Virtual grid, column sizing, navigation", "Partial"],
+      ["Installed-editor first-usable-grid performance", "Partial"]
+    ])
+  ).replace("| Yes | Yes | Partial |", "| Yes | Partial | Partial |");
   const fixture = await createFixture(context, { featureParity });
   assert.deepEqual(
     inspectReleaseDocumentationSource({
       featureParity,
       preview: false,
-      readme: readFileSync(join(fixture.root, "README.md"), "utf8"),
       trackedEvidencePaths: new Set(["scripts/evidence.test.mjs"]),
       version: stablePackage.version
     }),
@@ -476,7 +463,7 @@ test("incomplete source documentation remains valid while canonical stable autho
   );
   await assert.rejects(
     createCanonicalReleaseArtifact(artifactOptions(fixture).options),
-    /Canonical stable release readiness failed:.*File entry points; Windows Polars JSONL excludes glob paths.*Partial.*Yes\/Partial/su
+    /Canonical stable release readiness failed:.*File entry points; Windows Polars JSONL excludes glob paths.*Partial.*Yes\/Partial.*Virtual grid, column sizing, navigation.*Installed-editor first-usable-grid performance/su
   );
   assert.equal(existsSync(fixture.outputDirectory), false);
 });
@@ -486,7 +473,6 @@ test("source documentation validates incomplete rows, applicability and tracked 
     inspectReleaseDocumentationSource({
       featureParity,
       preview: false,
-      readme: `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n`,
       trackedEvidencePaths: new Set(["scripts/evidence.test.mjs"]),
       version: stablePackage.version
     });
@@ -524,11 +510,10 @@ test("source documentation validates incomplete rows, applicability and tracked 
   }
 });
 
-test("source documentation retains channel, README and Native R rules", () => {
+test("source documentation retains channel and Native R rules", () => {
   const stable = {
     featureParity: `${parityMatrix()}\n${nativeRPreviewMatrix()}`,
     preview: false,
-    readme: `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n`,
     trackedEvidencePaths: new Set(["scripts/evidence.test.mjs"]),
     version: "2.1.0"
   };
@@ -537,7 +522,6 @@ test("source documentation retains channel, README and Native R rules", () => {
     { version: "bad" },
     { preview: undefined },
     { preview: true },
-    { readme: "# Open Wrangler\n" },
     { featureParity: parityMatrix() },
     { featureParity: stable.featureParity.replace("| Preview | Partial |", "| Preview | Done |") }
   ]) {
@@ -547,7 +531,6 @@ test("source documentation retains channel, README and Native R rules", () => {
     ...stable,
     featureParity: nativeRPreviewMatrix(),
     preview: true,
-    readme: `# Open Wrangler\n\n${PREVIEW_README_RELEASE_SECTION}\n`,
     version: previewPackage.version
   };
   assert.deepEqual(inspectReleaseDocumentationSource(preview), []);
@@ -667,100 +650,17 @@ test("preview and stable artifact authors reject the opposite release channel", 
   assert.equal(existsSync(previewFixture.outputDirectory), false);
 });
 
-test("publishes a distinctly non-promotable artifact when only performance evidence remains", async (context) => {
-  const parityStatuses = new Map(PERFORMANCE_EVIDENCE_PARTIAL_ROWS.map((surface) => [surface, "Partial"]));
-  const fixture = await createFixture(context, {
-    parityStatuses,
-    readmeSection: PERFORMANCE_EVIDENCE_README_RELEASE_SECTION
-  });
-  const { options, state } = artifactOptions(fixture, {
-    publicationMode: PERFORMANCE_EVIDENCE_PUBLICATION_MODE
-  });
-  const receipt = await createCanonicalReleaseArtifact(options);
-
-  assert.equal(receipt.publicationMode, PERFORMANCE_EVIDENCE_PUBLICATION_MODE);
-  const digest = createHash("sha256").update(fixture.candidateBytes).digest("hex");
-  const rawProvenance = parseStrictJson(
-    readFileSync(join(fixture.outputDirectory, "openwrangler.vsix.provenance.json"), "utf8")
-  );
-  const evidenceProvenance = validatePerformanceEvidenceCandidateProvenance(rawProvenance);
-  assert.deepEqual(evidenceProvenance, {
-    protocol: PERFORMANCE_EVIDENCE_ARTIFACT_PROTOCOL,
-    artifactRole: PERFORMANCE_EVIDENCE_ARTIFACT_ROLE,
-    extensionId: "Matt17BR.openwrangler",
-    extensionVersion: "1.0.0",
-    preview: false,
-    releaseTag: "v1.0.0",
-    sourceCommit: fixture.expectedCommit,
-    vsixSha256: digest,
-    vsixBytes: fixture.candidateBytes.length
-  });
-  assert.throws(() => validateCanonicalReleaseProvenance(rawProvenance), /exactly the canonical artifact fields/u);
-  assert.equal(state.reproducibleChecks, 1);
-  assert.deepEqual(state.callOrder, [
-    "pinPackageSources",
-    "assertReproducibleVsixArchive",
-    "assertPackageInventory",
-    "pinPackageSources",
-    "assertSamePackageSources"
-  ]);
-});
-
-test("performance-evidence publication rejects every other incomplete row and stable publication rejects its exception", async (context) => {
-  const allowedPartial = new Map(PERFORMANCE_EVIDENCE_PARTIAL_ROWS.map((surface) => [surface, "Partial"]));
-  const stableFixture = await createFixture(context, { parityStatuses: allowedPartial });
-  await assert.rejects(
-    createCanonicalReleaseArtifact(artifactOptions(stableFixture).options),
-    /Canonical stable release readiness failed:.*Virtual grid, column sizing, navigation.*Installed-editor first-usable-grid performance/su
-  );
-  assert.equal(existsSync(stableFixture.outputDirectory), false);
-
-  const unrelatedPartial = new Map(allowedPartial);
-  unrelatedPartial.set("Dataset summary and quick insights", "Partial");
-  const evidenceFixture = await createFixture(context, {
-    parityStatuses: unrelatedPartial,
-    readmeSection: PERFORMANCE_EVIDENCE_README_RELEASE_SECTION
-  });
-  await assert.rejects(
-    createCanonicalReleaseArtifact(
-      artifactOptions(evidenceFixture, {
-        publicationMode: PERFORMANCE_EVIDENCE_PUBLICATION_MODE
-      }).options
-    ),
-    /Performance-evidence candidate readiness failed:.*Dataset summary and quick insights/su
-  );
-  assert.equal(existsSync(evidenceFixture.outputDirectory), false);
-
-  for (const [changes, expectedProblem] of [
-    [{ parityStatuses: new Map() }, /must remain Partial/u],
-    [{ manifest: { ...stablePackage, version: "1.0.1" } }, /limited to version 1\.0\.0/u]
-  ]) {
-    const fixture = await createFixture(context, {
-      parityStatuses: allowedPartial,
-      readmeSection: PERFORMANCE_EVIDENCE_README_RELEASE_SECTION,
-      ...changes
-    });
-    await assert.rejects(
-      createCanonicalReleaseArtifact(
-        artifactOptions(fixture, { publicationMode: PERFORMANCE_EVIDENCE_PUBLICATION_MODE }).options
-      ),
-      expectedProblem
-    );
-    assert.equal(existsSync(fixture.outputDirectory), false);
-  }
-});
-
 test("rejects unknown artifact publication modes before reading or publishing a candidate", async (context) => {
   const fixture = await createFixture(context);
-  await assert.rejects(
-    createCanonicalReleaseArtifact(
-      artifactOptions(fixture, {
-        publicationMode: "evidence-ish"
-      }).options
-    ),
-    /publication mode must be stable-release, preview-release, or performance-evidence/u
-  );
-  assert.equal(existsSync(fixture.outputDirectory), false);
+  for (const publicationMode of ["performance-evidence", "evidence-ish"]) {
+    const { options, state } = artifactOptions(fixture, { publicationMode });
+    await assert.rejects(
+      createCanonicalReleaseArtifact(options),
+      /publication mode must be stable-release or preview-release/u
+    );
+    assert.deepEqual(state.callOrder, []);
+    assert.equal(existsSync(fixture.outputDirectory), false);
+  }
 });
 
 test("production dependency composition pins and verifies the complete package inventory", async (context) => {

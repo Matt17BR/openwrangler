@@ -1,32 +1,9 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import {
-  closeSync,
-  constants as fsConstants,
-  fchmodSync,
-  fstatSync,
-  fsyncSync,
-  lstatSync,
-  openSync,
-  readFileSync,
-  realpathSync,
-  unlinkSync,
-  writeSync
-} from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { SaxesParser } from "saxes";
-import {
-  inspectChangelog,
-  inspectPerformanceEvidenceReadme,
-  inspectPreviewReadme,
-  inspectPreviewRParityMatrix,
-  inspectPrimaryParityMatrix,
-  inspectStableReadme,
-  PERFORMANCE_EVIDENCE_README_RELEASE_SECTION,
-  STABLE_README_RELEASE_SECTION
-} from "./release-documents.mjs";
+import { inspectChangelog, inspectPreviewRParityMatrix, inspectPrimaryParityMatrix } from "./release-documents.mjs";
 import { classifyNumericReleaseVersion, NUMERIC_RELEASE_VERSION } from "./release-metadata.mjs";
 import { DuplicateJsonKeyError, parseStrictJson } from "./strict-json.mjs";
 import { inspectVsixArchive, readBoundedVsixFileSnapshot } from "./vsix-archive.mjs";
@@ -42,7 +19,6 @@ const RELEASE_SOURCE_FILES = new Map([
   ["CHANGELOG.md", 2 * 1024 * 1024],
   ["README.md", 2 * 1024 * 1024]
 ]);
-export { PERFORMANCE_EVIDENCE_README_RELEASE_SECTION, STABLE_README_RELEASE_SECTION };
 const STABLE_PACKAGE_IDENTITY = Object.freeze({
   name: "openwrangler",
   displayName: "Open Wrangler",
@@ -112,14 +88,6 @@ export const R_PREVIEW_PARITY_SCOPE = Object.freeze([
   previewRScope("Quarto and R Markdown lexical R-cell run", "Preview", "Partial")
 ]);
 
-export const PERFORMANCE_EVIDENCE_PARTIAL_ROWS = Object.freeze([
-  "Virtual grid, column sizing, navigation",
-  "Installed-editor first-usable-grid performance"
-]);
-export const PERFORMANCE_EVIDENCE_VERSION = "1.0.0";
-const PERFORMANCE_EVIDENCE_ALLOWED_INCOMPLETE_ROWS = new Map(
-  PERFORMANCE_EVIDENCE_PARTIAL_ROWS.map((surface) => [surface, "Partial"])
-);
 function numericReleaseMajor(version) {
   const match = typeof version === "string" ? NUMERIC_RELEASE_VERSION.exec(version) : null;
   return match === null ? undefined : BigInt(match.groups?.major ?? "");
@@ -224,27 +192,17 @@ function parseVsixIdentity(contents) {
   return identities[0];
 }
 
-function inspectReleaseReadiness(
-  {
-    releaseTag,
-    sourcePackageJson,
-    pythonVersionFile,
-    featureParity,
-    changelog,
-    readme,
-    packagedPackageJson,
-    packagedPythonVersionFile,
-    packagedReadme,
-    vsixManifest,
-    trackedEvidencePaths = new Set()
-  },
-  {
-    allowedIncompleteRows = new Map(),
-    inspectReadme = inspectStableReadme,
-    requiredIncompleteRows = new Map(),
-    requiredVersion
-  } = {}
-) {
+export function inspectStableReleaseReadiness({
+  releaseTag,
+  sourcePackageJson,
+  pythonVersionFile,
+  featureParity,
+  changelog,
+  packagedPackageJson,
+  packagedPythonVersionFile,
+  vsixManifest,
+  trackedEvidencePaths = new Set()
+}) {
   const problems = [];
   const sourceManifest = parseJsonObject(sourcePackageJson, "Source package.json", problems);
   const packagedManifest = parseJsonObject(packagedPackageJson, "Packaged package.json", problems);
@@ -267,9 +225,6 @@ function inspectReleaseReadiness(
     problems.push(
       `Source package.json version ${sourceVersion} is reserved for preview releases and cannot pass stable readiness.`
     );
-  }
-  if (requiredVersion !== undefined && sourceVersion !== requiredVersion) {
-    problems.push(`Performance-evidence authoring is limited to version ${requiredVersion}.`);
   }
   for (const [field, expected] of Object.entries(STABLE_PACKAGE_IDENTITY)) {
     if (sourceManifest?.[field] !== expected) {
@@ -294,15 +249,8 @@ function inspectReleaseReadiness(
   if (sourceVersion !== undefined) {
     problems.push(...inspectChangelog(changelog, sourceVersion));
   }
-  problems.push(
-    ...inspectPrimaryParityMatrix(featureParity, PRIMARY_PARITY_SCOPE, trackedEvidencePaths, {
-      allowedIncompleteRows,
-      requiredIncompleteRows
-    })
-  );
+  problems.push(...inspectPrimaryParityMatrix(featureParity, PRIMARY_PARITY_SCOPE, trackedEvidencePaths));
   problems.push(...stableRParityProblems(featureParity, sourceVersion));
-  problems.push(...inspectReadme(readme, "README.md"));
-  problems.push(...inspectReadme(packagedReadme, "Packaged README"));
 
   if (packagedManifest?.preview !== false) {
     problems.push("Packaged package.json preview must be false for a stable release.");
@@ -344,10 +292,6 @@ function inspectReleaseReadiness(
   }
 
   return [...new Set(problems)];
-}
-
-export function inspectStableReleaseReadiness(options) {
-  return inspectReleaseReadiness(options);
 }
 
 export function inspectPreviewReleaseReadiness({
@@ -438,7 +382,6 @@ export function inspectPreviewRParitySource({ featureParity }) {
 export function inspectReleaseDocumentationSource({
   featureParity,
   preview,
-  readme,
   trackedEvidencePaths = new Set(),
   version
 }) {
@@ -460,54 +403,13 @@ export function inspectReleaseDocumentationSource({
     return problems;
   }
   return classification.channel === "preview"
-    ? [...inspectPreviewReadme(readme), ...inspectPreviewRParitySource({ featureParity })]
+    ? inspectPreviewRParitySource({ featureParity })
     : [
         ...inspectPrimaryParityMatrix(featureParity, PRIMARY_PARITY_SCOPE, trackedEvidencePaths, {
           requireComplete: false
         }),
-        ...stableRParityProblems(featureParity, version),
-        ...inspectStableReadme(readme, "README.md")
+        ...stableRParityProblems(featureParity, version)
       ];
-}
-
-export function inspectPerformanceEvidenceCandidateReadiness(options) {
-  return inspectReleaseReadiness(options, {
-    allowedIncompleteRows: PERFORMANCE_EVIDENCE_ALLOWED_INCOMPLETE_ROWS,
-    inspectReadme: inspectPerformanceEvidenceReadme,
-    requiredIncompleteRows: PERFORMANCE_EVIDENCE_ALLOWED_INCOMPLETE_ROWS,
-    requiredVersion: PERFORMANCE_EVIDENCE_VERSION
-  });
-}
-
-export function inspectPerformanceEvidenceSourceReadiness({
-  featureParity,
-  readme,
-  trackedEvidencePaths = new Set(),
-  version
-}) {
-  return [
-    ...(version === PERFORMANCE_EVIDENCE_VERSION
-      ? []
-      : [`Performance-evidence authoring is limited to version ${PERFORMANCE_EVIDENCE_VERSION}.`]),
-    ...inspectPrimaryParityMatrix(featureParity, PRIMARY_PARITY_SCOPE, trackedEvidencePaths, {
-      allowedIncompleteRows: PERFORMANCE_EVIDENCE_ALLOWED_INCOMPLETE_ROWS,
-      requiredIncompleteRows: PERFORMANCE_EVIDENCE_ALLOWED_INCOMPLETE_ROWS
-    }),
-    ...inspectPerformanceEvidenceReadme(readme, "README.md")
-  ];
-}
-
-function sameFileIdentity(left, right) {
-  return left.dev === right.dev && left.ino === right.ino;
-}
-
-function unchangedFileSnapshot(before, after) {
-  return (
-    sameFileIdentity(before, after) &&
-    before.size === after.size &&
-    before.mtimeNs === after.mtimeNs &&
-    before.ctimeNs === after.ctimeNs
-  );
 }
 
 function sha256(contents) {
@@ -599,296 +501,4 @@ export function readOwnedVsixSnapshot(vsixPath) {
 
 export async function readStableVsixPayload(bytes) {
   return await inspectVsixArchive(bytes);
-}
-
-function readParentIdentity(path) {
-  const absolutePath = resolve(path);
-  const parentPath = realpathSync.native(dirname(absolutePath));
-  const parent = lstatSync(parentPath, { bigint: true });
-  if (!parent.isDirectory()) {
-    throw new Error(`Release output parent must be a directory: ${basename(path)}.`);
-  }
-  return Object.freeze({
-    parentDev: parent.dev,
-    parentIno: parent.ino,
-    parentPath,
-    outputName: basename(absolutePath),
-    outputPath: join(parentPath, basename(absolutePath))
-  });
-}
-
-function sameParent(path, receipt) {
-  try {
-    const absolutePath = resolve(path);
-    const current = lstatSync(receipt.parentPath, { bigint: true });
-    return (
-      basename(absolutePath) === receipt.outputName &&
-      realpathSync.native(dirname(absolutePath)) === receipt.parentPath &&
-      current.isDirectory() &&
-      current.dev === receipt.parentDev &&
-      current.ino === receipt.parentIno &&
-      realpathSync.native(receipt.parentPath) === receipt.parentPath
-    );
-  } catch {
-    return false;
-  }
-}
-
-function sameReceipt(path, receipt) {
-  try {
-    const current = lstatSync(receipt.outputPath, { bigint: true });
-    return (
-      sameParent(path, receipt) &&
-      current.isFile() &&
-      current.nlink === 1n &&
-      sameFileIdentity(current, receipt) &&
-      (receipt.size === undefined || current.size === receipt.size) &&
-      (receipt.mode === undefined || (current.mode & 0o777n) === receipt.mode) &&
-      (receipt.mtimeNs === undefined || current.mtimeNs === receipt.mtimeNs) &&
-      (receipt.ctimeNs === undefined || current.ctimeNs === receipt.ctimeNs)
-    );
-  } catch {
-    return false;
-  }
-}
-
-function removeOwnedOutput(path, receipt) {
-  if (!sameReceipt(path, receipt)) {
-    throw new Error(`Refusing to clean an unverified release output: ${basename(path)}.`);
-  }
-  unlinkSync(receipt.outputPath);
-}
-
-function writeExclusiveOwnedOutput(path, contents) {
-  const bytes = Buffer.isBuffer(contents) ? contents : Buffer.from(contents, "utf8");
-  const noFollow = fsConstants.O_NOFOLLOW ?? 0;
-  const parentReceipt = readParentIdentity(path);
-  const outputPath = parentReceipt.outputPath;
-  let descriptor;
-  let receipt;
-  let failure;
-  try {
-    descriptor = openSync(
-      outputPath,
-      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | noFollow,
-      0o600
-    );
-    const opened = fstatSync(descriptor, { bigint: true });
-    if (
-      !opened.isFile() ||
-      opened.nlink !== 1n ||
-      (typeof process.getuid === "function" && opened.uid !== BigInt(process.getuid()))
-    ) {
-      throw new Error(`Release output ownership could not be established: ${basename(path)}.`);
-    }
-    receipt = { ...parentReceipt, dev: opened.dev, ino: opened.ino };
-
-    let offset = 0;
-    while (offset < bytes.length) {
-      const written = writeSync(descriptor, bytes, offset, bytes.length - offset);
-      if (written <= 0) {
-        throw new Error(`Release output write did not make progress: ${basename(path)}.`);
-      }
-      offset += written;
-    }
-    fsyncSync(descriptor);
-    fchmodSync(descriptor, 0o444);
-    fsyncSync(descriptor);
-    const completed = fstatSync(descriptor, { bigint: true });
-    if (!sameFileIdentity(opened, completed) || completed.size !== BigInt(bytes.length)) {
-      throw new Error(`Release output changed while it was published: ${basename(path)}.`);
-    }
-    receipt = {
-      ...receipt,
-      ctimeNs: completed.ctimeNs,
-      mtimeNs: completed.mtimeNs,
-      sha256: sha256(bytes),
-      mode: process.platform === "win32" ? undefined : 0o444n,
-      size: completed.size
-    };
-  } catch (error) {
-    failure = error;
-  } finally {
-    if (descriptor !== undefined) {
-      try {
-        closeSync(descriptor);
-      } catch (error) {
-        failure ??= error;
-      }
-    }
-  }
-
-  if (failure !== undefined) {
-    if (receipt !== undefined && sameReceipt(path, receipt)) {
-      removeOwnedOutput(path, receipt);
-    }
-    throw failure;
-  }
-  if (receipt === undefined || !sameReceipt(path, receipt)) {
-    throw new Error(`Release output identity was lost after close: ${basename(path)}.`);
-  }
-  return Object.freeze(receipt);
-}
-
-function readVerifiedOutput(path, receipt) {
-  if (!sameReceipt(path, receipt)) {
-    throw new Error(`Release output identity or parent changed: ${basename(path)}.`);
-  }
-  const noFollow = fsConstants.O_NOFOLLOW ?? 0;
-  let descriptor;
-  try {
-    descriptor = openSync(receipt.outputPath, fsConstants.O_RDONLY | noFollow);
-    const before = fstatSync(descriptor, { bigint: true });
-    if (!before.isFile() || before.nlink !== 1n || !sameFileIdentity(before, receipt) || before.size !== receipt.size) {
-      throw new Error(`Release output changed before final content verification: ${basename(path)}.`);
-    }
-    const bytes = readFileSync(descriptor);
-    const after = fstatSync(descriptor, { bigint: true });
-    if (
-      bytes.length !== Number(before.size) ||
-      !unchangedFileSnapshot(before, after) ||
-      sha256(bytes) !== receipt.sha256 ||
-      !sameReceipt(path, receipt)
-    ) {
-      throw new Error(`Release output content changed during final verification: ${basename(path)}.`);
-    }
-    return bytes;
-  } finally {
-    if (descriptor !== undefined) {
-      closeSync(descriptor);
-    }
-  }
-}
-
-export function revalidateStableReleaseArtifacts({
-  afterVsixRead,
-  checksumOutput,
-  checksumReceipt,
-  snapshot,
-  vsixOutput,
-  vsixReceipt
-}) {
-  if (
-    !Buffer.isBuffer(snapshot?.bytes) ||
-    typeof snapshot?.sha256 !== "string" ||
-    sha256(snapshot.bytes) !== snapshot.sha256
-  ) {
-    throw new Error("Stable release snapshot digest no longer matches its inspected bytes.");
-  }
-  const vsixBytes = readVerifiedOutput(resolve(vsixOutput), vsixReceipt);
-  if (!vsixBytes.equals(snapshot.bytes)) {
-    throw new Error("Published stable VSIX does not match the inspected immutable snapshot.");
-  }
-  afterVsixRead?.();
-  const checksumBytes = readVerifiedOutput(resolve(checksumOutput), checksumReceipt);
-  const expectedChecksum = Buffer.from(`${snapshot.sha256}  ${basename(resolve(vsixOutput))}\n`, "utf8");
-  if (!checksumBytes.equals(expectedChecksum)) {
-    throw new Error("Published stable checksum does not match the inspected immutable snapshot.");
-  }
-  if (!sameReceipt(resolve(vsixOutput), vsixReceipt) || !sameReceipt(resolve(checksumOutput), checksumReceipt)) {
-    throw new Error("Published stable outputs did not retain one joint final identity.");
-  }
-}
-
-export function writeStableReleaseArtifacts({ snapshot, vsixOutput, checksumOutput }) {
-  if (
-    !Buffer.isBuffer(snapshot?.bytes) ||
-    typeof snapshot?.sha256 !== "string" ||
-    sha256(snapshot.bytes) !== snapshot.sha256
-  ) {
-    throw new Error("Stable release snapshot digest no longer matches its inspected bytes.");
-  }
-  const resolvedVsixOutput = resolve(vsixOutput);
-  const resolvedChecksumOutput = resolve(checksumOutput);
-  if (resolvedVsixOutput === resolvedChecksumOutput) {
-    throw new Error("Stable VSIX and checksum outputs must be different paths.");
-  }
-
-  let vsixReceipt;
-  let checksumReceipt;
-  try {
-    vsixReceipt = writeExclusiveOwnedOutput(resolvedVsixOutput, snapshot.bytes);
-    checksumReceipt = writeExclusiveOwnedOutput(
-      resolvedChecksumOutput,
-      `${snapshot.sha256}  ${basename(resolvedVsixOutput)}\n`
-    );
-    revalidateStableReleaseArtifacts({
-      checksumOutput: resolvedChecksumOutput,
-      checksumReceipt,
-      snapshot,
-      vsixOutput: resolvedVsixOutput,
-      vsixReceipt
-    });
-    return Object.freeze({ checksumReceipt, vsixReceipt });
-  } catch (error) {
-    const cleanupErrors = [];
-    for (const [path, receipt] of [
-      [resolvedChecksumOutput, checksumReceipt],
-      [resolvedVsixOutput, vsixReceipt]
-    ]) {
-      if (receipt !== undefined) {
-        try {
-          removeOwnedOutput(path, receipt);
-        } catch (cleanupError) {
-          cleanupErrors.push(cleanupError);
-        }
-      }
-    }
-    throw cleanupErrors.length === 0
-      ? error
-      : new AggregateError([error, ...cleanupErrors], "Stable release publication and cleanup failed.");
-  }
-}
-
-function parseCliArguments(args) {
-  if (args.length !== 5 || args[1] !== "--out" || args[3] !== "--checksum-out" || !args[0] || !args[2] || !args[4]) {
-    throw new Error(
-      "Pass one stable candidate plus explicit outputs: <candidate.vsix> --out <openwrangler.vsix> --checksum-out <openwrangler.vsix.sha256>."
-    );
-  }
-  return { candidate: args[0], checksumOutput: args[4], vsixOutput: args[2] };
-}
-
-async function runCli() {
-  const root = resolve(import.meta.dirname, "..");
-  const requested = parseCliArguments(process.argv.slice(2));
-  const candidate = resolve(root, requested.candidate);
-  const vsixOutput = resolve(root, requested.vsixOutput);
-  const checksumOutput = resolve(root, requested.checksumOutput);
-  if (new Set([candidate, vsixOutput, checksumOutput]).size !== 3) {
-    throw new Error("Stable candidate, VSIX output, and checksum output must be three distinct paths.");
-  }
-  const snapshot = readOwnedVsixSnapshot(candidate);
-  const packaged = await readStableVsixPayload(snapshot.bytes);
-  const source = readReleaseSourceSnapshot({
-    expectedCommit: process.env.EXPECTED_SHA,
-    root
-  });
-
-  const problems = inspectStableReleaseReadiness({
-    releaseTag: process.env.RELEASE_TAG,
-    sourcePackageJson: source.files.get("package.json"),
-    pythonVersionFile: source.files.get("python/openwrangler_runtime/version.py"),
-    featureParity: source.files.get("docs/feature-parity.md"),
-    changelog: source.files.get("CHANGELOG.md"),
-    readme: source.files.get("README.md"),
-    packagedPackageJson: packaged.packagedPackageJson,
-    packagedPythonVersionFile: packaged.packagedPythonVersionFile,
-    packagedReadme: packaged.packagedReadme,
-    trackedEvidencePaths: source.trackedPaths,
-    vsixManifest: packaged.vsixManifest
-  });
-
-  if (problems.length > 0) {
-    throw new Error(`Stable release readiness failed for ${basename(candidate)}:\n- ${problems.join("\n- ")}`);
-  }
-  if (sha256(snapshot.bytes) !== snapshot.sha256) {
-    throw new Error("Stable VSIX snapshot changed during readiness inspection.");
-  }
-  writeStableReleaseArtifacts({ checksumOutput, snapshot, vsixOutput });
-  console.log(`Stable release readiness verified for ${basename(vsixOutput)} (${snapshot.sha256}).`);
-}
-
-if (process.argv[1] !== undefined && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  await runCli();
 }

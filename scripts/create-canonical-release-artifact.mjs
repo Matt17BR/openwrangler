@@ -22,17 +22,13 @@ import { pathToFileURL } from "node:url";
 import {
   CANONICAL_PREVIEW_RELEASE_ARTIFACT_PROTOCOL,
   CANONICAL_RELEASE_ARTIFACT_PROTOCOL,
-  PERFORMANCE_EVIDENCE_ARTIFACT_PROTOCOL,
-  PERFORMANCE_EVIDENCE_ARTIFACT_ROLE,
   assertInstalledPerformancePackageInventory,
   assertNoPackageableUntrackedFiles,
   assertSameInstalledPerformancePackageSources,
   validateInstalledPerformanceProvenance,
-  validatePreviewReleaseProvenance,
-  validatePerformanceEvidenceProvenance
+  validatePreviewReleaseProvenance
 } from "./run-installed-performance.mjs";
 import {
-  inspectPerformanceEvidenceCandidateReadiness,
   inspectPreviewReleaseReadiness,
   inspectStableReleaseReadiness,
   readOwnedVsixSnapshot,
@@ -51,7 +47,6 @@ const PROVENANCE_MAX_BYTES = 4096;
 const CHECKSUM_MAX_BYTES = 512;
 export const CANONICAL_RELEASE_PUBLICATION_MODE = "stable-release";
 export const PREVIEW_RELEASE_PUBLICATION_MODE = "preview-release";
-export const PERFORMANCE_EVIDENCE_PUBLICATION_MODE = "performance-evidence";
 const CANONICAL_FILES = Object.freeze([
   "openwrangler.vsix",
   "openwrangler.vsix.sha256",
@@ -61,8 +56,6 @@ export { CANONICAL_RELEASE_ARTIFACT_PROTOCOL };
 export const validateCanonicalReleaseProvenance = validateInstalledPerformanceProvenance;
 export { CANONICAL_PREVIEW_RELEASE_ARTIFACT_PROTOCOL };
 export { validatePreviewReleaseProvenance };
-export { PERFORMANCE_EVIDENCE_ARTIFACT_PROTOCOL, PERFORMANCE_EVIDENCE_ARTIFACT_ROLE };
-export const validatePerformanceEvidenceCandidateProvenance = validatePerformanceEvidenceProvenance;
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -285,26 +278,12 @@ function publicationContract(publicationMode) {
       validateProvenance: validatePreviewReleaseProvenance
     });
   }
-  if (publicationMode === PERFORMANCE_EVIDENCE_PUBLICATION_MODE) {
-    return Object.freeze({
-      inspectReadiness: inspectPerformanceEvidenceCandidateReadiness,
-      parseSourceManifest: parseStableSourceManifest,
-      provenanceProtocol: PERFORMANCE_EVIDENCE_ARTIFACT_PROTOCOL,
-      readSourceBinding: readCanonicalReleaseSourceBinding,
-      readinessLabel: "Performance-evidence candidate",
-      validateProvenance: validatePerformanceEvidenceCandidateProvenance
-    });
-  }
-  throw new TypeError(
-    "Canonical artifact publication mode must be stable-release, preview-release, or performance-evidence."
-  );
+  throw new TypeError("Canonical artifact publication mode must be stable-release or preview-release.");
 }
 
-function provenanceBytes({ contract, expectedCommit, manifest, publicationMode, releaseTag, snapshot }) {
-  const evidenceOnly = publicationMode === PERFORMANCE_EVIDENCE_PUBLICATION_MODE;
+function provenanceBytes({ contract, expectedCommit, manifest, releaseTag, snapshot }) {
   const provenance = contract.validateProvenance({
     protocol: contract.provenanceProtocol,
-    ...(evidenceOnly ? { artifactRole: PERFORMANCE_EVIDENCE_ARTIFACT_ROLE } : {}),
     extensionId: manifest.extensionId,
     extensionVersion: manifest.version,
     preview: manifest.preview,
@@ -691,13 +670,9 @@ export async function createCanonicalReleaseArtifact({
     pythonVersionFile: sourceBefore.files.get("python/openwrangler_runtime/version.py"),
     featureParity: sourceBefore.files.get("docs/feature-parity.md"),
     changelog: sourceBefore.files.get("CHANGELOG.md"),
-    readme: sourceBefore.files.get("README.md"),
     packagedPackageJson: packaged.packagedPackageJson,
     packagedPythonVersionFile: packaged.packagedPythonVersionFile,
-    packagedReadme: packaged.packagedReadme,
     trackedEvidencePaths: sourceBefore.trackedPaths,
-    performanceReportFiles: sourceBefore.files,
-    candidateSha256: snapshot.sha256,
     vsixManifest: packaged.vsixManifest
   });
   if (problems.length > 0) {
@@ -712,7 +687,6 @@ export async function createCanonicalReleaseArtifact({
     contract,
     expectedCommit,
     manifest,
-    publicationMode,
     releaseTag,
     snapshot
   });
@@ -815,13 +789,11 @@ export async function createCanonicalReleaseArtifact({
 export function parseCanonicalReleaseArtifactArguments(arguments_) {
   const modeFlag = arguments_.length === 4 ? arguments_.at(-1) : undefined;
   const publicationMode =
-    modeFlag === "--performance-evidence"
-      ? PERFORMANCE_EVIDENCE_PUBLICATION_MODE
-      : modeFlag === "--preview-release"
-        ? PREVIEW_RELEASE_PUBLICATION_MODE
-        : modeFlag === undefined
-          ? CANONICAL_RELEASE_PUBLICATION_MODE
-          : undefined;
+    modeFlag === "--preview-release"
+      ? PREVIEW_RELEASE_PUBLICATION_MODE
+      : modeFlag === undefined
+        ? CANONICAL_RELEASE_PUBLICATION_MODE
+        : undefined;
   const positional = publicationMode === CANONICAL_RELEASE_PUBLICATION_MODE ? arguments_ : arguments_.slice(0, -1);
   if (
     publicationMode === undefined ||
@@ -833,7 +805,7 @@ export function parseCanonicalReleaseArtifactArguments(arguments_) {
     positional[2].length === 0
   ) {
     throw new Error(
-      "Pass one prebuilt candidate and a new output directory: <candidate.vsix> --out-dir <directory> [--preview-release|--performance-evidence]."
+      "Pass one prebuilt candidate and a new output directory: <candidate.vsix> --out-dir <directory> [--preview-release]."
     );
   }
   return Object.freeze({
