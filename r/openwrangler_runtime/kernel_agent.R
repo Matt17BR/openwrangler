@@ -7636,25 +7636,13 @@ openwrangler_r_kernel_agent <- local({
     )
   }
 
-  compile_plan <- function(
-    variable_name,
-    bound_plan,
-    maximum_columns,
-    maximum_factor_levels,
-    maximum_text_bytes,
-    maximum_payload_bytes,
-    maximum_name_bytes,
-    safe_float_midpoint,
-    round_coarse_helpers,
-    fill_directional_values,
-    interpolate_subnormal_units,
-    dense_rank_values,
-    duplicate_row_mask,
-    prepare_find_replace_regex,
-    integer_sum_helpers,
-    exact_mean_helpers
-  ) {
+  compile_plan <- function(variable_name, bound_plan, frame_contract) {
     if (length(bound_plan) == 0L) return("")
+    maximum_columns <- frame_contract$limits$columns
+    maximum_factor_levels <- frame_contract$limits$factorLevels
+    maximum_text_bytes <- frame_contract$limits$textBytes
+    maximum_payload_bytes <- frame_contract$limits$payloadBytes
+    maximum_name_bytes <- frame_contract$limits$nameBytes
     result_name <- if (identical(variable_name, "open_wrangler_result")) {
       "open_wrangler_result_2"
     } else {
@@ -7902,7 +7890,7 @@ openwrangler_r_kernel_agent <- local({
       lines <- c(
         lines,
         "  .ow_prepare_find_replace_regex <-",
-        paste0("  ", deparse(prepare_find_replace_regex, width.cutoff = 500L)),
+        paste0("  ", deparse(frame_contract$prepare_find_replace_regex, width.cutoff = 500L)),
         '  .ow_find_replace_abort <- function(code, message) stop(paste0("Open Wrangler ", message), call. = FALSE)'
       )
     }
@@ -7913,7 +7901,7 @@ openwrangler_r_kernel_agent <- local({
       lines <- c(
         lines,
         "  .ow_safe_float_midpoint <-",
-        paste0("  ", deparse(safe_float_midpoint, width.cutoff = 500L))
+        paste0("  ", deparse(frame_contract$safe_float_midpoint, width.cutoff = 500L))
       )
     }
     needs_exact_mean <- any(vapply(bound_plan, function(step) {
@@ -7922,13 +7910,18 @@ openwrangler_r_kernel_agent <- local({
       identical(step$kind, "groupBy") && any(vapply(step$aggregations, function(specification)
         identical(specification$operation, "mean") && !identical(specification$semanticsKind, "integer64"), logical(1L)))
     }, logical(1L)))
-    if (needs_exact_mean) for (name in names(exact_mean_helpers)) {
-      lines <- c(lines, sprintf("  %s <-", name), paste0("  ", deparse(exact_mean_helpers[[name]], width.cutoff = 500L)))
+    if (needs_exact_mean) {
+      exact_mean_helpers <- frame_contract$exact_mean_helpers
+      for (name in names(exact_mean_helpers)) {
+        lines <- c(lines, sprintf("  %s <-", name), paste0("  ", deparse(exact_mean_helpers[[name]], width.cutoff = 500L)))
+      }
     }
     fill_steps <- Filter(function(step) identical(step$kind, "fillMissingValues"), bound_plan)
     if (length(fill_steps) > 0L) {
       fill_kinds <- vapply(fill_steps, function(step) step$replacement$kind, character(1L), USE.NAMES = FALSE)
-      lines <- c(lines, fill_missing_code_helper_lines(fill_kinds, fill_directional_values, interpolate_subnormal_units))
+      lines <- c(lines, fill_missing_code_helper_lines(
+        fill_kinds, frame_contract$fill_directional_values, frame_contract$interpolate_subnormal_units
+      ))
     }
     group_steps <- Filter(function(step) identical(step$kind, "groupBy"), bound_plan)
     needs_integer_sum <- any(vapply(group_steps, function(step) {
@@ -7938,6 +7931,7 @@ openwrangler_r_kernel_agent <- local({
       }, logical(1L)))
     }, logical(1L)))
     if (needs_integer_sum) {
+      integer_sum_helpers <- frame_contract$integer_sum_helpers
       for (name in names(integer_sum_helpers)) {
         lines <- c(lines, sprintf("  %s <-", name), paste0("  ", deparse(integer_sum_helpers[[name]], width.cutoff = 500L)))
       }
@@ -7973,6 +7967,7 @@ openwrangler_r_kernel_agent <- local({
     if (any(vapply(bound_plan, function(step) {
       identical(step$kind, "roundNumber") && !identical(step$semanticKind, "integer64") && step$decimals < -22
     }, logical(1L)))) {
+      round_coarse_helpers <- frame_contract$round_coarse_helpers
       for (name in names(round_coarse_helpers)) {
         if (needs_integer_sum && identical(name, "add_unsigned_decimal")) next
         lines <- c(lines, sprintf("  %s <-", name), paste0("  ", deparse(round_coarse_helpers[[name]], width.cutoff = 500L)))
@@ -8072,12 +8067,12 @@ openwrangler_r_kernel_agent <- local({
       )
     }
     if (any(vapply(bound_plan, function(step) step$kind %in% c("dropDuplicates", "markDuplicates"), logical(1L)))) {
-      duplicate_lines <- deparse(duplicate_row_mask, width.cutoff = 500L)
+      duplicate_lines <- deparse(frame_contract$duplicate_row_mask, width.cutoff = 500L)
       duplicate_lines[[1L]] <- paste0(".ow_duplicate_row_mask <- ", duplicate_lines[[1L]])
       lines <- c(lines, paste0("  ", duplicate_lines))
     }
     if (any(vapply(bound_plan, function(step) identical(step$kind, "denseRank"), logical(1L)))) {
-      rank_lines <- deparse(dense_rank_values, width.cutoff = 500L)
+      rank_lines <- deparse(frame_contract$dense_rank_values, width.cutoff = 500L)
       rank_lines[[1L]] <- paste0(".ow_dense_rank <- ", rank_lines[[1L]])
       lines <- c(lines, paste0("  ", rank_lines))
     }
@@ -9755,20 +9750,7 @@ openwrangler_r_kernel_agent <- local({
       code = compile_plan(
         session$variableName,
         session$boundPlan,
-        frame_contract$limits$columns,
-        frame_contract$limits$factorLevels,
-        frame_contract$limits$textBytes,
-        frame_contract$limits$payloadBytes,
-        frame_contract$limits$nameBytes,
-        frame_contract$safe_float_midpoint,
-        frame_contract$round_coarse_helpers,
-        frame_contract$fill_directional_values,
-        frame_contract$interpolate_subnormal_units,
-        frame_contract$dense_rank_values,
-        frame_contract$duplicate_row_mask,
-        frame_contract$prepare_find_replace_regex,
-        frame_contract$integer_sum_helpers,
-        frame_contract$exact_mean_helpers
+        frame_contract
       )
     )
   }
@@ -10097,20 +10079,7 @@ openwrangler_r_kernel_agent <- local({
               kind = step$kind,
               params = list(code = step$params$code)
             ))),
-            frame_contract$limits$columns,
-            frame_contract$limits$factorLevels,
-            frame_contract$limits$textBytes,
-            frame_contract$limits$payloadBytes,
-            frame_contract$limits$nameBytes,
-            frame_contract$safe_float_midpoint,
-            frame_contract$round_coarse_helpers,
-            frame_contract$fill_directional_values,
-            frame_contract$interpolate_subnormal_units,
-            frame_contract$dense_rank_values,
-            frame_contract$duplicate_row_mask,
-            frame_contract$prepare_find_replace_regex,
-            frame_contract$integer_sum_helpers,
-            frame_contract$exact_mean_helpers
+            frame_contract
           )
         } else {
           NULL
@@ -10157,20 +10126,7 @@ openwrangler_r_kernel_agent <- local({
           code = if (!is.null(preflight_custom_code)) preflight_custom_code else compile_plan(
             candidate$variableName,
             candidate_bound_plan,
-            frame_contract$limits$columns,
-            frame_contract$limits$factorLevels,
-            frame_contract$limits$textBytes,
-            frame_contract$limits$payloadBytes,
-            frame_contract$limits$nameBytes,
-            frame_contract$safe_float_midpoint,
-            frame_contract$round_coarse_helpers,
-            frame_contract$fill_directional_values,
-            frame_contract$interpolate_subnormal_units,
-            frame_contract$dense_rank_values,
-            frame_contract$duplicate_row_mask,
-            frame_contract$prepare_find_replace_regex,
-            frame_contract$integer_sum_helpers,
-            frame_contract$exact_mean_helpers
+            frame_contract
           )
         )
         if (!is.null(effective_view)) response$effectiveView <- effective_view
@@ -10238,20 +10194,7 @@ openwrangler_r_kernel_agent <- local({
             code = compile_plan(
               session$variableName,
               utils::head(session$boundPlan, step_index),
-              frame_contract$limits$columns,
-              frame_contract$limits$factorLevels,
-              frame_contract$limits$textBytes,
-              frame_contract$limits$payloadBytes,
-              frame_contract$limits$nameBytes,
-              frame_contract$safe_float_midpoint,
-              frame_contract$round_coarse_helpers,
-              frame_contract$fill_directional_values,
-              frame_contract$interpolate_subnormal_units,
-              frame_contract$dense_rank_values,
-              frame_contract$duplicate_row_mask,
-              frame_contract$prepare_find_replace_regex,
-              frame_contract$integer_sum_helpers,
-              frame_contract$exact_mean_helpers
+              frame_contract
             )
           ))
         }
