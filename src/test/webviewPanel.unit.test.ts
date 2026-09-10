@@ -91,6 +91,77 @@ const panelPromptMocks = {
 };
 
 describe("OpenWranglerPanel retained view state", () => {
+  it.each(["sessionOpened", "sessionPresentation"])(
+    "retains a page issued after the snapshot while %s is still publishing",
+    async (phase) => {
+      let notify!: (replacement: SessionRuntimeReplacement) => void;
+      let holdPresentation = false;
+      const presentationStarted = deferred<void>();
+      const releasePresentation = deferred<void>();
+      const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+        if (candidate.kind !== "getPage") throw new Error(`Unexpected ${candidate.kind}`);
+        return { kind: "page", revision: 0, metadata, page, viewRequestId: candidate.viewRequestId };
+      });
+      const replacement: SessionRuntimeReplacement = {
+        sessionId: metadata.sessionId,
+        isCurrent: () => true,
+        captureView: () => () => true,
+        readPage: vi.fn(async () => ({
+          response: { kind: "page" as const, revision: 0, metadata, page, viewRequestId: "internal-read" },
+          isCurrent: () => true
+        }))
+      };
+      const harness = createPanelHarness(
+        {
+          request,
+          onDidReplaceRuntime: (listener) => {
+            notify = listener;
+            return { dispose() {} };
+          },
+          getSessionPresentation: () => ({ sessionId: metadata.sessionId, revision: 0, code: "clean_df = df" }),
+          getViewState: () => ({ columnWidths: new Map(), viewport: { firstVisibleRow: 0, scrollLeft: 0 } })
+        },
+        {
+          postMessage: async (message) => {
+            if (holdPresentation && (message as { kind?: string }).kind === phase) {
+              presentationStarted.resolve();
+              await releasePresentation.promise;
+            }
+            return true;
+          }
+        }
+      );
+      await harness.open();
+      await harness.receive({ kind: "ready" });
+      await acknowledgeLatestRendererSynchronization(harness);
+      holdPresentation = true;
+      const pull = harness.receive({ kind: "requestSessionSnapshot" });
+      try {
+        await presentationStarted.promise;
+        await harness.receive({ kind: "setViewContext", viewContextId: "snapshot-view" });
+        await harness.receive(pageMessage("restored-projection", "snapshot-view"));
+        expect(request).toHaveBeenCalledTimes(1);
+      } finally {
+        holdPresentation = false;
+        releasePresentation.resolve();
+        await pull;
+      }
+      await acknowledgeLatestRendererSynchronization(harness);
+      notify(replacement);
+      await vi.waitFor(() =>
+        expect(harness.posted.some((message) => (message as { kind?: string }).kind === "sessionRecovered")).toBe(true)
+      );
+      const offer = harness.posted.find(
+        (message) => (message as { kind?: string }).kind === "sessionRecovered"
+      ) as SessionRecoveryMessage;
+      expect(offer.context).toMatchObject({
+        viewContextId: "snapshot-view",
+        lastPageRequestId: "restored-projection",
+        request: null
+      });
+    }
+  );
+
   it.each([false, true])(
     "persists the accepted recovery viewport before its marker (old full publication: %s)",
     async (oldPublication) => {

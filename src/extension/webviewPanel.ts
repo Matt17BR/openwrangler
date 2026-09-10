@@ -115,7 +115,13 @@ export class OpenWranglerPanel {
       localResourceRoots: [vscode.Uri.file(path.join(this.context.extensionPath, "media"))]
     };
     this.rendererSync = new RendererSynchronizationCoordinator({
-      postMessage: (message) => this.panel.webview.postMessage(message),
+      postMessage: (message) => {
+        // The renderer can issue a new page before this snapshot send settles.
+        if (message && typeof message === "object" && "kind" in message && message.kind === "sessionOpened") {
+          this.latestPageViewRequestId = undefined;
+        }
+        return this.panel.webview.postMessage(message);
+      },
       replaceRenderer: () => {
         this.panel.webview.html = this.renderHtml();
       },
@@ -140,7 +146,6 @@ export class OpenWranglerPanel {
       didSynchronize: (synchronization) => this.revealCodePreviewAfterRendererSynchronization(synchronization),
       didPublishAuthoritativeSnapshot: () => {
         this.unpublishedAuthoritativeSnapshot = false;
-        this.latestPageViewRequestId = undefined;
         const pending = this.currentRuntimeReplacement();
         if (pending) {
           pending.context = this.recoveryContext(null);
@@ -1707,7 +1712,6 @@ export class OpenWranglerPanel {
   }
 
   private post(response: OpenWranglerResponse): Promise<boolean> {
-    if (response.kind === "sessionOpened") this.latestPageViewRequestId = undefined;
     return this.postRendererMessage(response);
   }
 
@@ -1757,7 +1761,6 @@ export class OpenWranglerPanel {
   }
 
   private async postImportResponse(response: OpenWranglerResponse): Promise<void> {
-    if (response.kind === "sessionOpened") this.latestPageViewRequestId = undefined;
     await this.rendererSync.postImportResponse(response);
   }
 

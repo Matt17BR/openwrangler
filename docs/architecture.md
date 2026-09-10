@@ -1004,6 +1004,8 @@ replacement only when the renderer returns the exact offered view context throug
 path; sending a message alone is insufficient. That receipt also saves the accepted grid placement. Once the complete
 view is accepted, ordinary grid presentation updates can proceed while the separate hydration marker is pending.
 Full-snapshot synchronization and import transitions retain their presentation lock.
+An authoritative snapshot clears the preceding page-request identity immediately before its webview send. A new page
+request received while that send or later presentation messages settle remains current for subsequent recovery.
 Mode changes suspend recovery acceptance from the local request through host settlement. A failed mode change can
 resume the pending replacement; a successful reopen supplies the new authoritative session.
 A current page-bearing response supplies the snapshot directly. Recovery through a page-less request uses one bounded
