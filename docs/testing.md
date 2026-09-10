@@ -198,6 +198,8 @@ checks compact panes with applied steps, a draft and a viewing filter, including
 selection and dismissal, exact cell focus, sticky-header clearance and bounded table height. The installed R editing
 case waits for natural cell focus, then checks the full available column lane, complete visible row, actual pointer
 target and focus in one DOM read.
+The existing wide-grid browser case holds correlated pages while the visible column range changes. It checks that
+Undo stays disabled through the corrective projection, then accepts one normal click after the final page settles.
 Browser cases set intended viewports explicitly through the page API, including the clipboard owner.
 Code Preview readiness uses its visible first line and published editor identity; offscreen generated functions
 may be absent from CodeMirror's virtualized DOM. Origin, message-shape and read-only controls retain their assertions.
