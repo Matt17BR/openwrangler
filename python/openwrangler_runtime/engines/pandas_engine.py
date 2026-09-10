@@ -1619,17 +1619,6 @@ class PandasEngine(DataFrameEngine):
             )
         return matches[0] if matches else None
 
-    def _resolve_visible_positions(self, frame: Any, requested: list[str]) -> list[int]:
-        available: dict[str, list[int]] = {}
-        for position in self._visible_positions(frame):
-            available.setdefault(str(frame.columns[position]), []).append(position)
-        resolved = []
-        for name in requested:
-            positions = available.get(str(name), [])
-            if positions:
-                resolved.append(positions.pop(0))
-        return resolved
-
     def compile_plan(self, steps: Iterable[Mapping[str, Any]], *, function_name: str = "clean_data") -> str:
         plan = list(steps)
         needs_missing_helpers = any(step["kind"] in {"filterRows", "fillMissingValues"} for step in plan)
