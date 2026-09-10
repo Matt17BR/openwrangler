@@ -2091,6 +2091,7 @@ describe("OperationBuilder", () => {
       expect(Array.from(columnSelect.options, (option) => option.text)).toEqual(["value, column 1", "value, column 2"]);
       fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
       expect(onPreview).toHaveBeenCalledOnce();
+      expect(onPreview).toHaveBeenCalledWith({ ...step, params: expect.objectContaining(step.params) }, step.id);
     }
   );
 
