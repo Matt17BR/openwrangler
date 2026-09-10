@@ -297,13 +297,13 @@ export function createReleasedROperationPreviews(dependencies: ReleasedROperatio
       active?.metadata.draftStep?.kind === "findReplace",
       "The native R Find and replace preview must retain its draft."
     );
-    assertReleasedRFindReplaceGeneratedCode(active.code ?? "", sourceName, find, replacement, false);
+    assertReleasedRFindReplaceGeneratedCode(active.code ?? "", sourceName, find, replacement);
     const codePreview = await waitForCodePreview(workbench, undefined, "R");
     const visibleCode = await revealCodePreviewText(
       codePreview,
       `.ow_text_replacement <- ${JSON.stringify(replacement)}`
     );
-    assertReleasedRFindReplaceCodeSurface(visibleCode, sourceName, find, replacement, false);
+    assertReleasedRFindReplaceCodeSurface(visibleCode, sourceName, find, replacement);
     return {
       app: await releasedRSessionApp(workbench, testing, sessionId, "the native R Find and replace preview"),
       stepId: active.metadata.draftStep.id

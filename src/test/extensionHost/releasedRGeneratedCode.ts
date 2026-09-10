@@ -233,10 +233,9 @@ export function assertReleasedRFindReplaceGeneratedCode(
   sourceName: string,
   find: string,
   replacement: string,
-  regex: boolean,
   variableName = "orders_frame"
 ): void {
-  assertReleasedRFindReplaceCodeSurface(code, sourceName, find, replacement, regex, variableName);
+  assertReleasedRFindReplaceCodeSurface(code, sourceName, find, replacement, variableName);
   assert.ok(code.includes("gsub("));
 }
 
@@ -245,7 +244,6 @@ export function assertReleasedRFindReplaceCodeSurface(
   sourceName: string,
   find: string,
   replacement: string,
-  regex: boolean,
   variableName = "orders_frame"
 ): void {
   assertReleasedRGeneratedSourceBoundary(code, variableName);
@@ -253,7 +251,6 @@ export function assertReleasedRFindReplaceCodeSurface(
   assert.ok(code.includes(JSON.stringify(sourceName)));
   assert.ok(code.includes(`.ow_text_find <- ${JSON.stringify(find)}`));
   assert.ok(code.includes(`.ow_text_replacement <- ${JSON.stringify(replacement)}`));
-  assert.ok(code.includes(`.ow_text_regex <- ${regex ? "TRUE" : "FALSE"}`));
   assertReleasedROnly(code);
 }
 
