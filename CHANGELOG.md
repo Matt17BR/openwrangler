@@ -31,7 +31,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
   empty fields and whitespace. Import Options can explicitly select a line ending when detection is ambiguous.
 - DuckDB and Polars file imports preserve literal paths instead of opening wildcard or encoded-name siblings.
   Unsupported path forms are refused. **Windows Polars JSONL/NDJSON paths containing glob characters remain unsupported**;
-  see [file and engine limits](docs/feature-parity.md).
+  see [file and engine limits](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md).
 - Viewing filters, ordered sorts and Spark page continuations retain the last confirmed query after overlapping
   requests fail or are superseded. Apply, Discard and Undo use the accepted view. Empty recovery pages remain valid;
   saved Filter Rows steps restore explicit positive and negative infinity operands.
@@ -66,7 +66,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 - Pandas Formula rejects integer wraparound and lossy promotion. Arrow integer modulo handles signed/unsigned extrema
   and refuses present zero divisors. Exact eligible differences, products, UInt64 adjustments and scalar powers are
   accepted; eligible Decimal128 arithmetic can widen to Decimal256. Native successful types and paired nulls remain.
-  [Engine precision limits](docs/architecture.md#pandas) still apply.
+  [Engine precision limits](https://github.com/Matt17BR/openwrangler/blob/main/docs/architecture.md#pandas) still apply.
 - Polars Formula refuses overflow, lossy mixed-integer results, newly introduced nulls and unsupported UInt128 arithmetic
   before native panics. DuckDB Formula refuses lossy signed/unsigned results; BIGNUM multiplication/modulo can still
   refuse selected operands outside signed 128-bit range. Recognized Polars panics return request errors.
@@ -100,7 +100,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
   time-zone map-key changes are refused instead of silently changing values.
 - Native R CSV keeps UTF-8 under the C locale and fractional durations under comma `OutDec`. Duration NaN refuses export
   before writing. **CSV timestamps can still lose precision and omit their zone**; the export choice now states this.
-  R Parquet refuses timestamps that cannot survive exact microsecond storage. See [native R limits](docs/feature-parity.md#native-r-preview).
+  R Parquet refuses timestamps that cannot survive exact microsecond storage. See [native R limits](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#native-r-preview).
 - Native R private-file cleanup accepts an unchanged directory after moving a response file into it. Release verification
   retries interrupted downloads within existing bounds, sanitizes transport errors and still rejects invalid packages.
 
