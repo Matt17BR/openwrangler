@@ -56,9 +56,9 @@ or AND/OR logic clear affected choices; Search loads the current choices without
 Opening value filters from a header, the Filters tab or Show More selects the requested column with fresh search input.
 Editing a sort from the sidebar selects its column while preserving unfinished filter and sort input.
 
-A runtime-refused Python viewing page retains its previous query. Editing uses the host's accepted filter and history
-marker even when a successful page was superseded before publication. Spark retains the accepted query's exact
-continuation anchors and known total through superseded pages and failed replacements, including a return to row zero.
+A refused Python viewing page retains the previous query. Editing uses the
+[accepted viewing query](architecture.md#protocol-and-publication) even after a successful page is superseded.
+Spark preserves that view's paging state through failed or superseded replacements.
 Concurrent grid presentation saves preserve current sort publication and newer file-session recovery state.
 Failed recovery-storage writes retain the current selection and layout during the session. Reopening uses the last
 successfully saved state, as the storage warning explains.
