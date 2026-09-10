@@ -686,10 +686,10 @@ After editor and display ownership and private-root identity are verified, a fai
 The R collapse-frame journey records notebook display, toolbar selection submission and session-open completion
 separately. Failure metadata reports the last stage reached when progress is read after shutdown. During the R editor
 phase, the existing progress poll also logs changed, allowlisted fixture milestones with elapsed time from phase
-launch. These include editing, native-frame opening, document execution and restart. Polling may miss quick transitions;
-these observations are not a complete trace or exact operation durations. Windows retains its metadata-only live
-progress reader. Fixed preparation, editor completion or failure, and profile-cleanup messages distinguish setup and
-cleanup cost from editor execution. When needed, VS Code acquisition and private R dependency installation also report
+launch. These include editing, the fixed collapse-frame opening stages, document execution and restart. Polling may miss
+quick transitions; these observations are not a complete trace or exact operation durations. Windows retains its
+metadata-only live progress reader. Fixed preparation, editor completion or failure, and profile-cleanup messages
+distinguish setup and cleanup cost from editor execution. When needed, VS Code acquisition and private R dependency installation also report
 their start and completion against the same preparation clock. Successful R installer processes also report bounded elapsed
 records for core packages, supplemental packages and the macOS collapse source build. Each total includes downloads
 and installation; it does not separate transfer from compilation. Other successful installer output is omitted.

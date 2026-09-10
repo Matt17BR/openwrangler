@@ -68,6 +68,50 @@ test("R checkpoint timing logs only changed fixed labels without changing phase 
         : []
     );
   }
+
+  for (const profile of ["comprehensive", "platform-lifecycle"]) {
+    lines.length = 0;
+    let clock = 1_000;
+    const collapseCheckpoints = ["collapse_frame", "collapse_tibble", "collapse_table"].flatMap((frame) =>
+      ["start", "notebook-shown", "selection-submitted", "complete"].map(
+        (stage) => `jupyter-r:coverage:${profile}:native-frame:${frame}:view-open:${stage}`
+      )
+    );
+    const checkpoints = [
+      "jupyter-r:editing:text-length-preview-discard",
+      ...collapseCheckpoints,
+      `jupyter-r:coverage:${profile}:native-frame:private-fixture:view-open:start`,
+      `jupyter-r:coverage:${profile}:native-frame:collapse_frame_private:view-open:start`,
+      `jupyter-r:coverage:${profile}:native-frame:collapse_frame:view-open:complete:private-value`,
+      `jupyter-r:coverage:${profile}:native-frame:collapse_frame:view-page:complete`,
+      `jupyter-r:coverage:${profile}:native-frame:collapse_frame:view-cleanup:complete`,
+      "jupyter-r:coverage:representative:native-frame:collapse_frame:view-open:start"
+    ];
+    const observed = await waitForEditorAcceptanceObservation({
+      resultPath: join(directory, "absent-result.json"),
+      progressPath: join(directory, "unused-progress.json"),
+      exit: new Promise(() => {}),
+      isRunning: () => true,
+      now: () => clock,
+      wait: async (interval) => {
+        clock += interval;
+      },
+      phase: "jupyter-r",
+      phaseStartedAt: 900,
+      phaseTimeoutMs: 500,
+      inactivityTimeoutMs: 35,
+      pollIntervalMs: 10,
+      initialProgressCheckpoint: checkpoints[0],
+      progressReader: () => checkpoints[Math.min(Math.floor((clock - 1_000) / 20), checkpoints.length - 1)]
+    });
+    assert.deepEqual(observed, { kind: "timeout", timeout: "inactivity", elapsedMs: 400 });
+    assert.deepEqual(
+      lines,
+      collapseCheckpoints.map(
+        (checkpoint, index) => `R editor checkpoint observed at ${120 + index * 20} ms: ${checkpoint}`
+      )
+    );
+  }
 });
 
 test("sealed failure evidence is re-redacted and identity-pinned through handoff", async () => {
