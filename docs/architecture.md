@@ -27,8 +27,9 @@ describes the durable ownership and safety boundaries. It intentionally leaves o
   has a separate private transport v14 and frame contract v5, which `RKernelBridge` adapts to and from coordinator
   protocol v4.
 
-Native tree views and Code Preview keep their original lazy provider registrations until shutdown. Loading the
-view owner attaches delegates and tree-change forwarding without unregistering a view while VS Code resolves it.
+Native tree views, Code Preview and file custom editors keep their original lazy provider registrations until shutdown.
+Loading an owner supplies its delegate without unregistering a view or disposing its document while VS Code resolves it.
+Walkthrough, Settings and Report Issue commands retain their lightweight owner when native views load.
 Lazy variable providers show a pending snapshot only until their owner loads. A loaded owner's absent notebook
 snapshot remains absent, allowing the Operations view to offer the idle R action.
 Editor and Code Preview resolution retain VS Code's exact cancellation token through loading and file preflight.

@@ -53,15 +53,6 @@ export class OpenWranglerCustomEditorProvider implements vscode.CustomReadonlyEd
 }
 
 export const registerFileCommands = (context: vscode.ExtensionContext, bridge: OpenWranglerBridge): void => {
-  const provider = new OpenWranglerCustomEditorProvider(context, bridge);
-  const providerOptions = {
-    supportsMultipleEditorsPerDocument: false,
-    webviewOptions: {
-      retainContextWhenHidden: true
-    }
-  };
-  context.subscriptions.push(vscode.window.registerCustomEditorProvider(CUSTOM_EDITOR_ID, provider, providerOptions));
-
   context.subscriptions.push(
     vscode.commands.registerCommand("openWrangler.changeImportOptions", async () => {
       if (await OpenWranglerPanel.changeActiveImportOptions()) return;

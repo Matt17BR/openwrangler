@@ -212,6 +212,24 @@ vi.mock("../extension/files/fileOpen", () => ({
   })
 }));
 
+vi.mock("../extension/files/trustedPickleConversion", () => ({
+  registerTrustedPickleConversion: (context: MockExtensionContext) =>
+    registerMockCommands(context, ["openWrangler.convertTrustedPickle"])
+}));
+
+vi.mock("../extension/files/trustedPickleWorker", () => ({
+  TrustedPickleWorkerLifecycle: class {
+    async shutdown(): Promise<void> {}
+  }
+}));
+
+vi.mock("../extension/r/rDocumentCommands", () => ({
+  registerRDocumentCommands: (context: MockExtensionContext) =>
+    registerMockCommands(context, ["openWrangler.runRDocument", "openWrangler.internal.openLiterateDataframe"])
+}));
+
+vi.mock("../extension/webviewPanel", () => ({ OpenWranglerPanel: {} }));
+
 const rVariables = vi.hoisted(() => ({
   onDidChangeVariables: () => ({ dispose: () => undefined }),
   startAutomaticDiscovery: owners.rDiscovery,
@@ -342,10 +360,7 @@ vi.mock("../extension/nativeViews", () => ({
         "openWrangler.insertNotebookCode",
         "openWrangler.exportData",
         "openWrangler.internal.exportSessionData",
-        "openWrangler.openSourceFile",
-        "openWrangler.openWalkthrough",
-        "openWrangler.openSettings",
-        "openWrangler.reportIssue"
+        "openWrangler.openSourceFile"
       ]);
       context.subscriptions.push(
         host.registerCommand("openWrangler.refreshLiveDataframes", async () => {
@@ -410,9 +425,66 @@ describe("lazy activation owners", () => {
     expect(packageMetadata.contributes.commands.every(({ command }) => host.commands.has(command))).toBe(true);
   });
 
+  it("defers test-only initialization until explicit acquisition and shares that acquisition", async () => {
+    vi.stubEnv("OPEN_WRANGLER_EXTENSION_TESTS", "1");
+    try {
+      active = createOwners();
+      active.startBeforeFirstYield();
+      const api = await active.extensionApiForCurrentEnvironment();
+      if (!api) throw new Error("Expected the environment-gated API.");
+      expect(active.diagnosticsForTesting().constructedOwners).toEqual([]);
+      expect(api.activationDiagnostics()).toEqual({ constructedOwners: [], rDiscoveryStarted: false });
+      const first = api.getTestingApi();
+      const second = api.getTestingApi();
+      expect(second).toBe(first);
+      const testing = await first;
+      expect(typeof testing.request).toBe("function");
+      expect(owners.pythonConstructed).toHaveBeenCalledOnce();
+      expect(owners.sessionConstructed).toHaveBeenCalledOnce();
+      expect(owners.rRegistered).toHaveBeenCalledOnce();
+      expect(await api.getTestingApi()).toBe(testing);
+      await active.shutdown();
+      expect(() => api.getTestingApi()).toThrow("disposed");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("rejects in-flight test API acquisition when already loaded owners retire", async () => {
+    vi.stubEnv("OPEN_WRANGLER_EXTENSION_TESTS", "1");
+    try {
+      active = createOwners();
+      active.startBeforeFirstYield();
+      for (const command of [
+        "openWrangler.openFile",
+        "openWrangler.convertTrustedPickle",
+        "openWrangler.openNotebookVariable",
+        "openWrangler.openRDataframe",
+        "openWrangler.startOperation",
+        "openWrangler.changeRuntime",
+        "openWrangler.runRDocument"
+      ]) {
+        await host.executeCommand(command);
+      }
+      const api = await active.extensionApiForCurrentEnvironment();
+      if (!api) throw new Error("Expected the environment-gated API.");
+      const pending = api.getTestingApi();
+      const retirement = active.shutdown();
+      await expect(pending).rejects.toThrow("disposed");
+      await retirement;
+      expect(owners.bridgeShutdown).toHaveBeenCalledOnce();
+      expect(owners.coordinatorShutdown).toHaveBeenCalledOnce();
+      expect(host.commands.size).toBe(0);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("keeps utility commands independent from native views and R discovery", async () => {
     active = createOwners();
     active.startBeforeFirstYield();
+    const utilityCommands = ["openWrangler.openWalkthrough", "openWrangler.openSettings", "openWrangler.reportIssue"];
+    const handlers = utilityCommands.map((id) => host.commands.get(id));
 
     await host.executeCommand("openWrangler.openSettings");
 
@@ -420,6 +492,12 @@ describe("lazy activation owners", () => {
     expect(owners.rDiscovery).not.toHaveBeenCalled();
     expect(owners.sessionConstructed).not.toHaveBeenCalled();
     expect(active.diagnosticsForTesting().constructedOwners).toEqual([]);
+    await host.executeCommand("openWrangler.startOperation");
+    expect(utilityCommands.map((id) => host.commands.get(id))).toEqual(handlers);
+    await host.executeCommand("openWrangler.openSettings");
+    expect(host.executeCommand.mock.calls.filter(([id]) => id === "workbench.action.openSettings")).toHaveLength(2);
+    await active.shutdown();
+    expect(utilityCommands.some((id) => host.commands.has(id))).toBe(false);
   });
 
   it("loads only the Python runtime owner for a runtime command and replays exact arguments", async () => {
@@ -456,7 +534,7 @@ describe("lazy activation owners", () => {
     expect(active.diagnosticsForTesting().rDiscoveryStarted).toBe(true);
   });
 
-  it("constructs the custom-editor owner only when an editor is resolved", async () => {
+  it.each(["editor resolution", "file command"])("retains its provider through first %s", async (trigger) => {
     active = createOwners();
     active.startBeforeFirstYield();
     const provider = host.customEditorProviders[0] as {
@@ -466,6 +544,7 @@ describe("lazy activation owners", () => {
     const document = provider.openCustomDocument({ scheme: "file", path: "/data.csv" });
 
     expect(owners.pythonConstructed).not.toHaveBeenCalled();
+    if (trigger === "file command") await host.executeCommand("openWrangler.openFile", document);
     const panel = {};
     const token = resolutionToken();
     await provider.resolveCustomEditor(document, panel, token);
@@ -475,6 +554,27 @@ describe("lazy activation owners", () => {
     expect(owners.pythonConstructed).toHaveBeenCalledOnce();
     expect(owners.sessionConstructed).toHaveBeenCalledOnce();
     expect(owners.rDiscovery).not.toHaveBeenCalled();
+    expect(host.customEditorProviders).toEqual([provider]);
+    expect(host.registerCustomEditorProvider).toHaveBeenCalledExactlyOnceWith("openWrangler.viewer", provider, {
+      supportsMultipleEditorsPerDocument: false,
+      webviewOptions: { retainContextWhenHidden: true }
+    });
+    await active.shutdown();
+    expect(host.customEditorProviders).toEqual([]);
+    expect(host.registerCustomEditorProvider.mock.results[0].value.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("retains the provider until shutdown when file-command registration rolls back", async () => {
+    active = createOwners();
+    active.startBeforeFirstYield();
+    const provider = host.customEditorProviders[0];
+    host.setRegistrationFailure({ id: "openWrangler.openFile", attempt: 2 });
+    await expect(host.executeCommand("openWrangler.openFile")).rejects.toThrow("registration failed");
+    expect(host.customEditorProviders).toEqual([provider]);
+    expect(host.commands.has("openWrangler.changeImportOptions")).toBe(false);
+    await active.shutdown();
+    expect(host.customEditorProviders).toEqual([]);
+    expect(host.registerCustomEditorProvider.mock.results[0].value.dispose).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -514,6 +614,7 @@ describe("lazy activation owners", () => {
       if (kind === "custom editor") {
         expect(owners.customEditorResolved).toHaveBeenCalledExactlyOnceWith(document, view, nextToken);
         expect(owners.pythonConstructed).toHaveBeenCalledOnce();
+        expect(host.customEditorProviders).toEqual([custom]);
       } else {
         expect(owners.nativeWebviewResolved).toHaveBeenCalledExactlyOnceWith(view, context, nextToken);
         expect(owners.nativeRegistered).toHaveBeenCalledOnce();

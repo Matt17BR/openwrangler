@@ -1218,20 +1218,7 @@ function registerNativeViewsTransactional(
         return;
       }
       await vscode.commands.executeCommand("vscode.open", source);
-    }),
-    registerCommand("openWrangler.openWalkthrough", () =>
-      vscode.commands.executeCommand("workbench.action.openWalkthrough", "Matt17BR.openwrangler#gettingStarted", false)
-    ),
-    registerCommand("openWrangler.openSettings", () =>
-      vscode.commands.executeCommand("workbench.action.openSettings", "@ext:Matt17BR.openwrangler")
-    ),
-    registerCommand("openWrangler.reportIssue", () =>
-      vscode.env.openExternal(
-        vscode.Uri.parse(
-          `https://github.com/Matt17BR/openwrangler/issues/new?title=${encodeURIComponent("Open Wrangler issue")}&body=${encodeURIComponent(`VS Code: ${vscode.version}\nOS: ${process.platform}\n\nSteps to reproduce:\n`)}`
-        )
-      )
-    )
+    })
   );
 
   const owner: NativeViewsOwner = {

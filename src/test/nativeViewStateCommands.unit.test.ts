@@ -22,7 +22,7 @@ describe("native state and presentation commands", () => {
   beforeEach(resetNativeViewMocks);
 
   it("serializes context writes and settles rollback after deferred and rejected writes", async () => {
-    nativeMocks.registrationFailure = "command:openWrangler.reportIssue";
+    nativeMocks.registrationFailure = "command:openWrangler.openSourceFile";
     const active = snapshotWithDraft();
     active.metadata = {
       ...active.metadata,
@@ -51,14 +51,14 @@ describe("native state and presentation commands", () => {
     nativeMocks.executeCommand.mockImplementation(executeContextCommand as () => Promise<undefined>);
 
     try {
-      expect(() => register(active)).toThrow("native registration failed: command:openWrangler.reportIssue");
+      expect(() => register(active)).toThrow("native registration failed: command:openWrangler.openSourceFile");
 
       expect(nativeMocks.commands.size).toBe(0);
       expect(nativeMocks.treeDataProviders.size).toBe(0);
       expect(nativeMocks.webviewViewProviders.size).toBe(0);
       expect(nativeMocks.activeRegistrations.size).toBe(0);
       expect(nativeMocks.coordinatorListeners.size).toBe(0);
-      expect(nativeMocks.registrationDisposals[0]).toBe("command:openWrangler.openSettings");
+      expect(nativeMocks.registrationDisposals[0]).toBe("command:openWrangler.internal.exportSessionData");
       expect(nativeMocks.registrationDisposals.at(-1)).toBe("command:openWrangler.refreshLiveDataframes");
       expect(nativeMocks.executeCommand).toHaveBeenCalledTimes(1);
 
