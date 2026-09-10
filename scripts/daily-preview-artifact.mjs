@@ -342,7 +342,7 @@ function escapeReleaseNotesLabel(value) {
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
-    .replace(/[\\`*_[\]]/gu, "\\$&");
+    .replace(/[\\`*_~[\]]/gu, "\\$&");
 }
 
 export function renderDailyPreviewReleaseNotes(source, pullRequests) {

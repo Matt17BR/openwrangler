@@ -217,12 +217,12 @@ test("daily notes link complete source subjects and identify the first preview's
   const root = repository(context, { source: metadata, stable: metadata });
   const baseSha = git(root, ["rev-parse", "HEAD"]);
   writeFileSync(join(root, "grid.txt"), "change\n");
-  const sourceSha = commitChanges(root, "Keep [Code Preview] & <grid> readable");
+  const sourceSha = commitChanges(root, "Keep [Code Preview] & <grid> ~readable~");
   const notes = dailyPreviewReleaseNotes({ root, baseSha, baseTag: "v2.1.0", sourceSha, version: "2.1.20260910" });
   assert.match(notes, /No earlier published preview/u);
   assert.ok(
     notes.includes(
-      `- [Keep \\[Code Preview\\] &amp; &lt;grid&gt; readable](https://github.com/Matt17BR/openwrangler/commit/${sourceSha})`
+      `- [Keep \\[Code Preview\\] &amp; &lt;grid&gt; \\~readable\\~](https://github.com/Matt17BR/openwrangler/commit/${sourceSha})`
     )
   );
   assert.ok(
@@ -247,7 +247,7 @@ test("daily notes group frozen PRs and fold only changes after the first five", 
     root,
     sourceSha: commits.at(-1),
     version: "1.99.20260910",
-    pullRequests: [{ number: 41, title: "Fix [grid] & <rows> *again*", commits: commits.slice(0, 2) }]
+    pullRequests: [{ number: 41, title: "Fix [grid] & <rows> *again* ~~literally~~", commits: commits.slice(0, 2) }]
   });
   assert.ok(
     notes.startsWith(
@@ -260,7 +260,7 @@ test("daily notes group frozen PRs and fold only changes after the first five", 
   assert.equal(folded.split("\n").filter((line) => line.startsWith("- ")).length, 2);
   assert.ok(
     folded.includes(
-      "- [Fix \\[grid\\] &amp; &lt;rows&gt; \\*again\\* (#41)](https://github.com/Matt17BR/openwrangler/pull/41)"
+      "- [Fix \\[grid\\] &amp; &lt;rows&gt; \\*again\\* \\~\\~literally\\~\\~ (#41)](https://github.com/Matt17BR/openwrangler/pull/41)"
     )
   );
   assert.equal(notes.includes(`commit/${commits[0]}`), false);
