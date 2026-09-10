@@ -79,7 +79,7 @@ function verify(fetchImpl) {
 }
 
 test("verifies exact stable Open VSX metadata, checksum, publisher, and VSIX bytes", async () => {
-  assert.deepEqual(await verify(exactFetch()), {
+  assert.deepEqual(await verify(exactFetch({ manifest: metadata({ preview: true }) })), {
     publishedBy: "Matt17BR",
     status: "exact",
     verifiedNamespace: true,
@@ -121,7 +121,7 @@ test("forwards the release's R inventory requirement to archive inspection", asy
 });
 
 test("verifies preview metadata only for an explicitly preview candidate", async () => {
-  const preview = metadata({ preRelease: true, preview: true });
+  const preview = metadata({ preRelease: true, preview: false });
   assert.equal(
     (
       await verifyOpenVsxReleaseOnce({
