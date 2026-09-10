@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { R_KERNEL_RUNTIME_BINDING } from "../../extension/r/rKernelRuntimeBundle";
+import type { ReleasedRAcceptanceCoverageProfile } from "./releasedRAcceptanceCoverage";
 import { RELEASED_NOTEBOOK_R_SETUP_FAILURE_PREFIX } from "./releasedNotebookFailure";
 
 export const RELEASED_JUPYTER_R_KERNEL_RESULT = "__OW_RELEASED_R_KERNEL__";
@@ -275,7 +276,8 @@ export interface ReleasedRNotebookKernelTarget {
 export function writeReleasedRNotebook(
   notebookPath: string,
   phase: "jupyter-r" | "jupyter-r-remote",
-  target: ReleasedRNotebookKernelTarget
+  target: ReleasedRNotebookKernelTarget,
+  focusedEditing: ReleasedRAcceptanceCoverageProfile["focusedEditing"] = "none"
 ): void {
   const kernelProbe = [
     `cat(${JSON.stringify(RELEASED_JUPYTER_R_KERNEL_RESULT)}, as.character(getRversion()), '\\n', sep = '')`
@@ -306,18 +308,22 @@ export function writeReleasedRNotebook(
     ".ow_setup_stage <- 'data-table'",
     "orders_table <- data.table::as.data.table(orders_frame)",
     "data.table::setkey(orders_table, row_id)",
-    ".ow_setup_stage <- 'collapse-load'",
-    "invisible(loadNamespace('collapse'))",
-    ".ow_setup_stage <- 'collapse-data-frame'",
-    "collapse_frame <- collapse::qDF(orders_frame)",
-    ".ow_setup_stage <- 'collapse-tibble'",
-    "collapse_tibble <- collapse::qTBL(orders_frame)",
-    ".ow_setup_stage <- 'collapse-data-table'",
-    "collapse_table <- collapse::qDT(orders_frame)",
-    ".ow_setup_stage <- 'collapse-grouped'",
-    "collapse_grouped <- collapse::fgroup_by(collapse_frame, group)",
-    ".ow_setup_stage <- 'collapse-indexed'",
-    "collapse_indexed <- collapse::findex_by(collapse_frame, group, row_id)",
+    ...(focusedEditing === "none"
+      ? [
+          ".ow_setup_stage <- 'collapse-load'",
+          "invisible(loadNamespace('collapse'))",
+          ".ow_setup_stage <- 'collapse-data-frame'",
+          "collapse_frame <- collapse::qDF(orders_frame)",
+          ".ow_setup_stage <- 'collapse-tibble'",
+          "collapse_tibble <- collapse::qTBL(orders_frame)",
+          ".ow_setup_stage <- 'collapse-data-table'",
+          "collapse_table <- collapse::qDT(orders_frame)",
+          ".ow_setup_stage <- 'collapse-grouped'",
+          "collapse_grouped <- collapse::fgroup_by(collapse_frame, group)",
+          ".ow_setup_stage <- 'collapse-indexed'",
+          "collapse_indexed <- collapse::findex_by(collapse_frame, group, row_id)"
+        ]
+      : []),
     ".ow_setup_stage <- 'snapshots'",
     "orders_frame_before <- serialize(orders_frame, NULL, version = 3L)",
     "orders_tibble_before <- serialize(orders_tibble, NULL, version = 3L)",
@@ -341,7 +347,7 @@ export function writeReleasedRNotebook(
     `cat(${JSON.stringify(RELEASED_JUPYTER_R_SETUP_RESULT)}, as.character(jsonlite::toJSON(list(`,
     "  pid = Sys.getpid(), rows = nrow(orders_frame), columns = ncol(orders_frame),",
     "  rVersion = as.character(getRversion()),",
-    "  collapseVersion = as.character(utils::packageVersion('collapse')),",
+    ...(focusedEditing === "none" ? ["  collapseVersion = as.character(utils::packageVersion('collapse')),"] : []),
     "  privateLibraryFirst = .ow_library_attestation$privateLibraryFirst,",
     "  irKernelFromPrivateLibrary = .ow_library_attestation$irKernelFromPrivateLibrary,",
     "  remoteRunId = Sys.getenv('OPEN_WRANGLER_REMOTE_RUN_ID', unset = ''),",

@@ -359,7 +359,11 @@ The `r-jupyter` notebook journeys prepare their reviewed package subset in a fre
 session watcher and nanoparquet for real Parquet export. It also omits rmarkdown, IRkernel, collapse and Rcpp because
 the plain-R terminal fixtures do not render documents, start a Jupyter kernel or use collapse. This terminal sequence
 does not exercise incidental language-server coexistence during discovery, replacement, editing and export; other
-profiles retain the default LSP setting. Notebook and literate journeys retain collapse and its structural probe.
+profiles retain the default LSP setting. The `value-operations`, `categorical-operations` and `pivot-wider` notebook
+selectors also omit the collapse and Rcpp roots, collapse residents and their discovery assertions. They retain real
+tibble/data.table residents and source-integrity checks. Default/core and other notebook profiles retain collapse,
+including native flavor labels and unsupported grouped/indexed exclusions; literate preparation retains its structural
+probe. Focused operation runs therefore do not repeat collapse coexistence coverage.
 On macOS, selected collapse fixtures use the pinned source snapshot built with two make jobs.
 Package pins remain in `scripts/jupyter-acceptance-environment.mjs`. Each selected root must resolve from the private
 library at its reviewed version and load successfully before editor launch. Notebook and literate journeys also
@@ -375,8 +379,8 @@ The focused interactive-terminal journey installs the pinned official R and R-sy
 a host Python interpreter nor installs the Jupyter extension; an inherited test Python override is cleared. It omits the
 Quarto extension and CLI; the literate-documents journey retains both, including private Pandoc configuration and
 native Quarto media preview checks. Tooling pins remain in `scripts/r-editor-acceptance-tooling.mjs`, and its selected
-extension records drive installation and expected versions. The existing preparer selects notebook, interactive-terminal,
-literate-documents or source-contracts dependencies by purpose; omitting the purpose retains the full tooling subset.
+extension records drive installation and expected versions. The existing preparer selects dependencies by purpose,
+including those three focused notebook selectors; omitting the purpose retains the full tooling subset.
 
 The macOS and Windows R jobs first run `kernel:numeric-portability`, the same case included in the canonical
 Linux kernel suite. It owns the platform-sensitive mean, decimal parsing, selection and generated-literal assertions
@@ -413,10 +417,12 @@ representative journeys. Windows and Cursor retain their representative profiles
 absolute deadline; preparation and cleanup add to total wall time.
 
 `scripts/packaged-r-jupyter.test.mjs` checks actual prepared install/probe/record agreement, private environment
-ownership and rejected inputs through the command seam without starting R. Changes to the installed-editor package
-selection require a fresh run of each affected profile against the supplied VSIX and proof that unaffected profiles'
-prepared install/probe inputs remain unchanged. Changes to shared pins or shared selection behavior require notebook
-core and full tooling/literate qualification. Measure setup cost; graph size alone does not establish savings.
+ownership and rejected inputs through the command seam without starting R. Package selection changes require fresh
+supplied-VSIX execution of each distinct changed preparation and fixture path. Existing selectors may share one
+representative when their package/probe inputs and setup/discovery behavior are identical, and their operation and
+transport paths are unchanged; establish that from the executable owners. Also prove that unaffected profiles'
+prepared install/probe inputs remain unchanged. Changes to shared pins or common notebook/literate selection require
+notebook core and full tooling/literate qualification. Measure setup cost; graph size alone does not establish savings.
 
 `src/test/releasedRTooling.unit.test.ts` checks the actual tooling assertions and focused journey routing, including
 missing or mismatched extensions, commands and CLI configuration. Tooling selection changes require the affected

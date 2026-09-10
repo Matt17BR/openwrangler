@@ -27,6 +27,11 @@ import {
   assertEditorAcceptancePrivateRootReceipt,
   createEditorAcceptancePrivateRootReceipt
 } from "./packaged-editor-orchestration.mjs";
+import {
+  CATEGORICAL_R_JUPYTER_SELECTOR,
+  VALUE_R_JUPYTER_SELECTOR,
+  PIVOT_WIDER_R_JUPYTER_SELECTOR
+} from "./packaged-r-journey.mjs";
 
 const CORE_DEPENDENCIES = Object.freeze(["ipykernel", "jupyter-client", "pandas"]);
 const NOTEBOOK_DEPENDENCIES = Object.freeze([...CORE_DEPENDENCIES, "polars", "duckdb", "fsspec", "pytz"]);
@@ -1967,7 +1972,14 @@ export async function prepareJupyterAcceptanceREnvironment(
     runCommand = runBoundedEditorCommand
   } = {}
 ) {
-  if (!["notebook", "interactive-terminal", "literate-documents", "source-contracts"].includes(purpose)) {
+  const focusedNotebook =
+    purpose === CATEGORICAL_R_JUPYTER_SELECTOR ||
+    purpose === VALUE_R_JUPYTER_SELECTOR ||
+    purpose === PIVOT_WIDER_R_JUPYTER_SELECTOR;
+  if (
+    !focusedNotebook &&
+    !["notebook", "interactive-terminal", "literate-documents", "source-contracts"].includes(purpose)
+  ) {
     throw new Error("R acceptance requires a known preparation purpose.");
   }
   if (
@@ -1995,12 +2007,15 @@ export async function prepareJupyterAcceptanceREnvironment(
   const packageEntries = Object.entries(R_ACCEPTANCE_PACKAGE_VERSIONS).filter(([packageName]) => {
     if (purpose === "source-contracts") return ["jsonlite", "nanoparquet", "bit64"].includes(packageName);
     if (packageName === "bit64") return false;
+    if (focusedNotebook && ["Rcpp", "collapse"].includes(packageName)) return false;
     if (
       purpose === "interactive-terminal" &&
       ["IRkernel", "Rcpp", "collapse", "rmarkdown", "languageserver", "knitr"].includes(packageName)
     )
       return false;
-    return purpose !== "notebook" || !["languageserver", "rmarkdown", "knitr"].includes(packageName);
+    return (
+      (purpose !== "notebook" && !focusedNotebook) || !["languageserver", "rmarkdown", "knitr"].includes(packageName)
+    );
   });
   const packages = Object.freeze(packageEntries.map(([packageName]) => packageName));
   const packageVersions = Object.freeze(Object.fromEntries(packageEntries));

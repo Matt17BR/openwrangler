@@ -91,6 +91,11 @@ for (const [scope, selection, packages] of [
   ["default", {}, editorPackages],
   ["literate", { purpose: "literate-documents" }, editorPackages],
   ["notebook", { purpose: "notebook" }, notebookPackages],
+  ...["value-operations", "categorical-operations", "pivot-wider"].map((purpose) => [
+    purpose,
+    { purpose },
+    ["IRkernel", "jsonlite", "rlang", "tibble", "data.table", "nanoparquet"]
+  ]),
   ["terminal", { purpose: "interactive-terminal" }, ["jsonlite", "rlang", "tibble", "data.table", "nanoparquet"]]
 ]) {
   test(`prepared R dependency inputs and receipt agree for ${scope}`, async (t) => {
@@ -102,6 +107,7 @@ for (const [scope, selection, packages] of [
     const versions = Object.fromEntries(packages.map((name) => [name, R_ACCEPTANCE_PACKAGE_VERSIONS[name]]));
     assert.deepEqual(preparedPackageInputs(prepared), { packages, versions });
     assert.deepEqual(prepared.packages, packages);
+    assert.equal(commandCode(prepared.dependencyProbe).includes("collapse::qDF("), packages.includes("collapse"));
     assert.deepEqual(prepared.packageVersions, versions);
     assert.equal(prepared.packageRecord, packages.map((name) => `${name}=${versions[name]}`).join("\n"));
     for (const value of [prepared, prepared.packages, prepared.packageVersions]) assert.ok(Object.isFrozen(value));

@@ -91,7 +91,12 @@ import {
   resolvePackagedPlatformSmokeSelector,
   runPackagedPlatformSmokePhase
 } from "./packaged-platform-smoke-selector.mjs";
-import { resolvePackagedRJourneySelection } from "./packaged-r-journey.mjs";
+import {
+  CATEGORICAL_R_JUPYTER_SELECTOR,
+  VALUE_R_JUPYTER_SELECTOR,
+  PIVOT_WIDER_R_JUPYTER_SELECTOR,
+  resolvePackagedRJourneySelection
+} from "./packaged-r-journey.mjs";
 import { prepareREditorAcceptanceTooling } from "./r-editor-acceptance-tooling.mjs";
 import {
   REAL_REMOTE_JUPYTER_ENV,
@@ -442,7 +447,11 @@ try {
             rAcceptanceEnvironment = await prepareJupyterAcceptanceREnvironment(resolve(temporaryRoot, "rv"), rscript, {
               containedBy: temporaryRoot,
               purpose:
-                rJourneySelector === "interactive-terminal" || rJourneySelector === "literate-documents"
+                rJourneySelector === "interactive-terminal" ||
+                rJourneySelector === "literate-documents" ||
+                rJourneySelector === CATEGORICAL_R_JUPYTER_SELECTOR ||
+                rJourneySelector === VALUE_R_JUPYTER_SELECTOR ||
+                rJourneySelector === PIVOT_WIDER_R_JUPYTER_SELECTOR
                   ? rJourneySelector
                   : "notebook"
             });
