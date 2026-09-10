@@ -1130,10 +1130,16 @@ replacement only when the renderer returns the exact offered view context throug
 path; sending a message alone is insufficient. That receipt also saves the accepted grid placement. Once the complete
 view is accepted, ordinary grid presentation updates can proceed while the separate hydration marker is pending.
 Full-snapshot synchronization and import transitions retain their presentation lock.
-An authoritative snapshot clears the preceding page-request identity immediately before its webview send. Each
-confirmed-view acknowledgement also carries the renderer's retained page-request identity, or null when none remains.
-The host adopts it only after accepting that acknowledgement. Pages issued for the new view remain current;
-acknowledging the snapshot retires crossed old requests and prevents their later responses from replacing that view.
+Before capturing an authoritative snapshot, the host waits only for an already-committed page's exact panel publication,
+including its final persistence write and retained page. It does not wait for pages still executing or awaiting their
+first persistence write. Snapshot preparation blocks additional scoped pages, then retires uncommitted page and view
+owners before capture. The snapshot carries a host-only offered view identity; scoped ordinary pages resume when that
+exact identity returns through the existing view acknowledgement. An older queued receipt cannot reopen admission.
+New projection and filter requests can proceed after that receipt, before the separate hydration marker. Native runtime
+responses and ephemeral or unscoped page admission remain unchanged; persistence write and rollback rules are unchanged.
+The coordinator retains one bounded produced-page reference, sharing its cells rather than copying them and deriving
+metadata from its current session. Mutation, runtime replacement and snapshot retirement clear it. If a storage error
+leaves that page active, snapshot preparation retains the active page while preserving the error; it does not run a query.
 Mode changes suspend recovery acceptance from the local request through host settlement. A failed mode change can
 resume the pending replacement; a successful reopen supplies the new authoritative session.
 A current page-bearing response supplies the snapshot directly. Recovery through a page-less request uses one bounded

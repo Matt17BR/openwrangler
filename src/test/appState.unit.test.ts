@@ -53,10 +53,30 @@ describe("App view-state model", () => {
     expect(decodeAppHostMessage({ ...action, expectedSessionId: 4 })).toBeUndefined();
   });
 
+  it("requires a strictly checked host snapshot offer without changing native snapshots", () => {
+    const snapshot = { kind: "sessionOpened", metadata, page, summaries: [] };
+    const offered = { ...snapshot, offeredViewContextId: "snapshot:accepted" };
+    expect(decodeAppHostMessage(offered)).toEqual(offered);
+    expect(decodeAppHostMessage(snapshot)).toBeUndefined();
+    for (const offeredViewContextId of [
+      undefined,
+      null,
+      1,
+      "",
+      "snapshot:",
+      "other:accepted",
+      "snapshot:two words",
+      "snapshot:".padEnd(257, "x")
+    ]) {
+      expect(decodeAppHostMessage({ ...snapshot, offeredViewContextId })).toBeUndefined();
+    }
+  });
+
   it("rejects forged PySpark metadata with an editing file source", () => {
     expect(
       decodeAppHostMessage({
         kind: "sessionOpened",
+        offeredViewContextId: "snapshot:invalid-backend",
         metadata: { ...metadata, backend: "pyspark" },
         page,
         summaries: []

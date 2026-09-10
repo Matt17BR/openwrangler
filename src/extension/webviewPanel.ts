@@ -15,6 +15,7 @@ import type {
 import {
   isRecoveryViewContextId,
   RECOVERY_VIEW_CONTEXT_PREFIX,
+  SNAPSHOT_VIEW_CONTEXT_PREFIX,
   type SessionRecoveryContext,
   type SessionRecoveryMessage
 } from "../shared/sessionRecovery";
@@ -67,6 +68,7 @@ export class OpenWranglerPanel {
   private sessionRevision = 0;
   private snapshot: SessionOpenedResponse | undefined;
   private snapshotViewContextId: string | undefined;
+  private snapshotOffer: { viewContextId: string; sent: boolean } | undefined;
   private latestPageViewRequestId: string | undefined;
   private opening: Promise<void> | undefined;
   private openResponse: OpenWranglerResponse | undefined;
@@ -78,7 +80,10 @@ export class OpenWranglerPanel {
   private reconnectingLiveSource = false;
   private importChangeCancellation: vscode.CancellationTokenSource | undefined;
   private sessionOpenCancellation: vscode.CancellationTokenSource | undefined;
-  private readonly forwardedRequests = new Map<Promise<void>, number | undefined>();
+  private readonly forwardedRequests = new Map<
+    Promise<void>,
+    { generation: number | undefined; page?: { sessionId: string; requestId: string } }
+  >();
   private pendingRuntimeReplacement: PendingRuntimeReplacement | undefined;
   private changingImportOptions = false;
   private readonly rendererSync: RendererSynchronizationCoordinator;
@@ -116,9 +121,18 @@ export class OpenWranglerPanel {
     };
     this.rendererSync = new RendererSynchronizationCoordinator({
       postMessage: (message) => {
-        // The renderer can issue a new page before this snapshot send settles.
         if (message && typeof message === "object" && "kind" in message && message.kind === "sessionOpened") {
+          const offer =
+            this.snapshotOffer && !this.snapshotOffer.sent
+              ? this.snapshotOffer
+              : { viewContextId: `${SNAPSHOT_VIEW_CONTEXT_PREFIX}${createSecureNonce()}`, sent: false };
+          this.snapshotOffer = offer;
+          offer.sent = true;
+          const offeredViewContextId = offer.viewContextId;
           this.latestPageViewRequestId = undefined;
+          this.snapshotViewContextId = undefined;
+          if (this.sessionId) this.bridge.setViewContext?.(this.sessionId, undefined);
+          return this.panel.webview.postMessage({ ...message, offeredViewContextId });
         }
         return this.panel.webview.postMessage(message);
       },
@@ -127,6 +141,7 @@ export class OpenWranglerPanel {
       },
       isVisible: () => this.panel.visible,
       getSnapshot: () => this.snapshot,
+      prepareSnapshot: () => this.prepareSnapshot(),
       getOpenResponse: () => this.openResponse,
       isSnapshotPending: () => this.currentRuntimeReplacement() !== undefined,
       getSessionPresentation: () => {
@@ -537,9 +552,12 @@ export class OpenWranglerPanel {
         )
           return;
         this.pendingRuntimeReplacement = undefined;
+        this.snapshotOffer = undefined;
         this.snapshot = offer.snapshot;
         this.sessionRevision = offer.snapshot.metadata.revision;
-        this.latestPageViewRequestId = decoded.lastPageRequestId ?? undefined;
+        if (offer.message.result?.kind === "stepPreview" || offer.message.result?.kind === "planUpdated") {
+          this.latestPageViewRequestId = undefined;
+        }
         this.snapshotViewContextId = decoded.viewContextId;
         this.bridge.setViewContext?.(pending.replacement.sessionId, decoded.viewContextId);
         const persistence = decoded.state
@@ -550,12 +568,20 @@ export class OpenWranglerPanel {
         return;
       }
       if (decoded.state) return;
+      if (this.snapshotOffer) {
+        if (!this.snapshotOffer.sent || decoded.viewContextId !== this.snapshotOffer.viewContextId) return;
+      } else if (
+        decoded.viewContextId.startsWith(SNAPSHOT_VIEW_CONTEXT_PREFIX) &&
+        decoded.viewContextId !== this.snapshotViewContextId
+      ) {
+        return;
+      }
       const pending = this.currentRuntimeReplacement();
       const currentForeground = [...this.forwardedRequests.values()].some(
-        (generation) => generation === this.rendererSync.rendererGeneration
+        ({ generation }) => generation === this.rendererSync.rendererGeneration
       );
       if (pending && pending.rendererGeneration !== this.rendererSync.rendererGeneration && currentForeground) return;
-      this.latestPageViewRequestId = decoded.lastPageRequestId ?? undefined;
+      this.snapshotOffer = undefined;
       this.snapshotViewContextId = decoded.viewContextId;
       if (this.sessionId) this.bridge.setViewContext?.(this.sessionId, decoded.viewContextId);
       if (pending?.context.request === null && !currentForeground) {
@@ -1297,7 +1323,12 @@ export class OpenWranglerPanel {
   ): Promise<void> {
     const generation = this.rendererSync.rendererGeneration;
     const task = this.forwardRequest(request, viewContextId, requestOptions, openAttemptGeneration);
-    this.forwardedRequests.set(task, isRecoveryForegroundRequest(request, requestOptions) ? generation : undefined);
+    this.forwardedRequests.set(task, {
+      generation: isRecoveryForegroundRequest(request, requestOptions) ? generation : undefined,
+      ...(request.kind === "getPage" && requestOptions?.ephemeralPage !== true
+        ? { page: { sessionId: request.sessionId, requestId: request.viewRequestId } }
+        : {})
+    });
     const settled = (): void => {
       this.forwardedRequests.delete(task);
       this.scheduleRecoveryRefresh();
@@ -1339,6 +1370,22 @@ export class OpenWranglerPanel {
       return;
     }
     const ephemeralPage = request.kind === "getPage" && requestOptions?.ephemeralPage === true;
+    if (
+      request.kind === "getPage" &&
+      !ephemeralPage &&
+      viewContextId !== undefined &&
+      (this.snapshotViewContextId === undefined || this.snapshotOffer !== undefined)
+    ) {
+      await this.post({
+        kind: "error",
+        code: "stale_response",
+        message: "Ignored a page from a view awaiting snapshot confirmation.",
+        recoverable: true,
+        sessionId: request.sessionId,
+        viewRequestId: request.viewRequestId
+      });
+      return;
+    }
     if (request.kind === "getPage" && !ephemeralPage) {
       this.latestPageViewRequestId = request.viewRequestId;
     }
@@ -1595,7 +1642,7 @@ export class OpenWranglerPanel {
       pending.offer ||
       this.sessionModeChangeTask ||
       !this.rendererSync.rendererReady ||
-      [...this.forwardedRequests.values()].some((generation) => generation !== undefined)
+      [...this.forwardedRequests.values()].some(({ generation }) => generation !== undefined)
     )
       return;
     const context = pending.context;
@@ -1616,7 +1663,7 @@ export class OpenWranglerPanel {
           this.currentRuntimeReplacement() !== pending ||
           pending.context !== context ||
           this.sessionModeChangeTask ||
-          [...this.forwardedRequests.values()].some((generation) => generation !== undefined)
+          [...this.forwardedRequests.values()].some(({ generation }) => generation !== undefined)
         )
           return;
         if (!read || !read.isCurrent()) return;
@@ -1640,7 +1687,7 @@ export class OpenWranglerPanel {
           this.currentRuntimeReplacement() !== pending ||
           pending.context !== context ||
           this.sessionModeChangeTask ||
-          [...this.forwardedRequests.values()].some((generation) => generation !== undefined)
+          [...this.forwardedRequests.values()].some(({ generation }) => generation !== undefined)
         )
           return;
         if (pending.error) {
@@ -1844,6 +1891,52 @@ export class OpenWranglerPanel {
 
   private scheduleRendererSynchronization(clearInspection: boolean): void {
     this.rendererSync.scheduleSynchronization(clearInspection);
+  }
+
+  private prepareSnapshot(): void | Promise<void> {
+    const sessionId = this.sessionId;
+    if (!sessionId || !this.snapshot) return;
+    const generation = this.rendererSync.rendererGeneration;
+    const offer = { viewContextId: `${SNAPSHOT_VIEW_CONTEXT_PREFIX}${createSecureNonce()}`, sent: false };
+    this.snapshotOffer = offer;
+    const settle = (): void | Promise<void> => {
+      if (
+        this.disposed ||
+        this.sessionId !== sessionId ||
+        generation !== this.rendererSync.rendererGeneration ||
+        this.snapshotOffer !== offer ||
+        this.currentRuntimeReplacement()
+      )
+        return;
+      const committed = this.bridge.getPagePublication?.(sessionId);
+      const requestId = committed?.viewRequestId;
+      const publication =
+        requestId === undefined
+          ? undefined
+          : [...this.forwardedRequests].find(
+              ([, owner]) => owner.page?.sessionId === sessionId && owner.page.requestId === requestId
+            )?.[0];
+      if (publication) return publication.then(settle, settle);
+      if (
+        committed &&
+        this.snapshot &&
+        (this.snapshot.page !== committed.page ||
+          this.snapshot.metadata.revision !== committed.revision ||
+          this.snapshot.metadata.filterModel !== committed.metadata.filterModel)
+      ) {
+        this.snapshot = {
+          ...this.snapshot,
+          metadata: withoutDatasetStats(committed.metadata),
+          page: committed.page,
+          summaries: []
+        };
+        this.sessionRevision = committed.revision;
+      }
+      this.latestPageViewRequestId = undefined;
+      this.snapshotViewContextId = undefined;
+      this.bridge.setViewContext?.(sessionId, undefined);
+    };
+    return settle();
   }
 
   private enqueueRendererSynchronization(clearInspection: boolean): Promise<void> {

@@ -41,6 +41,7 @@ import {
   persistenceUnavailableError,
   persistenceReadUnavailableError,
   protocolError,
+  publicMetadata,
   SessionResponseCommitter,
   stepInspectionKey
 } from "./sessionResponseCommitter";
@@ -166,6 +167,7 @@ export class SessionCoordinator implements vscode.Disposable {
       cancelViewRequests: (sessionId, viewRequestIds) => this.cancelViewRequests(sessionId, viewRequestIds),
       prioritizeViewRequest: (sessionId, viewRequestId) => this.prioritizeViewRequest(sessionId, viewRequestId),
       setViewContext: (sessionId, viewContextId) => this.setViewContext(sessionId, viewContextId),
+      getPagePublication: (sessionId) => this.pagePublication(sessionId),
       getViewState: (sessionId) => this.gridViewState(sessionId),
       getSessionPresentation: (sessionId) => this.sessionPresentation(sessionId),
       updateViewState: (sessionId, state) => this.updateGridViewState(sessionId, state),
@@ -305,6 +307,17 @@ export class SessionCoordinator implements vscode.Disposable {
 
   clearActiveStepInspection(): void {
     if (this.activeSessionId) this.clearStepInspection(this.activeSessionId);
+  }
+
+  private pagePublication(sessionId: string): PageResponse | undefined {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.closing || session.reconfiguring || !session.committedPage) return undefined;
+    return {
+      kind: "page",
+      ...session.committedPage,
+      revision: session.publicRevision,
+      metadata: publicMetadata(session.metadata, session.publicId, session.publicRevision, session.openRequest.source)
+    };
   }
 
   private gridViewState(sessionId: string): GridViewState | undefined {
@@ -1032,11 +1045,15 @@ export class SessionCoordinator implements vscode.Disposable {
     session.scheduler.prioritizeViewRequest(viewRequestId);
   }
 
-  private setViewContext(sessionId: string, viewContextId: string): void {
+  private setViewContext(sessionId: string, viewContextId: string | undefined): void {
     const session = this.sessions.get(sessionId);
     if (!session || session.closing || session.reconfiguring) return;
     session.activeViewContextId = viewContextId;
     session.latestRequestedViewContextId = viewContextId;
+    if (viewContextId === undefined) {
+      session.latestRequestedPageRequestId = undefined;
+      session.committedPage = undefined;
+    }
   }
 
   private async executeSessionRequest(

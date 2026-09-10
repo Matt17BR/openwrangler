@@ -1126,7 +1126,13 @@ describe("App draft state boundaries", () => {
       act(() => {
         window.dispatchEvent(
           new MessageEvent("message", {
-            data: { kind: "sessionOpened", metadata, page, summaries: [] },
+            data: {
+              kind: "sessionOpened",
+              metadata,
+              page,
+              summaries: [],
+              offeredViewContextId: "snapshot:atomic-draft"
+            },
             origin: window.location.origin
           })
         );
@@ -1265,7 +1271,17 @@ describe("App draft state boundaries", () => {
 });
 
 function dispatch(data: unknown): void {
-  act(() => window.dispatchEvent(new MessageEvent("message", { data, origin: window.location.origin })));
+  act(() =>
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data:
+          data && typeof data === "object" && "kind" in data && data.kind === "sessionOpened"
+            ? { ...data, offeredViewContextId: `snapshot:${crypto.randomUUID()}` }
+            : data,
+        origin: window.location.origin
+      })
+    )
+  );
 }
 
 function onlyPreviewRequest(): { step: TransformStep; replaceStepId?: string } {

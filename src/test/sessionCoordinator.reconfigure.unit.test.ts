@@ -60,6 +60,19 @@ describe("SessionCoordinator file-session reconfiguration", () => {
         });
         const bridge = coordinator.createBridge({ request });
         const opened = await open(bridge, source);
+        const retained = await bridge.request({
+          kind: "getPage",
+          sessionId: opened.metadata.sessionId,
+          revision: opened.metadata.revision,
+          viewRequestId: "original-page",
+          offset: 0,
+          limit: 1,
+          columnOffset: 0,
+          columnLimit: 1,
+          filterModel: opened.metadata.filterModel
+        });
+        if (retained.kind !== "page") throw new Error("Expected the original page.");
+        expect(bridge.getPagePublication?.(opened.metadata.sessionId)?.page).toBe(retained.page);
         const receiptA = coordinator.activeSession()?.sourceProtection;
         expect(receiptA?.available).toBe(true);
         await rename(sourcePath, originalA);
@@ -69,6 +82,8 @@ describe("SessionCoordinator file-session reconfiguration", () => {
           importOptions: replacementSource.importOptions
         });
         expect(replacement.kind).toBe(outcome === "publish" ? "sessionOpened" : "error");
+        if (outcome === "publish") expect(bridge.getPagePublication?.(opened.metadata.sessionId)).toBeUndefined();
+        else expect(bridge.getPagePublication?.(opened.metadata.sessionId)?.page).toBe(retained.page);
         const selected = coordinator.activeSession()?.sourceProtection;
         if (outcome === "publish") expect(selected).not.toBe(receiptA);
         else expect(selected).toBe(receiptA);

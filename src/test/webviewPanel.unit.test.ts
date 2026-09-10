@@ -6,6 +6,8 @@ import type { SessionRecoveryMessage } from "../shared/sessionRecovery";
 import type { GridViewState } from "../shared/viewState";
 import { CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY } from "../extension/files/confirmedFileConfigurations";
 import { DependencyGuardCommandError } from "../extension/dependencyGuardProtocol";
+import { SessionCoordinator } from "../extension/sessionCoordinator";
+import { SESSION_STORAGE_KEY } from "../extension/sessionPersistence";
 import { OpenWranglerPanel, restoreEditorGroupAfterQuickPick } from "../extension/webviewPanel";
 import type {
   ColumnSummary,
@@ -91,43 +93,218 @@ const panelPromptMocks = {
 };
 
 describe("OpenWranglerPanel retained view state", () => {
-  it.each(["before", "after"] as const)(
-    "retires an old-view page crossing a snapshot send and settling %s its new view receipt",
-    async (settlement) => {
-      let notify!: (replacement: SessionRuntimeReplacement) => void;
+  it.each([
+    "runtime",
+    "staged save",
+    "final save",
+    "final save with layout",
+    "final save with queued page",
+    "failed final save",
+    "failed final save with layout",
+    "failed final save with queued page",
+    "restarted final save",
+    "disposed final save"
+  ] as const)("captures a coherent page and filter across %s", async (phase) => {
+    const source = { kind: "file" as const, label: "sample.csv", path: "/workspace/sample.csv" };
+    const nativeMetadata = { ...metadata, source };
+    const changedPage: GridPage = {
+      ...page,
+      offset: 1,
+      limit: 1,
+      rows: [
+        {
+          ...page.rows[0],
+          id: "r:1",
+          rowNumber: 1,
+          values: [{ kind: "string", raw: "Paris", display: "Paris", isNull: false, isNaN: false }]
+        }
+      ]
+    };
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const preparing = deferred<void>();
+    const releaseQueuedPage = deferred<void>();
+    let holding = false;
+    let writes = 0;
+    const stored = new Map<string, unknown>([[SESSION_STORAGE_KEY, {}]]);
+    const state: vscode.Memento = {
+      get: <T>(key: string, fallback?: T): T => (stored.get(key) as T | undefined) ?? (fallback as T),
+      keys: () => [...stored.keys()],
+      update: async (key, value) => {
+        if (holding && ++writes === (phase === "staged save" ? 1 : 2)) {
+          entered.resolve();
+          await release.promise;
+          if (phase.startsWith("failed final save")) throw new Error("Final save unavailable");
+        }
+        stored.set(key, value);
+      }
+    };
+    const coordinator = new SessionCoordinator(state);
+    const bridge = coordinator.createBridge({
+      request: async (request) => {
+        if (request.kind === "openSession") return { ...openedResponse, metadata: nativeMetadata };
+        if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+        if (request.kind !== "getPage") throw new Error(`Unexpected ${request.kind}`);
+        if (request.viewRequestId === "queued-page") await releaseQueuedPage.promise;
+        if (phase === "runtime" && holding) {
+          entered.resolve();
+          await release.promise;
+        }
+        return {
+          kind: "page",
+          revision: request.revision,
+          viewRequestId: request.viewRequestId,
+          metadata: { ...nativeMetadata, filterModel: request.filterModel },
+          page: request.viewRequestId === "queued-page" ? page : changedPage
+        };
+      }
+    });
+    const readPublication = bridge.getPagePublication!;
+    bridge.getPagePublication = (sessionId) => {
+      const id = readPublication(sessionId);
+      if (holding) preparing.resolve();
+      return id;
+    };
+    const harness = createPanelHarness(bridge, {
+      delegateOpen: true,
+      source,
+      postMessage: async (message) => {
+        if (holding && isSessionOpenedResponse(message)) preparing.resolve();
+        return true;
+      }
+    });
+    let pending: Promise<void> | undefined;
+    let pull: Promise<void> | undefined;
+    let layout: Promise<void> | undefined;
+    let queuedPage: Promise<void> | undefined;
+    let restarted: Promise<void> | undefined;
+    try {
+      await harness.open();
+      await harness.receive({ kind: "ready" });
+      await acknowledgeLatestRendererSynchronization(harness);
+      const initial = [...harness.posted].reverse().find(isSessionOpenedResponse)!;
+      const sessionId = initial.metadata.sessionId;
+      const oldFilter = initial.metadata.filterModel;
+      const changedFilter = {
+        filters: [],
+        sort: [{ column: "city", direction: "desc" as const, nulls: "last" as const }]
+      };
+      const request = pageMessage("changing-filter", "filter-view");
+      request.request = { ...request.request, offset: 1, limit: 1, filterModel: changedFilter };
+      holding = true;
+      pending = harness.receive(request);
+      await entered.promise;
+      harness.posted.length = 0;
+      const nextLayout = {
+        columnWidths: new Map([["c:0", 240]]),
+        selectedColumnId: "c:0",
+        viewport: { firstVisibleRow: 1, scrollLeft: 30 }
+      };
+      if (phase.endsWith("with layout")) layout = bridge.updateViewState?.(sessionId, nextLayout);
+      if (phase.endsWith("with queued page")) queuedPage = harness.receive(pageMessage("queued-page", "queued-view"));
+      pull = harness.receive({ kind: "requestSessionSnapshot" });
+      await preparing.promise;
+      const committed = phase !== "runtime" && phase !== "staged save";
+      if (committed) {
+        expect(harness.posted.some(isSessionOpenedResponse)).toBe(false);
+        expect(coordinator.activeSession()?.metadata.filterModel).toEqual(changedFilter);
+        if (phase === "disposed final save") harness.dispose();
+        if (phase === "restarted final save") restarted = harness.receive({ kind: "ready" });
+      } else {
+        await pull;
+        expect([...harness.posted].reverse().find(isSessionOpenedResponse)?.page).toEqual(page);
+        expect(coordinator.activeSession()?.metadata.filterModel).toEqual(oldFilter);
+      }
+      release.resolve();
+      await pending;
+      await pull;
+      await restarted;
+      await layout;
+      if (phase === "disposed final save") {
+        expect(harness.posted.some(isSessionOpenedResponse)).toBe(false);
+        return;
+      }
+      const snapshot = [...harness.posted].reverse().find(isSessionOpenedResponse)!;
+      const succeeds = committed && phase !== "failed final save";
+      expect(snapshot.page).toEqual(succeeds ? changedPage : page);
+      expect(snapshot.metadata.filterModel).toEqual(succeeds ? changedFilter : oldFilter);
+      expect(coordinator.activeSession()?.metadata.filterModel).toEqual(snapshot.metadata.filterModel);
+      if (phase.endsWith("with layout")) expect(bridge.getViewState?.(sessionId)).toEqual(nextLayout);
+      if (phase.startsWith("failed final save")) {
+        expect(harness.posted).toContainEqual(
+          expect.objectContaining({
+            kind: "error",
+            code: "persistence_unavailable",
+            viewRequestId: "changing-filter"
+          })
+        );
+        expect(panelPromptMocks.showWarningMessage).toHaveBeenCalledWith(
+          "Open Wrangler could not save workspace recovery state. The current session remains open, but recent changes may not survive an editor restart."
+        );
+      }
+      if (!committed)
+        expect(harness.posted).toContainEqual(
+          expect.objectContaining({
+            kind: "error",
+            code: "stale_response",
+            viewRequestId: "changing-filter"
+          })
+        );
+      await confirmLatestSnapshot(harness);
+      releaseQueuedPage.resolve();
+      await queuedPage;
+      if (queuedPage)
+        expect(harness.posted).toContainEqual(
+          expect.objectContaining({
+            kind: "error",
+            code: "stale_response",
+            viewRequestId: "queued-page"
+          })
+        );
+    } finally {
+      holding = false;
+      release.resolve();
+      releaseQueuedPage.resolve();
+      await queuedPage;
+      await pending;
+      await pull;
+      await restarted;
+      await layout;
+      harness.dispose();
+      await coordinator.shutdown();
+    }
+  });
+
+  it.each(["snapshot:older", "older-filter"])(
+    "rejects a queued %s receipt and its page until the offered snapshot is accepted",
+    async (oldView) => {
+      const originalPage = {
+        ...page,
+        rows: [
+          ...page.rows,
+          {
+            id: "r:1",
+            rowNumber: 1,
+            values: [{ kind: "string" as const, raw: "Paris", display: "Paris", isNull: false, isNaN: false }]
+          }
+        ]
+      };
+      const oldPage = { ...originalPage, offset: 1, limit: 1, rows: [originalPage.rows[1]!] };
       let holdSnapshot = false;
-      const snapshotStarted = deferred<void>();
-      const releaseSnapshot = deferred<void>();
-      const releasePage = deferred<void>();
+      const started = deferred<void>();
+      const release = deferred<void>();
       const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
         if (candidate.kind !== "getPage") throw new Error(`Unexpected ${candidate.kind}`);
-        await releasePage.promise;
-        return { kind: "page", revision: 0, metadata, page, viewRequestId: candidate.viewRequestId };
+        return { kind: "page", revision: 0, metadata, page: oldPage, viewRequestId: candidate.viewRequestId };
       });
-      const replacement: SessionRuntimeReplacement = {
-        sessionId: metadata.sessionId,
-        isCurrent: () => true,
-        captureView: () => () => true,
-        readPage: vi.fn(async () => ({
-          response: { kind: "page" as const, revision: 0, metadata, page, viewRequestId: "internal-read" },
-          isCurrent: () => true
-        }))
-      };
       const harness = createPanelHarness(
+        { request },
         {
-          request,
-          onDidReplaceRuntime: (listener) => {
-            notify = listener;
-            return { dispose() {} };
-          },
-          getSessionPresentation: () => ({ sessionId: metadata.sessionId, revision: 0, code: "clean_df = df" }),
-          getViewState: () => ({ columnWidths: new Map(), viewport: { firstVisibleRow: 0, scrollLeft: 0 } })
-        },
-        {
+          openResponse: { ...openedResponse, page: originalPage },
           postMessage: async (message) => {
             if (holdSnapshot && (message as { kind?: string }).kind === "sessionOpened") {
-              snapshotStarted.resolve();
-              await releaseSnapshot.promise;
+              started.resolve();
+              await release.promise;
             }
             return true;
           }
@@ -136,113 +313,132 @@ describe("OpenWranglerPanel retained view state", () => {
       await harness.open();
       await harness.receive({ kind: "ready" });
       await acknowledgeLatestRendererSynchronization(harness);
-      await harness.receive({ kind: "setViewContext", lastPageRequestId: null, viewContextId: "old-view" });
       holdSnapshot = true;
       const pull = harness.receive({ kind: "requestSessionSnapshot" });
-      let crossingPage: Promise<void> | undefined;
       try {
-        await snapshotStarted.promise;
-        crossingPage = harness.receive(pageMessage("old-projection", "old-view"));
-        if (settlement === "before") {
-          releasePage.resolve();
-          await crossingPage;
-        }
-        // The rendered snapshot clears its old page owner and confirms a new view.
-        await harness.receive({ kind: "setViewContext", lastPageRequestId: null, viewContextId: "snapshot-view" });
+        await started.promise;
+        await harness.receive({ kind: "setViewContext", viewContextId: oldView });
+        const oldRequest = pageMessage("old-projection", oldView);
+        oldRequest.request.offset = 1;
+        oldRequest.request.limit = 1;
+        await harness.receive(oldRequest);
+        expect(request).not.toHaveBeenCalled();
+        expect(harness.posted.at(-1)).toMatchObject({
+          kind: "error",
+          code: "stale_response",
+          viewRequestId: "old-projection"
+        });
+        await confirmLatestSnapshot(harness);
       } finally {
-        releasePage.resolve();
-        await crossingPage;
         holdSnapshot = false;
-        releaseSnapshot.resolve();
+        release.resolve();
         await pull;
       }
       await acknowledgeLatestRendererSynchronization(harness);
-      expect(request).toHaveBeenCalledTimes(1);
-      notify(replacement);
-      await vi.waitFor(() =>
-        expect(harness.posted.some((message) => (message as { kind?: string }).kind === "sessionRecovered")).toBe(true)
-      );
-      const offer = harness.posted.find(
-        (message) => (message as { kind?: string }).kind === "sessionRecovered"
-      ) as SessionRecoveryMessage;
-      expect(offer.context).toMatchObject({
-        viewContextId: "snapshot-view",
-        lastPageRequestId: null,
-        request: null
-      });
+      await harness.receive({ kind: "requestSessionSnapshot" });
+      const restored = [...harness.posted].reverse().find(isSessionOpenedResponse)!;
+      expect(restored.page).toEqual(originalPage);
+      const viewContextId = await confirmLatestSnapshot(harness);
+      const freshRequest = pageMessage("fresh-projection", viewContextId);
+      freshRequest.request.offset = 1;
+      freshRequest.request.limit = 1;
+      await harness.receive(freshRequest);
+      expect(request).toHaveBeenCalledOnce();
+      await harness.receive({ kind: "requestSessionSnapshot" });
+      expect([...harness.posted].reverse().find(isSessionOpenedResponse)?.page).toEqual(oldPage);
     }
   );
 
-  it.each(["sessionOpened", "sessionPresentation"])(
-    "retains a page issued after the snapshot while %s is still publishing",
-    async (phase) => {
-      let notify!: (replacement: SessionRuntimeReplacement) => void;
-      let holdPresentation = false;
-      const presentationStarted = deferred<void>();
-      const releasePresentation = deferred<void>();
-      const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
-        if (candidate.kind !== "getPage") throw new Error(`Unexpected ${candidate.kind}`);
-        return { kind: "page", revision: 0, metadata, page, viewRequestId: candidate.viewRequestId };
-      });
-      const replacement: SessionRuntimeReplacement = {
-        sessionId: metadata.sessionId,
-        isCurrent: () => true,
-        captureView: () => () => true,
-        readPage: vi.fn(async () => ({
-          response: { kind: "page" as const, revision: 0, metadata, page, viewRequestId: "internal-read" },
-          isCurrent: () => true
-        }))
+  it.each([
+    ["sessionOpened", "projection"],
+    ["sessionPresentation", "projection"],
+    ["sessionOpened", "filter"],
+    ["sessionPresentation", "filter"]
+  ] as const)("retains a %s publication's fresh %s page after snapshot confirmation", async (phase, query) => {
+    let notify!: (replacement: SessionRuntimeReplacement) => void;
+    let holdPresentation = false;
+    const presentationStarted = deferred<void>();
+    const releasePresentation = deferred<void>();
+    const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (candidate.kind !== "getPage") throw new Error(`Unexpected ${candidate.kind}`);
+      return {
+        kind: "page",
+        revision: 0,
+        metadata: { ...metadata, filterModel: candidate.filterModel },
+        page,
+        viewRequestId: candidate.viewRequestId
       };
-      const harness = createPanelHarness(
-        {
-          request,
-          onDidReplaceRuntime: (listener) => {
-            notify = listener;
-            return { dispose() {} };
-          },
-          getSessionPresentation: () => ({ sessionId: metadata.sessionId, revision: 0, code: "clean_df = df" }),
-          getViewState: () => ({ columnWidths: new Map(), viewport: { firstVisibleRow: 0, scrollLeft: 0 } })
+    });
+    const replacement: SessionRuntimeReplacement = {
+      sessionId: metadata.sessionId,
+      isCurrent: () => true,
+      captureView: () => () => true,
+      readPage: vi.fn(async () => ({
+        response: { kind: "page" as const, revision: 0, metadata, page, viewRequestId: "internal-read" },
+        isCurrent: () => true
+      }))
+    };
+    const harness = createPanelHarness(
+      {
+        request,
+        onDidReplaceRuntime: (listener) => {
+          notify = listener;
+          return { dispose() {} };
         },
-        {
-          postMessage: async (message) => {
-            if (holdPresentation && (message as { kind?: string }).kind === phase) {
-              presentationStarted.resolve();
-              await releasePresentation.promise;
-            }
-            return true;
+        getSessionPresentation: () => ({ sessionId: metadata.sessionId, revision: 0, code: "clean_df = df" }),
+        getViewState: () => ({ columnWidths: new Map(), viewport: { firstVisibleRow: 0, scrollLeft: 0 } })
+      },
+      {
+        postMessage: async (message) => {
+          if (holdPresentation && (message as { kind?: string }).kind === phase) {
+            presentationStarted.resolve();
+            await releasePresentation.promise;
           }
+          return true;
         }
-      );
-      await harness.open();
-      await harness.receive({ kind: "ready" });
-      await acknowledgeLatestRendererSynchronization(harness);
-      holdPresentation = true;
-      const pull = harness.receive({ kind: "requestSessionSnapshot" });
-      try {
-        await presentationStarted.promise;
-        await harness.receive({ kind: "setViewContext", lastPageRequestId: null, viewContextId: "snapshot-view" });
-        await harness.receive(pageMessage("restored-projection", "snapshot-view"));
-        expect(request).toHaveBeenCalledTimes(1);
-      } finally {
-        holdPresentation = false;
-        releasePresentation.resolve();
-        await pull;
       }
-      await acknowledgeLatestRendererSynchronization(harness);
-      notify(replacement);
-      await vi.waitFor(() =>
-        expect(harness.posted.some((message) => (message as { kind?: string }).kind === "sessionRecovered")).toBe(true)
-      );
-      const offer = harness.posted.find(
-        (message) => (message as { kind?: string }).kind === "sessionRecovered"
-      ) as SessionRecoveryMessage;
-      expect(offer.context).toMatchObject({
-        viewContextId: "snapshot-view",
-        lastPageRequestId: "restored-projection",
-        request: null
+    );
+    await harness.open();
+    await harness.receive({ kind: "ready" });
+    await acknowledgeLatestRendererSynchronization(harness);
+    holdPresentation = true;
+    const pull = harness.receive({ kind: "requestSessionSnapshot" });
+    let confirmedViewContextId: string | undefined;
+    try {
+      await presentationStarted.promise;
+      const viewContextId = await confirmLatestSnapshot(harness);
+      confirmedViewContextId = query === "filter" ? "fresh-filter-view" : viewContextId;
+      const freshPage = pageMessage("restored-projection", confirmedViewContextId);
+      if (query === "filter")
+        freshPage.request.filterModel = {
+          filters: [],
+          sort: [{ column: "city", direction: "desc", nulls: "last" }]
+        };
+      await harness.receive(freshPage);
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(harness.posted.at(-1)).toMatchObject({
+        kind: "page",
+        metadata: { filterModel: freshPage.request.filterModel }
       });
+    } finally {
+      holdPresentation = false;
+      releasePresentation.resolve();
+      await pull;
     }
-  );
+    await acknowledgeLatestRendererSynchronization(harness);
+    notify(replacement);
+    await vi.waitFor(() =>
+      expect(harness.posted.some((message) => (message as { kind?: string }).kind === "sessionRecovered")).toBe(true)
+    );
+    const offer = harness.posted.find(
+      (message) => (message as { kind?: string }).kind === "sessionRecovered"
+    ) as SessionRecoveryMessage;
+    expect(offer.context).toMatchObject({
+      viewContextId: confirmedViewContextId,
+      lastPageRequestId: "restored-projection",
+      request: null
+    });
+  });
 
   it.each([false, true])(
     "persists the accepted recovery viewport before its marker (old full publication: %s)",
@@ -314,16 +510,17 @@ describe("OpenWranglerPanel retained view state", () => {
       await harness.open();
       await harness.receive({ kind: "ready" });
       await acknowledgeLatestRendererSynchronization(harness);
-      await harness.receive({ kind: "setViewContext", lastPageRequestId: null, viewContextId: "original-view" });
+      await harness.receive({ kind: "setViewContext", viewContextId: "original-view" });
       let oldPull: Promise<void> | undefined;
+      let viewContextId = "original-view";
       if (oldPublication) {
         holdPresentation = true;
         oldPull = harness.receive({ kind: "requestSessionSnapshot" });
         await presentationStarted.promise;
-        await harness.receive({ kind: "setViewContext", lastPageRequestId: null, viewContextId: "original-view" });
+        viewContextId = await confirmLatestSnapshot(harness);
       }
       harness.posted.length = 0;
-      const next = pageMessage("next-page", "original-view");
+      const next = pageMessage("next-page", viewContextId);
       next.request.offset = 200;
       await harness.receive(next);
       const offer = harness.posted[0] as SessionRecoveryMessage;
@@ -331,13 +528,11 @@ describe("OpenWranglerPanel retained view state", () => {
       const receiptState = { columnWidths: [], viewport: { firstVisibleRow: 200, scrollLeft: 0 } };
       await harness.receive({
         kind: "setViewContext",
-        lastPageRequestId: "next-page",
         viewContextId: "recovery:old",
         state: receiptState
       });
       await harness.receive({
         kind: "setViewContext",
-        lastPageRequestId: "next-page",
         viewContextId: offer.offeredViewContextId,
         state: { ...receiptState, viewport: { firstVisibleRow: -1, scrollLeft: 0 } }
       });
@@ -345,7 +540,6 @@ describe("OpenWranglerPanel retained view state", () => {
       holdMarker = true;
       await harness.receive({
         kind: "setViewContext",
-        lastPageRequestId: "next-page",
         viewContextId: offer.offeredViewContextId,
         state: receiptState
       });
@@ -360,7 +554,6 @@ describe("OpenWranglerPanel retained view state", () => {
       expect(updateViewState).toHaveBeenCalledTimes(2);
       await harness.receive({
         kind: "setViewContext",
-        lastPageRequestId: "next-page",
         viewContextId: offer.offeredViewContextId,
         state: receiptState
       });
@@ -422,19 +615,17 @@ describe("OpenWranglerPanel retained view state", () => {
       await harness.open();
       await harness.receive({ kind: "ready" });
       await acknowledgeLatestRendererSynchronization(harness);
-      await harness.receive({ kind: "setViewContext", lastPageRequestId: null, viewContextId: "original-view" });
+      await harness.receive({ kind: "setViewContext", viewContextId: "original-view" });
       await harness.receive(pageMessage("previous-next", "original-view"));
       holdSnapshot = true;
       const pull = harness.receive({ kind: "requestSessionSnapshot" });
       await postedSnapshot.promise;
       notify(replacement);
       // The already-posted ordinary snapshot clears the App's page owner and confirms a new view.
-      if (receipt === "before")
-        await harness.receive({ kind: "setViewContext", lastPageRequestId: null, viewContextId: "snapshot-view" });
+      if (receipt === "before") await confirmLatestSnapshot(harness);
       releaseSnapshot.resolve();
       await pull;
-      if (receipt === "after")
-        await harness.receive({ kind: "setViewContext", lastPageRequestId: null, viewContextId: "snapshot-view" });
+      if (receipt === "after") await confirmLatestSnapshot(harness);
       releaseRead.resolve({
         response: { kind: "page", revision: 0, metadata, page, viewRequestId: "internal-read" },
         isCurrent: () => true
@@ -445,7 +636,11 @@ describe("OpenWranglerPanel retained view state", () => {
       const offer = harness.posted.find(
         (message) => (message as { kind?: string }).kind === "sessionRecovered"
       ) as SessionRecoveryMessage;
-      expect(offer.context).toMatchObject({ viewContextId: "snapshot-view", lastPageRequestId: null, request: null });
+      expect(offer.context).toMatchObject({
+        viewContextId: expect.stringMatching(/^snapshot:/u),
+        lastPageRequestId: null,
+        request: null
+      });
     }
   );
 
@@ -496,7 +691,7 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.open();
     await harness.receive({ kind: "ready" });
     await acknowledgeLatestRendererSynchronization(harness);
-    await harness.receive({ kind: "setViewContext", lastPageRequestId: null, viewContextId: "original-view" });
+    await harness.receive({ kind: "setViewContext", viewContextId: "original-view" });
     const mutation = harness.receive({
       kind: "runtimeRequest",
       request: {
@@ -516,10 +711,11 @@ describe("OpenWranglerPanel retained view state", () => {
     releaseSnapshot.resolve();
     await pull;
     if (newPage) {
+      await confirmLatestSnapshot(harness);
       await harness.receive(pageMessage("new-generation-page", "new-view"));
       // A delayed ordinary snapshot receipt cannot replace the newer foreground outcome.
-      await harness.receive({ kind: "setViewContext", lastPageRequestId: null, viewContextId: "snapshot-view" });
-    } else await harness.receive({ kind: "setViewContext", lastPageRequestId: null, viewContextId: "snapshot-view" });
+      await confirmLatestSnapshot(harness);
+    } else await confirmLatestSnapshot(harness);
     releaseMutation.resolve({
       kind: "error",
       code: "r_kernel_changed",
@@ -541,7 +737,7 @@ describe("OpenWranglerPanel retained view state", () => {
             lastPageRequestId: "new-generation-page",
             request: { kind: "getPage", viewRequestId: "new-generation-page" }
           }
-        : { viewContextId: "snapshot-view", lastPageRequestId: null, request: null }
+        : { viewContextId: expect.stringMatching(/^snapshot:/u), lastPageRequestId: null, request: null }
     );
     expect(offers[0].result?.kind).toBe(newPage ? "page" : undefined);
     expect(replacement.readPage).toHaveBeenCalledTimes(newPage ? 0 : 1);
@@ -626,7 +822,7 @@ describe("OpenWranglerPanel retained view state", () => {
     });
     await previewPosted.promise;
     // The App received the preview and can issue a new page before postMessage settles.
-    await harness.receive({ kind: "setViewContext", lastPageRequestId: null, viewContextId: "preview-view" });
+    await harness.receive({ kind: "setViewContext", viewContextId: "preview-view" });
     await harness.receive(pageMessage("new-page", "preview-view"));
     const offer = harness.posted.find(
       (message) => (message as { kind?: string }).kind === "sessionRecovered"
@@ -634,7 +830,6 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(offer.result).toMatchObject({ kind: "page", revision: 1, viewRequestId: "new-page" });
     await harness.receive({
       kind: "setViewContext",
-      lastPageRequestId: "new-page",
       viewContextId: offer.offeredViewContextId
     });
     await acknowledgeLatestRendererSynchronization(harness);
@@ -717,10 +912,11 @@ describe("OpenWranglerPanel retained view state", () => {
           }
         }
       );
-      await vi.waitFor(() => expect(harness.posted).toContainEqual(viewing));
+      await vi.waitFor(() => expect(harness.posted).toContainEqual(hostSnapshot(viewing)));
       await harness.receive({ kind: "ready" });
       await acknowledgeLatestRendererSynchronization(harness);
-      await harness.receive({ kind: "setViewContext", lastPageRequestId: null, viewContextId: "confirmed" });
+      await harness.receive({ kind: "setViewContext", viewContextId: "confirmed" });
+      setViewContext.mockClear();
       harness.posted.length = 0;
       notify(replacement);
       await vi.waitFor(() => expect(readPage).toHaveBeenCalledOnce());
@@ -742,7 +938,6 @@ describe("OpenWranglerPanel retained view state", () => {
       if (firstOffer)
         await harness.receive({
           kind: "setViewContext",
-          lastPageRequestId: null,
           viewContextId: firstOffer.offeredViewContextId
         });
       else {
@@ -750,7 +945,7 @@ describe("OpenWranglerPanel retained view state", () => {
         await firstRead.promise;
         await Promise.resolve();
       }
-      expect(setViewContext).toHaveBeenCalledTimes(1);
+      expect(setViewContext).not.toHaveBeenCalled();
       expect(
         harness.posted.filter((message) => (message as { kind?: string }).kind === "sessionRecovered")
       ).toHaveLength(firstOffer ? 1 : 0);
@@ -769,14 +964,14 @@ describe("OpenWranglerPanel retained view state", () => {
       modeResult.resolve(outcome);
       await change;
       expect(harness.posted).toContainEqual({ kind: "sessionModeChangeState", busy: false, mode: "editing" });
-      expect(harness.posted).toContainEqual(outcome);
+      expect(harness.posted).toContainEqual(outcome.kind === "sessionOpened" ? hostSnapshot(outcome) : outcome);
       if (phase === "successful mode") {
+        setViewContext.mockClear();
         await harness.receive({
           kind: "setViewContext",
-          lastPageRequestId: null,
           viewContextId: firstOffer!.offeredViewContextId
         });
-        expect(setViewContext).toHaveBeenCalledTimes(1);
+        expect(setViewContext).not.toHaveBeenCalled();
         expect(readPage).toHaveBeenCalledOnce();
       } else {
         await vi.waitFor(() =>
@@ -791,7 +986,6 @@ describe("OpenWranglerPanel retained view state", () => {
         expect(readPage).toHaveBeenCalledTimes(phase === "reading" ? 2 : 1);
         await harness.receive({
           kind: "setViewContext",
-          lastPageRequestId: null,
           viewContextId: offer.offeredViewContextId
         });
         expect(setViewContext).toHaveBeenLastCalledWith(metadata.sessionId, offer.offeredViewContextId);
@@ -905,7 +1099,8 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.open();
     await harness.receive({ kind: "ready" });
     await acknowledgeLatestRendererSynchronization(harness);
-    await harness.receive({ kind: "setViewContext", lastPageRequestId: null, viewContextId: "original-view" });
+    await harness.receive({ kind: "setViewContext", viewContextId: "original-view" });
+    setViewContext.mockClear();
     harness.posted.length = 0;
     notify(replacement);
     await Promise.resolve();
@@ -939,7 +1134,6 @@ describe("OpenWranglerPanel retained view state", () => {
       });
       await harness.receive({
         kind: "setViewContext",
-        lastPageRequestId: "winning-page",
         viewContextId: offer.offeredViewContextId
       });
       expect(setViewContext).toHaveBeenLastCalledWith(metadata.sessionId, offer.offeredViewContextId);
@@ -984,7 +1178,8 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.open();
     await harness.receive({ kind: "ready" });
     await acknowledgeLatestRendererSynchronization(harness);
-    await harness.receive({ kind: "setViewContext", lastPageRequestId: null, viewContextId: "original-view" });
+    await harness.receive({ kind: "setViewContext", viewContextId: "original-view" });
+    setViewContext.mockClear();
     harness.posted.length = 0;
     await harness.receive(pageMessage("first-page", "original-view"));
     const firstOffer = harness.posted[0] as SessionRecoveryMessage;
@@ -997,22 +1192,19 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(secondOffer.context.lastPageRequestId).toBe("newer-page");
     await harness.receive({
       kind: "setViewContext",
-      lastPageRequestId: "first-page",
       viewContextId: firstOffer.offeredViewContextId
     });
-    expect(setViewContext).toHaveBeenCalledTimes(1);
+    expect(setViewContext).not.toHaveBeenCalled();
     await harness.receive({
       kind: "setViewContext",
-      lastPageRequestId: "newer-page",
       viewContextId: secondOffer.offeredViewContextId
     });
     expect(setViewContext).toHaveBeenLastCalledWith(metadata.sessionId, secondOffer.offeredViewContextId);
     await harness.receive({
       kind: "setViewContext",
-      lastPageRequestId: "first-page",
       viewContextId: firstOffer.offeredViewContextId
     });
-    expect(setViewContext).toHaveBeenCalledTimes(2);
+    expect(setViewContext).toHaveBeenCalledTimes(1);
     expect(replacement.readPage).not.toHaveBeenCalled();
   });
 
@@ -1077,7 +1269,8 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.open();
     await harness.receive({ kind: "ready" });
     await acknowledgeLatestRendererSynchronization(harness);
-    await harness.receive({ kind: "setViewContext", lastPageRequestId: null, viewContextId: "original-view" });
+    await harness.receive({ kind: "setViewContext", viewContextId: "original-view" });
+    setViewContext.mockClear();
     harness.posted.length = 0;
     await harness.receive({
       kind: "runtimeRequest",
@@ -1106,11 +1299,10 @@ describe("OpenWranglerPanel retained view state", () => {
       state: { columnWidths: [], viewport: { firstVisibleRow: 1, scrollLeft: 0 } }
     });
     expect(harness.posted).toHaveLength(1);
-    await harness.receive({ kind: "setViewContext", lastPageRequestId: null, viewContextId: "recovery:never-offered" });
-    expect(setViewContext).toHaveBeenCalledTimes(1);
+    await harness.receive({ kind: "setViewContext", viewContextId: "recovery:never-offered" });
+    expect(setViewContext).not.toHaveBeenCalled();
     await harness.receive({
       kind: "setViewContext",
-      lastPageRequestId: null,
       viewContextId: offer.offeredViewContextId
     });
     expect(setViewContext).toHaveBeenLastCalledWith(metadata.sessionId, offer.offeredViewContextId);
@@ -1124,16 +1316,14 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(request.mock.calls.at(-1)?.[0]).toMatchObject({ kind: "getPage", revision: 1 });
     await harness.receive({
       kind: "setViewContext",
-      lastPageRequestId: "after-recovery",
       viewContextId: offer.offeredViewContextId
     });
-    expect(setViewContext).toHaveBeenCalledTimes(3);
+    expect(setViewContext).toHaveBeenCalledTimes(2);
     await harness.receive({
       kind: "setViewContext",
-      lastPageRequestId: "after-recovery",
       viewContextId: "recovery:retired-other-offer"
     });
-    expect(setViewContext).toHaveBeenCalledTimes(3);
+    expect(setViewContext).toHaveBeenCalledTimes(2);
   });
 
   it.each(["requestSessionSnapshot", "ready", "retire-then-ready"] as const)(
@@ -1179,7 +1369,7 @@ describe("OpenWranglerPanel retained view state", () => {
       await harness.receive({ kind: "ready" });
       await acknowledgeLatestRendererSynchronization(harness);
       const synchronization = latestRendererSynchronization(harness.posted);
-      await harness.receive({ kind: "setViewContext", lastPageRequestId: null, viewContextId: "original-view" });
+      await harness.receive({ kind: "setViewContext", viewContextId: "original-view" });
       harness.posted.length = 0;
       const failed = harness.receive(
         signal === "retire-then-ready"
@@ -2545,12 +2735,15 @@ describe("OpenWranglerPanel retained view state", () => {
       await firstReady;
 
       expect(harness.htmlAssignmentCount).toBe(2);
-      expect(harness.posted.filter(isSessionOpenedResponse)).toEqual([openedResponse]);
+      expect(harness.posted.filter(isSessionOpenedResponse)).toEqual([hostSnapshot(openedResponse)]);
       expect(OpenWranglerPanel.panelSynchronizableForSession(openedResponse.metadata.sessionId)).toBe(false);
 
       await harness.receive({ kind: "ready" });
       await acknowledgeLatestRendererSynchronization(harness);
-      expect(harness.posted.filter(isSessionOpenedResponse)).toEqual([openedResponse, openedResponse]);
+      expect(harness.posted.filter(isSessionOpenedResponse)).toEqual([
+        hostSnapshot(openedResponse),
+        hostSnapshot(openedResponse)
+      ]);
       expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
     } finally {
       initialPublication.resolve();
@@ -3240,7 +3433,7 @@ describe("OpenWranglerPanel retained view state", () => {
       harness.posted.length = 0;
       await harness.receive({ kind });
       const retained = harness.posted.find(isSessionOpenedResponse);
-      expect(retained).toEqual({ ...initial, metadata: { ...initial.metadata, canRedo } });
+      expect(retained).toEqual(hostSnapshot({ ...initial, metadata: { ...initial.metadata, canRedo } }));
       expect(latestRendererSynchronization(harness.posted)).toMatchObject({
         sessionId: metadata.sessionId,
         revision: metadata.revision
@@ -3394,6 +3587,7 @@ describe("OpenWranglerPanel retained view state", () => {
     });
     const harness = createPanelHarness({ request }, { openResponse: openedResponse });
     await harness.open();
+    await confirmLatestSnapshot(harness);
 
     const pendingPage = harness.receive(pageMessage("pre-draft-page", "pre-draft-view"));
     await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
@@ -3451,7 +3645,7 @@ describe("OpenWranglerPanel retained view state", () => {
 
     await harness.receive({ kind: "requestSessionSnapshot" });
 
-    expect(harness.posted.slice(0, 2)).toEqual([opened, { kind: "importOptionsState", busy: false }]);
+    expect(harness.posted.slice(0, 2)).toEqual([hostSnapshot(opened), { kind: "importOptionsState", busy: false }]);
     expect(latestRendererSynchronization(harness.posted)).toMatchObject({
       sessionId: opened.metadata.sessionId,
       revision: opened.metadata.revision
@@ -3742,7 +3936,7 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(reconfigureFileSession.mock.calls[0]?.[2].importOptions).toEqual(configured.metadata.source.importOptions);
     expect(harness.posted).toEqual([
       { kind: "importOptionsState", busy: true },
-      configured,
+      hostSnapshot(configured),
       { kind: "importOptionsState", busy: false }
     ]);
     expect(harness.posted).not.toContainEqual({ kind: "requestImportOptionsChange" });
@@ -3750,7 +3944,10 @@ describe("OpenWranglerPanel retained view state", () => {
     harness.posted.length = 0;
     await harness.receive({ kind: "ready" });
 
-    expect(harness.posted.slice(0, 2)).toEqual([{ kind: "stepInspectionCleared", resumeProfiling: false }, configured]);
+    expect(harness.posted.slice(0, 2)).toEqual([
+      { kind: "stepInspectionCleared", resumeProfiling: false },
+      hostSnapshot(configured)
+    ]);
     expect(harness.posted).toContainEqual({ kind: "importOptionsState", busy: false });
     expect(latestRendererSynchronization(harness.posted)).toMatchObject({
       sessionId: configured.metadata.sessionId,
@@ -3803,7 +4000,7 @@ describe("OpenWranglerPanel retained view state", () => {
 
     expect(harness.posted.slice(0, 3)).toEqual([
       { kind: "stepInspectionCleared", resumeProfiling: false },
-      opened,
+      hostSnapshot(opened),
       failure
     ]);
     expect(harness.posted).toContainEqual({ kind: "importOptionsState", busy: false });
@@ -3899,7 +4096,7 @@ describe("OpenWranglerPanel retained view state", () => {
     const prioritizeViewRequest = vi.fn();
     const harness = createPanelHarness({ request, prioritizeViewRequest });
     await harness.open();
-    await harness.send({ kind: "setViewContext", lastPageRequestId: null, viewContextId: "priority-view" });
+    await harness.send({ kind: "setViewContext", viewContextId: "priority-view" });
 
     await harness.send({ kind: "prioritizeViewRequest", viewRequestId: "selected-summary" });
     expect(prioritizeViewRequest).toHaveBeenCalledWith("session", "selected-summary");
@@ -3968,7 +4165,8 @@ describe("OpenWranglerPanel retained view state", () => {
     const harness = createPanelHarness(bridge);
     await harness.open();
 
-    await harness.send({ kind: "setViewContext", lastPageRequestId: null, viewContextId: "view-a" });
+    await confirmLatestSnapshot(harness);
+    await harness.send({ kind: "setViewContext", viewContextId: "view-a" });
     const stale = harness.send({
       kind: "runtimeRequest",
       viewContextId: "view-a",
@@ -3990,9 +4188,9 @@ describe("OpenWranglerPanel retained view state", () => {
     });
 
     await harness.send(pageMessage("page-b", "view-b"));
-    await harness.send({ kind: "setViewContext", lastPageRequestId: "page-b", viewContextId: "view-b" });
+    await harness.send({ kind: "setViewContext", viewContextId: "view-b" });
     await harness.send(pageMessage("page-a-again", "view-a-again"));
-    await harness.send({ kind: "setViewContext", lastPageRequestId: "page-a-again", viewContextId: "view-a-again" });
+    await harness.send({ kind: "setViewContext", viewContextId: "view-a-again" });
     resolveStaleSummary?.({
       kind: "summary",
       revision: metadata.revision,
@@ -4015,7 +4213,8 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(retained.kind).toBe("sessionOpened");
     expect(retained.summaries).toEqual([]);
     expect(retained.metadata.stats).toBeUndefined();
-    expect(bridge.setViewContext).toHaveBeenLastCalledWith("session", "view-a-again");
+    expect(bridge.setViewContext).toHaveBeenCalledWith("session", "view-a-again");
+    expect(bridge.setViewContext).toHaveBeenLastCalledWith("session", undefined);
   });
 
   it("retains profiles only while subsequent pages stay in the same opaque view", async () => {
@@ -4051,7 +4250,8 @@ describe("OpenWranglerPanel retained view state", () => {
     };
     const harness = createPanelHarness(bridge);
     await harness.open();
-    await harness.send({ kind: "setViewContext", lastPageRequestId: null, viewContextId: "current-view" });
+    await confirmLatestSnapshot(harness);
+    await harness.send({ kind: "setViewContext", viewContextId: "current-view" });
     await harness.send({
       kind: "runtimeRequest",
       viewContextId: "current-view",
@@ -4138,7 +4338,8 @@ describe("OpenWranglerPanel retained view state", () => {
       openResponse: { kind: "sessionOpened", metadata: duplicateMetadata, page: duplicatePage, summaries: [] }
     });
     await harness.open();
-    await harness.send({ kind: "setViewContext", lastPageRequestId: null, viewContextId: "duplicate-view" });
+    await confirmLatestSnapshot(harness);
+    await harness.send({ kind: "setViewContext", viewContextId: "duplicate-view" });
     for (const columnId of ["c:right", "c:left"]) {
       await harness.send({
         kind: "runtimeRequest",
@@ -4282,6 +4483,7 @@ describe("OpenWranglerPanel retained view state", () => {
       { source, openResponse: initial }
     );
     await harness.open();
+    await confirmLatestSnapshot(harness);
     harness.posted.length = 0;
     configureDelimitedPrompts({
       delimiter: ";",
@@ -4350,7 +4552,7 @@ describe("OpenWranglerPanel retained view state", () => {
     harness.posted.length = 0;
     await harness.receive({ kind: "ready" });
 
-    expect(harness.posted).toContainEqual(initial);
+    expect(harness.posted).toContainEqual(hostSnapshot(initial));
     expect(harness.posted).toContainEqual({ kind: "importOptionsState", busy: true });
     expect(latestRendererSynchronization(harness.posted)).toMatchObject({
       sessionId: initial.metadata.sessionId,
@@ -4487,7 +4689,7 @@ describe("OpenWranglerPanel retained view state", () => {
 
     expect(firstBridge.clearStepInspection).toHaveBeenCalledWith("session");
     expect(first.posted[0]).toEqual({ kind: "stepInspectionCleared", resumeProfiling: false });
-    expect(first.posted).toContainEqual(openedResponse);
+    expect(first.posted).toContainEqual(hostSnapshot(openedResponse));
   });
 
   it.each([
@@ -4637,7 +4839,7 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(executeCommand).toHaveBeenCalledWith("openWrangler.installRuntimeDependencies");
     expect(request.mock.calls.map(([candidate]) => candidate.kind)).toEqual(["openSession", "openSession"]);
     expect(harness.posted).toContainEqual({ kind: "runtimeDependencyInstallState", busy: true });
-    expect(harness.posted).toContainEqual(openedResponse);
+    expect(harness.posted).toContainEqual(hostSnapshot(openedResponse));
     expect(harness.posted).toContainEqual({ kind: "runtimeDependencyInstallState", busy: false });
     expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
     expect(OpenWranglerPanel.panelSynchronizationReceiptForSession(openedResponse.metadata.sessionId)).toEqual({
@@ -4819,6 +5021,7 @@ describe("OpenWranglerPanel retained view state", () => {
       backendPreference: "auto"
     });
     await harness.open();
+    await confirmLatestSnapshot(harness);
     harness.posted.length = 0;
     configureDelimitedPrompts(nextOptions);
 
@@ -4839,9 +5042,10 @@ describe("OpenWranglerPanel retained view state", () => {
         })
       }
     );
+    if (!committed) throw new Error("Expected the confirmed replacement snapshot.");
     expect(harness.posted).toEqual([
       { kind: "importOptionsState", busy: true },
-      committed,
+      hostSnapshot(committed),
       { kind: "sessionPresentation", presentation: restoredPresentation() },
       { kind: "viewState", state: { ...retainedView, columnWidths: [["c:0", 245]] } },
       { kind: "importOptionsState", busy: false }
@@ -4853,9 +5057,10 @@ describe("OpenWranglerPanel retained view state", () => {
 
     harness.posted.length = 0;
     await harness.receive({ kind: "ready" });
-    expect(harness.posted).toContainEqual(committed);
+    expect(harness.posted).toContainEqual(hostSnapshot(committed));
     expect(harness.posted).toContainEqual({ kind: "sessionPresentation", presentation: restoredPresentation() });
 
+    await confirmLatestSnapshot(harness);
     await harness.receive(pageMessage("after-import-change", "changed-view"));
     expect(request.mock.calls.at(-1)?.[0]).toMatchObject({
       kind: "getPage",
@@ -4943,7 +5148,7 @@ describe("OpenWranglerPanel retained view state", () => {
         revision: committed.metadata.revision
       });
       expect(harness.posted.filter(isSessionOpenedResponse)).toHaveLength(publicationsBeforeRecoveredReady + 1);
-      expect(harness.posted.filter(isSessionOpenedResponse).at(-1)).toEqual(committed);
+      expect(harness.posted.filter(isSessionOpenedResponse).at(-1)).toEqual(hostSnapshot(committed));
       await harness.receive({
         kind: "rendererSynchronized",
         syncId: recovered.syncId,
@@ -5130,7 +5335,7 @@ describe("OpenWranglerPanel retained view state", () => {
     );
     expect(setActiveSession).toHaveBeenLastCalledWith(initial.metadata.sessionId);
     expect(workspaceState.update).toHaveBeenCalledTimes(2);
-    expect(harness.posted.filter(isSessionOpenedResponse)).toEqual([initial, configured]);
+    expect(harness.posted.filter(isSessionOpenedResponse)).toEqual([hostSnapshot(initial), hostSnapshot(configured)]);
     expect(workspaceState.values.get(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY)).toEqual({
       version: 2,
       entries: [
@@ -5270,6 +5475,7 @@ describe("OpenWranglerPanel retained view state", () => {
     const reconfigureFileSession = vi.fn(async (): Promise<OpenWranglerResponse> => replacement);
     const harness = createPanelHarness({ request, reconfigureFileSession }, { source, openResponse: initial });
     await harness.open();
+    await confirmLatestSnapshot(harness);
     harness.posted.length = 0;
     configureDelimitedPrompts({
       delimiter: ";",
@@ -5295,11 +5501,15 @@ describe("OpenWranglerPanel retained view state", () => {
     await Promise.all([pendingPage, changing]);
 
     expect(reconfigureFileSession).toHaveBeenCalledOnce();
-    expect(harness.posted.indexOf(confirmedOldPage)).toBeLessThan(harness.posted.indexOf(replacement));
+    expect(harness.posted.indexOf(confirmedOldPage)).toBeLessThan(
+      harness.posted.findIndex(
+        (message) => isSessionOpenedResponse(message) && message.metadata.revision === replacement.metadata.revision
+      )
+    );
     harness.posted.length = 0;
     await harness.receive({ kind: "ready" });
-    expect(harness.posted).toContainEqual(replacement);
-    expect(harness.posted).not.toContainEqual(initial);
+    expect(harness.posted).toContainEqual(hostSnapshot(replacement));
+    expect(harness.posted).not.toContainEqual(hostSnapshot(initial));
   });
 
   it("keeps the exact confirmed live snapshot and source after prompt cancellation", async () => {
@@ -5332,7 +5542,7 @@ describe("OpenWranglerPanel retained view state", () => {
 
     harness.posted.length = 0;
     await harness.receive({ kind: "ready" });
-    expect(harness.posted).toContainEqual(initial);
+    expect(harness.posted).toContainEqual(hostSnapshot(initial));
 
     panelPromptMocks.showQuickPick.mockClear();
     await harness.receive({ kind: "changeImportOptions" });
@@ -5360,6 +5570,7 @@ describe("OpenWranglerPanel retained view state", () => {
       { source, openResponse: initial }
     );
     await harness.open();
+    await confirmLatestSnapshot(harness);
     harness.posted.length = 0;
     configureDelimitedPrompts({
       delimiter: ";",
@@ -5377,7 +5588,7 @@ describe("OpenWranglerPanel retained view state", () => {
     ]);
     harness.posted.length = 0;
     await harness.receive({ kind: "ready" });
-    expect(harness.posted).toContainEqual(initial);
+    expect(harness.posted).toContainEqual(hostSnapshot(initial));
 
     panelPromptMocks.showQuickPick.mockReset();
     panelPromptMocks.showQuickPick.mockResolvedValue(undefined);
@@ -5405,6 +5616,7 @@ describe("OpenWranglerPanel retained view state", () => {
       { source, openResponse: initial }
     );
     await harness.open();
+    await confirmLatestSnapshot(harness);
     harness.posted.length = 0;
     configureDelimitedPrompts({
       delimiter: ";",
@@ -5422,7 +5634,7 @@ describe("OpenWranglerPanel retained view state", () => {
     ]);
     harness.posted.length = 0;
     await harness.receive({ kind: "ready" });
-    expect(harness.posted).toContainEqual(initial);
+    expect(harness.posted).toContainEqual(hostSnapshot(initial));
 
     panelPromptMocks.showQuickPick.mockReset();
     panelPromptMocks.showQuickPick.mockResolvedValue(undefined);
@@ -5486,12 +5698,14 @@ describe("OpenWranglerPanel retained view state", () => {
       backendPreference: "polars"
     });
     expect(harness.posted).toContainEqual(
-      responseForSource(
-        {
-          ...source,
-          importOptions: { delimiter: ";", encoding: "utf-8", quoteChar: '"', hasHeader: true }
-        },
-        0
+      hostSnapshot(
+        responseForSource(
+          {
+            ...source,
+            importOptions: { delimiter: ";", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+          },
+          0
+        )
       )
     );
   });
@@ -5625,7 +5839,7 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(maximumActiveCandidates).toBe(1);
     expect(harness.posted).toEqual([
       { kind: "importOptionsState", busy: true },
-      responseForSource({ ...source, importOptions: attempts[1] }, 8),
+      hostSnapshot(responseForSource({ ...source, importOptions: attempts[1] }, 8)),
       { kind: "importOptionsState", busy: false }
     ]);
   });
@@ -5696,8 +5910,8 @@ describe("OpenWranglerPanel retained view state", () => {
     );
     expect(delimiterPrompts).toHaveLength(2);
     expect(delimiterPrompts[1]?.[0][0]).toMatchObject({ value: ";", description: "Current" });
-    expect(harness.posted).not.toContainEqual(firstOpened);
-    expect(harness.posted).toContainEqual(secondOpened);
+    expect(harness.posted).not.toContainEqual(hostSnapshot(firstOpened));
+    expect(harness.posted).toContainEqual(hostSnapshot(secondOpened));
   });
 
   it("publishes a committed replacement when its superseding import prompt is cancelled", async () => {
@@ -5742,7 +5956,7 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(reconfigureFileSession).toHaveBeenCalledOnce();
     expect(harness.posted).toEqual([
       { kind: "importOptionsState", busy: true },
-      firstOpened,
+      hostSnapshot(firstOpened),
       { kind: "cancelled", targetRequestId: "change-import-options" },
       { kind: "importOptionsState", busy: false }
     ]);
@@ -5812,7 +6026,7 @@ describe("OpenWranglerPanel retained view state", () => {
     });
     expect(harness.posted).toEqual([
       { kind: "importOptionsState", busy: true },
-      firstOpened,
+      hostSnapshot(firstOpened),
       failure,
       { kind: "importOptionsState", busy: false }
     ]);
@@ -5878,12 +6092,14 @@ describe("OpenWranglerPanel retained view state", () => {
     });
     expect(harness.posted).toEqual([
       { kind: "importOptionsState", busy: true },
-      responseForSource(
-        {
-          ...source,
-          importOptions: { delimiter: ";", encoding: "utf-8", quoteChar: '"', hasHeader: true }
-        },
-        1
+      hostSnapshot(
+        responseForSource(
+          {
+            ...source,
+            importOptions: { delimiter: ";", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+          },
+          1
+        )
       ),
       { kind: "importOptionsState", busy: false }
     ]);
@@ -5948,12 +6164,14 @@ describe("OpenWranglerPanel retained view state", () => {
         recoverable: true,
         sessionId: metadata.sessionId
       },
-      responseForSource(
-        {
-          ...source,
-          importOptions: { delimiter: ";", encoding: "utf-8", quoteChar: '"', hasHeader: true }
-        },
-        1
+      hostSnapshot(
+        responseForSource(
+          {
+            ...source,
+            importOptions: { delimiter: ";", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+          },
+          1
+        )
       ),
       { kind: "importOptionsState", busy: false }
     ]);
@@ -6022,7 +6240,11 @@ describe("OpenWranglerPanel retained view state", () => {
           "kind" in message &&
           (message.kind === "importOptionsState" || message.kind === "sessionOpened")
       )
-    ).toEqual([{ kind: "importOptionsState", busy: true }, configured, { kind: "importOptionsState", busy: false }]);
+    ).toEqual([
+      { kind: "importOptionsState", busy: true },
+      hostSnapshot(configured),
+      { kind: "importOptionsState", busy: false }
+    ]);
   });
 
   it("closes once and publishes nothing late when disposed during the import prompt", async () => {
@@ -6234,7 +6456,7 @@ describe("OpenWranglerPanel retained view state", () => {
         }
       ]
     ]);
-    expect(harness.posted).not.toContainEqual(openedResponse);
+    expect(harness.posted).not.toContainEqual(hostSnapshot(openedResponse));
   });
 
   it("opens live notebook variables without waiting for renderer readiness", async () => {
@@ -6447,7 +6669,7 @@ describe("OpenWranglerPanel retained view state", () => {
       { createViaFactory: true, delegateOpen: true, source, backend: "r", backendPreference: "r" }
     );
     await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
-    await vi.waitFor(() => expect(harness.posted).toContainEqual(viewing));
+    await vi.waitFor(() => expect(harness.posted).toContainEqual(hostSnapshot(viewing)));
     harness.posted.length = 0;
 
     const currentViewState = {
@@ -6467,7 +6689,7 @@ describe("OpenWranglerPanel retained view state", () => {
     });
     expect(harness.posted).toEqual([
       { kind: "sessionModeChangeState", busy: true, mode: "editing" },
-      editing,
+      hostSnapshot(editing),
       { kind: "sessionModeChangeState", busy: false, mode: "editing" }
     ]);
 
@@ -6484,7 +6706,7 @@ describe("OpenWranglerPanel retained view state", () => {
     });
     expect(harness.posted).toEqual([
       { kind: "sessionModeChangeState", busy: true, mode: "viewing" },
-      viewingAgain,
+      hostSnapshot(viewingAgain),
       { kind: "sessionModeChangeState", busy: false, mode: "viewing" }
     ]);
   });
@@ -6536,7 +6758,7 @@ describe("OpenWranglerPanel retained view state", () => {
       },
       { createViaFactory: true, delegateOpen: true, source, backend: "r", backendPreference: "r" }
     );
-    await vi.waitFor(() => expect(harness.posted).toContainEqual(editing));
+    await vi.waitFor(() => expect(harness.posted).toContainEqual(hostSnapshot(editing)));
     harness.posted.length = 0;
 
     await harness.receive({
@@ -6575,7 +6797,6 @@ describe("OpenWranglerPanel retained view state", () => {
     ) as SessionRecoveryMessage;
     await harness.receive({
       kind: "setViewContext",
-      lastPageRequestId: null,
       viewContextId: offer.offeredViewContextId
     });
     expect(setViewContext).toHaveBeenLastCalledWith(metadata.sessionId, offer.offeredViewContextId);
@@ -6625,7 +6846,7 @@ describe("OpenWranglerPanel retained view state", () => {
       { request, reconfigureLiveSessionMode },
       { createViaFactory: true, delegateOpen: true, source, backend: "r", backendPreference: "r" }
     );
-    await vi.waitFor(() => expect(harness.posted).toContainEqual(viewing));
+    await vi.waitFor(() => expect(harness.posted).toContainEqual(hostSnapshot(viewing)));
     harness.posted.length = 0;
 
     await harness.receive({
@@ -6637,7 +6858,7 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(reconfigureLiveSessionMode).toHaveBeenCalledOnce();
     expect(harness.posted).toEqual([
       { kind: "sessionModeChangeState", busy: true, mode: "editing" },
-      editing,
+      hostSnapshot(editing),
       { kind: "sessionModeChangeState", busy: false, mode: "editing" }
     ]);
   });
@@ -6770,7 +6991,7 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.receive({ kind: "reconnectLiveSource" });
 
     expect(reconnectLiveSession).toHaveBeenCalledWith("session", 0, { priority: "interactive" });
-    expect(harness.posted).toContainEqual(pysparkOpened);
+    expect(harness.posted).toContainEqual(hostSnapshot(pysparkOpened));
     expect(harness.posted).toContainEqual({
       kind: "sessionPresentation",
       presentation: { sessionId: "session", revision: 0, code: "" }
@@ -6971,11 +7192,27 @@ function isSessionOpenedResponse(message: unknown): message is SessionOpenedResp
   return Boolean(message && typeof message === "object" && (message as { kind?: unknown }).kind === "sessionOpened");
 }
 
+function hostSnapshot(snapshot: SessionOpenedResponse) {
+  return { ...snapshot, offeredViewContextId: expect.stringMatching(/^snapshot:.+/u) };
+}
+
+async function confirmLatestSnapshot(harness: {
+  posted: unknown[];
+  receive(message: unknown): Promise<void>;
+}): Promise<string> {
+  const snapshot = [...harness.posted].reverse().find(isSessionOpenedResponse) as
+    (SessionOpenedResponse & { offeredViewContextId: string }) | undefined;
+  if (!snapshot) throw new Error("The panel did not offer a snapshot view.");
+  await harness.receive({ kind: "setViewContext", viewContextId: snapshot.offeredViewContextId });
+  return snapshot.offeredViewContextId;
+}
+
 async function acknowledgeLatestRendererSynchronization(harness: {
   posted: unknown[];
   receive(message: unknown): Promise<void>;
 }): Promise<RendererSynchronizationMessage> {
   const synchronization = latestRendererSynchronization(harness.posted);
+  if (harness.posted.some(isSessionOpenedResponse)) await confirmLatestSnapshot(harness);
   await harness.receive({
     kind: "rendererSynchronized",
     syncId: synchronization.syncId,

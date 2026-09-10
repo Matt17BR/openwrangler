@@ -46,6 +46,7 @@ export type SessionRecoveryMessage = {
   | { snapshot: SessionOpenedResponse; result?: ErrorResponse | CancelledResponse }
 );
 
+export const SNAPSHOT_VIEW_CONTEXT_PREFIX = "snapshot:";
 export const RECOVERY_VIEW_CONTEXT_PREFIX = "recovery:";
 
 export function isRecoveryViewContextId(value: string): boolean {

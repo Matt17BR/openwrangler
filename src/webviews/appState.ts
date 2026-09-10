@@ -15,6 +15,7 @@ import { decodeGridViewState, isBoundedViewId } from "../shared/viewState";
 import {
   isRecoveryViewContextId,
   RECOVERY_VIEW_CONTEXT_PREFIX,
+  SNAPSHOT_VIEW_CONTEXT_PREFIX,
   type SessionPresentation,
   type SessionRecoveryMessage
 } from "../shared/sessionRecovery";
@@ -113,7 +114,20 @@ function isSessionPresentation(value: unknown): value is SessionPresentationMess
 }
 
 export function decodeAppHostMessage(value: unknown) {
-  if (isOpenWranglerResponse(value)) return value;
+  if (isRecord(value) && value.kind === "sessionOpened") {
+    const { offeredViewContextId, ...snapshot } = value;
+    if (
+      !isBoundedViewId(offeredViewContextId) ||
+      !offeredViewContextId.startsWith(SNAPSHOT_VIEW_CONTEXT_PREFIX) ||
+      offeredViewContextId.length === SNAPSHOT_VIEW_CONTEXT_PREFIX.length ||
+      /\s/u.test(offeredViewContextId) ||
+      !isOpenWranglerResponse(snapshot) ||
+      snapshot.kind !== "sessionOpened"
+    )
+      return undefined;
+    return { ...snapshot, offeredViewContextId };
+  }
+  if (isOpenWranglerResponse(value) && value.kind !== "sessionOpened") return value;
   if (!isRecord(value)) return undefined;
 
   switch (value.kind) {

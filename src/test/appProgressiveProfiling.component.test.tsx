@@ -98,7 +98,13 @@ describe("App progressive profiling and view correlation", () => {
     act(() =>
       window.dispatchEvent(
         new MessageEvent("message", {
-          data: { kind: "sessionOpened", metadata, page, summaries: [] },
+          data: {
+            kind: "sessionOpened",
+            offeredViewContextId: "snapshot:foreign-origin",
+            metadata,
+            page,
+            summaries: []
+          },
           origin: "https://untrusted.invalid"
         })
       )
@@ -126,7 +132,7 @@ describe("App progressive profiling and view correlation", () => {
     expect(requestsOfKind("getDatasetStats")).toHaveLength(0);
 
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
-    expect(setViewContextMessages().at(-1)?.lastPageRequestId).toBeNull();
+    expect(setViewContextMessages().at(-1)?.viewContextId).toMatch(/^snapshot:/u);
     expect(screen.getByText("Berlin")).toBeInTheDocument();
   });
 
@@ -196,7 +202,6 @@ describe("App progressive profiling and view correlation", () => {
     expect(setViewContextMessages().at(-1)).toEqual({
       kind: "setViewContext",
       viewContextId: "recovery:test",
-      lastPageRequestId: next ? viewId(next) : null,
       ...(next ? { state: { columnWidths: [], viewport: { firstVisibleRow: 200, scrollLeft: 0 } } } : {})
     });
     expect(await screen.findByText("Tokyo")).toBeInTheDocument();
@@ -1038,7 +1043,7 @@ describe("App progressive profiling and view correlation", () => {
       page: pageWithCity("Latest A")
     });
     expect(await screen.findByText("Latest A")).toBeInTheDocument();
-    expect(setViewContextMessages().at(-1)?.lastPageRequestId).toBe(viewId(requestA));
+    expect(setViewContextMessages().at(-1)?.viewContextId).toBe(viewId(requestA));
 
     dispatch({
       kind: "page",
@@ -1122,8 +1127,7 @@ describe("App progressive profiling and view correlation", () => {
     await waitFor(() => expect(requestsOfKind("getDatasetStats")).toHaveLength(1));
     expect(setViewContextMessages().at(-1)).toEqual({
       kind: "setViewContext",
-      viewContextId: confirmedContext,
-      lastPageRequestId: viewId(failedPage)
+      viewContextId: confirmedContext
     });
     for (const envelope of [...runtimeEnvelopes("getSummary"), ...runtimeEnvelopes("getDatasetStats")]) {
       expect(envelope.viewContextId).toBe(confirmedContext);
@@ -2306,7 +2310,17 @@ function dispatch(
     | StepInspectionClearedMessage
     | SessionRecoveryMessage
 ): void {
-  act(() => window.dispatchEvent(new MessageEvent("message", { data, origin: window.location.origin })));
+  act(() =>
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data:
+          data && typeof data === "object" && "kind" in data && data.kind === "sessionOpened"
+            ? { ...data, offeredViewContextId: `snapshot:${crypto.randomUUID()}` }
+            : data,
+        origin: window.location.origin
+      })
+    )
+  );
 }
 
 function recoveryPacket(
@@ -2377,7 +2391,6 @@ interface PrioritizationMessage {
 interface SetViewContextMessage {
   kind: "setViewContext";
   viewContextId: string;
-  lastPageRequestId: string | null;
   state?: SerializedGridViewState;
 }
 
