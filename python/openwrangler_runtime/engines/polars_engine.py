@@ -664,6 +664,8 @@ class PolarsEngine(DataFrameEngine):
                 )
 
             count_name = f"__open_wrangler_count_{index}"
+            if count_name == column:
+                count_name += "_"
             top_queries.append(
                 frame.select(
                     [
@@ -850,7 +852,8 @@ class PolarsEngine(DataFrameEngine):
             valid = valid.drop_nans()
 
         try:
-            counts = valid.value_counts(sort=True)
+            count_name = "count_" if column == "count" else "count"
+            counts = valid.value_counts(sort=True, name=count_name)
             rows = list(counts.head(10).iter_rows(named=True))
             top_values = [
                 {
@@ -859,7 +862,7 @@ class PolarsEngine(DataFrameEngine):
                         if semantic_type in {"list", "struct"}
                         else str(row[column])
                     ),
-                    "count": int(row["count"]),
+                    "count": int(row[count_name]),
                 }
                 for row in rows
                 if row[column] is not None
@@ -868,8 +871,8 @@ class PolarsEngine(DataFrameEngine):
             if semantic_type == "boolean":
                 boolean_counts = {
                     "kind": "boolean",
-                    "trueCount": sum(int(row["count"]) for row in rows if row[column] is True),
-                    "falseCount": sum(int(row["count"]) for row in rows if row[column] is False),
+                    "trueCount": sum(int(row[count_name]) for row in rows if row[column] is True),
+                    "falseCount": sum(int(row[count_name]) for row in rows if row[column] is False),
                 }
             return top_values, counts.height, boolean_counts
         except Exception as error:
@@ -1014,17 +1017,18 @@ class PolarsEngine(DataFrameEngine):
                 .str.replace_many(_ASCII_LOWER_REPLACEMENTS)
                 .str.contains(str(search).translate(_ASCII_TO_LOWER), literal=True)
             )
+        count_name = "count_" if column == "count" else "count"
         counts = (
             series_df.group_by(column)
-            .len(name="count")
-            .sort([pl.col("count"), pl.col(column).cast(pl.String)], descending=[True, False])
+            .len(name=count_name)
+            .sort([pl.col(count_name), pl.col(column).cast(pl.String)], descending=[True, False])
             .head(limit + 1)
         )
         if isinstance(counts, pl.LazyFrame):
             counts = counts.collect(engine="streaming")
         values = []
         for row in counts.head(limit).iter_rows(named=True):
-            item: dict[str, Any] = {"value": str(row[column]), "count": int(row["count"])}
+            item: dict[str, Any] = {"value": str(row[column]), "count": int(row[count_name])}
             selection = typed_selection_value(row[column], column_type)
             if selection is not None:
                 item["selectionValue"] = selection
