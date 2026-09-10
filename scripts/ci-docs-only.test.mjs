@@ -142,7 +142,7 @@ test("proves added regular Python source only for native R", async (context) => 
   }
 });
 
-test("proves regular R source additions and edits only for Python", async (context) => {
+test("proves regular R source additions and edits and existing R journey edits only for Python", async (context) => {
   const cases = [
     { added: [], modified: ["r/openwrangler_runtime/frame_contract.R"] },
     { added: [], modified: ["r/tests/kernel_agent.R"] },
@@ -150,6 +150,19 @@ test("proves regular R source additions and edits only for Python", async (conte
     { added: ["r/tests/new_contract.R"], modified: [] },
     { added: [], modified: ["r/tests/kernel_agent.R", "CHANGELOG.md"] },
     { added: ["r/tests/new_contract.R"], modified: ["CHANGELOG.md"] },
+    { added: [], modified: ["src/test/extensionHost/releasedRCoreEditing.ts"] },
+    { added: [], modified: ["src/test/extensionHost/releasedRRowReduction.ts"] },
+    {
+      added: ["r/tests/new_contract.R"],
+      modified: [
+        "src/test/extensionHost/releasedRCoreEditing.ts",
+        "src/test/extensionHost/releasedRRowReduction.ts",
+        "r/openwrangler_runtime/kernel_agent.R",
+        "README.md",
+        "CHANGELOG.md",
+        "docs/testing.md"
+      ]
+    },
     {
       added: ["r/openwrangler_runtime/nested/helper.R", "r/tests/new_contract.R"],
       modified: ["r/openwrangler_runtime/kernel_agent.R", "README.md", "CHANGELOG.md", "docs/testing.md"]
@@ -174,11 +187,17 @@ test("proves regular R source additions and edits only for Python", async (conte
 
 test("keeps both runtimes required for R and CHANGELOG changes with Python source or shared inputs", async (context) => {
   for (const added of [false, true]) {
-    for (const other of ["python/tests/test_runtime.py", "src/shared/protocol.ts"]) {
+    for (const other of [
+      "python/tests/test_runtime.py",
+      "src/shared/protocol.ts",
+      "src/test/extensionHost/releasedROperationPicker.ts"
+    ]) {
       await context.test(`${other}, added=${added}`, (child) => {
         const rSource = "r/tests/contract.R";
-        const cwd = repository(child, added ? ["CHANGELOG.md"] : [rSource, other, "CHANGELOG.md"]);
+        const journey = "src/test/extensionHost/releasedRCoreEditing.ts";
+        const cwd = repository(child, added ? ["CHANGELOG.md", journey] : [rSource, other, "CHANGELOG.md", journey]);
         write(cwd, rSource);
+        write(cwd, journey);
         write(cwd, other);
         write(cwd, "CHANGELOG.md");
         assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), {
@@ -192,11 +211,16 @@ test("keeps both runtimes required for R and CHANGELOG changes with Python sourc
 });
 
 test("requires full owners for deleted or renamed runtime source, including alongside additions", async (context) => {
-  for (const file of ["python/openwrangler_runtime/session.py", "r/openwrangler_runtime/kernel_agent.R"]) {
+  for (const file of [
+    "python/openwrangler_runtime/session.py",
+    "r/openwrangler_runtime/kernel_agent.R",
+    "src/test/extensionHost/releasedRCoreEditing.ts",
+    "src/test/extensionHost/releasedRRowReduction.ts"
+  ]) {
     for (const change of ["add and delete", "delete", "rename", "rename into runtime"]) {
       await context.test(`${file}: ${change}`, (child) => {
         const cwd = repository(child, [file]);
-        const destination = file.replace(/\.(py|R)$/u, "-new.$1");
+        const destination = file.replace(/\.(py|R|ts)$/u, "-new.$1");
         if (change === "add and delete") {
           write(cwd, destination);
           rmSync(join(cwd, file));
@@ -216,7 +240,12 @@ test("requires full owners for deleted or renamed runtime source, including alon
 });
 
 test("requires full owners for source mode changes and existing executable or symlink entries", async (context) => {
-  for (const file of ["python/tests/helper.py", "r/tests/helper.R"]) {
+  for (const file of [
+    "python/tests/helper.py",
+    "r/tests/helper.R",
+    "src/test/extensionHost/releasedRCoreEditing.ts",
+    "src/test/extensionHost/releasedRRowReduction.ts"
+  ]) {
     for (const mode of ["100755", "120000"]) {
       for (const existing of [false, true]) {
         await context.test(`${file}: ${mode}, existing=${existing}`, (child) => {
@@ -245,7 +274,12 @@ test("requires full owners for source mode changes and existing executable or sy
 });
 
 test("requires full owners for added executable or symlink runtime source", async (context) => {
-  for (const file of ["python/tests/added.py", "r/tests/added.R"]) {
+  for (const file of [
+    "python/tests/added.py",
+    "r/tests/added.R",
+    "src/test/extensionHost/releasedRCoreEditing.ts",
+    "src/test/extensionHost/releasedRRowReduction.ts"
+  ]) {
     for (const mode of ["100755", "120000"]) {
       await context.test(`${file}: ${mode}`, (child) => {
         const cwd = repository(child);
@@ -273,7 +307,9 @@ test("requires full owners for added Markdown or paths outside the runtime sourc
     "scripts/new.R",
     "r/tests-extra/new.R",
     "r/tests/new.r",
-    "r/dependencies/new.R"
+    "r/dependencies/new.R",
+    "src/test/extensionHost/releasedRCoreEditing.ts",
+    "src/test/extensionHost/releasedRRowReduction.ts"
   ]) {
     await context.test(file, (child) => {
       const cwd = repository(child);
@@ -352,6 +388,10 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
     "CONTRIBUTING.md",
     "src/shared/protocol.ts",
     "src/extension/r/rKernelBridge.ts",
+    "src/test/extensionHost/releasedROperationPicker.ts",
+    "src/test/extensionHost/releasedRCoreEditing.ts.bak",
+    "src/test/extensionHost/releasedRCoreEditing.tsx",
+    "src/test/extensionHost-extra/releasedRRowReduction.ts",
     "fixtures/view-literal-contract.json",
     "scripts/r-contract-signal.py",
     "scripts/ci-docs-only.test.mjs",

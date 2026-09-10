@@ -53,6 +53,8 @@ and bounded output. They admit regular runtime source additions while retaining 
 paths or modes. They distinguish documentation-only omissions, including existing CHANGELOG edits, from the independent
 Python and R scopes, require both runtimes for mixed changes, and execute the required-result guards with failed proofs,
 malformed outputs, and skipped or canceled runtime execution.
+The [CI scope](ci.md#pull-requests) also permits edits to two existing R-only journey files; the same owner retains
+refusal of their additions, moves, unsafe modes, unlisted helpers and mixed Python changes.
 Dependency guard tests force lock creation between the initial missing-file check and directory enumeration, and
 retain refusal when the lock stays missing. Their real concurrent status pair receives EOF on both inputs before
 either process is awaited; status validation requires EOF before execution. The deterministic cases and real pair run

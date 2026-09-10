@@ -66,7 +66,11 @@ export function proveRuntimeOmissions({ cwd = process.cwd(), env = process.env }
       pythonOmittable = false;
       continue;
     }
-    if (rSource) {
+    if (
+      rSource ||
+      path === "src/test/extensionHost/releasedRCoreEditing.ts" ||
+      path === "src/test/extensionHost/releasedRRowReduction.ts"
+    ) {
       rOmittable = false;
       continue;
     }
@@ -88,7 +92,7 @@ if (process.argv[1] !== undefined && pathToFileURL(resolve(process.argv[1])).hre
       : rOmittable
         ? "Verified Python source additions or edits and existing Markdown edits independent of native R."
         : pythonOmittable
-          ? "Verified R source additions or edits and existing documentation edits independent of Python."
+          ? "Verified R source additions or edits, existing R journey edits and documentation edits independent of Python."
           : "Full runtime checks required."
   );
 }

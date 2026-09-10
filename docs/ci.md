@@ -31,8 +31,10 @@ Source contracts, packaged smoke, and the separate required CodeQL gate run for 
 `scripts/ci-docs-only.mjs` may omit runtime execution when every change fits that runtime's scope below. All admitted
 files must be regular and non-executable.
 
-- Python may be omitted for additions or edits to `.R` files under `r/openwrangler_runtime/` or `r/tests/`, and edits
-  to existing `README.md`, `CHANGELOG.md` or `docs/**/*.md` files.
+- Python may be omitted for additions or edits to `.R` files under `r/openwrangler_runtime/` or `r/tests/`; edits to
+  existing `src/test/extensionHost/releasedRCoreEditing.ts` or `src/test/extensionHost/releasedRRowReduction.ts`; and
+  edits to existing `README.md`, `CHANGELOG.md` or `docs/**/*.md` files. The two journey files retain all R and Windows
+  execution. Other acceptance helpers, including the shared R operation picker, are outside this permission.
 - R source and installed-editor execution may be omitted for additions or edits to `.py` files under
   `python/openwrangler_runtime/` or `python/tests/`, and edits to existing `README.md`, `CHANGELOG.md` or `docs/**/*.md`.
 - Windows execution may be omitted only for edits to existing `README.md`, `CHANGELOG.md` or `docs/**/*.md` files.
@@ -44,8 +46,8 @@ Source and packaged smoke retain its validation and package-content checks. Shar
 configuration, dependency locks and other paths outside these scopes require full execution. If a runtime's tests or selected runner begins consuming
 an omitted input, update the proof and its tests in the same change.
 
-This avoids unrelated runtime setup and execution during isolated engine changes. An omission is not a newly
-executed or transferred success; it can delay discovery of unrelated dependency or hosted-environment regressions.
+This avoids unrelated runtime setup and execution during isolated engine or allowed R journey changes. An omission
+is not a newly executed or transferred success; it can delay discovery of unrelated dependency or hosted-environment regressions.
 Scheduled R 4.4 qualification does not replace R 4.5 coverage. Release qualification remains separate.
 
 Each runtime has cancellable execution and a short required-result job. The latter reports success only for completed
