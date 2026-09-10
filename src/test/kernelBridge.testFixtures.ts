@@ -201,6 +201,10 @@ async function* kernelExecution(
   code: string,
   respond: (request: OpenWranglerRequest, requestId: string) => unknown | Promise<unknown>
 ): AsyncIterable<unknown> {
+  if (code.includes("__OPEN_WRANGLER_BOOTSTRAP_START_")) {
+    yield* bootstrapKernelExecution(code);
+    return;
+  }
   const markerMatch = code.match(/__OPEN_WRANGLER_START_([A-Za-z0-9]+)__/);
   if (!markerMatch) return;
   const payloadMatch = code.match(/__ow_payload = __ow_base64\.b64decode\("([A-Za-z0-9+/=]+)"\)/);
@@ -219,6 +223,19 @@ async function* kernelExecution(
       `__OPEN_WRANGLER_START_${markerMatch[1]}__`,
       JSON.stringify({ protocolVersion: 4, requestId: envelope.requestId, response }),
       `__OPEN_WRANGLER_END_${markerMatch[1]}__`
+    ].join("\n")
+  };
+}
+
+async function* bootstrapKernelExecution(code: string, status = "ready"): AsyncIterable<unknown> {
+  const nonce = code.match(/__OPEN_WRANGLER_BOOTSTRAP_START_([a-f0-9]{32})__/u)?.[1];
+  const bundleId = code.match(/expected_id = "([a-f0-9]{64})"/u)?.[1];
+  if (!nonce || !bundleId) throw new Error("Kernel test bootstrap must contain its exact nonce and bundle digest.");
+  yield {
+    text: [
+      `__OPEN_WRANGLER_BOOTSTRAP_START_${nonce}__`,
+      JSON.stringify({ bundleId, status }),
+      `__OPEN_WRANGLER_BOOTSTRAP_END_${nonce}__`
     ].join("\n")
   };
 }
@@ -366,6 +383,7 @@ function openedResponse(sessionId: string, backend: TestBackend = "polars"): Ope
 
 export {
   HANG,
+  bootstrapKernelExecution,
   cancellationSource,
   closeNotebook,
   closeRequest,

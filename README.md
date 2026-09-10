@@ -101,6 +101,17 @@ and select the file again. Auto does not switch engines after a file-read error.
 infer different types. See the [file-reader limits](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md)
 and [#986](https://github.com/Matt17BR/openwrangler/issues/986).
 
+For Windows Python notebooks, minimum CPython patch releases are 3.10.15, 3.11.10 and 3.12.4; supported 3.13
+and 3.14 releases also qualify. These notebooks require the default local per-user temporary directory with its
+standard profile protections. Custom or redirected temporary paths are unsupported.
+
+To recover a kernel with older or unverified Open Wrangler imports, restart it and rerun the dataframe-creation cells
+without importing `openwrangler_runtime`. Open the dataframe through the Open Wrangler notebook toolbar or variable
+command to load the bundled runtime; then import and use `show` if needed. Explicit `show` remains supported for
+static output. The
+[architecture notes](https://github.com/Matt17BR/openwrangler/blob/main/docs/architecture.md#notebook-kernel-terminal-and-document-provenance)
+describe runtime reuse and temporary-directory requirements.
+
 R workflows open `data.frame`, tibble, and `data.table` values. IRkernel works in VS Code on Linux, macOS,
 and Windows, and in Cursor on Linux. Selected R terminal workflows are available on Linux. Direct `.R`, `.Rmd`, and
 `.qmd` execution is available on macOS and Linux, not Windows; R Markdown and Quarto run selected code chunks rather

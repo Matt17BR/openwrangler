@@ -27,6 +27,9 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Python notebooks verify the bundled runtime before reuse and request a kernel restart for stale imports.
+  Bootstrap uses a fresh private directory and requires confirmation before runtime requests.
+
 - File detection preserves UTF-8 characters at sample boundaries, recognizes CR-delimited CSV/TSV records and retains
   empty fields and whitespace. Import Options can explicitly select a line ending when detection is ambiguous.
 - DuckDB and Polars file imports preserve literal paths instead of opening wildcard or encoded-name siblings.

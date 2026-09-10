@@ -10,6 +10,7 @@ import {
   parseNotebookCellResultProbe
 } from "../extension/notebooks/kernelBridge";
 import {
+  bootstrapKernelExecution,
   controllableKernel,
   createKernelBridge,
   deferred,
@@ -113,7 +114,7 @@ describe("executed notebook cell results", () => {
     setOpenNotebookDocuments(document);
     let resultLookups = 0;
     const controller = controllableKernel((code) => {
-      if (!code.includes("__OPEN_WRANGLER_CELL_RESULT_START_")) return emptyKernelExecution();
+      if (!code.includes("__OPEN_WRANGLER_CELL_RESULT_START_")) return bootstrapKernelExecution(code);
       resultLookups += 1;
       const resultMarker = code.match(/__OPEN_WRANGLER_CELL_RESULT_START_([a-f0-9]{32})__/)?.[1];
       if (!resultMarker) throw new Error("Expected a cell-result marker.");

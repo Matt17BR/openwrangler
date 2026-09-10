@@ -25,7 +25,7 @@ import {
   invalidatesKernelLifecycle,
   type KernelGenerationBinding
 } from "./kernelLifecycle";
-import { buildKernelBootstrapCode, readRuntimeFiles } from "./kernelRuntimeBundle";
+import { buildKernelRuntimeBundle, readRuntimeFiles } from "./kernelRuntimeBundle";
 import { getSetting, runtimeRequestTimeoutMs } from "../configuration";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
 import { assertSupportedPySparkNotebookPreflight, executePySparkNotebookPreflight } from "./notebookVariableDiscovery";
@@ -40,6 +40,10 @@ const NOTEBOOK_CELL_RESULT_PROTOCOL_VERSION = 1;
 const NOTEBOOK_CELL_RESULT_OUTPUT_LIMIT_BYTES = 64 * 1024;
 const NOTEBOOK_CELL_RESULT_TEXT_LIMIT = 256;
 const NOTEBOOK_CELL_RESULT_PROBE_TIMEOUT_MS = 10_000;
+const KERNEL_BOOTSTRAP_OUTPUT_LIMIT_BYTES = 64 * 1024;
+
+class KernelBootstrapRefusedError extends Error {}
+class KernelOutputLimitError extends Error {}
 
 export interface CapturedNotebookCellResult {
   readonly backend: "pandas" | "polars" | "duckdb" | "pyspark";
@@ -80,7 +84,7 @@ export class NotebookFormatterPreparationPendingError extends Error {
 
 export class KernelBridge implements OpenWranglerBridge {
   private readonly lifecycle: RestartableKernel<AcquiredKernel>;
-  private readonly bootstrapCode: string;
+  private readonly runtimeBundle: ReturnType<typeof buildKernelRuntimeBundle>;
   private readonly sessionKernels = new Map<string, Kernel>();
   private readonly sessionSources = new Map<string, OpenSessionRequest["source"]>();
   private readonly retiredSessionIds = new Set<string>();
@@ -104,7 +108,7 @@ export class KernelBridge implements OpenWranglerBridge {
   ) {
     this.notebookUri = notebookDocument.uri;
     this.lifecycle = new RestartableKernel(() => this.acquireKernel());
-    this.bootstrapCode = buildKernelBootstrapCode(readRuntimeFiles(path.join(this.context.extensionPath, "python")));
+    this.runtimeBundle = buildKernelRuntimeBundle(readRuntimeFiles(path.join(this.context.extensionPath, "python")));
   }
 
   static fromDiscoveredVariable(
@@ -236,7 +240,10 @@ export class KernelBridge implements OpenWranglerBridge {
       },
       {
         retryAfterDispatch: false,
-        shouldRetry: (error, phase) => phase === "bootstrap" && !(error instanceof SelectedKernelChangedError),
+        shouldRetry: (error, phase) =>
+          phase === "bootstrap" &&
+          !(error instanceof SelectedKernelChangedError) &&
+          !(error instanceof KernelBootstrapRefusedError),
         beforeDispatch: (acquired) => {
           this.assertNotebookProvenance();
           this.assertExecutedCellResultKernel(acquired, binding);
@@ -283,6 +290,7 @@ export class KernelBridge implements OpenWranglerBridge {
         {
           retryAfterDispatch: true,
           shouldRetry: (error, phase) =>
+            !(error instanceof KernelBootstrapRefusedError) &&
             !(this.requiredKernelBinding && error instanceof SelectedKernelChangedError) &&
             phase !== "acquire" &&
             phase !== "beforeDispatch",
@@ -525,6 +533,7 @@ export class KernelBridge implements OpenWranglerBridge {
           retryAfterDispatch: isIdempotentKernelReadRequest(runtimeRequest),
           shouldRetry: (error, phase) =>
             hostDetachReason === undefined &&
+            !(error instanceof KernelBootstrapRefusedError) &&
             !((requiredKernel || this.requiredKernelBinding) && error instanceof SelectedKernelChangedError) &&
             phase !== "acquire" &&
             (phase !== "beforeDispatch" || error instanceof SelectedKernelChangedError),
@@ -796,7 +805,7 @@ export class KernelBridge implements OpenWranglerBridge {
 
   private async executeFramedRequest(kernel: Kernel, framed: FramedKernelRequest): Promise<OpenWranglerResponse> {
     return parseKernelResponse(
-      await this.executePython(kernel, framed.code, framed.marker),
+      await this.executePython(kernel, framed.code, { kind: "framed", marker: framed.marker }),
       framed.marker,
       framed.requestId
     );
@@ -817,21 +826,76 @@ export class KernelBridge implements OpenWranglerBridge {
 
   private async ensureKernelAgent(kernel: Kernel, registerNotebookFormatters: boolean): Promise<void> {
     this.assertNotebookProvenance();
-    await this.executePython(
-      kernel,
-      `${this.bootstrapCode}
-import openwrangler_runtime.kernel_agent as __ow_kernel_agent
-${
-  registerNotebookFormatters
-    ? "import openwrangler_runtime.notebook as __ow_notebook\n__ow_notebook_formatters_registered = __ow_notebook.register_formatters()\ndel __ow_notebook_formatters_registered"
-    : ""
-}
-`
-    );
+    const nonce = randomUUID().replaceAll("-", "");
+    const start = `__OPEN_WRANGLER_BOOTSTRAP_START_${nonce}__`;
+    const end = `__OPEN_WRANGLER_BOOTSTRAP_END_${nonce}__`;
+    let output: string;
+    try {
+      output = await this.executePython(
+        kernel,
+        `${this.runtimeBundle.code}
+import json as __ow_bootstrap_json
+__ow_bootstrap_status = __ow_bootstrap_runtime(${registerNotebookFormatters ? "True" : "False"})
+print("${start}")
+print(__ow_bootstrap_json.dumps({"bundleId": "${this.runtimeBundle.bundleId}", "status": __ow_bootstrap_status}))
+print("${end}")
+del __ow_bootstrap_runtime, __ow_bootstrap_status, __ow_bootstrap_json
+`,
+        { kind: "text", maximumBytes: KERNEL_BOOTSTRAP_OUTPUT_LIMIT_BYTES }
+      );
+    } catch (error) {
+      if (error instanceof KernelOutputLimitError) {
+        throw new KernelBootstrapRefusedError("Open Wrangler kernel bootstrap output exceeds the byte limit.");
+      }
+      throw error;
+    }
     this.assertNotebookProvenance();
+    const invalid = () =>
+      new KernelBootstrapRefusedError("Open Wrangler could not verify the Python kernel runtime bootstrap.");
+    const startIndex = output.indexOf(start);
+    const endIndex = output.indexOf(end);
+    if (
+      startIndex < 0 ||
+      endIndex <= startIndex ||
+      output.indexOf(start, startIndex + start.length) >= 0 ||
+      output.indexOf(end, endIndex + end.length) >= 0
+    ) {
+      throw invalid();
+    }
+    let acknowledgment: unknown;
+    try {
+      acknowledgment = JSON.parse(output.slice(startIndex + start.length, endIndex));
+    } catch {
+      throw invalid();
+    }
+    if (
+      !isPlainRecord(acknowledgment) ||
+      Object.keys(acknowledgment).length !== 2 ||
+      acknowledgment.bundleId !== this.runtimeBundle.bundleId
+    ) {
+      throw invalid();
+    }
+    if (acknowledgment.status === "outdated") {
+      throw new KernelBootstrapRefusedError("Restart the Python kernel before loading this Open Wrangler runtime.");
+    }
+    if (acknowledgment.status === "unsafe_temp") {
+      throw new KernelBootstrapRefusedError(
+        "Open Wrangler requires a private or protected temporary directory; on Windows use the default per-user LocalAppData Temp."
+      );
+    }
+    if (acknowledgment.status === "unsupported_python") {
+      throw new KernelBootstrapRefusedError(
+        "Update the Windows Python kernel to CPython 3.10.15+ in 3.10, 3.11.10+ in 3.11, 3.12.4+ in 3.12, or 3.13+ before loading Open Wrangler."
+      );
+    }
+    if (acknowledgment.status !== "ready") throw invalid();
   }
 
-  private async executePython(kernel: Kernel, code: string, responseMarker?: string): Promise<string> {
+  private async executePython(
+    kernel: Kernel,
+    code: string,
+    output: { kind: "text"; maximumBytes: number } | { kind: "framed"; marker: string }
+  ): Promise<string> {
     const tokenSource = new vscode.CancellationTokenSource();
     try {
       // Jupyter maps cancellation to a whole-kernel SIGINT. With PySpark's
@@ -839,10 +903,10 @@ ${
       // and stop unrelated user work even when this request targets Pandas,
       // Polars, or DuckDB. Every execution therefore owns a fresh token that
       // is never cancelled and remains alive until its output settles.
-      const output = kernel.executeCode(code, tokenSource.token);
-      return await (responseMarker === undefined
-        ? kernelOutputsToText(output)
-        : kernelOutputsToFramedText(output, responseMarker));
+      const stream = kernel.executeCode(code, tokenSource.token);
+      return await (output.kind === "framed"
+        ? kernelOutputsToFramedText(stream, output.marker)
+        : kernelOutputsToText(stream, output.maximumBytes));
     } finally {
       tokenSource.dispose();
     }
@@ -1403,12 +1467,34 @@ export async function kernelOutputsToText(
 ): Promise<string> {
   const chunks: string[] = [];
   let bytes = 0;
-  for await (const item of output) {
-    const chunk = outputItemToText(item);
-    bytes += Buffer.byteLength(chunk, "utf8");
-    if (bytes > maximumBytes) throw new Error("Open Wrangler kernel output exceeds the byte limit.");
-    chunks.push(chunk);
+  let failure: { error: unknown } | undefined;
+  try {
+    for await (const item of output) {
+      // Jupyter retains its output listener until execution settles. Ending this
+      // iterator early can leave later output queued; drain it without retaining
+      // or decoding more data, and never interrupt the user's kernel.
+      if (failure) continue;
+      try {
+        const chunk = outputItemToText(item);
+        bytes += Buffer.byteLength(chunk, "utf8");
+        if (bytes > maximumBytes) {
+          throw new KernelOutputLimitError("Open Wrangler kernel output exceeds the byte limit.");
+        }
+        if (chunk) chunks.push(chunk);
+      } catch (error) {
+        failure = {
+          error:
+            error instanceof Error && Buffer.byteLength(error.message, "utf8") > maximumBytes
+              ? new KernelOutputLimitError("Open Wrangler kernel output exceeds the byte limit.")
+              : error
+        };
+        chunks.length = 0;
+      }
+    }
+  } catch (error) {
+    if (!failure) throw error;
   }
+  if (failure) throw failure.error;
   return chunks.join("");
 }
 

@@ -145,6 +145,13 @@ Use the existing owners to choose a focused source check:
   not admit an obsolete live runtime. See [notebook provenance](architecture.md#notebook-kernel-terminal-and-document-provenance)
   and [bounded transport](architecture.md#schemas-and-bounded-transport).
 
+The existing kernel-runtime bootstrap owner executes generated Python to check fresh import, same-source reuse,
+stale or partial imports, private-directory lifetime and refusal of substituted cache content. Bridge tests require
+a bounded acknowledgment from the current attempt before dispatch, including missing, duplicate and mismatched
+responses. Native Windows qualification must establish private-directory behavior; simulated version checks do not.
+Installed restart probes observe the expected bundle's existing lease and package/agent origins without triggering
+bootstrap. The bootstrap owner retains complete module-prefix validation.
+
 Qualify changed native engine, reader and generated-code behavior on its minimum and current supported dependencies.
 Keep native controls when versions differ: for example, newline-only Polars schemas may differ while preserving the
 reader's actual rows. Extended-precision cases use the platform's real storage and may skip where it is unavailable.
