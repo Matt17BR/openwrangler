@@ -11,6 +11,7 @@ import type { TestApi } from "./extensionHostTestApi";
 import { withAcceptanceOperationDeadline } from "./playwrightLifecycle";
 import { releasedRNotebookCleanedCsvHeader, releasedRNotebookCleanedCsvRow } from "./releasedDocumentFixtures";
 import { assertReleasedRGeneratedCode, assertReleasedRTextLengthGeneratedCode } from "./releasedRGeneratedCode";
+import { observeReleasedRUndo } from "./releasedRUndoObservation";
 
 type ReleasedRPhase = "jupyter-r" | "jupyter-r-remote";
 type ReleasedRPreview = Readonly<{ app: Locator; stepId: string }>;
@@ -376,94 +377,111 @@ export async function exerciseReleasedRCoreEditingCatalog(
         duplicateExposure.focused,
       `The native R duplicate flag must expose its available width and full row inside the workbench. ${JSON.stringify(duplicateExposure)}`
     );
-    await app.getByRole("button", { name: "Undo", exact: true }).click();
-    await waitFor(
-      () => {
-        const active = testing.activeSession();
-        return (
-          active?.sessionId === sessionId &&
-          active.metadata.draftStep === undefined &&
-          active.metadata.steps.length === 0 &&
-          !active.metadata.schema.some((column) => column.id === duplicateOutput.id)
-        );
-      },
-      30_000,
-      "undoing native R Mark Duplicates",
-      async () => {
-        const summarize = (session: ActiveSession | undefined) =>
-          session
-            ? {
-                sessionMatches: session.sessionId === sessionId,
-                revision: session.metadata.revision,
-                steps: session.metadata.steps.length,
-                draft: session.metadata.draftStep !== undefined,
-                columns: session.metadata.schema.length,
-                duplicateColumn: session.metadata.schema.some((column) => column.id === duplicateOutput.id)
-              }
-            : null;
-        const receipt = testing.panelSynchronizationReceipt(sessionId);
-        const scheduler = testing.sessionSchedulerState(sessionId);
-        const host = {
-          appliedRevision: duplicateApplied.metadata.revision,
-          active: summarize(testing.activeSession()),
-          exact: summarize(testing.sessionSnapshot(sessionId)),
-          hydrated: testing.panelHydrated(sessionId),
-          receipt: receipt
-            ? {
-                revision: receipt.revision,
-                sessionMatches: receipt.sessionId === sessionId,
-                layoutPending: receipt.layoutTransitionPending
-              }
-            : null,
-          scheduler: scheduler
-            ? {
-                sessionMatches: scheduler.sessionId === sessionId,
-                quiescent: scheduler.quiescent,
-                activeForegroundOperation: scheduler.activeForegroundOperation,
-                activeBackgroundOperation: scheduler.activeBackgroundOperation,
-                interactiveQueueLength: scheduler.interactiveQueueLength,
-                backgroundQueueLength: scheduler.backgroundQueueLength,
-                terminalOperation: scheduler.terminalOperation
-              }
-            : null
-        };
-        const dom = await withAcceptanceOperationDeadline(
-          app.evaluate(
-            (element, expected) => {
-              type DiagnosticElement = {
-                disabled?: boolean;
-                textContent: string | null;
-                getAttribute(name: string): string | null;
-                getClientRects(): ArrayLike<unknown>;
-                querySelector(selector: string): DiagnosticElement | null;
-                querySelectorAll(selector: string): ArrayLike<DiagnosticElement>;
-                ownerDocument: {
-                  defaultView: { getComputedStyle(target: DiagnosticElement): { visibility: string } } | null;
+    const undoObservation = await observeReleasedRUndo(app, {
+      sessionId,
+      syncId: testing.panelSynchronizationReceipt(sessionId)?.syncId ?? null
+    });
+    try {
+      await app.getByRole("button", { name: "Undo", exact: true }).click();
+      const afterClick = undoObservation.read();
+      await waitFor(
+        () => {
+          const active = testing.activeSession();
+          return (
+            active?.sessionId === sessionId &&
+            active.metadata.draftStep === undefined &&
+            active.metadata.steps.length === 0 &&
+            !active.metadata.schema.some((column) => column.id === duplicateOutput.id)
+          );
+        },
+        30_000,
+        "undoing native R Mark Duplicates",
+        async () => {
+          const summarize = (session: ActiveSession | undefined) =>
+            session
+              ? {
+                  sessionMatches: session.sessionId === sessionId,
+                  revision: session.metadata.revision,
+                  steps: session.metadata.steps.length,
+                  draft: session.metadata.draftStep !== undefined,
+                  columns: session.metadata.schema.length,
+                  duplicateColumn: session.metadata.schema.some((column) => column.id === duplicateOutput.id)
+                }
+              : null;
+          const receipt = testing.panelSynchronizationReceipt(sessionId);
+          const scheduler = testing.sessionSchedulerState(sessionId);
+          const host = {
+            appliedRevision: duplicateApplied.metadata.revision,
+            active: summarize(testing.activeSession()),
+            exact: summarize(testing.sessionSnapshot(sessionId)),
+            hydrated: testing.panelHydrated(sessionId),
+            receipt: receipt
+              ? {
+                  revision: receipt.revision,
+                  sessionMatches: receipt.sessionId === sessionId,
+                  layoutPending: receipt.layoutTransitionPending
+                }
+              : null,
+            scheduler: scheduler
+              ? {
+                  sessionMatches: scheduler.sessionId === sessionId,
+                  quiescent: scheduler.quiescent,
+                  activeForegroundOperation: scheduler.activeForegroundOperation,
+                  activeBackgroundOperation: scheduler.activeBackgroundOperation,
+                  interactiveQueueLength: scheduler.interactiveQueueLength,
+                  backgroundQueueLength: scheduler.backgroundQueueLength,
+                  terminalOperation: scheduler.terminalOperation
+                }
+              : null
+          };
+          const dom = await withAcceptanceOperationDeadline(
+            app.evaluate(
+              (element, expected) => {
+                type DiagnosticElement = {
+                  disabled?: boolean;
+                  getAttribute(name: string): string | null;
+                  getClientRects(): ArrayLike<unknown>;
+                  querySelector(selector: string): DiagnosticElement | null;
+                  querySelectorAll(selector: string): ArrayLike<DiagnosticElement>;
+                  ownerDocument: {
+                    defaultView: { getComputedStyle(target: DiagnosticElement): { visibility: string } } | null;
+                  };
                 };
-              };
-              const root = element as unknown as DiagnosticElement;
-              const undo = root.querySelector("button[data-cleaning-plan-undo]");
-              const alert = Array.from(root.querySelectorAll('[role="alert"]')).find(
-                (candidate) =>
-                  candidate.getClientRects().length > 0 &&
-                  candidate.getAttribute("aria-hidden") !== "true" &&
-                  candidate.ownerDocument.defaultView?.getComputedStyle(candidate).visibility !== "hidden"
-              );
-              return {
-                sessionMatches: root.getAttribute("data-session-id") === expected.sessionId,
-                syncMatches: expected.syncId !== null && root.getAttribute("data-renderer-sync-id") === expected.syncId,
-                undoDisabled: undo?.disabled ?? null,
-                alert: alert?.textContent?.replace(/\s+/gu, " ").trim().slice(0, 1_000) ?? null
-              };
+                const root = element as unknown as DiagnosticElement;
+                const undo = root.querySelector("button[data-cleaning-plan-undo]");
+                const alert = Array.from(root.querySelectorAll('[role="alert"]')).find(
+                  (candidate) =>
+                    candidate.getClientRects().length > 0 &&
+                    candidate.getAttribute("aria-hidden") !== "true" &&
+                    candidate.ownerDocument.defaultView?.getComputedStyle(candidate).visibility !== "hidden"
+                );
+                return {
+                  sessionMatches: root.getAttribute("data-session-id") === expected.sessionId,
+                  syncMatches:
+                    expected.syncId !== null && root.getAttribute("data-renderer-sync-id") === expected.syncId,
+                  undoDisabled: undo?.disabled ?? null,
+                  alertPresent: alert !== undefined
+                };
+              },
+              { sessionId, syncId: receipt?.syncId ?? null }
+            ),
+            2_000,
+            "the failed native R Undo diagnostic"
+          ).catch(() => ({ unavailable: true }));
+          return JSON.stringify(
+            {
+              host,
+              dom,
+              undoObservation: { afterClick: await afterClick, final: await undoObservation.read() }
             },
-            { sessionId, syncId: receipt?.syncId ?? null }
-          ),
-          2_000,
-          "the failed native R Undo diagnostic"
-        ).catch(() => ({ unavailable: true }));
-        return JSON.stringify({ host, dom });
-      }
-    );
+            null,
+            1
+          );
+        }
+      );
+    } finally {
+      await undoObservation.dispose();
+    }
     const duplicateRestored = testing.activeSession();
     assert.ok(duplicateRestored);
     assert.deepEqual(duplicateRestored.metadata.schema, duplicateBase.metadata.schema);

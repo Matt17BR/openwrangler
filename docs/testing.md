@@ -806,9 +806,11 @@ direct-document execution and kernel restart/recovery. Three page windows after 
 missing cells and row identities. The native kernel owner checks
 all original Mark Duplicates columns, and the real-process owner checks complete page restoration after Undo for
 both operations. Requested code-insertion screenshots keep the same capture owner.
-If the Mark Duplicates Undo wait fails, its diagnostic records bounded session, scheduler and renderer state and
-the visible alert. The diagnostic does not initiate synchronization or retry the action, and its DOM read has a
-separate two-second limit.
+The Mark Duplicates Undo diagnostic combines session, scheduler and renderer snapshots with a bounded, passive
+observation of that button's native input, relevant same-origin response categories and alert presence. It retains
+no message payloads or alert text, and its listeners are removed after the action. An observed click establishes
+input delivery, not host admission. The original click and 30-second wait remain unchanged; diagnostic reads and
+cleanup have separate two-second limits.
 
 The Linux comprehensive journey retains the broader operation catalog, final-page/last-column assertion, separate
 native Viewing opens and both native-flavor operations. macOS omits the additional tibble Rename and keyed-data.table
