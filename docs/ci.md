@@ -27,6 +27,11 @@ These Linux workers move the hosted image's unused `google-chrome.sources` file 
 R installation. This keeps a Chrome repository outage from blocking R setup or its system dependencies. Required
 repositories retain APT's signature and hash checks.
 
+The native R cache stores lock-verified package archives. With the same platform, lock and installer, runner image
+builds and R patch changes within the locked minor reuse the same key. Preparation records the actual image and R
+version, and every run installs and verifies a fresh private library. GitHub scopes pull-request caches to that PR,
+so reuse is limited to its later jobs, updates and reruns; the weekly R 4.4 job uses a separate lock.
+
 Source contracts, packaged smoke, and the separate required CodeQL gate run for every change.
 `scripts/ci-docs-only.mjs` may omit runtime execution when every change fits that runtime's scope below. All admitted
 files must be regular and non-executable.
