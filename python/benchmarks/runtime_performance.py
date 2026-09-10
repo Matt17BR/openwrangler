@@ -411,6 +411,10 @@ class StdioRuntimeClient:
             ) from error
         if isinstance(event, BaseException):
             raise AssertionError(self._runtime_failure(str(event))) from event
+        if event is _TRANSPORT_EOF:
+            raise AssertionError(
+                self._runtime_failure(f"Standalone runtime closed stderr before benchmark event {expected_kind}.")
+            )
         if not isinstance(event, dict):
             raise AssertionError(f"Standalone runtime returned an invalid benchmark event: {event!r}.")
         if event.get("kind") != expected_kind or not isinstance(event.get("perfCounterNs"), int):
@@ -451,16 +455,21 @@ class StdioRuntimeClient:
         stderr = self.process.stderr
         if stderr is None:  # pragma: no cover - constructor checks the pipe
             return
-        for line in stderr:
-            if not line.startswith(_BENCHMARK_EVENT_PREFIX):
-                self._stderr.append(line)
-                continue
-            try:
-                self._benchmark_events.put(json.loads(line.removeprefix(_BENCHMARK_EVENT_PREFIX)))
-            except Exception as error:
-                self._benchmark_events.put(
-                    AssertionError(f"Invalid benchmark runtime event: {line.rstrip()!r}: {error}")
-                )
+        try:
+            for line in stderr:
+                if not line.startswith(_BENCHMARK_EVENT_PREFIX):
+                    self._stderr.append(line)
+                    continue
+                try:
+                    self._benchmark_events.put(json.loads(line.removeprefix(_BENCHMARK_EVENT_PREFIX)))
+                except Exception as error:
+                    self._benchmark_events.put(
+                        AssertionError(f"Invalid benchmark runtime event: {line.rstrip()!r}: {error}")
+                    )
+        except Exception as error:
+            self._benchmark_events.put(error)
+        finally:
+            self._benchmark_events.put(_TRANSPORT_EOF)
 
     def _drain_available(self) -> None:
         while True:

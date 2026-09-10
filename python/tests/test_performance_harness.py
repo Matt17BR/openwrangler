@@ -154,6 +154,115 @@ def test_performance_harness_smoke(tmp_path: Path) -> None:
     assert '"warmSourceReopenMedianMs"' in result.stdout
 
 
+def test_benchmark_event_wait_reports_closed_stderr_and_child_failure(monkeypatch) -> None:
+    monkeypatch.setitem(
+        runtime_performance.StdioRuntimeClient.__init__.__globals__,
+        "_BENCHMARK_SERVER_BOOTSTRAP",
+        'raise RuntimeError("synthetic benchmark bootstrap failure")',
+    )
+    client = runtime_performance.StdioRuntimeClient()
+    try:
+        assert client.process.wait(timeout=5) == 1
+        client._stderr_thread.join(timeout=5)
+        assert not client._stderr_thread.is_alive()
+        with pytest.raises(AssertionError, match="closed stderr before benchmark event statsStarted") as failure:
+            client.receive_benchmark_event("statsStarted", timeout=0)
+        assert "RuntimeError: synthetic benchmark bootstrap failure" in str(failure.value)
+    finally:
+        client.close(raise_on_failure=False)
+        assert client.process.poll() is not None
+        assert not client._stdout_thread.is_alive()
+        assert not client._stderr_thread.is_alive()
+
+
+def test_benchmark_event_wait_preserves_queued_events_before_live_child_stderr_closes(monkeypatch) -> None:
+    prefix = runtime_performance._BENCHMARK_EVENT_PREFIX
+    monkeypatch.setitem(
+        runtime_performance.StdioRuntimeClient.__init__.__globals__,
+        "_BENCHMARK_SERVER_BOOTSTRAP",
+        f"""import os, sys
+print("synthetic stderr diagnostic", file=sys.stderr, flush=True)
+print({prefix!r} + '{{"kind":"statsStarted","perfCounterNs":1}}', file=sys.stderr, flush=True)
+print({prefix!r} + '{{invalid', file=sys.stderr, flush=True)
+print({prefix!r} + '{{"kind":"statsFinished","perfCounterNs":2}}', file=sys.stderr, flush=True)
+os.close(2)
+sys.stdin.read()
+""",
+    )
+    client = runtime_performance.StdioRuntimeClient()
+    try:
+        client._stderr_thread.join(timeout=5)
+        assert not client._stderr_thread.is_alive()
+        assert client.process.poll() is None
+        assert client.receive_benchmark_event("statsStarted", timeout=0) == {
+            "kind": "statsStarted",
+            "perfCounterNs": 1,
+        }
+        with pytest.raises(AssertionError, match="Invalid benchmark runtime event") as failure:
+            client.receive_benchmark_event("statsFinished", timeout=0)
+        assert "synthetic stderr diagnostic" in str(failure.value)
+        assert client.receive_benchmark_event("statsFinished", timeout=0) == {
+            "kind": "statsFinished",
+            "perfCounterNs": 2,
+        }
+        with pytest.raises(AssertionError, match="closed stderr before benchmark event statsStarted") as failure:
+            client.receive_benchmark_event("statsStarted", timeout=0)
+        assert "synthetic stderr diagnostic" in str(failure.value)
+        assert client.process.poll() is None
+    finally:
+        client.close(raise_on_failure=False)
+        assert client.process.poll() is not None
+        assert not client._stdout_thread.is_alive()
+        assert not client._stderr_thread.is_alive()
+
+
+def test_benchmark_event_wait_preserves_stderr_read_failure_before_eof(monkeypatch) -> None:
+    monkeypatch.setitem(
+        runtime_performance.StdioRuntimeClient.__init__.__globals__,
+        "_BENCHMARK_SERVER_BOOTSTRAP",
+        "import os; os.write(2, b'\\xff')",
+    )
+    client = runtime_performance.StdioRuntimeClient()
+    try:
+        assert client.process.wait(timeout=5) == 0
+        client._stderr_thread.join(timeout=5)
+        assert not client._stderr_thread.is_alive()
+        with pytest.raises(AssertionError, match="invalid start byte") as failure:
+            client.receive_benchmark_event("statsStarted", timeout=0)
+        assert isinstance(failure.value.__cause__, UnicodeDecodeError)
+        with pytest.raises(AssertionError, match="closed stderr before benchmark event statsStarted"):
+            client.receive_benchmark_event("statsStarted", timeout=0)
+    finally:
+        client.close(raise_on_failure=False)
+        assert client.process.poll() is not None
+        assert not client._stdout_thread.is_alive()
+        assert not client._stderr_thread.is_alive()
+
+
+def test_benchmark_event_wait_retains_timeout_for_live_open_stderr(monkeypatch) -> None:
+    prefix = runtime_performance._BENCHMARK_EVENT_PREFIX
+    monkeypatch.setitem(
+        runtime_performance.StdioRuntimeClient.__init__.__globals__,
+        "_BENCHMARK_SERVER_BOOTSTRAP",
+        f"""import sys
+print({prefix!r} + '{{"kind":"statsStarted","perfCounterNs":1}}', file=sys.stderr, flush=True)
+sys.stdin.read()
+""",
+    )
+    client = runtime_performance.StdioRuntimeClient()
+    try:
+        client.receive_benchmark_event("statsStarted", timeout=5)
+        with pytest.raises(AssertionError, match="Timed out waiting for benchmark runtime event statsFinished"):
+            client.receive_benchmark_event("statsFinished", timeout=0.05)
+        assert client.process.poll() is None
+        assert client._stderr_thread.is_alive()
+    finally:
+        client.close(raise_on_failure=False)
+        assert client.process.poll() is not None
+        assert not client._stdout_thread.is_alive()
+        assert not client._stderr_thread.is_alive()
+
+
 def test_performance_column_sampling_covers_real_horizontal_blocks() -> None:
     assert runtime_performance._sample_column_offsets(8, 4) == [0, 0, 0, 0]
     assert runtime_performance._sample_column_offsets(20, 4) == [16, 0, 16, 0]
