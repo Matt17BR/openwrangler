@@ -574,14 +574,14 @@ const byExamplePreviewHarness = writeWebviewHarness(
 );
 screenshot(
   byExampleDialogHarness,
-  screenshotOutput("public-media-source/v1.2/browser/by-example-dialog.png"),
+  screenshotOutput("public-media-source/browser/by-example-dialog.png"),
   1280,
   960,
   PUBLIC_MEDIA_PIXEL_RATIO
 );
 screenshot(
   byExamplePreviewHarness,
-  screenshotOutput("public-media-source/v1.2/browser/by-example-preview.png"),
+  screenshotOutput("public-media-source/browser/by-example-preview.png"),
   1280,
   760,
   PUBLIC_MEDIA_PIXEL_RATIO,
@@ -826,7 +826,7 @@ writeWebviewHarness(
   "duckdb-rich-parquet.html",
   payloads.duckdbRich,
   {},
-  "public-media-source/v1.2/browser/duckdb-rich-parquet.png",
+  "public-media-source/browser/duckdb-rich-parquet.png",
   {},
   { width: 1920, height: 640, defaultColumnWidth: 240, pixelRatio: PUBLIC_MEDIA_PIXEL_RATIO }
 );
