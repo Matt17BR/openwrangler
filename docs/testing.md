@@ -769,6 +769,11 @@ The notebook formatter's wide-capture case retains a 501-column, 200-row source 
 exercise full-width capture and row truncation. Dimension-budget tests retain production-limit checks and smaller
 native boundary cases.
 
+Released Pandas and DuckDB MIME checks inspect one completed cell execution. Missing MIME fails that execution;
+later cell runs cannot satisfy the assertion. The remote readiness poller rejects authentication refusals and completed
+invalid HTTP 200 responses promptly, while retaining bounded startup polling for transport interruptions and server errors.
+Its direct source tests cover both expected kernelspecs, response bounds and cleanup.
+
 DuckDB engine tests verify temporary query-view cleanup after reads, metadata inspection, query failures and source
 deletion, while preserving caller objects, source evaluation counts and primary errors. The engine and notebook
 owners also cover repeated session closes and successful or refused captures on both supported DuckDB cohorts.

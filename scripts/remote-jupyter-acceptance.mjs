@@ -1149,12 +1149,39 @@ async function resolveLoopbackBaseUrl(docker, containerId) {
   return `http://127.0.0.1:${value}`;
 }
 
-async function waitForJupyterStatus(
+export async function waitForJupyterStatus(
   baseUrl,
   token,
   fixtureDefinition,
   { fetchImpl, now, sleep, timeoutMs, progressIntervalMs, onProgress }
 ) {
+  async function request(path, signal) {
+    let response;
+    try {
+      response = await fetchImpl(`${baseUrl}${path}`, {
+        method: "GET",
+        redirect: "error",
+        headers: {
+          accept: "application/json",
+          authorization: `token ${token}`
+        },
+        signal
+      });
+    } catch {
+      return undefined;
+    }
+    // The fixed fixture receives its token before starting Jupyter. A completed
+    // authentication or response-contract failure cannot be repaired by polling.
+    if (response?.status === 401 || response?.status === 403) {
+      throw new Error("Remote Jupyter authentication was rejected.");
+    }
+    if (response?.status !== 200) return undefined;
+    if (!/^application\/json(?:\s*;|$)/iu.test(response.headers?.get?.("content-type") ?? "")) {
+      throw new Error("Remote Jupyter readiness did not return JSON.");
+    }
+    return await readBoundedJsonResponse(response);
+  }
+
   const deadline = now() + timeoutMs;
   let nextProgressAt = now() + progressIntervalMs;
   while (now() <= deadline) {
@@ -1167,49 +1194,30 @@ async function waitForJupyterStatus(
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), Math.min(3_000, remaining));
     try {
-      const response = await fetchImpl(`${baseUrl}/api/status`, {
-        method: "GET",
-        redirect: "error",
-        headers: {
-          accept: "application/json",
-          authorization: `token ${token}`
-        },
-        signal: controller.signal
-      });
-      if (
-        response?.status === 200 &&
-        /^application\/json(?:\s*;|$)/iu.test(response.headers?.get?.("content-type") ?? "")
-      ) {
-        const report = await readBoundedJsonResponse(response);
+      const report = await request("/api/status", controller.signal);
+      if (report !== undefined) {
         if (
-          isPlainObject(report) &&
-          Number.isSafeInteger(report.connections) &&
-          report.connections >= 0 &&
-          Number.isSafeInteger(report.kernels) &&
-          report.kernels >= 0
+          !isPlainObject(report) ||
+          !Number.isSafeInteger(report.connections) ||
+          report.connections < 0 ||
+          !Number.isSafeInteger(report.kernels) ||
+          report.kernels < 0
         ) {
-          const kernelspecResponse = await fetchImpl(`${baseUrl}/api/kernelspecs`, {
-            method: "GET",
-            redirect: "error",
-            headers: {
-              accept: "application/json",
-              authorization: `token ${token}`
-            },
-            signal: controller.signal
-          });
-          if (
-            kernelspecResponse?.status === 200 &&
-            /^application\/json(?:\s*;|$)/iu.test(kernelspecResponse.headers?.get?.("content-type") ?? "") &&
-            isExpectedRemoteKernelspec(await readBoundedJsonResponse(kernelspecResponse), fixtureDefinition)
-          ) {
-            return;
+          throw new Error("Remote Jupyter status was invalid.");
+        }
+        const kernelspec = await request("/api/kernelspecs", controller.signal);
+        if (kernelspec !== undefined) {
+          if (!isExpectedRemoteKernelspec(kernelspec, fixtureDefinition)) {
+            throw new Error("Remote Jupyter kernelspec did not match its fixed fixture.");
           }
+          return;
         }
       }
-    } catch {
-      // Startup races and rejected requests are retried only within the fixed deadline.
     } finally {
       clearTimeout(timer);
+      // Also release unread non-200 bodies; clearing the timer alone leaves
+      // their fetch streams alive across subsequent attempts.
+      controller.abort();
     }
     if (now() >= deadline) break;
     await sleep(Math.min(POLL_INTERVAL_MS, Math.max(1, deadline - now())));
@@ -1265,14 +1273,20 @@ async function readBoundedJsonResponse(response) {
   let length = 0;
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      let chunk;
+      try {
+        chunk = await reader.read();
+      } catch {
+        // A response interrupted after its headers is still a transport failure.
+        return undefined;
+      }
+      const { done, value } = chunk;
       if (done) break;
       if (!(value instanceof Uint8Array)) {
         throw new Error("Remote Jupyter status returned an invalid response chunk.");
       }
       length += value.byteLength;
       if (length > STATUS_MAX_BYTES) {
-        await reader.cancel();
         throw new Error("Remote Jupyter status exceeded its fixed response bound.");
       }
       chunks.push(Buffer.from(value));
