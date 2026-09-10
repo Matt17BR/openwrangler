@@ -4,253 +4,105 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ## [Unreleased]
 
+### Added
+
+- Mark Duplicates flags every member of a selected-value duplicate group without removing rows. Dense Rank appends
+  ascending or descending ranks while preserving ties, missing values and source order. Both operations generate
+  matching native code in Pandas, Polars, DuckDB and native R.
+- Redo re-executes the latest undone command from the workbench or Command Palette, preserving saved settings and
+  command order. Closing or recovering the runtime, or committing a new plan branch, clears Redo history.
+- Multi-column cleaning forms support searching columns without losing selections hidden by the search.
+
 ### Changed
 
-- Pandas value choices avoid retaining a label for every distinct value. Full-column counting and search remain
-  unchanged; reverse-ordered data can take longer.
-- The R CSV export choice now shows its timestamp precision and time-zone limits.
-- Native R encodes responses containing quoted or multiline text faster, including generated cleaning programs.
-- Pandas Formula accepts more exact Arrow integer differences, including negative results from unsigned operands.
-- Pandas Formula accepts more exact scalar powers of signed Arrow integers, including odd powers of nonnegative values,
-  when results fit UInt64.
-- Pandas Formula accepts more exact Arrow integer products, including signed-minimum negation and results that fit UInt64.
-- Generated native R Group By reuses live exact integer accumulation, including batching for ordinary integer sums.
-- Generated native R One-hot encoding prepares distinct category labels and avoids repeated source searches.
-- Mark Duplicates flags every row whose selected values occur more than once. It retains all records and their
-  order, with matching generated code in Pandas, Polars, DuckDB and native R.
-
-- Dense Rank appends numeric ranks in Pandas, Polars, DuckDB and native R. Ascending and descending ranks preserve
-  ties, missing values and input row order, and generate matching native code.
-
-- Redo re-executes the latest undone cleaning command in the current runtime session. It preserves saved settings
-  and command order, and is available from the workbench or Command Palette. Closing or recovering the runtime,
-  or committing a new plan branch, clears this history.
-
-- Generated Polars and native R Fill Missing Values scripts omit unused helpers while retaining dependencies for mixed plans.
-- Native R Find and Replace shares its regex calculation with generated code, reducing repeated code in multi-step plans.
-- Multi-column cleaning forms support column search while retaining selections hidden by the search.
-- Scheduled previews skip builds and publication when `main` has not changed since the last successful scheduled run.
-  Failed runs remain eligible for the next schedule; manual previews still run on request.
+- Newly entered Formula integer literals retain their exact text through forms, saved plans and generated code.
+  Engines refuse values beyond their supported capacity or precision. **Re-enter literals whose digits were already lost.**
+- Restart older live Python kernels after updating to load the changed runtime protocol. Saved notebook previews
+  remain readable.
+- Scheduled previews skip unchanged `main` commits after a successful scheduled run; failed runs remain eligible.
+- Pandas value choices retain fewer distinct-value labels. Full-column counting and search remain; reverse-ordered
+  data can take longer. Native R response encoding handles quoted and multiline text more efficiently.
+- Generated Polars and R Fill code includes only the helpers its plan needs. R Find and Replace and integer grouping
+  reuse their existing native calculations; categorical generation prepares distinct labels once.
 
 ### Fixed
 
-- Opening a viewing sort from the sidebar selects its column without clearing unfinished filter or sort input.
-- Filter choices clear stale counts after another filter or sort changes. Search reloads them for the current view.
-- Reopening value filters selects the requested column and clears old search input to match the fresh choices.
-- Polars profiles and value choices accept supported columns named `count` or matching a temporary count field.
-- Pandas profiles and value choices handle large object-stored integers without failing on floating-point overflow.
-  Exact values, counts, extrema and sums remain available.
-- CSV/TSV import detection recognizes CR records and gives Polars the matching line ending.
-  Import Options can set it explicitly when the sample is ambiguous.
-- File import detection preserves UTF-8 characters at its sample boundary instead of selecting a legacy encoding.
-- CSV/TSV imports retain empty fields and whitespace values that were incorrectly treated as an empty file.
-- Native R CSV exports keep fractional duration fields intact when `OutDec` uses a comma.
-  Duration NaN now refuses export before writing; missing values and infinity tokens retain their existing output.
-- Filtering or restoring a grid view keeps keyboard focus and cell selection aligned, preventing Ctrl+C from copying a different cell.
-- Native R Fill Missing Values avoids early underflow when interpolating between subnormal values, including in generated code.
-- Generated Python no longer replaces notebook inputs named like its imports or helpers. A source named `clean_data`
-  uses a generated function named `clean_data_1`.
-- Python Custom Code preserves multiline strings and comments instead of rewriting their separators and indentation.
-  Syntax errors report the entered code's line numbers.
-- Native R Pivot Longer no longer rejects valid previews because it changed retained column identities or nullability.
-- Polars Pivot Longer accepts compatible lazy categorical columns on the first attempt, including in generated code.
-- Editing preserves the accepted viewing filter after overlapping page requests fail or become superseded, including
-  dropped-column restoration through Discard and Undo. Restart an older live Python kernel after updating to load
-  the new runtime protocol; saved notebook previews remain readable.
-- Spark paging preserves the accepted query's continuation after overlapping viewing requests fail or become superseded.
-- Column menus keep Copy, Filter and Sort actions visible in short editor panes and narrow columns.
-- Native R cleanup no longer rejects an unchanged directory after moving a response file into it.
-- Native R Formula checks large integer literals exactly on Windows, preventing silent rounding of admitted input.
-- Native R numeric, datetime and duration filters preserve selected values when platform decimal parsers differ.
-  Scalar numeric Fill also retains the same value in live and generated execution.
-- Generated native R Formula and By Example preserve finite numeric literals when platform decimal parsers differ.
-- Native R Mean Fill, Group By and numeric profiles retain finite means across cancellation and chunk boundaries.
-- Read-only Code Preview supports keyboard entry and navigation through long generated programs.
-- Small editor panes keep space for the grid header and a data row. Column search brings its target into view
-  when wrapped workbench controls require vertical scrolling, and restores cell focus when selecting the same column again.
-- Escape closes the column-actions popup before discarding a draft or closing the profiles drawer.
-- Python sessions return valid empty pages when recovery or cleaning leaves fewer rows than the requested position.
-- Runtime recovery refreshes stale profiles with the recovered grid and preserves the originating operation's error.
-- DuckDB file imports preserve the selected file when its path contains wildcard characters, and refuse native path forms that could select another file.
-- Unfinished filters retain unavailable column targets until a replacement is chosen, and reset when a different session opens.
-- Column choices distinguish names that resemble position labels or differ only in ordinary spaces, tabs or line breaks.
-- Removing operation rows or clearing unavailable selections keeps focus in the dialog so Escape continues to work.
-- Invalid Python runtime timeout settings use their defaults instead of causing immediate timeouts.
-- Native R sessions honor configured opening and request deadlines while preserving the separate export timeout.
-- Pandas Dataset statistics retain missing-value counts when nested or set-valued columns prevent duplicate counting, and show the duplicate count as unavailable.
-- Lazy Polars Dataset statistics retain missing-value counts for Object columns and show the duplicate count as unavailable.
-- Native R Parquet exports refuse timestamp values that would lose precision in microsecond storage.
-- Native R CSV exports preserve UTF-8 text under the C locale.
-- Pandas Parquet imports preserve nullable integer values and integer children in lists, structs and maps through editing and export.
-- Generated native R Convert Type preserves text output when its duration input has no rows.
-- Native R One-hot encoding no longer creates phantom indicators for empty or all-missing duration columns.
-- Generated native R One-hot encoding groups equivalent text encodings consistently under the C locale.
-- Single-column cleaning forms retain their chosen target when a schema change removes it or makes it incompatible.
-  Preview requires an explicit replacement instead of silently selecting another column.
-- Cleaning forms retain unavailable column selections after schema changes and offer an explicit repair action.
-  Column search remains clearable when only one column remains.
-- DuckDB Multi-label Encoding accepts an input named `label` or an unrelated column with that name.
-- DuckDB Pivot Longer and Pivot Wider preserve requested output columns named like internal ordering helpers.
-  Saved Pivot Wider programs reject missing value columns instead of using an internal helper as input.
-- Generated DuckDB Sort Rows preserves user columns named like internal sort helpers and keeps tied rows in input order.
-- Generated DuckDB Drop Duplicates and Mark Duplicates reject missing input keys named like internal row ordinals.
-- Selecting a different applied step clears the pending deletion confirmation.
-- Polars Floor, Ceiling and Round preserve valid Decimal results without overflowing an intermediate value,
-  including in file previews and generated code.
-- Python sessions report recognized Polars panic exceptions as request errors instead of leaving requests unanswered.
-- Polars checks lazy Custom Code output for expression errors outside the displayed columns, with the same check
-  in generated code. Ordinary cleaning steps avoid repeating this full-width scan.
-- Generated Pandas and Polars Custom Code rejects zero-column results, matching live Preview when a plan runs on new input.
-- Generated DuckDB queries use the input relation's connection, preventing same-named tables or functions on another
-  connection from substituting different data.
-- DuckDB notebook queries and captures release their temporary views without closing the user's connection.
-- DuckDB Formula rejects lossy results when mixing signed and unsigned integer types in addition, subtraction,
-  multiplication and modulo. Correct native results retain their types, with matching generated code.
-- DuckDB Formula checks BIGNUM multiplication and modulo in programmatic and generated plans. Selected BIGNUM
-  operands outside the signed 128-bit range can cause refusal even when the native result is exact; zero identities
-  remain supported.
-- Pandas Formula rejects integer wraparound and lossy promotion in addition, subtraction, multiplication and
-  nonnegative integer powers. Correct native results retain their types, with matching generated code.
-- Changing operations clears validation errors from the previous form.
-- DuckDB evaluates computed cleaning results before accepting a step, catching errors outside the visible rows or
-  columns. Rename, Select Columns and Drop Columns avoid repeating this full-result scan.
-  Generated programs apply the same policy before continuing.
-- Registered R mean methods no longer change built-in means or profile medians. Custom Code keeps normal R dispatch.
-- Generated native R Group By handles empty inputs and preserves integer64 keys and first/last values in a fresh R session.
-- Native R medians and midpoint interpolation preserve tiny numeric results in live and generated cleaning code.
-  They use R's native mean while retaining finite-overflow protection and existing equal-value behavior.
-- Staged viewing sorts discard rules whose column was renamed, removed or replaced, avoiding stale sort targets.
-- Undo closes the editor for a removed cleaning step, preventing Preview from submitting a deleted step ID.
-- Histogram arrow keys follow the highlighted bin when switching from pointer to keyboard.
-- Concurrent grid-state saves no longer cancel a current sort or replace newer recovery state.
-- Failed recovery-storage writes keep the current grid selection, widths and viewport. A later refresh no longer
-  restores the previous selection; the existing warning explains that unsaved changes may be lost on restart.
-- Column-search arrow and page keys follow the displayed results after a cleaning action changes the schema.
-- Generated Python refuses an existing column when an operation requires a new output name.
-  Harmless extra columns and valid in-place replacements remain supported. DuckDB also refuses ambiguous column names
-  before later generated steps can read the wrong column.
-- Python 3.10 accepts short datetime fractions and compact timezone offsets in filters and Fill Missing Values,
-  with matching generated code. Invalid offset hours or minutes are rejected.
-- Pandas timestamps retain nanosecond fractions and time-zone offset seconds in grid cells, nested values, profiles
-  and value choices. Searching the corrected labels preserves ordinary value counts and representations.
-- Pandas keeps present Arrow timestamps and durations distinct from missing values in filters, pages and profiles.
-  Fill Missing Values preserves valid timestamps in target cells and when using them as donors or directional anchors.
-- Pandas Drop Duplicates and dataset duplicate counts retain distinct nullable Arrow integers, timestamps and
-  durations, including exact nanosecond differences. Retained rows keep their original values and types.
-  Sparse integer duplicate counts also retain exact neighboring values.
-- Pandas missing-cell totals correctly count multiple missing values in Sparse columns and reuse the per-column counts.
-- Native R Drop Duplicates and dataset duplicate counts distinguish exact integer64 keys. All three keep modes
-  retain the correct original rows, including both supported signed extrema and when other columns participate in the comparison.
-  Data tables also compare selected columns correctly when their labels repeat.
-- DuckDB Drop Duplicates preserves negative zero in retained floating values, including LIST and STRUCT keys,
-  in live and generated results.
-- Python runtime errors exclude late stderr from a retired process while keeping that text in the output history.
-- Python and native R keep broken-pipe errors within their runtime request handling, including cancellation and shutdown.
-- Native R Custom Code can create the first column of a zero-column source without losing the session. Generated R
-  accepts the same source, and step inspection preserves known empty schemas.
-- Python requests cancelled before dispatch retain their request ID, avoiding unnecessary runtime recovery.
-- DuckDB Parquet exports refuse interval truncation and time-zone map-key changes. Supported top-level time-zone
-  values retain their UTC time on the minimum runtime too.
-- DuckDB Parquet exports preserve top-level 128-bit integers within Decimal's 38-digit range. Larger values and
-  nested 128-bit fields are refused instead of silently rounding them to floating-point values.
-- Closing a session during runtime recovery stops later cleaning and viewing requests after the active request settles.
-- Delayed grid navigation keeps newer header or control focus. Interrupted column drags no longer overwrite restored
-  widths or continue after the view changes or controls become disabled.
-- Python refuses over-nested, non-finite and invalid-UTF-8 viewing operands before query work, so these requests no
-  longer leave a changed viewing query or terminate the standalone runtime.
-- Python and native R reject malformed viewing structures before execution. Native R no longer accepts malformed
-  filter arrays or null logic as an empty or default-AND Filter Rows draft.
-- Failed viewing pages preserve the last confirmed Python query, so later Apply and Discard do not use an unseen
-  filter. Spark retains the prior view's page continuation after a rejected replacement.
-- Large Unicode R pages report a bounded request error instead of terminating the standalone runtime during response
-  encoding. Smaller followup pages remain available in the same process.
-- The operation search field has an accessible name that remains available while entering a query.
-- Python notebook runtime requests discard unrelated printed output and bound the retained response. Malformed output
-  no longer copies source text into framing errors or starts cleanup before the originating execution settles.
-- Python notebook-open preflight bounds retained text and error diagnostics before runtime dispatch, including noisy
-  kernels and malformed output. Output refusals drain the originating execution without interrupting it.
-
-- Polars Formula refuses unsupported UInt128 column arithmetic before it can panic on the minimum runtime.
-
-- Failed operation previews show their error inside the open form and retain the input for correction.
-- DuckDB Round refuses unsigned 128-bit overflow on Windows instead of returning a wrapped value.
-- Native R value selections and numeric predicates preserve floating precision instead of selecting a neighboring
-  value or dropping a matching row. Typed temporal selections retain their exact numeric payloads.
-- Grouped median Fill works on the minimum Polars runtime and preserves native integer and Decimal output types.
-- Polars By Example accepts exact unsigned cancellation and multiplication by zero on the minimum runtime.
-- Multi-label binarization works across supported Polars versions without changing empty-label behavior.
-- Polars JSONL/NDJSON opens the selected Unix file instead of an encoded-name sibling. Windows paths containing
-  glob characters are explicitly refused; ordinary paths retain literal percent-looking text. Windows local-drive
-  verbatim prefixes are accepted when the remaining path contains no glob characters.
-- Pandas profiles and row queries use logical Arrow dictionary values, including null entries and repeated values
-  across chunks. Row removal preserves encoded columns and exact Sparse integer payloads.
-- Pandas Arrow `bool8` and UUID columns display logical booleans and canonical UUID strings consistently with
-  profiles, selections and compatible cleaning operations.
-- CSV and Parquet exports preserve logical Arrow Boolean and UUID values and selected row labels. Parquet files
-  containing these native extensions reopen without failing on their Pandas dtype metadata.
-- Pandas object UUIDs agree with their canonical text in value selections, counts, sorting and exports. Selecting
-  rows preserves the original UUID objects and other stored values.
-- Pandas integer filtering, sorting, directional Fill and duplicate detection retain distinct large values instead
-  of rounding them together or rejecting valid unsigned selections.
-- Convert Type accepts supported Arrow dictionary values across chunks and retains the native target's range checks.
-- Fill uses logical Arrow dictionary values and preserves encoded targets when no cells change. Generated Fill code
-  handles native Arrow dates consistently with live execution.
-- CSV and Parquet export handles scalar Arrow dictionary columns and indexes, including null codebook entries.
-- Pandas Parquet imports retain exact nullable integer row labels instead of rounding large index values together.
-- Pandas Group By, Pivot and grouped Fill handle missing Arrow floating keys and signed zero consistently. Aggregate
-  NaN results remain distinct from empty-group nulls.
-- Pandas Group By Count handles Sparse columns without breaking other aggregates on the same input.
-- Pandas Group By and Pivot keep distinct Sparse integer keys. Grouped Fill uses the correct donors for large and
-  missing keys.
-- Pandas mixed object columns preserve distinct large numeric values in filters, counts, sorting, duplicates,
-  grouping and Pivot. Exact integer filter text reaches the runtime unchanged, and grouped Fill uses the correct donors.
-- Pandas refuses extended NumPy floating values that would silently lose precision or range during display or
-  selected queries. Exact native CSV export and explicit conversions retain their existing behavior.
-- Formula preserves newly entered large integer literals across the UI, saved plans and generated code. Native
-  engines reject unsupported literal capacity or precision. Previously lost digits require re-entering the literal.
-- Polars Formula rejects integer overflow, conversions that introduce nulls, and inexact mixed-integer results
-  while retaining valid native output types and paired nulls, including saved steps whose source becomes Boolean.
-- Formula modulo works on Pandas Arrow integer columns, including signed and unsigned extrema. Live and generated
-  execution preserve nulls and refuse present zero divisors without changing the confirmed plan.
-- Pandas Formula accepts exact UInt64 arithmetic blocked by signed operand inference and widens eligible Decimal128
-  arithmetic to Decimal256. UInt64 addition and subtraction also accept negative integer literals and signed
-  adjustment columns, including mixed signs, when the unsigned result fits. Addition accepts these columns in either
-  order. Missing operands remain missing, and existing successful native results retain their types, precision and scale.
-- Pandas Arrow date columns retain date profiles, value filters and sorting, including Parquet imports.
-- Polars and DuckDB enum labels no longer change the column's type or break profiles and value filters. Fixed-size
-  DuckDB arrays remain containers in schema and generated-code checks.
-- Floor and Ceiling preserve exact integer and Decimal values in Python engines, including generated code.
-- Pandas Convert Type rejects out-of-range signed-integer conversions instead of wrapping positive values or
-  converting infinities into ordinary integers.
-- Script and data exports protect source files renamed after the dataframe opens and reject source-path changes
-  during export dialogs or code synchronization.
-- The Operations view restores **Start R and show dataframes…** after the R terminal closes with no notebook open.
-- R terminal discovery no longer truncates its startup command before the first R prompt.
-- Column reveal waits for automatic Code Preview focus to finish before treating the grid layout as settled.
-- Native R accepts valid empty `data.table` subsets and cleaning results, including generated code and Custom Code
-  that return no rows.
-- Generated R follows native `data.table` column-metadata behavior across cleaning steps, including when later custom
-  code reads those attributes.
-- Pandas and Polars exports validate the destination file before truncation. Replacing the temporary path cannot
-  redirect a write into another file. Eager Polars Parquet exports now accept the host's protected destination.
-- Min-max Scale handles extreme finite values and precise integer and decimal ranges in Python engines, with matching
-  generated code. Native R scaling also handles finite ranges whose difference overflows.
-- Round preserves exact integer and Decimal values in live and generated Python code, including negative precision
-  and half-even ties. Polars, DuckDB and Arrow Decimal results beyond usable native capacity are rejected. Arrow
-  Decimal rounding retains readable values and existing CSV/Parquet export support.
-- Round supports negative precision in Polars and handles extreme precision in live and generated Python and R code.
-  Floating rounding preserves nulls and valid NaN values while avoiding intermediate overflow and inaccurate scales.
-- Generated Polars datetime-formatting code preserves native time zones and nanosecond precision.
-- Notebook variable selections keep their original Python kernel through opening. Direct R opens retain the terminal
-  selected before previous-session cleanup.
-- Successful activation survives long scheduler or debugger pauses.
-- Canceled editor openings stop deferred panel setup and preserve existing Code Preview actions.
-- Value filters preserve null and NaN choices and recognize supported scalar selections. Unnamed
-  columns no longer disable column navigation. Summary tab labels remain legible on hover.
-- Unnamed-column menus and profiles disable unsupported filters and sorts instead of leaving the grid loading.
-- Saved Filter Rows steps containing `inf` or `-inf` restore without falling back to the original data.
-- Release verification retries interrupted downloads within its existing limits, with bounded requests and sanitized
-  transport errors. Invalid packages still fail verification.
+- File detection preserves UTF-8 characters at sample boundaries, recognizes CR-delimited CSV/TSV records and retains
+  empty fields and whitespace. Import Options can explicitly select a line ending when detection is ambiguous.
+- DuckDB and Polars file imports preserve literal paths instead of opening wildcard or encoded-name siblings.
+  Unsupported path forms are refused. **Windows Polars JSONL/NDJSON paths containing glob characters remain unsupported**;
+  see [file and engine limits](docs/feature-parity.md).
+- Viewing filters, ordered sorts and Spark page continuations retain the last confirmed query after overlapping
+  requests fail or are superseded. Apply, Discard and Undo use the accepted view. Empty recovery pages remain valid;
+  saved Filter Rows steps restore explicit positive and negative infinity operands.
+- Filter choices refresh stale counts and search state. Sidebar sort editing selects the intended column without
+  clearing unfinished input. Unavailable targets remain visible until explicitly repaired; forms do not silently
+  select a replacement after schema changes. Column choices distinguish whitespace and position-like names.
+- Grid selection, keyboard focus and copied cells remain aligned through filtering, view restoration and interrupted
+  navigation or drags. Small panes keep a usable grid row and column menus; column reveal accounts for scrolling and
+  Code Preview layout changes. Histogram and column-search keys follow the visible selection.
+- Escape closes the column popup before affecting a draft or profile drawer. Removing form rows preserves dialog
+  focus; operation search has an accessible name. Read-only Code Preview supports keyboard navigation. Unnamed columns
+  retain navigation while unsupported filter/sort actions are disabled with an explanation.
+- Failed previews retain their input and show the error in the form. Changing operations clears obsolete errors;
+  Undo closes an editor for a removed step, and selecting another applied step clears pending deletion confirmation.
+- Recovery refreshes profiles with the restored grid and retains the originating error. Concurrent or failed state
+  saves preserve newer selections, widths and viewport; unsaved-state warnings remain. Closing a recovering session
+  stops further replay after active work settles.
+- Notebook and terminal actions retain their original execution owner across awaits. Canceled openings stop deferred
+  setup without removing existing Code Preview actions; activation survives scheduler/debugger pauses. R terminal
+  discovery handles startup correctly and restores **Start R and show dataframes…** after the terminal closes.
+- Python and R handle broken pipes, malformed viewing inputs and oversized responses within bounded request errors.
+  Python notebook framing excludes unrelated output, bounds preflight diagnostics and waits for originating execution
+  before cleanup. Retired stderr cannot become a newer process's error. Invalid timeouts use defaults; native R honors
+  configured opening/request deadlines and keeps its separate export deadline.
+- Generated Python preserves notebook names that resemble imports or helpers (`clean_data` uses `clean_data_1`), refuses
+  output-name collisions and missing or ambiguous inputs, and preserves Custom Code strings, comments and line numbers.
+  Pandas/Polars Custom Code rejects zero-column output in both live and generated execution. Polars Custom Code evaluates hidden
+  lazy-expression errors; DuckDB validates computed results beyond the displayed page before accepting a cleaning step.
+- DuckDB generated queries use the input relation's own connection. Temporary notebook views are released without
+  closing the user's connection. Sort, Pivot and duplicate operations preserve user columns named like internal helpers;
+  Multi-label Encoding accepts `label` columns, and duplicate removal retains original signed-zero values in nested keys.
+- Pandas Formula rejects integer wraparound and lossy promotion. Arrow integer modulo handles signed/unsigned extrema
+  and refuses present zero divisors. Exact eligible differences, products, UInt64 adjustments and scalar powers are
+  accepted; eligible Decimal128 arithmetic can widen to Decimal256. Native successful types and paired nulls remain.
+  [Engine precision limits](docs/architecture.md#pandas) still apply.
+- Polars Formula refuses overflow, lossy mixed-integer results, newly introduced nulls and unsupported UInt128 arithmetic
+  before native panics. DuckDB Formula refuses lossy signed/unsigned results; BIGNUM multiplication/modulo can still
+  refuse selected operands outside signed 128-bit range. Recognized Polars panics return request errors.
+- Python Floor, Ceiling, Round and Min-max Scale preserve supported integer, Decimal and extreme floating results in
+  live/generated code, including negative precision and half-even ties. Windows DuckDB unsigned 128-bit Round no longer wraps. Pandas Convert Type refuses out-of-range signed integers
+  and infinities instead of wrapping or producing ordinary integers. Native R scaling and rounding retain their documented limits.
+- Pandas profiles, filters, sorting, duplicates, grouping, Pivot and Fill preserve supported large integer/object/Sparse
+  values and exact group keys. Missing-cell counts remain available when duplicate statistics cannot be computed;
+  lazy Polars Object columns likewise retain missing counts. Temporary-looking names no longer break Polars counts.
+- Pandas Arrow dictionary, Boolean, UUID and date values retain their logical meaning across viewing, supported cleaning
+  and export. Nullable integers and nested integer fields survive Parquet round trips; integer row labels remain exact.
+  Missing Arrow floating keys and signed zeros group consistently; aggregate NaN remains distinct from empty-group null.
+- Pandas temporal values retain nanoseconds, offset seconds and present extrema through pages, profiles, choices,
+  duplicate detection and supported Fill methods. Extended NumPy floats that would lose display/query precision are
+  refused. Python 3.10 accepts supported short datetime fractions and compact offsets; invalid offsets are rejected.
+  Generated Polars datetime formatting preserves native zones and nanoseconds.
+- Polars grouped median Fill, exact By Example cancellation/zero multiplication, Multi-label Encoding and lazy categorical
+  Pivot Longer work across supported dependencies. Polars/DuckDB enum labels and DuckDB fixed-size arrays retain their
+  proper semantic types.
+- Native R filtering, Formula literals and generated numeric code retain admitted values across platform decimal parsers.
+  Built-in means, medians and interpolation avoid the documented cancellation/underflow failures and ignore registered
+  S3 mean methods; Custom Code retains normal R dispatch. Normal-endpoint interpolation keeps its existing precision limits.
+- Native R duplicate detection keeps exact integer64 keys, including repeated data-table labels. Pivot Longer preserves
+  retained IDs/nullability; generated Group By preserves empty types and integer64 values in a fresh session. Empty
+  data-table results remain valid, and Custom Code can add the first column to a zero-column source. Generated steps
+  follow native column-metadata rules; empty duration-to-text and categorical encoding retain the correct outputs.
+- Script/data exports protect renamed sources and recheck destinations before truncation or publication. Pandas and
+  Polars cannot redirect writes through replaced temporary paths; protected eager Polars Parquet output remains usable.
+- Pandas CSV/Parquet exports preserve logical Arrow dictionary/Boolean/UUID values and row labels. DuckDB Parquet retains
+  supported top-level 128-bit integers within Decimal's 38-digit range; larger/nested integers, interval truncation and
+  time-zone map-key changes are refused instead of silently changing values.
+- Native R CSV keeps UTF-8 under the C locale and fractional durations under comma `OutDec`. Duration NaN refuses export
+  before writing. **CSV timestamps can still lose precision and omit their zone**; the export choice now states this.
+  R Parquet refuses timestamps that cannot survive exact microsecond storage. See [native R limits](docs/feature-parity.md#native-r-preview).
+- Native R private-file cleanup accepts an unchanged directory after moving a response file into it. Release verification
+  retries interrupted downloads within existing bounds, sanitizes transport errors and still rejects invalid packages.
 
 ## [2.1.0] - 2026-09-07
 
