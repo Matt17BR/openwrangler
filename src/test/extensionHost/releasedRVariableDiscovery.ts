@@ -90,14 +90,16 @@ export function createReleasedRVariableDiscovery({
 
     let sidebar = await arrangePackagedProductSidebar(workbench, "operation-catalog");
     let operations = sidebar.getByRole("tree", { name: /Operations/u }).first();
-    for (const [name, flavor] of [
+    const variables: Array<readonly [string, string]> = [
       ["orders_frame", "data.frame"],
       ["orders_tibble", "tibble"],
-      ["orders_table", "data.table"],
-      ["collapse_frame", "data.frame"],
-      ["collapse_tibble", "tibble"],
-      ["collapse_table", "data.table"]
-    ] as const) {
+      ["orders_table", "data.table"]
+    ];
+    if (coverage.focusedEditing === "none") {
+      variables.push(["collapse_frame", "data.frame"], ["collapse_tibble", "tibble"], ["collapse_table", "data.table"]);
+    }
+    const unsupportedVariables = coverage.focusedEditing === "none" ? ["collapse_grouped", "collapse_indexed"] : [];
+    for (const [name, flavor] of variables) {
       const row = operations.getByRole("treeitem", { name: new RegExp(`^${name}\\b`, "u") });
       await row.waitFor({ state: "visible", timeout: 90_000 });
       assert.match(
@@ -106,7 +108,7 @@ export function createReleasedRVariableDiscovery({
         `Operations must label ${name} with its native R dataframe flavor.`
       );
     }
-    for (const name of ["collapse_grouped", "collapse_indexed"] as const) {
+    for (const name of unsupportedVariables) {
       assert.equal(
         await operations.getByRole("treeitem", { name: new RegExp(`^${name}\\b`, "u") }).count(),
         0,
@@ -131,14 +133,7 @@ export function createReleasedRVariableDiscovery({
         await captureReleasedRJupyterOperations(workbench, sidebar, screenshotOutput);
       }
       picker = await activateReleasedNotebookVariableAction(workbench, notebook);
-      for (const [name, flavor] of [
-        ["orders_frame", "data.frame"],
-        ["orders_tibble", "tibble"],
-        ["orders_table", "data.table"],
-        ["collapse_frame", "data.frame"],
-        ["collapse_tibble", "tibble"],
-        ["collapse_table", "data.table"]
-      ] as const) {
+      for (const [name, flavor] of variables) {
         const row = await releasedJupyterQuickPickRow(picker, name);
         assert.ok(row, `The real R variable picker must expose ${name}.`);
         assert.match(
@@ -146,7 +141,7 @@ export function createReleasedRVariableDiscovery({
           new RegExp(`R · ${flavor}.*Live notebook session`, "u")
         );
       }
-      for (const name of ["collapse_grouped", "collapse_indexed"] as const) {
+      for (const name of unsupportedVariables) {
         assert.equal(
           await releasedJupyterQuickPickRow(picker, name),
           undefined,

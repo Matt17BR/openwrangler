@@ -231,7 +231,7 @@ export function createReleasedRJupyterExtensionJourney({
       phase === "jupyter-r" && process.platform === "linux"
         ? process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS
         : undefined;
-    writeReleasedRNotebook(notebookPath, phase, releasedJupyterKernelTarget(phase));
+    writeReleasedRNotebook(notebookPath, phase, releasedJupyterKernelTarget(phase), coverage.focusedEditing);
     const configuration = vscode.workspace.getConfiguration("openWrangler");
     const originalProvider = configuration.inspect<"ask" | "openWrangler" | "dataWrangler" | "disabled">(
       "notebookPreviewProvider"
@@ -280,7 +280,7 @@ export function createReleasedRJupyterExtensionJourney({
       assert.deepEqual({ rows: setup.rows, columns: setup.columns }, { rows: 1_205, columns: 25 });
       assertReleasedRVersion(setup, kernelTarget, "R setup");
       if (!kernelTarget.remote) assertReleasedRPrivateLibrary(setup, "R setup");
-      assert.equal(setup.collapseVersion, "2.1.7");
+      if (coverage.focusedEditing === "none") assert.equal(setup.collapseVersion, "2.1.7");
       assert.ok(Number.isSafeInteger(Number(setup.pid)) && Number(setup.pid) > 0);
       if (kernelTarget.remote) {
         assert.equal(setup.remoteRunId, kernelTarget.remote.runId);
