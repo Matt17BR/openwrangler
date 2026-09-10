@@ -586,6 +586,10 @@ sum fits signed 64-bit storage. Empty int64 columns need no reductions. Other in
 that sufficient bound retain exact widening; output normalization is unchanged. Live and generated code share
 the same admission helper.
 
+Pandas Pivot Wider shares nullable output allocation between live execution and standalone generated code.
+Categories, nullable integer storage, Boolean storage and the existing object fallback follow the same native dtype
+policy; validation, grouping and row restoration retain their existing paths.
+
 ### Polars
 
 Profiles and value choices keep temporary count fields distinct from the selected source field. Supported source

@@ -46,11 +46,13 @@ from . import (
     _pandas_group_sum_helpers,
     _pandas_linear_fill_helpers,
     _pandas_min_max_helpers,
+    _pandas_pivot_helpers,
 )
 from ._pandas_arrow_formula_helpers import _open_wrangler_arrow_formula_repair as _pandas_arrow_formula_repair
 from ._pandas_group_sum_helpers import _open_wrangler_native_int64_sum_is_safe as _pandas_native_int64_sum_is_safe
 from ._pandas_linear_fill_helpers import _open_wrangler_fill_linear_gaps as _pandas_fill_linear_gaps
 from ._pandas_min_max_helpers import _open_wrangler_min_max_scale as _pandas_min_max_scale
+from ._pandas_pivot_helpers import _open_wrangler_nullable_pivot_series as _pandas_nullable_pivot_series
 from .base import (
     DEFAULT_STRIP_CHARACTERS,
     INTERNAL_ROW_ID_PREFIX,
@@ -2962,27 +2964,6 @@ def _pandas_pivot_wider_identifier_frame(
     return frame, states
 
 
-def _pandas_nullable_pivot_series(values: Any, size: int, name: str) -> Any:
-    import numpy as np
-    import pandas as pd
-
-    dtype = values.dtype
-    if isinstance(dtype, pd.CategoricalDtype):
-        data = pd.Categorical([None] * size, categories=dtype.categories, ordered=dtype.ordered)
-        return pd.Series(data, name=name)
-    if pd.api.types.is_integer_dtype(dtype):
-        nullable = pd.UInt64Dtype() if pd.api.types.is_unsigned_integer_dtype(dtype) else pd.Int64Dtype()
-        return pd.Series(pd.array([pd.NA] * size, dtype=nullable), name=name)
-    if pd.api.types.is_bool_dtype(dtype):
-        return pd.Series(pd.array([pd.NA] * size, dtype=pd.BooleanDtype()), name=name)
-    if isinstance(dtype, np.dtype) and pd.api.types.is_float_dtype(dtype):
-        return pd.Series(np.full(size, np.nan, dtype=dtype), name=name)
-    try:
-        return pd.Series(pd.array([pd.NA] * size, dtype=dtype), name=name)
-    except (TypeError, ValueError):
-        return pd.Series([None] * size, dtype="object", name=name)
-
-
 def _pandas_pivot_wider(
     df: Any,
     names_position: int,
@@ -3041,6 +3022,7 @@ def _pandas_pivot_wider(
 
 def _generated_pandas_pivot_wider_helpers() -> list[str]:
     return [
+        getsource(_pandas_pivot_helpers),
         "def _open_wrangler_pivot_wider(df, names_position, values_position, output_values, output_names):",
         "    def output_key(value):",
         (
@@ -3143,26 +3125,8 @@ def _generated_pandas_pivot_wider_helpers() -> list[str]:
         "        group_count = 1 if len(df) else 0",
         "        group_codes = pd.Series([0] * len(df), dtype='int64')",
         "        result = pd.DataFrame(index=range(group_count))",
-        "    dtype = values.dtype",
         "    for key_value, output_name in zip(output_values, output_names, strict=True):",
-        "        if isinstance(dtype, pd.CategoricalDtype):",
-        ("            data = pd.Categorical([None] * group_count, categories=dtype.categories, ordered=dtype.ordered)"),
-        "            output = pd.Series(data, name=output_name)",
-        "        elif pd.api.types.is_integer_dtype(dtype):",
-        (
-            "            nullable = pd.UInt64Dtype() if pd.api.types.is_unsigned_integer_dtype(dtype) "
-            "else pd.Int64Dtype()"
-        ),
-        "            output = pd.Series(pd.array([pd.NA] * group_count, dtype=nullable), name=output_name)",
-        "        elif pd.api.types.is_bool_dtype(dtype):",
-        "            output = pd.Series(pd.array([pd.NA] * group_count, dtype=pd.BooleanDtype()), name=output_name)",
-        "        elif isinstance(dtype, np.dtype) and pd.api.types.is_float_dtype(dtype):",
-        "            output = pd.Series(np.full(group_count, np.nan, dtype=dtype), name=output_name)",
-        "        else:",
-        "            try:",
-        "                output = pd.Series(pd.array([pd.NA] * group_count, dtype=dtype), name=output_name)",
-        "            except (TypeError, ValueError):",
-        "                output = pd.Series([None] * group_count, dtype='object', name=output_name)",
+        "        output = _open_wrangler_nullable_pivot_series(values, group_count, output_name)",
         "        mask = names.eq(key_value)",
         "        target = group_codes.loc[mask].astype('int64').to_list()",
         "        if target:",
