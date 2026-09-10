@@ -28,6 +28,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .node-version
+          package-manager-cache: false
       - id: proof
         name: Verify the exact pull-request merge
         run: node scripts/ci-docs-only.mjs
