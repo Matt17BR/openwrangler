@@ -3,9 +3,9 @@ from __future__ import annotations
 import contextlib
 import errno
 import importlib.util
+import io
 import json
 import os
-import queue
 import shutil
 import stat
 import subprocess
@@ -13,12 +13,15 @@ import threading
 import time
 import uuid
 import venv
-from dataclasses import dataclass
+from collections.abc import Iterator
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
+import dependency_guard_test_support
 import pytest
-from dependency_guard_test_support import create_fake_pip_package
+from dependency_guard_test_support import cleanup_guard_processes, create_fake_pip_package, read_guard_line
 
 PROTOCOL = "openwrangler-dependency-guard-v1"
 HELPER = Path(__file__).parents[1] / "openwrangler_runtime" / "dependency_guard.py"
@@ -35,6 +38,7 @@ class GuardFixture:
     dependency: dict[str, Any]
     pip_sentinel: Path
     pip_release: Path
+    processes: list[subprocess.Popen[bytes]] = field(default_factory=list)
 
     @property
     def journal(self) -> Path:
@@ -42,7 +46,7 @@ class GuardFixture:
 
 
 @pytest.fixture
-def guard_fixture(tmp_path: Path) -> GuardFixture:
+def guard_fixture(tmp_path: Path) -> Iterator[GuardFixture]:
     root = tmp_path / "selected"
     venv.EnvBuilder(with_pip=False).create(root)
     executable = root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
@@ -50,7 +54,7 @@ def guard_fixture(tmp_path: Path) -> GuardFixture:
     _write_fake_dependency(site_packages)
     _write_fake_pip(site_packages)
     environment = _probe_environment(executable)
-    return GuardFixture(
+    fixture = GuardFixture(
         root=root,
         executable=executable,
         environment=environment,
@@ -65,6 +69,10 @@ def guard_fixture(tmp_path: Path) -> GuardFixture:
         pip_sentinel=tmp_path / "pip-started.json",
         pip_release=tmp_path / "pip-release",
     )
+    try:
+        yield fixture
+    finally:
+        cleanup_guard_processes(fixture.processes, PROCESS_TIMEOUT_SECONDS)
 
 
 def _site_packages(executable: Path) -> Path:
@@ -257,13 +265,15 @@ def _start(
     *,
     environment: dict[str, str] | None = None,
 ) -> subprocess.Popen[bytes]:
-    return subprocess.Popen(
+    process = subprocess.Popen(
         [str(fixture.executable), "-I", str(HELPER), mode],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=environment or _process_environment(fixture),
     )
+    fixture.processes.append(process)
+    return process
 
 
 def _write_frame(process: subprocess.Popen[bytes], payload: dict[str, Any]) -> None:
@@ -272,28 +282,9 @@ def _write_frame(process: subprocess.Popen[bytes], payload: dict[str, Any]) -> N
     process.stdin.flush()
 
 
-def _read_line_with_timeout(stream: Any) -> bytes:
-    results: queue.Queue[bytes | BaseException] = queue.Queue(maxsize=1)
-
-    def read() -> None:
-        try:
-            results.put(stream.readline())
-        except BaseException as error:
-            results.put(error)
-
-    threading.Thread(target=read, daemon=True).start()
-    try:
-        result = results.get(timeout=FRAME_TIMEOUT_SECONDS)
-    except queue.Empty:
-        raise AssertionError("The dependency guard did not emit a frame before the timeout.") from None
-    if isinstance(result, BaseException):
-        raise result
-    return result
-
-
 def _read_frame(process: subprocess.Popen[bytes]) -> dict[str, Any]:
     assert process.stdout is not None
-    line = _read_line_with_timeout(process.stdout)
+    line = read_guard_line(process, FRAME_TIMEOUT_SECONDS, PROCESS_TIMEOUT_SECONDS)
     assert line.endswith(b"\n")
     decoded = json.loads(line)
     assert isinstance(decoded, dict)
@@ -538,6 +529,175 @@ def _arm(
     _write_frame(process, _install_request(fixture, token, dependency=dependency))
     assert _read_frame(process) == {"kind": "ready", "protocol": PROTOCOL, "token": token}
     return process
+
+
+@pytest.mark.parametrize("boundary", ["ready", "caller"])
+def test_fixture_cleanup_settles_native_pre_go_assertion_failures(
+    guard_fixture: GuardFixture, monkeypatch: pytest.MonkeyPatch, boundary: str
+) -> None:
+    original_read = _read_frame
+    captured: list[subprocess.Popen[bytes]] = []
+
+    def observe(process: subprocess.Popen[bytes]) -> dict[str, Any]:
+        captured.append(process)
+        frame = original_read(process)
+        if boundary == "ready":
+            frame["token"] = "mismatched-ready-observation"
+        return frame
+
+    monkeypatch.setitem(globals(), "_read_frame", observe)
+    try:
+        with pytest.raises(AssertionError):
+            _arm(guard_fixture, str(uuid.uuid4()))
+            assert _marker_paths(guard_fixture) == []
+        assert len(captured) == 1
+        process = captured[0]
+        assert guard_fixture.processes == captured
+        assert process.poll() is None
+        assert process.stdin is not None and not process.stdin.closed
+        assert len(_marker_paths(guard_fixture)) == 1
+        cleanup_guard_processes(guard_fixture.processes, PROCESS_TIMEOUT_SECONDS)
+        assert process.returncode == 10
+        assert process.stdout is not None and process.stdout.closed
+        assert process.stderr is not None and process.stderr.closed
+        assert not guard_fixture.processes
+        assert _marker_paths(guard_fixture) == []
+        assert not guard_fixture.pip_sentinel.exists()
+    finally:
+        cleanup_guard_processes(captured, PROCESS_TIMEOUT_SECONDS)
+
+
+def test_fixture_cleanup_bounds_missing_native_frame_and_joins_reader(
+    guard_fixture: GuardFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    process = _arm(guard_fixture, str(uuid.uuid4()))
+    original_thread = threading.Thread
+    readers: list[threading.Thread] = []
+
+    def capture_reader(*args: Any, **kwargs: Any) -> threading.Thread:
+        reader = original_thread(*args, **kwargs)
+        readers.append(reader)
+        return reader
+
+    monkeypatch.setattr(dependency_guard_test_support.threading, "Thread", capture_reader)
+    with pytest.raises(AssertionError, match="did not emit a frame"):
+        read_guard_line(process, 0.05, PROCESS_TIMEOUT_SECONDS)
+    assert len(readers) == 1 and not readers[0].is_alive()
+    assert process.returncode == 10
+    assert process.stdout is not None and not process.stdout.closed
+    cleanup_guard_processes(guard_fixture.processes, PROCESS_TIMEOUT_SECONDS)
+    assert process.stdout.closed
+    assert _marker_paths(guard_fixture) == []
+    assert not guard_fixture.pip_sentinel.exists()
+
+
+@pytest.mark.parametrize("failure_at", ["wait", "poll", "close"])
+def test_fixture_cleanup_attempts_other_handles_after_cleanup_failure(failure_at: str) -> None:
+    original = RuntimeError("original cleanup failure")
+    waited: list[int] = []
+    closed: list[int] = []
+
+    class Output(io.BytesIO):
+        def __init__(self, index: int) -> None:
+            super().__init__()
+            self.index = index
+
+        def close(self) -> None:
+            closed.append(self.index)
+            super().close()
+            if self.index == 0 and failure_at == "close":
+                raise original
+
+    def wait(index: int, *, timeout: float) -> int:
+        assert timeout == PROCESS_TIMEOUT_SECONDS
+        waited.append(index)
+        if index == 0 and failure_at == "wait":
+            raise original
+        return 0
+
+    def poll(index: int) -> int:
+        if index == 0 and failure_at == "poll":
+            raise original
+        return 0
+
+    processes = [
+        cast(
+            Any,
+            SimpleNamespace(
+                stdin=io.BytesIO(),
+                stdout=Output(index),
+                stderr=io.BytesIO(),
+                wait=lambda *, timeout, index=index: wait(index, timeout=timeout),
+                poll=lambda index=index: poll(index),
+            ),
+        )
+        for index in range(2)
+    ]
+    processes[1].stdin.close()
+    processes[1].stderr.close()
+    try:
+        with pytest.raises(RuntimeError) as failure:
+            cleanup_guard_processes(processes, PROCESS_TIMEOUT_SECONDS)
+        assert failure.value is original
+        assert waited == [0, 1]
+        assert 1 in closed
+        assert processes[1].stdout.closed and processes[1].stderr.closed
+    finally:
+        for process in processes:
+            for stream in (process.stdout, process.stderr):
+                if not stream.closed:
+                    io.BytesIO.close(stream)
+
+
+def test_fixture_cleanup_never_closes_a_pipe_while_its_reader_is_unsettled() -> None:
+    joined: list[float] = []
+    reader = SimpleNamespace(join=lambda *, timeout: joined.append(timeout), is_alive=lambda: True)
+    blocked = cast(
+        Any,
+        SimpleNamespace(
+            stdin=io.BytesIO(),
+            stdout=io.BytesIO(),
+            stderr=io.BytesIO(),
+            wait=lambda *, timeout: 0,
+            poll=lambda: 0,
+            _dependency_guard_frame_reader=reader,
+        ),
+    )
+    finished = cast(
+        Any,
+        SimpleNamespace(
+            stdin=None,
+            stdout=io.BytesIO(),
+            stderr=io.BytesIO(),
+            wait=lambda *, timeout: 0,
+            poll=lambda: 0,
+        ),
+    )
+    processes = [blocked, finished]
+    try:
+        with pytest.raises(AssertionError, match="frame reader did not settle"):
+            cleanup_guard_processes(processes, PROCESS_TIMEOUT_SECONDS)
+        assert joined == [PROCESS_TIMEOUT_SECONDS]
+        assert not blocked.stdout.closed and not blocked.stderr.closed
+        assert finished.stdout.closed and finished.stderr.closed
+        assert processes == [blocked, finished]
+        assert blocked._dependency_guard_frame_reader is reader
+    finally:
+        blocked.stdout.close()
+        blocked.stderr.close()
+
+
+def test_fixture_cleanup_preserves_original_frame_reader_exception() -> None:
+    original = OSError("original reader failure")
+
+    def read() -> bytes:
+        raise original
+
+    process = cast(Any, SimpleNamespace(stdout=SimpleNamespace(readline=read)))
+    with pytest.raises(OSError) as failure:
+        read_guard_line(process, FRAME_TIMEOUT_SECONDS, PROCESS_TIMEOUT_SECONDS)
+    assert failure.value is original
+    assert not hasattr(process, "_dependency_guard_frame_reader")
 
 
 def test_journal_marker_capability_is_current_acquisition_only(guard_fixture: GuardFixture) -> None:

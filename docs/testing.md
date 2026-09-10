@@ -64,6 +64,10 @@ Dependency guard tests force lock creation between the initial missing-file chec
 retain refusal when the lock stays missing. Their real concurrent status pair receives EOF on both inputs before
 either process is awaited; status validation requires EOF before execution. The deterministic cases and real pair run
 in ordinary Linux and Windows CI alongside the existing platform filesystem controls.
+Dependency fixtures own their interactive helper processes from creation, before writing or asserting READY. Per-test
+teardown closes input and settles those exact processes before removing journal files, including after pre-GO assertions
+fail. Bounded frame readers settle before pipe closure. Portable `fixture_cleanup` cases also run in the existing Windows
+worker; they preserve no-install behavior on EOF and the original assertion failure.
 The daily-preview tests execute the scheduled source check with controlled GitHub CLI responses, covering unchanged
 and changed commits, missing history, manual dispatches, and lookup failures. Real Git fixtures own daily change-note
 ranges, sibling preview source parents, first-preview and empty output, conservative version-only filtering, merge

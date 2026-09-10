@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import shutil
 import subprocess
 import uuid
-from collections.abc import Iterator
 
 import pytest
 from test_dependency_guard_install_frames import (
@@ -24,7 +22,10 @@ from test_dependency_guard_install_frames import (
     _write_bytes,
 )
 from test_dependency_guard_install_frames import (
-    shared_guard_runtime as shared_guard_runtime_fixture,  # noqa: F401
+    guard_runtime as guard_runtime,
+)
+from test_dependency_guard_install_frames import (
+    shared_guard_runtime as shared_guard_runtime,
 )
 
 INVALID_REQUEST_FRAME = {
@@ -33,17 +34,6 @@ INVALID_REQUEST_FRAME = {
     "protocol": PROTOCOL,
 }
 TRAILING_SECRET = b"ow-trailing-frame-payload-must-not-leak"
-
-
-@pytest.fixture
-def guard_runtime(request: pytest.FixtureRequest) -> Iterator[GuardRuntime]:
-    runtime: GuardRuntime = request.getfixturevalue("shared_guard_runtime_fixture")
-    assert not runtime.journal.exists()
-    assert not runtime.pip_sentinel.exists()
-    yield runtime
-    if runtime.journal.exists():
-        shutil.rmtree(runtime.journal)
-    runtime.pip_sentinel.unlink(missing_ok=True)
 
 
 @pytest.mark.parametrize("trailing", [TRAILING_SECRET, _frame_bytes({"unexpected": True})], ids=["byte", "frame"])
