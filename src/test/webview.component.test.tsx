@@ -527,7 +527,7 @@ describe("DataGrid", () => {
 
       const distributionControl = document.querySelector<HTMLButtonElement>(".numericHistogramHitTarget");
       if (!distributionControl) throw new Error("Expected an interactive header distribution.");
-      distributionControl.focus();
+      act(() => distributionControl.focus());
       expect(distributionControl).toHaveFocus();
       scrollerHeight = 124;
       signalResize();

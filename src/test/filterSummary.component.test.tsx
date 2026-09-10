@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { FilterModel } from "../shared/filterModel";
@@ -611,7 +611,7 @@ describe("SummaryPanel", () => {
     });
     expect(screen.getByText("Filter: 10–11")).toBeVisible();
 
-    firstBin.focus();
+    act(() => firstBin.focus());
     fireEvent.keyDown(firstBin, { key: "End" });
     expect(firstBin).toHaveAccessibleName("11-12: 2 rows (66.7%); both bounds included");
     fireEvent.keyDown(firstBin, { key: "Home" });

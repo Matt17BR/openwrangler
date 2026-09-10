@@ -177,7 +177,7 @@ describe("App cleaning-plan keyboard shortcuts", () => {
     expect(runtimeRequestKinds()).not.toContain("redoStep");
     dispatch({ kind: "sessionOpened", metadata: { ...appliedMetadata, canRedo: true }, page, summaries: [] });
     const search = screen.getByPlaceholderText("Search columns");
-    search.focus();
+    act(() => search.focus());
     for (const shortcut of [
       { key: "y", ctrlKey: true },
       { key: "z", ctrlKey: true, shiftKey: true }
@@ -217,7 +217,7 @@ describe("App cleaning-plan keyboard shortcuts", () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata: { ...appliedMetadata, canRedo: true }, page, summaries: [] });
     const search = await screen.findByPlaceholderText("Search columns");
-    search.focus();
+    act(() => search.focus());
     dispatch({ kind: "editorAction", action: "redoStep", expectedSessionId: "previous", expectedRevision: 1 });
     dispatch({ kind: "editorAction", action: "redoStep", expectedSessionId: "session", expectedRevision: 0 });
     expect(runtimeRequestKinds()).not.toContain("redoStep");
@@ -259,7 +259,7 @@ describe("App cleaning-plan keyboard shortcuts", () => {
       expect(screen.queryByRole("group", { name: "Cleaning plan" })).toBeNull();
       expect(screen.getByRole("alert")).toHaveTextContent("Redo history was lost");
       const search = screen.getByPlaceholderText("Search columns");
-      search.focus();
+      act(() => search.focus());
       act(() => frames.forEach((frame) => frame(performance.now())));
       expect(search).toHaveFocus();
     } finally {
