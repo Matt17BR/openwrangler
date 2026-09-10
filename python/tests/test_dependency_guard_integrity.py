@@ -6,12 +6,13 @@ import shutil
 import subprocess
 import uuid
 import venv
-from dataclasses import dataclass
+from collections.abc import Iterator
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import pytest
-from dependency_guard_test_support import create_fake_pip_package
+from dependency_guard_test_support import cleanup_guard_processes, create_fake_pip_package, read_guard_line
 
 PROTOCOL = "openwrangler-dependency-guard-v1"
 INTEGRITY_PROTOCOL = "openwrangler-dependency-integrity-v1"
@@ -30,6 +31,7 @@ class IntegrityRuntime:
     state: Path
     checks: Path
     pip_started: Path
+    processes: list[subprocess.Popen[bytes]] = field(default_factory=list)
 
     @property
     def journal(self) -> Path:
@@ -37,7 +39,7 @@ class IntegrityRuntime:
 
 
 @pytest.fixture
-def integrity_runtime(tmp_path: Path) -> IntegrityRuntime:
+def integrity_runtime(tmp_path: Path) -> Iterator[IntegrityRuntime]:
     root = tmp_path / "selected"
     venv.EnvBuilder(with_pip=False).create(root)
     executable = root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
@@ -52,7 +54,7 @@ def integrity_runtime(tmp_path: Path) -> IntegrityRuntime:
     shutil.copy2(RUNTIME_SOURCE / integrity_helper.name, integrity_helper)
     state = tmp_path / "integrity-state"
     state.write_text("clean", encoding="utf-8")
-    return IntegrityRuntime(
+    runtime = IntegrityRuntime(
         root=root,
         executable=executable,
         helper=helper,
@@ -70,6 +72,10 @@ def integrity_runtime(tmp_path: Path) -> IntegrityRuntime:
         checks=tmp_path / "integrity-checks",
         pip_started=tmp_path / "pip-started",
     )
+    try:
+        yield runtime
+    finally:
+        cleanup_guard_processes(runtime.processes, PROCESS_TIMEOUT_SECONDS)
 
 
 def test_preexisting_conflict_waits_for_go_then_stops_before_package_write(
@@ -445,10 +451,15 @@ def _arm_install(runtime: IntegrityRuntime, token: str, **values: str) -> subpro
         stderr=subprocess.PIPE,
         env=_environment(runtime, **values),
     )
+    runtime.processes.append(process)
     assert process.stdin is not None and process.stdout is not None
     process.stdin.write(_frame(_install_request(runtime, token)))
     process.stdin.flush()
-    assert json.loads(process.stdout.readline()) == {"kind": "ready", "protocol": PROTOCOL, "token": token}
+    assert json.loads(read_guard_line(process, PROCESS_TIMEOUT_SECONDS, PROCESS_TIMEOUT_SECONDS)) == {
+        "kind": "ready",
+        "protocol": PROTOCOL,
+        "token": token,
+    }
     return process
 
 

@@ -329,7 +329,7 @@ jobs:
           python/tests/test_trusted_pickle_to_parquet.py::test_real_helper_job_kills_a_spawned_pickle_descendant
       - name: Windows dependency filesystem contracts
         run: |
-          python -m pytest -q python/tests/test_dependency_guard.py -k "windows or status_lock_preparation or concurrent_status_on_absent_journal"
+          python -m pytest -q python/tests/test_dependency_guard.py -k "windows or status_lock_preparation or concurrent_status_on_absent_journal or fixture_cleanup"
           python -m pytest -q python/tests/test_dependency_guard_exact_version.py
       - name: Windows dependency and process cleanup contracts
         run: >-

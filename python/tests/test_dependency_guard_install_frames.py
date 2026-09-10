@@ -2,19 +2,17 @@ from __future__ import annotations
 
 import json
 import os
-import queue
 import shutil
 import subprocess
-import threading
 import uuid
 import venv
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import pytest
-from dependency_guard_test_support import create_fake_pip_package
+from dependency_guard_test_support import cleanup_guard_processes, create_fake_pip_package, read_guard_line
 
 PROTOCOL = "openwrangler-dependency-guard-v1"
 HELPER = Path(__file__).parents[1] / "openwrangler_runtime" / "dependency_guard.py"
@@ -30,6 +28,7 @@ class GuardRuntime:
     environment: dict[str, Any]
     dependency: dict[str, Any]
     pip_sentinel: Path
+    processes: list[subprocess.Popen[bytes]] = field(default_factory=list)
 
     @property
     def journal(self) -> Path:
@@ -63,12 +62,16 @@ def shared_guard_runtime(tmp_path_factory: pytest.TempPathFactory) -> GuardRunti
 
 @pytest.fixture
 def guard_runtime(shared_guard_runtime: GuardRuntime) -> Iterator[GuardRuntime]:
+    assert not shared_guard_runtime.processes
     assert not shared_guard_runtime.journal.exists()
     assert not shared_guard_runtime.pip_sentinel.exists()
-    yield shared_guard_runtime
-    if shared_guard_runtime.journal.exists():
-        shutil.rmtree(shared_guard_runtime.journal)
-    shared_guard_runtime.pip_sentinel.unlink(missing_ok=True)
+    try:
+        yield shared_guard_runtime
+    finally:
+        cleanup_guard_processes(shared_guard_runtime.processes, PROCESS_TIMEOUT_SECONDS)
+        if shared_guard_runtime.journal.exists():
+            shutil.rmtree(shared_guard_runtime.journal)
+        shared_guard_runtime.pip_sentinel.unlink(missing_ok=True)
 
 
 @pytest.mark.parametrize("case", ["malformed", "oversized", "miscorrelated"])
@@ -244,6 +247,7 @@ def _arm_install(runtime: GuardRuntime, token: str, **environment_values: str) -
         stderr=subprocess.PIPE,
         env=environment,
     )
+    runtime.processes.append(process)
     _write_bytes(process, _frame_bytes(_install_request(runtime, token)))
     assert _read_frame(process) == {"kind": "ready", "protocol": PROTOCOL, "token": token}
     return process
@@ -292,26 +296,7 @@ def _write_bytes(process: subprocess.Popen[bytes], payload: bytes) -> None:
 
 
 def _read_frame(process: subprocess.Popen[bytes]) -> dict[str, Any]:
-    stdout = process.stdout
-    assert stdout is not None
-    results: queue.Queue[bytes | BaseException] = queue.Queue(maxsize=1)
-
-    def read() -> None:
-        try:
-            results.put(stdout.readline())
-        except BaseException as error:
-            results.put(error)
-
-    threading.Thread(target=read, daemon=True).start()
-    try:
-        result = results.get(timeout=PROCESS_TIMEOUT_SECONDS)
-    except queue.Empty:
-        process.kill()
-        process.wait(timeout=PROCESS_TIMEOUT_SECONDS)
-        raise AssertionError("The dependency guard did not emit READY before the timeout.") from None
-    if isinstance(result, BaseException):
-        raise result
-    decoded = json.loads(result)
+    decoded = json.loads(read_guard_line(process, PROCESS_TIMEOUT_SECONDS, PROCESS_TIMEOUT_SECONDS))
     assert isinstance(decoded, dict)
     return decoded
 
