@@ -428,6 +428,9 @@ is attempted independently; unavailable statistics and histograms are omitted. N
 If Pandas cannot build its count index for object-stored ordinary Python integers, native factorization supplies exact
 counts with an object index; requested descending counts keep first-encounter ties. Successful native counts retain
 their existing ordering. This repair does not change stored values or admit custom integer subclasses.
+Value-choice ranking retains the leading `limit + 1` labeled candidates and the current input, instead of the full
+label collection. Native counting and ordinary text search remain exhaustive over their inputs. All distinct labels
+are evaluated before publication, so a late formatting failure still refuses the entire request.
 Datetime cells and nested values share one formatter. Pandas Timestamp nanoseconds are inserted into the time
 fraction while preserving the complete native offset, including offset seconds. Ordinary Timestamp profile and
 value-choice labels reuse this formatter with their existing space separator. Other scalar labels retain native string conversion. Search keeps
