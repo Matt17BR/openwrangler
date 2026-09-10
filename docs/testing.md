@@ -619,6 +619,10 @@ Polars and DuckDB engine owners exercise misleading enum labels, nested types, f
 selections and standalone Filter Rows. Typed-cell controls preserve Arrow scalar wrappers and Pandas Sparse behavior;
 the existing Spark Classic/Connect owner covers native schema, bounded paging, filters, sorts and profiles.
 
+`python/tests/test_empty_delimited_files.py` owns native empty-file adaptation and preservation of delimited records,
+including public pages, statistics, invalid options and source bytes. Qualify changes against minimum and current
+readers; newline-only Polars schemas can differ by version while retaining the native rows.
+
 The DuckDB engine owner checks literal selected-file imports for CSV, TSV, JSONL/NDJSON and Parquet beside matching
 and escaped-looking siblings. It covers native rows and types, import options, ordinary and empty files, generated
 cleaning, source preservation and explicit unsupported-path refusals. The existing Windows job selects these same

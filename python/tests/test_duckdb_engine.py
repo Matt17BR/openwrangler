@@ -1663,11 +1663,11 @@ def test_duckdb_literal_selected_file_public_source_and_blank(tmp_path: Path) ->
         assert not manager.sessions
     finally:
         manager.close_all()
-    selected.write_bytes(b"\xef\xbb\xbf \n")
+    selected.write_bytes(b"\xef\xbb\xbf")
     engine = DuckDBEngine()
     try:
         assert engine.shape(engine.read_file(str(selected))) == {"rows": 0, "columns": 0}
-        assert selected.read_bytes() == b"\xef\xbb\xbf \n"
+        assert selected.read_bytes() == b"\xef\xbb\xbf"
     finally:
         engine.close()
 

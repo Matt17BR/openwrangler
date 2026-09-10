@@ -112,29 +112,6 @@ _DURATION_SECONDS_TEXT = re.compile(r"^[+-]?(?:\d+(?:\.\d{0,6})?|\.\d{1,6})$")
 _DURATION_TEXT = re.compile(r"^(?:(-?\d+) days?, )?(\d{1,2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?$")
 
 
-def is_blank_delimited_file(
-    path: str,
-    *,
-    encoding: str = "utf-8",
-    errors: Literal["strict", "replace"] = "strict",
-) -> bool:
-    """Return whether a delimited text source contains only a BOM/whitespace.
-
-    Reader failures remain authoritative for missing, undecodable, or otherwise
-    malformed non-empty files. Scanning in bounded chunks avoids allocating a
-    complete large whitespace-only source.
-    """
-
-    try:
-        with Path(path).open("r", encoding=encoding, errors=errors, newline="") as source:
-            while chunk := source.read(8192):
-                if any(character != "\ufeff" and not character.isspace() for character in chunk):
-                    return False
-        return True
-    except (LookupError, OSError, UnicodeError):
-        return False
-
-
 def validate_view_predicate_operator(column_type: str | None, operator: Any) -> str:
     normalized = str(operator)
     if normalized not in VIEW_PREDICATE_OPERATORS.get(str(column_type), frozenset()):

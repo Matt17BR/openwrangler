@@ -72,7 +72,6 @@ from .base import (
     generated_fill_replacement_expression,
     generated_view_value_helper_lines,
     infer_semantic_type,
-    is_blank_delimited_file,
     is_internal_row_id_label,
     normalize_cell,
     normalize_export_options,
@@ -638,17 +637,18 @@ class PandasEngine(DataFrameEngine):
             )
             actual_encoding = "utf-8" if lossy_utf8 else requested_encoding
             encoding_errors: Literal["replace", "strict"] = "replace" if lossy_utf8 else "strict"
-            if is_blank_delimited_file(path, encoding=actual_encoding, errors=encoding_errors):
+            try:
+                return pd.read_csv(
+                    path,
+                    sep=delimiter,
+                    encoding=actual_encoding,
+                    encoding_errors=encoding_errors,
+                    quotechar=quote_char,
+                    header=0 if options.get("hasHeader", True) else None,
+                    engine=parser_engine,
+                )
+            except pd.errors.EmptyDataError:
                 return pd.DataFrame()
-            return pd.read_csv(
-                path,
-                sep=delimiter,
-                encoding=actual_encoding,
-                encoding_errors=encoding_errors,
-                quotechar=quote_char,
-                header=0 if options.get("hasHeader", True) else None,
-                engine=parser_engine,
-            )
         if extension == ".parquet":
             return _pandas_read_parquet(path)
         if extension in {".jsonl", ".ndjson"}:
