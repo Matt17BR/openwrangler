@@ -135,7 +135,7 @@ async function verifyCodePreviewOrigin(browser) {
     () =>
       document.querySelector("#root")?.getAttribute("data-code-dialect") === "python.polars" &&
       document.querySelector(".cm-content")?.getAttribute("aria-label") === "Editable generated Python code preview" &&
-      document.querySelector(".cm-line")?.textContent === "import polars as pl"
+      Boolean(document.querySelector(".cm-line")?.textContent?.trim())
   );
   const before = await page.locator(".cm-content").textContent();
   await page.evaluate(() => {

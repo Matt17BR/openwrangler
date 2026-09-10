@@ -98,9 +98,10 @@ including dependency declarations. Local and CI checks use the same strict webvi
 `npm run check:pr` runs both commands for local and protected-main checks. The release-candidate workflow starts from
 protected main after these checks pass and does not repeat the source suites.
 
-For changes to rendered webview UI, interactions, styles, browser fixtures or screenshot baselines, run local browser
-acceptance. Complete [Clone and install](../CONTRIBUTING.md#clone-and-install), including `python[dev]`, and select the
-fixture generator's interpreter using [Python selection](../CONTRIBUTING.md#python-selection-for-repository-commands).
+For changes to rendered webview UI, interactions, styles, browser fixtures, their generated content or screenshot
+baselines, run local browser acceptance. Complete [Clone and install](../CONTRIBUTING.md#clone-and-install), including
+`python[dev]`, and select the fixture generator's interpreter using
+[Python selection](../CONTRIBUTING.md#python-selection-for-repository-commands).
 Then run:
 
 ```bash
@@ -224,8 +225,9 @@ target and focus in one DOM read.
 The existing wide-grid browser case holds correlated pages while the visible column range changes. It checks that
 Undo stays disabled through the corrective projection, then accepts one normal click after the final page settles.
 Browser cases set intended viewports explicitly through the page API, including the clipboard owner.
-Code Preview readiness uses its visible first line and published editor identity; offscreen generated functions
-may be absent from CodeMirror's virtualized DOM. Origin, message-shape and read-only controls retain their assertions.
+Code Preview readiness uses nonempty visible code and its published editor identity, independent of import placement.
+Offscreen generated functions may be absent from CodeMirror's virtualized DOM. Origin, message-shape and read-only
+controls retain their assertions.
 The same owner checks Tab entry and exit, navigation to the end of a long read-only buffer, and keyboard edit refusal.
 The filter keyboard owner checks that a long profiles panel scrolls internally while the wide grid footer remains
 visible, including compact resizing and focus restoration on Close.
