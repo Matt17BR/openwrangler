@@ -25,6 +25,7 @@ from openwrangler_runtime.engines.base import EngineError, typed_selection_value
 from openwrangler_runtime.engines.duckdb_engine import DuckDBEngine, DuckDBNotebookPlan, DuckDBSqlPlan
 from openwrangler_runtime.engines.registry import EngineRegistry
 from openwrangler_runtime.export_target import ExportTarget, _regular_file_identity
+from openwrangler_runtime.generated_helpers import select_generated_helpers
 from openwrangler_runtime.lineage import source_lineage
 from openwrangler_runtime.operations import operation_catalog, validate_step
 from openwrangler_runtime.session import SessionManager
@@ -925,6 +926,8 @@ def test_duckdb_public_generated_query_uses_the_input_connection(tmp_path: Path,
         namespace: dict[str, Any] = {}
         assert "openwrangler_runtime" not in applied["code"]
         exec(compile(applied["code"], "<public-generated-query>", "exec"), namespace)
+        query_namespace: dict[str, Any] = {}
+        exec(select_generated_helpers(duckdb_runtime._generated_helper_source(), "_ow_query"), query_namespace)
         with duckdb.connect(config={"python_enable_replacements": False}) as connection:
             connection.execute("CREATE TABLE generated_query_source AS SELECT * FROM (VALUES (2::BIGINT), (3)) t(key)")
             connection.execute("CREATE TEMP VIEW ow AS SELECT 99 AS sentinel")
@@ -941,7 +944,7 @@ def test_duckdb_public_generated_query_uses_the_input_connection(tmp_path: Path,
             result = namespace["clean_data"](frame)
             assert result.fetchall() == expected
             assert str(result.types[-1]) == "BIGINT"
-            later = namespace["_ow_query"](
+            later = query_namespace["_ow_query"](
                 result, "WITH next AS (SELECT *, plus + 1 AS later FROM ow) SELECT * FROM next"
             )
             assert later.fetchall() == [(*row, row[-1] + 1) for row in expected]
@@ -1000,6 +1003,8 @@ def test_duckdb_generated_query_catalog_work_does_not_evaluate_source_rows() -> 
     ]
     try:
         exec(engine.compile_plan(plan), namespace)
+        query_namespace: dict[str, Any] = {}
+        exec(select_generated_helpers(duckdb_runtime._generated_helper_source(), "_ow_query"), query_namespace)
         with duckdb.connect() as connection:
             calls: list[int] = []
 
@@ -1011,7 +1016,7 @@ def test_duckdb_generated_query_catalog_work_does_not_evaluate_source_rows() -> 
             frame = connection.sql("SELECT generated_query_observed(i) AS key FROM range(2, 4) t(i)")
             connection.execute("CREATE MACRO lower(value) AS 'wrong'")
             connection.execute("CREATE MACRO count(value) AS 0")
-            direct = namespace["_ow_query"](frame, "SELECT * FROM ow")
+            direct = query_namespace["_ow_query"](frame, "SELECT * FROM ow")
             assert calls == []
             result = namespace["clean_data"](frame)
             assert calls == [2, 3]
@@ -1020,7 +1025,7 @@ def test_duckdb_generated_query_catalog_work_does_not_evaluate_source_rows() -> 
             assert calls == [2, 3]
             calls.clear()
             with pytest.raises(duckdb.BinderException, match="absent"):
-                namespace["_ow_query"](frame, "SELECT absent FROM ow")
+                query_namespace["_ow_query"](frame, "SELECT absent FROM ow")
             assert calls == []
             assert connection.sql("SELECT view_name FROM duckdb_views() WHERE NOT internal").fetchall() == []
             assert direct.fetchall() == [(102,), (103,)]
@@ -1039,7 +1044,7 @@ def test_duckdb_generated_query_alias_collision_preserves_caller_object(object_k
     engine = DuckDBEngine()
     namespace: dict[str, Any] = {}
     try:
-        exec(engine.compile_plan([bound_step("customCode", code="result = df")]), namespace)
+        exec(select_generated_helpers(duckdb_runtime._generated_helper_source(), "_ow_query"), namespace)
         namespace["uuid4"] = lambda: UUID(int=1)
         alias = "__open_wrangler_query_" + UUID(int=1).hex
         existing = alias.upper() if uppercase else alias
@@ -1063,7 +1068,7 @@ def test_duckdb_generated_query_cleanup_observes_native_lifetime_boundaries(mode
     engine = DuckDBEngine()
     namespace: dict[str, Any] = {}
     try:
-        exec(engine.compile_plan([bound_step("customCode", code="result = df")]), namespace)
+        exec(select_generated_helpers(duckdb_runtime._generated_helper_source(), "_ow_query"), namespace)
         with duckdb.connect() as connection:
             connection.execute("CREATE TABLE generated_lifetime_source AS SELECT 7 AS key")
             source = connection.table("generated_lifetime_source")
@@ -1173,7 +1178,6 @@ def test_duckdb_generated_code_emits_only_reachable_helpers() -> None:
             assert calls == [99]
         plain_code = engine.compile_plan(plain_plan)
         assert "from collections import Counter" not in plain_code
-        assert plain_code.startswith("import math")
         assert "def _ow_text(" in plain_code
         assert "def _ow_assign(" in plain_code
         assert "def _ow_query(" in plain_code

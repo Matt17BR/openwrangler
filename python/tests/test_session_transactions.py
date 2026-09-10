@@ -272,6 +272,67 @@ def test_many_small_custom_steps_fail_before_preview_mutation(tmp_path: Path, mo
     assert_unchanged_and_closable(manager, session_id, 0, before)
 
 
+def test_generated_entrypoint_preserves_the_source_through_plan_history(monkeypatch: pytest.MonkeyPatch) -> None:
+    import pandas as pd
+
+    import __main__
+
+    frame = pd.DataFrame({"value": [1, 2]})
+    monkeypatch.setattr(__main__, "clean_data", frame, raising=False)
+    manager = SessionManager()
+
+    def operation(name: str) -> dict[str, Any]:
+        return {
+            "id": name,
+            "kind": "formula",
+            "params": {
+                "leftColumn": {"id": "c:source:0", "name": "value"},
+                "operator": "add",
+                "value": 1,
+                "newColumn": name,
+            },
+        }
+
+    def check(response: dict[str, Any], columns: list[str]) -> int:
+        namespace: dict[str, Any] = {"clean_data": frame}
+        exec(response["code"], namespace)
+        assert namespace["clean_data"] is frame
+        actual = namespace["clean_data_1"](namespace["clean_data"])
+        pd.testing.assert_frame_equal(actual, pd.DataFrame({"value": [1, 2], **{name: [2, 3] for name in columns}}))
+        pd.testing.assert_frame_equal(frame, pd.DataFrame({"value": [1, 2]}))
+        return response["revision"]
+
+    try:
+        opened = manager.open_session(
+            {"kind": "notebookVariable", "variableName": "clean_data", "label": "source"},
+            backend="pandas",
+            mode="editing",
+            page_size=2,
+        )
+        session_id = opened["metadata"]["sessionId"]
+        first = manager.preview_step(session_id, 0, operation("first"), 0, 2)
+        revision = check(first, ["first"])
+        revision = check(manager.apply_draft(session_id, revision, 0, 2), ["first"])
+        revision = check(manager.preview_step(session_id, revision, operation("second"), 0, 2), ["first", "second"])
+        discarded = manager.discard_draft(session_id, revision, 0, 2)
+        revision = check(discarded, ["first"])
+        assert discarded["code"] == first["code"]
+        revision = check(manager.preview_step(session_id, revision, operation("second"), 0, 2), ["first", "second"])
+        applied = manager.apply_draft(session_id, revision, 0, 2)
+        revision = check(applied, ["first", "second"])
+        inspected = manager.inspect_step(session_id, revision, "first", 0, 2)
+        assert check(inspected, ["first"]) == revision
+        assert inspected["code"] == first["code"]
+        undone = manager.undo_step(session_id, revision, 0, 2)
+        revision = check(undone, ["first"])
+        assert undone["code"] == first["code"]
+        redone = manager.redo_step(session_id, revision, 0, 2)
+        check(redone, ["first", "second"])
+        assert redone["code"] == applied["code"]
+    finally:
+        manager.close_all()
+
+
 @pytest.mark.parametrize("kind", ["formula", "markDuplicates"])
 def test_generated_code_limit_is_exact_and_precedes_transform_execution(tmp_path: Path, monkeypatch, kind: str) -> None:
     def operation(step_id: str) -> dict[str, Any]:
@@ -880,8 +941,8 @@ def test_source_post_validation_rolls_back_preview_but_keeps_cache_invalidated(t
     path.write_text("name,value\na,1\nb,2\nc,3\n", encoding="utf-8")
 
     class ReplacingSourcePolarsEngine(PolarsEngine):
-        def compile_plan(self, steps: Iterable[Mapping[str, Any]]) -> str:
-            code = super().compile_plan(steps)
+        def compile_plan(self, steps: Iterable[Mapping[str, Any]], *, function_name: str = "clean_data") -> str:
+            code = super().compile_plan(steps, function_name=function_name)
             original = path.stat()
             replacement = path.with_name(f".{path.name}.replacement")
             replacement.write_text("name,value\nreplacement,100\n", encoding="utf-8")

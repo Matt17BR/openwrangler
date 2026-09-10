@@ -11,6 +11,7 @@ CUSTOM_CODE_FUNCTION_NAME = "_open_wrangler_custom_code"
 _CUSTOM_CODE_FILENAME = "<open-wrangler-custom-code>"
 _CUSTOM_CODE_COMPILER_FLAGS = __future__.annotations.compiler_flag
 _GENERATED_BUILTINS_NAME = "_open_wrangler_builtins"
+_GENERATED_FUTURE_NAME = "_open_wrangler_future"
 _MAX_CUSTOM_CODE_AST_NODES = 262_144
 _MAX_CUSTOM_CODE_AST_DEPTH = 512
 _COMPLEXITY_ERROR = "Custom Code syntax is too complex."
@@ -78,24 +79,24 @@ def execute_custom_code(code: str, dataframe: object, namespace: Mapping[str, ob
 
 
 def custom_code_prelude_lines() -> list[str]:
-    """Render the caller-independent future and builtins contract for generated scripts."""
+    """Render imports local to the generated cleaning function."""
 
     return [
-        "from __future__ import annotations",
-        "",
+        f"import __future__ as {_GENERATED_FUTURE_NAME}",
         f"import builtins as {_GENERATED_BUILTINS_NAME}",
         "",
     ]
 
 
-def custom_code_definition_lines(code: str, *, index: int) -> list[str]:
-    """Render one validated module-level wrapper retained under a unique name."""
+def custom_code_definition_lines(code: str, *, index: int, prefix: str = "") -> list[str]:
+    """Retain exact function source without indenting its multiline string contents."""
 
     validate_custom_code_scope(code)
+    source = _function_source(code).replace("\\", "\\\\").replace('"', '\\"')
     return [
-        *_function_lines(code, prefix=""),
-        f"{_custom_code_raw_name(index)} = {CUSTOM_CODE_FUNCTION_NAME}",
-        f"del {CUSTOM_CODE_FUNCTION_NAME}",
+        f"{prefix}{_custom_code_source_name(index)} = (",
+        f'"""{source}"""',
+        f"{prefix})",
         "",
         "",
     ]
@@ -109,27 +110,22 @@ def custom_code_execution_lines(
 ) -> tuple[list[str], str]:
     """Execute a generated wrapper with the same fresh globals used live."""
 
-    raw_function = _custom_code_raw_name(index)
+    source = _custom_code_source_name(index)
     runtime_namespace = f"_open_wrangler_custom_globals_{index}"
-    function = f"_open_wrangler_custom_function_{index}"
     result = f"_open_wrangler_custom_result_{index}"
     return (
         [
-            f"{prefix}if {raw_function}.__code__.co_freevars:",
-            (
-                f"{prefix}    raise NameError('Custom Code cannot access generated-plan local names: ' "
-                f"+ ', '.join({raw_function}.__code__.co_freevars))"
-            ),
             (
                 f"{prefix}{runtime_namespace} = "
                 f"{{{module_name!r}: {module_name}, '__builtins__': {_GENERATED_BUILTINS_NAME}.__dict__}}"
             ),
+            f"{prefix}{_GENERATED_BUILTINS_NAME}.exec({_GENERATED_BUILTINS_NAME}.compile(",
+            f"{prefix}    {source}, {_CUSTOM_CODE_FILENAME!r}, 'exec',",
             (
-                f"{prefix}{function} = type({raw_function})("
-                f"{raw_function}.__code__, {runtime_namespace}, {CUSTOM_CODE_FUNCTION_NAME!r})"
+                f"{prefix}    flags={_GENERATED_FUTURE_NAME}.annotations.compiler_flag, dont_inherit=True), "
+                f"{runtime_namespace}, {runtime_namespace})"
             ),
-            f"{prefix}{runtime_namespace}[{CUSTOM_CODE_FUNCTION_NAME!r}] = {function}",
-            f"{prefix}{result} = {function}(df)",
+            f"{prefix}{result} = {runtime_namespace}[{CUSTOM_CODE_FUNCTION_NAME!r}](df)",
         ],
         result,
     )
@@ -179,6 +175,7 @@ def custom_code_generated_utf8_bytes(
     code_utf8_bytes: int,
     separator_utf8_bytes: int,
     line_count: int,
+    literal_escape_bytes: int,
     engine_name: str,
     index: int,
     include_prelude: bool,
@@ -186,17 +183,21 @@ def custom_code_generated_utf8_bytes(
     """Return the exact Custom Code line contribution without splitting user source."""
 
     fixed_definition_lines = [
-        f"def {CUSTOM_CODE_FUNCTION_NAME}(df):",
-        "    return result",
-        f"{_custom_code_raw_name(index)} = {CUSTOM_CODE_FUNCTION_NAME}",
-        f"del {CUSTOM_CODE_FUNCTION_NAME}",
+        f"    {_custom_code_source_name(index)} = (",
+        f'"""def {CUSTOM_CODE_FUNCTION_NAME}(df):\n    return result\n"""',
+        "    )",
         "",
         "",
     ]
     user_lines = code_utf8_bytes - separator_utf8_bytes + (line_count * 5)
     return (
         user_lines
-        + (_joined_line_bytes(custom_code_prelude_lines()) if include_prelude else 0)
+        + literal_escape_bytes
+        + (
+            _joined_line_bytes([f"    {line}" if line else "" for line in custom_code_prelude_lines()])
+            if include_prelude
+            else 0
+        )
         + _joined_line_bytes(fixed_definition_lines)
         + _joined_line_bytes(custom_code_step_lines(prefix="    ", engine_name=engine_name, index=index))
     )
@@ -228,8 +229,8 @@ def _function_lines(code: str, *, prefix: str) -> list[str]:
     ]
 
 
-def _custom_code_raw_name(index: int) -> str:
-    return f"_open_wrangler_custom_raw_{index}"
+def _custom_code_source_name(index: int) -> str:
+    return f"_open_wrangler_custom_source_{index}"
 
 
 def _scope_nodes(root: ast.AST) -> Iterator[tuple[ast.AST, bool]]:

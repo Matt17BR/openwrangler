@@ -114,6 +114,11 @@ Script and data exports protect the session's concrete source files even after a
 replacement during code synchronization or destination selection. If source identity is unavailable, viewing remains
 available and export requires reopening the dataframe.
 
+Generated Python keeps import and helper bindings local. Pandas and Polars notebook inputs named like those bindings
+remain available after executing the program; an input named `clean_data` uses the generated function `clean_data_1`.
+Public kernel, session-history and Custom Code scope tests cover this behavior. The
+[architecture contract](architecture.md#engine-boundaries-and-capabilities) describes scope and caller limitations.
+
 Discovery selections remain bound to their originating Python kernel until the initial session opens. Direct active-R
 opens likewise retain the terminal selected when the command starts. Replacing either runtime before that open
 completes requires a new open action; discovery and bridge regression tests cover these transitions.

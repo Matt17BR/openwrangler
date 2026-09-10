@@ -32,7 +32,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 ### Fixed
 
 - Native R Fill Missing Values avoids early underflow when interpolating between subnormal values, including in generated code.
-- Generated Pandas Min-max Scale and Polars Round code no longer replaces notebook variables named `Any`.
+- Generated Python no longer replaces notebook inputs named like its imports or helpers. A source named `clean_data`
+  uses a generated function named `clean_data_1`.
 - Native R Pivot Longer no longer rejects valid previews because it changed retained column identities or nullability.
 - Polars Pivot Longer accepts compatible lazy categorical columns on the first attempt, including in generated code.
 - Editing preserves the accepted viewing filter after overlapping page requests fail or become superseded, including

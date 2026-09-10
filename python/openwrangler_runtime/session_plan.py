@@ -28,11 +28,20 @@ def preflight_retained_plan(plan: Sequence[Mapping[str, Any]]) -> int:
 def compile_plan_with_limits(
     engine: DataFrameEngine,
     bound_plan: Sequence[Mapping[str, Any]],
+    *,
+    source: Mapping[str, Any] | None = None,
 ) -> str:
     if not bound_plan:
         return ""
     _preflight_custom_code_generation(engine, bound_plan)
-    generated_code = engine.compile_plan(bound_plan)
+    if (
+        source is not None
+        and source.get("kind") in {"notebookVariable", "notebookOutput"}
+        and source.get("variableName") == "clean_data"
+    ):
+        generated_code = engine.compile_plan(bound_plan, function_name="clean_data_1")
+    else:
+        generated_code = engine.compile_plan(bound_plan)
     if not isinstance(generated_code, str):
         raise EngineError("The dataframe engine returned malformed generated Python code.")
     try:
@@ -77,6 +86,7 @@ def _preflight_custom_code_generation(
                 code_utf8_bytes=code_bytes,
                 separator_utf8_bytes=separator_bytes,
                 line_count=line_count,
+                literal_escape_bytes=code.count("\\") + code.count('"'),
                 engine_name=engine.name,
                 index=index,
                 include_prelude=prelude_pending,

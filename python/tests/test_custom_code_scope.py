@@ -154,7 +154,6 @@ def execute_generated(engine: Any, frame: Any, operation: dict[str, Any] | list[
     plan = operation if isinstance(operation, list) else [operation]
     namespace: dict[str, Any] = {"__builtins__": builtins}
     source = engine.compile_plan(plan)
-    assert source.startswith("from __future__ import annotations\n")
     exec(compile(source, "<generated-custom-code>", "exec", dont_inherit=True), namespace, namespace)
     return namespace["clean_data"](frame)
 
@@ -204,6 +203,28 @@ def test_import_closure_and_multiline_code_matches_executable_generated_output(
     assert materialize(live)[1] == [(2,), (3,)]
 
 
+@pytest.mark.parametrize(
+    ("literal", "expected"),
+    [
+        ('"""first\n  \n\t\nlast"""', "first\n      \n    \t\n    last"),
+        (repr('\\""""""\\'), '\\""""""\\'),
+        ("'first' \\\n    + 'last'", "firstlast"),
+    ],
+    ids=["multiline-whitespace", "quote-runs-and-backslashes", "line-continuation"],
+)
+def test_generated_custom_literals_preserve_function_source(
+    engine_and_frame: tuple[str, Any, Any], literal: str, expected: str
+) -> None:
+    _backend, engine, frame = engine_and_frame
+    code = f"text = {literal}\nresult = df if text == {expected!r} else None"
+    operation = custom_step(code, "literal")
+    original = materialize(frame)
+
+    assert materialize(engine.apply_transform(frame, operation)) == original
+    assert materialize(execute_generated(engine, frame, operation)) == original
+    assert materialize(frame) == original
+
+
 def test_generated_result_type_validation_and_series_normalization_match_live(
     engine_and_frame: tuple[str, Any, Any],
 ) -> None:
@@ -235,9 +256,21 @@ def test_live_and_generated_custom_code_receive_the_same_exact_globals(
     code = f"result = df if list(globals()) == {expected!r} else None"
     operation = custom_step(code, "globals")
 
-    assert materialize(engine.apply_transform(frame, operation)) == materialize(
-        execute_generated(engine, frame, operation)
-    )
+    source_names = [
+        "annotations",
+        "compile",
+        "exec",
+        CUSTOM_CODE_FUNCTION_NAME,
+        "_open_wrangler_custom_raw_0",
+        "_open_wrangler_custom_source_0",
+        "_open_wrangler_builtins",
+    ]
+    namespace: dict[str, Any] = {name: frame for name in source_names}
+    exec(compile(engine.compile_plan([operation]), "<generated-custom-globals>", "exec", dont_inherit=True), namespace)
+    assert all(namespace.get(name) is frame for name in source_names)
+    generated = namespace["clean_data"](frame)
+    assert materialize(engine.apply_transform(frame, operation)) == materialize(generated)
+    assert all(namespace.get(name) is frame for name in source_names)
 
 
 def test_live_and_generated_custom_code_use_the_same_builtins_dictionary(

@@ -10,6 +10,7 @@ from decimal import Decimal
 from glob import escape as escape_glob
 from math import inf, isfinite, isinf, isnan, nextafter
 from pathlib import Path
+from textwrap import indent
 from threading import RLock
 from typing import Any
 from uuid import uuid4
@@ -1242,10 +1243,10 @@ class DuckDBEngine(DataFrameEngine):
         if any(types[name] != types[selected[0]] for name in selected[1:]):
             raise EngineError("Pivot-longer columns must have one exactly compatible DuckDB type.")
 
-    def compile_plan(self, steps: Iterable[Mapping[str, Any]]) -> str:
+    def compile_plan(self, steps: Iterable[Mapping[str, Any]], *, function_name: str = "clean_data") -> str:
         plan = list(steps)
         if plan and all(step["kind"] == "renameColumn" for step in plan):
-            lines = ["def clean_data(df):", "    _ow_check_addressability(df)"]
+            lines = [f"def {function_name}(df):", "    _ow_check_addressability(df)"]
             for index, step in enumerate(plan):
                 params = step["params"]
                 column = bound_column_name(params["column"], "renameColumn")
@@ -1261,9 +1262,9 @@ class DuckDBEngine(DataFrameEngine):
             lines.append("    return df")
             clean_data = "\n".join(lines)
             helpers = select_generated_helpers(_generated_helper_source(), clean_data)
-            return helpers + "\n\n" + clean_data + "\n"
+            return "\n".join([lines[0], indent(helpers, "    "), *lines[1:]]) + "\n"
         has_custom_code = any(step["kind"] == "customCode" for step in plan)
-        clean_data_lines = ["def clean_data(df):"]
+        clean_data_lines = [f"def {function_name}(df):"]
         if plan:
             clean_data_lines.append("    _ow_check_addressability(df)")
         for index, step in enumerate(plan):
@@ -1287,10 +1288,11 @@ class DuckDBEngine(DataFrameEngine):
             lines.extend(["from collections import Counter", ""])
         if generated_helpers:
             lines.extend([generated_helpers, ""])
+        lines = [clean_data_lines[0], *indent("\n".join(lines), "    ").splitlines()]
         for index, step in enumerate(plan):
             if step["kind"] == "customCode":
-                lines.extend(custom_code_definition_lines(str(step["params"]["code"]), index=index))
-        lines.append(clean_data)
+                lines.extend(custom_code_definition_lines(str(step["params"]["code"]), index=index, prefix="    "))
+        lines.extend(clean_data_lines[1:])
         return "\n".join(lines) + "\n"
 
     def export_data(

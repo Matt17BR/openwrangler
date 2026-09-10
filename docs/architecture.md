@@ -268,6 +268,19 @@ binds public references against the exact input schema and lineage to private po
 disallowed, type/name-mismatched, colliding, or private row-identity references fail closed. The current catalog and
 parameters are listed in the generated [transformation reference](reference.md#transformation-operations).
 
+Generated Python defines one public function, `clean_data(df)`, with its selected imports and helpers local to that
+function. A retained notebook source named `clean_data` instead uses `clean_data_1(df)`. Preview, inspection and
+history regeneration select that name from the same captured source metadata. Files and direct compiler calls keep
+the default name. This preserves source bindings that the generated program would otherwise replace; it does not
+change ordinary Python lookup when the caller shadows builtins.
+
+Generated Custom Code compiles its normalized function source in fresh globals containing the engine alias,
+builtins and the custom function itself, matching live execution. A multiline source literal preserves visible code
+lines and escapes backslashes and delimiter quotes without dedenting user text. Explicit compiler flags retain
+postponed annotations independently of the caller. Each invocation receives fresh globals; ordinary generated
+helpers remain unavailable there. The existing preflight counts escaped source before generation, and the complete
+program retains its generated-code byte limit.
+
 Generated Python rechecks destinations for column appends, renames and optional replacements at each affected step.
 The shared column-binding policy distinguishes a fresh output from replacement of the selected source column;
 unrelated extra columns remain valid. Pandas compares displayed names while retaining positional input checks.
