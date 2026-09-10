@@ -509,9 +509,16 @@ test("creates a draft, verifies all three assets, and only then publishes", asyn
   assert.deepEqual(mutationMethods, ["POST", "POST", "POST", "POST", "PATCH"]);
 });
 
-test("retries temporary absent inventories after mutations without delaying initial discovery", async () => {
+test("retries temporary absent inventories after mutations without delaying initial discovery", async (context) => {
+  const nativeSetTimeout = setTimeout;
+  const retryTimer = context.mock.method(globalThis, "setTimeout", (callback, delay, ...args) => {
+    assert.equal(delay, 250);
+    return nativeSetTimeout(callback, 0, ...args);
+  });
   const fixture = githubFixture({ hiddenInventoryReadsAfterMutation: 1 });
   assert.equal((await publish(fixture.fetchImpl)).releaseId, 71);
+  assert.equal(retryTimer.mock.callCount(), 4);
+  assert.equal(fixture.requests.filter((request) => request.url.startsWith(`${apiRoot}/releases?`)).length, 11);
   const firstMutation = fixture.requests.findIndex((request) => request.method !== "GET");
   assert.equal(
     fixture.requests.slice(0, firstMutation).filter((request) => request.url.startsWith(`${apiRoot}/releases?`)).length,
@@ -652,13 +659,20 @@ test("resumes an exact partial draft without replacing retained assets", async (
   assert.equal(fixture.requests.filter((request) => request.method === "POST").length, 2);
 });
 
-test("resumes create and upload conflicts only when the discovered draft is exact", async () => {
+test("resumes create and upload conflicts only when the discovered draft is exact", async (context) => {
+  const nativeSetTimeout = setTimeout;
+  const retryTimer = context.mock.method(globalThis, "setTimeout", (callback, delay, ...args) => {
+    assert.equal(delay, 250);
+    return nativeSetTimeout(callback, 0, ...args);
+  });
   const creation = githubFixture({ createConflict: true, createConflictProvidesRelease: true });
   await publish(creation.fetchImpl);
   assert.equal(creation.releases[0].draft, false);
 
   const missingCreation = githubFixture({ createConflict: true });
   await assert.rejects(publish(missingCreation.fetchImpl), /conflicted without an exact release/u);
+  assert.equal(retryTimer.mock.callCount(), 20);
+  assert.equal(missingCreation.requests.filter((request) => request.url.startsWith(`${apiRoot}/releases?`)).length, 22);
 
   const upload = githubFixture({ uploadConflictName: assets[0].name, uploadConflictProvidesAsset: true });
   await publish(upload.fetchImpl);
