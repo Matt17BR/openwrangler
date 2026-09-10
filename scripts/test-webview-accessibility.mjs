@@ -811,7 +811,7 @@ async function verifyInsightsDrawerWorkflow(browser) {
     await scanPageAccessibility(page, `${harness} (hovered Filters / Sorts tab)`);
     await filtersPanel.getByRole("heading", { name: "Filters / Sorts" }).waitFor();
     await filtersPanel.getByRole("status").filter({ hasText: '2 columns share the displayed name "value"' }).waitFor();
-    for (const optionName of ["value (column 1)", "value (column 2)"]) {
+    for (const optionName of ["value, column 1", "value, column 2"]) {
       const options = filtersPanel.locator("option", { hasText: optionName });
       if ((await options.count()) !== 2) {
         throw new Error(`${harness} did not preserve positional duplicate labels in both column selectors.`);
