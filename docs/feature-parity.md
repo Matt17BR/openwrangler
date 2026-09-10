@@ -96,6 +96,8 @@ names. Custom Code checks lazy output expressions beyond the displayed columns b
 check in generated code. Other operations keep their native lazy evaluation and operation-specific guards. These checks
 do not snapshot inputs or guarantee all later queries will succeed. One-hot encoding, multi-label encoding and Custom
 Code may materialize their results.
+Import inference preserves UTF-8 characters crossing its sample boundary. The selected native reader still owns
+full-file decoding and parsing.
 CSV/TSV imports preserve native empty fields and whitespace values, including headerless all-null TSV records.
 Files with no bytes or only a UTF-8 BOM open with an empty schema; other blank records follow the selected reader.
 Pandas accepts its supported text encodings

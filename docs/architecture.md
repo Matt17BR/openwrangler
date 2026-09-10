@@ -79,6 +79,10 @@ cached blocks and returns a recoverable reopen diagnostic. Page caches are sessi
 payload weight, and keyed by both row and column projection. A view, source, plan, draft, or disposal change
 invalidates incompatible entries.
 
+Delimited import detection reads at most 65,539 bytes once: a 64 KiB nominal prefix and up to three bytes to complete
+its final UTF-8 scalar. A valid nominal prefix ignores later bytes; malformed interior bytes retain the existing
+encoding fallback. This sample does not prove EOF or validate the full file.
+
 Changing import options is a host-owned session swap. The coordinator quiesces accepted work, opens a private
 candidate against the same immutable source, replays the confirmed plan, draft, and view, publishes the replacement
 once, and then retires the prior runtime. Failure leaves the prior confirmed session unchanged. The public session
