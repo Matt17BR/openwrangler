@@ -23,7 +23,8 @@ export interface ReleasedROperationPickerDependencies {
   readonly requireFreshExactSessionPanelHydration: (
     testing: TestApi,
     sessionId: string,
-    expectation: string
+    expectation: string,
+    timeoutMs?: number
   ) => Promise<void>;
   readonly waitForOpenWranglerGridTarget: (
     workbench: Page,
@@ -42,14 +43,15 @@ export function createReleasedROperationPicker(dependencies: ReleasedROperationP
     sessionId: string
   ): Promise<Readonly<{ app: Locator; dialog: Locator }>> {
     type RendererReceipt = NonNullable<ReturnType<TestApi["panelSynchronizationReceipt"]>>;
-    const acquire = async (expected?: RendererReceipt) => {
+    const acquire = async (timeoutMs: number, expected?: RendererReceipt) => {
       const app =
         expected === undefined
           ? await synchronizedSessionApp(
               workbench,
               testing,
               sessionId,
-              "The native R operation picker requires the acknowledged renderer."
+              "The native R operation picker requires the acknowledged renderer.",
+              timeoutMs
             )
           : await reacquireAcknowledgedSessionApp(
               workbench,
@@ -80,9 +82,10 @@ export function createReleasedROperationPicker(dependencies: ReleasedROperationP
         let target: PickerTarget;
         let element: Awaited<ReturnType<PickerTarget["button"]["elementHandle"]>>;
         try {
+          const acquisitionTimeoutMs = Math.max(1, deadline - Date.now());
           target = await withAcceptanceOperationDeadline(
-            acquire(wanted),
-            Math.max(1, deadline - Date.now()),
+            acquire(acquisitionTimeoutMs, wanted),
+            acquisitionTimeoutMs,
             "the native R Add step renderer acquisition"
           );
           wanted = target.receipt;
@@ -192,9 +195,10 @@ export function createReleasedROperationPicker(dependencies: ReleasedROperationP
     workbench: Page,
     testing: TestApi,
     sessionId: string,
-    expectation: string
+    expectation: string,
+    timeoutMs?: number
   ): Promise<Locator> {
-    await requireFreshExactSessionPanelHydration(testing, sessionId, expectation);
+    await requireFreshExactSessionPanelHydration(testing, sessionId, expectation, timeoutMs);
     const receipt = testing.panelSynchronizationReceipt(sessionId);
     assert.ok(receipt, `${expectation} The host must retain its acknowledged renderer receipt.`);
     return consumeLayoutCommittedRendererValue(testing, sessionId, receipt.revision, waitFor, async (committed) => {

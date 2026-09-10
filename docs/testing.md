@@ -238,6 +238,8 @@ inspection retains its existing renderer.
 The R journeys leave synchronization to the next app acquisition, operation picker or nested journey when no
 intervening action consumes the current renderer.
 They retain separate waits before step inspection, passive acquisition, Code Preview receipt checks and helper completion.
+The R operation picker passes its remaining acquisition budget to hydration, preventing a late repair request after
+that deadline; other session acquisitions retain their default hydration timeout.
 The R value journey completes both Pivot UI rounds before coordinator-only Lowercase, Uppercase, Strip and Split
 checks. Those direct requests advance session state without publishing a panel snapshot, so no same-session UI action follows them.
 App draft-state tests own failed and cancelled preview feedback for new and edited operations. They assert an
