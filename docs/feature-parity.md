@@ -129,8 +129,12 @@ Python live entry points include the notebook toolbar, Jupyter Variables, linked
 execution through Python Interactive. MIME v2 is a static capture, not session or export data: it is capped at 10,000
 rows, 2,048 columns, 100,000 cells, 16 MiB, 64 graph levels, and 1,000,000 graph nodes, and pages at 10, 20, 50, or
 100 rows. Its full-view action opens only the exact current live value in the originating notebook and kernel.
-Existing saved MIME-v2 outputs remain readable. A Python kernel retaining an older live runtime after an extension
-update requires a kernel restart and rerunning its cells before a live dataframe can reopen.
+Existing saved MIME-v2 outputs remain readable. A running Python kernel reuses only the same verified bundled
+runtime; older or partial imports require a manual kernel restart. Explicit `show` remains supported for static
+output; live reopening follows the [notebook recovery order](architecture.md#notebook-kernel-terminal-and-document-provenance)
+so the host loads the verified bundle before `show` is imported. Windows notebook patch-version and temporary-directory
+limits are in the
+[compatibility notes](../README.md#compatibility-and-limits).
 Cleaned-data export requires no draft and writes the committed plan, never the viewing filters or sorts, to a local
 file destination through the shared publication boundary.
 Script and data exports protect the session's concrete source files even after a rename. They also reject source-path

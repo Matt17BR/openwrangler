@@ -1072,6 +1072,25 @@ cached variable list. Opening a selection rechecks that receipt and gives the ne
 the runtime session is confirmed. Refreshing the list cannot retire an already opened session, and a stale selection
 cannot bootstrap or execute against a replacement kernel.
 
+Python bootstrap imports the bundled source into a fresh private directory and retains that directory for the
+loaded package lifetime. Reuse requires the exact source digest, the original private directory and matching
+locations for every loaded runtime module. Older, partial or mixed runtime imports require a user-directed kernel
+restart. The host requires one bounded acknowledgment for its current bootstrap attempt before sending a runtime
+request. Failed qualification preserves existing modules, sessions, variables and result handles.
+
+Explicit `show` can emit static MIME from an installed package without establishing its origin for live sessions.
+Importing that package before host bootstrap still requires a restart. Recreate the dataframe without importing
+`openwrangler_runtime`, then open it through the Open Wrangler notebook toolbar or variable command so the host
+loads the verified bundle. Import and use `show` afterward. This order also works when automatic previews are
+disabled or another provider is selected; it does not reload or adopt the previously imported package.
+
+On POSIX, the canonical temporary-directory ancestry must be owned by root or the effective user; group- or
+world-writable ancestors require sticky-directory protection. Windows notebook bootstrap requires a patched
+CPython that creates private directories and the ordinary local per-user `LOCALAPPDATA/Temp` location, with its
+OS-protected profile ancestry. Custom, shared, UNC and reparse-point temporary paths are refused. This policy does
+not attest arbitrary Windows ACLs or protect a deliberately weakened user profile. The patch-version prerequisites
+are listed in the [compatibility notes](../README.md#compatibility-and-limits). No existing cache is adopted or removed.
+
 The host creates each live-kernel candidate session ID before dispatch and maps it to the exact kernel. A malformed,
 cancelled, timed-out, stale, or mis-correlated open makes one bounded direct cleanup attempt for that candidate on the
 same mapped kernel. Cleanup never looks up a replacement kernel by URI. Kernel replacement invalidates every session

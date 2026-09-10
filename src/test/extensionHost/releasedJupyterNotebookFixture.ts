@@ -1,4 +1,6 @@
 import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { buildKernelRuntimeBundle, readRuntimeFiles } from "../../extension/notebooks/kernelRuntimeBundle";
 
 export const RELEASED_JUPYTER_SETUP_RESULT = "__OW_RELEASED_SETUP__";
 export const RELEASED_JUPYTER_RESTART_RESULT = "__OW_RELEASED_RESTART__";
@@ -25,6 +27,39 @@ export interface ReleasedJupyterNotebookFixture {
   };
   readonly nbformat: 4;
   readonly nbformat_minor: 5;
+}
+
+export function releasedKernelRuntimeOriginProbe(hostExtensionPath: string): string {
+  const { bundleId } = buildKernelRuntimeBundle(readRuntimeFiles(join(hostExtensionPath, "python")));
+  // Observe the installed bundle's lease and the two modules used by the
+  // journey. Complete module-prefix validation belongs to the bootstrap owner.
+  return `def __ow_fixture_bundle_origin():
+    import os, pathlib, stat, sys, tempfile, types
+    owner = sys.modules.get('openwrangler_runtime')
+    if type(owner) is not types.ModuleType:
+        return False
+    provenance = owner.__dict__.get('__openwrangler_bundle_provenance__')
+    if (type(provenance) is not tuple or len(provenance) != 3
+        or provenance[0] != ${JSON.stringify(bundleId)}
+        or type(provenance[1]) is not tempfile.TemporaryDirectory
+        or type(provenance[2]) is not tuple or len(provenance[2]) != 2
+        or any(type(value) is not int for value in provenance[2])):
+        return False
+    root = pathlib.Path(provenance[1].name)
+    try:
+        info = root.lstat()
+    except OSError:
+        return False
+    if not stat.S_ISDIR(info.st_mode) or (info.st_dev, info.st_ino) != provenance[2] or str(root) not in sys.path:
+        return False
+    if os.name == 'posix' and (info.st_uid != os.geteuid() or info.st_mode & 0o077):
+        return False
+    for name, relative in (('openwrangler_runtime', 'openwrangler_runtime/__init__.py'), ('openwrangler_runtime.kernel_agent', 'openwrangler_runtime/kernel_agent.py')):
+        module = sys.modules.get(name)
+        if type(module) is not types.ModuleType or module.__dict__.get('__file__') != str(root / relative):
+            return False
+    return owner.__dict__.get('__path__') == [str(root / 'openwrangler_runtime')]
+`;
 }
 
 export function releasedJupyterNotebookFixture(
@@ -146,16 +181,18 @@ export function releasedJupyterNotebookFixture(
         metadata: {},
         outputs: [],
         source: [
+          releasedKernelRuntimeOriginProbe(hostExtensionPath),
           "import importlib.util, json, os, socket, sys\n",
           `print(${JSON.stringify(RELEASED_JUPYTER_RESTART_RESULT)} + json.dumps({` +
             "'pid': os.getpid(), " +
             "'runtime': importlib.util.find_spec('openwrangler_runtime') is not None, " +
-            "'bootstrap': ('__ow_bundle_root' in globals() and str(globals().get('__ow_bundle_root')) in sys.path), " +
+            "'bootstrap': __ow_fixture_bundle_origin(), " +
             "'remoteRunId': os.environ.get('OPEN_WRANGLER_REMOTE_RUN_ID'), " +
             "'hostname': socket.gethostname(), " +
             `'hostExtensionVisible': os.path.exists(${JSON.stringify(hostExtensionPath)}), ` +
             "'setup': globals().get('openwrangler_restart_marker')" +
-            "}, sort_keys=True))\n"
+            "}, sort_keys=True))\n",
+          "del __ow_fixture_bundle_origin\n"
         ]
       },
       {

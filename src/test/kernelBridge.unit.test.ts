@@ -23,6 +23,7 @@ import type {
   RuntimeRequestEnvelope
 } from "../shared/protocol";
 import {
+  bootstrapKernelExecution,
   cancellationSource,
   closeNotebook,
   closeRequest,
@@ -44,7 +45,6 @@ import {
   resetKernelBridgeTestState,
   resultBinding,
   setOpenNotebookDocuments,
-  textKernelExecution,
   unpinnedOpenRequest
 } from "./kernelBridge.testFixtures";
 
@@ -98,7 +98,7 @@ describe("discovered Python variable kernel binding", () => {
         return (async function* () {
           started.resolve();
           await gate.promise;
-          yield* [];
+          yield* bootstrapKernelExecution(code);
         })();
       return kernelExecution(code, (request) =>
         request.kind === "openSession" ? openedResponse(request.requestedSessionId!) : initializedResponse
@@ -278,6 +278,217 @@ classic_module.__dict__["DataFrame"] = DataFrame
 sys.modules["pyspark"] = pyspark_module
 sys.modules["pyspark.sql.classic.dataframe"] = classic_module
 `;
+
+describe("verified kernel bootstrap acknowledgment", () => {
+  const corruptions = [
+    "missing",
+    "text traceback",
+    "wrong nonce",
+    "wrong digest",
+    "duplicate",
+    "malformed",
+    "extra field",
+    "unknown status",
+    "outdated",
+    "unsafe_temp",
+    "unsupported_python",
+    "oversize",
+    "oversize error"
+  ] as const;
+
+  describe.each(["request", "formatter", "capture"] as const)("%s", (route) => {
+    it.each(corruptions)(
+      "refuses %s before dispatch without reacquiring or interrupting the kernel",
+      async (corruption) => {
+        const executions: string[] = [];
+        const controller = controllableKernel((code) => {
+          executions.push(code);
+          return (async function* () {
+            if (corruption === "oversize error") {
+              yield {
+                items: [
+                  {
+                    mime: "application/vnd.code.notebook.error",
+                    data: JSON.stringify({
+                      name: "ImportError",
+                      message: "private-diagnostic-".repeat(64 * 1024)
+                    })
+                  }
+                ]
+              };
+              return;
+            }
+            let text = "";
+            for await (const item of bootstrapKernelExecution(code)) text += (item as { text: string }).text;
+            const nonce = code.match(/__OPEN_WRANGLER_BOOTSTRAP_START_([a-f0-9]{32})__/u)![1];
+            const digest = code.match(/expected_id = "([a-f0-9]{64})"/u)![1];
+            switch (corruption) {
+              case "missing":
+                text = "";
+                break;
+              case "text traceback":
+                text = "Traceback: ImportError: original import failed\n";
+                break;
+              case "wrong nonce":
+                text = text.replaceAll(nonce, "0".repeat(32));
+                break;
+              case "wrong digest":
+                text = text.replace(digest, "0".repeat(64));
+                break;
+              case "duplicate":
+                text += `\n${text}`;
+                break;
+              case "malformed":
+                text = text.replace('"ready"', "undefined");
+                break;
+              case "extra field":
+                text = text.replace('"status":', '"extra": true, "status":');
+                break;
+              case "unknown status":
+                text = text.replace('"ready"', '"error"');
+                break;
+              case "outdated":
+              case "unsafe_temp":
+              case "unsupported_python":
+                text = text.replace('"ready"', JSON.stringify(corruption));
+                break;
+              case "oversize":
+                text += "x".repeat(64 * 1024);
+                break;
+            }
+            yield { text };
+          })();
+        });
+        const acquisition = mockKernel(controller.kernel);
+        const bridge = createKernelBridge();
+        const operation =
+          route === "request"
+            ? bridge.request(openRequest())
+            : route === "formatter"
+              ? bridge.prepareNotebookFormatter()
+              : bridge.captureExecutedCellResult(7, "a".repeat(64), resultBinding(controller.kernel, "pandas"));
+        const expected =
+          corruption === "outdated"
+            ? "Restart the Python kernel"
+            : corruption === "unsafe_temp"
+              ? "private or protected temporary directory"
+              : corruption === "unsupported_python"
+                ? "CPython 3.10.15+ in 3.10"
+                : corruption === "oversize" || corruption === "oversize error"
+                  ? "bootstrap output exceeds"
+                  : "could not verify";
+        await expect(operation).rejects.toThrow(expected);
+        expect(acquisition).toHaveBeenCalledOnce();
+        expect(executions).toHaveLength(1);
+        expect(executions[0]).not.toContain("__ow_payload =");
+        expect(controller.executionTokens()).toHaveLength(1);
+        expect(controller.executionTokens()[0]?.isCancellationRequested).toBe(false);
+        bridge.dispose();
+      }
+    );
+  });
+
+  it("requires a fresh receipt after the observed kernel generation changes", async () => {
+    let firstReceipt = "";
+    const requests: OpenWranglerRequest[] = [];
+    const controller = controllableKernel((code) => {
+      if (code.includes("__OPEN_WRANGLER_BOOTSTRAP_START_"))
+        return (async function* () {
+          if (!firstReceipt) {
+            for await (const item of bootstrapKernelExecution(code)) firstReceipt += (item as { text: string }).text;
+          }
+          yield { text: firstReceipt };
+        })();
+      return kernelExecution(code, (request) => {
+        requests.push(request);
+        return initializedResponse;
+      });
+    });
+    mockKernel(controller.kernel);
+    const bridge = createKernelBridge();
+    await expect(bridge.request(initializeRequest())).resolves.toEqual(initializedResponse);
+    controller.setStatus("restarting");
+    controller.setStatus("idle");
+    await expect(bridge.request(initializeRequest())).rejects.toThrow("could not verify");
+    expect(requests).toHaveLength(1);
+    expect(controller.executionTokens()).toHaveLength(3);
+    bridge.dispose();
+  });
+
+  it("preserves structured import errors and the existing generic bootstrap retry", async () => {
+    let attempts = 0;
+    const controller = controllableKernel(() =>
+      (async function* () {
+        attempts += 1;
+        yield {
+          items: [
+            {
+              mime: "application/vnd.code.notebook.error",
+              data: JSON.stringify({
+                name: "ImportError",
+                message: "original dependency detail"
+              })
+            }
+          ]
+        };
+      })()
+    );
+    const acquisition = mockKernel(controller.kernel);
+    const bridge = createKernelBridge();
+    await expect(bridge.request(initializeRequest())).rejects.toThrow("ImportError): original dependency detail");
+    expect(attempts).toBe(2);
+    expect(acquisition).toHaveBeenCalledTimes(2);
+    expect(controller.executionTokens().every((token) => !token.isCancellationRequested)).toBe(true);
+    bridge.dispose();
+  });
+
+  it.each(["settle", "transport error"] as const)(
+    "drains oversized bootstrap output through %s after the host detaches, without decoding or dispatching",
+    async (ending) => {
+      vi.useFakeTimers();
+      const overflowRead = deferred<void>();
+      const finish = deferred<void>();
+      let iteratorClosed = false;
+      let executions = 0;
+      const controller = controllableKernel(() =>
+        (async function* () {
+          executions += 1;
+          try {
+            yield { text: "x".repeat(64 * 1024 + 1) };
+            overflowRead.resolve();
+            await finish.promise;
+            yield {
+              get text(): never {
+                throw new Error("Discarded output was decoded");
+              }
+            };
+            if (ending === "transport error") throw new Error("late transport failure");
+          } finally {
+            iteratorClosed = true;
+          }
+        })()
+      );
+      const acquisition = mockKernel(controller.kernel);
+      const bridge = createKernelBridge();
+      const opening = bridge.request(openRequest("oversize-detached"), { timeoutMs: 30 });
+      await overflowRead.promise;
+      expect(iteratorClosed).toBe(false);
+      await vi.advanceTimersByTimeAsync(30);
+      await expect(opening).resolves.toMatchObject({ kind: "cancelled" });
+      expect(iteratorClosed).toBe(false);
+      const joined = bridge.request(openRequest("oversize-joined"), { timeoutMs: 60_000 });
+      const rejection = expect(joined).rejects.toThrow("bootstrap output exceeds the byte limit");
+      finish.resolve();
+      await rejection;
+      expect(iteratorClosed).toBe(true);
+      expect(executions).toBe(1);
+      expect(acquisition).toHaveBeenCalledOnce();
+      expect(controller.executionTokens()).toHaveLength(1);
+      expect(controller.executionTokens()[0]?.isCancellationRequested).toBe(false);
+      bridge.dispose();
+    }
+  );
+});
 
 describe("notebook preflight output ownership", () => {
   const fixedError = "Open Wrangler could not verify PySpark in the selected notebook kernel.";
@@ -1041,7 +1252,7 @@ sys.modules["openwrangler_runtime.notebook"] = notebook_module`
         return (async function* () {
           bootstrapStarted.resolve(undefined);
           await releaseBootstrap.promise;
-          yield* [];
+          yield* bootstrapKernelExecution(code);
         })();
       }
       return kernelExecution(code, (request) => {
@@ -1237,7 +1448,7 @@ sys.modules["openwrangler_runtime.notebook"] = notebook_module`
         formatterExecutions += 1;
         formatterStarted.resolve();
         await releaseFormatter.promise;
-        yield { text: "" };
+        yield* bootstrapKernelExecution(code);
       })();
     });
     const getExtension = mockKernel(controller.kernel);
@@ -1274,7 +1485,7 @@ sys.modules["openwrangler_runtime.notebook"] = notebook_module`
     let formatterBootstrap = "";
     const controller = controllableKernel((code) => {
       formatterBootstrap = code;
-      return textKernelExecution("");
+      return bootstrapKernelExecution(code);
     });
     mockKernel(controller.kernel);
 
@@ -1313,7 +1524,7 @@ if isinstance(tree.body[-1], ast.Expr):
           firstFormatterStarted.resolve();
           await new Promise<never>(() => undefined);
         }
-        yield { text: "" };
+        yield* bootstrapKernelExecution(code);
       })();
     });
     const getExtension = mockKernel(controller.kernel);
@@ -1973,7 +2184,7 @@ if isinstance(tree.body[-1], ast.Expr):
           return (async function* (): AsyncIterable<unknown> {
             bootstrapStarted.resolve(undefined);
             await releaseBootstrap.promise;
-            yield* [];
+            yield* bootstrapKernelExecution(code);
           })();
         }
         return kernelExecution(code, (request) => {

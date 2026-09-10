@@ -298,4 +298,73 @@ describe("kernel protocol responses", () => {
       "Open Wrangler kernel execution failed (ModuleNotFoundError): No module named 'polars'"
     );
   });
+
+  it.each(["settle", "iterator rejection"] as const)(
+    "drains after a structured error through %s before preserving the original diagnostic",
+    async (ending) => {
+      const drainedError = deferred<void>();
+      const finish = deferred<void>();
+      let iteratorClosed = false;
+      let laterDecoded = false;
+      async function* outputs() {
+        try {
+          yield {
+            items: [
+              {
+                mime: "application/vnd.code.notebook.error",
+                data: new TextEncoder().encode(
+                  JSON.stringify({
+                    name: "ImportError",
+                    message: "original dependency detail"
+                  })
+                )
+              }
+            ]
+          };
+          drainedError.resolve();
+          await finish.promise;
+          yield {
+            items: [],
+            get text(): never {
+              laterDecoded = true;
+              throw new Error("must not decode later output");
+            }
+          };
+          if (ending === "iterator rejection") throw new Error("later iterator failure");
+        } finally {
+          iteratorClosed = true;
+        }
+      }
+      const collection = kernelOutputsToText(outputs(), 1024);
+      const rejection = expect(collection).rejects.toThrow("ImportError): original dependency detail");
+      await drainedError.promise;
+      expect(iteratorClosed).toBe(false);
+      finish.resolve();
+      await rejection;
+      expect(iteratorClosed).toBe(true);
+      expect(laterDecoded).toBe(false);
+    }
+  );
+
+  it("bounds an oversized structured diagnostic without retaining its raw cause", async () => {
+    async function* outputs() {
+      yield {
+        items: [
+          {
+            mime: "application/vnd.code.notebook.error",
+            data: new TextEncoder().encode(
+              JSON.stringify({
+                name: "ImportError",
+                message: "private-diagnostic-".repeat(1024)
+              })
+            )
+          }
+        ]
+      };
+    }
+    const error = await kernelOutputsToText(outputs(), 1024).catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("Open Wrangler kernel output exceeds the byte limit.");
+    expect(error).not.toHaveProperty("cause");
+  });
 });

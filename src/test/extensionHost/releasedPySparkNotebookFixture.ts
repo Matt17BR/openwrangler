@@ -1,6 +1,7 @@
 import { writeFileSync } from "node:fs";
 import {
   RELEASED_JUPYTER_RESTART_RESULT,
+  releasedKernelRuntimeOriginProbe,
   type ReleasedJupyterNotebookKernelTarget
 } from "./releasedJupyterNotebookFixture";
 
@@ -39,6 +40,7 @@ export function releasedPySparkNotebookFixture(
   return {
     cells: [
       cell([
+        releasedKernelRuntimeOriginProbe(hostExtensionPath),
         "import importlib.util",
         "import json",
         "import os",
@@ -47,10 +49,11 @@ export function releasedPySparkNotebookFixture(
         "    'executable': sys.executable,",
         "    'pid': os.getpid(),",
         "    'runtime': importlib.util.find_spec('openwrangler_runtime') is not None,",
-        "    'bootstrap': ('__ow_bundle_root' in globals() and str(globals().get('__ow_bundle_root')) in sys.path),",
+        "    'bootstrap': __ow_fixture_bundle_origin(),",
         "    'setup': None,",
         `    'hostExtensionVisible': os.path.exists(${JSON.stringify(hostExtensionPath)}),`,
-        "}, sort_keys=True))"
+        "}, sort_keys=True))",
+        "del __ow_fixture_bundle_origin"
       ]),
       cell([
         "import json",
