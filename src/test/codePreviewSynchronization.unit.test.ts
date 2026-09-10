@@ -1,6 +1,6 @@
 import { historyField, undo, undoDepth } from "@codemirror/commands";
 import { EditorView } from "@codemirror/view";
-import { expect, it, vi } from "vitest";
+import { beforeAll, expect, it, vi } from "vitest";
 import { CODE_PREVIEW_EDIT_DEBOUNCE_MS, CODE_PREVIEW_MAX_UTF8_BYTES } from "../shared/codePreviewLimits";
 import {
   command,
@@ -13,6 +13,20 @@ import {
 } from "./nativeViews.testFixtures";
 
 import * as safeFileExport from "../extension/files/safeFileExport";
+
+beforeAll(() => {
+  if (typeof Range.prototype.getClientRects === "function") return;
+  // jsdom has no range layout. These tests own editor state and IPC; Chromium owns rendered geometry.
+  const originalRangeGetClientRects = Object.getOwnPropertyDescriptor(Range.prototype, "getClientRects");
+  Object.defineProperty(Range.prototype, "getClientRects", { configurable: true, value: () => [] });
+  return () => {
+    if (originalRangeGetClientRects) {
+      Object.defineProperty(Range.prototype, "getClientRects", originalRangeGetClientRects);
+    } else {
+      Reflect.deleteProperty(Range.prototype, "getClientRects");
+    }
+  };
+});
 
 it("reconstructs CRLF and bare-CR edits and flushes crossed snapshots across recreation", async () => {
   vi.useRealTimers();
