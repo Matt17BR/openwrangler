@@ -1,7 +1,4 @@
-from typing import Any
-
-
-def _open_wrangler_round_exact(expression: Any, dtype: Any, decimals: int) -> Any:
+def _open_wrangler_round_exact(expression, dtype, decimals: int):
     import polars as pl
 
     if dtype.is_integer():
@@ -74,7 +71,7 @@ def _open_wrangler_round_exact(expression: Any, dtype: Any, decimals: int) -> An
     return _open_wrangler_round(expression.cast(pl.Float64, strict=False), decimals)
 
 
-def _open_wrangler_round(expression: Any, decimals: int) -> Any:
+def _open_wrangler_round(expression, decimals: int):
     import math
 
     import polars as pl
@@ -89,7 +86,7 @@ def _open_wrangler_round(expression: Any, decimals: int) -> Any:
     small = expression.is_finite() & (expression.abs() < unit / 4)
     eligible = expression.is_finite() & ~small & (expression.abs() < unit * 2**54)
 
-    def rounded(value: Any) -> float:
+    def rounded(value) -> float:
         try:
             return round(float(value), decimals)
         except OverflowError:

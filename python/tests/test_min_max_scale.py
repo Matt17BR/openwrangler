@@ -115,9 +115,13 @@ def scaled_frames(adapter: Any, source: Any, *, inplace: bool = True) -> tuple[A
         schema,
         lineage,
     )
-    namespace: dict[str, Any] = {}
+    namespace: dict[str, Any] = {"Any": source}
     exec(adapter.compile_plan([operation]), namespace, namespace)
-    return adapter.apply_transform(source, operation), namespace["clean_data"](source)
+    assert namespace["Any"] is source
+    live = adapter.apply_transform(source, operation)
+    generated = namespace["clean_data"](namespace["Any"])
+    assert namespace["Any"] is source
+    return live, generated
 
 
 def assert_scaling(engine: tuple[Any, bool], values: list[Any], kind: str, *, inplace: bool = False) -> None:
