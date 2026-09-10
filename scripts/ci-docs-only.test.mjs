@@ -83,6 +83,31 @@ test("proves existing Markdown edits against the exact tested merge", async (con
   }
 });
 
+test("proves existing component test edits while retaining Source execution", (context) => {
+  const files = [
+    "src/test/appColumnProjection.component.test.tsx",
+    "src/test/appShortcuts.component.test.tsx",
+    "src/test/filterSummary.component.test.tsx",
+    "src/test/webview.component.test.tsx"
+  ];
+  const cwd = repository(context, files);
+  for (const file of files) write(cwd, file);
+  const env = merge(cwd);
+  assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
+    docsOnly: false,
+    rOmittable: true,
+    pythonOmittable: true
+  });
+  const output = join(cwd, "action-output");
+  const message = execFileSync(process.execPath, [script], {
+    cwd,
+    env: { ...process.env, ...env, GITHUB_OUTPUT: output },
+    encoding: "utf8"
+  });
+  assert.equal(readFileSync(output, "utf8"), "docs_only=false\nr_omittable=true\npython_omittable=true\n");
+  assert.match(message, /component-test/u);
+});
+
 test("proves existing Python source and Markdown edits only for native R", async (context) => {
   const cases = [
     ["python/openwrangler_runtime/engines/duckdb_engine.py"],
@@ -93,6 +118,7 @@ test("proves existing Python source and Markdown edits only for native R", async
     [
       "python/openwrangler_runtime/engines/duckdb_engine.py",
       "python/tests/test_duckdb_engine.py",
+      "src/test/webview.component.test.tsx",
       "README.md",
       "CHANGELOG.md",
       "docs/architecture.md"
@@ -157,6 +183,7 @@ test("proves regular R source additions and edits and existing R journey edits o
       modified: [
         "src/test/extensionHost/releasedRCoreEditing.ts",
         "src/test/extensionHost/releasedRRowReduction.ts",
+        "src/test/webview.component.test.tsx",
         "r/openwrangler_runtime/kernel_agent.R",
         "README.md",
         "CHANGELOG.md",
@@ -215,12 +242,13 @@ test("requires full owners for deleted or renamed runtime source, including alon
     "python/openwrangler_runtime/session.py",
     "r/openwrangler_runtime/kernel_agent.R",
     "src/test/extensionHost/releasedRCoreEditing.ts",
-    "src/test/extensionHost/releasedRRowReduction.ts"
+    "src/test/extensionHost/releasedRRowReduction.ts",
+    "src/test/webview.component.test.tsx"
   ]) {
     for (const change of ["add and delete", "delete", "rename", "rename into runtime"]) {
       await context.test(`${file}: ${change}`, (child) => {
         const cwd = repository(child, [file]);
-        const destination = file.replace(/\.(py|R|ts)$/u, "-new.$1");
+        const destination = file.replace(/\.(py|R|tsx?)$/u, "-new.$1");
         if (change === "add and delete") {
           write(cwd, destination);
           rmSync(join(cwd, file));
@@ -244,7 +272,8 @@ test("requires full owners for source mode changes and existing executable or sy
     "python/tests/helper.py",
     "r/tests/helper.R",
     "src/test/extensionHost/releasedRCoreEditing.ts",
-    "src/test/extensionHost/releasedRRowReduction.ts"
+    "src/test/extensionHost/releasedRRowReduction.ts",
+    "src/test/webview.component.test.tsx"
   ]) {
     for (const mode of ["100755", "120000"]) {
       for (const existing of [false, true]) {
@@ -309,7 +338,8 @@ test("requires full owners for added Markdown or paths outside the runtime sourc
     "r/tests/new.r",
     "r/dependencies/new.R",
     "src/test/extensionHost/releasedRCoreEditing.ts",
-    "src/test/extensionHost/releasedRRowReduction.ts"
+    "src/test/extensionHost/releasedRRowReduction.ts",
+    "src/test/webview.component.test.tsx"
   ]) {
     await context.test(file, (child) => {
       const cwd = repository(child);
@@ -323,8 +353,12 @@ test("requires full owners for added Markdown or paths outside the runtime sourc
   }
 });
 
-test("requires full owners for control characters in runtime source paths", async (context) => {
-  for (const file of ["python/tests/unusual\nname.py", "r/tests/unusual\nname.R"]) {
+test("requires full owners for control characters in source paths", async (context) => {
+  for (const file of [
+    "python/tests/unusual\nname.py",
+    "r/tests/unusual\nname.R",
+    "src/test/unusual\nname.component.test.tsx"
+  ]) {
     for (const added of [false, true]) {
       await context.test(`${file}, added=${added}`, (child) => {
         const cwd = repository(child, added ? [] : [file]);
@@ -387,6 +421,15 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
     "docs/image.svg",
     "CONTRIBUTING.md",
     "src/shared/protocol.ts",
+    "src/webviews/App.tsx",
+    "src/test/popoverTestSetup.ts",
+    "src/test/dependencyInstaller.unit.test.ts",
+    "src/test/rPrivateArtifactBoundary.unit.test.ts",
+    "src/test/rKernelTransport.cross.test.ts",
+    "src/test/extensionHost/nested.component.test.tsx",
+    "src/test/webview.component.test.ts",
+    "src/test/component.test.tsx",
+    "tsconfig.extension-test.json",
     "src/extension/r/rKernelBridge.ts",
     "src/test/extensionHost/releasedROperationPicker.ts",
     "src/test/extensionHost/releasedRCoreEditing.ts.bak",
@@ -412,7 +455,9 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
     "r/dependencies/native-r-contract/lock.json"
   ]) {
     await context.test(file, (child) => {
-      const cwd = repository(child, [file, "CHANGELOG.md"]);
+      const component = "src/test/webview.component.test.tsx";
+      const cwd = repository(child, [file, "CHANGELOG.md", component]);
+      write(cwd, component);
       write(cwd, "README.md");
       write(cwd, "CHANGELOG.md");
       write(cwd, file);
@@ -676,23 +721,26 @@ test("required runtime results reject missing proof and incomplete or canceled e
     assert.equal(guard.if, undefined);
     assert.equal(guard.shell, "bash");
     assert.equal(guard.env.PROOF_RESULT, "${{ needs.docs-proof.result }}");
-    const omissionOutput = id === "windows" ? "docs_only" : `${id}_omittable`;
-    const omissionEnvironment = omissionOutput.toUpperCase();
-    assert.equal(guard.env[omissionEnvironment], `\${{ needs.docs-proof.outputs.${omissionOutput} }}`);
+    const omissionOutputs = id === "windows" ? ["r_omittable", "python_omittable"] : [`${id}_omittable`];
+    for (const output of omissionOutputs) {
+      assert.equal(guard.env[output.toUpperCase()], `\${{ needs.docs-proof.outputs.${output} }}`);
+    }
     for (const other of ["DOCS_ONLY", "R_OMITTABLE", "PYTHON_OMITTABLE"]) {
-      if (other !== omissionEnvironment) assert.equal(guard.env[other], undefined);
+      if (!omissionOutputs.includes(other.toLowerCase())) assert.equal(guard.env[other], undefined);
     }
     assert.equal(guard.env.RUNTIME_RESULT, `\${{ needs.${runtimeId}.result }}`);
     assert.equal(runtime.needs, "docs-proof");
     assert.equal(
       runtime.if,
-      `\${{ !cancelled() && needs.docs-proof.result == 'success' && needs.docs-proof.outputs.${omissionOutput} == 'false' }}`,
+      id === "windows"
+        ? "${{ !cancelled() && needs.docs-proof.result == 'success' && (needs.docs-proof.outputs.r_omittable == 'false' || needs.docs-proof.outputs.python_omittable == 'false') }}"
+        : `\${{ !cancelled() && needs.docs-proof.result == 'success' && needs.docs-proof.outputs.${id}_omittable == 'false' }}`,
       "execution jobs must be cancellable, including while queued after a successful proof"
     );
     assert.equal(runtime["runs-on"], id === "windows" ? "windows-latest" : "ubuntu-24.04");
     assert.equal(runtime.steps[0].if, undefined);
     assert.equal(runtime.steps.at(-1).if, undefined);
-    for (const [result, omittable, runtimeResult, expectedStatus] of [
+    for (const [result, omittable, runtimeResult, expectedStatus, otherOmittable = omittable] of [
       ["success", "true", "skipped", 0],
       ["success", "false", "success", 0],
       ["failure", "true", "skipped", 1],
@@ -709,7 +757,19 @@ test("required runtime results reject missing proof and incomplete or canceled e
       ["success", "true", "", 1],
       ["success", "", "skipped", 1],
       ["success", "TRUE", "skipped", 1],
-      ["success", "true\nfalse", "success", 1]
+      ["success", "true\nfalse", "success", 1],
+      ...(id === "windows"
+        ? [
+            ["success", "false", "success", 0, "true"],
+            ["success", "true", "success", 0, "false"],
+            ["success", "false", "skipped", 1, "true"],
+            ["success", "true", "skipped", 1, "false"],
+            ["success", "false", "success", 1, ""],
+            ["success", "", "success", 1, "false"],
+            ["success", "true", "skipped", 1, ""],
+            ["success", "", "skipped", 1, "true"]
+          ]
+        : [])
     ]) {
       const summary = join(temp, "summary");
       rmSync(summary, { force: true });
@@ -717,9 +777,10 @@ test("required runtime results reject missing proof and incomplete or canceled e
         env: {
           ...process.env,
           PROOF_RESULT: result,
-          DOCS_ONLY: id === "windows" ? omittable : omittable === "true" ? "false" : "true",
-          R_OMITTABLE: id === "r" ? omittable : omittable === "true" ? "false" : "true",
-          PYTHON_OMITTABLE: id === "python" ? omittable : omittable === "true" ? "false" : "true",
+          DOCS_ONLY: omittable === "true" ? "false" : "true",
+          R_OMITTABLE: id === "r" || id === "windows" ? omittable : omittable === "true" ? "false" : "true",
+          PYTHON_OMITTABLE:
+            id === "windows" ? otherOmittable : id === "python" ? omittable : omittable === "true" ? "false" : "true",
           RUNTIME_RESULT: runtimeResult,
           MACOS_CALL_RESULT: id === "r" && omittable === "true" ? "skipped" : "success",
           MACOS_RESULT: id === "r" && omittable === "true" ? "" : "success",
@@ -731,14 +792,14 @@ test("required runtime results reject missing proof and incomplete or canceled e
       });
       assert.equal(execution.error, undefined);
       assert.equal(execution.status, expectedStatus, `${id}: ${result}/${JSON.stringify(omittable)}/${runtimeResult}`);
-      if (expectedStatus === 0 && omittable === "true") {
+      if (expectedStatus === 0 && omittable === "true" && (id !== "windows" || otherOmittable === "true")) {
         assert.match(
           readFileSync(summary, "utf8"),
           id === "r"
             ? /Native R checks omitted:.*No fresh R execution is claimed/u
             : id === "python"
               ? /Python checks omitted:.*No fresh Python execution is claimed/u
-              : /existing regular Markdown documentation/u
+              : /Windows checks omitted:.*No fresh Windows execution is claimed/u
         );
       }
     }

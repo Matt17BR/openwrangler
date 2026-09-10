@@ -49,7 +49,12 @@ The scope-only job uses Node and Git without installing npm dependencies or rest
   execution. Other acceptance helpers, including the shared R operation picker, are outside this permission.
 - R source and installed-editor execution may be omitted for additions or edits to `.py` files under
   `python/openwrangler_runtime/` or `python/tests/`, and edits to existing `README.md`, `CHANGELOG.md` or `docs/**/*.md`.
-- Vitest and Windows execution may be omitted only for edits to existing `README.md`, `CHANGELOG.md` or `docs/**/*.md` files.
+- Python, R and Windows execution may be omitted for edits to existing top-level `src/test/*.component.test.tsx`
+  files, optionally with the allowed Markdown edits. Source still runs these component tests; the native and installed
+  harnesses do not consume them. Component additions, nested tests, unit/cross tests and shared fixtures are outside
+  this permission.
+- Vitest may be omitted only for edits to existing `README.md`, `CHANGELOG.md` or `docs/**/*.md` files. Windows also
+  omits those documentation-only changes.
 
 Mixed Python/R changes require both runtimes. The Python job does not consume the allowed R files. The R checks do
 not execute the allowed Python files; the selected installed R journeys use Python only for Jupyter client readiness
@@ -58,13 +63,15 @@ Source and packaged smoke retain its validation and package-content checks. Shar
 configuration, dependency locks and other paths outside these scopes require full execution. If an affected test suite
 or selected runner begins consuming an omitted input, update the proof and its tests in the same change.
 
-These omissions reduce unrelated work for documentation edits, isolated engine changes and the allowed R journeys.
+These omissions reduce unrelated work for documentation edits, private component tests, isolated engine changes and
+the allowed R journeys.
 They provide no fresh or transferred test result and can delay discovery of unrelated dependency or hosted-environment
 regressions.
 Scheduled R 4.4 qualification does not replace R 4.5 coverage. Release qualification remains separate.
 
 Each runtime has cancellable execution and a short required-result job. The latter reports success only for completed
-execution or a proved omission with actually skipped execution. The R result also checks both installed workflow calls
+execution or a proved omission with actually skipped execution. Windows omission requires both runtime omission flags
+and a skipped worker; otherwise both flags must be valid and its execution must succeed. The R result also checks both installed workflow calls
 and their selected platform job results. A proved R omission requires the source matrix and both installed workflow
 calls to be skipped, with empty reusable outputs. Otherwise every result must succeed; missing, canceled or skipped selected jobs
 cannot satisfy the check, even if a misconfigured workflow call otherwise reports success.
