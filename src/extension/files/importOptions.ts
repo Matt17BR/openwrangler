@@ -2,7 +2,7 @@ import { open } from "node:fs/promises";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import type { SessionSource } from "../../shared/protocol";
-import { detectedImportOptionsFromSample, IMPORT_DETECTION_SAMPLE_BYTES } from "./importDetection";
+import { detectedImportOptionsFromSample, IMPORT_DETECTION_READ_BYTES } from "./importDetection";
 
 type ImportOptions = NonNullable<SessionSource["importOptions"]>;
 
@@ -43,7 +43,7 @@ export async function detectImportOptions(uri: vscode.Uri): Promise<ImportOption
   let handle;
   try {
     handle = await open(uri.fsPath, "r");
-    const sample = Buffer.allocUnsafe(IMPORT_DETECTION_SAMPLE_BYTES);
+    const sample = Buffer.allocUnsafe(IMPORT_DETECTION_READ_BYTES);
     const { bytesRead } = await handle.read(sample, 0, sample.length, 0);
     return detectedImportOptionsFromSample(uri.fsPath, sample.subarray(0, bytesRead));
   } catch {

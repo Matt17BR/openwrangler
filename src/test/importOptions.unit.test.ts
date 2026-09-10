@@ -100,8 +100,29 @@ describe("automatic import option sampling", () => {
     expect(importOptionMocks.read).toHaveBeenCalledOnce();
     const [buffer, offset, length, position] = importOptionMocks.read.mock.calls[0] ?? [];
     expect(Buffer.isBuffer(buffer)).toBe(true);
-    expect(buffer).toHaveLength(IMPORT_DETECTION_SAMPLE_BYTES);
-    expect([offset, length, position]).toEqual([0, IMPORT_DETECTION_SAMPLE_BYTES, 0]);
+    expect(buffer).toHaveLength(IMPORT_DETECTION_SAMPLE_BYTES + 3);
+    expect([offset, length, position]).toEqual([0, IMPORT_DETECTION_SAMPLE_BYTES + 3, 0]);
+    expect(importOptionMocks.close).toHaveBeenCalledOnce();
+  });
+
+  it("reads enough lookahead to preserve a UTF-8 scalar across the nominal boundary", async () => {
+    const heading = "name;value\none;1\n";
+    const bytes = new TextEncoder().encode(
+      `${heading}${"x".repeat(IMPORT_DETECTION_SAMPLE_BYTES - heading.length - 1)}😀;2\n`
+    );
+    importOptionMocks.read.mockImplementationOnce(async (buffer: Uint8Array, offset: number, length: number) => {
+      const returned = bytes.subarray(0, length);
+      buffer.set(returned, offset);
+      return { bytesRead: returned.length, buffer };
+    });
+
+    await expect(detectImportOptions(vscode.Uri.file("/tmp/boundary.csv"))).resolves.toEqual({
+      delimiter: ";",
+      encoding: "utf-8",
+      quoteChar: '"',
+      hasHeader: true
+    });
+    expect(importOptionMocks.read).toHaveBeenCalledOnce();
     expect(importOptionMocks.close).toHaveBeenCalledOnce();
   });
 
