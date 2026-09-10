@@ -263,6 +263,11 @@ merely because another resource has the same URI, variable name, or display labe
 
 ## Engine boundaries and capabilities
 
+Python CSV/TSV readers own whitespace, empty fields and record parsing. Pandas maps only its native `EmptyDataError`
+to an empty dataframe; Polars disables the native empty-input exception. DuckDB validates the file and options in its
+native reader before a four-byte check adapts a zero-byte or single-UTF-8-BOM file to the existing zero-column plan.
+No shared whitespace scan discards native records. Other parse errors retain their normal refusal path.
+
 Every cleaning operation except Custom Code addresses input columns through public `{id, name}` references. The runtime
 binds public references against the exact input schema and lineage to private positions before execution. Unknown, stale, repeated where
 disallowed, type/name-mismatched, colliding, or private row-identity references fail closed. The current catalog and
@@ -618,7 +623,7 @@ creates and closes its own hardened connection, and any `DuckDBPyRelation` is de
 closes. DuckDB never converts through Pandas, Polars, or Arrow, and extension auto-install, autoload, and external-file
 caching remain disabled.
 
-File readers adapt paths to DuckDB's glob rules so imports use the selected file. Source identity, blank-file checks
+File readers adapt paths to DuckDB's glob rules so imports use the selected file. Source identity, empty-file checks
 and diagnostics retain the original path. On Unix, the adapter preserves the first absolute component, which DuckDB
 treats literally, and escapes the remaining components. Windows paths on local drives use standard glob escaping.
 Unix paths containing both backslashes and glob syntax, and Windows drive, share or device anchors containing glob

@@ -31,6 +31,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- CSV/TSV imports retain empty fields and whitespace values that were incorrectly treated as an empty file.
 - Filtering or restoring a grid view keeps keyboard focus and cell selection aligned, preventing Ctrl+C from copying a different cell.
 - Native R Fill Missing Values avoids early underflow when interpolating between subnormal values, including in generated code.
 - Generated Python no longer replaces notebook inputs named like its imports or helpers. A source named `clean_data`

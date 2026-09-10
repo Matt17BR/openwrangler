@@ -60,7 +60,6 @@ from .base import (
     exact_integer_median,
     generated_fill_replacement_expression,
     generated_view_value_helper_lines,
-    is_blank_delimited_file,
     is_internal_row_id_label,
     normalize_cell,
     normalize_page_projection,
@@ -403,14 +402,7 @@ class DuckDBEngine(DataFrameEngine):
                             f"DuckDB supports UTF-8 CSV input, not {encoding}. "
                             "Use the Pandas backend for this encoding."
                         )
-                    if is_blank_delimited_file(path):
-                        row_id = f"{INTERNAL_ROW_ID_PREFIX}empty_source"
-                        frame = _snapshot_relation_factory(
-                            lambda: connection.sql(f"SELECT CAST(NULL AS BIGINT) AS {_quote_ident(row_id)} WHERE FALSE")
-                        )
-                        self._empty_source_frame = frame
-                        return frame
-                    return _snapshot_relation_factory(
+                    frame = _snapshot_relation_factory(
                         lambda: connection.read_csv(
                             _literal_file_path(path),
                             delimiter=options.get("delimiter", "\t" if extension == ".tsv" else ","),
@@ -419,6 +411,17 @@ class DuckDBEngine(DataFrameEngine):
                             header=options.get("hasHeader", True),
                         )
                     )
+                    # Native binding above validates options even for empty input.
+                    # Only zero bytes or one UTF-8 BOM need a zero-column schema.
+                    with Path(path).open("rb") as source:
+                        empty = source.read(4) in {b"", b"\xef\xbb\xbf"}
+                    if empty:
+                        row_id = f"{INTERNAL_ROW_ID_PREFIX}empty_source"
+                        frame = _snapshot_relation_factory(
+                            lambda: connection.sql(f"SELECT CAST(NULL AS BIGINT) AS {_quote_ident(row_id)} WHERE FALSE")
+                        )
+                        self._empty_source_frame = frame
+                    return frame
                 if extension == ".parquet":
                     return _snapshot_relation_factory(lambda: connection.read_parquet(_literal_file_path(path)))
                 if extension in {".jsonl", ".ndjson"}:
