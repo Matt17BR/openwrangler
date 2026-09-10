@@ -1482,6 +1482,31 @@ describe("App progressive profiling and view correlation", () => {
     expect(requestsOfKind("getPage")).toHaveLength(0);
   });
 
+  it.each(["", " "])("only requests values for nonempty raw column names (%j)", (name) => {
+    const namedMetadata = {
+      ...metadata,
+      schema: metadata.schema.map((column, index) => (index === 0 ? { ...column, name } : column))
+    };
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata: namedMetadata, page, summaries: [] });
+    fireEvent.click(screen.getByRole("button", { name: "Column profiles and filters" }));
+    selectInsightsView("Filters / Sorts");
+    if (name === "") {
+      expect(requestsOfKind("getColumnValues")).toHaveLength(0);
+      expect(screen.getByRole("button", { name: /Search values/iu })).toBeDisabled();
+      expect(
+        screen.getAllByText("Viewing filters and sorts require a column name. Choose another column.").length
+      ).toBeGreaterThan(0);
+      fireEvent.change(screen.getByLabelText("Filter column"), { target: { value: "c:1" } });
+      fireEvent.click(screen.getByRole("button", { name: "Search values in sales" }));
+      expect(onlyRequest("getColumnValues")).toMatchObject({ column: "sales", search: "" });
+    } else {
+      expect(onlyRequest("getColumnValues")).toMatchObject({ column: name });
+      expect(screen.getByRole("button", { name: /Search values/iu })).toBeEnabled();
+    }
+    expect(requestsOfKind("getPage")).toHaveLength(0);
+  });
+
   it("clears unfinished filter inputs when a replacement session reuses column IDs", async () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
@@ -2133,6 +2158,18 @@ describe("App progressive profiling and view correlation", () => {
     selectInsightsView("Dataset");
     expect(screen.getByText("No missing values.")).toBeInTheDocument();
     selectInsightsView("Filters / Sorts");
+    const search = screen.getByPlaceholderText("Search values");
+    fireEvent.change(search, { target: { value: "Confirmed" } });
+    fireEvent.keyDown(search, { key: "Enter" });
+    const searched = requestsOfKind("getColumnValues").at(-1)!;
+    dispatch({
+      kind: "columnValues",
+      revision: metadata.revision,
+      viewRequestId: viewId(searched),
+      column: "city",
+      values: [{ value: "Confirmed candidate", count: 7 }],
+      hasMore: false
+    });
     const originalContext = setViewContextMessages().at(-1)?.viewContextId;
 
     postMessage.mockClear();
@@ -2143,6 +2180,11 @@ describe("App progressive profiling and view correlation", () => {
     const pageRequests = requestsOfKind("getPage");
     expect(pageRequests).toHaveLength(2);
     const newest = pageRequests[1];
+    fireEvent.change(screen.getByLabelText("Filter column"), { target: { value: "c:1" } });
+    dispatch({ kind: "editorAction", action: "openFilters", column: "city" });
+    expect(screen.getByLabelText("Filter column")).toHaveDisplayValue("city");
+    expect(screen.getByPlaceholderText("Search values")).toHaveValue("Confirmed");
+    expect(requestsOfKind("getColumnValues")).toHaveLength(0);
     dispatch({
       kind: "error",
       code: "page_failed",
@@ -2153,6 +2195,8 @@ describe("App progressive profiling and view correlation", () => {
 
     expect(await screen.findByText("Distinct 500")).toBeInTheDocument();
     expect(screen.getByText("Confirmed candidate")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Search values")).toHaveValue("Confirmed");
+    expect(requestsOfKind("getColumnValues")).toHaveLength(0);
     selectInsightsView("Dataset");
     expect(screen.getByText("No missing values.")).toBeInTheDocument();
     expect(setViewContextMessages().at(-1)?.viewContextId).toBe(originalContext);
@@ -2279,7 +2323,8 @@ function recoveryPacket(
 
 interface EditorActionMessage {
   kind: "editorAction";
-  action: "undoStep" | "openOperation" | "selectStep";
+  action: "undoStep" | "openOperation" | "selectStep" | "openFilters";
+  column?: string;
   operationKind?: "customCode";
   stepId?: string;
 }

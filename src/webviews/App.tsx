@@ -2612,11 +2612,11 @@ export function App() {
                   aria-labelledby={summaryTabId("filters")}
                 >
                   <FilterPanel
-                    key={JSON.stringify([metadata?.sessionId, filterPanelTarget.column, filterPanelTarget.openKey])}
+                    key={JSON.stringify([metadata?.sessionId, filterPanelTarget.openKey])}
                     metadata={metadata}
                     model={filterModel}
                     values={columnValues}
-                    activeColumn={filterPanelTarget.column}
+                    columnRequest={filterPanelTarget}
                     defaultAdvanced={webviewConfig.filterMode === "advanced"}
                     disabled={mutationPending || importOptionsPending}
                     filterSupported={filterSupported}

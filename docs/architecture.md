@@ -140,7 +140,9 @@ Cached filter choices exclude their own column's filter. A viewing change retain
 query, including sort and AND/OR logic, is unchanged; Search explicitly reloads cleared choices. Sorting can change
 the typed representative of equal values. Failed view changes restore choices from the original confirmed snapshot.
 Header Filter, the Filters tab and Show More start a fresh local form for their explicit default-value request,
-including when the requested column is unchanged. Passive metadata and viewing changes retain local form input.
+including when the requested column is unchanged. Native Sort Edit navigation selects its column without clearing
+search, predicate or staged-sort drafts, including when it targets a different column. It does not request values.
+Passive metadata and viewing changes retain local form input.
 Clipboard pages share the foreground queue with ordinary viewing requests. Before dispatch or recovery, and again
 after awaited recovery or detached-execution settlement, the coordinator rejects cancelled clipboard pages and
 those whose logical context is no longer current. This prevents a queued read for an older view from changing

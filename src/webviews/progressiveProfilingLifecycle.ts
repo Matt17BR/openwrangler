@@ -430,6 +430,7 @@ export function useProgressiveProfilingLifecycle({
       const current = readConfirmedView();
       if (
         !current ||
+        column.length === 0 ||
         !supportsViewingCapability(current.metadata.capabilities, "filter") ||
         !supportsViewingCapability(current.metadata.capabilities, "columnValues") ||
         current.metadata.schema.filter((candidate) => candidate.name === column).length !== 1

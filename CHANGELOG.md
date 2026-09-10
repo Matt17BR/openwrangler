@@ -34,6 +34,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Opening a viewing sort from the sidebar selects its column without clearing unfinished filter or sort input.
 - Filter choices clear stale counts after another filter or sort changes. Search reloads them for the current view.
 - Reopening value filters selects the requested column and clears old search input to match the fresh choices.
 - Polars profiles and value choices accept supported columns named `count` or matching a temporary count field.
