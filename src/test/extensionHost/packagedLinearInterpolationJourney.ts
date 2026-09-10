@@ -150,7 +150,7 @@ export function createPackagedLinearInterpolationJourney(
     await dialog.waitFor({ state: "hidden", timeout: 10_000 });
 
     const code = testing.activeSession()?.code ?? "";
-    assert.match(code, /^import polars as pl$/mu);
+    assert.match(code, /^[ \t]*import polars as pl$/mu);
     assert.ok(
       code.includes("df = _ow_polars_fill_missing_linear_interpolation(df, 'measurement', 'coordinate', 3)"),
       "Generated Polars code must call linear interpolation with the exact selected columns and gap limit."
