@@ -770,10 +770,12 @@ PySpark and generic verification. Qualification coverage is determined by the se
 ## Native R editor dependencies
 
 The `r-jupyter` notebook journeys prepare their reviewed package subset in a fresh private R library. They omit
-`languageserver`, `rmarkdown`, and `knitr`; literate-documents journeys retain all three. The terminal journey keeps
-`languageserver` and `knitr` for the official R extension, and nanoparquet for real Parquet export. It omits rmarkdown,
-IRkernel, collapse and Rcpp because the plain-R terminal fixtures do not render documents, start a Jupyter kernel or
-use collapse. Notebook and literate journeys retain collapse and its structural probe.
+`languageserver`, `rmarkdown`, and `knitr`; literate-documents journeys retain all three. The terminal journey disables
+`r.lsp.enabled` in its private profile and omits `languageserver` and `knitr`. It retains the official R extension's
+session watcher and nanoparquet for real Parquet export. It also omits rmarkdown, IRkernel, collapse and Rcpp because
+the plain-R terminal fixtures do not render documents, start a Jupyter kernel or use collapse. This terminal sequence
+does not exercise incidental language-server coexistence during discovery, replacement, editing and export; other
+profiles retain the default LSP setting. Notebook and literate journeys retain collapse and its structural probe.
 On macOS, selected collapse fixtures use the pinned source snapshot built with two make jobs.
 Package pins remain in `scripts/jupyter-acceptance-environment.mjs`. Each selected root must resolve from the private
 library at its reviewed version and load successfully before editor launch. Notebook and literate journeys also

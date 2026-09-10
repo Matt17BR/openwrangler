@@ -954,6 +954,7 @@ try {
                             "r.rpath.linux": rAcceptanceEnvironment.rExecutable,
                             "r.rterm.linux": rAcceptanceEnvironment.rExecutable,
                             "r.libPaths": [rAcceptanceEnvironment.libraryDir],
+                            ...(nativeTerminalOnly ? { "r.lsp.enabled": false } : {}),
                             ...(rJupyterSelection.literateDocuments
                               ? {
                                   "r.rmarkdown.knit.useBackgroundProcess": true,
