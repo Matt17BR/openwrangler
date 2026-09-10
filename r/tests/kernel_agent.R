@@ -13341,7 +13341,12 @@ local({
   csv_export <- "92929292-9292-4292-8292-929292929292"
   utf8 <- rawToChar(as.raw(c(0xc3, 0xa9)))
   Encoding(utf8) <- "UTF-8"
-  source_environment$csv_unicode <- data.frame(text = c(utf8, NA_character_))
+  original_options <- options(OutDec = ",")
+  on.exit(options(original_options), add = TRUE)
+  source_environment$csv_unicode <- data.frame(
+    text = c(utf8, NA_character_),
+    duration = structure(c(0.25, NA_real_), class = "difftime", units = "hours")
+  )
   assert_identical(Sys.setlocale("LC_CTYPE", "C"), "C", "public CSV test could not select the C locale")
   source_before <- serialize(source_environment$csv_unicode, NULL, version = 3L)
   opened <- dispatch("openSession", list(sessionId = csv_session, variableName = "csv_unicode", page = page_window()))
@@ -13354,12 +13359,44 @@ local({
   exported <- dispatch("exportData", list(sessionId = csv_session, revision = 0L, exportId = csv_export, options = csv_export_options))
   assert_identical(exported$kind, "dataExported", "Unicode CSV export did not complete")
   chunk <- dispatch("readDataExport", list(sessionId = csv_session, revision = 0L, exportId = csv_export, offset = 0L, limit = 1024L))
-  expected <- c(charToRaw("\"text\"\n\""), as.raw(c(0xc3, 0xa9)), charToRaw("\"\n\n"))
-  assert_identical(jsonlite::base64_dec(chunk$data), expected, "public CSV export changed UTF-8 text under the C locale")
+  expected <- c(charToRaw("\"text\",\"duration\"\n\""), as.raw(c(0xc3, 0xa9)), charToRaw("\",0.25\n,\n"))
+  assert_identical(jsonlite::base64_dec(chunk$data), expected, "public CSV export changed UTF-8 text or duration decimals under the caller locale/options")
   assert_identical(exported$bytes, length(expected), "public CSV export reported the wrong UTF-8 byte count")
   assert_identical(serialize(source_environment$csv_unicode, NULL, version = 3L), source_before, "public CSV export mutated source text")
   current <- dispatch("getPage", list(sessionId = csv_session, page = page_window()))
   assert_identical(current$page$page, opened$page$page, "CSV export changed the confirmed page")
+  closed <- dispatch("closeDataExport", list(sessionId = csv_session, revision = 0L, exportId = csv_export))
+  assert_identical(closed$kind, "dataExportClosed", "public duration CSV artifact did not close")
+})
+
+local({
+  csv_session <- "96969696-9696-4696-8696-969696969696"
+  csv_export <- "97979797-9797-4797-8797-979797979797"
+  failure_request <- "98989898-9898-4898-8898-989898989898"
+  source_environment$csv_invalid_duration <- data.frame(
+    duration = structure(c(0.25, NaN), class = "difftime", units = "hours")
+  )
+  before <- serialize(source_environment$csv_invalid_duration, NULL, version = 3L)
+  opened <- dispatch("openSession", list(sessionId = csv_session, variableName = "csv_invalid_duration", page = page_window(row_limit = 1L)))
+  assert_identical(opened$kind, "page", "the duration export session did not open")
+  on.exit({
+    dispatch("closeDataExport", list(sessionId = csv_session, revision = 0L, exportId = csv_export))
+    dispatch("closeSession", list(sessionId = csv_session))
+    rm("csv_invalid_duration", envir = source_environment)
+  })
+  failed <- dispatch("exportData", list(
+    sessionId = csv_session, revision = 0L, exportId = csv_export, options = csv_export_options
+  ), id = failure_request)
+  assert_identical(failed$kind, "error", "CSV export accepted duration NaN outside the requested page")
+  assert_identical(failed$requestId, failure_request, "duration CSV refusal lost request correlation")
+  assert_identical(failed$code, "runtime_error", "duration CSV refusal changed the runtime error boundary")
+  assert_identical(failed$recoverable, TRUE, "duration CSV refusal was not recoverable")
+  assert_identical(grepl("duration NaN", failed$message, fixed = TRUE), TRUE, "CSV export hid its duration NaN diagnostic")
+  unreadable <- dispatch("readDataExport", list(sessionId = csv_session, revision = 0L, exportId = csv_export, offset = 0L, limit = 1L))
+  assert_identical(unreadable$kind, "error", "a refused duration CSV export published readable bytes")
+  current <- dispatch("getPage", list(sessionId = csv_session, page = page_window(row_limit = 1L)))
+  assert_identical(current$page$page, opened$page$page, "duration CSV refusal changed the confirmed page")
+  assert_identical(serialize(source_environment$csv_invalid_duration, NULL, version = 3L), before, "refused duration CSV export changed the source")
 })
 
 parquet_ready <- dispatch(

@@ -9226,6 +9226,18 @@ openwrangler_r_frame_contract <- local({
         column <- csv_text(column, "CSV text")
       } else if (is.factor(column)) {
         attr(column, "levels") <- csv_text(attr(column, "levels", exact = TRUE), "CSV factor level")
+      } else if (inherits(column, "difftime")) {
+        # Keep stored magnitudes while the native numeric writer owns decimal punctuation.
+        column <- plain_metadata_storage(column)
+        row_count <- length(column)
+        if (row_count > 0L) {
+          for (start in seq.int(1, row_count, by = 65536)) {
+            values <- .subset(column, seq.int(start, min(start + 65535, row_count)))
+            if (any(is.nan(values))) {
+              abort("export-write-failed", "R duration NaN cannot be exported as CSV without becoming missing")
+            }
+          }
+        }
       }
       column
     })

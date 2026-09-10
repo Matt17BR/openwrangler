@@ -33,6 +33,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 - File import detection preserves UTF-8 characters at its sample boundary instead of selecting a legacy encoding.
 - CSV/TSV imports retain empty fields and whitespace values that were incorrectly treated as an empty file.
+- Native R CSV exports keep fractional duration fields intact when `OutDec` uses a comma.
+  Duration NaN now refuses export before writing; missing values and infinity tokens retain their existing output.
 - Filtering or restoring a grid view keeps keyboard focus and cell selection aligned, preventing Ctrl+C from copying a different cell.
 - Native R Fill Missing Values avoids early underflow when interpolating between subnormal values, including in generated code.
 - Generated Python no longer replaces notebook inputs named like its imports or helpers. A source named `clean_data`
