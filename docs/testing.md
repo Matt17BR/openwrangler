@@ -224,7 +224,8 @@ The Mark Duplicates and Dense Rank preview/apply checks and the applied Rename c
 revision and committed layout without requesting another publication. They retain active-session and revision guards
 before and after renderer acquisition. Other R session acquisitions keep their existing fresh synchronization;
 inspection retains its existing renderer.
-The R journeys omit an explicit refresh when the following app acquisition already performs it.
+The R journeys leave synchronization to the next app acquisition, operation picker or nested journey when no
+intervening action consumes the current renderer.
 They retain separate waits before step inspection, passive acquisition, Code Preview receipt checks and helper completion.
 The R value journey completes both Pivot UI rounds before coordinator-only Lowercase, Uppercase, Strip and Split
 checks. Those direct requests advance session state without publishing a panel snapshot, so no same-session UI action follows them.

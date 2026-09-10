@@ -208,11 +208,9 @@ export async function exerciseReleasedRCoreEditingCatalog(
 
   if (phase === "jupyter-r" && editingCatalog === "core-catalog") {
     await exerciseReleasedRPersistentRowsJourney(testing, workbench, sessionId, phase);
-    app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after persistent row operations");
     await exerciseReleasedRRowReductionJourney(testing, workbench, sessionId, phase);
     app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after row reduction operations");
     await exerciseReleasedRFillMissingJourney(testing, workbench, app, sessionId, phase);
-    app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after Fill missing values");
   }
 
   if (phase === "jupyter-r") {
@@ -498,7 +496,6 @@ export async function exerciseReleasedRCoreEditingCatalog(
       duplicateSourceBytes,
       "Mark Duplicates must preserve the source notebook."
     );
-    app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after undoing Mark Duplicates");
 
     recordAcceptanceProgress(`${phase}:editing:dense-rank-preview-apply-undo`);
     const rankBase = testing.activeSession();
@@ -708,7 +705,6 @@ export async function exerciseReleasedRCoreEditingCatalog(
   await discardedReview.waitFor({ state: "hidden", timeout: 10_000 });
 
   recordAcceptanceProgress(`${phase}:editing:preview-apply`);
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after discarding its draft");
   const previewed = await previewReleasedRRename(testing, workbench, app, sessionId, "row_id", "record_id");
   app = previewed.app;
   await app
@@ -1064,7 +1060,6 @@ export async function exerciseReleasedRCoreEditingCatalog(
   assert.deepEqual((await readRenamePage(final, `${phase}-editing-final-undo-page`)).page, restoredPage.page);
 
   recordAcceptanceProgress(`${phase}:editing:drop-preview-discard`);
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Drop Columns");
   const discardedDrop = await previewReleasedRDrop(
     testing,
     workbench,
@@ -1090,7 +1085,6 @@ export async function exerciseReleasedRCoreEditingCatalog(
   );
 
   recordAcceptanceProgress(`${phase}:editing:drop-preview-apply-inspect-undo`);
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before applying Drop Columns");
   const dropped = await previewReleasedRDrop(
     testing,
     workbench,
@@ -1169,7 +1163,6 @@ export async function exerciseReleasedRCoreEditingCatalog(
   );
 
   recordAcceptanceProgress(`${phase}:editing:select-preview-discard`);
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Select Columns");
   const selected = await previewReleasedRSelect(testing, workbench, sessionId, ["score", "row_id", "label"]);
   app = selected.app;
   await app.getByRole("region", { name: "Draft review" }).getByRole("button", { name: "Discard", exact: true }).click();
@@ -1191,12 +1184,6 @@ export async function exerciseReleasedRCoreEditingCatalog(
   );
 
   recordAcceptanceProgress(`${phase}:editing:select-preview-apply-inspect-undo`);
-  app = await releasedRSessionApp(
-    workbench,
-    testing,
-    sessionId,
-    "the restored R session before applying Select Columns"
-  );
   const appliedSelection = await previewReleasedRSelect(testing, workbench, sessionId, ["score", "row_id", "label"]);
   app = appliedSelection.app;
   await app
@@ -1271,7 +1258,6 @@ export async function exerciseReleasedRCoreEditingCatalog(
   );
 
   recordAcceptanceProgress(`${phase}:editing:clone-preview-discard`);
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Clone Column");
   const discardedClone = await previewReleasedRClone(testing, workbench, app, sessionId, "score", "score_discarded");
   app = discardedClone.app;
   await app.getByRole("region", { name: "Draft review" }).getByRole("button", { name: "Discard", exact: true }).click();
@@ -1295,7 +1281,6 @@ export async function exerciseReleasedRCoreEditingCatalog(
 
   await exerciseReleasedRCloneEditingLifecycle(testing, workbench, sessionId, phase);
   recordAcceptanceProgress(`${phase}:editing:text-length-preview-discard`);
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Text Length");
   const discardedLength = await previewReleasedRTextLength(
     testing,
     workbench,
@@ -1320,7 +1305,6 @@ export async function exerciseReleasedRCoreEditingCatalog(
   );
 
   recordAcceptanceProgress(`${phase}:editing:text-length-preview-apply-inspect-undo`);
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before applying Text Length");
   const measured = await previewReleasedRTextLength(testing, workbench, sessionId, "label", "label_length");
   app = measured.app;
   await app
