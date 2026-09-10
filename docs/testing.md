@@ -192,9 +192,9 @@ journey checks that closing the terminal restores the idle R action. The existin
 DOM-before-acknowledgement and mismatched-marker integration
 coverage; timing and retirement behavior is owned by the renderer lifecycle tests.
 
-Import detection tests distinguish complete UTF-8, cut scalars, malformed bytes and BOMs. The caller uses one
-positional read of at most 65,539 bytes: a 64 KiB nominal prefix plus up to three bytes to complete its final UTF-8
-scalar. Valid nominal prefixes leave later bytes to the runtime. Sampling does not certify EOF or full-file encoding.
+`src/test/importDetection.unit.test.ts` and `src/test/importOptions.unit.test.ts` own the
+[import sampling boundary](architecture.md#sources-sessions-and-data-flow), including cut UTF-8 scalars, malformed
+bytes, BOMs and the one-read acquisition bound.
 
 Native R frame tests own primitive numeric checks. The `kernel:numeric-portability` owner uses independent binary64
 references and raw-bit comparisons, including signed zero, with complete standalone and compiled execution.

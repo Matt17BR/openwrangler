@@ -31,6 +31,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- File import detection preserves UTF-8 characters at its sample boundary instead of selecting a legacy encoding.
 - CSV/TSV imports retain empty fields and whitespace values that were incorrectly treated as an empty file.
 - Filtering or restoring a grid view keeps keyboard focus and cell selection aligned, preventing Ctrl+C from copying a different cell.
 - Native R Fill Missing Values avoids early underflow when interpolating between subnormal values, including in generated code.
