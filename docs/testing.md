@@ -812,8 +812,10 @@ the private root; successful preparation and child exit permit its removal. The 
 keeps its separate environment and lifetime. The separate R 4.4 qualification remains unchanged.
 
 The macOS default is `platform-lifecycle`. It keeps a paging round trip, Mark Duplicates and Dense Rank forms, compact
-column reveal and focus, and the full Rename lifecycle with inspection, Edit, Undo/Redo, all-row exports, source
-refusal, Save, clipboard and source-bound notebook insertion. It also retains all three collapse-frame opens,
+column reveal and focus, and Rename inspection, Edit, Undo/Redo, all-row exports, source
+refusal, Save, clipboard and source-bound notebook insertion. Its editing sequence ends after verifying Rename Redo,
+followed by source integrity checks and session disposal. The additional Undo after Redo runs in Linux
+core to prepare for Drop Columns. The macOS profile also retains all three collapse-frame opens,
 direct-document execution and kernel restart/recovery. Three page windows after Dense Rank Apply check exact ranks,
 missing cells and row identities. The native kernel owner checks
 all original Mark Duplicates columns, and the real-process owner checks complete page restoration after Undo for

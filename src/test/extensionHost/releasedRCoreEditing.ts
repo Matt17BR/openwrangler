@@ -1038,6 +1038,8 @@ export async function exerciseReleasedRCoreEditingCatalog(
   assert.equal(redone.code, generatedCode, "Redo must restore the same copied, saved and inserted native R plan.");
   assert.deepEqual((await readRenamePage(redone, `${phase}-editing-redone-page`)).page, reappliedPage.page);
 
+  if (editingCatalog === "platform-lifecycle") return { app, coreScreenshot };
+
   app = await releasedRSessionApp(workbench, testing, sessionId, "the redone native R rename before final Undo");
   await app.getByRole("button", { name: "Undo", exact: true }).click();
   await waitFor(
@@ -1060,8 +1062,6 @@ export async function exerciseReleasedRCoreEditingCatalog(
   assert.deepEqual(final.metadata.source, restored.metadata.source);
   assert.equal(final.code, restored.code);
   assert.deepEqual((await readRenamePage(final, `${phase}-editing-final-undo-page`)).page, restoredPage.page);
-
-  if (editingCatalog === "platform-lifecycle") return { app, coreScreenshot };
 
   recordAcceptanceProgress(`${phase}:editing:drop-preview-discard`);
   app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Drop Columns");
