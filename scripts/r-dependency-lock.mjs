@@ -1096,12 +1096,11 @@ async function main(args) {
         readFileSync(new URL("./strict-json.mjs", import.meta.url))
       ])
     );
+    const imageVersion = requireText(process.env.ImageVersion, "ImageVersion");
     const key = [
       "openwrangler-r-contract-v2",
       requireText(process.env.ImageOS, "ImageOS"),
-      requireText(process.env.ImageVersion, "ImageVersion"),
       requireText(process.env.RUNNER_ARCH, "RUNNER_ARCH"),
-      runtime.version,
       runtime.platform,
       lockRecord.digest,
       installerDigest
@@ -1124,7 +1123,7 @@ async function main(args) {
         rVersion: runtime.version,
         rPlatform: runtime.platform,
         imageOS: process.env.ImageOS,
-        imageVersion: process.env.ImageVersion,
+        imageVersion,
         runnerArch: process.env.RUNNER_ARCH,
         cacheKey: key
       })}\n`

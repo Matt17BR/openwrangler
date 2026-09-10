@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import {
   closeSync,
   existsSync,
@@ -20,6 +21,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
 import {
   LOCK_LIMITS,
@@ -169,6 +171,150 @@ function fileOperations(overrides = {}) {
     ...overrides
   };
 }
+
+test("prepare keys verified archives independently of runner image and R patch", () => {
+  const directory = mkdtempSync(join(tmpdir(), "ow-r-prepare-test-"));
+  try {
+    const lockPath = join(directory, "ubuntu-24.04-x86_64-r-4.5.lock.json");
+    const lock = validLock();
+    writeFileSync(lockPath, canonicalLockBytes(lock));
+    const script = fileURLToPath(new URL("./r-dependency-lock.mjs", import.meta.url));
+    const fakeR = join(directory, "Rscript");
+    const outputPath = join(directory, "outputs");
+    const preload = join(directory, "r-receipt.mjs");
+    writeFileSync(
+      preload,
+      `import assert from "node:assert/strict";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+childProcess.spawnSync = (command, args) => {
+  assert.equal(command, process.env.TEST_R_COMMAND);
+  assert.deepEqual(args.slice(0, 2), ["--vanilla", "-e"]);
+  assert.equal(args.length, 3);
+  return { status: 0, signal: null, stdout: process.env.TEST_R_RECEIPT, stderr: "" };
+};
+syncBuiltinESMExports();
+`
+    );
+    function prepare({
+      imageVersion = "20260907.300.1",
+      rVersion = "4.5.3",
+      rPlatform = "x86_64-pc-linux-gnu",
+      entrypoint = script
+    } = {}) {
+      if (existsSync(outputPath)) unlinkSync(outputPath);
+      const result = spawnSync(
+        process.execPath,
+        [
+          "--import",
+          pathToFileURL(preload).href,
+          entrypoint,
+          "prepare",
+          "--lock",
+          lockPath,
+          "--rscript",
+          fakeR,
+          "--library",
+          join(directory, "library"),
+          "--archives",
+          join(directory, "archives"),
+          "--receipt",
+          join(directory, "receipt.json")
+        ],
+        {
+          encoding: "utf8",
+          timeout: 5_000,
+          maxBuffer: 64 * 1024,
+          env: {
+            ...process.env,
+            NODE_OPTIONS: "",
+            GITHUB_OUTPUT: outputPath,
+            ImageOS: "ubuntu24",
+            ImageVersion: imageVersion,
+            RUNNER_ARCH: "X64",
+            TEST_R_COMMAND: fakeR,
+            TEST_R_RECEIPT: `${rVersion}\t${rPlatform}\tLinux\tx86_64`
+          }
+        }
+      );
+      assert.equal(result.error, undefined);
+      assert.equal(result.signal, null);
+      return { ...result, output: existsSync(outputPath) ? readFileSync(outputPath, "utf8") : "" };
+    }
+    const baseline = prepare();
+    assert.equal(baseline.status, 0, baseline.stderr);
+    const initial = JSON.parse(baseline.stdout);
+    for (const change of [{ imageVersion: "20260831.293.1" }, { rVersion: "4.5.4" }]) {
+      const result = prepare(change);
+      assert.equal(result.status, 0, result.stderr);
+      const receipt = JSON.parse(result.stdout);
+      assert.equal(receipt.cacheKey, initial.cacheKey);
+      const outputs = new Map(
+        result.output
+          .trimEnd()
+          .split("\n")
+          .map((line) => {
+            const separator = line.indexOf("=");
+            return [line.slice(0, separator), line.slice(separator + 1)];
+          })
+      );
+      assert.equal(outputs.get("cache-key"), initial.cacheKey);
+      assert.equal(outputs.get("r-version"), receipt.rVersion);
+      for (const [field, value] of Object.entries(change)) assert.equal(receipt[field], value);
+    }
+
+    lock.packages[0].source.sha256 = sha256("different locked archive");
+    writeFileSync(lockPath, canonicalLockBytes(lock));
+    const changedLock = prepare();
+    assert.equal(changedLock.status, 0, changedLock.stderr);
+    assert.notEqual(JSON.parse(changedLock.stdout).cacheKey, initial.cacheKey);
+    assert.notEqual(JSON.parse(changedLock.stdout).lockSha256, initial.lockSha256);
+    writeFileSync(lockPath, canonicalLockBytes(validLock()));
+
+    const copiedScripts = join(directory, "scripts");
+    mkdirSync(copiedScripts);
+    const shared = join(directory, "src", "shared");
+    mkdirSync(shared, { recursive: true });
+    writeFileSync(
+      join(shared, "strictJson.cjs"),
+      readFileSync(new URL("../src/shared/strictJson.cjs", import.meta.url))
+    );
+    const copiedScript = join(copiedScripts, "r-dependency-lock.mjs");
+    const strictJson = readFileSync(new URL("./strict-json.mjs", import.meta.url), "utf8");
+    const strictJsonPath = join(copiedScripts, "strict-json.mjs");
+    writeFileSync(strictJsonPath, strictJson);
+    writeFileSync(copiedScript, readFileSync(script));
+    const copied = prepare({ entrypoint: copiedScript });
+    assert.equal(copied.status, 0, copied.stderr);
+    assert.equal(JSON.parse(copied.stdout).cacheKey, initial.cacheKey);
+    for (const [path, source] of [
+      [copiedScript, readFileSync(script, "utf8")],
+      [strictJsonPath, strictJson]
+    ]) {
+      writeFileSync(path, `${source}\n// Installer identity control.\n`);
+      const changedInstaller = prepare({ entrypoint: copiedScript });
+      assert.equal(changedInstaller.status, 0, changedInstaller.stderr);
+      assert.notEqual(JSON.parse(changedInstaller.stdout).cacheKey, initial.cacheKey);
+      assert.notEqual(JSON.parse(changedInstaller.stdout).installerSha256, initial.installerSha256);
+      writeFileSync(path, source);
+    }
+
+    for (const [change, error] of [
+      [{ rVersion: "4.6.0" }, /does not match the selected lock qualification/u],
+      [{ rPlatform: "aarch64-unknown-linux-gnu" }, /does not match the selected lock qualification/u],
+      [{ imageVersion: "" }, /ImageVersion/u]
+    ]) {
+      const result = prepare(change);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, error);
+      assert.equal(result.stdout, "");
+      assert.equal(result.output, "");
+      assert.equal(existsSync(outputPath), false);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("strict canonical locks bind the exact qualification, roots, archives, and filename", () => {
   const directory = mkdtempSync(join(tmpdir(), "ow-r-lock-test-"));

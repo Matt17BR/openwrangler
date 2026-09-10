@@ -46,6 +46,9 @@ project rather than adding browser setup to every suite.
 
 `npm run test:scripts` runs the Node tests for release, packaging, licenses, dependency locks, and archives directly
 with `node --test`.
+The R dependency-lock owner exercises the actual `prepare` CLI with a controlled R receipt, preserving cache identity
+across image and supported patch changes, provenance, and refusal before output publication. It also keeps the archive
+and fresh-library validation controls; this source check does not install R packages.
 The editor artifact owner checks that the isolated downloader closes rejected HTTPS response sockets after success
 and failure, preserving its result envelope and allowing pending filesystem work to finish through natural exit.
 The package owner checks in-place corruption and truncation after staging-name retirement, requiring byte mismatch
