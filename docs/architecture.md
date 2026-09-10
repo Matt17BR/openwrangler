@@ -494,6 +494,9 @@ Arrow timestamp and duration null masks use native validity, including logical n
 Pages and profile labels retain native context for present nanosecond extrema that Pandas boxes as `NaT`.
 Page context is prepared after row and column projection; profile extrema use native aggregation. Supported Fill
 methods retain native temporal donors and directional anchors in live and generated code. Source arrays stay unchanged.
+Linear Fill shares its ordered-gap and coordinate-weight arithmetic between live execution and standalone generated
+code. Target, coordinate and missing-value validation remain with the engine, along with dtype and original row-order
+restoration.
 Using the minimum nanosecond timestamp as a filter value remains unsupported under the existing microsecond input precision.
 Single-column Sparse integer duplicate counts also use the existing exact row keys, retaining native fill conventions.
 The missing-cell total sums the per-column counts, including Sparse columns, without a second aggregate scan.

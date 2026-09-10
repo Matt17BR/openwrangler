@@ -41,9 +41,15 @@ from ..portable_regex import (
     portable_regex_contract,
 )
 from ..trusted_pickle_to_parquet import _source_fingerprint
-from . import _pandas_arrow_formula_helpers, _pandas_group_sum_helpers, _pandas_min_max_helpers
+from . import (
+    _pandas_arrow_formula_helpers,
+    _pandas_group_sum_helpers,
+    _pandas_linear_fill_helpers,
+    _pandas_min_max_helpers,
+)
 from ._pandas_arrow_formula_helpers import _open_wrangler_arrow_formula_repair as _pandas_arrow_formula_repair
 from ._pandas_group_sum_helpers import _open_wrangler_native_int64_sum_is_safe as _pandas_native_int64_sum_is_safe
+from ._pandas_linear_fill_helpers import _open_wrangler_fill_linear_gaps as _pandas_fill_linear_gaps
 from ._pandas_min_max_helpers import _open_wrangler_min_max_scale as _pandas_min_max_scale
 from .base import (
     DEFAULT_STRIP_CHARACTERS,
@@ -6104,42 +6110,8 @@ def _pandas_fill_missing_linear_interpolation(
     ordered = series.iloc[order].reset_index(drop=True)
     ordered_coordinates = [coordinates[int(position)] for position in order]
     ordered_missing = (_null_mask(ordered) | _nan_mask(ordered)).to_numpy(dtype=bool)
-    result = ordered.copy()
-    filled = False
-    cursor = 0
-    while cursor < len(result):
-        if not ordered_missing[cursor]:
-            cursor += 1
-            continue
-        start = cursor
-        while cursor < len(result) and ordered_missing[cursor]:
-            cursor += 1
-        end = cursor
-        if start == 0 or end == len(result) or (max_gap is not None and end - start > max_gap):
-            continue
-        left_value = ordered.iloc[start - 1]
-        right_value = ordered.iloc[end]
-        if not _pandas_finite_interpolation_anchor(left_value) or not _pandas_finite_interpolation_anchor(right_value):
-            continue
-        left_coordinate = ordered_coordinates[start - 1]
-        right_coordinate = ordered_coordinates[end]
-        try:
-            for position in range(start, end):
-                weight = _pandas_linear_interpolation_weight(
-                    ordered_coordinates[position],
-                    left_coordinate,
-                    right_coordinate,
-                )
-                if not isfinite(weight) or not 0.0 <= weight <= 1.0:
-                    raise ValueError("coordinate distance produced a non-finite interpolation weight")
-                # This convex form avoids overflowing ``right - left`` for
-                # finite endpoints with opposite signs.
-                result.iloc[position] = (1.0 - weight) * float(left_value) + weight * float(right_value)
-                filled = True
-        except (ArithmeticError, TypeError, ValueError, OverflowError) as error:
-            raise EngineError(f"Linear interpolation failed for the selected coordinates: {error}") from error
-
-    if not filled:
+    result = _pandas_fill_linear_gaps(ordered, ordered_coordinates, ordered_missing, max_gap, EngineError)
+    if result is None:
         return original.copy()
     try:
         result = result.astype(series.dtype)
@@ -6151,22 +6123,6 @@ def _pandas_fill_missing_linear_interpolation(
     restored.index = series.index
     restored.name = series.name
     return restored
-
-
-def _pandas_linear_interpolation_weight(current: Any, left: Any, right: Any) -> float:
-    if any(isinstance(value, Decimal) for value in (current, left, right)) or all(
-        isinstance(value, Integral) for value in (current, left, right)
-    ):
-        with localcontext() as context:
-            context.prec = 80
-            return float((Decimal(current) - Decimal(left)) / (Decimal(right) - Decimal(left)))
-    current_float = float(current)
-    left_float = float(left)
-    right_float = float(right)
-    denominator = right_float - left_float
-    if isfinite(denominator):
-        return (current_float - left_float) / denominator
-    return ((current_float / 2.0) - (left_float / 2.0)) / ((right_float / 2.0) - (left_float / 2.0))
 
 
 def _pandas_linear_coordinate_values(series: Any) -> list[Any]:
@@ -6205,15 +6161,6 @@ def _pandas_linear_coordinate_values(series: Any) -> list[Any]:
             continue
         raise EngineError("Linear interpolation coordinates must contain only numeric, date, or datetime values.")
     return result
-
-
-def _pandas_finite_interpolation_anchor(value: Any) -> bool:
-    if _is_null_value(value) or _is_nan_value(value):
-        return False
-    try:
-        return isfinite(float(value))
-    except (TypeError, ValueError, OverflowError):
-        return False
 
 
 def _pandas_fill_missing_grouped_statistic(
@@ -7048,24 +6995,7 @@ def _generated_pandas_fill_directional_helpers() -> list[str]:
 
 def _generated_pandas_fill_linear_helpers() -> list[str]:
     return [
-        "def _open_wrangler_linear_interpolation_weight(current, left, right):",
-        "    if any(isinstance(value, Decimal) for value in (current, left, right)) or all(",
-        "        isinstance(value, Integral) for value in (current, left, right)",
-        "    ):",
-        "        with localcontext() as context:",
-        "            context.prec = 80",
-        ("            return float((Decimal(current) - Decimal(left)) / (Decimal(right) - Decimal(left)))"),
-        "    current_float = float(current)",
-        "    left_float = float(left)",
-        "    right_float = float(right)",
-        "    denominator = right_float - left_float",
-        "    if np.isfinite(denominator):",
-        "        return (current_float - left_float) / denominator",
-        "    return ((current_float / 2.0) - (left_float / 2.0)) / (",
-        "        (right_float / 2.0) - (left_float / 2.0)",
-        "    )",
-        "",
-        "",
+        getsource(_pandas_linear_fill_helpers),
         "def _open_wrangler_linear_coordinate_values(series):",
         "    result = []",
         "    for value in series.array:",
@@ -7116,15 +7046,6 @@ def _generated_pandas_fill_linear_helpers() -> list[str]:
         "    return result",
         "",
         "",
-        "def _open_wrangler_finite_interpolation_anchor(value):",
-        "    if _open_wrangler_is_null(value) or _open_wrangler_is_nan(value):",
-        "        return False",
-        "    try:",
-        "        return bool(np.isfinite(float(value)))",
-        "    except (TypeError, ValueError, OverflowError):",
-        "        return False",
-        "",
-        "",
         "def _open_wrangler_fill_missing_linear_interpolation(df, target_position, coordinate_position, max_gap):",
         "    original = df.iloc[:, target_position]",
         "    series = _open_wrangler_dictionary_values(original)",
@@ -7143,43 +7064,9 @@ def _generated_pandas_fill_linear_helpers() -> list[str]:
             "    ordered_missing = (_open_wrangler_mask(ordered, _open_wrangler_is_null) | "
             "_open_wrangler_mask(ordered, _open_wrangler_is_nan)).to_numpy(dtype=bool)"
         ),
-        "    result = ordered.copy()",
-        "    filled = False",
-        "    cursor = 0",
-        "    while cursor < len(result):",
-        "        if not ordered_missing[cursor]:",
-        "            cursor += 1",
-        "            continue",
-        "        start = cursor",
-        "        while cursor < len(result) and ordered_missing[cursor]:",
-        "            cursor += 1",
-        "        end = cursor",
-        ("        if start == 0 or end == len(result) or (max_gap is not None and end - start > max_gap):"),
-        "            continue",
-        "        left_value = ordered.iloc[start - 1]",
-        "        right_value = ordered.iloc[end]",
-        (
-            "        if not _open_wrangler_finite_interpolation_anchor(left_value) or not "
-            "_open_wrangler_finite_interpolation_anchor(right_value):"
-        ),
-        "            continue",
-        "        left_coordinate = ordered_coordinates[start - 1]",
-        "        right_coordinate = ordered_coordinates[end]",
-        "        try:",
-        "            for position in range(start, end):",
-        "                weight = _open_wrangler_linear_interpolation_weight(",
-        "                    ordered_coordinates[position], left_coordinate, right_coordinate",
-        "                )",
-        "                if not np.isfinite(weight) or not 0.0 <= weight <= 1.0:",
-        ("                    raise ValueError('coordinate distance produced a non-finite interpolation weight')"),
-        ("                result.iloc[position] = (1.0 - weight) * float(left_value) + weight * float(right_value)"),
-        "                filled = True",
-        "        except (ArithmeticError, TypeError, ValueError, OverflowError) as error:",
-        (
-            "            raise ValueError('Linear interpolation failed for the selected coordinates: ' "
-            "+ str(error)) from error"
-        ),
-        "    if not filled:",
+        "    result = _open_wrangler_fill_linear_gaps(",
+        "        ordered, ordered_coordinates, ordered_missing, max_gap, ValueError)",
+        "    if result is None:",
         "        return original.copy()",
         "    try:",
         "        result = result.astype(series.dtype)",

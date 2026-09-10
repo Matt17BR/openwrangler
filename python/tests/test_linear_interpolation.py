@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, Inexact, localcontext
 from math import isnan
 from typing import Any
 
@@ -303,11 +303,22 @@ def test_linear_interpolation_supports_decimal_coordinates(engine: Any) -> None:
     assert_values(result_values(engine, generated), [0.0, 1.0, 10.0])
 
 
-@pytest.mark.parametrize("backend", ["polars-decimal", "duckdb-bigint", "duckdb-decimal"])
+@pytest.mark.parametrize(
+    "backend", ["pandas-integer", "pandas-decimal", "polars-decimal", "duckdb-bigint", "duckdb-decimal"]
+)
 def test_linear_interpolation_preserves_high_offset_irregular_distances(backend: str) -> None:
     offset = 9_007_199_254_740_993
-    if backend == "polars-decimal":
-        engine: Any = PolarsEngine()
+    if backend.startswith("pandas-"):
+        engine: Any = PandasEngine()
+        coordinates = [offset, offset + 1, offset + 3]
+        frame = pd.DataFrame(
+            {
+                "coordinate": list(map(Decimal, coordinates)) if backend == "pandas-decimal" else coordinates,
+                "value": [0.0, None, 3.0],
+            }
+        )
+    elif backend == "polars-decimal":
+        engine = PolarsEngine()
         frame = pl.DataFrame(
             {
                 "coordinate": pl.Series(
@@ -436,6 +447,97 @@ def test_pandas_linear_interpolation_addresses_duplicate_labels_by_position() ->
     assert list(live.iloc[:, 0]) == [100.0, 200.0, 300.0]
     assert list(live.iloc[:, 2]) == [0.0, 2.0, 8.0]
     assert list(generated.iloc[:, 2]) == [0.0, 2.0, 8.0]
+
+
+@pytest.mark.parametrize("dtype", ["object", "Float64", "float64[pyarrow]"])
+def test_pandas_linear_interpolation_keeps_missing_and_nonfinite_anchors(dtype: str) -> None:
+    frame = pd.DataFrame(
+        {
+            "coordinate": range(10),
+            "value": pd.Series(
+                [None, 0.0, float("nan"), 4.0, float("inf"), pd.NA, 8.0, -float("inf"), None, 10.0],
+                dtype=dtype,
+            ),
+        }
+    )
+    frame.index = pd.Index(["same"] * len(frame), name="original")
+    before = frame.copy(deep=True)
+    expected = frame.copy(deep=True)
+    expected.iloc[2, 1] = 2.0
+    engine = PandasEngine()
+    operation = interpolation_step(engine, frame)
+
+    for actual in [engine.apply_transform(frame, operation), execute_generated(engine, frame, operation)]:
+        pd.testing.assert_frame_equal(actual, expected)
+    pd.testing.assert_frame_equal(frame, before)
+
+
+def test_pandas_linear_interpolation_preserves_arithmetic_error_class_and_cause() -> None:
+    frame = pd.DataFrame({"coordinate": list(map(Decimal, [0, 1, 3])), "value": [0.0, None, 3.0]})
+    before = frame.copy(deep=True)
+    engine = PandasEngine()
+    operation = interpolation_step(engine, frame)
+
+    with localcontext() as context:
+        context.traps[Inexact] = True
+        for run, error_type in [
+            (lambda: engine.apply_transform(frame, operation), EngineError),
+            (lambda: execute_generated(engine, frame, operation), ValueError),
+        ]:
+            with pytest.raises(error_type, match="Linear interpolation failed for the selected coordinates") as error:
+                run()
+            assert type(error.value) is error_type
+            assert isinstance(error.value.__cause__, Inexact)
+    pd.testing.assert_frame_equal(frame, before)
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_pandas_linear_interpolation_mixed_plan_keeps_helpers_local_and_source_unchanged(empty: bool) -> None:
+    frame = pd.DataFrame({"coordinate": [0, 1, 4], "value": [0.0, None, 8.0]})
+    if empty:
+        frame = frame.iloc[:0]
+    before = frame.copy(deep=True)
+    engine = PandasEngine()
+    operation = interpolation_step(engine, frame)
+    operations = [
+        operation,
+        {
+            "id": "isolated",
+            "kind": "customCode",
+            "params": {
+                "code": (
+                    "assert '_open_wrangler_fill_linear_gaps' not in globals()\n"
+                    "assert '_open_wrangler_linear_interpolation_weight' not in globals()\n"
+                    "_open_wrangler_fill_linear_gaps = 99\n"
+                    "_open_wrangler_linear_interpolation_weight = 99\nresult = df\n"
+                )
+            },
+        },
+        {**operation, "id": "second-fill"},
+    ]
+    live = frame
+    for step in operations:
+        live = engine.apply_transform(live, step)
+    caller_names = [
+        "list",
+        "_open_wrangler_fill_linear_gaps",
+        "_open_wrangler_linear_interpolation_weight",
+        "_open_wrangler_finite_interpolation_anchor",
+    ]
+    if empty:
+        caller_names.append("type")
+    namespace: dict[str, Any] = dict.fromkeys(caller_names, frame)
+    code = engine.compile_plan(operations)
+    assert "openwrangler_runtime" not in code
+    exec(compile(code, "<mixed-linear-fill>", "exec", dont_inherit=True), namespace)
+    expected = frame.copy(deep=True)
+    if not empty:
+        expected.iloc[1, 1] = 2.0
+    pd.testing.assert_frame_equal(live, expected)
+    pd.testing.assert_frame_equal(namespace["clean_data"](frame), expected)
+    for name in caller_names:
+        assert namespace[name] is frame
+    pd.testing.assert_frame_equal(frame, before)
 
 
 def test_duckdb_linear_interpolation_avoids_internal_name_collisions() -> None:
