@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from collections.abc import Iterable, Mapping
 from typing import Any, cast
 
@@ -12,6 +13,7 @@ from openwrangler_runtime.custom_code_scope import (
     custom_code_step_lines,
 )
 from openwrangler_runtime.engines import DataFrameEngine, EngineError
+from openwrangler_runtime.engines.pandas_engine import PandasEngine
 from openwrangler_runtime.protocol_limits_generated import (
     MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES,
     MAX_PYTHON_RETAINED_PLAN_UTF8_BYTES,
@@ -102,28 +104,47 @@ def test_many_small_custom_steps_are_rejected_before_generation(engine_name: str
     assert engine.calls == 0
 
 
+def test_escaped_custom_plan_is_rejected_before_generation() -> None:
+    code = "#" + '\\"' * 32_650 + "\nresult=df"
+    plan = [custom_step(f"custom-{index}", code) for index in range(32)]
+    engine = CompileMustNotRun("pandas", "compile_plan allocated escaped Custom Code")
+
+    assert len(code.encode("utf-8")) <= MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES
+    assert preflight_retained_plan(plan) <= MAX_PYTHON_RETAINED_PLAN_UTF8_BYTES
+    with pytest.raises(EngineError, match=r"4,194,304 UTF-8 bytes"):
+        compile_plan_with_limits(cast(DataFrameEngine, engine), plan)
+    assert engine.calls == 0
+
+
 @pytest.mark.parametrize("code", [case[0] for case in SPLITLINE_CASES], ids=[case[1] for case in SPLITLINE_CASES])
 def test_generated_renderer_matches_streaming_splitlines_shape(code: str) -> None:
     line_count, separator_bytes = _splitlines_shape(code)
     definition = custom_code_definition_lines(code, index=0)
-    rendered_user_lines = definition[1 : line_count + 1]
+    statement = ast.parse("\n".join(definition)).body[0]
+    assert isinstance(statement, ast.Assign)
+    function_source = ast.literal_eval(statement.value)
+    rendered_user_lines = function_source.splitlines()[1:-1]
 
     assert rendered_user_lines == [f"    {line}" for line in code.splitlines()]
     assert len(rendered_user_lines) == line_count
     assert sum(len(f"{line}\n".encode()) for line in rendered_user_lines) == (
         len(code.encode("utf-8")) - separator_bytes + (line_count * 5)
     )
-    compile("\n".join(definition), "<generated-custom-definition>", "exec")
+    namespace: dict[str, Any] = {}
+    exec(compile(function_source, "<generated-custom-definition>", "exec"), namespace)
+    sentinel = object()
+    assert namespace["_open_wrangler_custom_code"](sentinel) is sentinel
 
 
 @pytest.mark.parametrize("engine_name", ["pandas", "polars", "duckdb"])
 def test_streaming_preflight_counts_every_generated_custom_line(engine_name: str) -> None:
-    code = "marker = 'é'\u2028result = df"
+    marker = 'é\\"'
+    code = f"marker = {marker!r}\u2028result = df"
     index = 4_999
     line_count, separator_bytes = _splitlines_shape(code)
     rendered_lines = [
-        *custom_code_prelude_lines(),
-        *custom_code_definition_lines(code, index=index),
+        *[f"    {line}" if line else "" for line in custom_code_prelude_lines()],
+        *custom_code_definition_lines(code, index=index, prefix="    "),
         *custom_code_step_lines(prefix="    ", engine_name=engine_name, index=index),
     ]
 
@@ -131,7 +152,31 @@ def test_streaming_preflight_counts_every_generated_custom_line(engine_name: str
         code_utf8_bytes=len(code.encode("utf-8")),
         separator_utf8_bytes=separator_bytes,
         line_count=line_count,
+        literal_escape_bytes=code.count("\\") + code.count('"'),
         engine_name=engine_name,
         index=index,
         include_prelude=True,
     ) == sum(len(line.encode("utf-8")) + 1 for line in rendered_lines)
+
+
+@pytest.mark.parametrize("source_kind", ["notebookVariable", "notebookOutput"])
+def test_generated_entry_point_preserves_a_notebook_source_named_clean_data(source_kind: str) -> None:
+    import pandas as pd
+
+    frame = pd.DataFrame({"value": [1, 2]})
+    before = frame.copy(deep=True)
+    engine = PandasEngine()
+    try:
+        code = compile_plan_with_limits(
+            engine,
+            [custom_step("identity", "result = df")],
+            source={"kind": source_kind, "variableName": "clean_data"},
+        )
+        namespace: dict[str, Any] = {"clean_data": frame}
+        exec(compile(code, "<generated-notebook-source>", "exec", dont_inherit=True), namespace)
+        assert namespace["clean_data"] is frame
+        pd.testing.assert_frame_equal(namespace["clean_data_1"](namespace["clean_data"]), frame)
+        pd.testing.assert_frame_equal(frame, before)
+        assert namespace["clean_data"] is frame
+    finally:
+        engine.close()

@@ -1045,8 +1045,8 @@ class PySparkEngine(DataFrameEngine):
         del frame, step
         raise EngineError("PySpark notebook sessions are viewing-only.")
 
-    def compile_plan(self, steps: Iterable[Mapping[str, Any]]) -> str:
-        del steps
+    def compile_plan(self, steps: Iterable[Mapping[str, Any]], *, function_name: str = "clean_data") -> str:
+        del steps, function_name
         raise EngineError("PySpark notebook sessions do not generate cleaning code.")
 
     def export_data(

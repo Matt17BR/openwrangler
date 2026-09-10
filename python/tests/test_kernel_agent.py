@@ -199,6 +199,92 @@ def _envelope(
     )
 
 
+@pytest.mark.parametrize(
+    "backend,source_name,kind",
+    [
+        ("pandas", "input_frame", "formula"),
+        ("polars", "input_frame", "formula"),
+        ("pandas", "pd", "formula"),
+        ("polars", "pl", "formula"),
+        ("pandas", "_open_wrangler_formula_result", "formula"),
+        ("polars", "_ow_polars_check_formula", "formula"),
+        ("pandas", "clean_data", "formula"),
+        ("polars", "clean_data", "formula"),
+        ("pandas", "annotations", "customCode"),
+        ("polars", "annotations", "customCode"),
+    ],
+)
+def test_kernel_generated_code_preserves_source_bindings(
+    monkeypatch: pytest.MonkeyPatch, backend: str, source_name: str, kind: str
+) -> None:
+    import __main__
+
+    library = pd if backend == "pandas" else pytest.importorskip("polars")
+    frame = library.DataFrame({"value": [1, 2]})
+    expected = library.DataFrame({"value": [1, 2], "result": [2, 3]}) if kind == "formula" else frame
+    monkeypatch.setattr(__main__, source_name, frame, raising=False)
+    manager = SessionManager()
+    monkeypatch.setattr(kernel_agent, "_manager", manager)
+
+    def send(request: dict[str, Any], request_id: str) -> dict[str, Any]:
+        result = json.loads(kernel_agent.dispatch_json(_envelope(request, request_id=request_id)))
+        assert result["requestId"] == request_id
+        assert result["response"]["kind"] != "error", result["response"]
+        return result["response"]
+
+    try:
+        opened = send(
+            {
+                "kind": "openSession",
+                "source": {"kind": "notebookVariable", "variableName": source_name, "label": "source"},
+                "backend": backend,
+                "mode": "editing",
+                "pageSize": 2,
+                "columnOffset": 0,
+                "columnLimit": 2,
+            },
+            "binding-open",
+        )
+        window = {
+            "sessionId": opened["metadata"]["sessionId"],
+            "offset": 0,
+            "limit": 2,
+            "columnOffset": 0,
+            "columnLimit": 2,
+        }
+        params = (
+            {
+                "leftColumn": {"id": "c:source:0", "name": "value"},
+                "operator": "add",
+                "value": 1,
+                "newColumn": "result",
+            }
+            if kind == "formula"
+            else {"code": "result = df"}
+        )
+        preview = send(
+            {"kind": "previewStep", "revision": 0, **window, "step": {"id": "binding", "kind": kind, "params": params}},
+            "binding-preview",
+        )
+        applied = send({"kind": "applyDraft", "revision": preview["revision"], **window}, "binding-apply")
+        assert applied["code"] == preview["code"]
+        function_name = "clean_data_1" if source_name == "clean_data" else "clean_data"
+        namespace: dict[str, Any] = {source_name: frame}
+        exec(applied["code"], namespace)
+        assert namespace[source_name] is frame
+        assert set(namespace) == {source_name, "__builtins__", function_name}
+        generated = namespace[function_name](namespace[source_name])
+        assert namespace[source_name] is frame
+        if backend == "pandas":
+            pd.testing.assert_frame_equal(generated, expected)
+            pd.testing.assert_frame_equal(frame, pd.DataFrame({"value": [1, 2]}))
+        else:
+            assert generated.equals(expected)
+            assert frame.equals(library.DataFrame({"value": [1, 2]}))
+    finally:
+        manager.close_all()
+
+
 def test_kernel_confirmed_view_reaches_all_five_native_mutation_owners(tmp_path, monkeypatch) -> None:
     path = tmp_path / "confirmed-kernel-view.csv"
     source = "name,value\na,1\nb,2\nc,3\n"

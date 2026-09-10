@@ -1250,10 +1250,11 @@ def test_polars_generated_median_fill_emits_only_its_dependencies() -> None:
 
     try:
         module = ast.parse(engine.compile_plan([operation]), feature_version=(3, 10))
-        assert {node.name for node in module.body if isinstance(node, ast.FunctionDef)} == {
+        (entry_point,) = [node for node in module.body if isinstance(node, ast.FunctionDef)]
+        assert entry_point.name == "clean_data"
+        assert {node.name for node in entry_point.body if isinstance(node, ast.FunctionDef)} == {
             "_ow_decimal_at_scale",
             "_ow_polars_middle_values",
-            "clean_data",
         }
     finally:
         engine.close()
@@ -1299,10 +1300,12 @@ def test_polars_generated_fill_selects_mixed_dependencies_and_preserves_custom_c
     ]
     try:
         code = engine.compile_plan(plan)
+        (entry_point,) = [
+            node for node in ast.parse(code, feature_version=(3, 10)).body if isinstance(node, ast.FunctionDef)
+        ]
+        assert entry_point.name == "clean_data"
         functions = [
-            node.name
-            for node in ast.parse(code, feature_version=(3, 10)).body
-            if isinstance(node, ast.FunctionDef) and node.name.startswith("_ow_")
+            node.name for node in entry_point.body if isinstance(node, ast.FunctionDef) and node.name.startswith("_ow_")
         ]
         assert len(functions) == len(set(functions))
         assert set(functions) == {

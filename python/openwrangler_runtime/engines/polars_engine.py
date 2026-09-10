@@ -9,6 +9,7 @@ from importlib.util import find_spec
 from inspect import getsource, signature
 from math import isfinite
 from pathlib import Path
+from textwrap import indent
 from typing import Any, Literal, cast
 
 from .._column_binding import compile_output_collision_guards
@@ -1544,9 +1545,9 @@ class PolarsEngine(DataFrameEngine):
         columns = frame.collect_schema().names() if isinstance(frame, pl.LazyFrame) else frame.columns
         return [name for name in columns if not name.startswith(INTERNAL_ROW_ID_PREFIX)]
 
-    def compile_plan(self, steps: Iterable[Mapping[str, Any]]) -> str:
+    def compile_plan(self, steps: Iterable[Mapping[str, Any]], *, function_name: str = "clean_data") -> str:
         plan = list(steps)
-        clean_data_lines = ["def clean_data(df):"]
+        clean_data_lines = [f"def {function_name}(df):"]
         for index, step in enumerate(plan):
             output_guards, output_name = compile_output_collision_guards(
                 step, "(df.collect_schema().names() if isinstance(df, pl.LazyFrame) else df.columns)", index
@@ -1837,10 +1838,11 @@ class PolarsEngine(DataFrameEngine):
                     "    )",
                 ]
             )
+        lines = [clean_data_lines[0], indent("\n".join(lines), "    ")]
         for index, step in enumerate(plan):
             if step["kind"] == "customCode":
-                lines.extend(custom_code_definition_lines(str(step["params"]["code"]), index=index))
-        lines.extend(["", "", clean_data])
+                lines.extend(custom_code_definition_lines(str(step["params"]["code"]), index=index, prefix="    "))
+        lines.extend(clean_data_lines[1:])
         return "\n".join(lines) + "\n"
 
     def _compile_step(self, step: Mapping[str, Any], index: int, *, output_name: str | None = None) -> list[str]:

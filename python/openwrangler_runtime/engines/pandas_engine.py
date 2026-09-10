@@ -14,6 +14,7 @@ from inspect import getsource
 from math import isfinite, isnan
 from numbers import Integral, Real
 from pathlib import Path
+from textwrap import indent
 from typing import Any, Literal, cast
 from zoneinfo import ZoneInfo
 
@@ -1581,7 +1582,7 @@ class PandasEngine(DataFrameEngine):
                 resolved.append(positions.pop(0))
         return resolved
 
-    def compile_plan(self, steps: Iterable[Mapping[str, Any]]) -> str:
+    def compile_plan(self, steps: Iterable[Mapping[str, Any]], *, function_name: str = "clean_data") -> str:
         plan = list(steps)
         needs_missing_helpers = any(step["kind"] in {"filterRows", "fillMissingValues"} for step in plan)
         needs_view_value_helpers = any(step["kind"] == "filterRows" for step in plan)
@@ -2093,10 +2094,11 @@ class PandasEngine(DataFrameEngine):
                     "",
                 ]
             )
+        lines = [f"def {function_name}(df):", indent("\n".join(lines), "    ")]
         for index, step in enumerate(plan):
             if step["kind"] == "customCode":
-                lines.extend(custom_code_definition_lines(str(step["params"]["code"]), index=index))
-        lines.extend(["def clean_data(df):", "    df = df.copy()"])
+                lines.extend(custom_code_definition_lines(str(step["params"]["code"]), index=index, prefix="    "))
+        lines.append("    df = df.copy()")
         for index, step in enumerate(plan):
             lines.extend(self._compile_step_binding_guards(step, index))
             output_guards, output_name = compile_output_collision_guards(step, "df.columns", index)

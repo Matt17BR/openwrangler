@@ -125,7 +125,6 @@ def test_generated_code_imports_counter_only_for_categorical_encoding(engine_and
 
     plain_code = engine.compile_plan(plain_plan)
     assert "from collections import Counter" not in plain_code
-    assert plain_code.startswith("import numpy as np" if isinstance(engine, PandasEngine) else "import polars as pl")
     assert "from collections import Counter" in engine.compile_plan(encoded_plan)
 
 

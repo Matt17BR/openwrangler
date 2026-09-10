@@ -993,7 +993,7 @@ class DataFrameEngine(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def compile_plan(self, steps: Iterable[Mapping[str, Any]]) -> str:
+    def compile_plan(self, steps: Iterable[Mapping[str, Any]], *, function_name: str = "clean_data") -> str:
         raise NotImplementedError
 
     @abstractmethod

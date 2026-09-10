@@ -769,7 +769,9 @@ class SessionManager:
             except ColumnBindingError as error:
                 raise EngineError(str(error)) from error
             candidate_bound_plan = [*retained_bound_steps, bound_step]
-            generated_code = compile_plan_with_limits(session.engine, candidate_bound_plan)
+            generated_code = compile_plan_with_limits(
+                session.engine, candidate_bound_plan, source=session.source.metadata
+            )
             if replace_index is not None:
                 base, base_lineage, base_shape, base_schema = self._replay(session, session.bound_plan[:replace_index])
                 if schema_with_lineage(base_schema, base_lineage) != binding_schema:
@@ -898,7 +900,9 @@ class SessionManager:
 
             step_index = matches[0]
             bound_step = session.bound_plan[step_index]
-            generated_code = compile_plan_with_limits(session.engine, session.bound_plan[: step_index + 1])
+            generated_code = compile_plan_with_limits(
+                session.engine, session.bound_plan[: step_index + 1], source=session.source.metadata
+            )
             before, _, before_shape, before_raw_schema = self._replay(session, session.bound_plan[:step_index])
             after = self._apply_transform_with_row_ids(session, before, bound_step, before_shape)
             after_shape = session.engine.shape(after)
@@ -1024,7 +1028,9 @@ class SessionManager:
                 candidate_bound_plan[-2] = session.draft_bound_step
                 candidate_bound_plan.pop()
             preflight_retained_plan(candidate_plan)
-            generated_code = compile_plan_with_limits(session.engine, candidate_bound_plan)
+            generated_code = compile_plan_with_limits(
+                session.engine, candidate_bound_plan, source=session.source.metadata
+            )
             previous_restore = deepcopy(session.last_applied_view_restore)
             if session.replace_step_id is None:
                 session.plan.append(session.draft_step)
@@ -1099,7 +1105,9 @@ class SessionManager:
             self._synchronize_confirmed_view(session, confirmed_view)
             view_changed_during_draft = session.view_change_epoch != session.draft_base_view_change_epoch
             preflight_retained_plan(session.plan)
-            generated_code = compile_plan_with_limits(session.engine, session.bound_plan)
+            generated_code = compile_plan_with_limits(
+                session.engine, session.bound_plan, source=session.source.metadata
+            )
             filter_model = deepcopy(
                 session.filter_model if view_changed_during_draft else session.draft_base_filter_model
             )
@@ -1152,7 +1160,9 @@ class SessionManager:
             )
             candidate_bound_plan = session.bound_plan[:-1]
             preflight_retained_plan([*session.plan, *reversed(session.undone_steps)])
-            generated_code = compile_plan_with_limits(session.engine, candidate_bound_plan)
+            generated_code = compile_plan_with_limits(
+                session.engine, candidate_bound_plan, source=session.source.metadata
+            )
             previous_schema = session.committed_schema
             session.undone_steps.append(session.plan.pop())
             session.bound_plan.pop()
@@ -1208,7 +1218,9 @@ class SessionManager:
                 bound_step = bind_step(step, session.committed_schema, session.committed_lineage)
             except ColumnBindingError as error:
                 raise EngineError(str(error)) from error
-            generated_code = compile_plan_with_limits(session.engine, [*session.bound_plan, bound_step])
+            generated_code = compile_plan_with_limits(
+                session.engine, [*session.bound_plan, bound_step], source=session.source.metadata
+            )
             previous_schema = session.committed_schema
             filter_model_before = deepcopy(session.filter_model)
             frame = self._apply_transform_with_row_ids(session, session.committed, bound_step, session.committed_shape)
