@@ -80,12 +80,9 @@ def _preflight_custom_code_generation(
         if not isinstance(code, str):
             raise EngineError("The bound Custom Code step is malformed.")
         code_bytes = _bounded_utf8_size(code, MAX_GENERATED_PYTHON_CODE_UTF8_BYTES)
-        line_count, separator_bytes = _splitlines_shape(code)
         try:
             generated_bytes += custom_code_generated_utf8_bytes(
                 code_utf8_bytes=code_bytes,
-                separator_utf8_bytes=separator_bytes,
-                line_count=line_count,
                 literal_escape_bytes=code.count("\\") + code.count('"'),
                 engine_name=engine.name,
                 index=index,
@@ -98,34 +95,3 @@ def _preflight_custom_code_generation(
             raise EngineError(
                 f"Generated Python code may contain at most {MAX_GENERATED_PYTHON_CODE_UTF8_BYTES:,} UTF-8 bytes."
             )
-
-
-def _splitlines_shape(value: str) -> tuple[int, int]:
-    """Return splitlines() count and removed UTF-8 separator bytes without allocation."""
-
-    line_count = 0
-    separator_bytes = 0
-    index = 0
-    ended_with_separator = False
-    while index < len(value):
-        character = value[index]
-        if character == "\r":
-            line_count += 1
-            separator_bytes += 1
-            index += 1
-            if index < len(value) and value[index] == "\n":
-                separator_bytes += 1
-                index += 1
-            ended_with_separator = True
-            continue
-        if character in {"\n", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"}:
-            line_count += 1
-            separator_bytes += len(character.encode("utf-8"))
-            index += 1
-            ended_with_separator = True
-            continue
-        ended_with_separator = False
-        index += 1
-    if value and not ended_with_separator:
-        line_count += 1
-    return line_count, separator_bytes

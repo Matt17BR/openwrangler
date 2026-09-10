@@ -274,12 +274,14 @@ history regeneration select that name from the same captured source metadata. Fi
 the default name. This preserves source bindings that the generated program would otherwise replace; it does not
 change ordinary Python lookup when the caller shadows builtins.
 
-Generated Custom Code compiles its normalized function source in fresh globals containing the engine alias,
-builtins and the custom function itself, matching live execution. A multiline source literal preserves visible code
-lines and escapes backslashes and delimiter quotes without dedenting user text. Explicit compiler flags retain
-postponed annotations independently of the caller. Each invocation receives fresh globals; ordinary generated
-helpers remain unavailable there. The existing preflight counts escaped source before generation, and the complete
-program retains its generated-code byte limit.
+Live and generated Custom Code share a compiler that places parsed user statements inside a fixed function template.
+This preserves string values, comments and valid indentation. Python's parser owns line endings and syntax; user-code
+syntax errors retain their original line numbers. Generated programs keep the entered code in a multiline source
+literal, escaping backslashes and delimiter quotes. Execution uses fresh globals containing the engine alias,
+builtins and the custom function itself. Explicit compiler flags retain postponed annotations independently of the
+caller. Each invocation receives fresh globals; ordinary generated helpers remain unavailable there. Preflight counts
+source escaping and the emitted helper and calls before full generation, and the complete program retains its
+generated-code byte limit.
 
 Generated Python rechecks destinations for column appends, renames and optional replacements at each affected step.
 The shared column-binding policy distinguishes a fresh output from replacement of the selected source column;

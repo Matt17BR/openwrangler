@@ -7,36 +7,29 @@ from typing import Any, cast
 import pytest
 
 from openwrangler_runtime.custom_code_scope import (
+    CUSTOM_CODE_FUNCTION_NAME,
+    CustomCodeScopeError,
     custom_code_definition_lines,
     custom_code_generated_utf8_bytes,
     custom_code_prelude_lines,
     custom_code_step_lines,
+    execute_custom_code,
+    validate_custom_code_scope,
 )
 from openwrangler_runtime.engines import DataFrameEngine, EngineError
 from openwrangler_runtime.engines.pandas_engine import PandasEngine
 from openwrangler_runtime.protocol_limits_generated import (
+    MAX_GENERATED_PYTHON_CODE_UTF8_BYTES,
     MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES,
     MAX_PYTHON_RETAINED_PLAN_UTF8_BYTES,
 )
 from openwrangler_runtime.response_framing import strict_json_byte_length
-from openwrangler_runtime.session_plan import _splitlines_shape, compile_plan_with_limits, preflight_retained_plan
+from openwrangler_runtime.session_plan import compile_plan_with_limits, preflight_retained_plan
 
-SPLITLINE_SEPARATORS = [
-    ("lf", "\n"),
-    ("cr", "\r"),
-    ("crlf", "\r\n"),
-    ("vertical-tab", "\v"),
-    ("form-feed", "\f"),
-    ("file-separator", "\x1c"),
-    ("group-separator", "\x1d"),
-    ("record-separator", "\x1e"),
-    ("next-line", "\x85"),
-    ("line-separator", "\u2028"),
-    ("paragraph-separator", "\u2029"),
-]
-SPLITLINE_CASES = [
-    (f"marker = 1{separator}result = df", f"{name}-interior") for name, separator in SPLITLINE_SEPARATORS
-] + [(f"result = df{separator}", f"{name}-terminal") for name, separator in SPLITLINE_SEPARATORS]
+PHYSICAL_NEWLINES = [("lf", "\n"), ("cr", "\r"), ("crlf", "\r\n")]
+SOURCE_LINE_CASES = [
+    (f"marker = 1{separator}result = df", f"{name}-interior") for name, separator in PHYSICAL_NEWLINES
+] + [(f"result = df{separator}", f"{name}-terminal") for name, separator in PHYSICAL_NEWLINES]
 
 
 def custom_step(step_id: str, code: str) -> dict[str, Any]:
@@ -73,14 +66,23 @@ def test_retained_plan_budget_accepts_exact_limit_and_rejects_one_byte_over() ->
 
 
 @pytest.mark.parametrize("separator", ["\n", "\f"], ids=["line-feed", "form-feed"])
-def test_splitline_heavy_custom_plan_is_rejected_before_compile_allocates_lines(separator: str) -> None:
+def test_large_blank_custom_plan_is_not_rejected_for_indentation_expansion(separator: str) -> None:
+    import pandas as pd
+
     code = separator * (MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES - len("result=df")) + "result=df"
     plan = [custom_step(f"custom-{index}", code) for index in range(16)]
-    engine = CompileMustNotRun("pandas", "compile_plan allocated splitline-expanded custom code")
-
-    with pytest.raises(EngineError, match=r"4,194,304 UTF-8 bytes"):
-        compile_plan_with_limits(cast(DataFrameEngine, engine), plan)
-    assert engine.calls == 0
+    frame = pd.DataFrame({"value": [1, 2]})
+    before = frame.copy(deep=True)
+    engine = PandasEngine()
+    try:
+        generated = compile_plan_with_limits(engine, plan)
+        assert len(generated.encode("utf-8")) <= MAX_GENERATED_PYTHON_CODE_UTF8_BYTES
+        namespace: dict[str, Any] = {}
+        exec(compile(generated, "<large-custom-plan>", "exec", dont_inherit=True), namespace)
+        pd.testing.assert_frame_equal(namespace["clean_data"](frame), before)
+        pd.testing.assert_frame_equal(frame, before)
+    finally:
+        engine.close()
 
 
 @pytest.mark.parametrize("separator", ["\n", "\f"], ids=["terminal-lf", "terminal-form-feed"])
@@ -94,9 +96,9 @@ def test_terminal_splitline_separator_preserves_preallocation_limit(separator: s
     assert engine.calls == 0
 
 
-@pytest.mark.parametrize("engine_name", ["pandas", "polars", "duckdb"])
-def test_many_small_custom_steps_are_rejected_before_generation(engine_name: str) -> None:
-    plan = [custom_step(f"custom-{index}", "result=df") for index in range(5_000)]
+@pytest.mark.parametrize(("engine_name", "step_count"), [("pandas", 5_000), ("polars", 5_000), ("duckdb", 6_100)])
+def test_many_small_custom_steps_are_rejected_before_generation(engine_name: str, step_count: int) -> None:
+    plan = [custom_step(f"custom-{index}", "result=df") for index in range(step_count)]
     engine = CompileMustNotRun(engine_name, "compile_plan allocated many-step Custom Code")
 
     with pytest.raises(EngineError, match=r"4,194,304 UTF-8 bytes"):
@@ -116,32 +118,47 @@ def test_escaped_custom_plan_is_rejected_before_generation() -> None:
     assert engine.calls == 0
 
 
-@pytest.mark.parametrize("code", [case[0] for case in SPLITLINE_CASES], ids=[case[1] for case in SPLITLINE_CASES])
-def test_generated_renderer_matches_streaming_splitlines_shape(code: str) -> None:
-    line_count, separator_bytes = _splitlines_shape(code)
+@pytest.mark.parametrize("code", [case[0] for case in SOURCE_LINE_CASES], ids=[case[1] for case in SOURCE_LINE_CASES])
+def test_generated_custom_source_preserves_python_physical_lines(code: str) -> None:
     definition = custom_code_definition_lines(code, index=0)
     statement = ast.parse("\n".join(definition)).body[0]
     assert isinstance(statement, ast.Assign)
-    function_source = ast.literal_eval(statement.value)
-    rendered_user_lines = function_source.splitlines()[1:-1]
+    user_source = ast.literal_eval(statement.value)
+    assert ast.dump(ast.parse(user_source)) == ast.dump(ast.parse(code))
 
-    assert rendered_user_lines == [f"    {line}" for line in code.splitlines()]
-    assert len(rendered_user_lines) == line_count
-    assert sum(len(f"{line}\n".encode()) for line in rendered_user_lines) == (
-        len(code.encode("utf-8")) - separator_bytes + (line_count * 5)
-    )
-    namespace: dict[str, Any] = {}
-    exec(compile(function_source, "<generated-custom-definition>", "exec"), namespace)
+    namespace: dict[str, Any] = {"CodeType": object(), "str": object()}
+    exec(compile("\n".join(custom_code_prelude_lines()), "<generated-custom-compiler>", "exec"), namespace)
+    exec(namespace["_compile_function_source"](user_source), namespace)
     sentinel = object()
-    assert namespace["_open_wrangler_custom_code"](sentinel) is sentinel
+    assert namespace[CUSTOM_CODE_FUNCTION_NAME](sentinel) is sentinel
+
+
+@pytest.mark.parametrize("separator", ["\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"])
+def test_non_newline_separators_follow_python_literal_and_syntax_rules(separator: str) -> None:
+    code = f'result = "left{separator}right"'
+    namespace: dict[str, Any] = {}
+    exec(compile(code, "<ordinary-python-source>", "exec"), namespace)
+    assert execute_custom_code(code, object(), {}) == namespace["result"]
+    definition = custom_code_definition_lines(code, index=0)
+    statement = ast.parse("\n".join(definition)).body[0]
+    assert isinstance(statement, ast.Assign)
+    assert ast.dump(ast.parse(ast.literal_eval(statement.value))) == ast.dump(ast.parse(code))
+
+    with pytest.raises(CustomCodeScopeError, match="invalid Python syntax"):
+        validate_custom_code_scope(f"result = df{separator}result = None")
+
+
+@pytest.mark.parametrize("statement", ["break", "result = ("])
+def test_custom_code_syntax_errors_keep_original_user_line_numbers(statement: str) -> None:
+    with pytest.raises(CustomCodeScopeError, match="invalid Python syntax at line 2"):
+        validate_custom_code_scope(f'text = "left\u2028right"\n{statement}')
 
 
 @pytest.mark.parametrize("engine_name", ["pandas", "polars", "duckdb"])
 def test_streaming_preflight_counts_every_generated_custom_line(engine_name: str) -> None:
     marker = 'é\\"'
-    code = f"marker = {marker!r}\u2028result = df"
+    code = f"marker = {marker!r}\r\nresult = df"
     index = 4_999
-    line_count, separator_bytes = _splitlines_shape(code)
     rendered_lines = [
         *[f"    {line}" if line else "" for line in custom_code_prelude_lines()],
         *custom_code_definition_lines(code, index=index, prefix="    "),
@@ -150,8 +167,6 @@ def test_streaming_preflight_counts_every_generated_custom_line(engine_name: str
 
     assert custom_code_generated_utf8_bytes(
         code_utf8_bytes=len(code.encode("utf-8")),
-        separator_utf8_bytes=separator_bytes,
-        line_count=line_count,
         literal_escape_bytes=code.count("\\") + code.count('"'),
         engine_name=engine_name,
         index=index,

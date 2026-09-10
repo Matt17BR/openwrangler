@@ -119,6 +119,9 @@ remain available after executing the program; an input named `clean_data` uses t
 Public kernel, session-history and Custom Code scope tests cover this behavior. The
 [architecture contract](architecture.md#engine-boundaries-and-capabilities) describes scope and caller limitations.
 
+Python Custom Code preserves multiline and continued string values, comments and valid indentation. Syntax errors
+refer to the entered code's lines. Source tests compare native and complete generated execution with ordinary Python.
+
 Discovery selections remain bound to their originating Python kernel until the initial session opens. Direct active-R
 opens likewise retain the terminal selected when the command starts. Replacing either runtime before that open
 completes requires a new open action; discovery and bridge regression tests cover these transitions.
