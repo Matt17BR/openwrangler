@@ -353,31 +353,12 @@ The existing row kernel owner
 checks single and composite keys through Preview, Apply, inspection, Undo/Redo and standalone generated execution,
 including original row identities, frame metadata and integer64 helper admission.
 
-DuckDB engine tests compare retained scalar and nested values, zero signs and native types for every duplicate keep mode
-in live and generated results. Reused generated Drop Duplicates and Mark Duplicates programs must reject missing
-selected keys, including case and suffix variants of internal ordinals, while retaining valid helper-named keys.
-Session transactions own the corresponding preview/history and source-preservation assertions. The same DuckDB
-engine owner covers complete generated programs that refuse an erroneous intermediate before a later projection,
-preserve private-connection Rename plans, and leave empty plans unchanged. Session
-transactions cover native errors outside the requested row or column window, retained state after refusal and
-successful correction. Native complex-value and empty-result controls keep the result check compatible with valid frames.
-Mark Duplicates controls require one source evaluation per retained validation query and later retrieval. Private
-Rename, Select Columns and Drop Columns controls require no added result hash while preserving native values, types,
-source identities and connection ownership. Their session cases cover Preview, Apply, generated output and Undo;
-computed Formula and Custom errors must still refuse before a later Drop. Grouped Fill controls distinguish lazy plan
-construction from refusal during live result validation or generated execution.
-Generated Sort Rows controls compare all columns, native types and stable ties with nulls, including helper-name
-collisions, case-insensitive keys, extra input columns and a preceding Rename. Missing ordinary or helper-named keys
-must fail. A public CSV case compares Preview, Apply and the returned program while preserving the source bytes.
-The Pivot Longer and Pivot Wider owners check requested outputs named like temporary columns, including case and
-occupied-suffix collisions, native types, nulls and row order. Their public CSV cases compare visible metadata and
-page cells through Preview, Apply, returned-code execution and Undo. Reused Pivot Wider programs must reject missing
-value columns across each helper-name family while preserving valid private-connection results and caller catalogs.
-Multi-label engine controls cover inputs named `label`, case variants and an unrelated same-named column in live and
-generated code, retaining null/empty-label handling, output types, row order and private-connection ownership.
-The engine owner also executes complete generated programs on private connections, checks caller catalog preservation
-and earlier lazy results, and covers collision and cleanup failures. Custom Code cases retain its module namespace
-while keeping generated query helpers private. The same controls run on the minimum and current DuckDB versions.
+`python/tests/test_duckdb_engine.py` owns native live and complete generated-code behavior, private-connection and
+catalog lifetimes, and query-evaluation counts. The Pivot Longer/Wider, Mark Duplicates and Fill Missing owners retain
+their operation-specific cases. `python/tests/test_session_transactions.py` owns public Preview/Apply, refusal,
+history and source-preservation checks. Qualify changes to these boundaries on the minimum and current DuckDB versions.
+See [Architecture](architecture.md#duckdb) for result-validation and structural-step scan rules;
+[column binding](architecture.md#engine-boundaries-and-capabilities) defines generated-name admission.
 
 Polars engine and session transaction owners check hidden Custom expression errors, confirmed-state preservation and
 successful correction. Complete generated programs refuse an invalid Custom result before a later step drops its
