@@ -360,28 +360,24 @@ history and source-preservation checks. Qualify changes to these boundaries on t
 See [Architecture](architecture.md#duckdb) for result-validation and structural-step scan rules;
 [column binding](architecture.md#engine-boundaries-and-capabilities) defines generated-name admission.
 
-Polars engine and session transaction owners check hidden Custom expression errors, confirmed-state preservation and
-successful correction. Complete generated programs refuse an invalid Custom result before a later step drops its
-output. Native eager/lazy values, types, nulls and source preservation remain covered; the existing Custom Code owner
-checks Series normalization and scalar refusal. Ordinary lazy plans retain deferred execution, and the large-notebook
-journey keeps its bounded collection assertions through viewing, editing and export.
-Floor, Ceiling and Round owners check exact Decimal coefficients, nulls and signed carry boundaries through eager
-and lazy streaming results without changing caller configuration. Session transactions cover file-backed Preview,
-Apply, returned-code execution, counts, stable row IDs and Undo with hidden or off-page values.
+[Polars engine tests](../python/tests/test_polars_engine.py) own native eager/lazy execution and complete generated
+programs. They distinguish deferred ordinary plans from Custom Code validation and bound collected results through
+notebook-variable viewing, editing and export. [Session transactions](../python/tests/test_session_transactions.py)
+check public Preview/Apply/Undo, refusal and correction, generated replay, source preservation and streaming Decimal
+file results. See [Polars](architecture.md#polars) for evaluation limits and the
+[numeric policy](architecture.md#engine-boundaries-and-capabilities) for precision rules and minimum/current coefficient
+qualification.
 
-`python/tests/test_custom_code_scope.py` owns Pandas/Polars Custom result admission in live sessions and complete
-generated programs, including retained conditional plans reused on another input and a later step that could hide
-an invalid zero-column result. It preserves typed empty results, Series and first-column creation. The existing
-plan-size owner checks the shared emitter's exact byte contribution; zero-column viewing and row-operation owners
-retain their separate contracts.
+[Custom Code scope tests](../python/tests/test_custom_code_scope.py) own Pandas/Polars live and complete generated
+result admission; [session-plan tests](../python/tests/test_session_plan.py) own emitted-byte accounting.
+[Architecture](architecture.md#engine-boundaries-and-capabilities) defines result and scope rules. Zero-column viewing
+and row operations retain separate owners.
 
-Pandas duplicate owners cover nullable Arrow integer and temporal precision in live and generated row removal and
-dataset counts. Their controls retain exact original values and indexes, ordering, directional Fill, time-of-day
-nanoseconds and ordinary object missing-value distinctions. Present minimum temporal storage values remain distinct
-from real nulls. Public Parquet sessions verify the same comparison through Preview, history and export.
-Sparse integer profile controls preserve exact neighboring values, fill conventions and missing counts, including a
-public Custom Code session whose dataset count must agree with Drop Duplicates.
-Missing-cell totals are checked against per-column counts for multiple Sparse columns and mixed Dense/Sparse frames.
+[Operation tests](../python/tests/test_operation_edges.py) and [Fill Missing tests](../python/tests/test_fill_missing.py)
+own exact Pandas live/generated comparison and directional Fill, including source/index preservation.
+[Pandas engine tests](../python/tests/test_pandas_engine.py) own matching dataset and missing-cell counts; session
+transactions check public Arrow history/export and Sparse count agreement after Custom Code.
+See [Pandas](architecture.md#pandas) for exact comparison, missing-value and storage rules.
 
 Native R frame and catalog owners cover constructor and subset forms of empty tables, operations and Custom Code
 that return no rows, and malformed zero counts with nonempty columns. Generated input and output validation retain
