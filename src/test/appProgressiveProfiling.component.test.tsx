@@ -124,6 +124,10 @@ describe("App progressive profiling and view correlation", () => {
     expect(nextPage).toMatchObject({ offset: 200, limit: 200, filterModel: metadata.filterModel });
     expect(nextPage.viewRequestId).toMatch(/^view-.+-\d+$/);
     expect(requestsOfKind("getDatasetStats")).toHaveLength(0);
+
+    dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+    expect(setViewContextMessages().at(-1)?.lastPageRequestId).toBeNull();
+    expect(screen.getByText("Berlin")).toBeInTheDocument();
   });
 
   it.each(["page", "native"] as const)("replaces retired profiles and values after %s recovery", async (origin) => {
@@ -192,6 +196,7 @@ describe("App progressive profiling and view correlation", () => {
     expect(setViewContextMessages().at(-1)).toEqual({
       kind: "setViewContext",
       viewContextId: "recovery:test",
+      lastPageRequestId: next ? viewId(next) : null,
       ...(next ? { state: { columnWidths: [], viewport: { firstVisibleRow: 200, scrollLeft: 0 } } } : {})
     });
     expect(await screen.findByText("Tokyo")).toBeInTheDocument();
@@ -1033,6 +1038,7 @@ describe("App progressive profiling and view correlation", () => {
       page: pageWithCity("Latest A")
     });
     expect(await screen.findByText("Latest A")).toBeInTheDocument();
+    expect(setViewContextMessages().at(-1)?.lastPageRequestId).toBe(viewId(requestA));
 
     dispatch({
       kind: "page",
@@ -1114,7 +1120,11 @@ describe("App progressive profiling and view correlation", () => {
 
     await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(2));
     await waitFor(() => expect(requestsOfKind("getDatasetStats")).toHaveLength(1));
-    expect(setViewContextMessages().at(-1)?.viewContextId).toBe(confirmedContext);
+    expect(setViewContextMessages().at(-1)).toEqual({
+      kind: "setViewContext",
+      viewContextId: confirmedContext,
+      lastPageRequestId: viewId(failedPage)
+    });
     for (const envelope of [...runtimeEnvelopes("getSummary"), ...runtimeEnvelopes("getDatasetStats")]) {
       expect(envelope.viewContextId).toBe(confirmedContext);
     }
@@ -2367,6 +2377,7 @@ interface PrioritizationMessage {
 interface SetViewContextMessage {
   kind: "setViewContext";
   viewContextId: string;
+  lastPageRequestId: string | null;
   state?: SerializedGridViewState;
 }
 

@@ -27,7 +27,7 @@ export type WebviewRequest =
       sessionId: string | null;
       revision: number | null;
     }
-  | { kind: "setViewContext"; viewContextId: string; state?: GridViewState }
+  | { kind: "setViewContext"; viewContextId: string; lastPageRequestId: string | null; state?: GridViewState }
   | { kind: "cancelViewRequests"; viewRequestIds: string[] }
   | { kind: "prioritizeViewRequest"; viewRequestId: string }
   | { kind: "updateViewState"; state: GridViewState }
@@ -117,12 +117,21 @@ export function decodeWebviewMessage(
       : undefined;
   }
   if (message.kind === "setViewContext") {
-    if (!hasExactKeys(message, ["kind", "viewContextId"], ["state"]) || !isBoundedViewId(message.viewContextId))
+    if (
+      !hasExactKeys(message, ["kind", "viewContextId", "lastPageRequestId"], ["state"]) ||
+      !isBoundedViewId(message.viewContextId) ||
+      !(message.lastPageRequestId === null || isBoundedViewId(message.lastPageRequestId))
+    )
       return undefined;
-    if (!Object.hasOwn(message, "state")) return { kind: "setViewContext", viewContextId: message.viewContextId };
+    const receipt = {
+      kind: "setViewContext" as const,
+      viewContextId: message.viewContextId,
+      lastPageRequestId: message.lastPageRequestId
+    };
+    if (!Object.hasOwn(message, "state")) return receipt;
     if (!isRecoveryViewContextId(message.viewContextId)) return undefined;
     const state = decodeGridViewState(message.state);
-    return state ? { kind: "setViewContext", viewContextId: message.viewContextId, state } : undefined;
+    return state ? { ...receipt, state } : undefined;
   }
 
   if (message.kind === "cancelViewRequests") {
