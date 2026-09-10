@@ -173,7 +173,9 @@ not change, and concurrent recovery shares one replacement per runtime owner.
 Recovery checks the originating session and source after opening its candidate and around each replayed request.
 Close, cancellation or supersession stops subsequent replay, including fallback viewing requests. Already-started
 execution retains its settlement barrier before candidate cleanup.
-Detached saved-view restoration also waits for the originating execution before closing its candidate.
+Initial saved-plan and view restoration checks coordinator availability, cancellation and the captured source around
+each replayed request. Retirement stops further restoration and original-data fallback; detached execution settles
+before the unpublished runtime is closed.
 
 Python page reads stage the viewing query, shapes and bounded cache under the existing foreground-read lock. The
 previous view remains authoritative until page construction, metadata, source validation and the owning engine's
