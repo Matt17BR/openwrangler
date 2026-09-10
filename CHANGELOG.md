@@ -6,6 +6,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Changed
 
+- Pandas value choices avoid retaining a label for every distinct value. Full-column counting and search remain
+  unchanged; reverse-ordered data can take longer.
 - The R CSV export choice now shows its timestamp precision and time-zone limits.
 - Native R encodes responses containing quoted or multiline text faster, including generated cleaning programs.
 - Pandas Formula accepts more exact Arrow integer differences, including negative results from unsigned operands.

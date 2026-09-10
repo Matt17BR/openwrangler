@@ -135,6 +135,149 @@ def test_mixed_numeric_counts_retain_first_labels_and_native_containers(first, r
     pd.testing.assert_frame_equal(source, before)
     assert all(actual is original for actual, original in zip(source["value"].array, values, strict=True))
 
+    # Equal counts and displayed labels must retain the first typed resident at
+    # a cutoff, even when a later tied item replaces an earlier larger label.
+    tied = [first, str(first)]
+    if reverse:
+        tied.reverse()
+    tied_source = pd.DataFrame({"value": pd.Series(["z", *tied], dtype=object)})
+    selected, more = engine.column_values(tied_source, "value", limit=1)
+    assert more
+    assert selected == [{"value": str(first), "count": 1, "selectionValue": typed_selection_value(tied[0], "string")}]
+
+
+@pytest.mark.parametrize("limit", [1, 100, 10_000])
+def test_pandas_picker_limit_boundaries_keep_exact_values_and_has_more(limit: int) -> None:
+    engine = PandasEngine()
+    for distinct in (limit - 1, limit, limit + 1):
+        source = pd.DataFrame({"value": pd.Series(range(distinct - 1, -1, -1), dtype=object)})
+        source.attrs["origin"] = "retained"
+        before = source.copy(deep=True)
+        choices, more = engine.column_values(source, "value", limit=limit)
+        expected = sorted(range(distinct), key=str)[:limit]
+        assert choices == [
+            {"value": str(value), "count": 1, "selectionValue": typed_selection_value(value, "integer")}
+            for value in expected
+        ]
+        assert more is (distinct > limit)
+        pd.testing.assert_frame_equal(source, before, check_exact=True)
+        assert source.attrs == before.attrs
+
+
+@pytest.mark.parametrize("limit", [1, 7])
+def test_pandas_picker_retains_only_bounded_temporary_labels(monkeypatch: pytest.MonkeyPatch, limit: int) -> None:
+    import weakref
+
+    from openwrangler_runtime.engines import pandas_engine
+
+    class ObservedLabel(str):
+        __slots__ = ("__weakref__",)
+
+    live_labels: weakref.WeakSet[ObservedLabel] = weakref.WeakSet()
+    peak_labels = 0
+    evaluated_labels = 0
+    original_format = pandas_engine._pandas_temporal_text
+
+    def observe_label(value: Any, scalar: Any) -> str:
+        nonlocal peak_labels, evaluated_labels
+        label = ObservedLabel(original_format(value, scalar))
+        live_labels.add(label)
+        peak_labels = max(peak_labels, len(live_labels))
+        evaluated_labels += 1
+        return label
+
+    monkeypatch.setattr(pandas_engine, "_pandas_temporal_text", observe_label)
+    source = pd.DataFrame({"value": range(511, -1, -1)})
+    before = source.copy(deep=True)
+    choices, more = PandasEngine().column_values(source, "value", limit=limit)
+    expected = sorted(range(512), key=str)[:limit]
+    assert choices == [
+        {"value": str(value), "count": 1, "selectionValue": typed_selection_value(value, "integer")}
+        for value in expected
+    ]
+    assert more and evaluated_labels == len(source)
+    # Allow scratch labels as well as selected results without fixing the
+    # selection algorithm's internal buffer shape or allocator behavior.
+    assert peak_labels <= 4 * (limit + 1)
+    assert len(live_labels) <= limit
+    del choices
+    assert not live_labels
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, StopIteration])
+def test_pandas_picker_late_label_failure_refuses_whole_public_request(
+    monkeypatch: pytest.MonkeyPatch, error_type: type[Exception]
+) -> None:
+    import __main__
+    from openwrangler_runtime import kernel_agent
+    from openwrangler_runtime.protocol import PROTOCOL_VERSION
+
+    original_error = error_type("Original picker label refusal")
+
+    class RefusingLabel:
+        def __str__(self) -> str:
+            raise original_error
+
+    source = pd.DataFrame({"value": pd.Series(["early", RefusingLabel()], dtype=object)})
+    source.attrs["origin"] = "retained"
+    before = source.copy(deep=True)
+    monkeypatch.setattr(__main__, "picker_failure_source", source, raising=False)
+    manager = SessionManager()
+    monkeypatch.setattr(kernel_agent, "_manager", manager)
+    query: dict[str, Any] = {"filters": [], "sort": []}
+    try:
+        opened = manager.open_session(
+            {"kind": "notebookVariable", "label": "picker failure", "variableName": "picker_failure_source"},
+            backend="pandas",
+            page_size=1,
+        )
+        session_id = opened["metadata"]["sessionId"]
+        with pytest.raises((RuntimeError, StopIteration)) as failure:
+            manager.get_column_values(session_id, 0, "value", query, limit=1)
+        if error_type is RuntimeError:
+            assert failure.value is original_error
+        else:
+            # A generator may wrap StopIteration while retaining its cause;
+            # it must never interpret a failed label as successful exhaustion.
+            assert failure.value is original_error or failure.value.__cause__ is original_error
+        response = json.loads(
+            kernel_agent.dispatch_json(
+                json.dumps(
+                    {
+                        "protocolVersion": PROTOCOL_VERSION,
+                        "requestId": "picker-label-failure",
+                        "priority": "interactive",
+                        "request": {
+                            "kind": "getColumnValues",
+                            "sessionId": session_id,
+                            "revision": 0,
+                            "viewRequestId": "picker-view",
+                            "column": "value",
+                            "filterModel": query,
+                            "limit": 1,
+                        },
+                    }
+                )
+            )
+        )
+        assert response["requestId"] == "picker-label-failure"
+        error = response["response"]
+        assert (error["kind"], error["code"], error["recoverable"], error["viewRequestId"]) == (
+            "error",
+            "runtime_error",
+            True,
+            "picker-view",
+        )
+        assert "values" not in error and "hasMore" not in error
+        assert manager.get_page(session_id, 0, 0, 1, query)["page"] == opened["page"]
+        manager.close_session(session_id, 0)
+        assert manager.sessions == {}
+    finally:
+        manager.close_all()
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
+    assert source.attrs == before.attrs and __main__.picker_failure_source is source
+
 
 @pytest.mark.parametrize("offset", [0, 10**400], ids=["native", "wide"])
 def test_integer_value_counts_keep_native_success_and_wide_first_labels(offset: int) -> None:

@@ -180,6 +180,7 @@ Its live and generated paths preserve exact values and retain fractional-median 
 Pandas mixed object columns keep distinct large numeric values in filters, counts, sorting, duplicate removal,
 Group By, Pivot and grouped Fill. Selected rows retain their original stored values, and grouped output preserves
 its representative labels. Filter text and selected integer tokens keep exact integer values through the UI.
+Value choices retain a bounded set of ranked labels; full native counts and text search keep their existing memory costs.
 Pandas integer profiles and value choices retain exact counts and values beyond floating-point range. Profiles keep
 exact extrema and sums; unavailable approximate statistics show `n/a`, and unrepresentable histograms are omitted.
 Extended NumPy floating values that would lose precision or range at the display or selected query boundary are

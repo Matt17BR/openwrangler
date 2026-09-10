@@ -1079,6 +1079,8 @@ class PandasEngine(DataFrameEngine):
     def column_values(
         self, frame: Any, column: str, search: str | None = None, limit: int = 100
     ) -> tuple[list[dict[str, Any]], bool]:
+        from heapq import nsmallest
+
         import pandas as pd
 
         df = self.normalize(frame)
@@ -1110,20 +1112,20 @@ class PandasEngine(DataFrameEngine):
             series = series[folded.str.contains(str(search).translate(_ASCII_TO_LOWER), na=False, regex=False)]
         value_counts = _pandas_value_counts(series, sort=False)
         temporal_counts = _pandas_arrow_temporal_array(value_counts.index)
-        counts = [
+        counts = (
             (
                 index,
                 count,
                 _pandas_temporal_text(index, temporal_counts[position] if temporal_counts is not None else None),
             )
             for position, (index, count) in enumerate(value_counts.items())
-        ]
+        )
         if search and dictionary_string:
             needle = str(search).translate(_ASCII_TO_LOWER)
-            counts = [
+            counts = (
                 (value, count, label) for value, count, label in counts if needle in label.translate(_ASCII_TO_LOWER)
-            ]
-        counts = sorted(counts, key=lambda item: (-int(item[1]), item[2]))
+            )
+        counts = nsmallest(limit + 1, counts, key=lambda item: (-int(item[1]), item[2]))
         values = []
         for index, count, label in counts[:limit]:
             item: dict[str, Any] = {"value": label, "count": int(count)}
