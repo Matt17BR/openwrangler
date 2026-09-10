@@ -1,8 +1,9 @@
 import "@testing-library/jest-dom/vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { StrictMode, useState } from "react";
+import { cloneElement, StrictMode, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GridPage, SessionMetadata } from "../shared/protocol";
+import { viewCellSelectionFilter } from "../shared/filterModel";
 import { DataGrid } from "../webviews/grid/DataGrid";
 
 const vscodePostMessage = vi.hoisted(() => vi.fn());
@@ -1236,6 +1237,173 @@ describe("DataGrid clipboard interactions", () => {
 
     expect(document.querySelectorAll('[data-clipboard-selected="true"]')).toHaveLength(1);
     expect(screen.getByText("1 cell selected, row 1, column 2")).toBeTruthy();
+  });
+
+  it.each(["filter", "restore", "filter-and-restore"] as const)(
+    "aligns retained cell focus and keyboard copy with the %s selection reset",
+    async (transition) => {
+      const initialPage: GridPage = {
+        ...page,
+        limit: 200,
+        totalRows: 3,
+        rows: [...page.rows, { id: "r:2", rowNumber: 2, values: [cell("Rome"), numberCell(20.5)] }]
+      };
+      const initialMetadata = { ...metadata, shape: { rows: 3, columns: 2 }, filteredShape: { rows: 3, columns: 2 } };
+      const initialState = {
+        columnWidths: new Map<string, number>(),
+        selectedColumnId: "c:0",
+        viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+      };
+      const rendered = render(
+        cloneElement(grid("view-a", initialPage, initialMetadata), { busy: true, viewState: initialState })
+      );
+      const original = screen.getByRole("cell", { name: transition === "filter-and-restore" ? "Paris" : "Rome" });
+      focusCell(original);
+      const changesFilter = transition !== "restore";
+      const nextPage = changesFilter
+        ? {
+            ...initialPage,
+            totalRows: 2,
+            rows: initialPage.rows.slice(1).map((row, rowNumber) => ({ ...row, rowNumber }))
+          }
+        : initialPage;
+      const nextMetadata = {
+        ...initialMetadata,
+        filteredShape: { rows: nextPage.totalRows, columns: 2 },
+        filterModel: changesFilter
+          ? { filters: [viewCellSelectionFilter(metadata.schema[0], cell("Milan"), "exclude")], sort: [] }
+          : metadata.filterModel
+      };
+      rendered.rerender(
+        cloneElement(
+          grid(changesFilter ? "view-b" : "view-a", nextPage, nextMetadata, transition === "filter" ? 0 : 1),
+          {
+            viewState: {
+              ...initialState,
+              viewport: { firstVisibleRow: transition === "filter" ? 0 : 1, scrollLeft: 0 }
+            }
+          }
+        )
+      );
+
+      const resetTarget = screen.getByRole("cell", { name: transition === "filter-and-restore" ? "Rome" : "Paris" });
+      expect(original.isConnected).toBe(true);
+      const focusedBeforeCopy = document.activeElement;
+      fireEvent.keyDown(focusedBeforeCopy!, { key: "c", ctrlKey: true });
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+      expect(writeText).toHaveBeenLastCalledWith(focusedBeforeCopy?.getAttribute("aria-label"));
+      expect(focusedBeforeCopy).toBe(resetTarget);
+      expect(resetTarget).toHaveAttribute("tabindex", "0");
+      expect(resetTarget).toHaveAttribute("aria-selected", "true");
+      expect(document.querySelectorAll('[data-clipboard-selected="true"]')).toHaveLength(1);
+    }
+  );
+
+  it.each([
+    "outside",
+    "header",
+    "toolbar",
+    "cell-control",
+    "menu",
+    "body",
+    "removed-cell",
+    "unfocused-document"
+  ] as const)("preserves %s focus when the view and authoritative selection reset", (owner) => {
+    const initialPage = {
+      ...page,
+      totalRows: 3,
+      rows: [...page.rows, { id: "r:2", rowNumber: 2, values: [cell("Rome"), numberCell(20.5)] }]
+    };
+    const initialMetadata = { ...metadata, shape: { rows: 3, columns: 2 }, filteredShape: { rows: 3, columns: 2 } };
+    const rendered = renderGrid("view-a", initialPage, initialMetadata);
+    const original = screen.getByRole("cell", { name: owner === "removed-cell" ? "Milan" : "Rome" });
+    focusCell(original);
+    const outside = document.createElement("input");
+    try {
+      let expectedFocus: Element = original;
+      if (owner === "outside") {
+        document.body.appendChild(outside);
+        act(() => outside.focus());
+        expectedFocus = outside;
+      } else if (owner === "header" || owner === "toolbar") {
+        const target =
+          owner === "header"
+            ? screen.getByRole("columnheader", { name: "city" })
+            : screen.getByRole("button", { name: "Copy cell" });
+        act(() => target.focus());
+        expectedFocus = target;
+      } else if (owner === "cell-control" || owner === "menu") {
+        const button = within(original).getByRole("button", { name: "Filter city by this cell" });
+        if (owner === "cell-control") {
+          act(() => button.focus());
+          expectedFocus = button;
+        } else {
+          fireEvent.click(button);
+          expect(document.activeElement).toBe(screen.getByRole("menu", { name: "Filter city by this cell" }));
+          expectedFocus = document.body;
+        }
+      } else if (owner === "body") {
+        act(() => original.blur());
+        expectedFocus = document.body;
+      } else if (owner === "removed-cell") expectedFocus = document.body;
+      else vi.mocked(document.hasFocus).mockReturnValue(false);
+
+      const nextPage = {
+        ...initialPage,
+        totalRows: 2,
+        rows: initialPage.rows.slice(1).map((row, rowNumber) => ({ ...row, rowNumber }))
+      };
+      rendered.rerender(grid("view-b", nextPage, { ...initialMetadata, filteredShape: { rows: 2, columns: 2 } }, 1));
+
+      expect(document.activeElement).toBe(expectedFocus);
+      expect(screen.getByRole("cell", { name: "Paris" })).toHaveAttribute("aria-selected", "true");
+      expect(document.querySelectorAll('[data-clipboard-selected="true"]')).toHaveLength(1);
+      expect(screen.queryByRole("menu")).toBeNull();
+      expect(writeText).not.toHaveBeenCalled();
+    } finally {
+      outside.remove();
+    }
+  });
+
+  it("lets an authoritative reset supersede keyboard focus in the same page commit", async () => {
+    const onPage = vi.fn();
+    const pagedMetadata = { ...metadata, shape: { rows: 4, columns: 2 }, filteredShape: { rows: 4, columns: 2 } };
+    const initialPage = { ...page, totalRows: 4 };
+    const rendered = render(cloneElement(grid("view-a", initialPage, pagedMetadata), { onPage }));
+    const scroller = screen.getByTestId("data-grid-scroller");
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 58 });
+    const paris = screen.getByRole("cell", { name: "Paris" });
+    focusCell(paris);
+    const nextPage = {
+      ...initialPage,
+      offset: 2,
+      rows: [
+        { ...page.rows[1], rowNumber: 2 },
+        { id: "r:2", rowNumber: 3, values: [cell("Rome"), numberCell(20.5)] }
+      ]
+    };
+    act(() => {
+      fireEvent.keyDown(paris, { key: "ArrowDown" });
+      rendered.rerender(
+        cloneElement(grid("view-b", nextPage, pagedMetadata, 1), {
+          onPage,
+          viewState: {
+            columnWidths: new Map<string, number>(),
+            selectedColumnId: "c:0",
+            viewport: { firstVisibleRow: 3, scrollLeft: 0 }
+          }
+        })
+      );
+    });
+    expect(onPage).toHaveBeenCalledWith(2);
+
+    const rome = screen.getByRole("cell", { name: "Rome" });
+    expect(paris.isConnected).toBe(true);
+    expect(document.activeElement).toBe(rome);
+    expect(rome).toHaveAttribute("tabindex", "0");
+    expect(rome).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(document.activeElement!, { key: "c", ctrlKey: true });
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("Rome"));
   });
 
   it("reports clipboard denial without exposing cell contents in the error", async () => {
