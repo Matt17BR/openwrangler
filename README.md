@@ -72,10 +72,10 @@ Mode.
   the cleaning plan and exported result.
 - Open delimited text, Parquet, JSON Lines, and Excel files, or continue from live notebook and interactive dataframes.
 
-**Unreleased (current source):** Redo restores an undone command while its runtime session remains open. Dense Rank
+**Current source:** Redo restores an undone command while its runtime session remains open. Dense Rank
 adds numeric ranks while preserving ties and missing values. Mark Duplicates flags repeated groups without removing
-records. These additions are not in stable 2.1.0; see the
-[Unreleased changelog](https://github.com/Matt17BR/openwrangler/blob/main/CHANGELOG.md#unreleased).
+records. For published availability, see the
+[latest stable release notes](https://github.com/Matt17BR/openwrangler/releases/latest).
 
 ## View, edit, and export
 
