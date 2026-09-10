@@ -172,6 +172,18 @@ release notes, registry listings, screenshots, or other public copy. Lead with t
 architecture and test proofs in their own documents, and use a concrete commit subject. Public text needs a real
 editorial read; do not rely on an AI detector or a word list.
 
+### Public screenshots
+
+Use deterministic, license-clean synthetic data. Capture editor integration from one verified VSIX in a disposable,
+zero-window editor profile. Browser-only scenes use the matching production webview bundle and must not imply editor
+integration. Keep useful product controls visible, hide private setup and temporary or acceptance-only UI, and check
+readability and clipping at the rendered width. Use width-only presentation capped at 960 CSS pixels with sufficient
+physical density. Compose exact accepted pixels without scaling, masking, annotations, recoloring or reconstructed UI.
+The [compositor](scripts/compose-readme-media.mjs) owns sources and crops; the
+[shared media contract](scripts/public-media-contract.mjs) owns capture density and lossless size budgets. Ordinary
+browser baselines retain their existing density. Run `npm run compose:readme-media -- --verify` to check retained crops
+without rewriting them; follow [Testing](docs/testing.md) for browser and editor prerequisites.
+
 ## Pull requests
 
 - Target `main` for all work. Use a short-lived branch and pull request for each change.
