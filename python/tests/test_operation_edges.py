@@ -2720,6 +2720,48 @@ def test_pandas_arrow_formula_capacity_retains_native_refusals(family: str) -> N
         pd.testing.assert_frame_equal(frame, before)
 
 
+@pytest.mark.parametrize("generated", [False, True])
+def test_pandas_arrow_formula_refusal_releases_input_without_cyclic_collection(generated: bool) -> None:
+    import gc
+    import weakref
+
+    pytest.importorskip("pyarrow")
+    runtime = PandasEngine()
+    operation = bound_step(
+        "formula",
+        leftColumn=bound_ref("c:source:0", "value", 0),
+        operator="multiply",
+        value=str(2**64 - 1),
+        newColumn="result",
+    )
+    namespace: dict[str, Any] = {}
+    if generated:
+        exec(runtime.compile_plan([operation]), namespace)
+
+    def refuse():
+        frame = pd.DataFrame({"value": pd.Series([2**63 - 1], dtype="int64[pyarrow]")})
+        reference = weakref.ref(frame)
+        try:
+            if generated:
+                namespace["clean_data"](frame)
+            else:
+                runtime.apply_transform(frame, operation)
+        except OverflowError:
+            return reference
+        raise AssertionError("The complete integer result must exceed supported capacity.")
+
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        # An escaped error must not retain itself through its repair frame.
+        reference = refuse()
+        assert reference() is None
+    finally:
+        gc.collect()
+        if was_enabled:
+            gc.enable()
+
+
 @pytest.mark.parametrize("signed_value,operator", [(1, "add"), (-1, "add"), (-1, "multiply")])
 @pytest.mark.parametrize("signed_left", [False, True])
 def test_pandas_arrow_formula_capacity_does_not_convert_custom_integer_extensions(
@@ -2845,7 +2887,7 @@ def test_pandas_arrow_formula_capacity_mixed_plan_keeps_by_example_and_custom_co
         elif kind == "customCode":
             params = {
                 "code": "_open_wrangler_formula_result = None\n_open_wrangler_formula = None\n"
-                "_pandas_formula = None\nresult = df"
+                "_open_wrangler_arrow_formula_repair = None\n_pandas_formula = None\nresult = df"
             }
         else:
             params = {
@@ -2862,9 +2904,17 @@ def test_pandas_arrow_formula_capacity_mixed_plan_keeps_by_example_and_custom_co
     assert code.count("def _open_wrangler_formula_result(") == 1
     assert "def _open_wrangler_modulo(" not in code
     assert "def _open_wrangler_formula_result(" not in runtime.compile_plan([plan[2]])
-    namespace: dict[str, Any] = {"_open_wrangler_formula_result": object()}
+    namespace: dict[str, Any] = {
+        "_open_wrangler_formula_result": object(),
+        "_open_wrangler_arrow_formula_repair": frame,
+        "Any": frame,
+    }
     exec(code, namespace)
-    generated = namespace["clean_data"](frame)
+    assert namespace["_open_wrangler_arrow_formula_repair"] is frame
+    assert namespace["Any"] is frame
+    generated = namespace["clean_data"](namespace["_open_wrangler_arrow_formula_repair"])
+    assert namespace["_open_wrangler_arrow_formula_repair"] is frame
+    assert namespace["Any"] is frame
     pd.testing.assert_frame_equal(generated, live)
     expected_inferred = frame["value"].astype(object)
     if operand in {"mixed", "reversed"}:

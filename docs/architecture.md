@@ -470,6 +470,8 @@ keep their existing paths. Live Formula and generated code share the same valida
 
 Arrow-backed Formula preserves successful native results and types. Integer repairs accept 8–64-bit native NumPy,
 built-in Pandas nullable or Arrow integer columns; Sparse and arbitrary extension types are excluded.
+Live execution and generated code use one repair implementation, called only after native arithmetic fails.
+The generated repair stays local to the Formula result helper so it adds no notebook-global binding.
 
 After native power fails, a signed Arrow integer column and an exact positive scalar exponent below 2^64 can use
 checked UInt64 power. Even exponents take checked magnitudes after widening to Int64; odd exponents require
