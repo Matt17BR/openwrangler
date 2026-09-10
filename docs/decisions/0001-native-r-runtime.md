@@ -364,7 +364,7 @@ rule in this ADR.
   Python, Arrow, or another dataframe. A document process exposes only its private artifact to the host; IRkernel
   returns offset-addressed canonical-base64 chunks from an artifact owned by that exact kernel. Both routes end in
   the extension-host atomic save path. CSV uses UTF-8 and LF record separators even under the C locale; its text
-  validation, duration formatting and source-preservation contract is owned by
+  validation, timestamp and duration formatting, and source-preservation contract is owned by
   [the architecture document](../architecture.md#native-r).
   Parquet timestamps must retain their native value in microsecond storage; otherwise export refuses before publication.
 - Group sums keep ordinary R integer or `bit64::integer64` output. Base R and `bit64` do not have an exact 38-digit
