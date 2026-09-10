@@ -1,5 +1,4 @@
 import MarkdownIt from "markdown-it";
-import { JSDOM } from "jsdom";
 import { posix as posixPath } from "node:path";
 
 const markdown = new MarkdownIt({
@@ -10,31 +9,6 @@ const markdown = new MarkdownIt({
 
 const DOCUMENT_MAX_BYTES = 2 * 1024 * 1024;
 const FEATURE_PARITY_HEADING = "Feature parity matrix";
-const README_RELEASE_SECTION_START = "<!-- open-wrangler-release-status:start -->";
-const README_RELEASE_SECTION_END = "<!-- open-wrangler-release-status:end -->";
-const RELEASES_URL = "https://github.com/Matt17BR/openwrangler/releases";
-const LATEST_STABLE_RELEASE_URL = "https://github.com/Matt17BR/openwrangler/releases/latest";
-const MARKETPLACE_URL = "https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler";
-const OPEN_VSX_URL = "https://open-vsx.org/extension/Matt17BR/openwrangler";
-const CI_URL = "https://github.com/Matt17BR/openwrangler/actions/workflows/ci.yml";
-const LICENSE_URL = "https://github.com/Matt17BR/openwrangler/blob/main/LICENSE";
-const README_BADGES = `<p align="center">
-  <a href="${LATEST_STABLE_RELEASE_URL}"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fapi.github.com%2Frepos%2FMatt17BR%2Fopenwrangler%2Freleases%2Flatest&amp;query=%24.tag_name&amp;label=stable&amp;color=blue" alt="Latest stable GitHub release"></a>
-  <a href="${CI_URL}"><img src="https://github.com/Matt17BR/openwrangler/actions/workflows/ci.yml/badge.svg?event=pull_request" alt="Pull request CI status"></a>
-  <a href="${MARKETPLACE_URL}"><img src="https://img.shields.io/badge/VS%20Marketplace-install-blue" alt="Install from Visual Studio Marketplace"></a>
-  <a href="${OPEN_VSX_URL}"><img src="https://img.shields.io/badge/Open%20VSX-install-blue" alt="Install from Open VSX"></a>
-  <a href="${LICENSE_URL}"><img src="https://img.shields.io/github/license/Matt17BR/openwrangler" alt="MIT license"></a>
-</p>`;
-const README_INSTALL = `## Install
-
-- **Stable:** choose **Install** on the [Visual Studio Marketplace](${MARKETPLACE_URL}), select the newest non-preview
-  version in [Open VSX](${OPEN_VSX_URL})'s version list, or download the [latest stable GitHub release](${LATEST_STABLE_RELEASE_URL}).
-- **Preview:** choose **Install Pre-Release Version** on the editor listing, or download a preview from
-  [GitHub prereleases](${RELEASES_URL}).
-- **From source:** [build and install the current \`main\` branch](https://github.com/Matt17BR/openwrangler/blob/main/CONTRIBUTING.md).
-  It may contain changes newer than the published preview.
-
-For a downloaded VSIX, open the Extensions view and choose **Views and More Actions → Install from VSIX…**.`;
 const CHANGELOG_CATEGORIES = new Set(["Added", "Changed", "Fixed", "Removed", "Security"]);
 const ISO_DATE = /^(?:0|[1-9]\d{3,})-(\d{2})-(\d{2})$/u;
 const CHANGELOG_HEADING = /^\[([^\]\r\n]+)\] - ([^\r\n]+)$/u;
@@ -44,49 +18,6 @@ const FUTURE_EVIDENCE =
   /\b(?:TODO|TBD|pending|planned|future|later|will (?:add|capture|record|run|test|verify)|to be (?:added|captured|recorded|run|tested|verified))\b/iu;
 const CAPABILITY_STATUSES = new Set(["Done", "Partial", "Planned", "Out of scope"]);
 const BACKEND_AVAILABILITY = new Set(["Yes", "Partial", "No"]);
-const LEGACY_PREVIEW_VERSION = /(?<![\d.])v?1\.99(?:\.(?:x|\d+))?(?:(?=previews?\b)|(?![\p{L}\p{N}]|\.[\p{L}\p{N}]))/iu;
-
-function containsUnsupportedTextControl(value) {
-  return [...value].some((character) => {
-    const codePoint = character.codePointAt(0);
-    return (
-      (codePoint >= 0 && codePoint <= 8) ||
-      codePoint === 11 ||
-      codePoint === 12 ||
-      (codePoint >= 14 && codePoint <= 31) ||
-      (codePoint >= 127 && codePoint <= 159)
-    );
-  });
-}
-
-export const PREVIEW_README_RELEASE_SECTION = `${README_RELEASE_SECTION_START}
-
-${README_BADGES}
-
-> Preview release. Features and behavior may still change.
-
-${README_INSTALL}
-
-${README_RELEASE_SECTION_END}`;
-
-export const STABLE_README_RELEASE_SECTION = `${README_RELEASE_SECTION_START}
-
-${README_BADGES}
-
-${README_INSTALL}
-
-${README_RELEASE_SECTION_END}`;
-
-export const PERFORMANCE_EVIDENCE_README_RELEASE_SECTION = `${README_RELEASE_SECTION_START}
-
-> **Release status:** Validation candidate. This build is not for distribution.
-
-## Install
-
-This candidate is installed only by the isolated validation workflow. Use a stable release for normal installation.
-
-${README_RELEASE_SECTION_END}`;
-
 function parseMarkdown(contents, label) {
   if (typeof contents !== "string" || Buffer.byteLength(contents, "utf8") > DOCUMENT_MAX_BYTES) {
     return { problem: `${label} must be bounded UTF-8 Markdown.`, tokens: undefined };
@@ -411,7 +342,7 @@ export function inspectPrimaryParityMatrix(
   contents,
   expectedScope,
   trackedEvidencePaths,
-  { requireComplete = true, allowedIncompleteRows = new Map(), requiredIncompleteRows = new Map() } = {}
+  { requireComplete = true } = {}
 ) {
   const parsed = parseMarkdown(contents, "docs/feature-parity.md");
   if (parsed.problem !== undefined || parsed.tokens === undefined) {
@@ -470,14 +401,8 @@ export function inspectPrimaryParityMatrix(
     }
 
     const [surface, pandas, polars, status, evidence] = actual;
-    const allowedIncompleteStatus = allowedIncompleteRows.get(surface);
-    const requiredIncompleteStatus = requiredIncompleteRows.get(surface);
-    if (requireComplete && status !== "Done" && status !== allowedIncompleteStatus) {
+    if (requireComplete && status !== "Done") {
       problems.push(`Parity row "${surface}" is ${status}, not Done.`);
-    } else if (requiredIncompleteStatus !== undefined && status !== requiredIncompleteStatus) {
-      problems.push(
-        `Parity row "${surface}" must remain ${requiredIncompleteStatus} while authoring performance evidence; received ${status}.`
-      );
     }
     if (!requireComplete && !CAPABILITY_STATUSES.has(status)) {
       problems.push(`Parity row "${surface}" must use Done, Partial, Planned, or Out of scope; received ${status}.`);
@@ -579,195 +504,4 @@ export function inspectChangelog(contents, version) {
     : [
         `CHANGELOG.md version ${version} must contain at least one substantive list item under Added, Changed, Fixed, Removed, or Security.`
       ];
-}
-
-function lineRangeContains(range, token) {
-  return (
-    range !== undefined &&
-    token.map !== null &&
-    token.map !== undefined &&
-    token.map[0] >= range[0] &&
-    token.map[1] <= range[1]
-  );
-}
-
-function isProductReleaseClaim(value) {
-  const normalized = value
-    .replace(/<[^>]+>/gu, " ")
-    .replace(/\s+/gu, " ")
-    .trim();
-  return (
-    /\bprebuilt (?:Open Wrangler )?releases? (?:are|remain|will be)\b/iu.test(normalized) ||
-    /\bno (?:prebuilt|packaged|stable) (?:Open Wrangler )?releases? (?:are|remain|will be)?\b/iu.test(normalized) ||
-    /\bfuture (?:Open Wrangler )?preview builds?\b/iu.test(normalized) ||
-    /\bOpen Wrangler(?: itself)? (?:is|remains) (?:an? )?(?:preview|stable|released|published)\b/iu.test(normalized) ||
-    /\bThis is (?:an? )?preview\b.*\b(?:Open Wrangler|Data Wrangler|parity)\b/iu.test(normalized) ||
-    /\bThis is\b.*\bnot\b.*\bparity[- ]complete\b/iu.test(normalized) ||
-    /\bOpen Wrangler\b.*\b(?:has|satisfies|reaches|claims)\b.*\b(?:complete )?parity\b/iu.test(normalized) ||
-    /\bOpen Wrangler\b.*\b(?:not yet|does not yet|is not)\b.*\b(?:parity|stable|published)\b/iu.test(normalized)
-  );
-}
-
-function inspectReadmeReleaseRegion(contents, label, expectedSection, channel) {
-  const normalized = typeof contents === "string" ? contents.replace(/\r\n?/gu, "\n") : contents;
-  const parsed = parseMarkdown(normalized, label);
-  if (parsed.problem !== undefined || parsed.tokens === undefined) {
-    return [parsed.problem];
-  }
-  const tokens = parsed.tokens;
-  const marker = (value) =>
-    tokens.flatMap((token, index) =>
-      token.type === "html_block" && token.level === 0 && token.content.trim() === value
-        ? [{ index, map: token.map }]
-        : []
-    );
-  const starts = marker(README_RELEASE_SECTION_START);
-  const ends = marker(README_RELEASE_SECTION_END);
-  if (starts.length !== 1 || ends.length !== 1 || starts[0].index >= ends[0].index) {
-    return [`${label} must contain one active top-level generated ${channel} release/install region.`];
-  }
-  const range = [starts[0].map?.[0] ?? -1, ends[0].map?.[1] ?? -1];
-  const lines = normalized.split("\n");
-  const actual = lines.slice(range[0], range[1]).join("\n");
-  if (actual !== expectedSection) {
-    return [`${label} must contain the exact generated ${channel} release/install region.`];
-  }
-
-  const installHeadings = topLevelHeadings(tokens, "h2").filter((heading) => heading.text === "Install");
-  if (installHeadings.length !== 1 || !lineRangeContains(range, tokens[installHeadings[0].index])) {
-    return [`${label} must keep its only active Install section inside the generated ${channel} region.`];
-  }
-  for (const token of tokens) {
-    if (lineRangeContains(range, token)) {
-      continue;
-    }
-    const isVisibleText = token.type === "inline" || (token.type === "html_block" && !token.content.startsWith("<!--"));
-    const visibleText = token.type === "inline" ? visibleInlineText(token) : token.content;
-    const hasReleaseStatus = isVisibleText && /^\s*\**Release status:\**/iu.test(visibleText);
-    const hasReleaseLink =
-      token.type === "inline" &&
-      token.children?.some((child) => child.type === "link_open" && child.attrGet("href") === RELEASES_URL);
-    if (hasReleaseStatus || hasReleaseLink || (isVisibleText && isProductReleaseClaim(visibleText))) {
-      return [`${label} contains release-channel status or install material outside its generated region.`];
-    }
-  }
-  return [];
-}
-
-export function inspectPreviewReadme(contents, label = "README.md") {
-  return inspectReadmeReleaseRegion(contents, label, PREVIEW_README_RELEASE_SECTION, "preview");
-}
-
-export function inspectStablePublicCopy(contents, label = "Public documentation") {
-  const parsed = parseMarkdown(contents, label);
-  if (parsed.problem !== undefined || parsed.tokens === undefined) {
-    return [parsed.problem];
-  }
-  const rendered = markdown.renderer.render(
-    parsed.tokens.filter((token) => token.type !== "fence" && token.type !== "code_block"),
-    markdown.options,
-    {}
-  );
-  const fragment = JSDOM.fragment(rendered);
-  const allowedElements = new Map([
-    ["A", new Set(["href"])],
-    ["BLOCKQUOTE", new Set()],
-    ["CODE", new Set()],
-    ["EM", new Set()],
-    ["H1", new Set(["align"])],
-    ["H2", new Set()],
-    ["IMG", new Set(["alt", "height", "src", "width"])],
-    ["LI", new Set()],
-    ["P", new Set(["align"])],
-    ["STRONG", new Set()],
-    ["TABLE", new Set()],
-    ["TBODY", new Set()],
-    ["TD", new Set(["width"])],
-    ["TH", new Set()],
-    ["THEAD", new Set()],
-    ["TR", new Set()],
-    ["UL", new Set()]
-  ]);
-  const unsupportedElement = [...fragment.querySelectorAll("*")].find((element) => {
-    const allowedAttributes = allowedElements.get(element.tagName);
-    return (
-      allowedAttributes === undefined ||
-      [...element.attributes].some((attribute) => !allowedAttributes.has(attribute.name))
-    );
-  });
-  if (unsupportedElement !== undefined) {
-    return [`${label} contains unsupported active HTML that can obscure its stable release copy.`];
-  }
-  const blockElements = new Set([
-    "BLOCKQUOTE",
-    "H1",
-    "H2",
-    "LI",
-    "P",
-    "TABLE",
-    "TBODY",
-    "TD",
-    "TH",
-    "THEAD",
-    "TR",
-    "UL"
-  ]);
-  const renderedText = (node, includeImageAlt) => {
-    if (node.nodeType === 3) {
-      return node.nodeValue ?? "";
-    }
-    if (node.nodeType !== 1 && node.nodeType !== 11) {
-      return "";
-    }
-    if (node.nodeType === 1 && node.nodeName === "IMG") {
-      return includeImageAlt ? (node.getAttribute("alt") ?? "") : "";
-    }
-    const text = [...node.childNodes].map((child) => renderedText(child, includeImageAlt)).join("");
-    return node.nodeType === 1 && blockElements.has(node.nodeName) ? `${text}\n` : text;
-  };
-  const renderedTexts = [true, false].map((includeImageAlt) => renderedText(fragment, includeImageAlt));
-  if (renderedTexts.some((renderedCopy) => containsUnsupportedTextControl(renderedCopy))) {
-    return [`${label} contains unsupported control characters in its stable release copy.`];
-  }
-  if (renderedTexts.some((renderedCopy) => /\p{Bidi_Control}/u.test(renderedCopy))) {
-    return [`${label} contains unsupported bidirectional text controls in its stable release copy.`];
-  }
-  if (renderedTexts.some((renderedCopy) => /\p{Cf}/u.test(renderedCopy))) {
-    return [`${label} contains unsupported Unicode format characters in its stable release copy.`];
-  }
-  if (renderedTexts.some((renderedCopy) => /\p{Default_Ignorable_Code_Point}/u.test(renderedCopy))) {
-    return [`${label} contains unsupported default-ignorable characters in its stable release copy.`];
-  }
-  const visibleTexts = renderedTexts.map((renderedCopy) =>
-    renderedCopy
-      .normalize("NFKC")
-      .replace(/\p{Default_Ignorable_Code_Point}/gu, "")
-      .replace(/\s+/gu, " ")
-  );
-  return visibleTexts.some((visibleText) => LEGACY_PREVIEW_VERSION.test(visibleText))
-    ? [`${label} still contains a 1.99 preview label. Remove it before the stable version 2 release.`]
-    : [];
-}
-
-export function inspectStableReadme(contents, label = "README.md") {
-  const normalizedContents = typeof contents === "string" ? contents.replace(/\r\n?/gu, "\n") : contents;
-  const releaseRegionProblems = inspectReadmeReleaseRegion(
-    normalizedContents,
-    label,
-    STABLE_README_RELEASE_SECTION,
-    "stable"
-  );
-  if (typeof normalizedContents !== "string") {
-    return releaseRegionProblems;
-  }
-  return [...releaseRegionProblems, ...inspectStablePublicCopy(normalizedContents, label)];
-}
-
-export function inspectPerformanceEvidenceReadme(contents, label = "README.md") {
-  return inspectReadmeReleaseRegion(
-    contents,
-    label,
-    PERFORMANCE_EVIDENCE_README_RELEASE_SECTION,
-    "performance-evidence candidate"
-  );
 }

@@ -1,7 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { inspectStablePublicCopy } from "./release-documents.mjs";
 import { inspectReleaseDocumentationSource } from "./release-readiness.mjs";
 import { inspectMarketplacePromotionPipeline, inspectMarketplaceVsceLock } from "./marketplace-promotion-workflow.mjs";
 import { inspectOpenVsxPromotionWorkflow } from "./open-vsx-promotion-workflow.mjs";
@@ -25,7 +24,7 @@ const required = [
   "docs/writing-style.md"
 ];
 
-const missing = required.filter((file) => !existsSync(resolve(root, file)));
+const missing = [...required, "README.md", "docs/media-gallery.md"].filter((file) => !existsSync(resolve(root, file)));
 if (missing.length > 0) {
   throw new Error(`Missing required documentation: ${missing.join(", ")}`);
 }
@@ -49,8 +48,6 @@ const repositoryMetadataProblems = inspectPublicRepositoryMetadata({
 if (repositoryMetadataProblems.length > 0) {
   throw new Error(`Public repository metadata is stale:\n- ${repositoryMetadataProblems.join("\n- ")}`);
 }
-const readme = readFileSync(resolve(root, "README.md"), "utf8");
-const mediaGallery = readFileSync(resolve(root, "docs/media-gallery.md"), "utf8");
 const featureParity = readFileSync(resolve(root, "docs/feature-parity.md"), "utf8");
 const pullRequestTemplate = readFileSync(resolve(root, ".github/pull_request_template.md"), "utf8");
 const publicWritingProblems = [];
@@ -81,18 +78,11 @@ const trackedEvidencePaths = new Set(
 const sourceDocumentationProblems = inspectReleaseDocumentationSource({
   featureParity,
   preview: packageJson.preview,
-  readme,
   trackedEvidencePaths,
   version: packageJson.version
 });
 if (sourceDocumentationProblems.length > 0) {
   throw new Error(`Source documentation is invalid:\n- ${sourceDocumentationProblems.join("\n- ")}`);
-}
-if (!packageJson.preview) {
-  const galleryProblems = inspectStablePublicCopy(mediaGallery, "docs/media-gallery.md");
-  if (galleryProblems.length > 0) {
-    throw new Error(`Public gallery copy is stale:\n- ${galleryProblems.join("\n- ")}`);
-  }
 }
 const marketplacePromotionProblems = inspectMarketplacePromotionPipeline(
   readFileSync(resolve(root, "azure-pipelines-marketplace.yml"), "utf8")

@@ -11,8 +11,6 @@ make changes visually, and keep the generated Python or R code.
 
 _Explore rows, profiles, filters, and cleaning history in one workbench._
 
-<!-- open-wrangler-release-status:start -->
-
 <p align="center">
   <a href="https://github.com/Matt17BR/openwrangler/releases/latest"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fapi.github.com%2Frepos%2FMatt17BR%2Fopenwrangler%2Freleases%2Flatest&amp;query=%24.tag_name&amp;label=stable&amp;color=blue" alt="Latest stable GitHub release"></a>
   <a href="https://github.com/Matt17BR/openwrangler/actions/workflows/ci.yml"><img src="https://github.com/Matt17BR/openwrangler/actions/workflows/ci.yml/badge.svg?event=pull_request" alt="Pull request CI status"></a>
@@ -31,8 +29,6 @@ _Explore rows, profiles, filters, and cleaning history in one workbench._
   It may contain changes newer than the published preview.
 
 For a downloaded VSIX, open the Extensions view and choose **Views and More Actions → Install from VSIX…**.
-
-<!-- open-wrangler-release-status:end -->
 
 ## A five-minute path from data to code
 

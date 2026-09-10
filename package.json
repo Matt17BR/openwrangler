@@ -124,7 +124,6 @@
     "package:dev": "npm run clean && npm run build && node scripts/package-current-channel.mjs --out openwrangler-dev.vsix",
     "package:run": "npm run clean && npm run build && node scripts/package-current-channel.mjs",
     "package:prepared": "node scripts/package-current-channel.mjs",
-    "release:readiness": "node scripts/release-readiness.mjs",
     "verify:vsix": "node scripts/verify-vsix.mjs"
   },
   "activationEvents": [
