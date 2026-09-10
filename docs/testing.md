@@ -889,6 +889,9 @@ provenance triple. It does not repeat protected-main source checks. The candidat
 
 Stable publication uses this verified VSIX and does not rebuild it.
 
+The optional [competitor comparison](performance-comparison.md) is archived; its `comparison:*` commands are no longer
+available. Direct installed-performance, weekly runtime performance and Data Wrangler coexistence checks remain.
+
 ## Change-focused editor checks
 
 Run a manual editor scenario only when the change crosses that UI or integration boundary:
