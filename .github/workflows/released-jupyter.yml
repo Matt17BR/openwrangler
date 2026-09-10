@@ -307,7 +307,7 @@ jobs:
             const receipt = createEditorAcceptancePrivateRootReceipt(privateRoot, { containedBy: parent });
             const prepared = await prepareJupyterAcceptanceREnvironment(
               join(privateRoot, "r"), process.env.OPEN_WRANGLER_TEST_RSCRIPT,
-              { containedBy: privateRoot, nativeEditorTooling: false, sourceContracts: true }
+              { containedBy: privateRoot, purpose: "source-contracts" }
             );
             const environment = prepared.dependencyProbe.input.environment;
             const runtime = await runBoundedEditorCommand({

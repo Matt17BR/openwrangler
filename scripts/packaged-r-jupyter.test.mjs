@@ -89,12 +89,12 @@ function preparedPackageInputs(prepared) {
 
 for (const [scope, selection, packages] of [
   ["default", {}, editorPackages],
-  ["literate", { nativeEditorTooling: true }, editorPackages],
-  ["notebook", { nativeEditorTooling: false }, notebookPackages],
+  ["literate", { purpose: "literate-documents" }, editorPackages],
+  ["notebook", { purpose: "notebook" }, notebookPackages],
   [
     "terminal",
-    { nativeEditorTooling: true, collapseFixtures: false },
-    editorPackages.filter((name) => name !== "Rcpp" && name !== "collapse")
+    { purpose: "interactive-terminal" },
+    ["jsonlite", "rlang", "languageserver", "knitr", "tibble", "data.table", "nanoparquet"]
   ]
 ]) {
   test(`prepared R dependency inputs and receipt agree for ${scope}`, async (t) => {
@@ -122,9 +122,12 @@ for (const [scope, selection, packages] of [
       assert.equal(command.input.environment.RETAINED, "value");
       assert.equal(command.input.environment.R_LIBS, undefined);
     }
-    const kernel = JSON.parse(readFileSync(prepared.kernelSpecPath, "utf8"));
-    assert.deepEqual(kernel.argv, [fixture.rscript, "--vanilla", prepared.kernelBootstrapPath, "{connection_file}"]);
-    assert.equal(kernel.env.R_LIBS_USER, prepared.libraryDir);
+    if (scope !== "terminal") {
+      const kernel = JSON.parse(readFileSync(prepared.kernelSpecPath, "utf8"));
+      assert.deepEqual(kernel.argv, [fixture.rscript, "--vanilla", prepared.kernelBootstrapPath, "{connection_file}"]);
+      assert.equal(kernel.env.R_LIBS_USER, prepared.libraryDir);
+    }
+    assert.equal(prepared.jupyterEnvironment.rscriptPath, fixture.rscript);
     assert.equal(prepared.jupyterEnvironment.rLibraryDir, prepared.libraryDir);
     assert.equal(prepared.dependencyProbe.options.timeoutMs, 30_000);
     assert.equal(prepared.dependencyInstall.options.timeoutMs, 1_200_000);
@@ -140,10 +143,10 @@ for (const [scope, selection, packages] of [
 
 test("R package records accept console line endings while preserving exact package contents", async (t) => {
   for (const selection of [
-    { nativeEditorTooling: false },
-    { nativeEditorTooling: true },
-    { nativeEditorTooling: true, collapseFixtures: false },
-    { nativeEditorTooling: false, sourceContracts: true }
+    { purpose: "notebook" },
+    { purpose: "literate-documents" },
+    { purpose: "interactive-terminal" },
+    { purpose: "source-contracts" }
   ]) {
     const fixture = provisioning(t);
     const prepared = await prepareJupyterAcceptanceREnvironment(fixture.directory, fixture.rscript, {
@@ -200,30 +203,15 @@ test("R install timings expose only bounded fixed stages and omit ambiguous reco
   }
 });
 
-test("invalid R tooling decisions fail before commands or private directories", async (t) => {
+test("invalid R preparation purposes fail before commands or private directories", async (t) => {
   const fixture = provisioning(t);
-  for (const nativeEditorTooling of [null, 0, 1, "false", [], {}]) {
+  for (const purpose of [null, false, true, 0, 1, "", "terminal", "unknown", [], {}]) {
     await assert.rejects(
       prepareJupyterAcceptanceREnvironment(fixture.directory, fixture.rscript, {
         ...fixture.options,
-        nativeEditorTooling
+        purpose
       }),
-      /native editor tooling decision/u
-    );
-    assert.equal(fixture.commands.length, 0);
-    assert.equal(existsSync(fixture.directory), false);
-  }
-});
-
-test("invalid R collapse fixture decisions fail before commands or private directories", async (t) => {
-  const fixture = provisioning(t);
-  for (const collapseFixtures of [null, 0, 1, "false", [], {}]) {
-    await assert.rejects(
-      prepareJupyterAcceptanceREnvironment(fixture.directory, fixture.rscript, {
-        ...fixture.options,
-        collapseFixtures
-      }),
-      /boolean collapse fixture decision/u
+      /preparation purpose/u
     );
     assert.equal(fixture.commands.length, 0);
     assert.equal(existsSync(fixture.directory), false);
@@ -234,10 +222,10 @@ test("all R package scopes require the caller's contained private directory", as
   const fixture = provisioning(t);
   const other = provisioning(t);
   for (const selection of [
-    { nativeEditorTooling: false },
-    { nativeEditorTooling: true },
-    { nativeEditorTooling: true, collapseFixtures: false },
-    { nativeEditorTooling: false, sourceContracts: true }
+    { purpose: "notebook" },
+    { purpose: "literate-documents" },
+    { purpose: "interactive-terminal" },
+    { purpose: "source-contracts" }
   ]) {
     await assert.rejects(
       prepareJupyterAcceptanceREnvironment(other.directory, fixture.rscript, {
@@ -256,8 +244,7 @@ for (const platform of ["linux", "darwin", "win32"]) {
     const fixture = provisioning(t);
     const prepared = await prepareJupyterAcceptanceREnvironment(fixture.directory, fixture.rscript, {
       ...fixture.options,
-      nativeEditorTooling: false,
-      sourceContracts: true,
+      purpose: "source-contracts",
       platform
     });
     const packages = ["jsonlite", "nanoparquet", "bit64"];
@@ -305,21 +292,6 @@ for (const platform of ["linux", "darwin", "win32"]) {
     assert.equal(fixture.commands.length, 1);
   });
 }
-
-test("invalid or mixed R source-contract scope fails before commands or directories", async (t) => {
-  const fixture = provisioning(t);
-  for (const selection of [
-    ...[null, 0, 1, "false", [], {}].map((sourceContracts) => ({ nativeEditorTooling: false, sourceContracts })),
-    { nativeEditorTooling: true, sourceContracts: true }
-  ]) {
-    await assert.rejects(
-      prepareJupyterAcceptanceREnvironment(fixture.directory, fixture.rscript, { ...fixture.options, ...selection }),
-      /source.contract/u
-    );
-    assert.equal(fixture.commands.length, 0);
-    assert.equal(existsSync(fixture.directory), false);
-  }
-});
 
 test("all R journey selectors retain their existing local and tooling boundaries", () => {
   const common = {
@@ -387,7 +359,7 @@ test("notebook roots retain supplemental installs and private dependency refusal
     const fixture = provisioning(t);
     const prepared = await prepareJupyterAcceptanceREnvironment(fixture.directory, fixture.rscript, {
       ...fixture.options,
-      nativeEditorTooling: false,
+      purpose: "notebook",
       platform
     });
     const repositories = rAcceptanceRepositories(platform);
@@ -420,19 +392,20 @@ test("notebook roots retain supplemental installs and private dependency refusal
   }
 });
 
-test("terminal roots omit only collapse builds and probes on each platform", async (t) => {
+test("terminal preparation keeps native R ownership without a kernel on each platform", async (t) => {
   for (const platform of ["linux", "darwin", "win32"]) {
     const fixture = provisioning(t);
     const prepared = await prepareJupyterAcceptanceREnvironment(fixture.directory, fixture.rscript, {
       ...fixture.options,
-      nativeEditorTooling: true,
-      collapseFixtures: false,
+      purpose: "interactive-terminal",
       platform
     });
     const install = commandCode(prepared.dependencyInstall);
     assert.match(install, /\.ow_supplemental_packages <- c\("nanoparquet"\)/u);
     assert.equal(install.includes('"collapse"'), false);
     assert.equal(install.includes('"Rcpp"'), false);
+    assert.equal(install.includes('"IRkernel"'), false);
+    assert.equal(install.includes('"rmarkdown"'), false);
     assert.equal(install.includes('type = "source"'), false);
     assert.deepEqual(
       install.split("\n").filter((line) => line.startsWith("Sys.setenv(MAKEFLAGS")),
@@ -445,6 +418,35 @@ test("terminal roots omit only collapse builds and probes on each platform", asy
     assert.match(probe, /find\.package\(.ow_package, lib.loc = .ow_library, quiet = TRUE\)/u);
     assert.match(probe, /loadNamespace\(.ow_package, lib.loc = .ow_library\)/u);
     for (const status of [10, 11, 12]) assert.ok(probe.includes(`status = ${status}L`));
+    assert.equal(prepared.rExecutable, fixture.rExecutable);
+    assert.deepEqual(prepared.jupyterEnvironment, {
+      dataDir: join(prepared.root, "d"),
+      runtimeDir: join(prepared.root, "r"),
+      configDir: join(prepared.root, "c"),
+      path: join(prepared.root, "p"),
+      rscriptPath: fixture.rscript,
+      rLibraryDir: prepared.libraryDir
+    });
+    assert.ok(Object.isFrozen(prepared.jupyterEnvironment));
+    assert.deepEqual(readdirSync(prepared.root).sort(), ["c", "d", "h", "l", "p", "r", "t"]);
+    for (const directory of readdirSync(prepared.root)) {
+      assert.deepEqual(readdirSync(join(prepared.root, directory)), []);
+    }
+    for (const key of [
+      "kernelId",
+      "kernelSpecPath",
+      "kernelBootstrapPath",
+      "kernelBootstrapStagePath",
+      "kernelProbeWorkingDirectory"
+    ]) {
+      assert.equal(Object.hasOwn(prepared, key), false);
+    }
+    await assert.rejects(
+      probeJupyterAcceptanceRKernel(fixture.rscript, prepared, { runCommand: fixture.options.runCommand }),
+      /exact prepared private environment/u
+    );
+    assert.equal(fixture.commands.length, 1);
+    assert.throws(() => jupyterAcceptanceRKernelBootstrapStage(prepared), /exact prepared environment/u);
   }
 });
 
@@ -452,7 +454,7 @@ test("the selected R environment retains exact bootstrap ownership through readi
   const fixture = provisioning(t);
   const prepared = await prepareJupyterAcceptanceREnvironment(fixture.directory, fixture.rscript, {
     ...fixture.options,
-    nativeEditorTooling: false
+    purpose: "notebook"
   });
   let probes = 0;
   const runCommand = async (input) => {

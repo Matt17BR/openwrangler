@@ -770,22 +770,27 @@ PySpark and generic verification. Qualification coverage is determined by the se
 ## Native R editor dependencies
 
 The `r-jupyter` notebook journeys prepare their reviewed package subset in a fresh private R library. They omit
-`languageserver`, `rmarkdown`, and `knitr`; interactive-terminal and literate-documents journeys retain all three.
-The terminal journey omits collapse and Rcpp because its native-frame fixtures do not use collapse. It keeps
-nanoparquet for real Parquet export. Notebook and literate journeys retain collapse and its structural probe.
+`languageserver`, `rmarkdown`, and `knitr`; literate-documents journeys retain all three. The terminal journey keeps
+`languageserver` and `knitr` for the official R extension, and nanoparquet for real Parquet export. It omits rmarkdown,
+IRkernel, collapse and Rcpp because the plain-R terminal fixtures do not render documents, start a Jupyter kernel or
+use collapse. Notebook and literate journeys retain collapse and its structural probe.
 On macOS, selected collapse fixtures use the pinned source snapshot built with two make jobs.
 Package pins remain in `scripts/jupyter-acceptance-environment.mjs`. Each selected root must resolve from the private
-library at its reviewed version and load successfully before the exact private IRkernel readiness probe runs.
+library at its reviewed version and load successfully before editor launch. Notebook and literate journeys also
+require the exact private IRkernel readiness probe; terminal preparation creates no kernel or bootstrap receipt.
+All editor purposes retain the exact native R executable and private library environment.
 
 The hosted macOS R job installs Homebrew's current `zeromq` formula before private R preparation. IRkernel's
 `pbdZMQ` dependency discovers that system library during its source build, avoiding bundled ZeroMQ compilation.
 This system dependency follows Homebrew updates; the R package pins stay unchanged. Local preparation keeps
 `pbdZMQ`'s default discovery and bundled fallback when no suitable system ZeroMQ is available.
 
-The focused interactive-terminal journey installs the pinned official R and R-syntax extensions. It omits the
+The focused interactive-terminal journey installs the pinned official R and R-syntax extensions. It neither selects
+a host Python interpreter nor installs the Jupyter extension; an inherited test Python override is cleared. It omits the
 Quarto extension and CLI; the literate-documents journey retains both, including private Pandoc configuration and
 native Quarto media preview checks. Tooling pins remain in `scripts/r-editor-acceptance-tooling.mjs`, and its selected
-extension records drive installation and expected versions. Both tooling scopes keep IRkernel readiness checks.
+extension records drive installation and expected versions. The existing preparer selects notebook, interactive-terminal,
+literate-documents or source-contracts dependencies by purpose; omitting the purpose retains the full tooling subset.
 
 The macOS and Windows R jobs first run `kernel:numeric-portability`, the same case included in the canonical
 Linux kernel suite. It owns the platform-sensitive mean, decimal parsing, selection and generated-literal assertions
