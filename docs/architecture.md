@@ -667,6 +667,9 @@ Multi-label discovery uses the available native explode API while retaining its 
 Generated Fill Missing Values code includes only the helpers referenced by the complete cleaning plan and their
 dependencies. Polars and DuckDB share the selector for their controlled helper declarations; each engine owns its
 helper implementations. The emitted programs remain standalone.
+Polars linear interpolation uses one helper module for live execution and standalone generation. Its coordinate
+validation aggregate runs before the returned lazy plan; live and generated refusals retain their respective error
+types.
 
 ### DuckDB
 
