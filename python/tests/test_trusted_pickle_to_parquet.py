@@ -95,36 +95,15 @@ def windows_process_is_running(process_id: int) -> bool:
 
     process_handle = kernel32.OpenProcess(0x1000, False, process_id)
     if not process_handle:
-        return False
+        error = ctypes.get_last_error()
+        if error == 87:  # ERROR_INVALID_PARAMETER: this positive PID no longer exists.
+            return False
+        raise ctypes.WinError(error)
     try:
         exit_code = wintypes.DWORD()
         if not kernel32.GetExitCodeProcess(process_handle, ctypes.byref(exit_code)):
             raise ctypes.WinError(ctypes.get_last_error())
         return exit_code.value == 259
-    finally:
-        kernel32.CloseHandle(process_handle)
-
-
-def terminate_windows_process(process_id: int) -> None:
-    if sys.platform != "win32":
-        raise RuntimeError("Windows process termination is available only on Windows.")
-
-    import ctypes
-    from ctypes import wintypes
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    kernel32.OpenProcess.restype = wintypes.HANDLE
-    kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
-    kernel32.TerminateProcess.restype = wintypes.BOOL
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel32.CloseHandle.restype = wintypes.BOOL
-
-    process_handle = kernel32.OpenProcess(0x0001, False, process_id)
-    if not process_handle:
-        return
-    try:
-        kernel32.TerminateProcess(process_handle, 1)
     finally:
         kernel32.CloseHandle(process_handle)
 
@@ -249,52 +228,86 @@ def test_real_helper_job_kills_a_spawned_pickle_descendant(tmp_path: Path) -> No
     destination = tmp_path / "reserved.tmp"
     destination.write_bytes(b"reserved")
     child_marker = tmp_path / "child.pid"
-    child_code = (
-        "import os, pathlib, sys, time; "
-        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()), encoding='ascii'); "
-        "time.sleep(120)"
+    child_ready = tmp_path / "child.ready"
+    child_stop = tmp_path / "child.stop"
+    child_code = "\n".join(
+        [
+            "import pathlib, sys, time",
+            "ready, stop = map(pathlib.Path, sys.argv[1:])",
+            "ready.touch()",
+            "deadline = time.monotonic() + 120",
+            "while not stop.exists() and time.monotonic() < deadline:",
+            "    time.sleep(0.05)",
+        ]
     )
     launcher_code = "\n".join(
         [
             "import os, pathlib, subprocess, sys, time",
-            "marker = pathlib.Path(sys.argv[1])",
-            f"subprocess.Popen([sys.executable, '-c', {child_code!r}, str(marker)])",
+            "marker, ready, stop = map(pathlib.Path, sys.argv[1:])",
+            f"child = subprocess.Popen([sys.executable, '-c', {child_code!r}, str(ready), str(stop)], "
+            "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)",
+            "pending = marker.with_suffix('.pending')",
+            "pending.write_text(str(child.pid), encoding='ascii')",
+            "pending.replace(marker)",
             "deadline = time.monotonic() + 10",
-            "while not marker.exists() and time.monotonic() < deadline:",
+            "while not ready.exists() and not stop.exists() and time.monotonic() < deadline:",
             "    time.sleep(0.02)",
-            "os._exit(0 if marker.exists() else 3)",
+            "os._exit(0 if ready.exists() else 3)",
         ]
     )
 
     class SpawnDescendantDuringUnpickle:
         def __reduce__(self) -> tuple[object, tuple[list[str]]]:
-            return subprocess.run, ([sys.executable, "-c", launcher_code, str(child_marker)],)
+            return subprocess.run, (
+                [sys.executable, "-c", launcher_code, str(child_marker), str(child_ready), str(child_stop)],
+            )
 
     with source.open("wb") as output:
         pickle.dump(SpawnDescendantDuringUnpickle(), output)
 
-    result = subprocess.run(
-        [sys.executable, "-I", "-B", "-S", str(HELPER), *cli_arguments(source, destination)],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-
-    assert result.returncode == conversion.EXIT_NON_DATAFRAME
-    assert result.stdout == ""
-    assert result.stderr == f"{conversion.NON_DATAFRAME_MESSAGE}\n"
-    assert destination.read_bytes() == b"reserved"
-    assert child_marker.is_file()
-    child_process_id = int(child_marker.read_text(encoding="ascii"))
-    deadline = time.monotonic() + 10
+    primary_error: BaseException | None = None
     try:
+        result = subprocess.run(
+            [sys.executable, "-I", "-B", "-S", str(HELPER), *cli_arguments(source, destination)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == conversion.EXIT_NON_DATAFRAME
+        assert result.stdout == ""
+        assert result.stderr == f"{conversion.NON_DATAFRAME_MESSAGE}\n"
+        assert destination.read_bytes() == b"reserved"
+        assert child_marker.is_file()
+        assert child_ready.is_file()
+        child_process_id = int(child_marker.read_text(encoding="ascii"))
+        assert 0 < child_process_id <= 0xFFFFFFFF
+        deadline = time.monotonic() + 10
         while windows_process_is_running(child_process_id) and time.monotonic() < deadline:
             time.sleep(0.05)
         assert not windows_process_is_running(child_process_id)
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
-        if windows_process_is_running(child_process_id):
-            terminate_windows_process(child_process_id)
+        try:
+            child_stop.touch()
+            deadline = time.monotonic() + 10
+            while not child_marker.is_file() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            if not child_marker.is_file():
+                raise RuntimeError("The fixture did not publish a child identity; cleanup is unverified.")
+            child_process_id = int(child_marker.read_text(encoding="ascii"))
+            if not 0 < child_process_id <= 0xFFFFFFFF:
+                raise RuntimeError("The fixture published an invalid child identity; cleanup is unverified.")
+            while windows_process_is_running(child_process_id) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            if windows_process_is_running(child_process_id):
+                raise RuntimeError("The cooperative fixture child did not settle.")
+        except BaseException as cleanup_error:
+            if primary_error is not None:
+                raise primary_error from cleanup_error
+            raise
 
 
 def test_rejects_a_stale_host_fingerprint_before_unpickling(

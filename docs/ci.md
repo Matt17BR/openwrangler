@@ -15,7 +15,8 @@ Every pull request reports the same five required product checks:
   `daily-core` selector in the declared minimum VS Code 1.106.0 and current stable VS Code.
   The job uses the base Python dependencies for CSV editing and saved-notebook rendering.
 - **Windows filesystem and process contracts** runs Windows-specific export, dependency and shutdown cases, dependency
-  journal creation races, and the DuckDB owner's selected-file import cases against actual local-drive paths.
+  journal creation races, trusted-pickle source identity and descendant cleanup, and the DuckDB owner's selected-file
+  import cases against actual local-drive paths.
 
 The Python runtime job reports the 20 slowest test phases, including fixture setup and teardown, to guide later
 investigation.
