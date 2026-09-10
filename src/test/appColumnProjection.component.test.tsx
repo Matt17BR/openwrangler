@@ -528,7 +528,7 @@ describe("App column projection", () => {
     expect(confirmedCell).toBeVisible();
     const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
     try {
-      confirmedCell.focus();
+      act(() => confirmedCell.focus());
       postMessage.mockClear();
       fireEvent.click(screen.getByRole("button", { name: "Next block" }));
       const request = await onlyRuntimeRequest("getPage");
