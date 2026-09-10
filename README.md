@@ -7,7 +7,7 @@
 Open Wrangler is a visual dataframe editor for VS Code and editors based on it. Open files or live notebook data,
 make changes visually, and keep the generated Python or R code.
 
-<a href="https://github.com/Matt17BR/openwrangler/blob/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/explore.png"><img alt="Open Wrangler in VS Code with a dataframe grid, column profiles, filters, sorts, and cleaning history" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/explore.png" width="960"></a>
+<a href="https://github.com/Matt17BR/openwrangler/blob/main/docs/images/readme/explore.png"><img alt="Open Wrangler in VS Code with a dataframe grid, column profiles, filters, sorts, and cleaning history" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/explore.png" width="960"></a>
 
 _Explore rows, profiles, filters, and cleaning history in one workbench._
 
@@ -36,7 +36,7 @@ For a downloaded VSIX, open the Extensions view and choose **Views and More Acti
 an editor tab, or the editor toolbar. In a Python notebook, run a supported dataframe and choose **Open in Open
 Wrangler** on its output or from the notebook toolbar.
 
-<a href="https://github.com/Matt17BR/openwrangler/blob/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/notebook-pandas.png"><img alt="A live Pandas dataframe output in a VS Code notebook with the Open in Open Wrangler action" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/notebook-pandas.png" width="960"></a>
+<a href="https://github.com/Matt17BR/openwrangler/blob/main/docs/images/readme/notebook-pandas.png"><img alt="A live Pandas dataframe output in a VS Code notebook with the Open in Open Wrangler action" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/notebook-pandas.png" width="960"></a>
 
 _Open a live notebook dataframe from its output and continue in the workbench._
 
@@ -46,7 +46,7 @@ Where a form offers column search, changing the search keeps your selections. Ch
 as a draft. Viewing filters and sorts affect only the current view. Use **Sort rows** or **Filter rows** to add a
 cleaning step.
 
-<a href="https://github.com/Matt17BR/openwrangler/blob/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/workflow.png"><img alt="A Polars transformation draft with highlighted changed values, Apply and Discard actions, and generated code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/workflow.png" width="960"></a>
+<a href="https://github.com/Matt17BR/openwrangler/blob/main/docs/images/readme/workflow.png"><img alt="A Polars transformation draft with highlighted changed values, Apply and Discard actions, and generated code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/workflow.png" width="960"></a>
 
 _Preview changed values and generated code before applying a step._
 
@@ -107,7 +107,7 @@ and Windows, and in Cursor on Linux. Selected R terminal workflows are available
 than rendering the document. Install `jsonlite` and `rlang` in the owning R environment. Parquet export also requires
 `nanoparquet` 0.5.1 or newer. These workflows remain partial.
 
-<a href="https://github.com/Matt17BR/openwrangler/blob/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/notebook-r-editing.png"><img alt="An R notebook dataframe with a Group and aggregate draft, changed values, Apply and Discard actions, and generated R" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22/docs/images/readme/v1.2/gallery/notebook-r-editing.png" width="960"></a>
+<a href="https://github.com/Matt17BR/openwrangler/blob/main/docs/images/readme/gallery/notebook-r-editing.png"><img alt="An R notebook dataframe with a Group and aggregate draft, changed values, Apply and Discard actions, and generated R" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/gallery/notebook-r-editing.png" width="960"></a>
 
 _Use the same draft-and-code workflow with an R notebook dataframe._
 

@@ -12,8 +12,8 @@ import {
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const editorImages = resolve(root, "docs", "images", "editor-acceptance");
-const browserImages = resolve(root, "docs", "images", "public-media-source", "v1.2", "browser");
-const readmeImages = resolve(root, "docs", "images", "readme", "v1.2");
+const browserImages = resolve(root, "docs", "images", "public-media-source", "browser");
+const readmeImages = resolve(root, "docs", "images", "readme");
 const verify = process.argv.includes("--verify");
 const unexpectedArguments = process.argv.slice(2).filter((argument) => argument !== "--verify");
 
