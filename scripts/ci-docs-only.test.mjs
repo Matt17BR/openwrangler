@@ -100,12 +100,38 @@ test("proves existing Python source and Markdown edits only for native R", async
   }
 });
 
-test("requires native R for added, deleted or renamed Python source", async (context) => {
+test("proves added regular Python source only for native R", async (context) => {
+  const cases = [
+    { added: ["python/openwrangler_runtime/helper.py"], modified: [] },
+    { added: ["python/tests/test_helper.py"], modified: [] },
+    { added: ["python/openwrangler_runtime/nested/__init__.py"], modified: [] },
+    {
+      added: ["python/openwrangler_runtime/helper.py", "python/tests/test_helper.py"],
+      modified: ["python/openwrangler_runtime/session.py", "README.md", "CHANGELOG.md", "docs/testing.md"]
+    }
+  ];
+  for (const { added, modified } of cases) {
+    await context.test(added.join(", "), (child) => {
+      const cwd = repository(child, modified);
+      for (const file of [...added, ...modified]) write(cwd, file);
+      const env = merge(cwd);
+      assert.deepEqual(proveRuntimeOmissions({ cwd, env }), { docsOnly: false, rOmittable: true });
+      const output = join(cwd, "action-output");
+      execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
+      assert.equal(readFileSync(output, "utf8"), "docs_only=false\nr_omittable=true\n");
+    });
+  }
+});
+
+test("requires native R for deleted or renamed Python source, including alongside additions", async (context) => {
   const file = "python/openwrangler_runtime/session.py";
-  for (const change of ["add", "delete", "rename", "rename into Python"]) {
+  for (const change of ["add and delete", "delete", "rename", "rename into Python"]) {
     await context.test(change, (child) => {
       const cwd = repository(child, [file]);
-      if (change === "add") write(cwd, "python/tests/new_test.py");
+      if (change === "add and delete") {
+        write(cwd, "python/tests/new_test.py");
+        rmSync(join(cwd, file));
+      }
       if (change === "delete") rmSync(join(cwd, file));
       if (change === "rename") renameSync(join(cwd, file), join(cwd, "python/openwrangler_runtime/renamed.py"));
       if (change === "rename into Python")
@@ -140,11 +166,73 @@ test("requires native R for Python mode changes and existing executable or symli
   }
 });
 
+test("requires native R for added executable or symlink Python entries", async (context) => {
+  for (const mode of ["100755", "120000"]) {
+    await context.test(mode, (child) => {
+      const cwd = repository(child);
+      const blob = git(cwd, "rev-parse", "HEAD:README.md");
+      git(cwd, "update-index", "--add", "--cacheinfo", `${mode},${blob},python/tests/added.py`);
+      assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd, false) }), {
+        docsOnly: false,
+        rOmittable: false
+      });
+    });
+  }
+});
+
+test("requires full owners for added Markdown or paths outside the Python source scope", async (context) => {
+  for (const file of [
+    "docs/new.md",
+    "CHANGELOG.md",
+    "src/new.py",
+    "scripts/new.py",
+    "python/pyproject.toml",
+    "python/tests-extra/new.py",
+    "python/tests/new.PY"
+  ]) {
+    await context.test(file, (child) => {
+      const cwd = repository(child);
+      write(cwd, file);
+      assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), { docsOnly: false, rOmittable: false });
+    });
+  }
+});
+
 test("requires native R for control characters in an existing Python path", (context) => {
   const file = "python/tests/unusual\nname.py";
   const cwd = repository(context, [file]);
   write(cwd, file);
   assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), { docsOnly: false, rOmittable: false });
+});
+
+test("requires native R for an added Python path containing a control character", (context) => {
+  const cwd = repository(context);
+  write(cwd, "python/tests/unusual\nname.py");
+  assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), { docsOnly: false, rOmittable: false });
+});
+
+test("requires full owners for an added Python path with invalid UTF-8", (context) => {
+  const cwd = repository(context);
+  const base = git(cwd, "rev-parse", "main");
+  const blob = git(cwd, "rev-parse", "HEAD:README.md");
+  const path = Buffer.concat([Buffer.from("python/tests/"), Buffer.from([0xff]), Buffer.from(".py")]);
+  execFileSync("git", ["update-index", "--add", "-z", "--index-info"], {
+    cwd,
+    input: Buffer.concat([Buffer.from(`100644 ${blob}\t`), path, Buffer.from("\0")]),
+    stdio: ["pipe", "ignore", "pipe"]
+  });
+  git(cwd, "commit", "--quiet", "-m", "add non-UTF-8 path");
+  const head = git(cwd, "rev-parse", "HEAD");
+  // Build the real merge without checking out a filename that Windows cannot represent.
+  const merged = git(cwd, "commit-tree", git(cwd, "write-tree"), "-p", base, "-p", head, "-m", "merge");
+  git(cwd, "update-ref", "HEAD", merged);
+  assert.deepEqual(
+    proveRuntimeOmissions({
+      cwd,
+      env: { CI_EVENT: "pull_request", CI_BASE_REF: "main", CI_BASE_SHA: base, CI_HEAD_SHA: head, CI_MERGE_SHA: merged }
+    }),
+    { docsOnly: false, rOmittable: false }
+  );
 });
 
 test("requires full owners for runtime, metadata, fixture, workflow and script changes", async (context) => {

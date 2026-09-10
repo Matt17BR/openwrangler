@@ -50,12 +50,16 @@ export function proveRuntimeOmissions({ cwd = process.cwd(), env = process.env }
   if (records.pop() !== "" || records.length === 0 || records.length % 2 !== 0) return required;
   let docsOnly = true;
   for (let index = 0; index < records.length; index += 2) {
-    // Both omissions require existing regular files; additions/deletions also exclude renames.
-    if (!/^:100644 100644 [0-9a-f]{40} [0-9a-f]{40} M$/u.test(records[index])) return required;
+    const modified = /^:100644 100644 [0-9a-f]{40} [0-9a-f]{40} M$/u.test(records[index]);
     const path = records[index + 1];
-    if (path === "README.md" || /^docs\/[^\p{Cc}]+\.md$/u.test(path)) continue;
+    const pythonSource = /^python\/(?:openwrangler_runtime|tests)\/[^\p{Cc}]+\.py$/u.test(path);
+    // Only regular Python additions may omit R; deletions still exclude renames.
+    if (!modified && !(pythonSource && /^:000000 100644 0{40} [0-9a-f]{40} A$/u.test(records[index]))) {
+      return required;
+    }
+    if (modified && (path === "README.md" || /^docs\/[^\p{Cc}]+\.md$/u.test(path))) continue;
     docsOnly = false;
-    if (path === "CHANGELOG.md" || /^python\/(?:openwrangler_runtime|tests)\/[^\p{Cc}]+\.py$/u.test(path)) continue;
+    if (path === "CHANGELOG.md" || pythonSource) continue;
     return required;
   }
   return { docsOnly, rOmittable: true };
@@ -69,7 +73,7 @@ if (process.argv[1] !== undefined && pathToFileURL(resolve(process.argv[1])).hre
     docsOnly
       ? "Verified existing documentation edits only."
       : rOmittable
-        ? "Verified existing Python or Markdown edits independent of native R."
+        ? "Verified Python source additions or edits and existing Markdown edits independent of native R."
         : "Full runtime checks required."
   );
 }
