@@ -173,6 +173,10 @@ replays only the selected plan prefix. The kernel returns its code, input page, 
 large pages are never forced into one response. Page responses omit schemas; the host restores the exact schemas it
 retained for that plan step before publishing the inspection.
 
+Pivot Longer carries retained column identities and nullability from its input capture, including columns created
+by earlier steps. The new label column is non-nullable; the value column is nullable when any selected input is.
+The producer validates the captured source metadata before reshaping, following the same ownership as Pivot Wider.
+
 Native R retains undone decoded commands; the host retains their public command representations. Redo checks the
 expected next step ID before execution, applies it to the current committed capture and publishes one revision.
 The host uses the existing preview result validators for fresh schema, row identity, diff and effective viewing

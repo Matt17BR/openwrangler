@@ -122,6 +122,8 @@ npm run test:scripts:native
 
 The grouped commands separate frame/catalog/transport checks from kernel-agent checks. Each group runs its phases
 serially, with a fresh child process for each phase.
+The native Pivot Longer owner compares retained column descriptors with the input capture and executes complete
+generated programs. A preceding derived-column step covers stable identities and known non-nullable columns.
 Nested Rscript contract programs use the existing warning assertion inside the child process, so an unexpected
 warning fails even when the child handles a later error. Their fresh-process isolation and original assertions remain.
 

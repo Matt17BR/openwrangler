@@ -340,6 +340,9 @@ Custom Code retains ordinary R dispatch; existing numeric precision limits remai
 Native R keeps the **Preview** label in every release channel. These rows describe the current capability and its
 limits; none is a stable-release gate.
 
+Native R Pivot Longer preserves retained columns' confirmed identities and nullability across preceding cleaning steps.
+Its live and generated results preserve the selected columns' native scalar types.
+
 | Surface                                       | Availability                    | Status  | Current owner                                                       |
 | --------------------------------------------- | ------------------------------- | ------- | ------------------------------------------------------------------- |
 | Native R frame paging and typed cells         | Preview                         | Partial | Projected native frame contracts, empty subsets and installed pages |

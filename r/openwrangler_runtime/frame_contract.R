@@ -5411,12 +5411,14 @@ openwrangler_r_frame_contract <- local({
 
   capture_pivot_longer_at <- function(
     value,
+    source_capture,
     positions,
     old_names,
     label_name,
     value_name,
     output_ids
   ) {
+    validate_capture(source_capture)
     inspected <- inspect_frame(
       value,
       conservative_nullable = TRUE,
@@ -5424,8 +5426,23 @@ openwrangler_r_frame_contract <- local({
       metrics = new_capture_metrics()
     )
     schema <- plain_metadata_storage(inspected$descriptor$schema)
+    source_schema <- plain_metadata_storage(source_capture$descriptor$schema)
     column_count <- inspected$descriptor$shape$columns
     row_count <- as.double(inspected$descriptor$shape$rows)
+    if (
+      length(source_schema) != length(schema) ||
+        any(!vapply(seq_along(schema), function(position) {
+          source_column <- source_schema[[position]]
+          inspected_column <- schema[[position]]
+          identical(source_column$name, inspected_column$name) &&
+            identical(source_column$position, inspected_column$position) &&
+            identical(source_column$rawType, inspected_column$rawType) &&
+            identical(source_column$type, inspected_column$type) &&
+            identical(source_column$semantics, inspected_column$semantics)
+        }, logical(1L), USE.NAMES = FALSE))
+    ) {
+      abort("stale-column", "Pivot longer source metadata no longer matches the confirmed R capture")
+    }
     if (
       !is.numeric(positions) || anyNA(positions) || any(!is.finite(positions)) ||
         any(positions != floor(positions)) || length(positions) < 2L || length(positions) > 64L ||
@@ -5534,13 +5551,27 @@ openwrangler_r_frame_contract <- local({
     ) {
       abort("internal-error", "Pivot longer changed R scalar or key metadata")
     }
-    source_ids <- vapply(schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    source_ids <- vapply(source_schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
     assigned_ids <- c(source_ids[retained_positions], output_ids)
     generated_ids <- vapply(output_schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
     for (position in seq_along(output_schema)) {
       output_schema[[position]]$id <- assigned_ids[[position]]
       output_schema[[position]]$position <- position - 1L
+      if (position <= length(retained_positions)) {
+        source_column <- source_schema[[retained_positions[[position]]]]
+        output_column <- output_schema[[position]]
+        if (
+          !identical(output_column$rawType, source_column$rawType) ||
+            !identical(output_column$type, source_column$type) ||
+            !identical(output_column$semantics, source_column$semantics)
+        ) {
+          abort("internal-error", "Pivot longer changed retained R column metadata")
+        }
+        output_schema[[position]]$nullable <- source_column$nullable
+      }
     }
+    output_schema[[label_position]]$nullable <- FALSE
+    output_schema[[value_position]]$nullable <- any(vapply(source_schema[positions], `[[`, logical(1L), "nullable"))
     descriptor <- captured$descriptor
     descriptor$schema <- json_array(output_schema)
     descriptor$frameSemantics$keyColumnIds <- json_array(character())
