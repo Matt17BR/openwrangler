@@ -4877,6 +4877,33 @@ assert_identical(
   "linear interpolation overflowed finite opposite-sign endpoints"
 )
 
+local({
+  tiny <- 2^-1074
+  largest <- .Machine$double.xmin - tiny
+  cases <- list(
+    quarter = list(values = c(-2 * tiny, 2 * tiny), coordinate = c(0, 1, 4), expected = "-0x0.0000000000001p-1022"),
+    reversed_quarter = list(values = c(2 * tiny, -2 * tiny), coordinate = c(0, 1, 4), expected = "0x0.0000000000001p-1022"),
+    tiny_weight = list(values = c(0, -largest), coordinate = c(0, tiny, 1), expected = "-0x0p+0"),
+    equal_zero = list(values = c(-abs(0), -abs(0)), coordinate = c(0, 1, 4), expected = "0x0p+0"),
+    normal_boundary = list(values = c(-largest, .Machine$double.xmin), coordinate = c(0, 1, 4), expected = "-0x0.7ffffffffffffp-1022"),
+    huge_nonmidpoint = list(values = c(-.Machine$double.xmax, .Machine$double.xmax), coordinate = c(0, 1, 4), expected = "-0x1.ffffffffffffep+1022")
+  )
+  for (name in names(cases)) {
+    case <- cases[[name]]
+    frame <- data.frame(coordinate = case$coordinate,
+      target = c(case$values[[1L]], NA_real_, case$values[[2L]]), row.names = c("left", "gap", "right"))
+    before <- serialize(frame, NULL, version = 3L)
+    result <- openwrangler_r_frame_contract$fill_missing_linear_interpolation_at(frame, 2L, "target", 1L, "coordinate")
+    expected <- frame$target
+    expected[[2L]] <- as.double(case$expected)
+    assert_identical(writeBin(result$target, raw(), size = 8L), writeBin(expected, raw(), size = 8L),
+      paste(name, "interpolation changed the expected binary64 values"))
+    assert_identical(result$coordinate, frame$coordinate, paste(name, "interpolation changed coordinates"))
+    assert_identical(row.names(result), row.names(frame), paste(name, "interpolation changed row names"))
+    assert_identical(serialize(frame, NULL, version = 3L), before, paste(name, "interpolation changed source"))
+  }
+})
+
 interpolation_date <- data.frame(
   coordinate = as.Date(c("2026-01-01", "2026-01-03", "2026-01-11")),
   target = c(0, NA_real_, 100)

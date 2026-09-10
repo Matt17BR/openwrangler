@@ -328,7 +328,8 @@ Live and generated execution use the same admitted scalar; ordinary R arithmetic
 
 Native R Group By medians, median Fill and midpoint interpolation use R's native mean for unequal finite pairs
 in both live and generated execution. Tiny ties, finite extremes and existing signed-zero behavior are covered.
-Interpolation at other weights still has a [known tiny-value rounding limit](https://github.com/Matt17BR/openwrangler/issues/1064).
+Interpolation between unequal subnormal or zero endpoints also avoids early product underflow in live and generated
+code. It uses the computed binary64 coordinate weight; normal-endpoint arithmetic retains its existing precision limits.
 
 Generated native R Group By preserves typed empty results, integer64 keys and first/last values in a fresh R session.
 Generated integer sums also use the live batched calculation; integer and integer64 output limits remain unchanged.

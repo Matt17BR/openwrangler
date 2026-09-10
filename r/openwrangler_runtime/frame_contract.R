@@ -7090,6 +7090,45 @@ openwrangler_r_frame_contract <- local({
     result
   }
 
+  interpolate_subnormal_units <- function(anchor, difference, weight, unit) {
+    # Existing gap owner supplies exact subnormal units and the original binary64 weight.
+    direction <- if (difference < 0) -1 else 1
+    magnitude <- abs(difference)
+    product <- magnitude * weight
+    if (product < 0.5) {
+      if (anchor == 0) return(if (direction < 0) -abs(anchor) else abs(anchor))
+      return(anchor * unit)
+    }
+
+    # Dekker's splitter is 2^27 + 1; unequal subnormal anchors give |difference| < 2^53.
+    # Here product >= 0.5 implies weight >= 2^-54, keeping nonzero product-residual intermediates normal.
+    split <- 134217729 * magnitude
+    high_magnitude <- split - (split - magnitude)
+    low_magnitude <- magnitude - high_magnitude
+    split <- 134217729 * weight
+    high_weight <- split - (split - weight)
+    low_weight <- weight - high_weight
+    error <- low_magnitude * low_weight -
+      (((product - high_magnitude * high_weight) - low_magnitude * high_weight) -
+        high_magnitude * low_weight)
+
+    nearest <- round(product)
+    retained <- anchor + direction * nearest
+    fraction <- product - nearest
+    # Keep the multiplication residual separate at either half-unit boundary.
+    above <- (fraction - 0.5) + error
+    below <- (fraction + 0.5) + error
+    negative <- retained < 0 ||
+      (retained == 0 && direction * (fraction + error) < 0)
+    if (above > 0 || (above == 0 && retained %% 2 != 0)) {
+      retained <- retained + direction
+    } else if (below < 0 || (below == 0 && retained %% 2 != 0)) {
+      retained <- retained - direction
+    }
+    if (retained == 0) return(if (negative) -abs(retained) else abs(retained))
+    retained * unit
+  }
+
   fill_missing_linear_interpolation_at <- function(
     value,
     position,
@@ -7176,6 +7215,13 @@ openwrangler_r_frame_contract <- local({
         left_value <- ordered_values[[left]]
         right_value <- ordered_values[[right]]
         if (!is.finite(left_value) || !is.finite(right_value)) next
+        subnormal_gap <- abs(left_value) < .Machine$double.xmin &&
+          abs(right_value) < .Machine$double.xmin && left_value != right_value
+        if (subnormal_gap) {
+          subnormal_unit <- .Machine$double.xmin * .Machine$double.eps
+          subnormal_anchor <- left_value / subnormal_unit
+          subnormal_difference <- right_value / subnormal_unit - subnormal_anchor
+        }
 
         left_coordinate <- coordinate_values[[row_positions[[left]]]]
         right_coordinate <- coordinate_values[[row_positions[[right]]]]
@@ -7202,6 +7248,8 @@ openwrangler_r_frame_contract <- local({
           }
           interpolated <- if (weight == 0.5) {
             safe_float_midpoint(left_value, right_value)
+          } else if (subnormal_gap) {
+            interpolate_subnormal_units(subnormal_anchor, subnormal_difference, weight, subnormal_unit)
           } else if (sign(left_value) == sign(right_value)) {
             left_value + (right_value - left_value) * weight
           } else {
@@ -9941,6 +9989,7 @@ openwrangler_r_frame_contract <- local({
     fill_missing_from_fallback_columns_at = fill_missing_from_fallback_columns_at,
     fill_missing_directional_at = fill_missing_directional_at,
     fill_directional_values = fill_directional_values,
+    interpolate_subnormal_units = interpolate_subnormal_units,
     fill_missing_linear_interpolation_at = fill_missing_linear_interpolation_at,
     fill_missing_grouped_statistic_at = fill_missing_grouped_statistic_at,
     cast_column_at = cast_column_at,
