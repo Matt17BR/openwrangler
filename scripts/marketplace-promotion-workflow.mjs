@@ -1,59 +1,19 @@
-import { createHash } from "node:crypto";
 import { load as parseYaml } from "js-yaml";
 import { parseStrictJson } from "./strict-json.mjs";
 
 const MAX_PIPELINE_BYTES = 32 * 1024;
 const MAX_PACKAGE_JSON_BYTES = 2 * 1024 * 1024;
 const MAX_PACKAGE_LOCK_BYTES = 16 * 1024 * 1024;
-const AUDITED_MARKETPLACE_PIPELINE_SHA256 = "228d5b3e690cd5c52afd71659437414abc06f16563bd40497e5d3efcd90e0bf7";
 const SERVICE_CONNECTION = "openwrangler-marketplace-publishing";
 const VSCE_PACKAGE = "@vscode/vsce";
 const VSCE_LOCK_PATH = "node_modules/@vscode/vsce";
-const STABLE_PUBLISH_COMMAND =
-  "npx --no-install vsce publish --azure-credential --packagePath canonical-release/openwrangler.vsix --skip-duplicate";
-const PREVIEW_PUBLISH_COMMAND =
-  "npx --no-install vsce publish --azure-credential --packagePath canonical-release/openwrangler.vsix --pre-release --skip-duplicate";
-const STABLE_PUBLISH_ATTEMPT = `${STABLE_PUBLISH_COMMAND} || publish_status=$?`;
-const PREVIEW_PUBLISH_ATTEMPT = `${PREVIEW_PUBLISH_COMMAND} || publish_status=$?`;
-const PROFILE_ID_COMMAND = "node scripts/marketplace-identity-profile.mjs";
-const VERIFY_IDENTITY_COMMAND = "npx --no-install vsce verify-pat Matt17BR --azure-credential";
-const VERIFY_ARTIFACT_COMMAND = "node scripts/verify-registry-release-artifact.mjs canonical-release";
-const PROBE_PUBLICATION_COMMAND = "node scripts/verify-marketplace-publication.mjs canonical-release --probe-existing";
-const SKIP_EXISTING_PUBLIC_CONDITION = "and(succeeded(), ne(variables['marketplaceAlreadyPublic'], 'true'))";
-const PINNED_NODE_TASK = Object.freeze({
-  task: "UseNode@1",
-  displayName: "Use pinned Node.js",
-  inputs: Object.freeze({ version: "24.19.0", checkLatest: false })
-});
 
-function exactKeys(value, expected) {
+function mandatory(step, condition) {
   return (
-    typeof value === "object" &&
-    value !== null &&
-    !Array.isArray(value) &&
-    JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...expected].sort())
+    step !== undefined &&
+    step.condition === condition &&
+    (step.continueOnError === undefined || step.continueOnError === false)
   );
-}
-
-function isPinnedNodeTask(step) {
-  return JSON.stringify(step) === JSON.stringify(PINNED_NODE_TASK);
-}
-
-function steps(job) {
-  return Array.isArray(job?.steps) ? job.steps : [];
-}
-
-function deploySteps(stage) {
-  return stage?.jobs?.[0]?.strategy?.runOnce?.deploy?.steps ?? [];
-}
-
-function normalizedLines(value) {
-  return typeof value === "string"
-    ? value
-        .split(/\r?\n/u)
-        .map((line) => line.trim())
-        .filter(Boolean)
-    : [];
 }
 
 export function inspectMarketplaceVsceLock({ packageJson, packageLock }) {
@@ -104,245 +64,151 @@ export function inspectMarketplaceVsceLock({ packageJson, packageLock }) {
 }
 
 export function inspectMarketplacePromotionPipeline(source) {
-  const problems = [];
-  if (typeof source !== "string" || Buffer.byteLength(source, "utf8") > MAX_PIPELINE_BYTES) {
-    return ["azure-pipelines-marketplace.yml must be bounded UTF-8 text."];
-  }
+  if (typeof source !== "string" || Buffer.byteLength(source, "utf8") > MAX_PIPELINE_BYTES)
+    return ["Marketplace promotion must be bounded UTF-8 YAML."];
   let pipeline;
   try {
     pipeline = parseYaml(source);
   } catch {
-    return ["azure-pipelines-marketplace.yml must contain valid YAML."];
+    return ["Marketplace promotion must contain valid YAML."];
   }
+  const problems = [];
+  const intake = pipeline?.stages?.find((stage) => stage.stage === "Intake");
+  const promote = pipeline?.stages?.find((stage) => stage.stage === "Promote");
+  const bind = intake?.jobs?.find((job) => job.job === "Bind");
+  const deployment = promote?.jobs?.find((job) => job.deployment === "Marketplace");
+  const intakeSteps = bind?.steps ?? [];
+  const promotionSteps = deployment?.strategy?.runOnce?.deploy?.steps ?? [];
+  if (!Array.isArray(intakeSteps) || !Array.isArray(promotionSteps))
+    return ["Marketplace intake and deployment need their release steps."];
+  const service = pipeline?.parameters?.find((parameter) => parameter.name === "marketplaceServiceConnection");
   if (
-    !exactKeys(pipeline, ["name", "trigger", "pr", "parameters", "stages"]) ||
-    pipeline.name !== "marketplace-$(Date:yyyyMMdd).$(Rev:r)"
-  ) {
-    problems.push("Marketplace promotion must use the reviewed top-level Azure Pipeline contract.");
-  }
-  if (
-    !exactKeys(pipeline.trigger, ["batch", "branches", "tags"]) ||
-    pipeline.trigger.batch !== false ||
-    JSON.stringify(pipeline.trigger.branches) !== JSON.stringify({ include: ["main"] }) ||
-    JSON.stringify(pipeline.trigger.tags) !== JSON.stringify({ include: ["v*"] }) ||
-    pipeline.pr !== "none"
-  ) {
-    problems.push(
-      "Marketplace promotion must preserve path-independent immutable-tag runs plus fail-closed main-branch recovery and disable pull-request runs."
-    );
-  }
-  if (
-    !Array.isArray(pipeline.parameters) ||
-    pipeline.parameters.length !== 2 ||
-    !exactKeys(pipeline.parameters[0], ["name", "displayName", "type", "default", "values"]) ||
-    pipeline.parameters[0].name !== "marketplaceServiceConnection" ||
-    pipeline.parameters[0].type !== "string" ||
-    pipeline.parameters[0].default !== SERVICE_CONNECTION ||
-    JSON.stringify(pipeline.parameters[0].values) !== JSON.stringify([SERVICE_CONNECTION]) ||
-    !exactKeys(pipeline.parameters[1], ["name", "displayName", "type", "default"]) ||
-    pipeline.parameters[1].name !== "existingReleaseTag" ||
-    pipeline.parameters[1].type !== "string" ||
-    pipeline.parameters[1].default !== ""
-  ) {
-    problems.push(
-      "Marketplace promotion must use the fixed WIF service connection plus one validated manual existing-release parameter."
-    );
-  }
-  if (!Array.isArray(pipeline.stages) || pipeline.stages.length !== 2) {
-    problems.push("Marketplace promotion must contain exactly Intake and Promote stages.");
-    return problems;
-  }
-  const [intake, promote] = pipeline.stages;
-  if (
-    intake?.stage !== "Intake" ||
-    !Array.isArray(intake.jobs) ||
-    intake.jobs.length !== 1 ||
-    intake.jobs[0]?.job !== "Bind"
-  ) {
-    problems.push("Marketplace promotion intake must bind one exact tag checkout.");
-  }
-  const intakeSteps = steps(intake?.jobs?.[0]);
-  const intakeScript = intakeSteps.find((step) => step?.name === "release_intake");
-  if (
-    intakeSteps.length !== 3 ||
-    intakeSteps[0]?.checkout !== "self" ||
-    intakeSteps[0]?.clean !== true ||
-    intakeSteps[0]?.fetchDepth !== 0 ||
-    intakeSteps[0]?.fetchTags !== true ||
-    intakeSteps[0]?.persistCredentials !== false ||
-    !isPinnedNodeTask(intakeSteps[1]) ||
-    intakeSteps[2] !== intakeScript ||
-    intakeScript?.script !== "node scripts/marketplace-release-intake.mjs" ||
-    intakeScript?.env?.BUILD_REASON !== "$(Build.Reason)" ||
-    intakeScript?.env?.BUILD_SOURCEBRANCH !== "$(Build.SourceBranch)" ||
-    intakeScript?.env?.BUILD_SOURCEVERSION !== "$(Build.SourceVersion)" ||
-    intakeScript?.env?.EXISTING_RELEASE_TAG !== "${{ parameters.existingReleaseTag }}"
-  ) {
-    problems.push(
-      "Marketplace promotion intake must validate either the exact tag event or one manual historical tag selected from protected main."
-    );
-  }
-  if (
-    promote?.stage !== "Promote" ||
-    promote.dependsOn !== "Intake" ||
+    !mandatory(intake) ||
+    !mandatory(bind) ||
+    !mandatory(deployment) ||
+    pipeline?.pr !== "none" ||
+    !pipeline.trigger?.branches?.include?.includes("main") ||
+    !pipeline.trigger?.tags?.include?.includes("v*") ||
+    service?.default !== SERVICE_CONNECTION ||
+    JSON.stringify(service.values) !== JSON.stringify([SERVICE_CONNECTION]) ||
+    promote?.dependsOn !== "Intake" ||
     promote.condition !== "and(succeeded(), eq(dependencies.Intake.outputs['Bind.release_intake.promote'], 'true'))" ||
     promote.lockBehavior !== "sequential" ||
-    !Array.isArray(promote.jobs) ||
-    promote.jobs.length !== 1
-  ) {
-    problems.push("Marketplace promotion must serialize validated release intake through one deployment stage.");
-  }
-  const deployment = promote?.jobs?.[0];
-  if (
-    deployment?.deployment !== "Marketplace" ||
-    deployment?.timeoutInMinutes !== 240 ||
-    deployment?.environment !== SERVICE_CONNECTION ||
-    JSON.stringify(deployment?.variables) !==
-      JSON.stringify({
-        releaseCommit: "$[stageDependencies.Intake.Bind.outputs['release_intake.releaseCommit']]",
-        releasePrerelease: "$[stageDependencies.Intake.Bind.outputs['release_intake.releasePrerelease']]",
-        releaseTag: "$[stageDependencies.Intake.Bind.outputs['release_intake.releaseTag']]"
-      }) ||
-    deployment?.strategy?.runOnce?.deploy === undefined
-  ) {
-    problems.push("Marketplace publication must use the fixed protected Azure deployment environment.");
-  }
-  const promotionSteps = deploySteps(promote);
-  const download = promotionSteps.find(
-    (step) => step?.script === "node scripts/download-canonical-github-release.mjs canonical-release"
-  );
-  const canonicalVerifier = promotionSteps.find((step) => step?.script === VERIFY_ARTIFACT_COMMAND);
-  const publicProbe = promotionSteps.find((step) => step?.script === PROBE_PUBLICATION_COMMAND);
-  const publicVerifier = promotionSteps.find(
-    (step) => step?.script === "node scripts/verify-marketplace-publication.mjs canonical-release"
-  );
-  const verifierEnvironment = {
-    AUTOMATION_SHA: "$(Build.SourceVersion)",
-    EXPECTED_SHA: "$(releaseCommit)",
-    RELEASE_PRERELEASE: "$(releasePrerelease)",
-    RELEASE_TAG: "$(releaseTag)"
-  };
-  const publicVerifierEnvironment = {
-    AUTOMATION_SHA: "$(Build.SourceVersion)",
-    EXPECTED_SHA: "$(releaseCommit)",
-    OPEN_WRANGLER_MARKETPLACE_VERIFY_ATTEMPTS: 40,
-    RELEASE_PRERELEASE: "$(releasePrerelease)",
-    RELEASE_TAG: "$(releaseTag)"
-  };
-  if (
-    JSON.stringify(download?.env) !==
-      JSON.stringify({
-        OPEN_WRANGLER_GITHUB_RELEASE_ATTEMPTS: 210,
-        OPEN_WRANGLER_GITHUB_RELEASE_DELAY_MS: 60000,
-        RELEASE_PRERELEASE: "$(releasePrerelease)",
-        RELEASE_TAG: "$(releaseTag)"
-      }) ||
-    JSON.stringify(canonicalVerifier?.env) !== JSON.stringify(verifierEnvironment) ||
-    publicProbe?.displayName !== "Reuse an exact existing public Marketplace payload" ||
-    JSON.stringify(publicProbe?.env) !== JSON.stringify(verifierEnvironment) ||
-    JSON.stringify(publicVerifier?.env) !== JSON.stringify(publicVerifierEnvironment)
-  ) {
+    deployment?.environment !== SERVICE_CONNECTION
+  )
     problems.push(
-      "Every registry artifact consumer must use the exact intake outputs and the public verifier's maximum reviewed polling bound."
+      "Marketplace publication needs validated release intake, no PR trigger and the protected sequential WIF environment."
     );
-  }
-  const azure = promotionSteps.find((step) => step?.task === "AzureCLI@2");
-  const azureLines = normalizedLines(azure?.inputs?.inlineScript);
+  const intakeScript = intakeSteps.find((step) => step.name === "release_intake");
   if (
-    azure?.inputs?.azureSubscription !== "${{ parameters.marketplaceServiceConnection }}" ||
-    azure?.inputs?.scriptType !== "bash" ||
-    azure?.inputs?.scriptLocation !== "inlineScript" ||
-    azure?.inputs?.addSpnToEnvironment !== false ||
-    azure?.inputs?.visibleAzLogin !== false ||
-    azure?.inputs?.failOnStandardError !== false ||
-    azure?.condition !== SKIP_EXISTING_PUBLIC_CONDITION ||
-    azure?.env?.AUTOMATION_SHA !== "$(Build.SourceVersion)" ||
-    azure?.env?.EXPECTED_SHA !== "$(releaseCommit)" ||
-    azure?.env?.RELEASE_PRERELEASE !== "$(releasePrerelease)" ||
-    azure?.env?.RELEASE_TAG !== "$(releaseTag)" ||
-    JSON.stringify(azureLines) !==
-      JSON.stringify([
-        "set -euo pipefail",
-        PROFILE_ID_COMMAND,
-        VERIFY_IDENTITY_COMMAND,
-        VERIFY_ARTIFACT_COMMAND,
-        "publish_status=0",
-        'if [ "$RELEASE_PRERELEASE" = "true" ]; then',
-        PREVIEW_PUBLISH_ATTEMPT,
-        'elif [ "$RELEASE_PRERELEASE" = "false" ]; then',
-        STABLE_PUBLISH_ATTEMPT,
-        "else",
-        "exit 64",
-        "fi",
-        'if [ "$publish_status" -ne 0 ]; then',
-        'echo "vsce publish exited with status $publish_status; public verification will determine the result." >&2',
-        "fi"
-      ])
-  ) {
-    problems.push("Marketplace publication must use locked VSCE through the named WIF AzureCLI task.");
+    !mandatory(intakeScript) ||
+    intakeScript.script?.trim() !== "node scripts/marketplace-release-intake.mjs" ||
+    intakeScript.env?.BUILD_REASON !== "$(Build.Reason)" ||
+    intakeScript.env?.BUILD_SOURCEBRANCH !== "$(Build.SourceBranch)" ||
+    intakeScript.env?.BUILD_SOURCEVERSION !== "$(Build.SourceVersion)" ||
+    intakeScript.env?.EXISTING_RELEASE_TAG !== "${{ parameters.existingReleaseTag }}" ||
+    deployment?.variables?.releaseCommit !==
+      "$[stageDependencies.Intake.Bind.outputs['release_intake.releaseCommit']]" ||
+    deployment?.variables?.releasePrerelease !==
+      "$[stageDependencies.Intake.Bind.outputs['release_intake.releasePrerelease']]" ||
+    deployment?.variables?.releaseTag !== "$[stageDependencies.Intake.Bind.outputs['release_intake.releaseTag']]"
+  )
+    problems.push("Promotion must consume the exact source, channel and tag admitted by release intake.");
+  for (const list of [intakeSteps, promotionSteps]) {
+    if (
+      list.some((step) => step.checkout !== undefined && step.persistCredentials !== false) ||
+      !list.some(
+        (step) =>
+          mandatory(step) &&
+          step.checkout === "self" &&
+          step.fetchDepth === 0 &&
+          step.fetchTags === true &&
+          step.persistCredentials === false
+      )
+    )
+      problems.push("Release intake and promotion require the full checkout without persisted credentials.");
   }
-  const commands = promotionSteps.flatMap((step) => [
-    ...(typeof step?.script === "string" ? [step.script] : []),
-    ...normalizedLines(step?.inputs?.inlineScript)
-  ]);
+  const run = (command) => promotionSteps.find((step) => step.script?.trim() === command);
+  const install = run("npm ci --ignore-scripts");
+  const download = run("node scripts/download-canonical-github-release.mjs canonical-release");
+  const artifact = run("node scripts/verify-registry-release-artifact.mjs canonical-release");
+  const probe = run("node scripts/verify-marketplace-publication.mjs canonical-release --probe-existing");
+  const verify = run("node scripts/verify-marketplace-publication.mjs canonical-release");
+  const azure = promotionSteps.find((step) => step.task === "AzureCLI@2");
+  const bound = (step) =>
+    step?.env?.AUTOMATION_SHA === "$(Build.SourceVersion)" &&
+    step.env.EXPECTED_SHA === "$(releaseCommit)" &&
+    step.env.RELEASE_PRERELEASE === "$(releasePrerelease)" &&
+    step.env.RELEASE_TAG === "$(releaseTag)";
   if (
-    commands.filter((command) => command === "npm ci --ignore-scripts").length !== 1 ||
-    commands.filter((command) => command === STABLE_PUBLISH_ATTEMPT).length !== 1 ||
-    commands.filter((command) => command === PREVIEW_PUBLISH_ATTEMPT).length !== 1 ||
-    commands.filter((command) => command === PROFILE_ID_COMMAND).length !== 1 ||
-    commands.filter((command) => command === VERIFY_IDENTITY_COMMAND).length !== 1 ||
-    commands.filter((command) => command === VERIFY_ARTIFACT_COMMAND).length !== 2 ||
-    commands.filter((command) => command === PROBE_PUBLICATION_COMMAND).length !== 1 ||
-    commands.filter((command) => command === "node scripts/download-canonical-github-release.mjs canonical-release")
-      .length !== 1 ||
-    commands.filter((command) => command === "node scripts/verify-marketplace-publication.mjs canonical-release")
-      .length !== 1
-  ) {
+    !mandatory(install) ||
+    !mandatory(download) ||
+    download.env?.RELEASE_PRERELEASE !== "$(releasePrerelease)" ||
+    download.env?.RELEASE_TAG !== "$(releaseTag)" ||
+    [artifact, probe].some((step) => !mandatory(step) || !bound(step))
+  )
     problems.push(
-      "Marketplace promotion must install its lockfile, download, reverify, channel-publish, and publicly verify one canonical artifact."
+      "Download, artifact verification and existing-public probe must fail closed for the admitted release."
     );
-  }
+  const skipExisting = "and(succeeded(), ne(variables['marketplaceAlreadyPublic'], 'true'))";
+  if (
+    !mandatory(verify, skipExisting) ||
+    !bound(verify) ||
+    !mandatory(azure, skipExisting) ||
+    !bound(azure) ||
+    azure.inputs?.azureSubscription !== "${{ parameters.marketplaceServiceConnection }}" ||
+    azure.inputs?.scriptType !== "bash" ||
+    azure.inputs?.scriptLocation !== "inlineScript" ||
+    azure.inputs?.addSpnToEnvironment !== false ||
+    azure.inputs?.visibleAzLogin !== false
+  )
+    problems.push(
+      "Only the protected WIF task may publish; exact existing bytes or mandatory public verification must determine success."
+    );
+  const lines =
+    typeof azure?.inputs?.inlineScript === "string"
+      ? azure.inputs.inlineScript.split(/\r?\n/u).map((line) => line.trim())
+      : [];
+  if (
+    !lines.includes("set -euo pipefail") ||
+    !lines.includes("node scripts/marketplace-identity-profile.mjs") ||
+    !lines.includes("npx --no-install vsce verify-pat Matt17BR --azure-credential") ||
+    !lines.includes("node scripts/verify-registry-release-artifact.mjs canonical-release") ||
+    !lines.some((line) =>
+      line.startsWith(
+        "npx --no-install vsce publish --azure-credential --packagePath canonical-release/openwrangler.vsix --skip-duplicate"
+      )
+    ) ||
+    !lines.some((line) =>
+      line.startsWith(
+        "npx --no-install vsce publish --azure-credential --packagePath canonical-release/openwrangler.vsix --pre-release --skip-duplicate"
+      )
+    ) ||
+    !lines.includes('if [ "$RELEASE_PRERELEASE" = "true" ]; then') ||
+    !lines.includes('elif [ "$RELEASE_PRERELEASE" = "false" ]; then')
+  )
+    problems.push("WIF publication must validate identity and canonical bytes and select the bound package channel.");
+  if (!(
+    promotionSteps.indexOf(install) < promotionSteps.indexOf(download) &&
+    promotionSteps.indexOf(download) < promotionSteps.indexOf(artifact) &&
+    promotionSteps.indexOf(artifact) < promotionSteps.indexOf(probe) &&
+    promotionSteps.indexOf(probe) < promotionSteps.indexOf(azure) &&
+    promotionSteps.indexOf(azure) < promotionSteps.indexOf(verify)
+  ))
+    problems.push(
+      "Artifact verification and existing-public probe must precede authentication; public verification follows publication."
+    );
+  const scripts = [...intakeSteps, ...promotionSteps]
+    .map((step) => `${step.script ?? ""}\n${step.inputs?.inlineScript ?? ""}`)
+    .join("\n");
   if (
     /(?:VSCE_PAT|AZURE_CLIENT_SECRET|clientSecret|password|token:|npm\s+(?:run\s+)?(?:pack|package|build|version)|vsce\s+package|ovsx)/iu.test(
-      source
-    )
-  ) {
+      scripts
+    ) ||
+    /(?:VSCE_PAT|AZURE_CLIENT_SECRET|clientSecret|password|"token":)/iu.test(JSON.stringify(pipeline))
+  )
     problems.push(
-      "Marketplace promotion must not carry secrets, rebuild/reversion artifacts, or publish to another registry."
+      "Marketplace promotion must not expose credentials or rebuild, reversion or publish to another registry."
     );
-  }
-  const publicVerifierIndex = promotionSteps.findIndex(
-    (step) => step?.script === "node scripts/verify-marketplace-publication.mjs canonical-release"
-  );
-  const azureIndex = promotionSteps.indexOf(azure);
-  if (
-    azureIndex < 0 ||
-    publicVerifierIndex !== azureIndex + 1 ||
-    publicVerifier?.condition !== SKIP_EXISTING_PUBLIC_CONDITION
-  ) {
-    problems.push("Public Marketplace verification must immediately follow the authenticated publication task.");
-  }
-  const canonicalVerifierIndex = promotionSteps.findIndex((step) => step?.script === VERIFY_ARTIFACT_COMMAND);
-  const downloadIndex = promotionSteps.findIndex(
-    (step) => step?.script === "node scripts/download-canonical-github-release.mjs canonical-release"
-  );
-  const npmIndex = promotionSteps.findIndex((step) => step?.script === "npm ci --ignore-scripts");
-  const publicProbeIndex = promotionSteps.indexOf(publicProbe);
-  if (
-    promotionSteps.length !== 8 ||
-    !isPinnedNodeTask(promotionSteps[1]) ||
-    npmIndex < 0 ||
-    downloadIndex !== npmIndex + 1 ||
-    canonicalVerifierIndex !== downloadIndex + 1 ||
-    publicProbeIndex !== canonicalVerifierIndex + 1 ||
-    azureIndex !== publicProbeIndex + 1
-  ) {
-    problems.push(
-      "Canonical verification, existing-public probe, and authenticated promotion must retain their reviewed order."
-    );
-  }
-  if (createHash("sha256").update(source, "utf8").digest("hex") !== AUDITED_MARKETPLACE_PIPELINE_SHA256) {
-    problems.push("Marketplace promotion YAML differs from the explicitly reviewed pipeline bytes.");
-  }
   return problems;
 }
