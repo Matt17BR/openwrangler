@@ -5470,6 +5470,7 @@ openwrangler_r_kernel_agent <- local({
       return(list(
         capture = frame_contract$capture_pivot_longer_at(
           source,
+          capture,
           bound$positions,
           bound$selectedNames,
           bound$labelName,

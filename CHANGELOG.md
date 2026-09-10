@@ -31,6 +31,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Native R Pivot Longer no longer rejects valid previews because it changed retained column identities or nullability.
 - Polars Pivot Longer accepts compatible lazy categorical columns on the first attempt, including in generated code.
 - Editing preserves the accepted viewing filter after overlapping page requests fail or become superseded, including
   dropped-column restoration through Discard and Undo. Restart an older live Python kernel after updating to load
