@@ -87,7 +87,6 @@ export function createReleasedRRowReductionJourney({
     await drawer.getByRole("button", { name: "Close panel" }).click();
 
     recordAcceptanceProgress(`${phase}:editing:drop-missing-rows`);
-    app = await releasedRSessionApp(workbench, testing, sessionId, "the R Drop missing rows session");
     const missingStepId = await previewReleasedRDropMissingRows(testing, workbench, sessionId);
     let active = testing.activeSession();
     assert.ok(active?.metadata.draftStep?.kind === "dropMissingRows");
@@ -210,7 +209,6 @@ export function createReleasedRRowReductionJourney({
     await drawer.getByRole("button", { name: "Close panel" }).click();
 
     recordAcceptanceProgress(`${phase}:editing:drop-duplicates`);
-    app = await releasedRSessionApp(workbench, testing, sessionId, "the R Drop duplicates session");
     const duplicateStepId = await previewReleasedRDropDuplicates(testing, workbench, sessionId);
     active = testing.activeSession();
     assert.ok(active?.metadata.draftStep?.kind === "dropDuplicates");
