@@ -1,5 +1,9 @@
 # Testing
 
+Keep commands, prerequisites, fixtures, editor scenarios and responsibilities between test layers in this guide.
+Detailed regression cases belong in their executable owners. Record exact boundaries here when they affect test
+selection, qualification or safe execution.
+
 Prefer the lowest-cost test that exercises the behavior. Keep a higher-level test only when it can catch a product,
 package, runtime, or platform failure that a direct test cannot. Keep dedicated security and privacy tests for
 credential redaction, no-follow identity checks, sealed artifacts, and exact output-path handoff. Do not keep fixture
@@ -169,26 +173,17 @@ changed and invalid text still reaches the validator. Lazy-owner tests distingui
 notebook snapshots; the installed R terminal
 journey checks that closing the terminal restores the idle R action. The existing App component tests retain
 DOM-before-acknowledgement and mismatched-marker integration
-coverage; timing and retirement behavior is owned by the renderer lifecycle tests. Native R Group By and Fill Missing
-contracts execute generated code for midpoint edge cases alongside live execution. Their existing owners cover tiny
-ties, the normal/subnormal boundary, finite extremes, source preservation and Undo. Direct frame tests also check
-signed zero and bypassing user-defined S3 mean methods. Non-midpoint interpolation cases cover early underflow,
-rounding ties after adding the anchor, signed zero and the computed binary64 weight. They retain controls for the
-unchanged midpoint and normal-endpoint paths, with complete generated execution and source preservation through Undo.
-The existing native R Group By owner compares typed empty results across base dataframes, tibbles and data.tables.
-It also executes complete generated programs in fresh R processes to check integer64 first/last outputs and exact
-wide keys without a preloaded bit64 namespace, retaining source and result-publication assertions.
-It also checks exact-sum helper admission and reuse across repeated Group By and coarse Round steps, with complete
-generated execution isolated from caller arithmetic. Existing frame and kernel owners verify signed cancellation
-across multiple integer batches; the profile owner covers the unchanged live consumer of those functions.
-The existing R Fill, Group By, profiling and Custom Code owners register and restore numeric mean methods to check
-built-in isolation and intentional user-code dispatch. Live results and complete generated programs must agree.
-The `kernel:numeric-portability` owner checks exact finite Group By, Fill and profile means against binary64 reference
-values, including cancellation, midpoint parity, subnormal boundaries, finite maxima, chunk thresholds and multiple
-chunks. Subnormal interpolation controls also execute repeated steps and compiled code, preserving signed zero.
-The owner executes complete generated programs, preserves source and frame types through Undo, and checks once-only
-helper emission for repeated plans. The existing Fill owner checks omission from unrelated plans. Integer64 and
-non-mean profile controls remain in their existing owners.
+coverage; timing and retirement behavior is owned by the renderer lifecycle tests.
+
+Native R frame tests own primitive numeric checks. The `kernel:numeric-portability` owner uses independent binary64
+references and raw-bit comparisons, including signed zero, with complete standalone and compiled execution.
+Group By and Fill owners exercise public Preview, Apply and Undo while checking source and frame identity. They check that
+plans with repeated steps emit each helper once and omit unused helpers. Group By also runs complete standalone
+programs in fresh processes without a preloaded bit64 namespace and checks isolation from caller arithmetic.
+Method-dispatch controls register and restore numeric mean methods to distinguish built-in operations from intentional
+Custom Code dispatch. Integer64 and non-mean profile controls
+remain in their existing owners. Arithmetic policy belongs in the [native R decision](decisions/0001-native-r-runtime.md).
+
 Profile controls cover small and chunked even medians, text lengths and unchanged fields; primitive checks retain
 signed-zero and nonfinite median behavior that JSON cannot distinguish.
 R interactive transport tests also execute the real dispatcher in a fresh Linux PTY with canonical input and in a
@@ -273,7 +268,7 @@ preflight rollback. R's kernel and bridge owners additionally check host/native 
 output contracts. Runtime replacement is tested separately from failures that retain the original session.
 The existing file reopen journey exercises the registered Redo command after the last Undo. Live Python Formula
 and native R core-editing journeys use the visible button and compare the restored plan, schema, code and bounded
-page before returning to their original final state. The Pandas By Example owner also executes the redone plan's
+page. The Pandas By Example owner also executes the redone plan's
 generated code with its existing value, dtype, label and index comparator.
 
 `python/tests/test_generated_output_columns.py` owns static output-name agreement between public binding and
@@ -300,14 +295,9 @@ public aliases, and retain optional-import, cancellation and request-registry cl
 The installed R Formula journey verifies a visible precision refusal, retains the input, and corrects that same form
 before continuing its existing preview, apply and undo assertions.
 
-The native R `text-fill-and-cast` kernel contract executes mixed Fill plans, checking that generated code includes each
-required helper family once and omits unused families. The `kernel:numeric-portability` case owns scalar and datetime
-Fill precision, comparing raw native doubles with complete generated and compiled results. The frame
-interactive and Fill owners cover accepted decimal spellings, signed zero, subnormals, finite extrema and invalid
-input. The portability owner also checks native floating, datetime and duration picker selections and
-predicates through Preview, generated execution and draft discard, preserving source values and row identities.
-Temporal cases include compiled programs, adjacent values, timezone metadata, missing values, manual inputs,
-empty rebound frames and refusal of stale duration units. The existing datetime Fill case also executes compiled code.
+The native R `text-fill-and-cast` contract owns helper selection for mixed Fill plans. Frame interactive and Fill tests
+own scalar input acceptance and refusal. The portability owner also covers public numeric and temporal picker and filter
+requests through Preview and draft discard, preserving source values, row identities and frame metadata.
 Mixed literal and regex Find and Replace steps check independent replacement state, one shared generated regex
 function, complete live/generated results and source isolation despite conflicting caller functions.
 Directional Fill plans include Custom Code, typed and empty columns, named elements, and keyed data tables. Preview,
@@ -422,9 +412,9 @@ first-use journey also previews and applies Mark Duplicates, checks a visible `F
 the export flow. The default comprehensive R notebook journey submits the form, checks the visible `TRUE` cell,
 column reveal and focus, and verifies Apply and Undo without changing the source notebook.
 
-`python/tests/test_min_max_scale.py` compares live and generated scaling for finite extremes, subnormals, exact
-integers, decimals, missing values, and source identity in each Python editing engine. Native R owns the corresponding
-double and `integer64` cases in `r/tests/complete_catalog_contract.R`. Export replacement races belong in
+`python/tests/test_min_max_scale.py` checks live and standalone scaling agreement and source identity across Python editing
+engines; `r/tests/complete_catalog_contract.R` owns native R scaling. See [Architecture](architecture.md#engine-boundaries-and-capabilities) and the
+[native R decision](decisions/0001-native-r-runtime.md) for numeric policy. Export replacement races belong in
 `python/tests/test_configurable_export.py`, where native writers must leave replacement files unchanged.
 
 Export owner tests use actual files to cover source renames and replacements before and during command awaits.
@@ -459,15 +449,11 @@ The R process transport case forces a changed modification time after its real i
 refusal, continued session use and cleanup.
 R notebook source-integrity checks also verify that no active export artifacts remain before the session closes.
 
-`python/tests/test_round_number.py` executes live and generated Round across the Python editing engines, checking
-negative and extreme precision, midpoint neighbors, exact integer and Decimal carries, output capacity, storage types,
-masks, signed zero, and source identity. The Min-max and Round owners execute generated code with a source named
-`Any` already bound, checking its identity before and after the generated function runs.
-Arrow Decimal cases validate native readback and CSV/Parquet export; object Decimal cases change the caller's context
-before execution. Native R's catalog owns its corresponding numeric cases
-and executes them under altered display options.
-DuckDB unsigned 128-bit controls exercise exact capacity refusal, valid neighbors, nulls and empty results. Session
-transactions verify that a failed Round preview retains the previously committed plan and data.
+`python/tests/test_round_number.py` checks live and standalone Round agreement, native readback, CSV/Parquet export,
+and isolation from the caller's Decimal context. Together with the Min-max owner, it checks source identity and an
+occupied `Any` binding before and after generated execution. Native R's catalog checks its operations under altered display
+options. Session transaction tests own failed-preview rollback to the complete committed plan and data.
+See [Architecture](architecture.md#engine-boundaries-and-capabilities) for type, precision and capacity rules.
 
 Native R frame and catalog owners compare picker raw values with distinct source values before filtering them.
 Adjacent doubles, finite extrema, signed zero and temporal payloads cross actual JSON preview and generated execution.
