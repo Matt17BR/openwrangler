@@ -87,14 +87,22 @@ function preparedPackageInputs(prepared) {
   };
 }
 
-for (const nativeEditorTooling of [undefined, true, false]) {
-  test(`prepared R dependency inputs and receipt agree for tooling=${nativeEditorTooling}`, async (t) => {
+for (const [scope, selection, packages] of [
+  ["default", {}, editorPackages],
+  ["literate", { nativeEditorTooling: true }, editorPackages],
+  ["notebook", { nativeEditorTooling: false }, notebookPackages],
+  [
+    "terminal",
+    { nativeEditorTooling: true, collapseFixtures: false },
+    editorPackages.filter((name) => name !== "Rcpp" && name !== "collapse")
+  ]
+]) {
+  test(`prepared R dependency inputs and receipt agree for ${scope}`, async (t) => {
     const fixture = provisioning(t);
     const prepared = await prepareJupyterAcceptanceREnvironment(fixture.directory, fixture.rscript, {
       ...fixture.options,
-      ...(nativeEditorTooling === undefined ? {} : { nativeEditorTooling })
+      ...selection
     });
-    const packages = nativeEditorTooling === false ? notebookPackages : editorPackages;
     const versions = Object.fromEntries(packages.map((name) => [name, R_ACCEPTANCE_PACKAGE_VERSIONS[name]]));
     assert.deepEqual(preparedPackageInputs(prepared), { packages, versions });
     assert.deepEqual(prepared.packages, packages);
@@ -134,6 +142,7 @@ test("R package records accept console line endings while preserving exact packa
   for (const selection of [
     { nativeEditorTooling: false },
     { nativeEditorTooling: true },
+    { nativeEditorTooling: true, collapseFixtures: false },
     { nativeEditorTooling: false, sourceContracts: true }
   ]) {
     const fixture = provisioning(t);
@@ -206,12 +215,28 @@ test("invalid R tooling decisions fail before commands or private directories", 
   }
 });
 
+test("invalid R collapse fixture decisions fail before commands or private directories", async (t) => {
+  const fixture = provisioning(t);
+  for (const collapseFixtures of [null, 0, 1, "false", [], {}]) {
+    await assert.rejects(
+      prepareJupyterAcceptanceREnvironment(fixture.directory, fixture.rscript, {
+        ...fixture.options,
+        collapseFixtures
+      }),
+      /boolean collapse fixture decision/u
+    );
+    assert.equal(fixture.commands.length, 0);
+    assert.equal(existsSync(fixture.directory), false);
+  }
+});
+
 test("all R package scopes require the caller's contained private directory", async (t) => {
   const fixture = provisioning(t);
   const other = provisioning(t);
   for (const selection of [
     { nativeEditorTooling: false },
     { nativeEditorTooling: true },
+    { nativeEditorTooling: true, collapseFixtures: false },
     { nativeEditorTooling: false, sourceContracts: true }
   ]) {
     await assert.rejects(
@@ -392,6 +417,34 @@ test("notebook roots retain supplemental installs and private dependency refusal
     for (const status of [10, 11, 12, 13, 14, 15, 16, 17]) assert.ok(probe.includes(`status = ${status}L`));
     for (const factory of ["qDF", "qTBL", "qDT", "fgroup_by", "findex_by"])
       assert.ok(probe.includes(`collapse::${factory}(`));
+  }
+});
+
+test("terminal roots omit only collapse builds and probes on each platform", async (t) => {
+  for (const platform of ["linux", "darwin", "win32"]) {
+    const fixture = provisioning(t);
+    const prepared = await prepareJupyterAcceptanceREnvironment(fixture.directory, fixture.rscript, {
+      ...fixture.options,
+      nativeEditorTooling: true,
+      collapseFixtures: false,
+      platform
+    });
+    const install = commandCode(prepared.dependencyInstall);
+    assert.match(install, /\.ow_supplemental_packages <- c\("nanoparquet"\)/u);
+    assert.equal(install.includes('"collapse"'), false);
+    assert.equal(install.includes('"Rcpp"'), false);
+    assert.equal(install.includes('type = "source"'), false);
+    assert.deepEqual(
+      install.split("\n").filter((line) => line.startsWith("Sys.setenv(MAKEFLAGS")),
+      ['Sys.setenv(MAKEFLAGS = "-s")']
+    );
+    assert.equal(install.match(/utils::install\.packages\(/gu)?.length, 2);
+    assert.match(install, /dependencies = NA/u);
+    const probe = commandCode(prepared.dependencyProbe);
+    assert.equal(probe.includes("collapse::"), false);
+    assert.match(probe, /find\.package\(.ow_package, lib.loc = .ow_library, quiet = TRUE\)/u);
+    assert.match(probe, /loadNamespace\(.ow_package, lib.loc = .ow_library\)/u);
+    for (const status of [10, 11, 12]) assert.ok(probe.includes(`status = ${status}L`));
   }
 });
 

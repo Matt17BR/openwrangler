@@ -89,7 +89,7 @@ Released-Jupyter R editor runs use the [notebook/tooling package selection](test
 resolved by their existing journey. Private package-version and kernel-readiness checks precede editor launch.
 The macOS job supplies system ZeroMQ through Homebrew as described in that dependency section.
 The focused terminal lane uses the pinned R extensions; Quarto extension and CLI qualification remains with the
-literate-documents lane. This tooling selection does not change the terminal lane's R package or IRkernel checks.
+literate-documents lane.
 
 The `macos-r` and `windows-r` jobs first run the existing private R artifact filesystem tests in Node, before private
 R dependencies or editor preparation. These exercise real file cleanup and refusal of replaced files and directories
