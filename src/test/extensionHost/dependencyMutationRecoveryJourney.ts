@@ -369,7 +369,9 @@ export function createDependencyMutationRecoveryJourney({
       await assertDependencyRecoveryDialog(recoveryDialog, recovery.executable);
       await recoveryPage.bringToFront();
       await withAcceptanceOperationDeadline(
-        recoveryDialog.getByRole("button", { name: "Revalidate", exact: true }).click(),
+        recoveryDialog
+          .getByRole("button", { name: "Revalidate", exact: true })
+          .click({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
         WORKBENCH_OPERATION_TIMEOUT_MS,
         "the exact dependency-revalidation confirmation"
       );
