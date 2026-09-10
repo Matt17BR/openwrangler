@@ -72,9 +72,9 @@ implementation detail from the diff.
 Release notes and registry listings should lead with what a user can now do or what no longer breaks. Internal protocol
 or test work belongs in curated notes only when it changes risk, compatibility, or contributor workflow. Stable and
 manual-preview releases have a checked-in `docs/release-notes/<version>.md`; GitHub-generated notes remain disabled.
-Daily previews instead publish the complete linked commit subjects and one source comparison, using the frozen baseline
-described in [Releasing](releasing.md). They omit duplicate release headings and build/test boilerplate. The checks prove
-which text will ship, not whether a person read it. Review curated prose in the release change.
+Daily previews instead link the previous preview, list merged PRs once each and keep long lists behind **Read more**,
+using the frozen inputs described in [Releasing](releasing.md). They omit duplicate release headings and build/test
+boilerplate. The checks prove which text will ship, not whether a person read it. Review curated prose in the release change.
 
 Before publishing text:
 

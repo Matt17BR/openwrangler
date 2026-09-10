@@ -14,6 +14,9 @@ const RELEASE_JSON_MAX_BYTES = 4 * 1024 * 1024;
 const GITHUB_REQUEST_TIMEOUT_MS = 30_000;
 const RELEASES_PER_PAGE = 100;
 const MAX_RELEASE_PAGES = 100;
+const PREVIEW_COMMITS_PER_REQUEST = 25;
+const MAX_PREVIEW_SOURCE_COMMITS = 1_000;
+const MAX_COMMIT_PULL_REQUESTS = 10;
 const DISCOVERY_ATTEMPTS = 21;
 const DISCOVERY_RETRY_MS = 250;
 export const CANONICAL_GITHUB_RELEASE_ASSETS = Object.freeze(
@@ -337,6 +340,131 @@ export async function readPublishedPreviewRelease({ fetchImpl = fetch, releaseTa
   if ((await resolveTagCommit({ apiRoot, fetchImpl, headers, releaseTag })) !== sourceCommit)
     throw new Error("The published preview baseline tag moved during verification.");
   return Object.freeze({ releaseTag, sourceCommit });
+}
+
+export async function readPreviewPullRequests({ commits, fetchImpl = fetch, repository, token }) {
+  if (
+    repository !== EXPECTED_REPOSITORY ||
+    typeof token !== "string" ||
+    token.length === 0 ||
+    /[\0\r\n]/u.test(token)
+  ) {
+    throw new Error("Preview PR discovery requires the canonical repository and a single-line token.");
+  }
+  if (
+    !Array.isArray(commits) ||
+    commits.length > MAX_PREVIEW_SOURCE_COMMITS ||
+    commits.some((commit) => typeof commit !== "string" || !FULL_COMMIT.test(commit)) ||
+    new Set(commits).size !== commits.length
+  ) {
+    throw new Error("Preview PR discovery requires at most 1,000 unique lowercase full source commit IDs.");
+  }
+  // Bound discovery to 40 requests, including commits later omitted as version-only.
+  const sourceCommits = [...commits];
+  const sourceSet = new Set(sourceCommits);
+  const metadata = new Map();
+  const groups = new Map();
+  for (let offset = 0; offset < sourceCommits.length; offset += PREVIEW_COMMITS_PER_REQUEST) {
+    const batch = sourceCommits.slice(offset, offset + PREVIEW_COMMITS_PER_REQUEST);
+    const fields = batch.map(
+      (commit, index) => `c${index}: object(oid: "${commit}") { ... on Commit {
+        oid associatedPullRequests(first: ${MAX_COMMIT_PULL_REQUESTS}) {
+          pageInfo { hasNextPage }
+          nodes { number title state baseRefName repository { nameWithOwner }
+            baseRepository { nameWithOwner } mergeCommit { oid } }
+        }
+      } }`
+    );
+    const response = await requestJson(
+      fetchImpl,
+      `${GITHUB_API_BASE}/graphql`,
+      {
+        body: JSON.stringify({
+          query: `query { repository(owner: "Matt17BR", name: "openwrangler") {
+            nameWithOwner ${fields.join("\n")}
+          } }`
+        }),
+        headers: { ...githubHeaders(token), "content-type": "application/json" },
+        method: "POST"
+      },
+      "GitHub preview PR associations",
+      [200]
+    );
+    if (Object.hasOwn(response, "errors")) {
+      throw new Error("GitHub preview PR associations returned GraphQL errors.");
+    }
+    const data = requirePlainObject(response.data, "GitHub preview PR data");
+    const result = requirePlainObject(data.repository, "GitHub preview PR repository");
+    if (result.nameWithOwner !== repository || Object.keys(result).length !== batch.length + 1) {
+      throw new Error("GitHub preview PR associations returned a different repository or incomplete batch.");
+    }
+    for (const [index, commit] of batch.entries()) {
+      const entry = requirePlainObject(result[`c${index}`], "GitHub preview commit");
+      if (entry.oid !== commit) throw new Error("GitHub preview PR associations returned a different commit.");
+      const connection = requirePlainObject(entry.associatedPullRequests, "GitHub preview PR connection");
+      if (
+        connection.pageInfo?.hasNextPage !== false ||
+        !Array.isArray(connection.nodes) ||
+        connection.nodes.length > MAX_COMMIT_PULL_REQUESTS
+      ) {
+        throw new Error("GitHub preview PR associations are malformed or exceed their pagination bound.");
+      }
+      const seen = new Set();
+      let attributed;
+      for (const value of connection.nodes) {
+        const pr = requirePlainObject(value, "GitHub preview PR");
+        const prRepository = pr.repository?.nameWithOwner;
+        const baseRepository = pr.baseRepository?.nameWithOwner;
+        const mergeCommit = pr.mergeCommit === null ? null : pr.mergeCommit?.oid;
+        if (
+          !Number.isSafeInteger(pr.number) ||
+          pr.number <= 0 ||
+          typeof pr.title !== "string" ||
+          !pr.title.isWellFormed() ||
+          pr.title.trim().length === 0 ||
+          /\p{Cc}/u.test(pr.title) ||
+          Buffer.byteLength(pr.title, "utf8") > 1_024 ||
+          !["OPEN", "CLOSED", "MERGED"].includes(pr.state) ||
+          typeof pr.baseRefName !== "string" ||
+          pr.baseRefName.length === 0 ||
+          typeof prRepository !== "string" ||
+          typeof baseRepository !== "string" ||
+          !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(prRepository) ||
+          !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(baseRepository) ||
+          (mergeCommit !== null && (typeof mergeCommit !== "string" || !FULL_COMMIT.test(mergeCommit))) ||
+          (pr.state === "MERGED" && mergeCommit === null)
+        ) {
+          throw new Error("GitHub preview PR metadata is malformed.");
+        }
+        const key = `${prRepository}#${pr.number}`;
+        const snapshot = JSON.stringify([pr.title, pr.state, pr.baseRefName, baseRepository, mergeCommit]);
+        if (seen.has(key) || (metadata.has(key) && metadata.get(key) !== snapshot)) {
+          throw new Error("GitHub preview PR associations contain duplicate or conflicting metadata.");
+        }
+        seen.add(key);
+        metadata.set(key, snapshot);
+        if (
+          prRepository !== repository ||
+          baseRepository !== repository ||
+          pr.baseRefName !== "main" ||
+          pr.state !== "MERGED" ||
+          !sourceSet.has(mergeCommit)
+        )
+          continue;
+        if (attributed !== undefined) {
+          throw new Error("GitHub preview commit has conflicting merged PR attribution.");
+        }
+        attributed = pr;
+      }
+      if (attributed !== undefined) {
+        if (!groups.has(attributed.number)) {
+          groups.set(attributed.number, { number: attributed.number, title: attributed.title, commits: [] });
+        }
+        groups.get(attributed.number).commits.push(commit);
+      }
+    }
+  }
+  return [...groups.values()];
 }
 
 function validatePublicationTime(value) {

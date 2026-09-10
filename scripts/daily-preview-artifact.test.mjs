@@ -8,7 +8,9 @@ import { load as parseYaml } from "js-yaml";
 import {
   dailyPreviewReleaseNotes,
   inspectDailyPreviewSourceCommit,
-  prepareDailyPreviewCommit
+  prepareDailyPreviewCommit,
+  readDailyPreviewSourceChanges,
+  renderDailyPreviewReleaseNotes
 } from "./daily-preview-artifact.mjs";
 import {
   classifyNumericReleaseVersion,
@@ -230,6 +232,119 @@ test("daily notes link complete source subjects and identify the first preview's
   assert.equal(notes.includes("VSIX"), false);
 });
 
+test("daily notes group frozen PRs and fold only changes after the first five", (context) => {
+  const root = repository(context);
+  const baseSha = git(root, ["rev-parse", "HEAD"]);
+  git(root, ["tag", "v1.99.7", baseSha]);
+  const commits = [];
+  for (let index = 0; index < 8; index += 1) {
+    writeFileSync(join(root, "grid.txt"), `change ${index}\n`);
+    commits.push(commitChanges(root, `Change ${index}`));
+  }
+  const notes = dailyPreviewReleaseNotes({
+    baseSha,
+    baseTag: "v1.99.7",
+    root,
+    sourceSha: commits.at(-1),
+    version: "1.99.20260910",
+    pullRequests: [{ number: 41, title: "Fix [grid] & <rows> *again*", commits: commits.slice(0, 2) }]
+  });
+  assert.ok(
+    notes.startsWith(
+      "Changes since the previous preview, [v1.99.7](https://github.com/Matt17BR/openwrangler/releases/tag/v1.99.7).\n\n"
+    )
+  );
+  const [visible, folded] = notes.split("<details>\n<summary>Read more — 2 more changes</summary>\n\n");
+  assert.equal(visible.split("\n").filter((line) => line.startsWith("- ")).length, 5);
+  assert.ok(folded, notes);
+  assert.equal(folded.split("\n").filter((line) => line.startsWith("- ")).length, 2);
+  assert.ok(
+    folded.includes(
+      "- [Fix \\[grid\\] &amp; &lt;rows&gt; \\*again\\* (#41)](https://github.com/Matt17BR/openwrangler/pull/41)"
+    )
+  );
+  assert.equal(notes.includes(`commit/${commits[0]}`), false);
+  assert.equal(notes.includes(`commit/${commits[1]}`), false);
+  for (const commit of commits.slice(2)) assert.ok(notes.includes(`commit/${commit}`));
+  assert.equal(visible.includes("Full comparison"), false);
+  assert.ok(
+    folded.endsWith(
+      `[Full comparison](https://github.com/Matt17BR/openwrangler/compare/${baseSha}...${commits.at(-1)})\n\n</details>\n`
+    )
+  );
+  assert.equal(notes.includes("<details open"), false);
+});
+
+test("daily notes leave five changes unfolded and link the first-preview stable fallback", (context) => {
+  const metadata = { preview: false, version: "2.1.0" };
+  const root = repository(context, { source: metadata, stable: metadata });
+  const baseSha = git(root, ["rev-parse", "HEAD"]);
+  let sourceSha = baseSha;
+  for (let index = 0; index < 5; index += 1) {
+    writeFileSync(join(root, "grid.txt"), `change ${index}\n`);
+    sourceSha = commitChanges(root, `Change ${index}`);
+  }
+  const notes = dailyPreviewReleaseNotes({ root, baseSha, baseTag: "v2.1.0", sourceSha, version: "2.1.20260910" });
+  assert.ok(
+    notes.startsWith(
+      "No earlier published preview; changes since stable [v2.1.0](https://github.com/Matt17BR/openwrangler/releases/tag/v2.1.0).\n\n"
+    )
+  );
+  assert.equal(notes.split("\n").filter((line) => line.startsWith("- ")).length, 5);
+  assert.equal(notes.includes("<details>"), false);
+  assert.ok(
+    notes.endsWith(`[Full comparison](https://github.com/Matt17BR/openwrangler/compare/${baseSha}...${sourceSha})\n`)
+  );
+  writeFileSync(join(root, "grid.txt"), "sixth change\n");
+  sourceSha = commitChanges(root, "Sixth change");
+  const longer = dailyPreviewReleaseNotes({ root, baseSha, baseTag: "v2.1.0", sourceSha, version: "2.1.20260910" });
+  assert.ok(longer.includes("<summary>Read more — 1 more change</summary>"));
+  assert.equal(
+    longer
+      .split("<details>")[0]
+      .split("\n")
+      .filter((line) => line.startsWith("- ")).length,
+    5
+  );
+});
+
+test("daily notes reject malformed, oversized or out-of-range frozen PR attribution", (context) => {
+  const metadata = { preview: false, version: "2.1.0" };
+  const root = repository(context, { source: metadata, stable: metadata });
+  const baseSha = git(root, ["rev-parse", "HEAD"]);
+  writeFileSync(join(root, "grid.txt"), "change\n");
+  const sourceSha = commitChanges(root, "Preserve this direct change");
+  const source = readDailyPreviewSourceChanges({
+    root,
+    baseSha,
+    baseTag: "v2.1.0",
+    sourceSha,
+    version: "2.1.20260910"
+  });
+  const valid = { number: 41, title: "Reviewed change", commits: [sourceSha] };
+  for (const value of [
+    undefined,
+    null,
+    {},
+    [null],
+    [{ ...valid, number: 0 }],
+    [{ ...valid, number: Number.MAX_SAFE_INTEGER + 1 }],
+    [{ ...valid, title: " " }],
+    [{ ...valid, title: "title\nnext line" }],
+    [{ ...valid, title: "x".repeat(64 * 1024) }],
+    [{ ...valid, commits: [] }],
+    [{ ...valid, commits: [baseSha] }],
+    [{ ...valid, commits: [sourceSha, sourceSha] }],
+    [valid, valid],
+    [valid, { ...valid, number: 42 }],
+    [{ ...valid, url: "https://unrelated.invalid" }]
+  ]) {
+    assert.throws(() => renderDailyPreviewReleaseNotes(source, value), /Daily preview PR attribution/u);
+  }
+  assert.ok(renderDailyPreviewReleaseNotes(source, []).includes(`commit/${sourceSha}`));
+  assert.ok(renderDailyPreviewReleaseNotes(source, [valid]).includes("pull/41"));
+});
+
 test("daily notes omit proven version-only metadata and retain dependency and mixed changes", (context) => {
   const metadata = { preview: false, version: "2.1.0" };
   const root = repository(context, { source: metadata, stable: metadata });
@@ -286,6 +401,7 @@ test("daily notes normalize sibling preview commits and keep the frozen source r
     baseTag: previous.releaseTag,
     baseSha: previous.generatedSha,
     commit: current.generatedSha,
+    pullRequests: [],
     releaseTag: current.releaseTag,
     root,
     version: current.version
@@ -293,11 +409,15 @@ test("daily notes normalize sibling preview commits and keep the frozen source r
   const notes = readPreviewReleaseNotesFromCommit(input);
   assert.equal(
     notes,
-    `- [Preserve grid focus](https://github.com/Matt17BR/openwrangler/commit/${currentSource})\n\n[Full comparison](https://github.com/Matt17BR/openwrangler/compare/${firstSource}...${currentSource})\n`
+    `Changes since the previous preview, [${previous.releaseTag}](https://github.com/Matt17BR/openwrangler/releases/tag/${previous.releaseTag}).\n\n- [Preserve grid focus](https://github.com/Matt17BR/openwrangler/commit/${currentSource})\n\n[Full comparison](https://github.com/Matt17BR/openwrangler/compare/${firstSource}...${currentSource})\n`
   );
   writeFileSync(join(root, "later.txt"), "future source\n");
   commitChanges(root, "A later change");
   assert.equal(readPreviewReleaseNotesFromCommit(input), notes);
+  assert.throws(
+    () => readPreviewReleaseNotesFromCommit({ ...input, pullRequests: undefined }),
+    /frozen PR attribution/u
+  );
   assert.throws(() => readPreviewReleaseNotesFromCommit({ ...input, baseSha: undefined }), /baseline commits/u);
   assert.throws(() => readPreviewReleaseNotesFromCommit({ ...input, baseTag: undefined }), /baseline commits/u);
   git(root, ["tag", "--force", previous.releaseTag, current.generatedSha]);
@@ -326,7 +446,7 @@ test("first-preview preparation freezes the bound stable baseline and distinguis
       return new Response("[]");
     }
   });
-  assert.deepEqual(baseline, { baseTag: current.stableTag, baseSha: sourceSha });
+  assert.deepEqual(baseline, { baseTag: current.stableTag, baseSha: sourceSha, pullRequests: [] });
   const notes = readPreviewReleaseNotesFromCommit({ ...options, ...baseline, version: current.version });
   assert.match(notes, /No earlier published preview/u);
   assert.match(notes, /No source changes beyond release metadata/u);
@@ -334,6 +454,84 @@ test("first-preview preparation freezes the bound stable baseline and distinguis
     prepareDailyPreviewNotesBaseline({ ...options, fetchImpl: async () => new Response("{}", { status: 503 }) }),
     /HTTP 503/u
   );
+});
+
+test("package preparation freezes PR titles from the complete range before filtering version-only commits", async (context) => {
+  const metadata = { preview: false, version: "2.1.0" };
+  const root = repository(context, { source: metadata, stable: metadata });
+  writeFileSync(join(root, "grid.txt"), "change\n");
+  const productCommit = commitChanges(root, "Product change without a PR suffix");
+  writeVersionSources(root, { preview: false, version: "2.1.1" });
+  const versionCommit = commitChanges(root, "Version-only merge result");
+  const current = prepareDailyPreviewCommit({
+    root,
+    environment: { GITHUB_REF: "refs/heads/main", SOURCE_SHA: versionCommit, PREVIEW_DATE: "20260829" }
+  });
+  const requests = [];
+  const options = {
+    commit: current.generatedSha,
+    releaseTag: current.releaseTag,
+    root,
+    repository: "Matt17BR/openwrangler",
+    token: "test-token"
+  };
+  const frozen = await prepareDailyPreviewNotesBaseline({
+    ...options,
+    fetchImpl: async (url, input) => {
+      requests.push(url);
+      if (url.includes("/releases?")) return new Response("[]");
+      assert.equal(url, "https://api.github.com/graphql");
+      assert.equal(input.method, "POST");
+      const query = JSON.parse(input.body).query;
+      const commits = [...query.matchAll(/object\(oid: "([0-9a-f]{40})"\)/gu)].map((match) => match[1]);
+      assert.deepEqual(commits, [versionCommit, productCommit]);
+      return Response.json({
+        data: {
+          repository: {
+            nameWithOwner: options.repository,
+            ...Object.fromEntries(
+              commits.map((commit, index) => [
+                `c${index}`,
+                {
+                  oid: commit,
+                  associatedPullRequests: {
+                    pageInfo: { hasNextPage: false },
+                    nodes: [
+                      {
+                        number: 41,
+                        title: "Frozen [reviewed] title",
+                        state: "MERGED",
+                        baseRefName: "main",
+                        repository: { nameWithOwner: options.repository },
+                        baseRepository: { nameWithOwner: options.repository },
+                        mergeCommit: { oid: versionCommit }
+                      }
+                    ]
+                  }
+                }
+              ])
+            )
+          }
+        }
+      });
+    }
+  });
+  assert.deepEqual(frozen.pullRequests, [
+    { number: 41, title: "Frozen [reviewed] title", commits: [versionCommit, productCommit] }
+  ]);
+  const input = { ...options, ...frozen, version: current.version };
+  const notes = readPreviewReleaseNotesFromCommit(input);
+  assert.equal(notes.split("\n").filter((line) => line.startsWith("- ")).length, 1);
+  assert.ok(notes.includes("- [Frozen \\[reviewed\\] title (#41)](https://github.com/Matt17BR/openwrangler/pull/41)"));
+  assert.equal(notes.includes(`commit/${productCommit}`), false);
+  assert.equal(notes.includes(`commit/${versionCommit}`), false);
+  writeFileSync(join(root, "later.txt"), "later change\n");
+  commitChanges(root, "Later source is outside the frozen publication");
+  assert.equal(
+    readPreviewReleaseNotesFromCommit({ ...input, pullRequests: JSON.parse(JSON.stringify(frozen.pullRequests)) }),
+    notes
+  );
+  assert.equal(requests.length, 2);
 });
 
 test("daily notes preserve merge-resolution commits and refuse oversized complete notes", (context) => {
@@ -385,11 +583,19 @@ test("the first package attempt freezes notes inputs for publication-only recove
   assert.equal(steps[baselineIndex].run, "node scripts/publish-github-preview-release.mjs --notes-baseline");
   assert.equal(workflow.jobs.package.outputs["notes-base-tag"], "${{ steps.notes_base.outputs.notes_base_tag }}");
   assert.equal(workflow.jobs.package.outputs["notes-base-sha"], "${{ steps.notes_base.outputs.notes_base_sha }}");
+  assert.equal(
+    workflow.jobs.package.outputs["notes-pull-requests"],
+    "${{ steps.notes_base.outputs.notes_pull_requests }}"
+  );
+  assert.deepEqual(workflow.jobs.package.permissions, { actions: "read", contents: "read", "pull-requests": "read" });
+  assert.deepEqual(workflow.permissions, { actions: "read", contents: "read" });
   const publication = workflow.jobs.release.steps.find(
     (step) => step.name === "Publish and verify the exact GitHub preview release"
   );
   assert.equal(publication.env.NOTES_BASE_TAG, "${{ needs.package.outputs.notes-base-tag }}");
   assert.equal(publication.env.NOTES_BASE_SHA, "${{ needs.package.outputs.notes-base-sha }}");
+  assert.equal(publication.env.NOTES_PULL_REQUESTS, "${{ needs.package.outputs.notes-pull-requests }}");
+  assert.deepEqual(workflow.jobs.release.permissions, { actions: "write", contents: "write" });
   assert.equal(
     workflow.jobs.release.steps.some((step) => step.run?.includes("--notes-baseline")),
     false
@@ -554,6 +760,7 @@ test("stable-series preparation is deterministic, recoverable, and changes only 
       baseSha: first.stableCommit,
       baseTag: first.stableTag,
       commit: first.generatedSha,
+      pullRequests: [],
       releaseTag: first.releaseTag,
       root: firstRoot,
       version: first.version

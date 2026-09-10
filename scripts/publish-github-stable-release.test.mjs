@@ -5,7 +5,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { publishGitHubRelease, readPublishedPreviewRelease } from "./github-release-publisher.mjs";
+import {
+  publishGitHubRelease,
+  readPreviewPullRequests,
+  readPublishedPreviewRelease
+} from "./github-release-publisher.mjs";
 import {
   parseGitHubImmutableReleaseExpectation,
   publishGitHubStableRelease
@@ -43,6 +47,262 @@ function jsonResponse(value, status = 200) {
     status
   });
 }
+
+function previewPr(overrides = {}) {
+  return {
+    number: 17,
+    title: "Preserve [source] bindings",
+    state: "MERGED",
+    baseRefName: "main",
+    repository: { nameWithOwner: repository },
+    baseRepository: { nameWithOwner: repository },
+    mergeCommit: { oid: expectedCommit },
+    ...overrides
+  };
+}
+
+function previewAssociations(commits, nodes) {
+  return {
+    data: {
+      repository: {
+        nameWithOwner: repository,
+        ...Object.fromEntries(
+          commits.map((oid, index) => [
+            `c${index}`,
+            { oid, associatedPullRequests: { pageInfo: { hasNextPage: false }, nodes: nodes[index] } }
+          ])
+        )
+      }
+    }
+  };
+}
+
+test("preview PR discovery groups exact associated commits and leaves direct commits unassigned", async () => {
+  const commits = [expectedCommit, "b".repeat(40), "c".repeat(40), "d".repeat(40)];
+  const result = await readPreviewPullRequests({
+    commits,
+    fetchImpl: async (url, options) => {
+      assert.equal(url, "https://api.github.com/graphql");
+      assert.equal(options.method, "POST");
+      assert.equal(options.headers.authorization, "Bearer test-token");
+      assert.equal(options.headers["content-type"], "application/json");
+      assert.ok(options.signal instanceof AbortSignal);
+      assert.match(JSON.parse(options.body).query, /associatedPullRequests\(first: 10\)/u);
+      return jsonResponse(
+        previewAssociations(commits, [
+          [previewPr()],
+          [previewPr()],
+          [],
+          [previewPr({ number: 18, mergeCommit: { oid: commits[3] } })]
+        ])
+      );
+    },
+    repository,
+    token: "test-token"
+  });
+  assert.deepEqual(result, [
+    { number: 17, title: "Preserve [source] bindings", commits: commits.slice(0, 2) },
+    { number: 18, title: "Preserve [source] bindings", commits: [commits[3]] }
+  ]);
+});
+
+test("preview PR discovery ignores unmerged, noncanonical, other-base and outside-range associations", async () => {
+  const nodes = [
+    previewPr({ number: 1, state: "OPEN", mergeCommit: null }),
+    previewPr({ number: 2, state: "CLOSED", mergeCommit: null }),
+    previewPr({ number: 3, repository: { nameWithOwner: "other/openwrangler" } }),
+    previewPr({ number: 4, baseRepository: { nameWithOwner: "other/openwrangler" } }),
+    previewPr({ number: 5, baseRefName: "release" }),
+    previewPr({ number: 6, mergeCommit: { oid: "b".repeat(40) } })
+  ];
+  assert.deepEqual(
+    await readPreviewPullRequests({
+      commits: [expectedCommit],
+      fetchImpl: async () => jsonResponse(previewAssociations([expectedCommit], [nodes])),
+      repository,
+      token: "test-token"
+    }),
+    []
+  );
+});
+
+test("preview PR discovery refuses invalid inputs before requests and accepts an empty range", async () => {
+  const options = {
+    commits: [expectedCommit],
+    fetchImpl: async () => assert.fail("Invalid or empty ranges must not request GitHub"),
+    repository,
+    token: "test-token"
+  };
+  for (const change of [
+    { repository: "other/openwrangler" },
+    { token: "" },
+    { token: "secret\nsecond-line" },
+    { commits: undefined },
+    { commits: [42] },
+    { commits: [expectedCommit.toUpperCase()] },
+    { commits: [expectedCommit, expectedCommit] },
+    { commits: Array.from({ length: 1_001 }, (_, index) => index.toString(16).padStart(40, "0")) }
+  ]) {
+    await assert.rejects(readPreviewPullRequests({ ...options, ...change }), /Preview PR discovery requires/u);
+  }
+  assert.deepEqual(await readPreviewPullRequests({ ...options, commits: [] }), []);
+});
+
+test("preview PR discovery refuses partial GraphQL data, paging and malformed attribution", async () => {
+  const valid = () => previewAssociations([expectedCommit], [[previewPr()]]);
+  for (const mutate of [
+    (response) => {
+      response.errors = [{ message: "private upstream detail" }];
+    },
+    (response) => {
+      response.data = null;
+    },
+    (response) => {
+      response.data.repository.nameWithOwner = "other/openwrangler";
+    },
+    (response) => {
+      delete response.data.repository.c0;
+    },
+    (response) => {
+      response.data.repository.c0 = null;
+    },
+    (response) => {
+      response.data.repository.c0.oid = "b".repeat(40);
+    },
+    (response) => {
+      response.data.repository.c0.associatedPullRequests.pageInfo.hasNextPage = true;
+    },
+    (response) => {
+      response.data.repository.c0.associatedPullRequests.nodes = Array(11).fill(previewPr());
+    },
+    (response) => {
+      response.data.repository.c0.associatedPullRequests.nodes = [null];
+    }
+  ]) {
+    const response = valid();
+    mutate(response);
+    await assert.rejects(
+      readPreviewPullRequests({
+        commits: [expectedCommit],
+        fetchImpl: async () => jsonResponse(response),
+        repository,
+        token: "test-token"
+      }),
+      (error) => /GitHub preview/u.test(error.message) && !error.message.includes("private upstream detail")
+    );
+  }
+  for (const change of [
+    { number: 0 },
+    { title: "" },
+    { title: "line\nbreak" },
+    { title: "\ud800" },
+    { title: "x".repeat(1_025) },
+    { state: "UNKNOWN" },
+    { mergeCommit: null },
+    { mergeCommit: { oid: "short" } },
+    { baseRepository: null }
+  ]) {
+    await assert.rejects(
+      readPreviewPullRequests({
+        commits: [expectedCommit],
+        fetchImpl: async () => jsonResponse(previewAssociations([expectedCommit], [[previewPr(change)]])),
+        repository,
+        token: "test-token"
+      }),
+      /metadata is malformed/u
+    );
+  }
+});
+
+test("preview PR discovery refuses duplicate and conflicting merged attribution", async () => {
+  for (const nodes of [
+    [previewPr(), previewPr()],
+    [previewPr(), previewPr({ number: 18 })]
+  ]) {
+    await assert.rejects(
+      readPreviewPullRequests({
+        commits: [expectedCommit],
+        fetchImpl: async () => jsonResponse(previewAssociations([expectedCommit], [nodes])),
+        repository,
+        token: "test-token"
+      }),
+      /duplicate or conflicting metadata|conflicting merged PR attribution/u
+    );
+  }
+});
+
+test("preview PR discovery refuses mutable PR metadata across batches", async () => {
+  const commits = Array.from({ length: 26 }, (_, index) => index.toString(16).padStart(40, "0"));
+  for (const change of [{ title: "Edited title" }, { baseRefName: "release" }, { mergeCommit: { oid: commits[1] } }]) {
+    let calls = 0;
+    await assert.rejects(
+      readPreviewPullRequests({
+        commits,
+        fetchImpl: async () => {
+          const batch = calls++ === 0 ? commits.slice(0, 25) : commits.slice(25);
+          const pr = previewPr({ mergeCommit: { oid: commits[0] }, ...(calls === 2 ? change : {}) });
+          return jsonResponse(
+            previewAssociations(
+              batch,
+              batch.map(() => [pr])
+            )
+          );
+        },
+        repository,
+        token: "test-token"
+      }),
+      /conflicting metadata/u
+    );
+    assert.equal(calls, 2);
+  }
+});
+
+test("preview PR discovery bounds batches without truncating the supplied history", async () => {
+  const commits = Array.from({ length: 1_000 }, (_, index) => index.toString(16).padStart(40, "0"));
+  const requested = [];
+  let calls = 0;
+  assert.deepEqual(
+    await readPreviewPullRequests({
+      commits,
+      fetchImpl: async (_url, options) => {
+        const query = JSON.parse(options.body).query;
+        const batch = [...query.matchAll(/c\d+: object\(oid: "([a-f0-9]{40})"\)/gu)].map((match) => match[1]);
+        assert.equal(batch.length, 25);
+        requested.push(...batch);
+        calls += 1;
+        return jsonResponse(
+          previewAssociations(
+            batch,
+            batch.map(() => [previewPr({ mergeCommit: { oid: commits[0] } })])
+          )
+        );
+      },
+      repository,
+      token: "test-token"
+    }),
+    [{ number: 17, title: "Preserve [source] bindings", commits }]
+  );
+  assert.equal(calls, 40);
+  assert.deepEqual(requested, commits);
+});
+
+test("preview PR discovery retains the existing HTTP, strict JSON and response-size refusals", async () => {
+  for (const [response, message] of [
+    [jsonResponse({ message: "private upstream detail" }, 403), /HTTP 403/u],
+    [new Response('{"data":{},"data":{}}'), /duplicate/u],
+    [new Response("", { headers: { "content-length": String(4 * 1024 * 1024 + 1) } }), /response-size bound/u]
+  ]) {
+    await assert.rejects(
+      readPreviewPullRequests({
+        commits: [expectedCommit],
+        fetchImpl: async () => response,
+        repository,
+        token: "test-token"
+      }),
+      message
+    );
+  }
+});
 
 function releaseAsset(name, bytes, id) {
   const canonical = assets.find((asset) => asset.name === name);

@@ -2,22 +2,38 @@ import { appendFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { withPinnedCanonicalReleaseAssets } from "./canonical-release-assets.mjs";
-import { dailyPreviewReleaseNotes, inspectDailyPreviewSourceCommit } from "./daily-preview-artifact.mjs";
+import {
+  dailyPreviewReleaseNotes,
+  inspectDailyPreviewSourceCommit,
+  readDailyPreviewSourceChanges,
+  renderDailyPreviewReleaseNotes
+} from "./daily-preview-artifact.mjs";
 import {
   parseGitHubImmutableReleaseExpectation,
   publishGitHubRelease,
-  readPublishedPreviewRelease
+  readPublishedPreviewRelease,
+  readPreviewPullRequests
 } from "./github-release-publisher.mjs";
 import { classifyNumericReleaseVersion, isDailyPreviewVersion } from "./release-metadata.mjs";
 import { readReleaseNotesFromCommit } from "./release-notes.mjs";
+import { parseStrictJson } from "./strict-json.mjs";
 import { verifyPinnedPreviewReleaseArtifactFromCheckout } from "./verify-preview-release-artifact.mjs";
 
 export async function publishGitHubPreviewRelease(options) {
   return publishGitHubRelease({ ...options, channel: "preview" });
 }
 
-export function readPreviewReleaseNotesFromCommit({ baseSha, baseTag, commit, releaseTag, root, version }) {
+export function readPreviewReleaseNotesFromCommit({
+  baseSha,
+  baseTag,
+  commit,
+  pullRequests,
+  releaseTag,
+  root,
+  version
+}) {
   if (!isDailyPreviewVersion(version)) return readReleaseNotesFromCommit({ commit, root, version });
+  if (!Array.isArray(pullRequests)) throw new Error("Daily preview notes require frozen PR attribution.");
   const source = inspectDailyPreviewSourceCommit({ commit, releaseTag, root });
   if (
     classifyNumericReleaseVersion(baseTag?.slice(1))?.channel === "stable" &&
@@ -25,7 +41,14 @@ export function readPreviewReleaseNotesFromCommit({ baseSha, baseTag, commit, re
   ) {
     throw new Error("The first preview's notes must use its bound stable tag and commit.");
   }
-  return dailyPreviewReleaseNotes({ baseSha, baseTag, root, sourceSha: source.parentCommit, version: source.version });
+  return dailyPreviewReleaseNotes({
+    baseSha,
+    baseTag,
+    pullRequests,
+    root,
+    sourceSha: source.parentCommit,
+    version: source.version
+  });
 }
 
 export async function prepareDailyPreviewNotesBaseline({ commit, fetchImpl, releaseTag, repository, root, token }) {
@@ -35,8 +58,21 @@ export async function prepareDailyPreviewNotesBaseline({ commit, fetchImpl, rele
     throw new Error("The daily preview is already published; its notes baseline cannot be replaced.");
   const baseTag = previous?.releaseTag ?? source.stableTag;
   const baseSha = previous?.sourceCommit ?? source.stableCommit;
-  readPreviewReleaseNotesFromCommit({ baseTag, baseSha, commit, releaseTag, root, version: source.version });
-  return Object.freeze({ baseTag, baseSha });
+  const changes = readDailyPreviewSourceChanges({
+    baseTag,
+    baseSha,
+    root,
+    sourceSha: source.parentCommit,
+    version: source.version
+  });
+  const pullRequests = await readPreviewPullRequests({
+    commits: changes.commits.map(({ commit }) => commit),
+    fetchImpl,
+    repository,
+    token
+  });
+  renderDailyPreviewReleaseNotes(changes, pullRequests);
+  return Object.freeze({ baseTag, baseSha, pullRequests });
 }
 
 export async function publishVerifiedGitHubPreviewRelease({
@@ -46,6 +82,7 @@ export async function publishVerifiedGitHubPreviewRelease({
   fetchImpl,
   notesBaseSha,
   notesBaseTag,
+  notesPullRequests,
   releaseTag,
   releaseNotes,
   repository,
@@ -63,10 +100,12 @@ export async function publishVerifiedGitHubPreviewRelease({
     if (isDailyPreviewVersion(receipt.version)) {
       if (releaseNotes !== undefined)
         throw new Error("Daily preview notes must come from the frozen package-job baseline.");
+      if (typeof notesPullRequests !== "string") throw new Error("Daily preview notes require frozen PR attribution.");
       releaseNotes = readPreviewReleaseNotesFromCommit({
         baseSha: notesBaseSha,
         baseTag: notesBaseTag,
         commit: receipt.sourceCommit,
+        pullRequests: parseStrictJson(notesPullRequests, { maxBytes: 64 * 1024 }),
         releaseTag: receipt.releaseTag,
         root,
         version: receipt.version
@@ -111,7 +150,7 @@ async function runCli() {
     if (!process.env.GITHUB_OUTPUT) throw new Error("Daily preview notes require the package job's output file.");
     appendFileSync(
       process.env.GITHUB_OUTPUT,
-      `notes_base_tag=${baseline.baseTag}\nnotes_base_sha=${baseline.baseSha}\n`
+      `notes_base_tag=${baseline.baseTag}\nnotes_base_sha=${baseline.baseSha}\nnotes_pull_requests=${JSON.stringify(baseline.pullRequests)}\n`
     );
     return;
   }
@@ -123,6 +162,7 @@ async function runCli() {
     releaseTag: process.env.RELEASE_TAG,
     notesBaseSha: process.env.NOTES_BASE_SHA,
     notesBaseTag: process.env.NOTES_BASE_TAG,
+    notesPullRequests: process.env.NOTES_PULL_REQUESTS,
     releaseNotes: isDailyPreviewVersion(process.env.RELEASE_TAG?.slice(1))
       ? undefined
       : readPreviewReleaseNotesFromCommit({
