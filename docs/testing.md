@@ -747,6 +747,9 @@ packaged icon. The test harness's similar display name cannot satisfy this check
 The broader platform smoke checks trusted-pickle publication, unchanged source bytes, worker cleanup, and opening
 the converted Parquet file through the public command. The optional completion-notification action has a direct
 command test; toast visibility is not the conversion-completion signal.
+Windows CI also selects the two Windows-only cases in `python/tests/test_trusted_pickle_to_parquet.py`: Node/Win32
+source identity agreement and actual helper Job Object containment of a spawned pickle descendant. Qualification
+requires both cases to pass without skips.
 
 The smoke catches production-bundle, VSIX-installation, public CSV action, grid rendering, sort, and terminal cleanup
 failures that source tests cannot observe. It must not rebuild or substitute the VSIX after verification.

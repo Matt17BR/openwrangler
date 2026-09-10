@@ -322,6 +322,11 @@ jobs:
           python -m pytest -q python/tests/test_duckdb_export_filesystem.py
       - name: Windows selected-file import contracts
         run: python -m pytest -q python/tests/test_duckdb_engine.py -k literal_selected_file
+      - name: Windows trusted-pickle source and process contracts
+        run: >-
+          python -m pytest -q
+          python/tests/test_trusted_pickle_to_parquet.py::test_windows_source_fingerprint_matches_node_lstat
+          python/tests/test_trusted_pickle_to_parquet.py::test_real_helper_job_kills_a_spawned_pickle_descendant
       - name: Windows dependency filesystem contracts
         run: |
           python -m pytest -q python/tests/test_dependency_guard.py -k "windows or status_lock_preparation or concurrent_status_on_absent_journal"
