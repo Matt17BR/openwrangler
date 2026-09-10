@@ -44,10 +44,21 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .node-version
           cache: npm
+      - id: proof
+        name: Verify the exact pull-request merge
+        run: node scripts/ci-docs-only.mjs
+        env:
+          CI_EVENT: ${{ github.event_name }}
+          CI_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_MERGE_SHA: ${{ github.sha }}
       - run: npm ci --ignore-scripts
       - name: Formatting and lint
         run: |
@@ -68,7 +79,17 @@ jobs:
       - name: Direct script contracts
         run: npm run test:scripts
       - name: TypeScript tests
-        run: npx --no-install vitest run
+        shell: bash
+        run: |
+          case "$DOCS_ONLY" in
+            true)
+              echo "Vitest omitted: verified existing Markdown edits only. No fresh TypeScript test execution is claimed." >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            false) npx --no-install vitest run ;;
+            *) exit 1 ;;
+          esac
+        env:
+          DOCS_ONLY: ${{ steps.proof.outputs.docs_only }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22.17.0
