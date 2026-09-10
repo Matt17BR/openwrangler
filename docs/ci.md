@@ -122,6 +122,8 @@ repeating the broad Linux operation and export suites. macOS uses the bounded `p
 keeps its representative journey. See [Testing](testing.md#native-r-editor-dependencies) for their coverage and bounds.
 These local R jobs install only Jupyter's Python client and its dependencies for the kernel-readiness probe. Python
 dataframe engines and development tools remain with the jobs that execute them.
+The Windows R job does not restore or save a pip cache with setup-python, avoiding the larger cache shared with
+Windows runtime contracts for this small dependency set. Its package installation still depends on the package index.
 
 ## Scheduled and release workflows
 
