@@ -66,19 +66,19 @@ export class SessionRuntimeEstablisher {
       return { established: false, response: protocolError("invalid_source_origin", invalidOrigin, true) };
     }
     sourceProtection ??= await captureSessionSourceFiles(request.source);
-    if (!hooks.isCoordinatorAvailable()) {
-      return {
-        established: false,
-        response: protocolError(
+    const currentFailure = (): OpenWranglerResponse | undefined => {
+      if (!hooks.isCoordinatorAvailable())
+        return protocolError(
           "coordinator_disposed",
-          "The Open Wrangler session coordinator was disposed before the dataframe opened.",
+          "The Open Wrangler session coordinator was disposed before the dataframe finished opening.",
           false
-        )
-      };
-    }
-    if (options?.cancellation?.isCancellationRequested) {
-      return { established: false, response: { kind: "cancelled", targetRequestId: "not-started" } };
-    }
+        );
+      if (options?.cancellation?.isCancellationRequested) return { kind: "cancelled", targetRequestId: "not-started" };
+      const mismatch = sessionOriginMismatch(request, origin);
+      return mismatch ? protocolError("invalid_source_origin", mismatch, true) : undefined;
+    };
+    const beforeOpen = currentFailure();
+    if (beforeOpen) return { established: false, response: beforeOpen };
     const response = await delegate.request(request, options);
     if (response.kind === "error" || response.kind === "cancelled") {
       return { established: false, response };
@@ -125,10 +125,10 @@ export class SessionRuntimeEstablisher {
       recoveryRequired: false
     };
     sessionOwner.current = session;
-    const staleOrigin = sessionOriginMismatch(request, origin);
-    if (staleOrigin) {
+    const afterOpen = currentFailure();
+    if (afterOpen) {
       await this.runtimeCleanup.close(session, "invalid open runtime");
-      return { established: false, response: protocolError("invalid_source_origin", staleOrigin, true) };
+      return { established: false, response: afterOpen };
     }
     const openedMismatch = sessionOpenedResponseMismatch(request, response);
     if (openedMismatch) {
@@ -143,26 +143,15 @@ export class SessionRuntimeEstablisher {
       };
     }
 
-    const restored = await this.restorePersistedSession(session, request, response, hooks, options);
+    const restored = await this.restorePersistedSession(session, request, response, currentFailure, options);
     if (!restored.established) return restored;
     if (session.sourceProtection) {
       session.sourceProtection = await confirmSessionSourceProtection(session.sourceProtection);
     }
-    if (!hooks.isCoordinatorAvailable()) {
+    const beforePublication = currentFailure();
+    if (beforePublication) {
       await this.runtimeCleanup.close(session, "late-open runtime");
-      return {
-        established: false,
-        response: protocolError(
-          "coordinator_disposed",
-          "The Open Wrangler session coordinator was disposed before the dataframe finished opening.",
-          false
-        )
-      };
-    }
-    const finalOrigin = sessionOriginMismatch(request, origin);
-    if (finalOrigin) {
-      await this.runtimeCleanup.close(session, "invalid open runtime");
-      return { established: false, response: protocolError("invalid_source_origin", finalOrigin, true) };
+      return { established: false, response: beforePublication };
     }
     return {
       established: true,
@@ -175,12 +164,15 @@ export class SessionRuntimeEstablisher {
     session: RuntimeEstablishedSession,
     request: OpenSessionRequest,
     response: SessionOpenedResponse,
-    hooks: RuntimeEstablishmentHooks,
+    currentFailure: () => OpenWranglerResponse | undefined,
     options?: BridgeRequestOptions
   ): Promise<RuntimeEstablishmentResult> {
     let opened: SessionOpenedResponse = { ...response, summaries: [] };
     const persisted = this.persistence.load(request.source, response.metadata.backend);
     if (!persisted) return { established: true, session, response: opened };
+    const assertCurrent = (): void => {
+      if (currentFailure()) throw new Error("The saved-state opening is no longer current.");
+    };
 
     let cleaningRestored = false;
     try {
@@ -189,29 +181,34 @@ export class SessionRuntimeEstablisher {
         persisted.cleaning,
         request.columnOffset,
         request.columnLimit,
-        options
+        options,
+        assertCurrent
       );
       cleaningRestored = true;
-    } catch {
-      await this.runtimeCleanup.close(session, "saved-plan fallback runtime");
-      if (session.openRequest.source.kind === "file")
-        session.sourceProtection = await captureSessionSourceFiles(session.openRequest.source);
-      if (!hooks.isCoordinatorAvailable()) {
+    } catch (error) {
+      if (error instanceof DetachedBridgeRequestError) {
+        this.runtimeCleanup.trackDelegateSettlement(
+          session.delegate,
+          error.settlement.then(() => this.runtimeCleanup.close(session, "failed saved-state runtime"))
+        );
         return {
           established: false,
-          response: protocolError(
-            "coordinator_disposed",
-            "The Open Wrangler session coordinator was disposed before original data reopened.",
-            false
-          )
+          response:
+            currentFailure() ??
+            protocolError(
+              "saved_plan_restore_failed",
+              `Open Wrangler could not finish restoring the saved cleaning plan for ${request.source.label}.`,
+              true
+            )
         };
       }
-      if (options?.cancellation?.isCancellationRequested) {
-        return { established: false, response: { kind: "cancelled", targetRequestId: "not-started" } };
-      }
-      const staleOrigin = sessionOriginMismatch(session.openRequest, session.origin);
-      if (staleOrigin)
-        return { established: false, response: protocolError("invalid_source_origin", staleOrigin, true) };
+      await this.runtimeCleanup.close(session, "saved-plan fallback runtime");
+      const afterClose = currentFailure();
+      if (afterClose) return { established: false, response: afterClose };
+      if (session.openRequest.source.kind === "file")
+        session.sourceProtection = await captureSessionSourceFiles(session.openRequest.source);
+      const beforeFallback = currentFailure();
+      if (beforeFallback) return { established: false, response: beforeFallback };
       const clean = await session.delegate.request(session.openRequest, options);
       if (clean.kind === "error" || clean.kind === "cancelled") return { established: false, response: clean };
       if (clean.kind !== "sessionOpened") {
@@ -247,6 +244,11 @@ export class SessionRuntimeEstablisher {
         };
       }
       opened = { ...clean, summaries: [] };
+      const afterFallback = currentFailure();
+      if (afterFallback) {
+        await this.runtimeCleanup.close(session, "late-open runtime");
+        return { established: false, response: afterFallback };
+      }
       void vscode.window.showWarningMessage(
         `Open Wrangler could not replay the saved cleaning plan for ${request.source.label}. Original data was opened instead.`
       );
@@ -261,7 +263,8 @@ export class SessionRuntimeEstablisher {
           request.pageSize,
           request.columnOffset,
           request.columnLimit,
-          options
+          options,
+          assertCurrent
         );
       } catch (error) {
         if (error instanceof DetachedBridgeRequestError) {
@@ -274,11 +277,13 @@ export class SessionRuntimeEstablisher {
         }
         return {
           established: false,
-          response: protocolError(
-            "saved_view_restore_failed",
-            `Open Wrangler could not restore a confirmed view for ${request.source.label}.`,
-            true
-          )
+          response:
+            currentFailure() ??
+            protocolError(
+              "saved_view_restore_failed",
+              `Open Wrangler could not restore a confirmed view for ${request.source.label}.`,
+              true
+            )
         };
       }
       session.publicRevision = session.runtimeRevision;

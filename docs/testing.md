@@ -429,9 +429,9 @@ engines; `r/tests/complete_catalog_contract.R` owns native R scaling. See [Archi
 
 Export owner tests use actual files to cover source renames and replacements before and during command awaits.
 Coordinator tests cover source identity across initial open, runtime replacement, rollback and live-variable recovery,
-including Python Interactive's originating document. Recovery and state-restorer owners check Close during replay,
-stale viewing fallback, and detached execution settling before candidate cleanup in recovery and initial saved-view
-restoration. Ordinary replay remains covered.
+including Python Interactive's originating document. Establishment, recovery and state-restorer owners check retirement
+during replay, stale viewing fallback, and detached execution settling before candidate cleanup. Initial saved plans
+and views retain the same ownership checks as recovery; ordinary replay and invalid-state fallback remain covered.
 Coordinator recovery tests own replacement notifications, bounded viewport reads and retirement on Close. The panel
 and renderer synchronization owners check atomic publication, stale offers, failed or late reads and remounts. App
 progressive profiling, projection and draft-state tests check fresh summaries and statistics, retained failure/Retry

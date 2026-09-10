@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Memento } from "vscode";
+import * as vscode from "vscode";
+import type { Memento, NotebookDocument } from "vscode";
 import { DetachedBridgeRequestError, type OpenWranglerBridge } from "../extension/dataBridge";
 import {
   persistedSessionState,
@@ -11,8 +12,14 @@ import { SessionPersistenceStore } from "../extension/sessionPersistenceStore";
 import { SessionRuntimeEstablisher, type RuntimeEstablishmentHooks } from "../extension/sessionRuntimeEstablisher";
 import { SessionRuntimeCleanup } from "../extension/sessionRuntimeCleanup";
 import { SessionRuntimeStateRestorer } from "../extension/sessionRuntimeStateRestorer";
+import * as sessionOrigin from "../extension/sessionOrigin";
 import type { OpenWranglerRequest, OpenWranglerResponse, TransformStep } from "../shared/protocol";
-import { openRequest, openedResponse } from "./sessionCoordinatorTestFixtures";
+import {
+  openRequest,
+  openedResponse,
+  setOpenNotebookDocuments,
+  stepPreviewResponse
+} from "./sessionCoordinatorTestFixtures";
 
 describe("SessionRuntimeEstablisher", () => {
   it("publishes a public identity while retaining the exact private runtime contract", async () => {
@@ -125,70 +132,168 @@ describe("SessionRuntimeEstablisher", () => {
     expect(executionOrder).toEqual(["open-1", "preview-failed", "close-cleaning-runtime-1", "open-2"]);
   });
 
-  it("waits for a detached saved view before closing its unpublished runtime", async () => {
+  it.each(["cleaning", "view"] as const)(
+    "waits for detached saved %s before closing its unpublished runtime",
+    async (phase) => {
+      const step: TransformStep = {
+        id: "saved-step",
+        kind: "dropColumns",
+        params: { columns: [{ id: "c:value", name: "value" }] }
+      };
+      const persisted = serializePersistedSession(
+        persistedSessionState(
+          { ...openedResponse().metadata, steps: phase === "cleaning" ? [step] : [] },
+          {
+            columnWidths: new Map(),
+            viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+          }
+        )
+      );
+      if (!persisted) throw new Error("Expected saved state to serialize.");
+      const stored = { [persistenceKey(openRequest.source, "polars")]: persisted };
+      const workspaceState = {
+        get: vi.fn((key: string) => (key === SESSION_STORAGE_KEY ? stored : undefined)),
+        update: vi.fn(async () => undefined),
+        keys: vi.fn(() => [SESSION_STORAGE_KEY])
+      } as unknown as Memento;
+      let settle!: () => void;
+      const settlement = new Promise<void>((resolve) => {
+        settle = resolve;
+      });
+      let settled = false;
+      const detached = new DetachedBridgeRequestError(
+        "The saved view is still settling.",
+        "timeout",
+        true,
+        settlement.then(() => {
+          settled = true;
+        })
+      );
+      const requests: OpenWranglerRequest[] = [];
+      const delegate: OpenWranglerBridge = {
+        onIdle: vi.fn(),
+        request: async (request): Promise<OpenWranglerResponse> => {
+          requests.push(request);
+          if (request.kind === "openSession") return openedResponse("pending-view-runtime");
+          if (request.kind === (phase === "cleaning" ? "previewStep" : "getPage")) throw detached;
+          if (request.kind === "closeSession") {
+            expect(settled).toBe(true);
+            return { kind: "sessionClosed", sessionId: request.sessionId };
+          }
+          throw new Error(`Unexpected saved-view request: ${request.kind}`);
+        }
+      };
+      const cleanup = new SessionRuntimeCleanup(() => false);
+      const owner = new SessionRuntimeEstablisher(
+        cleanup,
+        new SessionRuntimeStateRestorer(),
+        new SessionPersistenceStore(workspaceState)
+      );
+      try {
+        await expect(owner.establish(delegate, openRequest, undefined, undefined, hooks())).resolves.toMatchObject({
+          established: false,
+          response: {
+            kind: "error",
+            code: phase === "cleaning" ? "saved_plan_restore_failed" : "saved_view_restore_failed"
+          }
+        });
+        expect(requests.map((request) => request.kind)).toEqual([
+          "openSession",
+          phase === "cleaning" ? "previewStep" : "getPage"
+        ]);
+        cleanup.releaseIfIdle(delegate);
+        expect(delegate.onIdle).not.toHaveBeenCalled();
+        expect(workspaceState.update).not.toHaveBeenCalled();
+        settle();
+        await cleanup.waitForTracked();
+        expect(requests).toHaveLength(3);
+        expect(requests[2]).toEqual({ kind: "closeSession", sessionId: "pending-view-runtime", revision: 0 });
+        expect(delegate.onIdle).toHaveBeenCalledOnce();
+      } finally {
+        settle();
+        await cleanup.waitForTracked();
+      }
+    }
+  );
+
+  it.each([
+    ["shutdown", "cleaning"],
+    ["cancellation", "cleaning"],
+    ["file cancellation", "cleaning"],
+    ["origin", "cleaning"],
+    ["shutdown", "view"],
+    ["cancellation", "view"],
+    ["origin", "view"]
+  ] as const)("stops on %s during saved %s without reopening or falling back", async (retirement, phase) => {
+    const document = { uri: vscode.Uri.parse("untitled:restore.ipynb"), isClosed: false } as NotebookDocument;
+    setOpenNotebookDocuments(document);
+    const file = retirement === "file cancellation";
+    const cancelled = file || retirement === "cancellation";
+    const source = file
+      ? openRequest.source
+      : { kind: "notebookVariable" as const, uri: document.uri.toString(), variableName: "df", label: "df" };
+    const request = { ...openRequest, source };
+    const opened = openedResponse();
+    opened.metadata.source = source;
+    const step: TransformStep = {
+      id: "saved-step",
+      kind: "dropColumns",
+      params: { columns: [{ id: "c:value", name: "value" }] }
+    };
     const persisted = serializePersistedSession(
-      persistedSessionState(openedResponse().metadata, {
-        columnWidths: new Map(),
-        viewport: { firstVisibleRow: 0, scrollLeft: 0 }
-      })
+      persistedSessionState(
+        { ...opened.metadata, steps: phase === "cleaning" ? [step, { ...step, id: "second" }] : [] },
+        { columnWidths: new Map(), viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
+      )
     );
     if (!persisted) throw new Error("Expected saved state to serialize.");
-    const stored = { [persistenceKey(openRequest.source, "polars")]: persisted };
+    const stored = { [persistenceKey(source, "polars")]: persisted };
     const workspaceState = {
       get: vi.fn((key: string) => (key === SESSION_STORAGE_KEY ? stored : undefined)),
       update: vi.fn(async () => undefined),
-      keys: vi.fn(() => [SESSION_STORAGE_KEY])
+      keys: () => [SESSION_STORAGE_KEY]
     } as unknown as Memento;
-    let settle!: () => void;
-    const settlement = new Promise<void>((resolve) => {
-      settle = resolve;
-    });
-    let settled = false;
-    const detached = new DetachedBridgeRequestError(
-      "The saved view is still settling.",
-      "timeout",
-      true,
-      settlement.then(() => {
-        settled = true;
-      })
-    );
-    const requests: OpenWranglerRequest[] = [];
-    const delegate: OpenWranglerBridge = {
-      onIdle: vi.fn(),
-      request: async (request): Promise<OpenWranglerResponse> => {
-        requests.push(request);
-        if (request.kind === "openSession") return openedResponse("pending-view-runtime");
-        if (request.kind === "getPage") throw detached;
-        if (request.kind === "closeSession") {
-          expect(settled).toBe(true);
-          return { kind: "sessionClosed", sessionId: request.sessionId };
-        }
-        throw new Error(`Unexpected saved-view request: ${request.kind}`);
+    let available = true;
+    const cancellation = new vscode.CancellationTokenSource();
+    const warning = vi.spyOn(vscode.window, "showWarningMessage");
+    const captureSource = vi.spyOn(sessionOrigin, "captureSessionSourceFiles");
+    const requests: OpenWranglerRequest["kind"][] = [];
+    const delegate = bridge(async (next): Promise<OpenWranglerResponse> => {
+      requests.push(next.kind);
+      if (next.kind === "openSession") return opened;
+      if (next.kind === "closeSession") return { kind: "sessionClosed", sessionId: next.sessionId };
+      if (retirement === "shutdown") available = false;
+      else if (cancelled) cancellation.cancel();
+      else setOpenNotebookDocuments();
+      if (next.kind === "previewStep") {
+        const preview = stepPreviewResponse(1, step);
+        return { ...preview, metadata: { ...preview.metadata, source }, page: { ...preview.page, limit: next.limit } };
       }
-    };
-    const cleanup = new SessionRuntimeCleanup(() => false);
-    const owner = new SessionRuntimeEstablisher(
-      cleanup,
-      new SessionRuntimeStateRestorer(),
-      new SessionPersistenceStore(workspaceState)
-    );
+      return { kind: "error", code: "engine_error", message: "The saved view is stale.", recoverable: true };
+    });
     try {
-      await expect(owner.establish(delegate, openRequest, undefined, undefined, hooks())).resolves.toMatchObject({
+      const result = await establisher(workspaceState).establish(
+        delegate,
+        request,
+        { cancellation: cancellation.token },
+        file ? undefined : { kind: "notebook", document },
+        { ...hooks(), isCoordinatorAvailable: () => available }
+      );
+      expect(result).toMatchObject({
         established: false,
-        response: { kind: "error", code: "saved_view_restore_failed" }
+        response: cancelled
+          ? { kind: "cancelled" }
+          : { kind: "error", code: retirement === "shutdown" ? "coordinator_disposed" : "invalid_source_origin" }
       });
-      expect(requests.map((request) => request.kind)).toEqual(["openSession", "getPage"]);
-      cleanup.releaseIfIdle(delegate);
-      expect(delegate.onIdle).not.toHaveBeenCalled();
+      expect(requests).toEqual(["openSession", phase === "cleaning" ? "previewStep" : "getPage", "closeSession"]);
       expect(workspaceState.update).not.toHaveBeenCalled();
-      settle();
-      await cleanup.waitForTracked();
-      expect(requests).toHaveLength(3);
-      expect(requests[2]).toEqual({ kind: "closeSession", sessionId: "pending-view-runtime", revision: 0 });
-      expect(delegate.onIdle).toHaveBeenCalledOnce();
+      expect(warning).not.toHaveBeenCalled();
+      expect(captureSource).toHaveBeenCalledOnce();
     } finally {
-      settle();
-      await cleanup.waitForTracked();
+      captureSource.mockRestore();
+      warning.mockRestore();
+      cancellation.dispose();
+      setOpenNotebookDocuments();
     }
   });
 
