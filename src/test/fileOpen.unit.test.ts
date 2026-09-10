@@ -31,7 +31,6 @@ const fileMocks = vi.hoisted(() => ({
         ): Promise<void>;
       }
     | undefined,
-  customEditorProviderOptions: undefined as unknown,
   activeTabInput: undefined as unknown,
   activeTextUri: undefined as unknown,
   enabledFileTypes: ["csv", "tsv", "parquet", "jsonl", "xlsx", "xls"] as unknown,
@@ -118,15 +117,6 @@ vi.mock("vscode", () => {
           }
         }
       },
-      registerCustomEditorProvider: (
-        _id: string,
-        provider: typeof fileMocks.customEditorProvider,
-        options: unknown
-      ) => {
-        fileMocks.customEditorProvider = provider;
-        fileMocks.customEditorProviderOptions = options;
-        return disposable();
-      },
       showWarningMessage: fileMocks.showWarningMessage,
       showInformationMessage: fileMocks.showInformationMessage,
       showErrorMessage: fileMocks.showErrorMessage,
@@ -167,7 +157,7 @@ vi.mock("../extension/configuration", () => ({
         : fallback) as T
 }));
 
-import { registerFileCommands } from "../extension/files/fileOpen";
+import { OpenWranglerCustomEditorProvider, registerFileCommands } from "../extension/files/fileOpen";
 import { CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY } from "../extension/files/confirmedFileConfigurations";
 
 describe("file launch command", () => {
@@ -189,7 +179,6 @@ describe("file launch command", () => {
     fileMocks.showOpenDialog.mockReset();
     fileMocks.showOpenDialog.mockResolvedValue(undefined);
     fileMocks.customEditorProvider = undefined;
-    fileMocks.customEditorProviderOptions = undefined;
     fileMocks.activeTabInput = undefined;
     fileMocks.activeTextUri = undefined;
     fileMocks.enabledFileTypes = ["csv", "tsv", "parquet", "jsonl", "xlsx", "xls"];
@@ -574,9 +563,6 @@ describe("file launch command", () => {
       true,
       "auto"
     );
-    expect(fileMocks.customEditorProviderOptions).toMatchObject({
-      supportsMultipleEditorsPerDocument: false
-    });
     expect(fileMocks.detectImportOptions).not.toHaveBeenCalled();
   });
 
@@ -696,6 +682,7 @@ function register(): { context: ExtensionContext; bridge: OpenWranglerBridge } {
   } as unknown as ExtensionContext;
   const bridge = { request: fileMocks.bridgeRequest } as OpenWranglerBridge;
   registerFileCommands(context, bridge);
+  fileMocks.customEditorProvider = new OpenWranglerCustomEditorProvider(context, bridge);
   return { context, bridge };
 }
 

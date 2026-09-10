@@ -154,7 +154,8 @@ export interface OpenWranglerTestApi {
 }
 
 export interface OpenWranglerExtensionApi {
-  testing?: OpenWranglerTestApi;
+  getTestingApi(): Promise<OpenWranglerTestApi>;
+  activationDiagnostics(): LazyActivationDiagnostics;
 }
 
 export interface LazyActivationDiagnostics {
@@ -285,7 +286,13 @@ export class LazyActivationOwners implements vscode.Disposable {
   async extensionApiForCurrentEnvironment(): Promise<OpenWranglerExtensionApi | undefined> {
     await this.initialNotebookOwner;
     if (process.env.OPEN_WRANGLER_EXTENSION_TESTS !== "1") return undefined;
-    return { testing: await (this.testingApiOwner ??= this.createTestingApi()) };
+    return {
+      getTestingApi: () => {
+        this.assertActive();
+        return (this.testingApiOwner ??= this.createTestingApi());
+      },
+      activationDiagnostics: () => this.diagnosticsForTesting()
+    };
   }
 
   diagnosticsForTesting(): LazyActivationDiagnostics {
@@ -551,8 +558,6 @@ export class LazyActivationOwners implements vscode.Disposable {
     ]);
     this.assertActive();
     this.replaceCommandGroup("file");
-    this.customEditorRegistration?.dispose();
-    this.customEditorRegistration = undefined;
     this.captureOwnerRegistration("file", () => fileOpenModule.registerFileCommands(this.context, coordinatedBridge));
     this.constructedOwners.push("custom-editor");
     return { module: fileOpenModule };
@@ -709,7 +714,6 @@ export class LazyActivationOwners implements vscode.Disposable {
     const [native, session] = await Promise.all([this.moduleLoaders.nativeViews(), this.ensureSessionOwner()]);
     this.assertActive();
     this.replaceCommandGroup("native");
-    this.replaceCommandGroup("utility");
     const rVariables = (this.nativeRVariables ??= new LazyLiveVariables<
       RLiveVariableProvider,
       RLiveVariableSnapshot,
@@ -857,6 +861,7 @@ export class LazyActivationOwners implements vscode.Disposable {
     void r;
     await this.ensureRuntimeOwner();
     await this.ensureRDocumentOwner();
+    this.assertActive();
     const { OpenWranglerPanel } = panel;
     return {
       request: (request, options) => coordinatedBridge.request(request, options),

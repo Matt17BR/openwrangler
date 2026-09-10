@@ -58,7 +58,7 @@ interface TestApi {
 }
 
 interface ExtensionApi {
-  testing?: TestApi;
+  getTestingApi(): Promise<TestApi>;
 }
 
 interface RuntimeProbe {
@@ -123,7 +123,7 @@ export async function run(): Promise<InstalledPerformanceArtifactReceipt> {
   const extension = vscode.extensions.getExtension<ExtensionApi>("matt17br.openwrangler");
   assert.ok(extension, "The installed Open Wrangler candidate must be discoverable.");
   const api = await extension.activate();
-  const testing = api?.testing;
+  const testing = await api?.getTestingApi();
   assert.ok(testing, "The isolated performance phase requires the environment-gated test API.");
   const productConfiguration = await configureBenchmarkProfile(testPython);
   const runtime = await runtimeProvenance(testPython, String(extension.packageJSON.version));
