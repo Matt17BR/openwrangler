@@ -60,7 +60,10 @@ Packaging verifies the staged archive's canonical form, then compares the publis
 exact bytes before reusing its receipt. Final file identity, link count, source inventory and manifest checks remain
 required. A changed output fails and only owned files are removed.
 
-`npm run package:dev` is for local development. Its output is not a release candidate and must not be committed.
+`npm run package:dev` is for local development. Its output is not a release candidate and must not be committed. The
+README links to the [source installation steps](../CONTRIBUTING.md); its generated installation block lives in
+`scripts/release-documents.mjs`. The stable badge reads GitHub's latest stable release, while registry badges link to
+installation without presenting a preview version as stable.
 
 ## Daily preview
 
