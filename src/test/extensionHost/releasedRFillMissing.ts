@@ -47,17 +47,20 @@ export function createReleasedRFillMissingJourney({
     assert.equal(target.type, "float");
     assert.equal(target.rawType, "double");
     assert.equal(target.nullable, true);
-    const sourceGap = await testing.request({
-      kind: "getPage",
-      sessionId,
-      revision: original.metadata.revision,
-      viewRequestId: `${phase}-fill-mean-source-gap`,
-      offset: 602,
-      limit: 1,
-      filterModel: original.viewState.filterModel,
-      columnOffset: target.position,
-      columnLimit: 1
-    });
+    const sourceGap = await testing.request(
+      {
+        kind: "getPage",
+        sessionId,
+        revision: original.metadata.revision,
+        viewRequestId: `${phase}-fill-mean-source-gap`,
+        offset: 602,
+        limit: 1,
+        filterModel: original.viewState.filterModel,
+        columnOffset: target.position,
+        columnLimit: 1
+      },
+      { ephemeralPage: true }
+    );
     assert.equal(sourceGap.kind, "page");
     if (sourceGap.kind !== "page") throw new Error("The native R mean-fill source page did not resolve.");
     assert.deepEqual(sourceGap.page.columnIds, [target.id]);
@@ -131,17 +134,20 @@ export function createReleasedRFillMissingJourney({
       !/\b(?:pandas|polars|python)\b/iu.test(preview.code ?? ""),
       "Generated R Fill code must remain native R."
     );
-    const previewGap = await testing.request({
-      kind: "getPage",
-      sessionId,
-      revision: preview.metadata.revision,
-      viewRequestId: `${phase}-fill-mean-preview-gap`,
-      offset: 602,
-      limit: 1,
-      filterModel: preview.viewState.filterModel,
-      columnOffset: target.position,
-      columnLimit: 1
-    });
+    const previewGap = await testing.request(
+      {
+        kind: "getPage",
+        sessionId,
+        revision: preview.metadata.revision,
+        viewRequestId: `${phase}-fill-mean-preview-gap`,
+        offset: 602,
+        limit: 1,
+        filterModel: preview.viewState.filterModel,
+        columnOffset: target.position,
+        columnLimit: 1
+      },
+      { ephemeralPage: true }
+    );
     assert.equal(previewGap.kind, "page");
     if (previewGap.kind !== "page") throw new Error("The native R mean-fill preview page did not resolve.");
     assert.deepEqual(previewGap.page.columnIds, [target.id]);
@@ -232,17 +238,20 @@ export function createReleasedRFillMissingJourney({
     );
     const restored = testing.activeSession();
     assert.ok(restored, "The undone native R mean-fill session must remain active.");
-    const restoredGap = await testing.request({
-      kind: "getPage",
-      sessionId,
-      revision: restored.metadata.revision,
-      viewRequestId: `${phase}-fill-mean-restored-gap`,
-      offset: 602,
-      limit: 1,
-      filterModel: restored.viewState.filterModel,
-      columnOffset: target.position,
-      columnLimit: 1
-    });
+    const restoredGap = await testing.request(
+      {
+        kind: "getPage",
+        sessionId,
+        revision: restored.metadata.revision,
+        viewRequestId: `${phase}-fill-mean-restored-gap`,
+        offset: 602,
+        limit: 1,
+        filterModel: restored.viewState.filterModel,
+        columnOffset: target.position,
+        columnLimit: 1
+      },
+      { ephemeralPage: true }
+    );
     assert.equal(restoredGap.kind, "page");
     if (restoredGap.kind !== "page") throw new Error("The undone native R mean-fill page did not resolve.");
     assert.deepEqual(restoredGap.page.columnIds, [target.id]);

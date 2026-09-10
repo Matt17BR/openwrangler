@@ -42,17 +42,20 @@ export async function exercisePivotLongerJourney(
   assert.ok(typeof sourceRows === "number" && Number.isSafeInteger(sourceRows) && sourceRows >= 0);
   const sourceValues: (CellValue | undefined)[] = [];
   for (const [index, column] of selected.entries()) {
-    const response = await testing.request({
-      kind: "getPage",
-      sessionId,
-      revision: initial.metadata.revision,
-      viewRequestId: `${checkpoint}:source-${index}`,
-      offset: 0,
-      limit: 1,
-      filterModel: initial.viewState.filterModel,
-      columnOffset: column.position,
-      columnLimit: 1
-    });
+    const response = await testing.request(
+      {
+        kind: "getPage",
+        sessionId,
+        revision: initial.metadata.revision,
+        viewRequestId: `${checkpoint}:source-${index}`,
+        offset: 0,
+        limit: 1,
+        filterModel: initial.viewState.filterModel,
+        columnOffset: column.position,
+        columnLimit: 1
+      },
+      { ephemeralPage: true }
+    );
     assert.equal(response.kind, "page");
     if (response.kind !== "page") throw new Error(`Pivot longer source column ${column.name} did not resolve.`);
     sourceValues.push(response.page.rows[0]?.values[0]);
@@ -112,17 +115,20 @@ export async function exercisePivotLongerJourney(
 
   const previewApp = await synchronizeApp("Pivot longer preview");
   for (const [selectedIndex, expectedValue] of sourceValues.entries()) {
-    const response = await testing.request({
-      kind: "getPage",
-      sessionId,
-      revision: preview.metadata.revision,
-      viewRequestId: `${checkpoint}:preview-${selectedIndex}`,
-      offset: selectedIndex * sourceRows,
-      limit: 1,
-      filterModel: preview.viewState.filterModel,
-      columnOffset: labelOutput.position,
-      columnLimit: 2
-    });
+    const response = await testing.request(
+      {
+        kind: "getPage",
+        sessionId,
+        revision: preview.metadata.revision,
+        viewRequestId: `${checkpoint}:preview-${selectedIndex}`,
+        offset: selectedIndex * sourceRows,
+        limit: 1,
+        filterModel: preview.viewState.filterModel,
+        columnOffset: labelOutput.position,
+        columnLimit: 2
+      },
+      { ephemeralPage: true }
+    );
     assert.equal(response.kind, "page");
     if (response.kind !== "page") throw new Error(`Pivot longer output block ${selectedIndex} did not resolve.`);
     assert.deepEqual(response.page.columnIds, [labelOutput.id, valueOutput.id]);

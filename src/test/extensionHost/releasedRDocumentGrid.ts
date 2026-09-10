@@ -107,16 +107,19 @@ export function createReleasedRDocumentGrid({
     await applyReleasedRQuickSort(workbench, testing, "score", "descending", ["score", "group"]);
     const active = testing.activeSession();
     assert.ok(active, "The sorted plain R session must remain active.");
-    const first = await testing.request({
-      kind: "getPage",
-      ...GRID_COLUMN_WINDOW,
-      sessionId,
-      revision: active.metadata.revision,
-      viewRequestId: "jupyter-r-document-sorted-page",
-      offset: 0,
-      limit: 1,
-      filterModel: active.viewState.filterModel
-    });
+    const first = await testing.request(
+      {
+        kind: "getPage",
+        ...GRID_COLUMN_WINDOW,
+        sessionId,
+        revision: active.metadata.revision,
+        viewRequestId: "jupyter-r-document-sorted-page",
+        offset: 0,
+        limit: 1,
+        filterModel: active.viewState.filterModel
+      },
+      { ephemeralPage: true }
+    );
     assert.equal(first.kind, "page");
     if (first.kind !== "page") throw new Error("The sorted plain R page did not resolve.");
     assert.equal(first.page.totalRows, 120);

@@ -195,17 +195,20 @@ async function exerciseReleasedROneHotJourney(
   const codePreview = await waitForCodePreview(workbench, generatedCall, "R");
   const visibleCode = await revealCodePreviewText(codePreview, generatedCall);
   assertReleasedRCategoricalGeneratedCode(visibleCode, generatedExpectation);
-  const previewPage = await testing.request({
-    kind: "getPage",
-    sessionId,
-    revision: preview.metadata.revision,
-    viewRequestId: "jupyter-r-one-hot-preview-page",
-    offset: 601,
-    limit: 2,
-    filterModel: preview.viewState.filterModel,
-    columnOffset: outputA.position,
-    columnLimit: 2
-  });
+  const previewPage = await testing.request(
+    {
+      kind: "getPage",
+      sessionId,
+      revision: preview.metadata.revision,
+      viewRequestId: "jupyter-r-one-hot-preview-page",
+      offset: 601,
+      limit: 2,
+      filterModel: preview.viewState.filterModel,
+      columnOffset: outputA.position,
+      columnLimit: 2
+    },
+    { ephemeralPage: true }
+  );
   assert.equal(previewPage.kind, "page");
   if (previewPage.kind !== "page") throw new Error("The packaged R One-hot encode preview did not return its page.");
   assert.deepEqual(previewPage.page.columnIds, [outputA.id, outputB.id]);
@@ -363,17 +366,20 @@ async function exerciseReleasedRMultiLabelJourney(
   const codePreview = await waitForCodePreview(workbench, generatedCall, "R");
   const visibleCode = await revealCodePreviewText(codePreview, generatedCall);
   assertReleasedRCategoricalGeneratedCode(visibleCode, generatedExpectation);
-  const previewPage = await testing.request({
-    kind: "getPage",
-    sessionId,
-    revision: preview.metadata.revision,
-    viewRequestId: "jupyter-r-multi-label-preview-page",
-    offset: 0,
-    limit: 2,
-    filterModel: preview.viewState.filterModel,
-    columnOffset: outputA.position,
-    columnLimit: 2
-  });
+  const previewPage = await testing.request(
+    {
+      kind: "getPage",
+      sessionId,
+      revision: preview.metadata.revision,
+      viewRequestId: "jupyter-r-multi-label-preview-page",
+      offset: 0,
+      limit: 2,
+      filterModel: preview.viewState.filterModel,
+      columnOffset: outputA.position,
+      columnLimit: 2
+    },
+    { ephemeralPage: true }
+  );
   assert.equal(previewPage.kind, "page");
   if (previewPage.kind !== "page") {
     throw new Error("The packaged R Multi-label binarize preview did not return its page.");

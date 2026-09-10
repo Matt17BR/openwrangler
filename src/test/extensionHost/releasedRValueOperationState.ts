@@ -143,17 +143,20 @@ export function createReleasedRValueOperationState(dependencies: ReleasedRValueO
     const restored = testing.activeSession();
     assert.equal(restored?.sessionId, sessionId, `The focused R value catalog must remain active at ${checkpoint}.`);
     assert.ok(restored, `The focused R value catalog requires its restored session at ${checkpoint}.`);
-    const page = await testing.request({
-      kind: "getPage",
-      sessionId,
-      revision: restored.metadata.revision,
-      viewRequestId: `jupyter-r-value-${checkpoint}`,
-      offset: 0,
-      limit: 1,
-      filterModel: restored.viewState.filterModel,
-      columnOffset: 0,
-      columnLimit: 4
-    });
+    const page = await testing.request(
+      {
+        kind: "getPage",
+        sessionId,
+        revision: restored.metadata.revision,
+        viewRequestId: `jupyter-r-value-${checkpoint}`,
+        offset: 0,
+        limit: 1,
+        filterModel: restored.viewState.filterModel,
+        columnOffset: 0,
+        columnLimit: 4
+      },
+      { ephemeralPage: true }
+    );
     if (page.kind !== "page") {
       const diagnostic = {
         kind: page.kind,

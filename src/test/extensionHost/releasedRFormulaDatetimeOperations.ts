@@ -142,17 +142,20 @@ export function createReleasedRFormulaDatetimeOperations(dependencies: ReleasedR
     const codePreview = await waitForCodePreview(workbench, undefined, "R");
     const visibleCode = await revealCodePreviewText(codePreview, ".ow_formula_values");
     assertReleasedRFormulaGeneratedCode(visibleCode, "score", "score_plus_two", "add", 2);
-    const previewPage = await testing.request({
-      kind: "getPage",
-      sessionId,
-      revision: preview.metadata.revision,
-      viewRequestId: "jupyter-r-formula-preview-page",
-      offset: 0,
-      limit: 2,
-      filterModel: preview.viewState.filterModel,
-      columnOffset: output.position,
-      columnLimit: 1
-    });
+    const previewPage = await testing.request(
+      {
+        kind: "getPage",
+        sessionId,
+        revision: preview.metadata.revision,
+        viewRequestId: "jupyter-r-formula-preview-page",
+        offset: 0,
+        limit: 2,
+        filterModel: preview.viewState.filterModel,
+        columnOffset: output.position,
+        columnLimit: 1
+      },
+      { ephemeralPage: true }
+    );
     assert.equal(previewPage.kind, "page");
     if (previewPage.kind !== "page") throw new Error("The packaged R Formula preview did not return its page.");
     assert.deepEqual(previewPage.page.columnIds, [output.id]);
@@ -272,17 +275,20 @@ export function createReleasedRFormulaDatetimeOperations(dependencies: ReleasedR
     const codePreview = await waitForCodePreview(workbench, undefined, "R");
     const visibleCode = await revealCodePreviewText(codePreview, ".ow_datetime_values");
     assertReleasedRFormatDatetimeGeneratedCode(visibleCode, "extra_19", "formatted_date", "%d/%m/%Y");
-    const previewPage = await testing.request({
-      kind: "getPage",
-      sessionId,
-      revision: preview.metadata.revision,
-      viewRequestId: "jupyter-r-format-datetime-preview-page",
-      offset: 0,
-      limit: 2,
-      filterModel: preview.viewState.filterModel,
-      columnOffset: output.position,
-      columnLimit: 1
-    });
+    const previewPage = await testing.request(
+      {
+        kind: "getPage",
+        sessionId,
+        revision: preview.metadata.revision,
+        viewRequestId: "jupyter-r-format-datetime-preview-page",
+        offset: 0,
+        limit: 2,
+        filterModel: preview.viewState.filterModel,
+        columnOffset: output.position,
+        columnLimit: 1
+      },
+      { ephemeralPage: true }
+    );
     assert.equal(previewPage.kind, "page");
     if (previewPage.kind !== "page") {
       throw new Error("The packaged R Format datetime preview did not return its page.");

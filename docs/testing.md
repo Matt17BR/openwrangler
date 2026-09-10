@@ -210,7 +210,9 @@ without forcing another panel publication. [Picker source tests](../src/test/rel
 check passive success, stale-receipt refusal and the shared ten-second acquisition budget; ordinary session acquisition
 retains its existing thirty-second bound. Dedicated recovery injection, media setup and deliberately synthetic view
 setup retain their explicit synchronization. A missing production publication must fail rather than be repaired by
-the ordinary assertion path.
+the ordinary assertion path. Page assertions use the existing read-only request option so inspecting returned rows
+does not replace the visible page or retire the renderer's view context. Requests that deliberately change the view
+or exercise recovery keep their own mutation path.
 
 The R value journey retains Find and Replace, Formula's visible precision refusal and correction, Format Datetime,
 Capitalize and both dynamic Pivot forms. Repeated numeric and text catalog checks belong to native owners; remote

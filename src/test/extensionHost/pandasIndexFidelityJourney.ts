@@ -64,16 +64,19 @@ export async function exercisePandasIndexFidelityJourney(options: PandasIndexFid
     );
 
     options.recordProgress("verify:notebook:pandas-index:page");
-    const initialPage = await testing.request({
-      kind: "getPage",
-      ...GRID_COLUMN_WINDOW,
-      viewRequestId: "pandas-index-initial-page",
-      sessionId,
-      revision: active.metadata.revision,
-      offset: 0,
-      limit: 10,
-      filterModel: EMPTY_VIEW
-    });
+    const initialPage = await testing.request(
+      {
+        kind: "getPage",
+        ...GRID_COLUMN_WINDOW,
+        viewRequestId: "pandas-index-initial-page",
+        sessionId,
+        revision: active.metadata.revision,
+        offset: 0,
+        limit: 10,
+        filterModel: EMPTY_VIEW
+      },
+      { ephemeralPage: true }
+    );
     assert.equal(initialPage.kind, "page", "The named-MultiIndex page must resolve.");
     if (initialPage.kind !== "page") throw new Error("The named-MultiIndex page did not resolve.");
     assert.deepEqual(

@@ -273,19 +273,21 @@ export function createReleasedRGridJourney({
     );
 
     // The real UI owns the filter and both filtered profile requests above.
-    // Read the stable source row only after that visible journey is complete;
-    // Clear all below immediately establishes the next webview-owned context.
+    // Observe the stable source row without replacing the webview-owned context.
     const filteredPageRequestId = "jupyter-r-filtered-page";
-    const filteredPage = await testing.request({
-      kind: "getPage",
-      ...GRID_COLUMN_WINDOW,
-      sessionId,
-      revision: testing.activeSession()!.metadata.revision,
-      viewRequestId: filteredPageRequestId,
-      offset: 0,
-      limit: 1,
-      filterModel: testing.activeSession()!.viewState.filterModel
-    });
+    const filteredPage = await testing.request(
+      {
+        kind: "getPage",
+        ...GRID_COLUMN_WINDOW,
+        sessionId,
+        revision: testing.activeSession()!.metadata.revision,
+        viewRequestId: filteredPageRequestId,
+        offset: 0,
+        limit: 1,
+        filterModel: testing.activeSession()!.viewState.filterModel
+      },
+      { ephemeralPage: true }
+    );
     assert.equal(filteredPage.kind, "page");
     if (filteredPage.kind !== "page") throw new Error("The native R filtered page did not resolve.");
     assert.equal(filteredPage.viewRequestId, filteredPageRequestId);
@@ -378,16 +380,19 @@ export function createReleasedRGridJourney({
 
     await applyReleasedRQuickSort(workbench, testing, "group", "ascending", ["group"]);
     await applyReleasedRQuickSort(workbench, testing, "score", "descending", ["score", "group"]);
-    const scoreFirst = await testing.request({
-      kind: "getPage",
-      ...GRID_COLUMN_WINDOW,
-      sessionId,
-      revision: testing.activeSession()!.metadata.revision,
-      viewRequestId: "jupyter-r-score-priority",
-      offset: 0,
-      limit: 1,
-      filterModel: testing.activeSession()!.viewState.filterModel
-    });
+    const scoreFirst = await testing.request(
+      {
+        kind: "getPage",
+        ...GRID_COLUMN_WINDOW,
+        sessionId,
+        revision: testing.activeSession()!.metadata.revision,
+        viewRequestId: "jupyter-r-score-priority",
+        offset: 0,
+        limit: 1,
+        filterModel: testing.activeSession()!.viewState.filterModel
+      },
+      { ephemeralPage: true }
+    );
     assert.equal(scoreFirst.kind, "page");
     if (scoreFirst.kind === "page") assert.equal(scoreFirst.page.rows[0]?.values[0]?.display, "1205");
 
@@ -419,16 +424,19 @@ export function createReleasedRGridJourney({
       10_000,
       "the native R sort priority to move through the Activity Bar"
     );
-    const groupFirst = await testing.request({
-      kind: "getPage",
-      ...GRID_COLUMN_WINDOW,
-      sessionId,
-      revision: testing.activeSession()!.metadata.revision,
-      viewRequestId: "jupyter-r-group-priority",
-      offset: 0,
-      limit: 1,
-      filterModel: testing.activeSession()!.viewState.filterModel
-    });
+    const groupFirst = await testing.request(
+      {
+        kind: "getPage",
+        ...GRID_COLUMN_WINDOW,
+        sessionId,
+        revision: testing.activeSession()!.metadata.revision,
+        viewRequestId: "jupyter-r-group-priority",
+        offset: 0,
+        limit: 1,
+        filterModel: testing.activeSession()!.viewState.filterModel
+      },
+      { ephemeralPage: true }
+    );
     assert.equal(groupFirst.kind, "page");
     if (groupFirst.kind === "page") assert.equal(groupFirst.page.rows[0]?.values[0]?.display, "602");
   };
