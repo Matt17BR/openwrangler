@@ -128,8 +128,7 @@ jobs:
           EXPECTED_SHA: ${{ needs.select.outputs.candidate-source-sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/prepare-stable-candidate-tag.mjs --verify-remote
-      - id: canonical_release
-        name: Reverify the exact candidate bytes before publication
+      - name: Reverify the exact candidate bytes before publication
         env:
           EXPECTED_SHA: ${{ needs.select.outputs.candidate-source-sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
@@ -141,11 +140,6 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/push-stable-release-tag.mjs
-      - name: Prepare the exact local release tag for registry verification
-        env:
-          EXPECTED_SHA: ${{ needs.select.outputs.candidate-source-sha }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: node scripts/prepare-stable-candidate-tag.mjs
       - name: Publish or verify the exact GitHub stable release
         env:
           EXPECTED_SHA: ${{ needs.select.outputs.candidate-source-sha }}
@@ -154,50 +148,17 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/publish-github-stable-release.mjs canonical-release
-      - name: Verify the Open VSX publisher token
-        env:
-          OVSX_PAT: ${{ secrets.OVSX_PAT }}
-        run: |
-          set -euo pipefail
-          test -n "${OVSX_PAT:-}"
-          output="$(npx --no-install ovsx verify-pat Matt17BR 2>&1)"
-          printf '%s\n' "$output"
-          grep -Fq "PAT valid to publish at Matt17BR" <<< "$output"
-      - name: Reject a conflicting Open VSX stable release
-        env:
-          AUTOMATION_SHA: ${{ needs.select.outputs.candidate-source-sha }}
-          EXPECTED_SHA: ${{ needs.select.outputs.candidate-source-sha }}
-          RELEASE_PRERELEASE: "false"
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: node scripts/verify-open-vsx-github-release.mjs canonical-release --preflight
-      - name: Reverify the candidate before Open VSX publication
-        env:
-          EXPECTED_SHA: ${{ needs.select.outputs.candidate-source-sha }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
-      - name: Publish the exact candidate VSIX to Open VSX
-        env:
-          OVSX_PAT: ${{ secrets.OVSX_PAT }}
-          RELEASE_PRERELEASE: "false"
-          RELEASE_VERSION: ${{ steps.canonical_release.outputs.extension_version }}
-        run: |
-          set -euo pipefail
-          test -n "${OVSX_PAT:-}"
-          test "$RELEASE_PRERELEASE" = "false"
-          output="$(npx --no-install ovsx publish --skip-duplicate canonical-release/openwrangler.vsix 2>&1)"
-          printf '%s\n' "$output"
-          published="Published Matt17BR.openwrangler v$RELEASE_VERSION"
-          duplicate="Extension Matt17BR.openwrangler $RELEASE_VERSION is already published. Skipping publish."
-          grep -Fq "$published" <<< "$output" || grep -Fq "$duplicate" <<< "$output"
-      - name: Verify the exact public Open VSX stable release
-        env:
-          AUTOMATION_SHA: ${{ needs.select.outputs.candidate-source-sha }}
-          EXPECTED_SHA: ${{ needs.select.outputs.candidate-source-sha }}
-          RELEASE_PRERELEASE: "false"
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: node scripts/verify-open-vsx-github-release.mjs canonical-release --verify
       - name: Recheck the immutable public stable tag
         env:
           EXPECTED_SHA: ${{ needs.select.outputs.candidate-source-sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/prepare-stable-candidate-tag.mjs --require-remote
+
+  open-vsx:
+    name: Promote the published release to Open VSX
+    needs: promote
+    permissions:
+      contents: read
+    uses: ./.github/workflows/open-vsx-promotion.yml
+    with:
+      release_tag: ${{ inputs.release_tag }}
