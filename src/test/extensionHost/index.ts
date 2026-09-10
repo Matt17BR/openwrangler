@@ -16537,13 +16537,31 @@ async function verifyVisiblePersistedReplayAndRecovery(testing: TestApi, fixture
       .locator(`th[data-column="${PERSISTED_PANEL_SELECTED_COLUMN}"]`)
       .first();
     await recoveredSelectedHeader.waitFor({ state: "visible", timeout: 10_000 });
+    const recoveredSessionId = sessionId;
     await waitForLocatorText(
       recoveredSelectedHeader,
       (text) =>
         !text.includes("Profiling\u2026") &&
         ["Missing", "Distinct", "Min", "Max"].every((label) => text.includes(label)),
       SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-      "renderer-originated Header profiles to finish on the persisted selected column"
+      "renderer-originated Header profiles to finish on the persisted selected column",
+      (text) => {
+        const active = testing.activeSession();
+        return JSON.stringify({
+          profiling: text.includes("Profiling\u2026"),
+          labels: ["Missing", "Distinct", "Min", "Max"].map((label) => [label, text.includes(label)]),
+          activeRevision: active?.metadata.revision,
+          selectedColumnMatches:
+            active?.sessionId === recoveredSessionId &&
+            active.metadata.schema.some(
+              (column) =>
+                column.name === PERSISTED_PANEL_SELECTED_COLUMN && column.id === active.viewState.selectedColumnId
+            ),
+          hydrated: testing.panelHydrated(recoveredSessionId),
+          receipt: testing.panelSynchronizationReceipt(recoveredSessionId),
+          scheduler: testing.sessionSchedulerState(recoveredSessionId)
+        });
+      }
     );
     await synchronizedSessionApp(
       workbench,
