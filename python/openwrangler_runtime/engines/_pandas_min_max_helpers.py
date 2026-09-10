@@ -1,9 +1,7 @@
-from typing import Any
-
-
-def _open_wrangler_min_max_scale(series: Any) -> Any:
+def _open_wrangler_min_max_scale(series):
     from decimal import MAX_EMAX, MIN_EMIN, Decimal, localcontext
     from numbers import Integral
+    from typing import Any
 
     import numpy as np
     import pandas as pd

@@ -438,8 +438,10 @@ R notebook source-integrity checks also verify that no active export artifacts r
 
 `python/tests/test_round_number.py` executes live and generated Round across the Python editing engines, checking
 negative and extreme precision, midpoint neighbors, exact integer and Decimal carries, output capacity, storage types,
-masks, signed zero, and source identity. Arrow Decimal cases validate native readback and CSV/Parquet export; object
-Decimal cases change the caller's context before execution. Native R's catalog owns its corresponding numeric cases
+masks, signed zero, and source identity. The Min-max and Round owners execute generated code with a source named
+`Any` already bound, checking its identity before and after the generated function runs.
+Arrow Decimal cases validate native readback and CSV/Parquet export; object Decimal cases change the caller's context
+before execution. Native R's catalog owns its corresponding numeric cases
 and executes them under altered display options.
 DuckDB unsigned 128-bit controls exercise exact capacity refusal, valid neighbors, nulls and empty results. Session
 transactions verify that a failed Round preview retains the previously committed plan and data.

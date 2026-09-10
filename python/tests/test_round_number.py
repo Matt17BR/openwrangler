@@ -83,10 +83,12 @@ def rounded_frames(adapter: Any, source: Any, decimals: int, *, replace: bool = 
         schema,
         lineage,
     )
-    namespace: dict[str, Any] = {}
+    namespace: dict[str, Any] = {"Any": source}
     exec(adapter.compile_plan([operation]), namespace)
+    assert namespace["Any"] is source
     live = adapter.apply_transform(source, operation)
-    generated = namespace["clean_data"](source)
+    generated = namespace["clean_data"](namespace["Any"])
+    assert namespace["Any"] is source
     for result in (live, generated):
         output_lineage = derive_lineage(lineage, adapter.schema(result), operation)
         assert output_lineage[: len(lineage)] == lineage
