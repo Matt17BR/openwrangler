@@ -362,17 +362,20 @@ export function createPackagedExcelDependencyInstallJourney({
         wait: (durationMs) => workbench.waitForTimeout(durationMs)
       });
 
-      const page = await testing.request({
-        kind: "getPage",
-        sessionId: active.sessionId,
-        revision: active.metadata.revision,
-        viewRequestId: "packaged-excel-dependency-install-page",
-        offset: 0,
-        limit: 20,
-        columnOffset: 0,
-        columnLimit: 6,
-        filterModel: active.metadata.filterModel
-      });
+      const page = await testing.request(
+        {
+          kind: "getPage",
+          sessionId: active.sessionId,
+          revision: active.metadata.revision,
+          viewRequestId: "packaged-excel-dependency-install-page",
+          offset: 0,
+          limit: 20,
+          columnOffset: 0,
+          columnLimit: 6,
+          filterModel: active.metadata.filterModel
+        },
+        { ephemeralPage: true }
+      );
       assert.equal(page.kind, "page", "The recovered XLSX session must return a live page.");
       if (page.kind !== "page") throw new Error("The recovered XLSX session did not return its grid page.");
       assert.equal(page.page.totalRows, 64);
