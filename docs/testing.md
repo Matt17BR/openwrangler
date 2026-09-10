@@ -9,6 +9,11 @@ Before adding operations to an installed journey, measure preparation, editor ex
 review the remaining phase margin. Keep operation semantics in their source/generated-code owners when the installed
 interaction adds no distinct coverage. Include execution and maintenance cost when proposing new test infrastructure.
 
+Run local released-Jupyter invocations one at a time on each host, waiting for cleanup before starting the next.
+The [pinned Jupyter launcher](https://github.com/microsoft/vscode-jupyter/blob/fc61dfe2fd70a3d62d3ce0fef580757e7d64b81c/src/kernels/raw/launcher/kernelLauncher.node.ts)
+checks ports before the kernel binds them and tracks selections only within one extension host. Separate profiles
+therefore do not prevent concurrent invocations from choosing the same ports.
+
 ## Direct source checks
 
 While iterating, run the smallest relevant test:
