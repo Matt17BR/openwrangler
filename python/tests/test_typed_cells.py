@@ -136,7 +136,37 @@ def test_mixed_numeric_counts_retain_first_labels_and_native_containers(first, r
     assert all(actual is original for actual, original in zip(source["value"].array, values, strict=True))
 
 
+@pytest.mark.parametrize("offset", [0, 10**400], ids=["native", "wide"])
+def test_integer_value_counts_keep_native_success_and_wide_first_labels(offset: int) -> None:
+    from openwrangler_runtime.engines.pandas_engine import _pandas_value_counts
+
+    values = [offset + key for key in range(48) for _ in range(1 + key % 3)]
+    for reverse in (False, True):
+        ordered = list(reversed(values)) if reverse else values
+        source = pd.Series([*ordered, None, pd.NA, float("nan"), Decimal("NaN"), pd.NaT], dtype=object, name="value")
+        before = source.copy(deep=True)
+        for sort in (False, True):
+            actual = _pandas_value_counts(source, sort=sort)
+            try:
+                native = source.value_counts(dropna=True, sort=sort)
+            except OverflowError:
+                expected = [(value, ordered.count(value)) for value in dict.fromkeys(ordered)]
+                if sort:
+                    expected.sort(key=lambda item: -item[1])
+                assert list(actual.items()) == expected
+                assert actual.index.dtype == object and actual.dtype == np.dtype("int64")
+                assert actual.name == "count" and actual.index.name == "value"
+            else:
+                pd.testing.assert_series_equal(actual, native)
+            if offset:
+                assert all(
+                    value is next(original for original in ordered if original == value) for value in actual.index
+                )
+        pd.testing.assert_series_equal(source, before)
+
+
 def test_numeric_key_preserves_custom_numeric_and_temporal_native_behavior():
+    from openwrangler_runtime.engines.base import normalized_numeric_sum
     from openwrangler_runtime.engines.pandas_engine import _pandas_numeric_key, _pandas_value_counts
 
     class UnhashableFloat(float):
@@ -144,6 +174,29 @@ def test_numeric_key_preserves_custom_numeric_and_temporal_native_behavior():
 
     class UnhashableNumpyFloat(np.float64):
         __hash__: Any = None
+
+    original_error = OverflowError("Custom integer float refusal")
+
+    class FloatRefusingInteger(int):
+        def __float__(self) -> float:
+            raise original_error
+
+    custom_integer = pd.Series([FloatRefusingInteger(1), None], dtype=object)
+    try:
+        native_integer_counts = custom_integer.value_counts(sort=False)
+    except OverflowError as error:
+        with pytest.raises(OverflowError) as failure:
+            _pandas_value_counts(custom_integer, sort=False)
+        assert failure.value is error is original_error
+    else:
+        pd.testing.assert_series_equal(_pandas_value_counts(custom_integer, sort=False), native_integer_counts)
+    for values in ([FloatRefusingInteger(1), None], [0, FloatRefusingInteger(1), 2]):
+        with pytest.raises(OverflowError) as failure:
+            PandasEngine().summaries(pd.DataFrame({"value": pd.Series(values, dtype=object)}))
+        assert failure.value is original_error
+    with pytest.raises(OverflowError) as failure:
+        normalized_numeric_sum(FloatRefusingInteger(1), "integer")
+    assert failure.value is original_error
 
     unchanged = [
         1,

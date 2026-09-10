@@ -32,6 +32,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Pandas profiles and value choices handle large object-stored integers without failing on floating-point overflow.
+  Exact values, counts, extrema and sums remain available.
 - CSV/TSV import detection recognizes CR records and gives Polars the matching line ending.
   Import Options can set it explicitly when the sample is ambiguous.
 - File import detection preserves UTF-8 characters at its sample boundary instead of selecting a legacy encoding.

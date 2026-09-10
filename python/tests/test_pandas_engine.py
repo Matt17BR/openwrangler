@@ -893,6 +893,92 @@ def test_pandas_numeric_summaries_publish_lossless_wide_integer_and_decimal_extr
     assert isinstance(summaries[1]["numeric"]["max"], float)
 
 
+@pytest.mark.parametrize(
+    "values,approximations,has_chart,dtype",
+    [
+        pytest.param([10**309, None], {}, False, "object", id="positive-309"),
+        pytest.param([10**400, None], {}, False, "object", id="positive-400"),
+        pytest.param([-(10**400), None], {}, False, "object", id="negative-400"),
+        pytest.param([-(10**400), 10**400, None], {"mean": 0.0, "sum": 0.0}, False, "object", id="opposite-400"),
+        pytest.param([1, 10**400, None], {"min": 1.0}, False, "object", id="small-and-400"),
+        pytest.param([10**308, 10**308, None], {"min": 1e308, "max": 1e308}, True, "object", id="finite-308-pair"),
+        pytest.param([], {"sum": 0.0}, True, "Int64", id="empty-integer"),
+        pytest.param([None, pd.NA], {"sum": 0.0}, True, "Int64", id="missing-integer"),
+    ],
+)
+def test_pandas_wide_profiles_keep_exact_values_when_approximations_overflow(
+    monkeypatch: pytest.MonkeyPatch,
+    values: list[Any],
+    approximations: dict[str, float],
+    has_chart: bool,
+    dtype: str,
+) -> None:
+    import __main__
+
+    source = pd.DataFrame({"value": pd.Series(values, dtype=dtype), "safe": range(len(values))})
+    source.index = pd.Index(["same"] * len(source), name="original")
+    source.attrs["origin"] = "retained"
+    before = source.copy(deep=True)
+    monkeypatch.setattr(__main__, "wide_profile_source", source, raising=False)
+    manager = SessionManager()
+    query: dict[str, Any] = {"filters": [], "sort": []}
+    try:
+        opened = manager.open_session(
+            {"kind": "notebookVariable", "label": "wide integers", "variableName": "wide_profile_source"},
+            backend="pandas",
+            page_size=10,
+        )
+        session_id = opened["metadata"]["sessionId"]
+        column, safe = opened["metadata"]["schema"]
+        assert (column["type"], column["rawType"]) == ("integer", dtype)
+        response = manager.get_summary(session_id, 0, query, [column["id"]])
+        summary = response["summaries"][0]
+        assert summary["columnId"] == column["id"]
+        present = [value for value in values if type(value) is int]
+        counts = [(str(value), present.count(value)) for value in dict.fromkeys(present)]
+        expected_top = [{"value": value, "count": count} for value, count in sorted(counts, key=lambda item: -item[1])]
+        assert (summary["totalCount"], summary["nullCount"], summary["nanCount"]) == (
+            len(values),
+            len(values) - len(present),
+            0,
+        )
+        assert summary["distinctCount"] == len(counts)
+        assert summary["topValues"] == expected_top
+        numeric = summary["numeric"]
+        assert {key: value for key, value in numeric.items() if not key.startswith("exact")} == approximations
+        exact = {"exactSum": sum(present)}
+        if present:
+            exact.update(exactMin=min(present), exactMax=max(present))
+        assert {key for key in numeric if key.startswith("exact")} == set(exact)
+        for key, value in exact.items():
+            assert numeric[key] == {
+                "kind": "integer",
+                "raw": value if -(2**53) < value < 2**53 else str(value),
+                "display": str(value),
+                "isNull": False,
+                "isNaN": False,
+            }
+        assert ("visualization" in summary) is has_chart
+        if has_chart:
+            assert sum(bin_["count"] for bin_ in summary["visualization"]["bins"]) == len(present)
+        picker = manager.get_column_values(session_id, 0, "value", query)
+        assert not picker["hasMore"]
+        assert [(item["value"], item["count"]) for item in picker["values"]] == sorted(
+            counts, key=lambda item: (-item[1], item[0])
+        )
+        assert all(item["selectionValue"]["cell"]["display"] == item["value"] for item in picker["values"])
+        json.dumps([response, picker], allow_nan=False)
+        assert manager.get_summary(session_id, 0, query, [safe["id"]])["summaries"][0]["totalCount"] == len(values)
+        assert manager.get_page(session_id, 0, 0, 10, query)["page"] == opened["page"]
+        manager.close_session(session_id, 0)
+        assert manager.sessions == {}
+    finally:
+        manager.close_all()
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
+    assert source.attrs == before.attrs
+    assert __main__.wide_profile_source is source
+
+
 def test_pandas_decimal_summaries_keep_native_aggregate_precision_before_approximation() -> None:
     values = [Decimal("1e30"), Decimal("1"), Decimal("-1e30")]
 

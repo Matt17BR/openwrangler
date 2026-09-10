@@ -423,6 +423,11 @@ Pandas executes viewing, all catalog operations, profiling, generated code, and 
 Duplicate and non-string labels are addressed positionally after binding. Object-dtype cells are recursively isolated
 before trusted custom code, preview, rollback, or generated-code execution so nested user objects cannot mutate the
 source. Typed null, NaN, decimal, datetime, and wide-integer behavior is normalized at the protocol boundary.
+Integer profiles retain exact extrema and sums when floating-point approximations overflow. Each approximate statistic
+is attempted independently; unavailable statistics and histograms are omitted. Native value counting remains first.
+If Pandas cannot build its count index for object-stored ordinary Python integers, native factorization supplies exact
+counts with an object index; requested descending counts keep first-encounter ties. Successful native counts retain
+their existing ordering. This repair does not change stored values or admit custom integer subclasses.
 Datetime cells and nested values share one formatter. Pandas Timestamp nanoseconds are inserted into the time
 fraction while preserving the complete native offset, including offset seconds. Ordinary Timestamp profile and
 value-choice labels reuse this formatter with their existing space separator. Other scalar labels retain native string conversion. Search keeps

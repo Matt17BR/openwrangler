@@ -467,10 +467,29 @@ def _pandas_value_counts(series: Any, *, sort: bool = True) -> Any:
     import pandas as pd
 
     keys = _pandas_numeric_key(series)
-    if keys is series:
-        return series.value_counts(dropna=True, sort=sort)
-    counts = keys.value_counts(dropna=True, sort=sort)
-    if isinstance(series.dtype, pd.ArrowDtype):
+    try:
+        counts = keys.value_counts(dropna=True, sort=sort)
+    except OverflowError:
+        if keys.dtype != object or not all(
+            type(value) is int or _pandas_is_missing_scalar(value) for value in keys.array
+        ):
+            raise
+        counts = None
+    if counts is None:
+        import numpy as np
+
+        # Avoid native Index inference narrowing exact object-integer labels.
+        # Allocate after leaving the failed native call's exception scope.
+        codes, unique = pd.factorize(keys.to_numpy(copy=False), sort=False, use_na_sentinel=True)
+        counts = pd.Series(
+            np.bincount(codes[codes >= 0], minlength=len(unique)),
+            index=pd.Index(unique, dtype=object, name=series.name),
+            name="count",
+            copy=False,
+        )
+        if sort:
+            counts = counts.sort_values(ascending=False, kind="stable")
+    if keys is series or isinstance(series.dtype, pd.ArrowDtype):
         return counts
     first: dict[Any, Any] = {}
     for original, key in zip(series.array, keys.array, strict=True):
@@ -934,15 +953,33 @@ class PandasEngine(DataFrameEngine):
                 numeric_summary: dict[str, Any] = {
                     "min": _maybe_float(minimum),
                     "max": _maybe_float(maximum),
-                    "mean": _maybe_float(statistics["mean"] if statistics is not None else numeric.mean()),
-                    "median": _maybe_float(statistics["median"] if statistics is not None else numeric.median()),
-                    "std": _maybe_float(statistics["std"] if statistics is not None else numeric.std()),
                 }
+                exact_integer_domain: bool | None = None
+                for name in ("mean", "median", "std"):
+                    try:
+                        numeric_summary[name] = _maybe_float(
+                            statistics[name] if statistics is not None else getattr(numeric, name)()
+                        )
+                    except OverflowError:
+                        if exact_integer_domain is None:
+                            exact_integer_domain = numeric.dtype == object and all(
+                                type(value) is int or _pandas_is_missing_scalar(value) for value in numeric.array
+                            )
+                        if not exact_integer_domain:
+                            raise
                 numeric_summary.update(normalized_numeric_sum(numeric_sum, semantic_type))
                 if semantic_type in {"integer", "decimal"} and not numeric.empty:
                     numeric_summary.update(_pandas_exact_numeric_extrema(minimum, maximum, semantic_type))
                 summary["numeric"] = {key: value for key, value in numeric_summary.items() if value is not None}
-                summary["visualization"] = _pandas_numeric_visualization(numeric)
+                try:
+                    summary["visualization"] = _pandas_numeric_visualization(numeric)
+                except OverflowError:
+                    if exact_integer_domain is None:
+                        exact_integer_domain = numeric.dtype == object and all(
+                            type(value) is int or _pandas_is_missing_scalar(value) for value in numeric.array
+                        )
+                    if not exact_integer_domain:
+                        raise
             elif semantic_type == "boolean":
                 summary["visualization"] = {
                     "kind": "boolean",
@@ -5821,6 +5858,10 @@ def _maybe_float(value: Any) -> float | None:
         result = None if value is None else float(value)
         return result if result is None or isfinite(result) else None
     except (TypeError, ValueError):
+        return None
+    except OverflowError:
+        if type(value) is not int:
+            raise
         return None
 
 
