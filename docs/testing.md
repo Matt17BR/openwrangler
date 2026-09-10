@@ -704,7 +704,7 @@ declared minimum VS Code 1.106.0 and then to current stable VS Code:
 
 ```bash
 npm ci --ignore-scripts
-python -m pip install -e "python[dev]"
+python -m pip install -e python
 npm run clean
 npm run build
 npm run package:prepared -- --out openwrangler.vsix
