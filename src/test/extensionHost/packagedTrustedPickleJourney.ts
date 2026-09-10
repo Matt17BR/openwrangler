@@ -206,17 +206,20 @@ export function createPackagedTrustedPickleJourney({
         active.metadata.schema.map((column) => column.name),
         ["order_id", "market", "revenue"]
       );
-      const page = await testing.request({
-        kind: "getPage",
-        sessionId: active.sessionId,
-        revision: active.metadata.revision,
-        viewRequestId: "packaged-trusted-pickle-page",
-        offset: 0,
-        limit: 20,
-        columnOffset: 0,
-        columnLimit: 3,
-        filterModel: active.metadata.filterModel
-      });
+      const page = await testing.request(
+        {
+          kind: "getPage",
+          sessionId: active.sessionId,
+          revision: active.metadata.revision,
+          viewRequestId: "packaged-trusted-pickle-page",
+          offset: 0,
+          limit: 20,
+          columnOffset: 0,
+          columnLimit: 3,
+          filterModel: active.metadata.filterModel
+        },
+        { ephemeralPage: true }
+      );
       assert.equal(page.kind, "page");
       if (page.kind !== "page") throw new Error("The converted Parquet file did not return its first grid page.");
       assert.deepEqual(
