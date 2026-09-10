@@ -748,6 +748,10 @@ source storage and other non-text columns remain unchanged. Duration storage is 
 values; NaN is refused before artifact creation because the numeric writer would otherwise turn it into missing.
 Missing durations and existing infinity tokens remain unchanged. Invalid text is also refused before creating the
 artifact; export does not apply the page cell-size limit.
+POSIXct columns retain native R text formatting, which rounds fractional seconds to six decimal places and omits
+both the time-zone name and offset. An explicit column time zone is used; a missing or empty zone uses the R process's
+time zone, unlike the grid's UTC default. CSV therefore does not guarantee exact timestamp preservation or record
+the zone needed to interpret the exported local time. The R CSV format choice displays these limits before export.
 
 Native R Parquet export retains nanoparquet's microsecond timestamp representation. Before writing, it scans all
 POSIXct values in bounded slices and refuses non-missing non-finite values, range overflow or precision loss.

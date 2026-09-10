@@ -411,7 +411,8 @@ The complete current operation set has direct native live, generated-code, and r
 parameters live in the [generated reference](reference.md#transformation-operations). CSV export is UTF-8 with
 double-quote syntax and LF record separators, including under the C locale. Fractional durations retain decimal points
 regardless of `OutDec`. Duration NaN refuses CSV export before creating an artifact, because the numeric writer would
-otherwise make it indistinguishable from a missing value. Parquet export additionally requires
+otherwise make it indistinguishable from a missing value. CSV timestamp text may lose precision and omits time-zone
+information; see the [native R export rules](architecture.md#native-r). Parquet export additionally requires
 `nanoparquet` 0.5.1 or newer in the selected R environment,
 and notebook export is available only from the current local extension host. Fill interpolation does not accept
 `integer64` coordinates, and active `data.table` keys restrict in-place changes. The durable ownership boundary lives

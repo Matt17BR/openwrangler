@@ -43,7 +43,11 @@ async function exportSessionData(
   }
   const choices = [
     initial.metadata.capabilities.exportCsv
-      ? { label: "CSV", description: "Delimited text", format: "csv" as const }
+      ? {
+          label: "CSV",
+          description: backend === "r" ? "Rounds timestamps to microseconds; no time-zone offset" : "Delimited text",
+          format: "csv" as const
+        }
       : undefined,
     initial.metadata.capabilities.exportParquet
       ? { label: "Parquet", description: "Typed columnar data", format: "parquet" as const }

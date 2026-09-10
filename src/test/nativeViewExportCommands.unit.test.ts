@@ -404,7 +404,7 @@ describe("native export commands", () => {
     await expect(command("openWrangler.exportData")()).resolves.toBe(true);
 
     expect(nativeMocks.showQuickPick).toHaveBeenCalledWith(
-      [{ label: "CSV", description: "Delimited text", format: "csv" }],
+      [{ label: "CSV", description: "Rounds timestamps to microseconds; no time-zone offset", format: "csv" }],
       { title: "Export Cleaned Data", placeHolder: "Choose a file format" }
     );
     expect(nativeMocks.showSaveDialog).toHaveBeenCalledWith({
