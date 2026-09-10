@@ -95,7 +95,8 @@ ambiguous attribution and exceeded history, snapshot or note-size bounds stop pr
 list. Stable and manual-preview releases keep their checked-in curated notes.
 
 The workflow packages one VSIX with its checksum and provenance receipt, then installs those bytes in stable VS Code
-with the `daily-core` selector. After that check passes, the protected job creates the lightweight tag and GitHub
+with the `daily-core` selector, using the base Python dependencies for CSV viewing and saved-notebook rendering.
+After that check passes, the protected job creates the lightweight tag and GitHub
 prerelease, sends the same public files to Open VSX, and lets the tag start the Azure Marketplace pipeline. A failed
 check publishes nothing; fix `main` and let the next scheduled run create a new candidate.
 

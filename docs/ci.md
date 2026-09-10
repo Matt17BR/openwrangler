@@ -40,6 +40,7 @@ claiming fresh TypeScript test execution. All other Source steps, including the 
 The allowed Markdown files are not inputs to the Vitest suite; formatting, documentation, reference, script and
 package checks retain their actual document validation.
 
+The scope-only job uses Node and Git without installing npm dependencies or restoring the npm cache.
 `scripts/ci-docs-only.mjs` permits the omissions below. All admitted files must be regular and non-executable.
 
 - Python may be omitted for additions or edits to `.R` files under `r/openwrangler_runtime/` or `r/tests/`; edits to
