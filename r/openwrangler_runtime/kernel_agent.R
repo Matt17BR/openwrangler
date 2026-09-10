@@ -6395,52 +6395,59 @@ openwrangler_r_kernel_agent <- local({
     sprintf("list(kind = %s, value = %s)", r_string(replacement$kind), value)
   }
 
-  fill_missing_code_helper_lines <- function(replacement_kinds, fill_directional_values) {
+  fill_missing_code_helper_lines <- function(replacement_kinds, fill_directional_values, interpolate_subnormal_units) {
     c(
       if ("directional" %in% replacement_kinds) {
         directional_lines <- deparse(fill_directional_values, width.cutoff = 500L)
         directional_lines[[1L]] <- paste0(".ow_fill_directional <- ", directional_lines[[1L]])
         paste0("  ", directional_lines)
       },
-      if ("linearInterpolation" %in% replacement_kinds) c(
-        "  .ow_fill_linear <- function(.ow_values, .ow_coordinate, .ow_max_gap = NULL) {",
-        "    if (!is.null(.ow_max_gap) && (length(.ow_max_gap) != 1L || !is.numeric(.ow_max_gap) || is.na(.ow_max_gap) || !is.finite(.ow_max_gap) || .ow_max_gap < 1 || .ow_max_gap > 1000000 || .ow_max_gap != floor(.ow_max_gap))) stop(\"Open Wrangler received an invalid maximum gap\", call. = FALSE)",
-        "    .ow_coordinate_values <- as.double(.ow_coordinate)",
-        "    if (anyNA(.ow_coordinate_values) || any(!is.finite(.ow_coordinate_values))) stop(\"Every interpolation coordinate must be present and finite\", call. = FALSE)",
-        "    if (base::anyDuplicated.default(.ow_coordinate_values)) stop(\"Interpolation coordinates must be unique\", call. = FALSE)",
-        "    .ow_rows <- order(.ow_coordinate_values, method = \"radix\")",
-        "    .ow_result_values <- .ow_values",
-        "    .ow_ordered_values <- .ow_result_values[.ow_rows]",
-        "    .ow_missing <- is.na(.ow_ordered_values)",
-        "    if (length(.ow_missing) == 0L || !any(.ow_missing)) return(.ow_result_values)",
-        "    .ow_runs <- rle(.ow_missing)",
-        "    .ow_run_ends <- cumsum(.ow_runs$lengths)",
-        "    .ow_run_starts <- .ow_run_ends - .ow_runs$lengths + 1L",
-        "    for (.ow_run_index in which(.ow_runs$values)) {",
-        "      .ow_run_length <- .ow_runs$lengths[[.ow_run_index]]",
-        "      if (!is.null(.ow_max_gap) && .ow_run_length > .ow_max_gap) next",
-        "      .ow_start <- .ow_run_starts[[.ow_run_index]]; .ow_end <- .ow_run_ends[[.ow_run_index]]",
-        "      .ow_left <- .ow_start - 1L; .ow_right <- .ow_end + 1L",
-        "      if (.ow_left < 1L || .ow_right > length(.ow_rows)) next",
-        "      .ow_left_value <- .ow_ordered_values[[.ow_left]]; .ow_right_value <- .ow_ordered_values[[.ow_right]]",
-        "      if (!is.finite(.ow_left_value) || !is.finite(.ow_right_value)) next",
-        "      .ow_left_coordinate <- .ow_coordinate_values[[.ow_rows[[.ow_left]]]]; .ow_right_coordinate <- .ow_coordinate_values[[.ow_rows[[.ow_right]]]]",
-        "      .ow_coordinate_width <- .ow_right_coordinate - .ow_left_coordinate",
-        "      .ow_scaled <- !is.finite(.ow_coordinate_width)",
-        "      if (.ow_scaled) { .ow_coordinate_scale <- max(abs(.ow_left_coordinate), abs(.ow_right_coordinate)); .ow_scaled_left <- .ow_left_coordinate / .ow_coordinate_scale; .ow_coordinate_width <- .ow_right_coordinate / .ow_coordinate_scale - .ow_scaled_left }",
-        "      if (!is.finite(.ow_coordinate_width) || .ow_coordinate_width <= 0) stop(\"Interpolation coordinates cannot be represented safely\", call. = FALSE)",
-        "      for (.ow_index in .ow_start:.ow_end) {",
-        "        .ow_coordinate_value <- .ow_coordinate_values[[.ow_rows[[.ow_index]]]]",
-        "        .ow_weight <- if (.ow_scaled) (.ow_coordinate_value / .ow_coordinate_scale - .ow_scaled_left) / .ow_coordinate_width else (.ow_coordinate_value - .ow_left_coordinate) / .ow_coordinate_width",
-        "        if (!is.finite(.ow_weight) || .ow_weight <= 0 || .ow_weight >= 1) stop(\"Interpolation coordinates cannot be represented safely\", call. = FALSE)",
-        "        .ow_interpolated <- if (.ow_weight == 0.5) .ow_safe_float_midpoint(.ow_left_value, .ow_right_value) else if (sign(.ow_left_value) == sign(.ow_right_value)) .ow_left_value + (.ow_right_value - .ow_left_value) * .ow_weight else .ow_left_value * (1 - .ow_weight) + .ow_right_value * .ow_weight",
-        "        if (!is.finite(.ow_interpolated)) stop(\"Linear interpolation produced a non-finite value\", call. = FALSE)",
-        "        .ow_result_values[[.ow_rows[[.ow_index]]]] <- .ow_interpolated",
-        "      }",
-        "    }",
-        "    .ow_result_values",
-        "  }"
-      ),
+      if ("linearInterpolation" %in% replacement_kinds) {
+        subnormal_lines <- deparse(interpolate_subnormal_units, width.cutoff = 500L)
+        subnormal_lines[[1L]] <- paste0(".ow_fill_subnormal_units <- ", subnormal_lines[[1L]])
+        c(
+          paste0("  ", subnormal_lines),
+          "  .ow_fill_linear <- function(.ow_values, .ow_coordinate, .ow_max_gap = NULL) {",
+          "    if (!is.null(.ow_max_gap) && (length(.ow_max_gap) != 1L || !is.numeric(.ow_max_gap) || is.na(.ow_max_gap) || !is.finite(.ow_max_gap) || .ow_max_gap < 1 || .ow_max_gap > 1000000 || .ow_max_gap != floor(.ow_max_gap))) stop(\"Open Wrangler received an invalid maximum gap\", call. = FALSE)",
+          "    .ow_coordinate_values <- as.double(.ow_coordinate)",
+          "    if (anyNA(.ow_coordinate_values) || any(!is.finite(.ow_coordinate_values))) stop(\"Every interpolation coordinate must be present and finite\", call. = FALSE)",
+          "    if (base::anyDuplicated.default(.ow_coordinate_values)) stop(\"Interpolation coordinates must be unique\", call. = FALSE)",
+          "    .ow_rows <- order(.ow_coordinate_values, method = \"radix\")",
+          "    .ow_result_values <- .ow_values",
+          "    .ow_ordered_values <- .ow_result_values[.ow_rows]",
+          "    .ow_missing <- is.na(.ow_ordered_values)",
+          "    if (length(.ow_missing) == 0L || !any(.ow_missing)) return(.ow_result_values)",
+          "    .ow_runs <- rle(.ow_missing)",
+          "    .ow_run_ends <- cumsum(.ow_runs$lengths)",
+          "    .ow_run_starts <- .ow_run_ends - .ow_runs$lengths + 1L",
+          "    for (.ow_run_index in which(.ow_runs$values)) {",
+          "      .ow_run_length <- .ow_runs$lengths[[.ow_run_index]]",
+          "      if (!is.null(.ow_max_gap) && .ow_run_length > .ow_max_gap) next",
+          "      .ow_start <- .ow_run_starts[[.ow_run_index]]; .ow_end <- .ow_run_ends[[.ow_run_index]]",
+          "      .ow_left <- .ow_start - 1L; .ow_right <- .ow_end + 1L",
+          "      if (.ow_left < 1L || .ow_right > length(.ow_rows)) next",
+          "      .ow_left_value <- .ow_ordered_values[[.ow_left]]; .ow_right_value <- .ow_ordered_values[[.ow_right]]",
+          "      if (!is.finite(.ow_left_value) || !is.finite(.ow_right_value)) next",
+          "      .ow_subnormal_gap <- abs(.ow_left_value) < .Machine$double.xmin && abs(.ow_right_value) < .Machine$double.xmin && .ow_left_value != .ow_right_value",
+          "      if (.ow_subnormal_gap) { .ow_subnormal_unit <- .Machine$double.xmin * .Machine$double.eps; .ow_subnormal_anchor <- .ow_left_value / .ow_subnormal_unit; .ow_subnormal_difference <- .ow_right_value / .ow_subnormal_unit - .ow_subnormal_anchor }",
+          "      .ow_left_coordinate <- .ow_coordinate_values[[.ow_rows[[.ow_left]]]]; .ow_right_coordinate <- .ow_coordinate_values[[.ow_rows[[.ow_right]]]]",
+          "      .ow_coordinate_width <- .ow_right_coordinate - .ow_left_coordinate",
+          "      .ow_scaled <- !is.finite(.ow_coordinate_width)",
+          "      if (.ow_scaled) { .ow_coordinate_scale <- max(abs(.ow_left_coordinate), abs(.ow_right_coordinate)); .ow_scaled_left <- .ow_left_coordinate / .ow_coordinate_scale; .ow_coordinate_width <- .ow_right_coordinate / .ow_coordinate_scale - .ow_scaled_left }",
+          "      if (!is.finite(.ow_coordinate_width) || .ow_coordinate_width <= 0) stop(\"Interpolation coordinates cannot be represented safely\", call. = FALSE)",
+          "      for (.ow_index in .ow_start:.ow_end) {",
+          "        .ow_coordinate_value <- .ow_coordinate_values[[.ow_rows[[.ow_index]]]]",
+          "        .ow_weight <- if (.ow_scaled) (.ow_coordinate_value / .ow_coordinate_scale - .ow_scaled_left) / .ow_coordinate_width else (.ow_coordinate_value - .ow_left_coordinate) / .ow_coordinate_width",
+          "        if (!is.finite(.ow_weight) || .ow_weight <= 0 || .ow_weight >= 1) stop(\"Interpolation coordinates cannot be represented safely\", call. = FALSE)",
+          "        .ow_interpolated <- if (.ow_weight == 0.5) .ow_safe_float_midpoint(.ow_left_value, .ow_right_value) else if (.ow_subnormal_gap) .ow_fill_subnormal_units(.ow_subnormal_anchor, .ow_subnormal_difference, .ow_weight, .ow_subnormal_unit) else if (sign(.ow_left_value) == sign(.ow_right_value)) .ow_left_value + (.ow_right_value - .ow_left_value) * .ow_weight else .ow_left_value * (1 - .ow_weight) + .ow_right_value * .ow_weight",
+          "        if (!is.finite(.ow_interpolated)) stop(\"Linear interpolation produced a non-finite value\", call. = FALSE)",
+          "        .ow_result_values[[.ow_rows[[.ow_index]]]] <- .ow_interpolated",
+          "      }",
+          "    }",
+          "    .ow_result_values",
+          "  }"
+        )
+      },
       if ("groupedStatistic" %in% replacement_kinds) c(
         "  .ow_fill_grouped <- function(.ow_values, .ow_rows, .ow_keys, .ow_semantic_kind, .ow_statistic) {",
         "    if (!.ow_statistic %in% c(\"mean\", \"median\", \"mostFrequent\")) stop(\"Open Wrangler received an invalid grouped statistic\", call. = FALSE)",
@@ -7640,6 +7647,7 @@ openwrangler_r_kernel_agent <- local({
     safe_float_midpoint,
     round_coarse_helpers,
     fill_directional_values,
+    interpolate_subnormal_units,
     dense_rank_values,
     duplicate_row_mask,
     prepare_find_replace_regex,
@@ -7920,7 +7928,7 @@ openwrangler_r_kernel_agent <- local({
     fill_steps <- Filter(function(step) identical(step$kind, "fillMissingValues"), bound_plan)
     if (length(fill_steps) > 0L) {
       fill_kinds <- vapply(fill_steps, function(step) step$replacement$kind, character(1L), USE.NAMES = FALSE)
-      lines <- c(lines, fill_missing_code_helper_lines(fill_kinds, fill_directional_values))
+      lines <- c(lines, fill_missing_code_helper_lines(fill_kinds, fill_directional_values, interpolate_subnormal_units))
     }
     group_steps <- Filter(function(step) identical(step$kind, "groupBy"), bound_plan)
     needs_integer_sum <- any(vapply(group_steps, function(step) {
@@ -9755,6 +9763,7 @@ openwrangler_r_kernel_agent <- local({
         frame_contract$safe_float_midpoint,
         frame_contract$round_coarse_helpers,
         frame_contract$fill_directional_values,
+        frame_contract$interpolate_subnormal_units,
         frame_contract$dense_rank_values,
         frame_contract$duplicate_row_mask,
         frame_contract$prepare_find_replace_regex,
@@ -10096,6 +10105,7 @@ openwrangler_r_kernel_agent <- local({
             frame_contract$safe_float_midpoint,
             frame_contract$round_coarse_helpers,
             frame_contract$fill_directional_values,
+            frame_contract$interpolate_subnormal_units,
             frame_contract$dense_rank_values,
             frame_contract$duplicate_row_mask,
             frame_contract$prepare_find_replace_regex,
@@ -10155,6 +10165,7 @@ openwrangler_r_kernel_agent <- local({
             frame_contract$safe_float_midpoint,
             frame_contract$round_coarse_helpers,
             frame_contract$fill_directional_values,
+            frame_contract$interpolate_subnormal_units,
             frame_contract$dense_rank_values,
             frame_contract$duplicate_row_mask,
             frame_contract$prepare_find_replace_regex,
@@ -10235,6 +10246,7 @@ openwrangler_r_kernel_agent <- local({
               frame_contract$safe_float_midpoint,
               frame_contract$round_coarse_helpers,
               frame_contract$fill_directional_values,
+              frame_contract$interpolate_subnormal_units,
               frame_contract$dense_rank_values,
               frame_contract$duplicate_row_mask,
               frame_contract$prepare_find_replace_regex,

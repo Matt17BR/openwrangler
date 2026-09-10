@@ -1,5 +1,62 @@
 # Native numeric representation contracts shared by canonical and platform qualification.
 
+local({
+  tiny <- 2^-1074
+  sources <- new.env(parent = baseenv())
+  sources$portable_interpolation <- data.frame(coordinate = c(0, 3, 4),
+    quarter = c(-2 * tiny, NA_real_, 2 * tiny), zero = c(-tiny, NA_real_, 0),
+    row.names = c("left", "gap", "right"))
+  before <- serialize(sources$portable_interpolation, NULL, version = 3L)
+  expected <- sources$portable_interpolation
+  agent <- openwrangler_r_kernel_agent$new_agent(instrumented_frame_contract, sources)
+  on.exit(agent$dispose(), add = TRUE)
+  session <- "96969696-9696-4696-8696-969696969696"
+  opened <- dispatch_with(agent, "openSession", list(
+    sessionId = session, variableName = "portable_interpolation", page = page_window()))
+  assert_identical(opened$kind, "page", "portable interpolation did not open")
+  revision <- 0L
+  for (position in 2:3) {
+    name <- names(expected)[[position]]
+    expected[[position]][[2L]] <- if (position == 2L) tiny else -abs(0)
+    preview <- dispatch_with(agent, "previewStep", list(sessionId = session, revision = revision,
+      step = fill_step(paste0("portable-", name), paste0("r:c:", position - 1L), name,
+        list(kind = "linearInterpolation", coordinate = list(id = "r:c:0", name = "coordinate"))),
+      page = page_window()))
+    assert_identical(preview$kind, "stepPreview", "portable interpolation did not preview")
+    live <- get("snapshot", envir = latest_full_capture, inherits = FALSE)
+    assert_identical(writeBin(live[[position]], raw(), size = 8L),
+      writeBin(expected[[position]], raw(), size = 8L), "portable interpolation lost live binary64 bits")
+    applied <- dispatch_with(agent, "applyDraft", list(
+      sessionId = session, revision = preview$revision, page = page_window()))
+    assert_identical(applied$page, preview$page, "portable interpolation changed on Apply")
+    declarations <- grep("^[[:space:]]*\\.ow_fill_[a-z_]+ <- function",
+      strsplit(applied$code, "\n", fixed = TRUE)[[1L]], value = TRUE)
+    assert_identical(sub(" <- function.*$", "", trimws(declarations)),
+      c(".ow_fill_subnormal_units", ".ow_fill_linear"), "repeated interpolation duplicated or omitted helpers")
+    copied <- new.env(parent = baseenv())
+    copied$portable_interpolation <- unserialize(before)
+    eval(parse(text = applied$code), envir = copied)
+    assert_identical(copied$open_wrangler_result, expected, "generated interpolation changed values or metadata")
+    compiled <- compiler::cmpfun(eval(parse(text = paste("function(portable_interpolation) {", applied$code,
+      "open_wrangler_result\n}", sep = "\n")), envir = baseenv()))
+    compiled_result <- compiled(copied$portable_interpolation)
+    assert_identical(compiled_result, expected, "compiled interpolation changed values or metadata")
+    assert_identical(writeBin(compiled_result[[position]], raw(), size = 8L),
+      writeBin(expected[[position]], raw(), size = 8L), "compiled interpolation lost binary64 bits")
+    assert_identical(serialize(copied$portable_interpolation, NULL, version = 3L), before,
+      "compiled interpolation changed its source")
+    revision <- applied$revision
+  }
+  for (iteration in 1:2) {
+    undone <- dispatch_with(agent, "undoStep", list(sessionId = session, revision = revision, page = page_window()))
+    revision <- undone$revision
+  }
+  assert_identical(undone$page, opened$page, "portable interpolation Undo changed source metadata or rows")
+  assert_identical(serialize(sources$portable_interpolation, NULL, version = 3L), before,
+    "portable interpolation changed source")
+  invisible(dispatch_with(agent, "closeSession", list(sessionId = session)))
+})
+
 # Hexadecimal inputs bind the Fraction oracles to the same binary64 values on every platform.
 # These controls protect cancellation and final rounding, including signed zero.
 local({

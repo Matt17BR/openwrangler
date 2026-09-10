@@ -155,8 +155,9 @@ DOM-before-acknowledgement and mismatched-marker integration
 coverage; timing and retirement behavior is owned by the renderer lifecycle tests. Native R Group By and Fill Missing
 contracts execute generated code for midpoint edge cases alongside live execution. Their existing owners cover tiny
 ties, the normal/subnormal boundary, finite extremes, source preservation and Undo. Direct frame tests also check
-signed zero and bypassing user-defined S3 mean methods. Non-midpoint interpolation counterexamples stay
-separate from the midpoint guarantee.
+signed zero and bypassing user-defined S3 mean methods. Non-midpoint interpolation cases cover early underflow,
+rounding ties after adding the anchor, signed zero and the computed binary64 weight. They retain controls for the
+unchanged midpoint and normal-endpoint paths, with complete generated execution and source preservation through Undo.
 The existing native R Group By owner compares typed empty results across base dataframes, tibbles and data.tables.
 It also executes complete generated programs in fresh R processes to check integer64 first/last outputs and exact
 wide keys without a preloaded bit64 namespace, retaining source and result-publication assertions.
@@ -167,7 +168,8 @@ The existing R Fill, Group By, profiling and Custom Code owners register and res
 built-in isolation and intentional user-code dispatch. Live results and complete generated programs must agree.
 The `kernel:numeric-portability` owner checks exact finite Group By, Fill and profile means against binary64 reference
 values, including cancellation, midpoint parity, subnormal boundaries, finite maxima, chunk thresholds and multiple
-chunks. It executes complete generated programs, preserves source and frame types through Undo, and checks once-only
+chunks. Subnormal interpolation controls also execute repeated steps and compiled code, preserving signed zero.
+The owner executes complete generated programs, preserves source and frame types through Undo, and checks once-only
 helper emission for repeated plans. The existing Fill owner checks omission from unrelated plans. Integer64 and
 non-mean profile controls remain in their existing owners.
 Profile controls cover small and chunked even medians, text lengths and unchanged fields; primitive checks retain

@@ -240,13 +240,16 @@ along an ordinary numeric, `Date`, or `POSIXct` coordinate. The coordinate must 
 R types. Live and generated medians and interpolation at the midpoint share the same two-value calculation.
 Unequal finite doubles use `base::mean.default`, avoiding both early underflow and user-defined S3 mean methods.
 Equal values retain their original signed zero; existing non-finite and exact integer64 rules remain unchanged.
-Interpolation at other weights can still round tiny intermediate values too early; this is tracked in
-[#1064](https://github.com/Matt17BR/openwrangler/issues/1064).
+For other weights, unequal endpoints that are zero or subnormal use integer multiples of the smallest positive
+double. A shared [TwoProduct calculation](https://www.tuhh.de/ti3/paper/rump/Ru05d.pdf) retains multiplication error
+until final nearest-even rounding. It uses the binary64 weight from the existing coordinate calculation, rather than
+an exact rational coordinate ratio. Normal endpoints retain the existing arithmetic and its floating-point limits.
 Active data-table key columns are rejected because changing a key value could invalidate the stored order.
 
 Standalone generated Fill code includes only the helper families used by the cleaning plan. Mixed steps retain
 their dependencies, including datetime handling for scalar replacements and the shared numeric midpoint.
 Directional Fill emits its native live function, keeping missing-run and donor selection in one implementation.
+Linear interpolation also emits its native subnormal calculation once; anchor units are prepared once per gap.
 
 Dropping columns keeps retained IDs stable and refuses to remove the final column. Selecting columns preserves the
 chosen order. Cloning appends a copy with its own stable derived ID, which later steps can address directly. The

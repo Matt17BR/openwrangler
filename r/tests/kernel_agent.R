@@ -3790,7 +3790,7 @@ linear_complete_apply <- dispatch(
   list(sessionId = linear_fill_session_id, revision = 3L, page = page_window())
 )
 assert_identical(linear_complete_apply$action, "apply", "R linear interpolation did not apply")
-assert_fill_helpers(linear_complete_apply$code, ".ow_fill_linear")
+assert_fill_helpers(linear_complete_apply$code, c(".ow_fill_subnormal_units", ".ow_fill_linear"))
 linear_generated_flavors <- list(
   data.frame(coordinate = c(12, 0, 5, 20, 8, 30, 3), target = c(NA_real_, 0, NaN, Inf, 80, NA_real_, NA_real_), check.names = FALSE),
   tibble::tibble(coordinate = c(12, 0, 5, 20, 8, 30, 3), target = c(NA_real_, 0, NaN, Inf, 80, NA_real_, NA_real_)),
@@ -3876,7 +3876,7 @@ linear_scalar_apply <- dispatch(
   list(sessionId = linear_fill_session_id, revision = 5L, page = page_window())
 )
 assert_identical(linear_scalar_apply$action, "apply", "mixed R fill did not apply")
-assert_fill_helpers(linear_scalar_apply$code, c(".ow_fill_linear", ".ow_fill_datetime", ".ow_fill_values"))
+assert_fill_helpers(linear_scalar_apply$code, c(".ow_fill_subnormal_units", ".ow_fill_linear", ".ow_fill_datetime", ".ow_fill_values"))
 linear_scalar_environment <- new.env(parent = baseenv())
 linear_scalar_environment$linear_fill_frame <- linear_fill_before
 eval(parse(text = linear_scalar_apply$code), envir = linear_scalar_environment)
@@ -3899,10 +3899,18 @@ assert_identical(linear_fill_closed$kind, "closed", "the R linear-interpolation 
 
 local({
   tiny <- 2^-1074
+  largest <- .Machine$double.xmin - tiny
   cases <- list(
-    positive_tie = list(values = c(tiny, 2 * tiny), weight = 0.5, expected = 2 * tiny),
-    negative_zero = list(values = c(-2 * tiny, tiny), weight = 0.5, expected = -0.0),
-    nonmidpoint = list(values = c(-8 * tiny, -3 * tiny), weight = 0.1, expected = -7 * tiny)
+    positive_tie = list(values = c(tiny, 2 * tiny), coordinate = c(0, 0.5, 1), expected = 2 * tiny),
+    negative_zero = list(values = c(-2 * tiny, tiny), coordinate = c(0, 0.5, 1), expected = -0.0),
+    nonmidpoint = list(values = c(-8 * tiny, -3 * tiny), coordinate = c(0, 0.1, 1), expected = -7 * tiny),
+    quarter = list(values = c(-2 * tiny, 2 * tiny), coordinate = c(0, 1, 4), expected = -tiny),
+    three_quarters = list(values = c(-2 * tiny, 2 * tiny), coordinate = c(0, 3, 4), expected = tiny),
+    anchor_parity = list(values = c(-7 * tiny, 3 * tiny), coordinate = c(0, 1, 4), expected = -4 * tiny),
+    stored_weight = list(values = c(0, 5 * tiny), coordinate = c(0, 1, 10), expected = tiny),
+    subnormal_zero = list(values = c(-tiny, 0), coordinate = c(0, 3, 4), expected = -abs(0)),
+    positive_residual = list(values = c(-largest, largest), coordinate = c(0, 3, 4), expected = 0x0.8000000000000p-1022),
+    negative_residual = list(values = c(-largest, largest - 4 * tiny), coordinate = c(0, 3, 4), expected = 0x0.7fffffffffffcp-1022)
   )
   constructors <- list(
     data.frame = identity,
@@ -3920,7 +3928,7 @@ local({
     case <- cases[[case_name]]
     label <- paste(flavor, case_name, "interpolation")
     before <- constructors[[flavor]](data.frame(
-      coordinate = c(0, case$weight, 1), target = c(case$values[[1L]], NA_real_, case$values[[2L]]),
+      coordinate = case$coordinate, target = c(case$values[[1L]], NA_real_, case$values[[2L]]),
       row.names = c("left", "gap", "right")
     ))
     midpoint_source$midpoint_frame <- before
