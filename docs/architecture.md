@@ -563,6 +563,9 @@ for that aggregation alone; keys, source storage and other aggregates retain the
 
 ### Polars
 
+Profiles and value choices keep temporary count fields distinct from the selected source field. Supported source
+names remain valid in eager and lazy frames, independently of which columns a profile request selects.
+
 Pivot Longer compares exact selected-column dtypes from the schema during preflight, live execution and generated
 execution. Category mapping identity and Enum order must match. Compatibility checks use schema metadata;
 row-count bounds and result validation retain their existing execution paths.

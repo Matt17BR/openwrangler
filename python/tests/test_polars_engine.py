@@ -650,6 +650,113 @@ def test_polars_column_values_and_parquet(tmp_path):
     ]
 
 
+@pytest.mark.parametrize("lazy", [False, True])
+def test_polars_count_labels_keep_public_profiles_and_value_choices(
+    lazy: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import __main__
+
+    values = ["b", "d", "a", "c", "a", "b", "a", None]
+    frame = pl.DataFrame({"count": values, "count_": list(reversed(values))})
+    before = frame.clone()
+    source = frame.lazy() if lazy else frame
+    monkeypatch.setattr(__main__, "count_label_source", source, raising=False)
+    manager = SessionManager()
+    view = {"filters": [], "sort": []}
+    expected = [
+        {"value": value, "count": count, "selectionValue": typed_selection_value(value, "string")}
+        for value, count in (("a", 3), ("b", 2), ("c", 1), ("d", 1))
+    ]
+    try:
+        opened = manager.open_session(
+            {"kind": "notebookVariable", "label": "count_label_source", "variableName": "count_label_source"},
+            backend="polars",
+            page_size=8,
+        )
+        session_id = opened["metadata"]["sessionId"]
+        schema = opened["metadata"]["schema"]
+        assert [column["name"] for column in schema] == ["count", "count_"]
+        for column in schema:
+            for limit, has_more in ((3, True), (4, False)):
+                choices = manager.get_column_values(session_id, 0, column["name"], view, limit=limit)
+                assert choices == {
+                    "kind": "columnValues",
+                    "revision": 0,
+                    "column": column["name"],
+                    "values": expected[:limit],
+                    "hasMore": has_more,
+                }
+            search = manager.get_column_values(session_id, 0, column["name"], view, search="B", limit=1)
+            assert search["values"] == [expected[1]]
+            assert search["hasMore"] is False
+            summary = manager.get_summary(session_id, 0, view, [column["id"]])["summaries"][0]
+            assert summary["columnId"] == column["id"]
+            assert (summary["totalCount"], summary["nullCount"], summary["nanCount"], summary["distinctCount"]) == (
+                8,
+                1,
+                0,
+                4,
+            )
+            assert {item["value"]: item["count"] for item in summary["topValues"]} == {"a": 3, "b": 2, "c": 1, "d": 1}
+        summaries = manager.get_summary(session_id, 0, view)["summaries"]
+        assert [summary["columnId"] for summary in summaries] == [column["id"] for column in schema]
+        page = manager.get_page(session_id, 0, 0, 8, view)
+        assert page["revision"] == 0
+        assert page["page"]["rows"] == opened["page"]["rows"]
+        assert __main__.count_label_source is source
+        assert (source.collect() if isinstance(source, pl.LazyFrame) else source).equals(before)
+        assert frame.schema == before.schema
+    finally:
+        manager.close_all()
+
+
+@pytest.mark.parametrize(
+    ("column", "position"),
+    [("__open_wrangler_count_0", 0), ("__open_wrangler_count_0", 1), ("__open_wrangler_count_1", 1)],
+)
+def test_lazy_polars_count_labels_keep_projected_and_full_profiles(
+    column: str, position: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import __main__
+
+    frame = pl.DataFrame({column: [True, False, True, None], "sibling": ["a", "b", "a", None]})
+    if position == 1:
+        frame = frame.select("sibling", column)
+    source = frame.lazy()
+    before = source.explain()
+    monkeypatch.setattr(__main__, "projected_count_source", source, raising=False)
+    manager = SessionManager()
+    view = {"filters": [], "sort": []}
+    try:
+        opened = manager.open_session(
+            {"kind": "notebookVariable", "label": "projected_count_source", "variableName": "projected_count_source"},
+            backend="polars",
+        )
+        session_id = opened["metadata"]["sessionId"]
+        schema = opened["metadata"]["schema"]
+        column_id = next(item["id"] for item in schema if item["name"] == column)
+        for projection in (None, [column_id]):
+            response = manager.get_summary(session_id, 0, view, projection)
+            assert response["revision"] == 0
+            assert [item["columnId"] for item in response["summaries"]] == (
+                [item["id"] for item in schema] if projection is None else [column_id]
+            )
+            summary = next(item for item in response["summaries"] if item["column"] == column)
+            assert (summary["totalCount"], summary["nullCount"], summary["nanCount"], summary["distinctCount"]) == (
+                4,
+                1,
+                0,
+                2,
+            )
+            assert summary["topValues"] == [{"value": "True", "count": 2}, {"value": "False", "count": 1}]
+            assert summary["visualization"] == {"kind": "boolean", "trueCount": 2, "falseCount": 1}
+        assert __main__.projected_count_source is source
+        assert source.explain() == before
+        assert source.collect().equals(frame)
+    finally:
+        manager.close_all()
+
+
 def test_polars_excel_reader_pins_the_probed_calamine_engine(monkeypatch):
     calls: list[tuple[str, dict[str, object]]] = []
 
@@ -1344,8 +1451,8 @@ def test_polars_eager_boolean_summaries_reuse_native_counts_without_materializin
     monkeypatch.setattr(polars_engine, "boolean_visualization", reject_list_materialization, raising=False)
     frame = pl.DataFrame(
         {
-            "native": pl.Series([True, False, True, True, False, True], dtype=pl.Boolean),
-            "nullable": pl.Series([True, False, True, None, True, None], dtype=pl.Boolean),
+            "count": pl.Series([True, False, True, True, False, True], dtype=pl.Boolean),
+            "count_": pl.Series([True, False, True, None, True, None], dtype=pl.Boolean),
             "all_null": pl.Series([None] * 6, dtype=pl.Boolean),
         }
     )
@@ -1353,8 +1460,8 @@ def test_polars_eager_boolean_summaries_reuse_native_counts_without_materializin
     summaries = {summary["column"]: summary for summary in PolarsEngine().summaries(frame)}
 
     expected = {
-        "native": (0, 2, {"kind": "boolean", "trueCount": 4, "falseCount": 2}),
-        "nullable": (2, 2, {"kind": "boolean", "trueCount": 3, "falseCount": 1}),
+        "count": (0, 2, {"kind": "boolean", "trueCount": 4, "falseCount": 2}),
+        "count_": (2, 2, {"kind": "boolean", "trueCount": 3, "falseCount": 1}),
         "all_null": (6, 0, {"kind": "boolean", "trueCount": 0, "falseCount": 0}),
     }
     for column, (null_count, distinct_count, visualization) in expected.items():
