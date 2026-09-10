@@ -3713,6 +3713,68 @@ describe("App file import options", () => {
     }
   );
 
+  it.each(["city", "sales"])(
+    "selects native Sort Edit's %s target without discarding local drafts or requesting values",
+    async (column) => {
+      const sortedMetadata: SessionMetadata = {
+        ...metadata,
+        filterModel: {
+          filters: [
+            {
+              column: "city",
+              type: "string",
+              predicates: [],
+              valueFilter: { kind: "values", selectedValues: ["Milan"], includeNulls: false, includeNaN: false }
+            }
+          ],
+          sort: [
+            { column: "city", direction: "asc", nulls: "last" },
+            { column: "sales", direction: "desc", nulls: "first" }
+          ]
+        }
+      };
+      render(<App />);
+      dispatchAppMessage({ kind: "sessionOpened", metadata: sortedMetadata, page, summaries: [] });
+      await screen.findByRole("cell", { name: "Milan" });
+      dispatchAppMessage({ kind: "editorAction", action: "openFilters", column: "city" });
+      fireEvent.change(screen.getByPlaceholderText("Search values"), { target: { value: "mil" } });
+      fireEvent.change(screen.getByPlaceholderText("Value"), { target: { value: "unfinished predicate" } });
+      fireEvent.change(screen.getByLabelText("Sort column"), { target: { value: "c:1" } });
+      fireEvent.click(screen.getByRole("button", { name: "Prioritize sort" }));
+      const drawer = screen.getByRole("complementary", { name: "Column profiles and filters" });
+      expect(within(drawer).getByRole("button", { name: 'Remove equals "Milan" filter from city' })).toBeVisible();
+      for (const target of [undefined, "missing"]) {
+        dispatchAppMessage({
+          kind: "editorAction",
+          action: "openFilters",
+          ...(target === undefined ? {} : { column: target })
+        });
+        expect(screen.getByLabelText("Sort column")).toHaveDisplayValue("sales");
+        expect(screen.getByPlaceholderText("Search values")).toHaveValue("mil");
+      }
+
+      dispatchAppMessage({ kind: "editorAction", action: "openFilters", column });
+      expect(screen.getByLabelText("Sort column")).toHaveDisplayValue(column);
+      expect(screen.getByLabelText("Filter column")).toHaveDisplayValue(column);
+      expect(screen.getByPlaceholderText("Search values")).toHaveValue("mil");
+      expect(screen.getByPlaceholderText("Value")).toHaveValue("unfinished predicate");
+      expect(screen.getByLabelText("Sort direction")).toHaveValue(column === "city" ? "asc" : "desc");
+      expect(screen.getByRole("button", { name: "Apply sort order" })).toBeEnabled();
+      expect(
+        within(screen.getByRole("list", { name: "Active sort order" }))
+          .getAllByRole("listitem")
+          .map((item) => item.textContent)
+      ).toEqual([expect.stringContaining("sales"), expect.stringContaining("city")]);
+      expect(within(drawer).getByRole("button", { name: 'Remove equals "Milan" filter from city' })).toBeVisible();
+      expect(
+        webviewPostMessage.mock.calls.filter(
+          ([message]) =>
+            message.kind === "runtimeRequest" && ["getColumnValues", "getPage"].includes(message.request.kind)
+        )
+      ).toHaveLength(0);
+    }
+  );
+
   it("rejects adversarial native sort messages without changing the current sort order", async () => {
     const sortedMetadata: SessionMetadata = {
       ...metadata,

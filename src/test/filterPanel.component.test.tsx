@@ -27,6 +27,9 @@ const values = new Map<string, ValuesResponse>([
   ]
 ]);
 
+const cityRequest = { column: "city" };
+const salesRequest = { column: "sales" };
+
 describe("FilterPanel", () => {
   it.each(["Filter column", "Sort column"])("keeps %s navigable when an unnamed column is selected", (selectorName) => {
     const onApply = vi.fn();
@@ -40,7 +43,7 @@ describe("FilterPanel", () => {
         metadata={unnamedMetadata}
         model={{ filters: [], sort: [] }}
         values={new Map()}
-        activeColumn=""
+        columnRequest={{ column: "" }}
         onApply={onApply}
         onRequestValues={onRequestValues}
       />
@@ -104,6 +107,7 @@ describe("FilterPanel", () => {
         }
       ]
     ]);
+    const columnRequest = { column: column.name };
     function Harness() {
       const [model, setModel] = useState<FilterModel>({ filters: [initialFilter], sort: [] });
       return (
@@ -111,7 +115,7 @@ describe("FilterPanel", () => {
           metadata={metadata}
           model={model}
           values={columnValues}
-          activeColumn={column.name}
+          columnRequest={columnRequest}
           onApply={(next) => {
             onApply(next);
             setModel(next);
@@ -254,7 +258,7 @@ describe("FilterPanel", () => {
       render(
         <FilterPanel
           metadata={metadata}
-          activeColumn="sales"
+          columnRequest={salesRequest}
           model={{ filters: [columnFilter], sort: [] }}
           values={
             new Map([
@@ -1010,7 +1014,7 @@ describe("FilterPanel", () => {
         metadata={metadata}
         model={model}
         values={values}
-        activeColumn="city"
+        columnRequest={cityRequest}
         defaultAdvanced={true}
         onApply={onApply}
         onRequestValues={() => undefined}
@@ -1046,7 +1050,7 @@ describe("FilterPanel", () => {
         metadata={metadata}
         model={afterValueRemoval}
         values={values}
-        activeColumn="city"
+        columnRequest={cityRequest}
         defaultAdvanced={true}
         onApply={onApply}
         onRequestValues={() => undefined}
@@ -1069,7 +1073,7 @@ describe("FilterPanel", () => {
         metadata={metadata}
         model={afterPredicateRemoval}
         values={values}
-        activeColumn="city"
+        columnRequest={cityRequest}
         defaultAdvanced={true}
         onApply={onApply}
         onRequestValues={() => undefined}
@@ -1088,7 +1092,7 @@ describe("FilterPanel", () => {
     render(
       <FilterPanel
         metadata={metadata}
-        activeColumn="sales"
+        columnRequest={salesRequest}
         defaultAdvanced={true}
         model={{ filters: [], sort: [] }}
         values={new Map()}
@@ -1127,7 +1131,7 @@ describe("FilterPanel", () => {
     render(
       <FilterPanel
         metadata={metadata}
-        activeColumn="sales"
+        columnRequest={salesRequest}
         defaultAdvanced={true}
         model={{ filters: [], sort: [] }}
         values={new Map()}
@@ -1347,7 +1351,7 @@ describe("FilterPanel", () => {
         metadata={ambiguousMetadata}
         model={{ filters: [], sort: [] }}
         values={ambiguousValues}
-        activeColumn="value"
+        columnRequest={{ column: "value" }}
         defaultAdvanced={true}
         onApply={onApply}
         onRequestValues={onRequestValues}
@@ -1471,7 +1475,7 @@ describe("FilterPanel", () => {
         metadata={metadata}
         model={{ filters: [], sort: [] }}
         values={new Map()}
-        activeColumn={activeColumn}
+        columnRequest={activeColumn === undefined ? undefined : { column: activeColumn }}
         onApply={onApply}
         onRequestValues={onRequestValues}
       />
@@ -1492,7 +1496,7 @@ describe("FilterPanel", () => {
         metadata={current}
         model={{ filters: [], sort: [] }}
         values={new Map()}
-        activeColumn="sales"
+        columnRequest={salesRequest}
         disabled={disabled}
         onApply={onApply}
         onRequestValues={onRequestValues}
@@ -1755,7 +1759,7 @@ describe("FilterPanel", () => {
         metadata={metadata}
         model={{ filters: [], sort: [] }}
         values={new Map()}
-        activeColumn="city"
+        columnRequest={cityRequest}
         onApply={onApply}
         onRequestValues={onRequestValues}
       />
@@ -1781,7 +1785,7 @@ describe("FilterPanel", () => {
         metadata={renamedMetadata}
         model={{ filters: [], sort: [] }}
         values={new Map()}
-        activeColumn="city"
+        columnRequest={cityRequest}
         onApply={onApply}
         onRequestValues={onRequestValues}
       />

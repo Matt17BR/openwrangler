@@ -40,7 +40,8 @@ interface FilterPanelProps {
   metadata: SessionMetadata | undefined;
   model: FilterModel;
   values: ReadonlyMap<string, ValuesResponse>;
-  activeColumn?: string;
+  /** A new object requests column selection without resetting form drafts. */
+  columnRequest?: Readonly<{ column: string }>;
   defaultAdvanced?: boolean;
   disabled?: boolean;
   filterSupported?: boolean;
@@ -54,7 +55,7 @@ export function FilterPanel({
   metadata,
   model,
   values,
-  activeColumn: requestedColumn,
+  columnRequest,
   defaultAdvanced = false,
   disabled = false,
   filterSupported = true,
@@ -64,9 +65,9 @@ export function FilterPanel({
   onRequestValues
 }: FilterPanelProps) {
   const [columnId, setColumnId] = useState(
-    () => metadata?.schema.find((item) => item.name === requestedColumn)?.id ?? metadata?.schema[0]?.id ?? ""
+    () => metadata?.schema.find((item) => item.name === columnRequest?.column)?.id ?? metadata?.schema[0]?.id ?? ""
   );
-  const previousRequestedColumn = useRef(requestedColumn);
+  const previousColumnRequest = useRef(columnRequest);
   const [search, setSearch] = useState("");
   const [predicateOperator, setPredicateOperator] = useState<PredicateOperator>("contains");
   const [predicateValue, setPredicateValue] = useState("");
@@ -130,16 +131,16 @@ export function FilterPanel({
   const panelLabel = filterSupported ? (sortSupported ? "Filters / Sorts" : "Filters") : "Sorts";
 
   useEffect(() => {
-    const requestedColumnChanged = previousRequestedColumn.current !== requestedColumn;
-    previousRequestedColumn.current = requestedColumn;
+    const requestedColumnChanged = previousColumnRequest.current !== columnRequest;
+    previousColumnRequest.current = columnRequest;
     setColumnId((currentId) => {
       const schema = metadata?.schema ?? [];
-      const requestedSchema = schema.find((item) => item.name === requestedColumn);
+      const requestedSchema = schema.find((item) => item.name === columnRequest?.column);
       if (requestedColumnChanged && requestedSchema) return requestedSchema.id;
       if (currentId) return currentId;
       return requestedSchema?.id ?? schema[0]?.id ?? "";
     });
-  }, [metadata?.schema, requestedColumn]);
+  }, [metadata?.schema, columnRequest]);
 
   const columnSchema = metadata?.schema.find((item) => item.id === columnId);
   const activeColumn = columnSchema?.name ?? "";

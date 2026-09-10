@@ -54,6 +54,7 @@ cleaning, export, and recovery flows, but not the full VS Code qualification mat
 Filter choices retain their counts while selecting values in the same column. Changes to the other filters, sort
 or AND/OR logic clear affected choices; Search loads the current choices without changing existing selections.
 Opening value filters from a header, the Filters tab or Show More selects the requested column with fresh search input.
+Editing a sort from the sidebar selects its column while preserving unfinished filter and sort input.
 
 A runtime-refused Python viewing page retains its previous query. Editing uses the host's accepted filter and history
 marker even when a successful page was superseded before publication. Spark retains the accepted query's exact
