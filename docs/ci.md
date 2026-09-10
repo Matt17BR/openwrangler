@@ -27,22 +27,25 @@ These Linux workers move the hosted image's unused `google-chrome.sources` file 
 R installation. This keeps a Chrome repository outage from blocking R setup or its system dependencies. Required
 repositories retain APT's signature and hash checks.
 
-Source contracts, packaged smoke, and the separate required CodeQL gate run for every change. Python and Windows
-run their full checks unless `scripts/ci-docs-only.mjs` proves that the tested merge only modifies existing regular,
-non-executable `README.md` or `docs/**/*.md` files.
+Source contracts, packaged smoke, and the separate required CodeQL gate run for every change.
+`scripts/ci-docs-only.mjs` may omit runtime execution when every change fits that runtime's scope below. All admitted
+files must be regular and non-executable.
 
-The same proof controls all R source and installed-editor jobs. R execution may also be omitted when every change
-adds or modifies a regular, non-executable `.py` file under `python/openwrangler_runtime/` or `python/tests/`, or modifies
-existing `README.md`, `CHANGELOG.md` or `docs/**/*.md`. Deletions, renames, mode changes and symlink entries require full R.
-These R checks do not execute Python files from the allowed paths. The selected
-installed R journeys use Python only for Jupyter client readiness; they exclude the mixed-language literate journey.
-The always-required Source and packaged smoke checks retain package validation. Python and
-Windows still run for Python or CHANGELOG changes. Shared/host code, R sources, fixtures, scripts, configuration,
-dependency locks and all other paths require full R. If an R test or selected runner begins executing files from
-those Python paths, update this proof and its tests in the same change.
+- Python may be omitted for additions or edits to `.R` files under `r/openwrangler_runtime/` or `r/tests/`, and edits
+  to existing `README.md` or `docs/**/*.md` files. `CHANGELOG.md` still requires Python, including alongside R changes.
+- R source and installed-editor execution may be omitted for additions or edits to `.py` files under
+  `python/openwrangler_runtime/` or `python/tests/`, and edits to existing `README.md`, `CHANGELOG.md` or `docs/**/*.md`.
+- Windows execution may be omitted only for edits to existing `README.md` or `docs/**/*.md` files.
 
-This policy reduces fresh R 4.5 environment checks during sequences of isolated Python changes. An omission is not
-a newly executed or transferred R success; it can delay discovery of unrelated hosted-environment regressions.
+Mixed Python/R changes require both runtimes. The Python job does not consume the allowed R files. The R checks do
+not execute the allowed Python files; the selected installed R journeys use Python only for Jupyter client readiness
+and exclude the mixed-language literate journey. Source and packaged smoke retain package validation. Shared/host
+code, fixtures, scripts, configuration, dependency locks and other paths outside these scopes require full execution.
+If either runtime's tests or selected runner begins consuming the other runtime's allowed files, update the proof and
+its tests in the same change.
+
+This avoids unrelated runtime setup and execution during isolated engine changes. An omission is not a newly
+executed or transferred success; it can delay discovery of unrelated dependency or hosted-environment regressions.
 Scheduled R 4.4 qualification does not replace R 4.5 coverage. Release qualification remains separate.
 
 Each runtime has cancellable execution and a short required-result job. The latter reports success only for completed
@@ -57,9 +60,9 @@ owner. Parallel Linux shards repeat environment setup on separate workers, and i
 platform workers. Assess total wall time and runner cost together when changing this composition.
 
 The proof binds the checkout's merge commit and both parents to the pull-request event. It reads a bounded,
-NUL-delimited Git diff. Additions outside the permitted Python source scope, deletions, renames, mode changes,
+NUL-delimited Git diff. Additions outside the permitted runtime source scopes, deletions, renames, mode changes,
 other changes outside the allowed paths, empty diffs and unavailable or unrecognized evidence select full checks.
-Changes to the proof or workflow also require full R.
+Changes to the proof or workflow also require full execution.
 A failed proof job or malformed output fails the required result.
 Execution jobs remain cancellable. Their result jobs run even after a failed or canceled dependency, so skipped or
 canceled execution cannot satisfy a required check when full runtime checks were needed.
