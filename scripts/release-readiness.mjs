@@ -49,7 +49,7 @@ const STABLE_PACKAGE_IDENTITY = Object.freeze({
   publisher: "Matt17BR"
 });
 export const PRIMARY_PARITY_SCOPE = Object.freeze([
-  ["CSV/TSV/Parquet/Excel/JSONL entry points", "Yes", "Yes"],
+  ["File entry points; Windows Polars JSONL excludes glob paths", "Yes", "Yes"],
   ["Notebook variable viewer and toolbar", "Yes", "Yes"],
   ["Inline notebook renderer and full-view expansion", "Yes", "Yes"],
   ["Virtual grid, column sizing, navigation", "Yes", "Yes"],

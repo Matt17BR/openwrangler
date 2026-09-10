@@ -648,7 +648,10 @@ They check selected rows, native lazy projection, standalone transformations and
 tests retain native reads after the Python stream closes and exhaust descriptors only inside isolated child
 processes, where fallback buffering, empty-plan publication, panic diagnostics and leaked handles fail assertions.
 Windows dispatch tests are separate from actual Windows local-drive verbatim reads, live/generated operations,
-source-replacement refusal and explicit glob-path refusal.
+source-replacement refusal and explicit glob-path refusal. Glob-path refusals also require actionable Settings
+and Open File Path guidance, with no native scan. File-command tests own explicit backend forwarding and the separate
+confirmed-backend restore behavior; the canonical release owner still rejects incomplete required rows within the
+explicit file-path scope in [feature parity](feature-parity.md).
 
 `python/tests/test_generated_helpers.py` owns canonical helper selection, dependency references, and source-library
 isolation. The existing DuckDB and Fill Missing Values tests execute the selected standalone programs. Polars Fill

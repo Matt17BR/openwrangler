@@ -849,7 +849,7 @@
             "pandas"
           ],
           "default": "auto",
-          "description": "Default backend for file-backed sessions. Auto prefers Polars, then DuckDB, and falls back to Pandas when required."
+          "description": "Default backend for file-backed sessions. Auto selects the first available engine in Polars, DuckDB, then Pandas order, subject to file-format and import-option support. It does not switch engines after a file-read error."
         },
         "openWrangler.fileStartMode": {
           "type": "string",
