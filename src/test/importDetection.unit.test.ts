@@ -210,6 +210,70 @@ describe("automatic delimited import detection", () => {
     });
   });
 
+  it.each(["\n", "\r\n", "\r"])("recognizes complete %j records without changing LF persistence options", (ending) => {
+    for (const finalEnding of ["", ending]) {
+      expect(
+        detectedImportOptionsFromSample(
+          "records.csv",
+          utf8(["name;value", "one;1", "two;2"].join(ending) + finalEnding)
+        )
+      ).toEqual({
+        delimiter: ";",
+        encoding: "utf-8",
+        quoteChar: '"',
+        hasHeader: true,
+        ...(ending === "\r" ? { lineEnding: "cr" } : {})
+      });
+      expect(
+        detectedImportOptionsFromSample("matrix.csv", utf8(["1;2", "3;4", "5;6"].join(ending) + finalEnding))
+      ).toMatchObject({
+        delimiter: ";",
+        hasHeader: false
+      });
+    }
+  });
+
+  it.each(['"', "'"])("ignores quoted line breaks and escaped %s quotes when inferring CR", (quote) => {
+    const sample = `name|note|value\rone|${quote}has\nLF ${quote}${quote}quote${quote}${quote}${quote}|1\rtwo|${quote}has\rCR\r\nCRLF${quote}|2\r`;
+    expect(detectedImportOptionsFromSample("quoted.csv", utf8(sample))).toEqual({
+      delimiter: "|",
+      encoding: "utf-8",
+      quoteChar: quote,
+      hasHeader: true,
+      lineEnding: "cr"
+    });
+  });
+
+  it.each([
+    "name,value",
+    "name,value\r",
+    'name,value\n"one\r',
+    "name,value\rone,1\ntwo,2",
+    "name,value\r\none,1\rtwo,2",
+    'name,value\none,"quoted\rCR"\ntwo,2'
+  ])("leaves absent, mixed or quoted-only CR evidence unspecified: %j", (sample) => {
+    expect(detectedImportOptionsFromSample("ambiguous.csv", utf8(sample))).not.toHaveProperty("lineEnding");
+  });
+
+  it("retains earlier CR evidence before an unfinished quoted tail", () => {
+    expect(detectedImportOptionsFromSample("cut.csv", utf8('name,value\rone,1\rtwo,"unfinished\n'))).toMatchObject({
+      delimiter: ",",
+      lineEnding: "cr"
+    });
+  });
+
+  it("does not use an undecided trailing CR or records beyond the existing bounds", () => {
+    const heading = "name,value\n";
+    const boundary = heading + "x".repeat(IMPORT_DETECTION_SAMPLE_BYTES - heading.length - 1) + "\r\n";
+    expect(detectedImportOptionsFromSample("cut.csv", utf8(boundary))).not.toHaveProperty("lineEnding");
+    expect(
+      detectedImportOptionsFromSample("rows.csv", utf8("name,value\r" + "one,1\r".repeat(100) + "two,2\n"))
+    ).toMatchObject({ lineEnding: "cr" });
+    expect(
+      detectedImportOptionsFromSample("rows.csv", utf8("name,value\n" + "one,1\n".repeat(100) + "two,2\r"))
+    ).not.toHaveProperty("lineEnding");
+  });
+
   it("uses extension defaults for an empty sample and leaves non-configurable formats alone", () => {
     expect(detectedImportOptionsFromSample("empty.tsv", new Uint8Array())).toEqual({
       delimiter: "\t",

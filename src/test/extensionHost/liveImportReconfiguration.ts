@@ -323,6 +323,18 @@ export function createLiveImportReconfiguration(
       "the quote-character prompt to close"
     );
     recordAcceptanceProgress(`${quoteCheckpoint}:accepted`);
+
+    const lineEndingCheckpoint = `${checkpointPrefix}:line-ending`;
+    recordAcceptanceProgress(`${lineEndingCheckpoint}:wait`);
+    const lineEndingInput = await waitForImportQuickInput(
+      page,
+      testing,
+      expectedSource,
+      "Line ending",
+      existingSessionId
+    );
+    recordAcceptanceProgress(`${lineEndingCheckpoint}:visible`);
+    await acceptQuickPickOptionWithKeyboard(page, lineEndingInput, "Line ending", "LF or CRLF", lineEndingCheckpoint);
   }
 
   async function exerciseLiveImportReconfiguration(

@@ -58,7 +58,7 @@ describe("SessionCoordinator file-session reconfiguration lifecycle", () => {
     const response = await bridge.reconfigureFileSession?.(
       opened.metadata.sessionId,
       opened.metadata.revision,
-      replacementSource,
+      { ...initialSource, importOptions: { ...initialSource.importOptions, lineEnding: "cr" } },
       { cancellation }
     );
 
@@ -780,6 +780,45 @@ describe("SessionCoordinator file-session reconfiguration lifecycle", () => {
     });
     expect(coordinator.activeSession()?.sessionId).toBe(secondOpened.metadata.sessionId);
     expect(coordinator.diagnostics().activeSessionId).toBe(secondOpened.metadata.sessionId);
+  });
+
+  it("replaces only changed record intent and keeps a matching choice on the same runtime", async () => {
+    const delegate = simpleReconfiguringDelegate("runtime-old");
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegate.request });
+    try {
+      const opened = await open(bridge, initialSource);
+      const source: SessionSource = {
+        ...initialSource,
+        importOptions: { ...initialSource.importOptions, lineEnding: "cr" }
+      };
+      const replacement = await bridge.reconfigureFileSession!(
+        opened.metadata.sessionId,
+        opened.metadata.revision,
+        source
+      );
+      expect(replacement).toMatchObject({
+        kind: "sessionOpened",
+        metadata: { sessionId: opened.metadata.sessionId, source }
+      });
+      expect(delegate.openRequests()).toHaveLength(2);
+      const candidate = delegate.openRequests()[1]!;
+      expect(candidate.source).toEqual(source);
+      expect(candidate.requestedSessionId).not.toBe("runtime-old");
+      expect(delegate.request).toHaveBeenCalledWith(
+        { kind: "closeSession", sessionId: "runtime-old", revision: 0 },
+        expect.anything()
+      );
+      const current = coordinator.activeSession();
+      expect(current?.metadata.source).toEqual(source);
+      await expect(
+        bridge.reconfigureFileSession!(opened.metadata.sessionId, current!.metadata.revision, structuredClone(source))
+      ).resolves.toMatchObject({ kind: "error", code: "import_options_unchanged" });
+      expect(delegate.openRequests()).toHaveLength(2);
+      expect(coordinator.activeSession()).toEqual(current);
+    } finally {
+      await coordinator.shutdown();
+    }
   });
 
   it("requires the exact same file identity and treats unchanged options as a no-op error", async () => {

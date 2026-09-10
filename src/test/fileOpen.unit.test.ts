@@ -549,7 +549,8 @@ describe("file launch command", () => {
       delimiter: ";",
       encoding: "windows-1252",
       quoteChar: "'",
-      hasHeader: false
+      hasHeader: false,
+      lineEnding: "cr"
     };
     fileMocks.workspaceValues.set(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY, {
       version: 2,

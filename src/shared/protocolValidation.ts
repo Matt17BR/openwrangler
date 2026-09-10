@@ -577,7 +577,7 @@ function hasCompatibleImportOptions(source: Record<string, unknown>): boolean {
   if (source.kind !== "file") return false;
   const extension = sourceExtension(source);
   const excelFields = new Set(["sheetName", "sheetIndex"]);
-  const delimitedFields = new Set(["delimiter", "encoding", "quoteChar", "hasHeader"]);
+  const delimitedFields = new Set(["delimiter", "encoding", "quoteChar", "hasHeader", "lineEnding"]);
   if (extension === "xlsx" || extension === "xls") return keys.every((key) => excelFields.has(key));
   if (extension === "csv" || extension === "tsv") return keys.every((key) => delimitedFields.has(key));
   return false;
@@ -599,13 +599,13 @@ function isImportOptions(value: unknown): boolean {
   const candidate = exactRecord(
     value,
     [],
-    ["delimiter", "encoding", "quoteChar", "hasHeader", "sheetName", "sheetIndex"]
+    ["delimiter", "encoding", "quoteChar", "hasHeader", "lineEnding", "sheetName", "sheetIndex"]
   );
   if (candidate === undefined) return false;
   const hasSheetName = Object.prototype.hasOwnProperty.call(candidate, "sheetName");
   const hasSheetIndex = Object.prototype.hasOwnProperty.call(candidate, "sheetIndex");
   const hasExcelSelector = hasSheetName || hasSheetIndex;
-  const hasDelimitedOption = ["delimiter", "encoding", "quoteChar", "hasHeader"].some((key) =>
+  const hasDelimitedOption = ["delimiter", "encoding", "quoteChar", "hasHeader", "lineEnding"].some((key) =>
     Object.prototype.hasOwnProperty.call(candidate, key)
   );
   return (
@@ -613,6 +613,7 @@ function isImportOptions(value: unknown): boolean {
     optional(candidate, "encoding", isNonEmptyTrimmedString) &&
     optional(candidate, "quoteChar", isSingleCharacter) &&
     optional(candidate, "hasHeader", isBoolean) &&
+    optional(candidate, "lineEnding", (value) => isOneOf(value, ["lf", "cr"])) &&
     optional(candidate, "sheetName", isNonEmptyTrimmedString) &&
     optional(candidate, "sheetIndex", isNonNegativeSafeInteger) &&
     !(hasSheetName && hasSheetIndex) &&

@@ -7,6 +7,7 @@ import {
   serializePersistedSession,
   SESSION_STORAGE_KEY
 } from "../extension/sessionPersistence";
+import { detectedImportOptionsFromSample } from "../extension/files/importDetection";
 import { runtimeIdentityForDataBackend } from "../shared/runtimeIdentity";
 
 const metadata: SessionMetadata = {
@@ -118,6 +119,27 @@ describe("session persistence", () => {
     expect(persistenceKey(source, "polars")).not.toBe(
       persistenceKey({ ...source, importOptions: { delimiter: ",", hasHeader: true } }, "polars")
     );
+  });
+
+  it("preserves normal reopen keys while separating explicit record intents", () => {
+    const source = {
+      kind: "file" as const,
+      label: "sample.csv",
+      path: "/workspace/sample.csv",
+      importOptions: { delimiter: ";", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+    };
+    const oldKey = persistenceKey(source, "polars");
+    for (const ending of ["\n", "\r\n"]) {
+      const importOptions = detectedImportOptionsFromSample(
+        source.path,
+        new TextEncoder().encode(["name;value", "one;1", "two;2"].join(ending))
+      );
+      expect(persistenceKey({ ...source, importOptions }, "polars")).toBe(oldKey);
+    }
+    const cr = { ...source, importOptions: { ...source.importOptions, lineEnding: "cr" as const } };
+    const lf = { ...source, importOptions: { ...source.importOptions, lineEnding: "lf" as const } };
+    expect(new Set([oldKey, persistenceKey(cr, "polars"), persistenceKey(lf, "polars")]).size).toBe(3);
+    expect(persistenceKey(JSON.parse(JSON.stringify(cr)), "polars")).toBe(persistenceKey(cr, "polars"));
   });
 
   it("round-trips only replayable plan and viewing state", () => {

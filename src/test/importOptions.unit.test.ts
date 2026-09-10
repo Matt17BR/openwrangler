@@ -79,31 +79,35 @@ describe("automatic import option sampling", () => {
     });
   });
 
-  it("performs one bounded positional local read and closes the descriptor", async () => {
-    const bytes = new TextEncoder().encode("name\tvalue\none\t1\ntwo\t2\n");
-    importOptionMocks.read.mockImplementationOnce(
-      async (buffer: Uint8Array, offset: number, _length: number, position: number) => {
-        expect(position).toBe(0);
-        buffer.set(bytes, offset);
-        return { bytesRead: bytes.length, buffer };
-      }
-    );
+  it.each(["\n", "\r"])(
+    "performs one bounded positional local read for %j records and closes the descriptor",
+    async (ending) => {
+      const bytes = new TextEncoder().encode(["name\tvalue", "one\t1", "two\t2", ""].join(ending));
+      importOptionMocks.read.mockImplementationOnce(
+        async (buffer: Uint8Array, offset: number, _length: number, position: number) => {
+          expect(position).toBe(0);
+          buffer.set(bytes, offset);
+          return { bytesRead: bytes.length, buffer };
+        }
+      );
 
-    await expect(detectImportOptions(vscode.Uri.file("/tmp/misleading.csv"))).resolves.toEqual({
-      delimiter: "\t",
-      encoding: "utf-8",
-      quoteChar: '"',
-      hasHeader: true
-    });
+      await expect(detectImportOptions(vscode.Uri.file("/tmp/misleading.csv"))).resolves.toEqual({
+        delimiter: "\t",
+        encoding: "utf-8",
+        quoteChar: '"',
+        hasHeader: true,
+        ...(ending === "\r" ? { lineEnding: "cr" } : {})
+      });
 
-    expect(importOptionMocks.open).toHaveBeenCalledWith("/tmp/misleading.csv", "r");
-    expect(importOptionMocks.read).toHaveBeenCalledOnce();
-    const [buffer, offset, length, position] = importOptionMocks.read.mock.calls[0] ?? [];
-    expect(Buffer.isBuffer(buffer)).toBe(true);
-    expect(buffer).toHaveLength(IMPORT_DETECTION_SAMPLE_BYTES + 3);
-    expect([offset, length, position]).toEqual([0, IMPORT_DETECTION_SAMPLE_BYTES + 3, 0]);
-    expect(importOptionMocks.close).toHaveBeenCalledOnce();
-  });
+      expect(importOptionMocks.open).toHaveBeenCalledWith("/tmp/misleading.csv", "r");
+      expect(importOptionMocks.read).toHaveBeenCalledOnce();
+      const [buffer, offset, length, position] = importOptionMocks.read.mock.calls[0] ?? [];
+      expect(Buffer.isBuffer(buffer)).toBe(true);
+      expect(buffer).toHaveLength(IMPORT_DETECTION_SAMPLE_BYTES + 3);
+      expect([offset, length, position]).toEqual([0, IMPORT_DETECTION_SAMPLE_BYTES + 3, 0]);
+      expect(importOptionMocks.close).toHaveBeenCalledOnce();
+    }
+  );
 
   it("reads enough lookahead to preserve a UTF-8 scalar across the nominal boundary", async () => {
     const heading = "name;value\none;1\n";
@@ -357,6 +361,7 @@ describe("delimited-file import prompts", () => {
     expect(importOptionMocks.showQuickPick.mock.calls.map(([, options]) => options?.ignoreFocusOut)).toEqual([
       true,
       true,
+      true,
       true
     ]);
     expect(importOptionMocks.executeCommand.mock.calls.map(([command]) => command)).toEqual([
@@ -364,8 +369,59 @@ describe("delimited-file import prompts", () => {
       "workbench.action.focusQuickOpen",
       "workbench.action.focusQuickOpen",
       "workbench.action.focusQuickOpen",
+      "workbench.action.focusQuickOpen",
       "workbench.action.focusQuickOpen"
     ]);
+  });
+
+  it.each([
+    { current: undefined, selected: "lf", expected: undefined },
+    { current: undefined, selected: "cr", expected: "cr" },
+    { current: "cr", selected: "cr", expected: "cr" },
+    { current: "cr", selected: "lf", expected: "lf" },
+    { current: "lf", selected: "lf", expected: "lf" }
+  ] as const)("preserves line-ending intent from $current to $selected", async ({ current, selected, expected }) => {
+    const options = {
+      delimiter: ";",
+      encoding: "utf-8",
+      quoteChar: '"',
+      hasHeader: true,
+      ...(current ? { lineEnding: current } : {})
+    };
+    importOptionMocks.showQuickPick.mockImplementation(async (items, prompt) =>
+      prompt?.title === "Line ending" ? (items as Pick[]).find(({ value }) => value === selected) : items[0]
+    );
+    importOptionMocks.showInputBox.mockImplementation(async (prompt) => prompt?.value);
+    await expect(promptImportOptions(vscode.Uri.file("/tmp/data.csv"), options)).resolves.toEqual({
+      delimiter: ";",
+      encoding: "utf-8",
+      quoteChar: '"',
+      hasHeader: true,
+      ...(expected ? { lineEnding: expected } : {})
+    });
+    expect(
+      picksAt(3)
+        .map(({ label }) => label)
+        .sort()
+    ).toEqual(["CR", "LF or CRLF"]);
+    expect(picksAt(3)[0]).toMatchObject({ value: current ?? "lf", description: "Current" });
+  });
+
+  it("rechecks cancellation after the line-ending choice settles", async () => {
+    let cancelled = false;
+    const cancellation = {
+      get isCancellationRequested() {
+        return cancelled;
+      }
+    } as vscode.CancellationToken;
+    importOptionMocks.showQuickPick.mockImplementation(async (items, options) => {
+      if (options?.title === "Line ending") cancelled = true;
+      return items[0];
+    });
+    importOptionMocks.showInputBox.mockImplementation(async (options) => options?.value);
+    await expect(promptImportOptions(vscode.Uri.file("/tmp/data.csv"), undefined, cancellation)).rejects.toBeInstanceOf(
+      ImportCancelledError
+    );
   });
 
   it("offers explicit UTF-16 byte-order recovery choices", async () => {
@@ -459,10 +515,11 @@ describe("delimited-file import prompts", () => {
       quoteChar: '"',
       hasHeader: true
     });
-    expect(importOptionMocks.showQuickPick).toHaveBeenCalledTimes(3);
+    expect(importOptionMocks.showQuickPick).toHaveBeenCalledTimes(4);
     expect(importOptionMocks.showInputBox).toHaveBeenCalledOnce();
     expect(importOptionMocks.executeCommand.mock.calls.map(([command]) => command)).toEqual([
       "workbench.action.focusActiveEditorGroup",
+      "workbench.action.focusQuickOpen",
       "workbench.action.focusQuickOpen",
       "workbench.action.focusQuickOpen",
       "workbench.action.focusQuickOpen",
@@ -483,6 +540,7 @@ describe("delimited-file import prompts", () => {
     });
     expect(importOptionMocks.executeCommand.mock.calls.map(([command]) => command)).toEqual([
       "workbench.action.focusActiveEditorGroup",
+      "workbench.action.focusQuickOpen",
       "workbench.action.focusQuickOpen",
       "workbench.action.focusQuickOpen",
       "workbench.action.focusQuickOpen",
@@ -510,7 +568,7 @@ describe("delimited-file import prompts", () => {
     expect(importOptionMocks.showInputBox).not.toHaveBeenCalled();
   });
 
-  it.each(["delimiter", "custom delimiter", "encoding", "header", "quote"] as const)(
+  it.each(["delimiter", "custom delimiter", "encoding", "header", "quote", "line ending"] as const)(
     "preserves cancellation at the %s prompt",
     async (stage) => {
       importOptionMocks.showQuickPick.mockImplementation(async (items, options) => {
@@ -522,6 +580,7 @@ describe("delimited-file import prompts", () => {
         }
         if (options?.title === "Text encoding" && stage === "encoding") return undefined;
         if (options?.title === "Header row" && stage === "header") return undefined;
+        if (options?.title === "Line ending" && stage === "line ending") return undefined;
         return choices[0];
       });
       importOptionMocks.showInputBox.mockImplementation(async (options) => {

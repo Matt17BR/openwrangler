@@ -262,6 +262,8 @@ def _open_session_envelope_with_import_options(
     ("import_options", "file_name"),
     [
         ({}, "sample.csv"),
+        ({"lineEnding": "cr"}, "sample.csv"),
+        ({"lineEnding": "lf"}, "sample.tsv"),
         ({"delimiter": "💠", "encoding": " utf-8 ", "quoteChar": "“", "hasHeader": True}, "sample.csv"),
         ({"sheetName": " résumé "}, "sample.xlsx"),
         ({"sheetIndex": 0}, "sample.xls"),
@@ -376,12 +378,13 @@ def test_open_session_import_format_uses_path_then_uri_then_label(
         decode_envelope(envelope)
 
 
-def test_open_session_allows_empty_import_options_only_on_non_file_sources() -> None:
+@pytest.mark.parametrize("kind", ["notebookVariable", "notebookOutput"])
+def test_open_session_allows_empty_import_options_only_on_non_file_sources(kind: str) -> None:
     envelope = _open_session_envelope_with_import_options({})
     request = envelope["request"]
     assert isinstance(request, dict)
     request["source"] = {
-        "kind": "notebookVariable",
+        "kind": kind,
         "label": "frame.csv",
         "variableName": "frame",
         "importOptions": {},
@@ -390,9 +393,10 @@ def test_open_session_allows_empty_import_options_only_on_non_file_sources() -> 
 
     source = request["source"]
     assert isinstance(source, dict)
-    source["importOptions"] = {"delimiter": ","}
-    with pytest.raises(ProtocolError, match="only for file sources"):
-        decode_envelope(envelope)
+    for options in ({"delimiter": ","}, {"lineEnding": "cr"}):
+        source["importOptions"] = options
+        with pytest.raises(ProtocolError, match="only for file sources"):
+            decode_envelope(envelope)
 
 
 @pytest.mark.parametrize(
@@ -416,6 +420,10 @@ def test_open_session_allows_empty_import_options_only_on_non_file_sources() -> 
         ({"encoding": " \t "}, "encoding must be a non-empty string"),
         ({"encoding": "\ufeff"}, "encoding must be a non-empty string"),
         ({"hasHeader": "yes"}, "hasHeader must be a boolean"),
+        *[
+            ({"lineEnding": value}, "lineEnding must be lf or cr")
+            for value in [None, True, 1, {}, [], "", "CR", "crlf", "\r", "lf "]
+        ],
         ({"sheetName": 1}, "sheetName must be a non-empty string"),
         ({"sheetName": " \n "}, "sheetName must be a non-empty string"),
         ({"sheetName": "\ufeff"}, "sheetName must be a non-empty string"),
@@ -443,6 +451,10 @@ def test_open_session_allows_empty_import_options_only_on_non_file_sources() -> 
             "must not mix Excel selectors with delimited-file options",
         ),
         (
+            {"sheetIndex": 0, "lineEnding": "cr"},
+            "must not mix Excel selectors with delimited-file options",
+        ),
+        (
             {"sheetIndex": 0, "hasHeader": True},
             "must not mix Excel selectors with delimited-file options",
         ),
@@ -459,6 +471,12 @@ def test_open_session_rejects_malformed_import_options(import_options: object, m
         ("sample.csv", {"sheetName": "Sheet1"}, "Excel values for a delimited-file source"),
         ("sample.xlsx", {"delimiter": ","}, "delimited-file values for an Excel source"),
         ("sample.parquet", {"encoding": "utf-8"}, "not supported for this file format"),
+        ("sample.xlsx", {"lineEnding": "cr"}, "delimited-file values for an Excel source"),
+        ("sample.xls", {"lineEnding": "lf"}, "delimited-file values for an Excel source"),
+        *[
+            (f"sample.{extension}", {"lineEnding": "cr"}, "not supported for this file format")
+            for extension in ["parquet", "json", "jsonl", "ndjson"]
+        ],
     ],
 )
 def test_open_session_rejects_import_values_for_the_wrong_file_format(

@@ -302,7 +302,8 @@
                       { "required": ["delimiter"] },
                       { "required": ["encoding"] },
                       { "required": ["quoteChar"] },
-                      { "required": ["hasHeader"] }
+                      { "required": ["hasHeader"] },
+                      { "required": ["lineEnding"] }
                     ]
                   }
                 }
@@ -346,7 +347,8 @@
                       { "required": ["delimiter"] },
                       { "required": ["encoding"] },
                       { "required": ["quoteChar"] },
-                      { "required": ["hasHeader"] }
+                      { "required": ["hasHeader"] },
+                      { "required": ["lineEnding"] }
                     ]
                   }
                 ]
@@ -372,6 +374,11 @@
               "pattern": "^[^\\uD800-\\uDFFF]$"
             },
             "hasHeader": { "type": "boolean" },
+            "lineEnding": {
+              "type": "string",
+              "enum": ["lf", "cr"],
+              "description": "Expected record endings for readers that need an explicit setting. lf includes CRLF; omission retains native defaults."
+            },
             "sheetName": {
               "type": "string",
               "minLength": 1,

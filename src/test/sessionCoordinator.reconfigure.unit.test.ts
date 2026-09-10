@@ -926,8 +926,22 @@ describe("SessionCoordinator file-session reconfiguration", () => {
           request,
           metadataFor({
             runtimeId: request.requestedSessionId ?? "",
-            source: replacementSource,
+            source: request.source,
             backend: "polars"
+          })
+        ),
+      expectedCode: "invalid_runtime_response",
+      expectsCandidateClose: true
+    },
+    {
+      label: "a candidate that loses requested CR intent",
+      candidateResponse: (request: OpenSessionRequest): OpenWranglerResponse =>
+        openedFor(
+          request,
+          metadataFor({
+            runtimeId: request.requestedSessionId ?? "",
+            backend: "pandas",
+            source: { ...request.source, importOptions: { ...request.source.importOptions, lineEnding: undefined } }
           })
         ),
       expectedCode: "invalid_runtime_response",
@@ -936,6 +950,10 @@ describe("SessionCoordinator file-session reconfiguration", () => {
   ])(
     "preserves exact confirmed state after $label",
     async ({ candidateResponse, expectedCode, expectsCandidateClose }) => {
+      const requestedSource = {
+        ...replacementSource,
+        importOptions: { ...replacementSource.importOptions, lineEnding: "cr" as const }
+      };
       const closeCalls: CloseRequest[] = [];
       const candidateRequests: OpenSessionRequest[] = [];
       const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
@@ -969,11 +987,11 @@ describe("SessionCoordinator file-session reconfiguration", () => {
       const response = await bridge.reconfigureFileSession!(
         openedResponse.metadata.sessionId,
         openedResponse.metadata.revision,
-        replacementSource
+        requestedSource
       );
 
       expect(candidateRequests).toHaveLength(1);
-      expect(candidateRequests[0]).toMatchObject({ backend: "pandas", source: replacementSource });
+      expect(candidateRequests[0]).toMatchObject({ backend: "pandas", source: requestedSource });
       expect(response).toMatchObject({ kind: "error", code: expectedCode });
       expect(coordinator.activeSession()).toEqual(before);
       expect(coordinator.diagnostics().sessions).toEqual([

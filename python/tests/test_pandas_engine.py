@@ -537,23 +537,33 @@ def test_pandas_excel_reader_matches_the_format_dependency(monkeypatch):
     ]
 
 
-def test_pandas_csv_import_options(tmp_path):
+@pytest.mark.parametrize(
+    ("record_ending", "line_ending"),
+    [("\n", None), ("\r", "cr"), ("\r\n", "lf")],
+    ids=["lf-omitted", "cr", "crlf"],
+)
+def test_pandas_csv_import_options(tmp_path, record_ending, line_ending):
     path = tmp_path / "latin1.csv"
-    path.write_bytes("city;value\nM\xfcnchen;7\n".encode("latin-1"))
-
+    contents = (record_ending.join(["city;value", "München;7", '"Berlin\nwest";8']) + record_ending).encode("latin-1")
+    path.write_bytes(contents)
+    options = {"delimiter": ";", "encoding": "latin-1", "hasHeader": True, "quoteChar": '"'}
+    if line_ending is not None:
+        options["lineEnding"] = line_ending
     manager = SessionManager()
-    opened = manager.open_session(
-        {
-            "kind": "file",
-            "label": "latin1.csv",
-            "path": str(path),
-            "importOptions": {"delimiter": ";", "encoding": "latin-1", "hasHeader": True, "quoteChar": '"'},
-        },
-        backend="pandas",
-    )
-
-    assert opened["metadata"]["schema"][0]["name"] == "city"
-    assert opened["page"]["rows"][0]["values"][0]["display"] == "München"
+    try:
+        opened = manager.open_session(
+            {"kind": "file", "label": "latin1.csv", "path": str(path), "importOptions": options},
+            backend="pandas",
+        )
+        assert opened["metadata"]["schema"][0]["name"] == "city"
+        assert opened["metadata"]["shape"] == {"rows": 2, "columns": 2}
+        assert opened["metadata"]["source"]["importOptions"] == options
+        assert opened["page"]["rows"][0]["values"][0]["display"] == "München"
+        assert [cell["raw"] for cell in opened["page"]["rows"][1]["values"]] == ["Berlin\nwest", 8]
+    finally:
+        manager.close_all()
+    assert manager.sessions == {}
+    assert path.read_bytes() == contents
 
 
 @pytest.mark.parametrize(
@@ -599,36 +609,46 @@ def test_pandas_opens_bom_marked_utf16_delimited_files(
     assert manager.sessions == {}
 
 
-def test_pandas_reads_multibyte_delimiter_and_quote_controls(tmp_path):
+@pytest.mark.parametrize(
+    ("record_ending", "line_ending"),
+    [("\n", None), ("\r", "cr"), ("\r\n", "lf")],
+    ids=["lf-omitted", "cr", "crlf"],
+)
+def test_pandas_reads_multibyte_delimiter_and_quote_controls(tmp_path, record_ending, line_ending):
     manager = SessionManager()
     cases = [
         (
             "unicode-delimiter.csv",
-            'city§note\nMilan§"one§two"\n',
+            ["city§note", 'Milan§"one§two"'],
             {"delimiter": "§"},
             ["Milan", "one§two"],
         ),
-        ("unicode-quote.csv", "city,note\nMilan,“one,two“\n", {"quoteChar": "“"}, ["Milan", "one,two"]),
+        ("unicode-quote.csv", ["city,note", "Milan,“one,two“"], {"quoteChar": "“"}, ["Milan", "one,two"]),
+        (
+            "unicode-multiline.csv",
+            ["city§note", 'Milan§"one\n""two"""'],
+            {"delimiter": "§"},
+            ["Milan", 'one\n"two"'],
+        ),
     ]
-    for file_name, contents, controls, expected in cases:
-        path = tmp_path / file_name
-        path.write_text(contents, encoding="utf-8")
-        opened = manager.open_session(
-            {
-                "kind": "file",
-                "label": path.name,
-                "path": str(path),
-                "importOptions": {
-                    **controls,
-                    "encoding": "utf-8",
-                    "hasHeader": True,
-                },
-            },
-            backend="pandas",
-        )
-
-        assert [cell["display"] for cell in opened["page"]["rows"][0]["values"]] == expected
-        manager.close_session(opened["metadata"]["sessionId"], 0)
+    try:
+        for file_name, records, controls, expected in cases:
+            path = tmp_path / file_name
+            contents = (record_ending.join(records) + record_ending).encode("utf-8")
+            path.write_bytes(contents)
+            options = {**controls, "encoding": "utf-8", "hasHeader": True}
+            if line_ending is not None:
+                options["lineEnding"] = line_ending
+            opened = manager.open_session(
+                {"kind": "file", "label": path.name, "path": str(path), "importOptions": options},
+                backend="pandas",
+            )
+            assert opened["metadata"]["source"]["importOptions"] == options
+            assert [cell["display"] for cell in opened["page"]["rows"][0]["values"]] == expected
+            manager.close_session(opened["metadata"]["sessionId"], 0)
+            assert path.read_bytes() == contents
+    finally:
+        manager.close_all()
     assert manager.sessions == {}
 
 
