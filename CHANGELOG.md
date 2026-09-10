@@ -4,6 +4,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-09-11
+
 ### Added
 
 - Mark Duplicates flags every member of a selected-value duplicate group without removing rows. Dense Rank appends
