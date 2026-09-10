@@ -817,15 +817,16 @@ jsonlite, bit64 and nanoparquet roots, including version and namespace checks. A
 the private root; successful preparation and child exit permit its removal. The subsequent installed-editor journey
 keeps its separate environment and lifetime. The separate R 4.4 qualification remains unchanged.
 
-The macOS default is `platform-lifecycle`. It keeps a paging round trip, Mark Duplicates and Dense Rank forms, compact
+The macOS default is `platform-lifecycle`. It keeps a paging round trip, the Mark Duplicates form, compact
 column reveal and focus, and Rename inspection, Edit, Undo/Redo, all-row exports, source
 refusal, Save, clipboard and source-bound notebook insertion. Its editing sequence ends after verifying Rename Redo,
 followed by source integrity checks and session disposal. The additional Undo after Redo runs in Linux
 core to prepare for Drop Columns. The macOS profile also retains all three collapse-frame opens,
-direct-document execution and kernel restart/recovery. Three page windows after Dense Rank Apply check exact ranks,
-missing cells and row identities. The native kernel owner checks
-all original Mark Duplicates columns, and the real-process owner checks complete page restoration after Undo for
-both operations. Requested code-insertion screenshots keep the same capture owner.
+direct-document execution and kernel restart/recovery. The Linux core catalog retains the Dense Rank form,
+Preview/Apply/Undo and three direct page samples for exact ranks, missing cells and row identities. The macOS profile
+does not check the Dense Rank form and its native nullable integer result together. Both paths restore the first column
+before Rename. The native kernel owner checks all original Mark Duplicates columns, and the real-process owner checks
+complete page restoration after Undo for both operations. Requested code-insertion screenshots keep the same capture owner.
 The Mark Duplicates Undo diagnostic combines session, scheduler and renderer snapshots with a bounded, passive
 observation of that button's native input, relevant same-origin response categories and alert presence. It retains
 no message payloads or alert text, and its listeners are removed after the action. An observed click establishes
