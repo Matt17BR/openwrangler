@@ -40,7 +40,8 @@ from ..portable_regex import (
     portable_regex_contract,
 )
 from ..trusted_pickle_to_parquet import _source_fingerprint
-from . import _pandas_min_max_helpers
+from . import _pandas_arrow_formula_helpers, _pandas_min_max_helpers
+from ._pandas_arrow_formula_helpers import _open_wrangler_arrow_formula_repair as _pandas_arrow_formula_repair
 from ._pandas_min_max_helpers import _open_wrangler_min_max_scale as _pandas_min_max_scale
 from .base import (
     DEFAULT_STRIP_CHARACTERS,
@@ -5058,7 +5059,6 @@ def _pandas_validate_integer_formula(left: Any, right: Any, operator: str, resul
 
 
 def _pandas_formula_result(left: Any, right: Any, operator: str) -> Any:
-    import numpy as np
     import pandas as pd
 
     if operator == "modulo" or not any(
@@ -5072,148 +5072,7 @@ def _pandas_formula_result(left: Any, right: Any, operator: str) -> Any:
     try:
         return _pandas_formula(left, right, operator)
     except (pa.ArrowInvalid, OverflowError) as error:
-        left_type = left.dtype.pyarrow_dtype if isinstance(left.dtype, pd.ArrowDtype) else None
-        right_type = right.dtype.pyarrow_dtype if isinstance(getattr(right, "dtype", None), pd.ArrowDtype) else None
-
-        def is_integer_column(value: Any, *, signed_only: bool = True) -> bool:
-            if not isinstance(value, pd.Series) or isinstance(value.dtype, pd.SparseDtype):
-                return False
-            if isinstance(value.dtype, pd.ArrowDtype):
-                dtype = value.dtype.pyarrow_dtype
-                if not pa.types.is_integer(dtype) or dtype.bit_width > 64:
-                    return False
-                if signed_only and not pa.types.is_signed_integer(dtype):
-                    return False
-            else:
-                dtype = value.dtype
-                if type(dtype) in (
-                    pd.Int8Dtype,
-                    pd.Int16Dtype,
-                    pd.Int32Dtype,
-                    pd.Int64Dtype,
-                    pd.UInt8Dtype,
-                    pd.UInt16Dtype,
-                    pd.UInt32Dtype,
-                    pd.UInt64Dtype,
-                ):
-                    dtype = cast(Any, dtype).numpy_dtype
-                if (
-                    not isinstance(dtype, np.dtype)
-                    or dtype.kind not in ("i" if signed_only else "iu")
-                    or dtype.itemsize > 8
-                ):
-                    return False
-            return True
-
-        if operator == "power" and is_integer_column(left) and type(right) is int and 0 < right < 2**64:
-            import pyarrow.compute as pc
-
-            # Widen narrow signed minima before even powers take their magnitude.
-            first = pc.cast(pa.array(left.array), pa.int64())
-            try:
-                magnitude = pc.cast(pc.call_function("abs_checked", [first]) if right % 2 == 0 else first, pa.uint64())
-                result = pc.call_function("power_checked", [magnitude, pa.scalar(right, pa.uint64())])
-            except pa.ArrowInvalid:
-                raise error from None
-            return pd.Series(pd.arrays.ArrowExtensionArray(result), index=left.index, name=left.name)
-
-        if (
-            operator == "subtract"
-            and is_integer_column(left, signed_only=False)
-            and (is_integer_column(right, signed_only=False) or type(right) is int and -(2**63) <= right < 2**64)
-        ):
-            import pyarrow.compute as pc
-
-            decimal = pa.decimal128(20, 0)
-            first = pc.cast(pa.array(left.array), decimal)
-            second = (
-                pc.cast(pa.array(right.array), decimal) if isinstance(right, pd.Series) else pa.scalar(right, decimal)
-            )
-            result = pc.call_function("subtract_checked", [first, second])
-            try:
-                try:
-                    result = pc.cast(result, pa.uint64())
-                except pa.ArrowInvalid:
-                    result = pc.cast(result, pa.int64())
-            except pa.ArrowInvalid:
-                # Preserve the original repair path and its refusal.
-                del first, second, result
-            else:
-                return pd.Series(pd.arrays.ArrowExtensionArray(result), index=left.index, name=left.name)
-
-        if operator in {"add", "subtract", "multiply", "power"}:
-            if left_type == pa.uint64() and type(right) is int:
-                if 0 <= right < 2**64:
-                    return _pandas_formula(left, pa.scalar(right, type=pa.uint64()), operator)
-                if operator in {"add", "subtract"} and -(2**64 - 1) <= right < 0:
-                    return _pandas_formula(
-                        left, pa.scalar(-right, type=pa.uint64()), "subtract" if operator == "add" else "add"
-                    )
-            if isinstance(error, pa.ArrowInvalid):
-                if operator == "add" and right_type == pa.uint64() and is_integer_column(left):
-                    left, right = right, left
-                    left_type, right_type = right_type, left_type
-                if left_type == pa.uint64() and isinstance(right, pd.Series) and is_integer_column(right):
-                    minimum = right.min()
-                    if pd.isna(minimum) or minimum >= 0:
-                        return _pandas_formula(left, right.astype(pd.ArrowDtype(pa.uint64())), operator)
-                    if operator in {"add", "subtract"}:
-                        import pyarrow.compute as pc
-
-                        array = cast(pd.arrays.ArrowExtensionArray, right.astype(pd.ArrowDtype(pa.int64())).array)
-                        values = array.__arrow_array__()
-                        bits = pc.cast(values, pa.uint64(), safe=False)
-                        if right.max() > 0:
-                            negative = pc.call_function("less", [values, pa.scalar(0, type=pa.int64())])
-                            zero = pa.scalar(0, type=pa.uint64())
-                            positive = pc.call_function("if_else", [negative, zero, bits])
-                            bits = pc.call_function("if_else", [negative, bits, zero])
-                            positive = pd.Series(
-                                pd.arrays.ArrowExtensionArray(positive), index=right.index, name=right.name
-                            )
-                            left = _pandas_formula(left, positive, operator)
-                        # Selected signed x <= 0 becomes its exact unsigned magnitude,
-                        # including INT64_MIN. Both requested arithmetic calls are checked.
-                        magnitude = pc.call_function("negate", [bits])
-                        right = pd.Series(pd.arrays.ArrowExtensionArray(magnitude), index=right.index, name=right.name)
-                        return _pandas_formula(left, right, "subtract" if operator == "add" else "add")
-                if right_type == pa.uint64() and is_integer_column(left):
-                    minimum = left.min()
-                    if pd.isna(minimum) or minimum >= 0:
-                        return _pandas_formula(left.astype(pd.ArrowDtype(pa.uint64())), right, operator)
-        if (
-            operator == "multiply"
-            and is_integer_column(left, signed_only=False)
-            and (is_integer_column(right, signed_only=False) or type(right) is int and -(2**63) <= right < 2**64)
-        ):
-            import pyarrow.compute as pc
-
-            # Two 64-bit integer operands fit this fixed native intermediate.
-            # Keep an integer result: signed capacity first, then unsigned.
-            decimal = pa.decimal256(20, 0)
-            first = pc.cast(pa.array(left.array), decimal)
-            second = (
-                pc.cast(pa.array(right.array), decimal) if isinstance(right, pd.Series) else pa.scalar(right, decimal)
-            )
-            result = pc.call_function("multiply_checked", [first, second])
-            try:
-                result = pc.cast(result, pa.int64())
-            except pa.ArrowInvalid:
-                try:
-                    result = pc.cast(result, pa.uint64())
-                except pa.ArrowInvalid:
-                    raise error from None
-            return pd.Series(pd.arrays.ArrowExtensionArray(result), index=left.index, name=left.name)
-        if isinstance(error, pa.ArrowInvalid) and operator in {"add", "subtract", "multiply", "divide"}:
-            left_decimal = left_type if left_type is not None and pa.types.is_decimal128(left_type) else None
-            right_decimal = right_type if right_type is not None and pa.types.is_decimal128(right_type) else None
-            if left_decimal is not None or right_decimal is not None:
-                if left_decimal is not None:
-                    left = left.astype(pd.ArrowDtype(pa.decimal256(left_decimal.precision, left_decimal.scale)))
-                if right_decimal is not None and isinstance(right, pd.Series):
-                    right = right.astype(pd.ArrowDtype(pa.decimal256(right_decimal.precision, right_decimal.scale)))
-                return _pandas_formula(left, right, operator)
-        raise
+        return _pandas_arrow_formula_repair(left, right, operator, error, _pandas_formula)
 
 
 def _pandas_modulo(left: Any, right: Any) -> Any:
@@ -5372,7 +5231,6 @@ def _generated_pandas_formula_helpers() -> list[str]:
         "",
         "",
         "def _open_wrangler_formula_result(left, right, operator):",
-        "    import numpy as np",
         "    import pandas as pd",
         "",
         "    if not any(",
@@ -5386,153 +5244,8 @@ def _generated_pandas_formula_helpers() -> list[str]:
         "    try:",
         "        return _open_wrangler_formula(left, right, operator)",
         "    except (pa.ArrowInvalid, OverflowError) as error:",
-        "        left_type = left.dtype.pyarrow_dtype if isinstance(left.dtype, pd.ArrowDtype) else None",
-        '        right_type = right.dtype.pyarrow_dtype if isinstance(getattr(right, "dtype", None), '
-        "pd.ArrowDtype) else None",
-        "",
-        "        def is_integer_column(value, *, signed_only=True):",
-        "            if not isinstance(value, pd.Series) or isinstance(value.dtype, pd.SparseDtype):",
-        "                return False",
-        "            if isinstance(value.dtype, pd.ArrowDtype):",
-        "                dtype = value.dtype.pyarrow_dtype",
-        "                if not pa.types.is_integer(dtype) or dtype.bit_width > 64:",
-        "                    return False",
-        "                if signed_only and not pa.types.is_signed_integer(dtype):",
-        "                    return False",
-        "            else:",
-        "                dtype = value.dtype",
-        "                if type(dtype) in (",
-        "                    pd.Int8Dtype, pd.Int16Dtype, pd.Int32Dtype, pd.Int64Dtype,",
-        "                    pd.UInt8Dtype, pd.UInt16Dtype, pd.UInt32Dtype, pd.UInt64Dtype,",
-        "                ):",
-        "                    dtype = dtype.numpy_dtype",
-        '                if not isinstance(dtype, np.dtype) or dtype.kind not in ("i" if signed_only else "iu") '
-        "or dtype.itemsize > 8:",
-        "                    return False",
-        "            return True",
-        "",
-        "        if (",
-        '            operator == "power"',
-        "            and is_integer_column(left)",
-        "            and type(right) is int",
-        "            and 0 < right < 2**64",
-        "        ):",
-        "            import pyarrow.compute as pc",
-        "",
-        "            # Widen narrow signed minima before even powers take their magnitude.",
-        "            first = pc.cast(pa.array(left.array), pa.int64())",
-        "            try:",
-        "                magnitude = pc.cast(",
-        '                    pc.call_function("abs_checked", [first]) if right % 2 == 0 else first, pa.uint64()',
-        "                )",
-        '                result = pc.call_function("power_checked", [magnitude, pa.scalar(right, pa.uint64())])',
-        "            except pa.ArrowInvalid:",
-        "                raise error from None",
-        "            return pd.Series(pd.arrays.ArrowExtensionArray(result), index=left.index, name=left.name)",
-        "",
-        "        if (",
-        '            operator == "subtract"',
-        "            and is_integer_column(left, signed_only=False)",
-        "            and (is_integer_column(right, signed_only=False) "
-        "or type(right) is int and -(2**63) <= right < 2**64)",
-        "        ):",
-        "            import pyarrow.compute as pc",
-        "",
-        "            decimal = pa.decimal128(20, 0)",
-        "            first = pc.cast(pa.array(left.array), decimal)",
-        "            second = (",
-        "                pc.cast(pa.array(right.array), decimal) "
-        "if isinstance(right, pd.Series) else pa.scalar(right, decimal)",
-        "            )",
-        '            result = pc.call_function("subtract_checked", [first, second])',
-        "            try:",
-        "                try:",
-        "                    result = pc.cast(result, pa.uint64())",
-        "                except pa.ArrowInvalid:",
-        "                    result = pc.cast(result, pa.int64())",
-        "            except pa.ArrowInvalid:",
-        "                # Preserve the original repair path and its refusal.",
-        "                del first, second, result",
-        "            else:",
-        "                return pd.Series(pd.arrays.ArrowExtensionArray(result), index=left.index, name=left.name)",
-        "",
-        '        if operator in {"add", "subtract", "multiply", "power"}:',
-        "            if left_type == pa.uint64() and type(right) is int:",
-        "                if 0 <= right < 2**64:",
-        "                    return _open_wrangler_formula(left, pa.scalar(right, type=pa.uint64()), operator)",
-        '                if operator in {"add", "subtract"} and -(2**64 - 1) <= right < 0:',
-        "                    return _open_wrangler_formula(",
-        '                        left, pa.scalar(-right, type=pa.uint64()), "subtract" if operator == "add" else "add"',
-        "                    )",
-        "            if isinstance(error, pa.ArrowInvalid):",
-        '                if operator == "add" and right_type == pa.uint64() and is_integer_column(left):',
-        "                    left, right = right, left",
-        "                    left_type, right_type = right_type, left_type",
-        "                if left_type == pa.uint64() and isinstance(right, pd.Series) and is_integer_column(right):",
-        "                    minimum = right.min()",
-        "                    if pd.isna(minimum) or minimum >= 0:",
-        "                        return _open_wrangler_formula("
-        "left, right.astype(pd.ArrowDtype(pa.uint64())), operator)",
-        '                    if operator in {"add", "subtract"}:',
-        "                        import pyarrow.compute as pc",
-        "",
-        "                        array = right.astype(pd.ArrowDtype(pa.int64())).array",
-        "                        values = array.__arrow_array__()",
-        "                        bits = pc.cast(values, pa.uint64(), safe=False)",
-        "                        if right.max() > 0:",
-        '                            negative = pc.call_function("less", [values, pa.scalar(0, type=pa.int64())])',
-        "                            zero = pa.scalar(0, type=pa.uint64())",
-        '                            positive = pc.call_function("if_else", [negative, zero, bits])',
-        '                            bits = pc.call_function("if_else", [negative, bits, zero])',
-        "                            positive = pd.Series(",
-        "                                pd.arrays.ArrowExtensionArray(positive), index=right.index, name=right.name",
-        "                            )",
-        "                            left = _open_wrangler_formula(left, positive, operator)",
-        "                        # Selected signed x <= 0 becomes its exact unsigned magnitude,",
-        "                        # including INT64_MIN. Both requested arithmetic calls are checked.",
-        '                        magnitude = pc.call_function("negate", [bits])',
-        "                        right = pd.Series(pd.arrays.ArrowExtensionArray(magnitude), "
-        "index=right.index, name=right.name)",
-        "                        return _open_wrangler_formula("
-        'left, right, "subtract" if operator == "add" else "add")',
-        "                if right_type == pa.uint64() and is_integer_column(left):",
-        "                    minimum = left.min()",
-        "                    if pd.isna(minimum) or minimum >= 0:",
-        "                        return _open_wrangler_formula("
-        "left.astype(pd.ArrowDtype(pa.uint64())), right, operator)",
-        '        if operator == "multiply" and is_integer_column(left, signed_only=False) and (',
-        "            is_integer_column(right, signed_only=False) or type(right) is int and -(2**63) <= right < 2**64",
-        "        ):",
-        "            import pyarrow.compute as pc",
-        "",
-        "            # Two 64-bit integer operands fit this fixed native intermediate.",
-        "            # Keep an integer result: signed capacity first, then unsigned.",
-        "            decimal = pa.decimal256(20, 0)",
-        "            first = pc.cast(pa.array(left.array), decimal)",
-        "            second = pc.cast(pa.array(right.array), decimal) "
-        "if isinstance(right, pd.Series) else pa.scalar(right, decimal)",
-        '            result = pc.call_function("multiply_checked", [first, second])',
-        "            try:",
-        "                result = pc.cast(result, pa.int64())",
-        "            except pa.ArrowInvalid:",
-        "                try:",
-        "                    result = pc.cast(result, pa.uint64())",
-        "                except pa.ArrowInvalid:",
-        "                    raise error from None",
-        "            return pd.Series(pd.arrays.ArrowExtensionArray(result), index=left.index, name=left.name)",
-        '        if isinstance(error, pa.ArrowInvalid) and operator in {"add", "subtract", "multiply", "divide"}:',
-        "            left_decimal = left_type if left_type is not None and pa.types.is_decimal128(left_type) else None",
-        "            right_decimal = right_type if right_type is not None "
-        "and pa.types.is_decimal128(right_type) else None",
-        "            if left_decimal is not None or right_decimal is not None:",
-        "                if left_decimal is not None:",
-        "                    left = left.astype(pd.ArrowDtype("
-        "pa.decimal256(left_decimal.precision, left_decimal.scale)))",
-        "                if right_decimal is not None and isinstance(right, pd.Series):",
-        "                    right = right.astype(pd.ArrowDtype("
-        "pa.decimal256(right_decimal.precision, right_decimal.scale)))",
-        "                return _open_wrangler_formula(left, right, operator)",
-        "        raise",
+        *(f"        {line}" if line else "" for line in getsource(_pandas_arrow_formula_helpers).splitlines()),
+        "        return _open_wrangler_arrow_formula_repair(left, right, operator, error, _open_wrangler_formula)",
         "",
         "",
     ]
