@@ -2419,13 +2419,7 @@ async function exerciseReleasedJupyterExtension(
       WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
       "the released-Jupyter MIME cell to become visible before execution"
     );
-    await executeReleasedNotebookCellUntilMime(
-      notebook,
-      1,
-      OPEN_WRANGLER_MIME_V2,
-      `${phase}:proactive-mime-cell`,
-      executionEditor
-    );
+    await executeReleasedNotebookCell(notebook, 1, undefined, `${phase}:proactive-mime-cell`, executionEditor);
     const pandasOutputMimes = notebook.cellAt(1).outputs.flatMap((output) => output.items.map((item) => item.mime));
     assert.ok(
       pandasOutputMimes.includes(OPEN_WRANGLER_MIME_V2),
@@ -2788,13 +2782,7 @@ async function exerciseReleasedJupyterExtension(
       WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
       "the native DuckDB MIME cell to become visible before execution"
     );
-    await executeReleasedNotebookCellUntilMime(
-      notebook,
-      5,
-      OPEN_WRANGLER_MIME_V2,
-      `${phase}:duckdb-mime-cell`,
-      duckdbRendererEditor
-    );
+    await executeReleasedNotebookCell(notebook, 5, undefined, `${phase}:duckdb-mime-cell`, duckdbRendererEditor);
     const duckdbOutputMimes = notebook.cellAt(5).outputs.flatMap((output) => output.items.map((item) => item.mime));
     assert.ok(
       duckdbOutputMimes.includes(OPEN_WRANGLER_MIME_V2),
@@ -4776,29 +4764,6 @@ async function executeReleasedNotebookCell(
   } finally {
     executionListener.dispose();
   }
-}
-
-async function executeReleasedNotebookCellUntilMime(
-  notebook: vscode.NotebookDocument,
-  index: number,
-  mime: string,
-  checkpoint: string,
-  expectedEditor: vscode.NotebookEditor
-): Promise<void> {
-  const deadline = Date.now() + 60_000;
-  let attempt = 0;
-  let observedMimes: string[] = [];
-  do {
-    attempt += 1;
-    await executeReleasedNotebookCell(notebook, index, undefined, `${checkpoint}:attempt-${attempt}`, expectedEditor);
-    observedMimes = notebook.cellAt(index).outputs.flatMap((output) => output.items.map((item) => item.mime));
-    if (observedMimes.includes(mime)) return;
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  } while (Date.now() < deadline);
-  throw new Error(
-    `Timed out waiting for proactive notebook formatter MIME ${JSON.stringify(mime)}. ` +
-      `Observed: ${JSON.stringify(observedMimes)}.`
-  );
 }
 
 function notebookCellOutputText(cell: vscode.NotebookCell): string {
