@@ -75,16 +75,21 @@ stable tag reachable from that protected `main` commit. It creates a determinist
 stable tag and changes only `package.json`, `package-lock.json`, and
 `python/openwrangler_runtime/version.py`.
 
-Daily release notes list linked commit subjects since the previous published canonical preview, followed by a source
-comparison link. The first-attempt package job selects that preview by publication time and records its verified tag
-and source commit in job outputs. Unpublished attempts, skipped schedules, drafts and stable releases do not advance
-this notes baseline. If no preview has been published, the notes identify the first preview and compare with its bound
-stable tag. An empty range is stated explicitly.
+Daily release notes start with a link to the previous published canonical preview and list merged PRs once each.
+They show five entries, with the remaining changes and full source comparison under **Read more**. Short lists keep
+the comparison visible. If no preview has been published, the introduction links to the bound stable release instead;
+an empty range is stated explicitly.
 
-Comparison endpoints replace generated daily commits with their protected-main parents. The notes retain merge
-commits and mixed changes, including dependency, configuration, changelog and curated-note edits. Only changes confined
-to version/channel fields in the three version files are omitted. History and note-size bounds fail instead of silently
-truncating the list. Stable and manual-preview releases keep their checked-in curated notes.
+The first-attempt package job selects the previous preview by publication time and records its verified tag, source
+commit and PR attribution in job outputs. PR numbers, titles and commit membership are frozen together. Unpublished
+attempts, skipped schedules, drafts and stable releases do not advance this notes baseline.
+
+Comparison endpoints replace generated daily commits with their protected-main parents. PR attribution requires a
+merged PR targeting this repository's `main`, with its merge commit in that exact source range. Unmatched commits keep
+their own linked subjects. Mixed changes, including dependency, configuration, changelog and curated-note edits, remain
+included; only changes confined to version/channel fields in the three version files are omitted. Incomplete or
+ambiguous attribution and exceeded history, snapshot or note-size bounds stop preparation instead of truncating the
+list. Stable and manual-preview releases keep their checked-in curated notes.
 
 The workflow packages one VSIX with its checksum and provenance receipt, then installs those bytes in stable VS Code
 with the `daily-core` selector. After that check passes, the protected job creates the lightweight tag and GitHub
@@ -100,10 +105,10 @@ creating a release. Set `publish: true` only when that run should publish the ch
 Preview packaging runs only on the first attempt of a workflow run. If packaging fails, start a new run; rerunning
 the package job is refused before checkout or setup. If the GitHub **Publish preview** job fails, rerun only that job
 in the same workflow run while its stable-tag binding is still current. It reconstructs the same source and reuses
-the same artifact and frozen notes baseline. Publication revalidates that baseline's tag and provenance and requires the
-existing draft or public release body to match exactly; it never selects a newer preview during recovery. Missing
-baseline outputs, moved tags, conflicting provenance or a nonancestor source stop publication. If a newer stable tag is
-now reachable, discard the old candidate and run the workflow again.
+the same artifact and frozen notes inputs. Publication revalidates the baseline's tag and provenance and requires the
+existing draft or public release body to match exactly; it never selects a newer preview or rereads PR titles during
+recovery. Missing notes outputs, moved tags, conflicting provenance or a nonancestor source stop publication. If a newer
+stable tag is now reachable, discard the old candidate and run the workflow again.
 To recover an Azure Marketplace failure, run its pipeline from current protected `main` with `existingReleaseTag`
 set to the same tag. Recovery verifies the existing tag and GitHub files and never rebuilds or replaces them.
 
@@ -148,9 +153,14 @@ different public package.
 
 ## Recovery
 
-Treat an existing release tag and GitHub Release as immutable. Before retrying a registry publication, verify the tag,
+Treat an existing release tag and its assets as immutable. Before retrying a registry publication, verify the tag,
 source commit, VSIX, checksum, and provenance receipt. Never rebuild historical bytes, move a tag, or replace a public
 package.
+
+A maintainer may correct the title or notes of a completed GitHub release separately. Preserve the previous text and
+verify that the tag, source and asset identities remain unchanged. This editorial correction does not authorize a new
+publication or relax the publisher's exact-body check; replaying the old GitHub publication against edited notes will
+still refuse the mismatch. Registry recovery below uses the existing artifacts.
 
 To recover Open VSX publication, dispatch `.github/workflows/open-vsx-promotion.yml` from protected `main` with
 `release_tag` set to the existing release tag. The workflow downloads the GitHub Release files, verifies them, and

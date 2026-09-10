@@ -290,7 +290,7 @@ function versionOnlyCommit(root, commit) {
   );
 }
 
-export function dailyPreviewReleaseNotes({ baseSha, baseTag, root, sourceSha, version }) {
+export function readDailyPreviewSourceChanges({ baseSha, baseTag, root, sourceSha, version }) {
   const date = dailyPreviewDateFromVersion(version);
   const baseVersion = CANONICAL_NUMERIC_RELEASE_TAG.exec(baseTag ?? "")?.groups?.version;
   const baseChannel = classifyNumericReleaseVersion(baseVersion)?.channel;
@@ -327,30 +327,103 @@ export function dailyPreviewReleaseNotes({ baseSha, baseTag, root, sourceSha, ve
   const fields = history === "" ? [] : history.split("\0");
   if (fields.length > 0 && fields.pop() !== "") throw new Error("Git returned incomplete release-notes history.");
   if (fields.length % 2 !== 0) throw new Error("Git returned malformed release-notes history.");
-  const entries = [];
+  const commits = [];
   for (let index = 0; index < fields.length; index += 2) {
     const [commit, subject] = fields.slice(index, index + 2);
     if (!FULL_SHA.test(commit) || subject.length === 0 || /[\0\r\n]/u.test(subject))
       throw new Error("Git returned an invalid release-notes commit.");
-    if (versionOnlyCommit(sourceRoot, commit)) continue;
-    const label = subject
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replace(/[\\`*_[\]]/gu, "\\$&");
-    entries.push(`- [${label}](https://github.com/Matt17BR/openwrangler/commit/${commit})`);
+    commits.push({ commit, subject, versionOnly: versionOnlyCommit(sourceRoot, commit) });
   }
+  return { baseChannel, baseSource, baseTag, commits, sourceSha };
+}
+
+function escapeReleaseNotesLabel(value) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replace(/[\\`*_[\]]/gu, "\\$&");
+}
+
+export function renderDailyPreviewReleaseNotes(source, pullRequests) {
+  if (!Array.isArray(pullRequests) || Buffer.byteLength(JSON.stringify(pullRequests), "utf8") > 64 * 1024) {
+    throw new Error("Daily preview PR attribution must be an explicit array within 64 KiB.");
+  }
+  const commits = new Set(source.commits.map(({ commit }) => commit));
+  const numbers = new Set();
+  const byCommit = new Map();
+  for (const pullRequest of pullRequests) {
+    if (
+      pullRequest === null ||
+      typeof pullRequest !== "object" ||
+      Array.isArray(pullRequest) ||
+      Object.keys(pullRequest).sort().join(",") !== "commits,number,title" ||
+      !Number.isSafeInteger(pullRequest.number) ||
+      pullRequest.number <= 0 ||
+      numbers.has(pullRequest.number) ||
+      typeof pullRequest.title !== "string" ||
+      !pullRequest.title.isWellFormed() ||
+      pullRequest.title.trim().length === 0 ||
+      /\p{Cc}/u.test(pullRequest.title) ||
+      Buffer.byteLength(pullRequest.title, "utf8") > 1_024 ||
+      !Array.isArray(pullRequest.commits) ||
+      pullRequest.commits.length === 0
+    ) {
+      throw new Error("Daily preview PR attribution contains an invalid or duplicate pull request.");
+    }
+    numbers.add(pullRequest.number);
+    for (const commit of pullRequest.commits) {
+      if (!commits.has(commit) || byCommit.has(commit)) {
+        throw new Error("Daily preview PR attribution must uniquely cover commits from its exact source range.");
+      }
+      byCommit.set(commit, pullRequest);
+    }
+  }
+  const entries = [];
+  const emitted = new Set();
+  for (const { commit, subject, versionOnly } of source.commits) {
+    if (versionOnly) continue;
+    const pullRequest = byCommit.get(commit);
+    if (pullRequest === undefined) {
+      entries.push(
+        `- [${escapeReleaseNotesLabel(subject)}](https://github.com/Matt17BR/openwrangler/commit/${commit})`
+      );
+    } else if (!emitted.has(pullRequest.number)) {
+      entries.push(
+        `- [${escapeReleaseNotesLabel(pullRequest.title)} (#${pullRequest.number})](https://github.com/Matt17BR/openwrangler/pull/${pullRequest.number})`
+      );
+      emitted.add(pullRequest.number);
+    }
+  }
+  const baseline = `[${source.baseTag}](https://github.com/Matt17BR/openwrangler/releases/tag/${source.baseTag})`;
+  const comparison = `[Full comparison](https://github.com/Matt17BR/openwrangler/compare/${source.baseSource}...${source.sourceSha})`;
+  const folded = entries.length > 5;
   return validateReleaseNotes(
     [
-      ...(baseChannel === "stable"
-        ? [`No earlier published preview; changes since stable tag \`${baseTag}\`.`, ""]
-        : []),
-      ...(entries.length === 0 ? ["No source changes beyond release metadata."] : entries),
+      source.baseChannel === "stable"
+        ? `No earlier published preview; changes since stable ${baseline}.`
+        : `Changes since the previous preview, ${baseline}.`,
       "",
-      `[Full comparison](https://github.com/Matt17BR/openwrangler/compare/${baseSource}...${sourceSha})`,
+      ...(entries.length === 0 ? ["No source changes beyond release metadata."] : entries.slice(0, 5)),
+      "",
+      ...(folded
+        ? [
+            "<details>",
+            `<summary>Read more — ${entries.length - 5} more ${entries.length === 6 ? "change" : "changes"}</summary>`,
+            "",
+            ...entries.slice(5),
+            ""
+          ]
+        : []),
+      comparison,
+      ...(folded ? ["", "</details>"] : []),
       ""
     ].join("\n")
   );
+}
+
+export function dailyPreviewReleaseNotes({ pullRequests = [], ...options }) {
+  return renderDailyPreviewReleaseNotes(readDailyPreviewSourceChanges(options), pullRequests);
 }
 
 export function inspectDailyPreviewSourceCommit({ commit, expectedParent, releaseTag, root }) {

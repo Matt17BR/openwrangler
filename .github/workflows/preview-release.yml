@@ -72,6 +72,10 @@ jobs:
     if: ${{ needs.changes.outputs.build == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
     outputs:
       artifact-id: ${{ steps.canonical_artifact.outputs.artifact-id }}
       candidate-sha: ${{ steps.daily_source.outputs.generated_sha || github.sha }}
@@ -79,6 +83,7 @@ jobs:
       release-tag: ${{ steps.daily_source.outputs.release_tag || inputs.release_tag }}
       notes-base-tag: ${{ steps.notes_base.outputs.notes_base_tag }}
       notes-base-sha: ${{ steps.notes_base.outputs.notes_base_sha }}
+      notes-pull-requests: ${{ steps.notes_base.outputs.notes_pull_requests }}
     steps:
       - name: Require first preview package attempt
         env:
@@ -252,6 +257,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           NOTES_BASE_TAG: ${{ needs.package.outputs.notes-base-tag }}
           NOTES_BASE_SHA: ${{ needs.package.outputs.notes-base-sha }}
+          NOTES_PULL_REQUESTS: ${{ needs.package.outputs.notes-pull-requests }}
           RELEASE_TAG: ${{ needs.package.outputs.release-tag }}
         run: node scripts/publish-github-preview-release.mjs canonical-release
       - name: Dispatch the exact public preview to Open VSX promotion

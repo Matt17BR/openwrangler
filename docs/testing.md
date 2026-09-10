@@ -67,9 +67,10 @@ in ordinary Linux and Windows CI alongside the existing platform filesystem cont
 The daily-preview tests execute the scheduled source check with controlled GitHub CLI responses, covering unchanged
 and changed commits, missing history, manual dispatches, and lookup failures. Real Git fixtures own daily change-note
 ranges, sibling preview source parents, first-preview and empty output, conservative version-only filtering, merge
-commits, Markdown escaping and complete-output limits. Publisher tests own published-baseline selection, private draft
-exclusion, source/provenance agreement, frozen retry inputs and exact body/asset refusal. Workflow assertions retain
-the first-attempt package output handoff; a publication retry must not discover a new notes baseline.
+commits, PR grouping with direct-commit fallback, collapsed long lists, Markdown escaping and complete-output limits.
+Publisher tests own bounded PR attribution, published-baseline selection, private draft exclusion, source/provenance
+agreement, frozen retry inputs and exact body/asset refusal. Workflow assertions retain the first-attempt package output
+handoff; a publication retry must not discover a new notes baseline or reread mutable PR metadata.
 
 Use these checks for changed static boundaries:
 
