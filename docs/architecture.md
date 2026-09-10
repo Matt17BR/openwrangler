@@ -838,6 +838,9 @@ Every live grid request is a two-dimensional row-and-column window. The protocol
 columns. The response returns the exact ordered stable `columnIds` corresponding to every row vector; a missing,
 reordered, duplicated, or partial identity list fails closed. Filters, sorts, full-schema ARIA coordinates, generated
 code, and exports remain independent of the transported projection.
+The grid reports its rendered column range during layout. If a returned page needs a corrective column projection
+for that range, cleaning controls remain unavailable between the two requests. Later scrolling or resizing can
+start another projection and temporarily disable those controls again.
 
 Profiles are progressive and bounded. The initial open does not profile all columns, background capacity is limited,
 and values or aggregates cross the runtime boundary only as bounded samples or fixed-size results. Applied-step

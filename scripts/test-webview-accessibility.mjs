@@ -1009,6 +1009,45 @@ async function verifyInsightsDrawerWorkflow(browser) {
 
 async function verifySessionModeDisclosure(browser) {
   const page = await browser.newPage();
+  page.setDefaultTimeout(15_000);
+  page.setDefaultNavigationTimeout(15_000);
+  await page.addInitScript(() => {
+    const state = { pages: [], observed: false, becameReady: false };
+    let holding = false;
+    let releasing = false;
+    let observer;
+    const holdPage = (event) => {
+      if (!holding || releasing || event.data?.kind !== "page") return;
+      event.stopImmediatePropagation();
+      state.pages.push(event.data);
+    };
+    globalThis.addEventListener("message", holdPage, true);
+    globalThis.openWranglerProjectionControl = {
+      state,
+      observe(button) {
+        holding = true;
+        observer = new MutationObserver(() => {
+          state.observed = true;
+          state.becameReady ||= !button.disabled;
+        });
+        observer.observe(button, { attributes: true, attributeFilter: ["disabled"] });
+      },
+      release() {
+        const data = state.pages.shift();
+        if (!data) throw new Error("No held projection page is ready.");
+        releasing = true;
+        try {
+          globalThis.dispatchEvent(new MessageEvent("message", { data, origin: globalThis.location.origin }));
+        } finally {
+          releasing = false;
+        }
+      },
+      dispose() {
+        observer?.disconnect();
+        globalThis.removeEventListener("message", holdPage, true);
+      }
+    };
+  });
   await page.setViewportSize({ width: 700, height: 760 });
   await page.emulateMedia({ forcedColors: "active" });
   await page.goto(pathToFileURL(resolve(harnessDir, "wide-view.html")).href, { waitUntil: "load" });
@@ -1049,6 +1088,7 @@ async function verifySessionModeDisclosure(browser) {
         }
       ]
     };
+    payload.metadata = metadata;
     globalThis.dispatchEvent(
       new MessageEvent("message", {
         data: { ...payload, metadata },
@@ -1098,8 +1138,73 @@ async function verifySessionModeDisclosure(browser) {
   await page.emulateMedia({ forcedColors: "none" });
   await page.addScriptTag({ path: axePath });
   await scanPageAccessibility(page, "wide-view.html (700px blocked reverse-mode explanation)");
-  await page.close();
-  console.log("Live Editing blocked reverse action, compact opened explanation, and forced colors verified.");
+  await page.locator('[data-session-badge="mode"]').click();
+
+  const undo = page.getByRole("button", { name: "Undo", exact: true });
+  const projection = await undo.evaluateHandle((button) => {
+    const control = globalThis.openWranglerProjectionControl;
+    control.observe(button);
+    globalThis.openWranglerMessages.length = 0;
+    return control;
+  });
+  try {
+    await page.getByTestId("data-grid-scroller").evaluate((scroller) => {
+      scroller.scrollLeft = 20 * Number(document.body.dataset.defaultColumnWidth);
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    await page.waitForFunction((control) => control.state.pages.length === 1, projection);
+    await page.getByTestId("data-grid-scroller").evaluate((scroller) => {
+      scroller.scrollLeft = 0;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    await page.locator('th[data-grid-column="0"]').waitFor();
+    if ((await runtimeRequestCount(page, "getPage")) !== 1 || !(await undo.isDisabled())) {
+      throw new Error("The newer visible column range did not retain its pending projection.");
+    }
+    await projection.evaluate((control) => control.release());
+    await page.waitForFunction((control) => control.state.pages.length === 1, projection);
+    const readiness = await projection.evaluate((control) => ({
+      observed: control.state.observed,
+      becameReady: control.state.becameReady,
+      requests: globalThis.openWranglerMessages
+        .filter((message) => message.kind === "runtimeRequest" && message.request?.kind === "getPage")
+        .map(({ request }) => [request.offset, request.columnOffset, request.columnLimit]),
+      sameView: control.state.pages.every(
+        ({ metadata }) =>
+          metadata.sessionId === globalThis.openWranglerSessionPayload.metadata.sessionId &&
+          metadata.revision === globalThis.openWranglerSessionPayload.metadata.revision &&
+          JSON.stringify(metadata.filterModel) ===
+            JSON.stringify(globalThis.openWranglerSessionPayload.metadata.filterModel)
+      )
+    }));
+    if (!readiness.observed || readiness.becameReady || !(await undo.isDisabled())) {
+      throw new Error(`Undo became ready before the corrective projection settled: ${JSON.stringify(readiness)}.`);
+    }
+    if (
+      !readiness.sameView ||
+      JSON.stringify(readiness.requests) !==
+        JSON.stringify([
+          [0, 16, 16],
+          [0, 0, 16]
+        ])
+    ) {
+      throw new Error(
+        `The corrective projection changed its requested row or column window: ${JSON.stringify(readiness)}.`
+      );
+    }
+    await projection.evaluate((control) => control.release());
+    await page.locator('td[data-grid-row="0"][data-grid-column="0"]').waitFor();
+    await undo.click();
+    if ((await runtimeRequestCount(page, "undoStep")) !== 1) {
+      throw new Error("The settled projection did not accept exactly one normal Undo click.");
+    }
+    await assertProjectedHarnessClean(page, "wide Editing projection readiness");
+  } finally {
+    await projection.evaluate((control) => control.dispose());
+    await projection.dispose();
+    await page.close();
+  }
+  console.log("Live Editing disclosure and continuous Undo gating through corrective projection verified.");
 }
 
 async function verifyShortGridProfileResponsiveness(browser) {

@@ -251,7 +251,7 @@ export function DataGrid({
     resetGridClipboardSelectionRef.current = resetGridClipboardSelection;
   }, [resetGridClipboardSelection]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     visibleColumnRangeHandler.current = onVisibleColumnRangeChange;
   }, [onVisibleColumnRangeChange]);
 
@@ -837,7 +837,7 @@ export function DataGrid({
     scrollerRef.current?.querySelector<HTMLElement>(selector)?.focus({ preventScroll: true });
   }, [rovingColumn, rovingRow]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     visibleColumnRangeHandler.current({ start: visibleColumnRange.start, end: visibleColumnRange.end });
   }, [busy, loadedColumnSignature, logicalViewContext, page.offset, visibleColumnRange.end, visibleColumnRange.start]);
 
