@@ -1323,7 +1323,7 @@ frame <- data.frame(value = 1L)
       rscriptPath,
       temporaryParent,
       workingDirectory: temporaryParent,
-      documentText: `frame <- data.frame(value = seq_len(400000L), label = rep("VALUE", 400000L))`
+      documentText: `frame <- data.frame(value = 1:2, label = rep("VALUE", 2L))`
     });
     try {
       const sessionId = randomUUID();
@@ -1335,9 +1335,9 @@ frame <- data.frame(value = 1L)
           sessionId,
           0,
           {
-            id: "slow-lower",
-            kind: "lowerText",
-            params: { column: { id: "r:c:1", name: "label" } }
+            id: "slow-custom",
+            kind: "customCode",
+            params: { code: "Sys.sleep(0.5)\nresult <- df\n" }
           },
           pageWindow(),
           opened.page.schema,

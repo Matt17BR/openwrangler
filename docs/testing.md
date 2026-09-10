@@ -453,6 +453,8 @@ clock resolution; metadata checks do not detect every same-size content change. 
 owner before R dependency and editor preparation.
 The R process transport case forces a changed modification time after its real in-place rewrite, then verifies
 refusal, continued session use and cleanup.
+Its detachment case uses a two-row Custom Code request with a short sleep to check dispatched cancellation,
+settlement and process cleanup.
 R notebook source-integrity checks also verify that no active export artifacts remain before the session closes.
 
 `python/tests/test_round_number.py` checks live and standalone Round agreement, native readback, CSV/Parquet export,
