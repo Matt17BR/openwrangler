@@ -187,9 +187,8 @@ without rewriting them; follow [Testing](docs/testing.md) for browser and editor
 ## Pull requests
 
 - Target `main` for all work. Use a short-lived branch and pull request for each change.
-- `main` is current development. Release preparation uses short-lived `release/*` branches before publication from
-  the exact merged commit. The protected `stable` branch starts with the verified 2.0 release and advances only to
-  releases published on all three registries.
+- `main` is current development. Release changes use short-lived branches; qualification and publication bind the
+  exact merged commit as described in [Releasing](docs/releasing.md).
 - Keep a pull request limited to one documented milestone or issue. Split unrelated work into separate pull requests.
 - Give each commit one reviewable purpose. Product code may travel with its directly related tests and required docs;
   keep unrelated product slices, test-harness changes, generated media, standalone docs/metadata, and release/version
@@ -208,4 +207,5 @@ without rewriting them; follow [Testing](docs/testing.md) for browser and editor
 - Push independently green branch commits before opening a pull request when early review is not needed. Draft pull
   requests run checks when opened and after each pushed commit. Marking an unchanged draft ready does not rerun them.
 
-All required checks must pass before merge. Feature work is tested in both VS Code and Cursor before a prerelease.
+All required checks must pass before merge. Use [Testing](docs/testing.md) for the checks required by a change;
+[Releasing](docs/releasing.md) defines the separate preview and stable-candidate qualification.
