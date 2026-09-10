@@ -177,7 +177,7 @@ including source and metadata preservation. Numeric portability uses independent
 comparisons through interpreted and compiled programs. Frame, kernel, decoder and process owners separately check
 primitive values, public mutations and correlated transport. Linux interactive transport controls use a real PTY;
 portable parser controls retain one-expression and physical-line byte bounds. Operation semantics and arithmetic policy belong in
-[the native R decision](decisions/0001-native-r-runtime.md); do not repeat the catalog in installed UI journeys.
+[the native R architecture contract](architecture.md#native-r); do not repeat the catalog in installed UI journeys.
 
 Linux R phase supervision needs the selected repository Python 3.10–3.14 standard library and kernel pidfd support,
 but no Python dataframe packages. Capability checks precede phase launch; signaling verifies the exact phase marker

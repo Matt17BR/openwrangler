@@ -5,380 +5,56 @@
 
 ## Context
 
-Before work on v2 began, Open Wrangler handled dataframe work through Python. R support needs to keep R objects and
-package semantics, including `data.frame`, tibble, and `data.table`. Sending those objects through Python would change types, null handling,
-categorical behavior, and generated code. It would also make a Python environment an unnecessary requirement for an R
-workflow.
+Open Wrangler originally handled dataframe work through Python. R support needs to preserve R objects and package
+semantics, including `data.frame`, tibble and `data.table`. Converting those objects through Python would change
+classes, missing values, factors and generated code, and require a Python environment for an R workflow.
 
-R notebooks already have a well-defined execution owner: the selected IRkernel. The official VS Code R extension can
-own a second kind of live session in its R terminal. Ordinary `.R` files can instead use an Open Wrangler-owned
-process. R Markdown and Quarto use that same process model for a smaller feature: Open Wrangler runs their supported R
-cells without taking over either extension's render process.
+R notebooks have an execution owner: the selected IRkernel. The official VS Code R extension can own a live R
+terminal. Ordinary R documents need a separate process whose lifetime Open Wrangler can control. R Markdown and
+Quarto add document syntax, but their render processes are not Open Wrangler sessions.
 
 ## Decision
 
-Open Wrangler 2 runs R dataframes in R. It does not convert them through Python or use a Python compatibility
-layer.
+Run R dataframe operations in R. Share the workbench, operation model and versioned host protocol with other engines,
+while keeping frame validation, execution, generated code and exports native to R. The host identifies the confirmed
+backend, frame flavor and code dialect explicitly.
 
-The host exposes a `RuntimeIdentity` derived from confirmed session metadata. The protocol keeps `backend` as its
-engine discriminator. R sessions add an explicit dataframe flavor (`data.frame`, tibble, or `data.table`) so the UI
-can describe the object without guessing from `backend`. Their `RuntimeIdentity.codeDialect` is `r.base`, which labels
-the shared Code Preview as R without changing the private kernel transport.
+Support three execution paths with distinct owners:
 
-The first implementation slice is a transport-neutral frame/page contract. It has these invariants:
+- An IRkernel session stays bound to the exact notebook, kernel and variable captured when the action starts.
+- An existing live terminal session stays bound to the exact official R terminal and process. Passive discovery uses
+  bounded, untrusted vscode-R metadata; Open or Refresh explicitly connects through the terminal API.
+- An R document session owns a private `Rscript` process and the exact text document/version that started it. R Markdown
+  and Quarto use the same process for supported R cells, without attaching to or replacing their render processes.
 
-- The producer runs in R and accepts only canonical base `data.frame`, tibble, and `data.table` classes.
-- Standalone contract captures own an isolated R snapshot. `data.table` snapshots use `data.table::copy()`.
-- A live IRkernel session keeps the verified variable binding instead. Each page, sort, or profile reads the current
-  object through that binding and rejects a changed shape, schema, class, or row-name mode.
-- Column identity starts from the source position but remains stable when editing moves a retained column. Duplicate
-  and non-syntactic names remain usable without rewriting the source or assigning identity by name.
-- R-specific factor, ordered-factor, Date, POSIXct, difftime, and integer64 metadata crosses the boundary explicitly.
-- Plain-double `NA`, `NaN`, positive infinity, and negative infinity remain distinct typed values. Non-finite
-  classed temporal values and fractional Dates are rejected instead of being relabeled or rounded.
-- Display text does not inherit `options(OutDec)` or the process time zone. POSIXct values with a null or empty
-  timezone display in UTC while retaining that original metadata, and reserved integer missing-value sentinels are
-  never accepted as ordinary values.
-- Read-only filters and sorts use the captured stable column ID and name. They remain stable with duplicate names,
-  keep source row IDs, and never become cleaning steps. Filters support compound AND/OR logic, typed predicates, and
-  selected values; sorts choose direction and missing-value placement independently for each key.
-- Finite numeric filter operands and typed temporal payloads retain their native value while binding. Floating,
-  datetime and duration comparisons and picker tokens use native source values. Datetime keys retain epoch seconds;
-  duration keys retain the column's units. Accepted decimal text is normalized for the existing jsonlite decoder
-  without changing its grammar or finite-range checks. Generated filters encode those bound numeric values directly.
-  Manual datetime input retains its timezone rules, and manual duration input converts seconds to the column's units.
-  Native floating selections still refuse integer-cell tokens.
-- Row, column, cell, factor-level, text, and encoded-payload limits are checked by the R producer and again by the
-  TypeScript decoder. The producer accounts for metadata and cells while building a page and stops before allocating
-  a complete oversized page or JSON string.
-- Bounded explicit row names cross as row labels and remain attached to their source rows after sorting. Aligned,
-  plain `names` attributes on atomic and classed columns are accepted as inert R column metadata but never become public
-  identity. Unsupported classes, nested columns, malformed column names metadata, and unrecognized attributes fail
-  before a page is published. The contract does not silently flatten them.
+Do not retarget asynchronous work to whichever editor, kernel or terminal becomes active later. Recovery must verify
+its replacement and retain the original operation's outcome; abandoning an await does not establish that native work
+has stopped. Cleanup remains attached to the resource that Open Wrangler actually owns.
 
-Native compact row names can encode zero rows, provided every column matches that count. Empty `data.table` subsets
-and empty cleaning or Custom Code results remain valid editing frames when their supported schema has at least one
-column. Inconsistent column lengths and malformed row-name counts are still rejected.
+Live viewing retains the verified R binding. Editing creates an isolated copy and preserves the source. Runtime and
+standalone generated code must agree on supported classes, values, column identity and refusals. Unsupported frames
+fail explicitly rather than being flattened or converted through another engine.
 
-A supported zero-column source is also valid, with its row count and labels intact. Custom Code may create its first
-column, and Drop Missing Rows and Drop Duplicates may retain the zero-column frame. Generated source validation follows
-the same boundary; operation-specific column checks and the nonempty Custom Code output requirement still apply.
+The [architecture](../architecture.md#native-r) owns the current frame, numeric, transport, document and export
+contracts. The [generated reference](../reference.md#transformation-operations) owns the operation catalog;
+[feature parity](../feature-parity.md#native-r-preview) owns user-facing support and limitations. Ordinary implementation fixes
+update those owners when needed. Amend this decision only when the language boundary, execution ownership or its
+rationale changes.
 
-Cleaning follows native `data.table` copy semantics for column-element names: ordinary operations drop this inert
-metadata. Clone, Dense Rank, Mark Duplicates and Custom Code explicitly retain named inputs. Generated code applies the
-same rule at each step, including when a later Custom Code step inspects the resulting attributes. Row labels and
-stable column identity are separate from these element names.
-Transform by Example validates names on its derived values before the final capture removes that metadata.
-One-hot encoding preserves the [category and empty-input rules](../architecture.md#native-r) in both live and
-generated execution, including duration columns. Convert Type to text retains character storage for an empty duration
-column, so the generated result keeps the requested schema.
+## Alternatives rejected
 
-The live notebook slice now connects this contract to the shared workbench. `DataBackend` includes `r`, session
-metadata records the R dataframe flavor, and `RKernelBridge` adapts the private R transport to protocol v4 and the
-shared session coordinator. The notebook command and Operations view discover supported R variables and open the
-same grid, Activity Bar views, and profile drawer used by Python-backed sessions. Cached Operations rows retain the
-original discovery receipt, so opening one rechecks that the same notebook, kernel, variable, and R dataframe type
-are still present. The Python runtime does not decode or execute the private R transport.
-
-Before editing, the bridge uses the coordinator's accepted filter and view-change epoch, including during replay.
-This prevents a superseded page from changing the view restored by Discard or Undo. Native R transport v14 and frame
-contract v5 are unchanged; the bridge supplies the resolved view through their existing mutation commands.
-
-IRkernel is the first supported R transport. A notebook launch must stay bound to the exact `NotebookDocument` and
-kernel captured when the user starts it. Kernel lookup, dispatch, recovery, and cleanup may not retarget through the
-active editor, a matching URI, a replacement document, or another R session.
-
-Before a native connection exists, Operations can read the dataframe descriptors already produced by vscode-R. It
-prefers vscode-R's exported workspace tree when its session status names the exact captured terminal PID. During
-terminal startup, it can fall back to the matching attach record and workspace files. Those files are treated as
-untrusted hints: reads are bounded and no-follow, marker changes are retried, and any PID, path, owner, file identity,
-or terminal change invalidates the list. This automatic path never sends terminal text. Because vscode-R replaces its
-single request record after plots, help, and data views, a same-process non-attach record falls back immediately
-instead of leaving Operations on a minute-long loading state.
-
-Opening a listed item or choosing Refresh is the explicit connection point. Open Wrangler then sends its bundled
-dispatcher through VS Code's terminal API and uses private response files for bounded requests. Dispatch remains one
-R expression, with physical lines below canonical terminal input limits, including escaped long paths. It can run
-while a new R terminal is still starting without a readiness retry. The dispatcher
-registers one task callback for that transport. After a top-level R command, the callback updates the transport's
-private mailbox; the host debounces the notification without sending another R command. Open Wrangler's own requests
-suppress their callback signal. Changing or closing the terminal invalidates the list and session; Open Wrangler never
-searches for a replacement terminal.
-
-IRkernel and active-terminal variables open in Viewing mode by default and can switch to Editing without changing the
-live object. A document session follows the file start-mode setting, which defaults to Editing. Generated R can be
-inserted only when the session retains an exact notebook or text document. An active terminal has no such source, so
-its generated R can be copied or saved but not inserted.
-
-R discovery and session requests honor the configured opening and ordinary request deadlines under the shared
-[runtime ownership rules](../architecture.md#runtime-ownership). Configured fractions round upward to whole
-milliseconds. Explicit per-call deadlines and the separate 30-minute export default retain their existing owners.
-
-The host creates the candidate session ID before dispatch and maps it to that kernel. A malformed, cancelled, timed
-out, or stale open keeps a continuation on the original operation. When that operation settles, the host makes one
-bounded direct close attempt for the known candidate on the same kernel; it does not look the kernel up again or retry
-against a replacement. For an already confirmed session, an exact correlated kernel-change response starts one
-shared recovery: the coordinator verifies a fresh delegate on the replacement kernel, replays the confirmed state,
-and swaps delegates without changing the public session ID. The operation that observed the loss still returns its
-own failure and is never retried. Cancellation, stale ownership, or a superseded view suppresses recovery, and
-concurrent losses share the same replacement. An operation that never settles may detach from the UI, but its
-ownership record remains until the original kernel ends or the continuation can perform its close.
-The replacement follows the shared [recovered-view publication contract](../architecture.md#persistence-and-recovery),
-including fresh profiles and the originating operation's failure.
-
-All native R transports share the same ASCII response encoder. Its existing traversal charges the aggregate cost of
-escaped string fragments before building them, including values repeated in cell display and raw representations.
-This prevents string expansion from exceeding the 17 MiB transport limit after a page passed its separate 16 MiB
-native bound. It does not replace jsonlite's final exact-byte check for keys, numbers and JSON structure or claim an
-exact preallocation ceiling for every payload. Unicode validation and scalar versus explicit-array behavior remain.
-Scalar escaping converts codepoints together and replaces escape classes in bulk, avoiding an R callback for every
-character in generated programs. Aggregate byte charging still precedes expansion.
-Encoder refusals produce a bounded correlated request error, allowing a standalone process to accept a smaller
-followup page. Open, preview and apply retain their full encoded-response preflight before session assignment.
-
-The current notebook viewer does not copy the complete dataframe when a session opens. It records the source binding
-and structural descriptor, then reads current values for pages, filters, sorts, value searches, and profiles without
-writing to the object. Column values return bounded counts and typed selections. Profiles and dataset statistics use
-the current viewing filters, and the private dataset-statistics response binds its counts to the filtered row total
-from the same request. Same-schema changes made in the notebook are therefore visible; structural changes ask the
-user to reopen the frame.
-
-Large profiles do not fail at an arbitrary dataframe row or cell count. The R contract scans cheap column and missing
-statistics in bounded chunks and takes a deterministic sample of at most 100,000
-non-missing values only for expensive histograms and categorical distributions. Omitted exact statistics display as
-`n/a`, sampled charts carry an explicit marker, and percentages use the sample population. Dataset missing counts stay
-exact; duplicate-row detection publishes the sample size when its deterministic sample is bounded below the visible
-row count. Sampling uses a private fixed seed, restores the user's R random state, and avoids fixed intervals that can
-lock onto periodic data. Opening Filters discovers values from at most 100,000 sampled rows and publishes that sample
-size. A non-empty value search scans the column exactly in bounded chunks, with no separate dataframe row or cell
-limit. It fails recoverably after 10,000 distinct matches or 16 MiB of matching key text and asks for a narrower
-term. These memory bounds do not imply that IRkernel can interrupt work already dispatched to the user's kernel.
-
-Finite Mean Fill, ordinary integer/double Group By and numeric profiles use the shared
-[exact mean calculation](../architecture.md#native-r). Duration profiles first use their existing declared-unit
-conversion. Small and chunked profiles apply the same arithmetic. An exact zero total returns positive zero; a
-negative result that rounds to zero keeps its sign. Missing, empty and non-finite handling remains with each caller.
-Integer64 profiles retain their existing conversion; text-length means and variance are unchanged.
-Profile medians select their middle value or pair with partial sorting; the pair retains the primitive midpoint
-owner and its signed-zero behavior. These built-in calculations bypass registered S3 mean methods, while Custom Code
-retains normal R dispatch. Other interpolation weights and unrelated statistics have separate precision limits.
-
-Editing supports the Native R operations published in the
-[generated transformation reference](../reference.md#transformation-operations), which is authoritative for the
-current catalog and parameters. The first draft takes an isolated original: base data frames and tibbles use R
-serialization, while data tables use `data.table::copy()`.
-The runtime keeps committed and draft results separate, resolves every target by stable ID and captured name, and
-advances the session revision for preview, apply, discard, latest-step replacement, undo, and redo. Applied-step inspection
-replays only the selected plan prefix. The kernel returns its code, input page, and output page separately, so two
-large pages are never forced into one response. Page responses omit schemas; the host restores the exact schemas it
-retained for that plan step before publishing the inspection.
-
-Pivot Longer carries retained column identities and nullability from its input capture, including columns created
-by earlier steps. The new label column is non-nullable; the value column is nullable when any selected input is.
-The producer validates the captured source metadata before reshaping, following the same ownership as Pivot Wider.
-
-Native R retains undone decoded commands; the host retains their public command representations. Redo checks the
-expected next step ID before execution, applies it to the current committed capture and publishes one revision.
-The host uses the existing preview result validators for fresh schema, row identity, diff and effective viewing
-state. It appends the current input contract only after validation, rather than assuming the old output repeats.
-These command suffixes contain no dataframe snapshots and follow the session and recovery rules in
-[the architecture contract](../architecture.md#protocol-and-publication).
-
-Filter Rows and Sort Rows use the same typed rules as the read-only view, but become explicit cleaning steps only
-when the user creates a draft. Each source row has a private stable identity that survives filtering, sorting, plan
-history, and diff inspection. Active row counts are tracked separately from that source identity domain. Sort keys
-are applied in priority order with stable ties and independent missing-value placement. Filtering distinguishes `NA`
-from `NaN`. Float operands accept the historical `inf` and `-inf` aliases alongside explicit `Infinity` forms;
-bound generated code retains their native infinity values. A filter keeps a compatible `data.table` key; an explicit sort clears it because the new row order no
-longer follows that key.
-
-The native request decoder checks array identity and scalar logic/operator types before viewing or draft execution.
-An explicit null logic field remains present until validation rejects it; it cannot become a default AND filter.
-Malformed page input leaves an existing draft available for a later valid apply. Picker search remains a required
-nullable field, while optional value-filter search must be text when present.
-
-Drop Missing Rows treats both `NA` and `NaN` as missing. It can remove rows when any selected column is missing or
-only when all selected columns are missing. Drop Duplicates compares selected columns, or all columns when none are
-specified, and can keep the first, last, or no row from each repeated group. Both operations keep source order,
-stable row identities, explicit row names, and compatible data-table keys.
-
-All three frame flavors compare integer64 keys through exact decimal text in a temporary frame. This distinguishes
-adjacent large values and both supported signed extrema. Other columns retain their native duplicate equality, including
-distinct `NA` and `NaN` groups. A data.table comparison keeps that frame flavor and its configured numeric rounding.
-Row reduction and dataset duplicate statistics share this owner. The original frame remains native, and profile
-sampling retains the bounds above.
-When data.table column labels repeat, the isolated comparison uses unique positional labels. The selected original
-columns remain distinct; returned column names and stable identities are unchanged.
-Generated Drop Duplicates uses the same helper and includes its guarded integer64 conversion dependency only when
-the selected keys require it.
-
-Group By requires at least one key and aggregation. An empty input produces the same typed empty result in live
-and generated execution. Generated grouping loads the bit64 namespace before handling selected integer64 keys or
-aggregations; it preserves exact keys and classed outputs without relying on methods loaded earlier in the session.
-An unselected integer64 column does not trigger that dependency.
-Generated integer sums and integer64 sum, mean and median use the same exact-sum functions as live execution.
-Ordinary integer sums accumulate native batches before combining their exact totals. Integer64 accumulation retains
-its existing decimal-text arithmetic and output limits, separate from the finite binary64 mean owner.
-
-Mark Duplicates uses the same comparison owner to flag every member of each repeated selected-key group. It requires
-at least one key and appends a fresh logical column with no missing flags. It preserves all input rows, values,
-identities, element names, row labels and compatible data-table keys. Capture validates the derived logical output
-separately from its selected input types; generated append behavior preserves the same metadata.
-
-Fill Missing Values binds scalar double replacement text once with the shared finite-number parser. Generated code
-encodes the same bound value through the numeric-literal owner, preserving it in interpreted and compiled programs.
-Other replacement types keep their existing binding and helper requirements.
-
-Fill Missing Values offers a typed value, a numeric median, the mean of a double column, or the most common
-non-missing value for character, factor, and logical columns. It also accepts an ordered list of same-type fallback
-columns and takes the first present value from each row. Directional fills use an explicit stable sort, restore the
-original row order, and optionally leave missing runs above a chosen length untouched. Median, mean, and most common
-value can also be calculated within selected groups. All-missing groups stay missing, as do groups where two or more
-values tie for most common. Automatic methods ignore `NA` and `NaN`. Double columns can use linear interpolation
-along an ordinary numeric, `Date`, or `POSIXct` coordinate. The coordinate must be complete, finite, and unique;
-`integer64` coordinates are rejected. Factors, ordered factors, `integer64`, dates, and datetimes stay in their native
-R types. Live and generated medians and interpolation at the midpoint share the same two-value calculation.
-Unequal finite doubles use `base::mean.default`, avoiding both early underflow and user-defined S3 mean methods.
-Equal values retain their original signed zero; existing non-finite and exact integer64 rules remain unchanged.
-For other weights, unequal endpoints that are zero or subnormal use integer multiples of the smallest positive
-double. A shared [TwoProduct calculation](https://www.tuhh.de/ti3/paper/rump/Ru05d.pdf) retains multiplication error
-until final nearest-even rounding. It uses the binary64 weight from the existing coordinate calculation, rather than
-an exact rational coordinate ratio. Normal endpoints retain the existing arithmetic and its floating-point limits.
-Active data-table key columns are rejected because changing a key value could invalidate the stored order.
-
-Standalone generated Fill code includes only the helper families used by the cleaning plan. Mixed steps retain
-their dependencies, including datetime handling for scalar replacements and the shared numeric midpoint.
-Directional Fill emits its native live function, keeping missing-run and donor selection in one implementation.
-Linear interpolation also emits its native subnormal calculation once; anchor units are prepared once per gap.
-
-Dropping columns keeps retained IDs stable and refuses to remove the final column. Selecting columns preserves the
-chosen order. Cloning appends a copy with its own stable derived ID, which later steps can address directly. The
-Text Length operation accepts character and factor columns, keeps `NA` values, and appends a derived integer column
-whose stable ID can be used by later steps. It counts Unicode characters rather than encoded bytes. The operations
-keep compatible data-table keys. The text operations accept character and factor columns, convert factors to
-character, and keep `NA`. Lowercase, Uppercase, Capitalize, Strip text, and Find and replace either update the column
-or append a character column with a stable derived ID. Find and replace can use literal text or a regular expression.
-Live and generated regex replacement share one calculation, including capture expansion and output bounds. Generated
-plans include that function once when needed, while each step prepares its own replacement state.
-Strip text removes the default whitespace or a literal character set from both ends. Split text uses a literal
-delimiter, appends a new character column, and returns `NA` when the requested part does not exist. An in-place change
-to a data-table key column is rejected; choosing a new output column keeps the key and row order. Generated R repeats
-the position and name checks and returns a copied result. Native, cross-language, and packaged-editor tests cover source isolation, executable
-code, keyed data tables, duplicate names, non-syntactic names, row identity, and mixed plans.
-
-Convert type replaces one column while keeping its stable ID, name, and position. It supports character, integer,
-double, logical, Date, and UTC POSIXct output. An `integer64` source stays `integer64` when the target is integer.
-Factors convert through their labels, failed parses become `NA`, and conversions that would lose units or `integer64`
-precision are rejected. A keyed `data.table` column must be cloned before it can be converted. Generated R applies the
-same checks and conversion rules.
-
-Formula retains canonical integer strings in public steps and decodes only its bound execution operand. A string
-must fit the shared finite, 309-digit limit and equal the integer represented by an ordinary R numeric scalar.
-Both decoding and binding use the shared finite-number parser. The binding check derives the exact integer from
-binary64 words using at most 35 base-10^9 limbs; it does not use floating-point decimal formatting as an exactness
-oracle. This scalar-only check adds no generated helper. Values in
-R's non-missing integer range use integer storage; other exactly representable values use double storage. A literal
-such as `9007199254740993` is refused before mutation. This does not add integer64 scalar arithmetic: existing
-integer64-column and double-scalar promotion remains unchanged. Live and generated Formula use the same bound value.
-Generated Formula and By Example retain finite double literals exactly, including in compiled programs, using the
-[shared literal-encoding policy](../architecture.md#native-r). This does not expand their accepted public values.
-
-Min-max scale accepts integer, double, and `integer64` columns and returns doubles from 0 to 1. A constant finite
-range becomes zero. Missing and non-finite input values become missing output. The `integer64` calculation keeps its
-offsets exact until its final conversion to double, avoiding the precision loss caused by converting the source values
-first. Finite double ranges that overflow on subtraction use halved operands; ordinary ranges retain direct
-subtraction so subnormal differences remain usable. Both live and generated R follow this rule. A keyed
-`data.table` column can only use a new output column.
-
-Round, Floor, and Ceiling accept ordinary integer, double, and `integer64` columns. Ordinary integer and double
-outputs are R doubles, while `integer64` outputs stay exact integers. The operations keep `NA`, `NaN`, `Inf`, and
-`-Inf`. Round follows R's ties-to-even rule. A keyed `data.table` column cannot be changed in place, but the result can
-be appended as a new column without changing the key.
-Round accepts any finite integer precision. Coarse rounding beyond 22 decimal places compares exact integer decimal
-digits before the final native conversion to double, avoiding false midpoints from an inexact power of ten. Precision
-at or below -309 turns finite doubles into signed zero. A correctly rounded double beyond its range becomes signed
-infinity; `integer64` retains its existing range-error behavior. Live and generated execution share the coarse helper
-and do not depend on the session's number-display options.
-
-Dense Rank accepts ordinary integer, double and `integer64` columns and appends an ordinary integer result. It
-preserves row order, existing column identities and compatible data-table keys. `NA` and `NaN` yield missing ranks;
-signed zeros tie, while infinities remain present. The existing frame row limit keeps every rank representable as
-an R integer. Exact `integer64` comparison loads the bit64 namespace before missing detection, including when Rank
-is the first generated step. Live execution and generated code share the same value helper. Rank has its own
-integer-result capture contract instead of using the double-valued numeric-transform contract.
-
-IRkernel sessions can insert generated R into the exact `NotebookDocument` captured when the dataframe session
-opened. The shared notebook helper creates one `r` cell and confirms that exact cell before reporting success. It does
-not rediscover the notebook from the active editor after an await.
-
-On macOS and Linux, R documents use a second supported transport. The command captures the sole open `TextDocument`, its version,
-and its complete in-memory text. It starts a private `Rscript --vanilla` process in the source directory and evaluates
-plain R once in a dedicated environment. Relative reads and `source()` therefore behave like the file itself,
-while console output stays separate from the file-based request channel. The process owns every discovered dataframe
-session and is stopped when its final panel closes. Generated code is inserted with one `WorkspaceEdit` only after the
-same document object and version are rechecked; success requires the complete resulting text to match.
-Private responses and exports use the host's [artifact ownership checks](../architecture.md#native-r).
-The process retains a stdin error listener through shutdown. A failed request write rejects through its callback,
-while actual child exit and the existing stop owner retain invalidation and cleanup authority.
-
-For `.Rmd` and `.qmd`, the command accepts top-level backtick-fenced `{r}` cells and a bounded first-line YAML block.
-It blanks prose for display diagnostics but sends each enabled cell to R as a separate source unit. The process reads
-and parses every unit before evaluating them in order in the shared document environment. This prevents syntax from
-joining across cell boundaries. Nested presentation options are parsed without splitting commas inside calls.
-Syntactically valid cells with literal `eval=FALSE` are skipped even when they refer to external chunk content;
-enabled external references and alternate engines are rejected. Indented R cells, R-looking fences inside opaque
-Markdown containers, ambiguous options, and unsupported YAML forms also fail before R starts. The command does not
-promise knitr or Quarto render semantics; code that changes knitr defaults cannot change this lexical cell selection.
-
-Generated R is appended to R Markdown or Quarto as a top-level `{r}` cell. R Markdown insertion rejects a generated
-line that knitr would interpret as the end of the cell.
-
-Direct `.R` execution remains disabled on Windows until the extension can own and stop every descendant process;
-IRkernel notebook support remains available there.
-
-The document command never infers ownership from a terminal, global R state, or a document path. The separate active-R
-command works only with an exact official R terminal captured before it yields. Open Wrangler does not attach to a
-Quarto or R Markdown render process and does not inspect private Quarto or vscode-R sockets, temporary state,
-extension storage, or process-discovery details.
-
-Native R is a channel-neutral Preview feature. It may be included in preview or stable Open Wrangler packages without
-becoming stable support, and its Preview status does not block stable publication. A user-facing R capability still
-needs direct native runtime and generated-code coverage plus bounded installed evidence for the host path it claims.
-The current support claims and limitations live in [feature parity](../feature-parity.md), not in a release-channel
-rule in this ADR.
+- **Conversion through Python:** loses native R semantics and adds an unrelated runtime dependency.
+- **Attaching to arbitrary R or render processes:** provides no reliable authority to evaluate code, recover a session
+  or stop its descendants. A matching path or process name is not sufficient ownership.
+- **Reimplementing knitr or Quarto rendering:** expands the product beyond bounded dataframe execution and would imply
+  render semantics the document parser does not provide.
 
 ## Consequences
 
-- The grid and transformation model are shared. Runtime processes, object ownership, type handling, and generated
-  code stay native to the selected language and dataframe flavor.
-- R viewing includes pages, compound filters, ordered sorts, value search and selection, and profiles. Editing uses
-  the current [generated operation catalog](../reference.md#transformation-operations) and emits generated R code.
-  Generated plans run in a fresh `baseenv()`-parented implementation environment and revalidate the
-  supported source-frame shape before copying it. Formula, Format Datetime, and the categorical encoders additionally
-  avoid caller-defined operator or S3-method lookup while validating and executing their emitted helpers.
-  Result publication rejects active bindings before and after source evaluation and immediately before assignment; a
-  source already named `open_wrangler_result` is preserved and its cleaned result uses `open_wrangler_result_2`.
-  Generated R can be inserted into the originating IRkernel notebook or R document. R notebook, active-terminal, and
-  local R document sessions opened in Editing mode can export their committed result as CSV or, when `nanoparquet`
-  0.5.1 or newer is installed, Parquet. The Parquet writer runs in the same R process and does not convert through
-  Python, Arrow, or another dataframe. A document process exposes only its private artifact to the host; IRkernel
-  returns offset-addressed canonical-base64 chunks from an artifact owned by that exact kernel. Both routes end in
-  the extension-host atomic save path. CSV uses UTF-8 and LF record separators even under the C locale; its text
-  validation, timestamp and duration formatting, and source-preservation contract is owned by
-  [the architecture document](../architecture.md#native-r).
-  Parquet timestamps must retain their native value in microsecond storage; otherwise export refuses before publication.
-- Group sums keep ordinary R integer or `bit64::integer64` output. Base R and `bit64` do not have an exact 38-digit
-  integer type, so the runtime rejects an out-of-range sum before publishing a result instead of stringifying it or
-  routing it through another engine. Integer64 mean and median perform exact decimal addition before their final
-  double result.
-- Ordinary frames returned by `collapse::qDF()`, `qTBL()`, and `qDT()` use the existing data-frame, tibble, and
-  data-table paths. Grouped `GRP_df` and indexed `indexed_frame` objects are outside the supported class contract.
-- Dataframes from the active official R terminal use the same native R contract and workbench. Refresh and open stay
-  pinned to that terminal, while **Run R Document** continues to own a separate process. Its current Preview support
-  boundary is recorded in [feature parity](../feature-parity.md).
-- The old R branches are design input only. Their speculative shared types and detached kernel timeout model will not
-  be carried forward.
-- Pull requests run the R 4.5 contract suite; the cross-platform workflow also checks R 4.4. See
-  [CI](../ci.md) for check ownership. A new user-facing R support claim requires the relevant real IRkernel or
-  packaged-editor evidence.
-- A preview label does not relax notebook ownership, cleanup, or packaged-editor acceptance.
+R needs its own producer, decoder, native tests and generated-code checks. The shared UI does not imply identical
+numeric capacity, package behavior or platform support across engines. Source preservation, trust, bounded transport
+and exact cleanup still apply to every path.
+
+Native R remains a Preview capability independently of the extension's release channel. Its presence in a stable
+package does not turn it into stable R support. New user-facing claims need direct native and generated-code evidence,
+plus installed evidence for the host path advertised. [Testing](../testing.md) and [CI](../ci.md) own those checks.

@@ -767,6 +767,51 @@ process.
 
 ### Native R
 
+Native R sessions operate directly on R `data.frame`, tibble, and `data.table` frames. IRkernel, exact official
+R-terminal, and owned `Rscript` transports share the same native frame contract and current operation catalog,
+including generated R. The runtime never routes an R frame through Python. The public status remains Preview and
+Partial because of the row-specific limitations recorded in the feature-parity matrix.
+
+#### Frame and source ownership
+
+The producer and host independently validate canonical frame classes, column IDs, row names, typed values and
+bounded metadata. Factors, ordered factors, Date, POSIXct, difftime and integer64 retain explicit native metadata.
+Plain-double `NA`, `NaN` and both infinities remain distinct. Non-finite classed temporal values, fractional Dates,
+reserved integer missing-value sentinels used as values, nested columns, unsupported attributes and malformed names
+are refused. Ordinary `collapse::qDF()`, `qTBL()` and `qDT()` outputs use the three supported frame paths;
+`GRP_df` and `indexed_frame` do not.
+
+Display text is independent of `OutDec` and the process time zone. POSIXct with a null or empty zone displays in UTC
+while preserving that original metadata. Explicit bounded row labels follow their source rows through sorting.
+Aligned plain column-element names are inert metadata, not row or column identity. Compact zero-row frames and
+zero-column sources retain their row count and labels; column lengths must still agree. Custom Code can create the
+first column, and Drop Missing Rows or Drop Duplicates can retain an empty schema. Custom Code output must have a column;
+Drop Columns must leave at least one visible column.
+Mutation and inspection decoders distinguish a known empty schema from missing host context and retain exact schema,
+row-identity and diff checks. Live and generated input/output validation accept the same native empty frames.
+
+Standalone captures own an isolated snapshot, using `data.table::copy()` for data tables. Live viewing instead retains
+the verified variable binding, reads its current values, and refuses changed shape, schema, class or row-name mode.
+The first editing draft isolates the original through R serialization or `data.table::copy()`. Committed and draft
+results remain separate, and targets use stable IDs plus captured names. Ordinary cleaning drops inert column-element
+names according to native data-table copy semantics; the explicit retention exceptions are described below.
+
+#### Viewing and profiling
+
+Viewing filters and sorts preserve source row IDs and stay outside the cleaning plan. Compound logic, typed predicates,
+value selections, stable ties and per-key missing placement share the cleaning Filter Rows/Sort Rows rules. Filtering
+may retain a compatible data-table key; explicit sorting clears the data-table key. `NA` and
+`NaN` remain distinct. Null filter logic is invalid, not a default AND; picker search is a required nullable field.
+Optional value-filter search must be text when present. Invalid viewing requests leave an existing draft usable.
+
+Cheap column/missing statistics scan in bounded chunks. Histograms and categorical distributions sample at most
+100,000 non-missing values; omitted exact statistics show `n/a`, and sampled charts name their sample population.
+Dataset missing counts remain exact; bounded duplicate-row estimates name the sampled population. Sampling uses a
+private fixed seed and restores the user's random state. Unsearched value discovery samples at most 100,000 rows;
+a nonempty search scans exactly in bounded chunks and refuses more than 10,000 distinct matches or 16 MiB of key text.
+These memory bounds do not imply that IRkernel can interrupt dispatched work. Dataset-statistics counts and their
+filtered row total come from the same request.
+
 Numeric filter operands and typed temporal payloads retain their finite native R value while binding. Floating,
 datetime and duration columns compare native values directly. Picker selections use the source value instead of
 reparsing display text; datetime keys retain epoch seconds and duration keys retain the column's units.
@@ -777,13 +822,11 @@ owner. Generated floating, datetime and duration Filter Rows uses that owner too
 timezone rules, and manual duration input still converts seconds to the column's units. Explicit Infinity tokens retain their separate rules,
 and native floating columns refuse integer-cell selection tokens.
 
-Native R sessions operate directly on R `data.frame`, tibble, and `data.table` frames. IRkernel, exact official
-R-terminal, and owned `Rscript` transports share the same native frame contract and current operation catalog,
-including generated R. The runtime never routes an R frame through Python. The public status remains Preview and
-Partial because of the row-specific limitations recorded in the feature-parity matrix.
+#### Export and transport
 
-Native R pivots preserve retained column IDs and nullability from the confirmed input capture. Their output schema
-must match the host's expected schema before publication; a fresh scan must not narrow retained nullability.
+Cleaned-data export requires Editing mode with no outstanding draft; Apply or Discard first. The writer runs in the
+same owning R process, including nanoparquet for Parquet. Document transport streams an identified private file;
+notebook and terminal transports read offset-checked chunks from the exact native owner before the host's atomic save.
 
 Native R CSV export writes validated UTF-8 bytes with LF record separators, independent of the current locale.
 It prepares character values and factor levels in a temporary frame. Duration columns use plain numeric storage in
@@ -803,15 +846,10 @@ The check reconstructs seconds from the writer's integer microseconds independen
 Some reader-created floating values therefore fail even if that reader previously reproduced them. Refusal leaves
 the source and confirmed session unchanged and publishes no artifact.
 
-Drop Duplicates and dataset duplicate statistics share an exact integer64 comparison owner. All three frame flavors
-use temporary decimal text keys, including for the two supported signed extrema. A data.table comparison remains a data.table
-so other columns retain their native equality and configured numeric rounding. Original values and metadata remain
-intact, and generated row reduction uses the same rule.
-Repeated column labels become unique only in the isolated comparison table, so selected column identities cannot
-collapse to the first matching name.
-
-Native R response encoding stays inside the correlated request error boundary. Oversized ASCII string expansion is
-refused before assembling the escaped response, and the final serialized output retains its complete transport cap.
+Native R charges metadata and cells against a 16 MiB page budget while constructing the page. Response encoding
+stays inside the correlated request error boundary: oversized ASCII string expansion is refused before assembling
+the escaped response, with a separate 17 MiB cap on the complete encoded response. These are payload bounds, not
+an exact allocation ceiling.
 Opening and editing still preflight the complete encoded reply before publishing session state.
 
 The host reads private R response and export files through bounded, single-link identity checks. Cleanup moves the
@@ -819,11 +857,17 @@ identified file into a private directory and verifies the same file before and a
 Directory identity uses device, inode, ownership and permissions; its link count can change with directory contents.
 Replaced files or cleanup directories are refused and preserved.
 
-R frame validation accepts native compact zero-row metadata while independently checking column lengths. Live and
-generated input/output validation apply the same rule, so native empty subsets do not become malformed frames.
-Mutation and inspection decoders distinguish a known empty schema from missing host context. They retain exact
-schema, row-identity and diff checks for zero-column sources. Generated code accepts the same sources; the native
-frame and operation boundaries are defined in [ADR 0001](decisions/0001-native-r-runtime.md).
+#### Cleaning and generated code
+
+Native R pivots preserve retained column IDs and nullability from the confirmed input capture. Their output schema
+must match the host's expected schema before publication; a fresh scan must not narrow retained nullability.
+
+Drop Duplicates and dataset duplicate statistics share an exact integer64 comparison owner. All three frame flavors
+use temporary decimal text keys, including for the two supported signed extrema. A data.table comparison remains a data.table
+so other columns retain their native equality and configured numeric rounding. Original values and metadata remain
+intact, and generated row reduction uses the same rule.
+Repeated column labels become unique only in the isolated comparison table, so selected column identities cannot
+collapse to the first matching name.
 
 Generated Formula and By Example code encode finite double literals from their binary64 bytes as bounded
 hexadecimal text, preserving the bound value across platforms. Subnormal and zero spellings use exponent -1022,
@@ -841,7 +885,9 @@ Median and exact-midpoint interpolation share the native R midpoint owner. Unequ
 `base::mean.default` directly, keeping user S3 methods out of the arithmetic; equal-value and non-finite behavior
 remain explicit in that owner.
 Linear interpolation emits its native subnormal arithmetic helper once and prepares anchor units in the existing
-gap loop. The [native R boundary](decisions/0001-native-r-runtime.md) defines its endpoint and weight limits.
+gap loop. Unequal zero/subnormal endpoints use integer multiples of the smallest positive double; the shared
+TwoProduct calculation retains multiplication error until final nearest-even rounding. It uses the computed binary64
+coordinate weight, not an exact rational ratio. Normal endpoints retain the existing arithmetic and precision limits.
 Directional Fill uses the same native missing-run and donor-selection function in live execution and standalone
 generated code. Frame validation, stable sorting, key restrictions, and isolated publication remain with their
 existing owners.
@@ -866,7 +912,9 @@ integer64 means keep their separate arithmetic and conversion rules. The fixed a
 temporary allocations or eliminate the added scan and per-group work.
 Built-in R means and profile medians bypass registered S3 mean methods. Live operations and their generated programs
 agree; Custom Code retains the caller's ordinary R dispatch.
-Profile calculation and precision limits are described in [ADR 0001](decisions/0001-native-r-runtime.md).
+Profile medians select their middle value or pair with partial sorting and the same midpoint owner. Exact zero totals
+return positive zero; negative results rounded to zero retain their sign. Duration profiles keep their declared-unit
+conversion; integer64 conversion, text-length means and variance retain their separate arithmetic.
 
 One-hot encoding derives indicators only from present categories with nonempty labels. Empty and all-missing
 duration columns contribute no categories; if no selected column contributes an indicator, the operation refuses
@@ -880,6 +928,46 @@ Convert Type to text retains a character output column for empty duration input 
 Integer64 One-hot Encode retains all native primitive validations but includes arithmetic code only when a Formula
 operand in the same plan needs it. Drop Duplicates retains its separate character-comparison binding.
 
+Formula integer text must fit the shared finite 309-digit limit and equal the integer represented by an ordinary R
+numeric scalar. Binding derives that integer from binary64 words using at most 35 base-10^9 limbs, rather than using
+decimal formatting as an exactness oracle. R's non-missing integer range uses integer storage; other admitted literals
+use double storage. `9007199254740993` is refused. This does not add integer64 scalar arithmetic.
+
+Fill offers typed scalar, numeric median, double mean, most-common character/factor/logical value, and ordered same-type
+fallback columns. Grouped automatic methods ignore `NA`/`NaN`; all-missing groups and most-common ties stay missing.
+Directional Fill uses explicit stable sorting, restores original order and honors maximum missing-run length.
+Linear Fill fills native double targets and requires a complete, finite, unique ordinary numeric/Date/POSIXct
+coordinate; integer64 coordinates are refused. Native factor, temporal and integer64 storage is preserved. Active data-table keys cannot be modified in place.
+
+Min-max scale preserves exact integer64 offsets until final double conversion; finite double ranges that overflow on
+subtraction use halved operands, while ordinary ranges retain subnormal differences. Constant finite ranges become
+zero; missing and non-finite values become missing. Round/Floor/Ceiling return doubles for ordinary numerics and exact
+integer64 for integer64 inputs, preserving native missing and infinite values. Round uses ties-to-even. Precision
+beyond 22 coarse decimal places uses exact decimal digits; precision at or below -309 produces signed zero from finite
+doubles. Overflow may produce signed infinity for doubles; integer64 keeps its range refusal.
+
+Integer Group By sums retain ordinary integer or integer64 output and refuse out-of-range exact results. Integer64 mean/median
+add in decimal text before final double conversion. Dense Rank appends integer ranks within the existing frame row
+bound: missing values stay missing, signed zeros tie and infinities remain present. Mark Duplicates appends a nonmissing
+logical flag for every member of a selected-key duplicate group. Both preserve original rows and compatible keys.
+
+Text operations accept character/factor input and preserve `NA`; transformed factors become character. Text Length
+counts Unicode characters and appends integer output. Split uses a literal delimiter and yields `NA` for an absent
+part. Strip uses whitespace or a literal character set. In-place text changes to a data-table key are refused; a new
+output column preserves the key and row order. Convert Type retains column identity, supports native character,
+integer, double, logical, Date and UTC POSIXct targets, and converts factors through labels. Failed parses become `NA`;
+unit or integer64 precision loss is refused. Integer64-to-integer retains integer64 storage; a keyed column must be cloned.
+
+Standalone generated plans run in a fresh `baseenv()`-parented implementation environment and validate the source
+before copying. Formula, Format Datetime and categorical helpers avoid caller-defined operator or S3 dispatch.
+Custom Code retains ordinary R dispatch. Publication rejects active bindings before/after evaluation and before
+assignment; an original named `open_wrangler_result` is preserved and output uses `open_wrangler_result_2`.
+Inspection replays only the selected prefix and transfers code/input/output separately; the host restores exact retained
+schemas before publishing bounded pages. Redo revalidates the expected next step and fresh result instead of assuming
+old output metadata remains valid.
+
+#### Notebook, terminal and document execution
+
 Notebook work stays in the selected IRkernel. An existing official R-terminal variable stays pinned to the exact
 terminal and process that exposed it. Passive discovery reads bounded vscode-R metadata as an untrusted hint and
 sends no R command. An explicit Open or Refresh action revalidates that terminal and process, then uses terminal
@@ -887,6 +975,30 @@ sends no R command. An explicit Open or Refresh action revalidates that terminal
 silently moves the session to another terminal. On macOS and Linux, trusted `.R`, `.Rmd`, and `.qmd` sources may use
 an Open Wrangler-owned `Rscript` process. Windows does not claim this direct document-process path. Literate documents
 resolve the owning executor before choosing R or Python; the fence label alone is not authority.
+
+Document execution captures the sole open text document, version and in-memory text before starting `Rscript --vanilla`
+in its source directory. Plain R is evaluated once in a dedicated environment; console output stays separate from the
+private request channel. The process owns its dataframe sessions and stops after the final panel closes. Its stdin error
+listener remains through shutdown; write callbacks report request failure while the exit/stop owner controls cleanup.
+Generated insertion rechecks the exact source document/version and complete resulting text. Notebook insertion confirms
+one newly inserted R cell in the originating notebook. A terminal has no source document for insertion.
+
+R Markdown/Quarto execution accepts top-level backtick-fenced R cells and bounded first-line YAML. Every source unit is
+parsed before enabled cells run in order in one environment, so syntax cannot join across cells. Literal `eval=FALSE`
+cells are skipped, including external references; enabled external references, alternate engines, ambiguous options,
+indented cells, R-looking fences in opaque Markdown containers and unsupported YAML are refused before R starts.
+Presentation options can contain nested calls. Changing knitr defaults cannot change lexical cell selection. Generated
+R is appended as a top-level R cell; R Markdown insertion rejects lines knitr would interpret as a closing fence.
+Open Wrangler does not attach to render processes or inspect private Quarto/vscode-R sockets or storage.
+
+IRkernel and terminal variables default to Viewing; document sessions use the file start-mode setting. Terminal
+startup discovery can use a matching exported workspace tree or bounded no-follow attach/workspace records. A PID,
+terminal, path or file-identity change invalidates them. Non-attach records from the same process fall back immediately.
+Explicit connection sends one bounded physical-line R expression and installs one callback/mailbox; Open Wrangler's own
+requests suppress callback notification. Terminal changes invalidate the session rather than selecting a replacement.
+Candidate kernel sessions are identified before dispatch. A failed/stale open retains one bounded close continuation on
+the original operation/kernel; detachment does not discard cleanup ownership. Confirmed kernel loss uses the shared
+coordinator recovery and never retries the failed user operation.
 
 [ADR 0001: Native R runtime for Open Wrangler 2](decisions/0001-native-r-runtime.md) explains why Native R has its own
 runtime and language boundary. The generated reference lists the current operations, and the feature-parity matrix
@@ -1130,7 +1242,7 @@ or substitute a candidate. Stable publication promotes the accepted bytes, and c
 metadata fail closed.
 
 The [testing guide](testing.md) covers source and editor checks, the [release guide](releasing.md) covers publication,
-and the [product roadmap](product-roadmap.md) records the bounded Cursor check and optional released-Jupyter workflow.
+and [CI](ci.md) records the bounded Cursor check and optional released-Jupyter workflow.
 
 ## Related authorities
 
