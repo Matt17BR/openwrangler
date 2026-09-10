@@ -539,9 +539,7 @@ export class OpenWranglerPanel {
         this.pendingRuntimeReplacement = undefined;
         this.snapshot = offer.snapshot;
         this.sessionRevision = offer.snapshot.metadata.revision;
-        if (offer.message.result?.kind === "stepPreview" || offer.message.result?.kind === "planUpdated") {
-          this.latestPageViewRequestId = undefined;
-        }
+        this.latestPageViewRequestId = decoded.lastPageRequestId ?? undefined;
         this.snapshotViewContextId = decoded.viewContextId;
         this.bridge.setViewContext?.(pending.replacement.sessionId, decoded.viewContextId);
         const persistence = decoded.state
@@ -557,6 +555,7 @@ export class OpenWranglerPanel {
         (generation) => generation === this.rendererSync.rendererGeneration
       );
       if (pending && pending.rendererGeneration !== this.rendererSync.rendererGeneration && currentForeground) return;
+      this.latestPageViewRequestId = decoded.lastPageRequestId ?? undefined;
       this.snapshotViewContextId = decoded.viewContextId;
       if (this.sessionId) this.bridge.setViewContext?.(this.sessionId, decoded.viewContextId);
       if (pending?.context.request === null && !currentForeground) {

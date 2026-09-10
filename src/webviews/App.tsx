@@ -345,7 +345,12 @@ export function App() {
       };
       confirmedView.current = confirmed;
       setActiveViewContextId(viewContextId);
-      vscode.postMessage({ kind: "setViewContext", viewContextId, ...(state ? { state } : {}) });
+      vscode.postMessage({
+        kind: "setViewContext",
+        viewContextId,
+        lastPageRequestId: lastIssuedPageRequestId.current,
+        ...(state ? { state } : {})
+      });
       return confirmed;
     },
     []

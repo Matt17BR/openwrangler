@@ -141,6 +141,9 @@ describe("App column projection", () => {
         rows: Array.from({ length: 16 }, (_, row) => projectedPage(row, 16).rows[0])
       };
       acceptPage(projectionRetry, metadata, withinBlockPage, 0);
+      expect(postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "setViewContext", lastPageRequestId: projectionRetry.viewRequestId })
+      );
       expect(scroller.scrollTop).toBe(5 * 29);
       expect(scroller.scrollLeft).toBe(20 * 190);
 

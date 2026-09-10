@@ -3197,7 +3197,7 @@ describe("App file import options", () => {
       dispatchAppMessage(recovery);
       expect(
         webviewPostMessage.mock.calls.map(([message]) => message).filter((message) => message.kind === "setViewContext")
-      ).toEqual([{ kind: "setViewContext", viewContextId: "recovery:mode-held" }]);
+      ).toEqual([{ kind: "setViewContext", viewContextId: "recovery:mode-held", lastPageRequestId: null }]);
       expect(
         webviewPostMessage.mock.calls.map(([message]) => message).filter((message) => message.kind === "ready")
       ).toHaveLength(0);
