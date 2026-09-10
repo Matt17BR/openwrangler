@@ -5,7 +5,8 @@
 Every pull request reports the same five required product checks:
 
 - **Source contracts (Node 24)** runs formatting, lint, TypeScript source and dependency declaration checks, generated
-  protocol/reference checks, documentation checks, dependency-lock checks, licenses, `npm run test:scripts`, and Vitest.
+  protocol/reference checks, documentation checks, dependency-lock checks, licenses, `npm run test:scripts`, and Vitest
+  subject to the documentation-only scope below.
   It then builds the same checkout with Node 22.17.0 against the already-installed locked dependencies.
 - **Python runtime contracts** runs Ruff, Pyright, and Pytest with the declared Python and PySpark dependencies.
 - **Native R frame, kernel, and transport contracts** installs the R 4.5 lock on two Linux workers: one runs frame,
@@ -33,9 +34,13 @@ builds and R patch changes within the locked minor reuse the same key. Preparati
 version, and every run installs and verifies a fresh private library. GitHub scopes pull-request caches to that PR,
 so reuse is limited to its later jobs, updates and reruns; the weekly R 4.4 job uses a separate lock.
 
-Source contracts, packaged smoke, and the separate required CodeQL gate run for every change.
-`scripts/ci-docs-only.mjs` may omit runtime execution when every change fits that runtime's scope below. All admitted
-files must be regular and non-executable.
+Source contracts, packaged smoke, and the separate required CodeQL gate run for every change. Source runs the same
+scope proof against its own checkout and omits Vitest only for `docs_only=true`. It records the omission without
+claiming fresh TypeScript test execution. All other Source steps, including the supported-Node build, remain required.
+The allowed Markdown files are not inputs to the Vitest suite; formatting, documentation, reference, script and
+package checks retain their actual document validation.
+
+`scripts/ci-docs-only.mjs` permits the omissions below. All admitted files must be regular and non-executable.
 
 - Python may be omitted for additions or edits to `.R` files under `r/openwrangler_runtime/` or `r/tests/`; edits to
   existing `src/test/extensionHost/releasedRCoreEditing.ts` or `src/test/extensionHost/releasedRRowReduction.ts`; and
@@ -43,17 +48,18 @@ files must be regular and non-executable.
   execution. Other acceptance helpers, including the shared R operation picker, are outside this permission.
 - R source and installed-editor execution may be omitted for additions or edits to `.py` files under
   `python/openwrangler_runtime/` or `python/tests/`, and edits to existing `README.md`, `CHANGELOG.md` or `docs/**/*.md`.
-- Windows execution may be omitted only for edits to existing `README.md`, `CHANGELOG.md` or `docs/**/*.md` files.
+- Vitest and Windows execution may be omitted only for edits to existing `README.md`, `CHANGELOG.md` or `docs/**/*.md` files.
 
 Mixed Python/R changes require both runtimes. The Python job does not consume the allowed R files. The R checks do
 not execute the allowed Python files; the selected installed R journeys use Python only for Jupyter client readiness
 and exclude the mixed-language literate journey. The Python and Windows contract suites do not read CHANGELOG;
 Source and packaged smoke retain its validation and package-content checks. Shared/host code, fixtures, scripts,
-configuration, dependency locks and other paths outside these scopes require full execution. If a runtime's tests or selected runner begins consuming
-an omitted input, update the proof and its tests in the same change.
+configuration, dependency locks and other paths outside these scopes require full execution. If an affected test suite
+or selected runner begins consuming an omitted input, update the proof and its tests in the same change.
 
-This avoids unrelated runtime setup and execution during isolated engine or allowed R journey changes. An omission
-is not a newly executed or transferred success; it can delay discovery of unrelated dependency or hosted-environment regressions.
+These omissions reduce unrelated work for documentation edits, isolated engine changes and the allowed R journeys.
+They provide no fresh or transferred test result and can delay discovery of unrelated dependency or hosted-environment
+regressions.
 Scheduled R 4.4 qualification does not replace R 4.5 coverage. Release qualification remains separate.
 
 Each runtime has cancellable execution and a short required-result job. The latter reports success only for completed

@@ -672,7 +672,7 @@ native R catalog tests execute the historical infinity selections through live a
 
 ## Pull-request CI
 
-See [CI](ci.md#pull-requests) for required jobs, platform coverage and the proof that permits runtime checks to be
+See [CI](ci.md#pull-requests) for required jobs, platform coverage and the proof that permits selected checks to be
 omitted for independent changes. The local source equivalent is `npm run check:pr`; installed-editor checks use the
 commands below.
 

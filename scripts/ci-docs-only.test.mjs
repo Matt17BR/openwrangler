@@ -561,6 +561,95 @@ test("empty diffs and Git failures select full checks", (context) => {
   assert.equal(readFileSync(output, "utf8"), "docs_only=false\nr_omittable=false\npython_omittable=false\n");
 });
 
+test("Source reuses the exact proof locally without changing job scheduling", () => {
+  const source = workflow.jobs.javascript;
+  const guard = source.steps.find((step) => step.name === "TypeScript tests");
+  assert.equal(source.needs, undefined);
+  assert.equal(source.if, undefined);
+  const checkoutIndex = source.steps.findIndex((step) => step.uses?.startsWith("actions/checkout@"));
+  const node24Index = source.steps.findIndex(
+    (step) => step.uses?.startsWith("actions/setup-node@") && step.with?.["node-version-file"] === ".node-version"
+  );
+  const proofIndex = source.steps.findIndex((step) => step.id === "proof");
+  const guardIndex = source.steps.indexOf(guard);
+  assert.ok(checkoutIndex >= 0 && node24Index > checkoutIndex && proofIndex > node24Index && guardIndex > proofIndex);
+  assert.equal(source.steps[checkoutIndex].with["fetch-depth"], 2);
+  for (const proof of [
+    source.steps[proofIndex],
+    workflow.jobs["docs-proof"].steps.find((step) => step.id === "proof")
+  ]) {
+    assert.equal(proof.run, "node scripts/ci-docs-only.mjs");
+    assert.deepEqual(proof.env, {
+      CI_EVENT: "${{ github.event_name }}",
+      CI_BASE_REF: "${{ github.event.pull_request.base.ref }}",
+      CI_BASE_SHA: "${{ github.event.pull_request.base.sha }}",
+      CI_HEAD_SHA: "${{ github.event.pull_request.head.sha }}",
+      CI_MERGE_SHA: "${{ github.sha }}"
+    });
+  }
+  assert.equal(guard.shell, "bash");
+  assert.deepEqual(guard.env, {
+    DOCS_ONLY: "${{ steps.proof.outputs.docs_only }}"
+  });
+  for (const step of source.steps) {
+    assert.equal(step.if, undefined);
+    assert.equal(step["continue-on-error"], undefined, "a failed local proof must stop later Source steps");
+  }
+  const node22Index = source.steps.findIndex(
+    (step) => step.uses?.startsWith("actions/setup-node@") && step.with?.["node-version"] === "22.17.0"
+  );
+  const buildIndex = source.steps.findIndex((step) => step.run === "npm run build");
+  assert.ok(node22Index > guardIndex && buildIndex > node22Index);
+});
+
+test("Source omits Vitest only for a successful exact documentation proof", async (context) => {
+  const guard = workflow.jobs.javascript.steps.find((step) => step.name === "TypeScript tests");
+  for (const [docsOnly, npxStatus, expectedStatus, invoked] of [
+    ["true", 0, 0, false],
+    ["false", 0, 0, true],
+    ["false", 37, 37, true],
+    [undefined, 0, 1, false],
+    ["", 0, 1, false],
+    ["TRUE", 0, 1, false],
+    ["true\nfalse", 0, 1, false]
+  ]) {
+    await context.test(`${JSON.stringify(docsOnly)}/Vitest=${npxStatus}`, (child) => {
+      const temp = mkdtempSync(join(tmpdir(), "openwrangler-ci-vitest-"));
+      child.after(() => rmSync(temp, { recursive: true, force: true }));
+      const marker = join(temp, "invocation");
+      const summary = join(temp, "summary");
+      writeFileSync(marker, "");
+      writeFileSync(summary, "");
+      writeFileSync(join(temp, "npx"), '#!/bin/sh\nprintf \'%s\\n\' "$@" >> "$NPX_MARKER"\nexit "$NPX_STATUS"\n', {
+        mode: 0o755
+      });
+      const env = {
+        ...process.env,
+        PATH: `${temp}:${process.env.PATH}`,
+        NPX_MARKER: marker,
+        NPX_STATUS: String(npxStatus),
+        GITHUB_STEP_SUMMARY: summary
+      };
+      if (docsOnly === undefined) delete env.DOCS_ONLY;
+      else env.DOCS_ONLY = docsOnly;
+      const result = spawnSync("bash", ["--noprofile", "--norc", "-e", "-o", "pipefail", "-c", guard.run], {
+        cwd: temp,
+        env,
+        encoding: "utf8",
+        timeout: 10_000
+      });
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, expectedStatus);
+      assert.equal(readFileSync(marker, "utf8"), invoked ? "--no-install\nvitest\nrun\n" : "");
+      if (docsOnly === "true") {
+        assert.match(readFileSync(summary, "utf8"), /Vitest omitted:.*No fresh TypeScript test execution is claimed/u);
+      } else {
+        assert.equal(readFileSync(summary, "utf8"), "");
+      }
+    });
+  }
+});
+
 test("required runtime results reject missing proof and incomplete or canceled execution", (context) => {
   assert.deepEqual(workflow.jobs["docs-proof"].outputs, {
     docs_only: "${{ steps.proof.outputs.docs_only }}",
