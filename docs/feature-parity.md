@@ -343,40 +343,9 @@ columns. Native eager/lazy and executable generated-code regressions cover colli
 
 ## Native R preview
 
-Native R sessions honor the opening and ordinary request timeout settings. Invalid settings use their defaults;
-configured fractions round upward to whole milliseconds. Exports retain their separate 30-minute default.
-
-Custom Code can add the first column to a supported zero-column R source without invalidating its session. The step
-supports inspection, Undo and Redo, and generated R accepts the same source. Drop Missing Rows and Drop Duplicates can
-preserve the empty schema; Custom Code results still require at least one column.
-
-Value selections and numeric predicates retain adjacent R doubles and finite extrema in live and generated filtering.
-Picker selections retain the native source value, including where platform decimal parsers disagree. Numeric text
-inputs accept finite extrema without changing the supported decimal grammar. Scalar numeric Fill uses the same
-bound value in live, generated and compiled execution. Datetime and duration selections and predicates also compare
-native values, preserving adjacent instants and durations in generated and compiled filtering. Manual duration
-input uses seconds; typed selections retain the column's units. Invalid previews preserve the confirmed result.
-
-Native R Formula accepts exactly representable large integer literals and refuses inexact neighbors.
-Live and generated execution use the same admitted scalar; ordinary R arithmetic limits still apply.
-
-Native R Group By medians, median Fill and midpoint interpolation use R's native mean for unequal finite pairs
-in both live and generated execution. Tiny ties, finite extremes and existing signed-zero behavior are covered.
-Interpolation between unequal subnormal or zero endpoints also avoids early product underflow in live and generated
-code. It uses the computed binary64 coordinate weight; normal-endpoint arithmetic retains its existing precision limits.
-
-Generated native R Group By preserves typed empty results, integer64 keys and first/last values in a fresh R session.
-Generated integer sums also use the live batched calculation; integer and integer64 output limits remain unchanged.
-
-Registered R mean methods do not alter built-in Fill and Group By means or profile means and medians.
-Custom Code retains ordinary R dispatch; existing numeric precision limits remain documented in
-[ADR 0001](decisions/0001-native-r-runtime.md).
-
-Native R keeps the **Preview** label in every release channel. These rows describe the current capability and its
-limits; none is a stable-release gate.
-
-Native R Pivot Longer preserves retained columns' confirmed identities and nullability across preceding cleaning steps.
-Its live and generated results preserve the selected columns' native scalar types.
+Native R keeps the **Preview** label in every release channel. These rows describe current capability and limits;
+none is a stable-release gate. The [architecture](architecture.md#native-r) owns native values, generated-code
+agreement, precision, session ownership and transport rules.
 
 | Surface                                       | Availability                    | Status  | Current owner                                                       |
 | --------------------------------------------- | ------------------------------- | ------- | ------------------------------------------------------------------- |
@@ -401,46 +370,35 @@ Its live and generated results preserve the selected columns' native scalar type
 | Active R-terminal cleaned-data export         | Preview                         | Partial | Native streaming and host-owned atomic publication                  |
 | Quarto and R Markdown lexical R-cell run      | Preview                         | Partial | Exact lexical-cell routing contracts                                |
 
-The accepted frame boundary is base `data.frame`, tibble, and `data.table`, including ordinary default
-`collapse::qDF()`, `qTBL()`, and `qDT()` outputs through those same paths. Grouped `GRP_df`, `indexed_frame`,
-unsupported attributes, and unsupported cell classes are rejected. Direct `.R`, `.Rmd`, and `.qmd` execution is
-limited to macOS and Linux; IRkernel remains cross-platform. R Markdown and Quarto support runs selected lexical
-cells, not document-render semantics. An active R terminal has no source document for generated-code insertion.
-An R page that exceeds the transport limit after ASCII escaping returns a request error without terminating the
-standalone runtime. A smaller page remains available; opening and mutation responses still validate before commit.
-Large R profiles retain exact cheap statistics but sample histograms, categories, and duplicate populations with
-explicit sample labels.
-Native R Mean Fill, ordinary integer/double Group By and numeric profiles retain finite means through cancellation
-and across profile chunks. Live and generated cleaning use the same arithmetic. Integer64 conversion and unrelated
-statistics keep their existing limits.
-Generated Formula and By Example preserve their finite numeric literals, including when decimal parsing differs
-between R platforms. Existing integer precision and operation-specific input limits still apply.
+Supported frames are base `data.frame`, tibble and `data.table`, including ordinary default `collapse::qDF()`,
+`qTBL()` and `qDT()` outputs. Grouped `GRP_df`, `indexed_frame`, unsupported attributes and unsupported cell classes
+are refused. IRkernel works across the supported desktop platforms; direct `.R`, `.Rmd` and `.qmd` execution is
+limited to macOS and Linux. Literate support runs selected lexical R cells, without promising document-render
+semantics. An active R terminal has no source document for generated-code insertion.
 
-Drop Duplicates and dataset duplicate counts preserve exact integer64 equality for single and composite keys,
-including both supported signed extrema. All three keep modes preserve original values and native frame metadata; data.table
-retains its configured comparison of ordinary numeric keys.
-Repeated data.table column labels do not merge distinct selected columns during comparison.
+Sessions honor the opening and ordinary request timeout settings; invalid values use defaults and fractions round
+upward to whole milliseconds. Exports retain their separate 30-minute default. Large profiles keep exact cheap
+statistics and explicitly label sampled histograms, categories and duplicate populations. An oversized page returns
+a request error; a smaller page remains available without restarting the standalone runtime.
 
-One-hot encoding creates no indicators for empty or all-missing duration columns. It refuses a selection that produces
-no indicators; other selected columns can still contribute valid categories. Equivalent text encodings produce the
-same categories in live and generated code, including under the C locale. Retained source columns keep their storage.
+The [generated reference](reference.md#transformation-operations) lists the complete operation set and parameters.
+Custom Code can create the first column of a supported zero-column source, with inspection, Undo and Redo. Drop
+Missing Rows and Drop Duplicates may retain an empty schema; Custom Code output still requires a column. Active
+`data.table` keys restrict in-place changes. Fill interpolation requires ordinary numeric or temporal coordinates
+and does not accept integer64 coordinates. Formula accepts exactly representable large integer literals and refuses
+inexact neighbors; ordinary R arithmetic limits still apply. Integer and integer64 aggregate outputs retain their
+native range limits. One-hot encoding refuses a selection that produces no indicators, including solely empty or
+all-missing duration columns. Other selected columns can still contribute categories.
 
-Convert Type to text produces an empty character column when a duration input has no rows, including in generated code.
+CSV export uses UTF-8, double quotes and LF records. Fractional durations retain decimal points regardless of
+`OutDec`; duration NaN refuses export because the writer would otherwise make it indistinguishable from missing.
+Timestamp text can lose precision and omits time-zone information. Review the [export rules](architecture.md#native-r)
+before using CSV to transfer timestamps.
 
-The complete current operation set has direct native live, generated-code, and replay contracts. The exact names and
-parameters live in the [generated reference](reference.md#transformation-operations). CSV export is UTF-8 with
-double-quote syntax and LF record separators, including under the C locale. Fractional durations retain decimal points
-regardless of `OutDec`. Duration NaN refuses CSV export before creating an artifact, because the numeric writer would
-otherwise make it indistinguishable from a missing value. CSV timestamp text may lose precision and omits time-zone
-information; see the [native R export rules](architecture.md#native-r). Parquet export additionally requires
-`nanoparquet` 0.5.1 or newer in the selected R environment,
-and notebook export is available only from the current local extension host. Fill interpolation does not accept
-`integer64` coordinates, and active `data.table` keys restrict in-place changes. The durable ownership boundary lives
-in the [Native R ADR](decisions/0001-native-r-runtime.md).
-
-Native R Parquet datetime export uses microseconds and refuses values that cannot be represented exactly, including
-sub-microsecond timestamps. The exactness check can also refuse floating values produced by a reader that rounds
-fractions differently. Missing timestamps remain supported; a refused export preserves the source and cleaning plan.
+Parquet export requires `nanoparquet` 0.5.1 or newer in the selected R environment. Timestamps must be exactly
+representable in microseconds; sub-microsecond values and some values reconstructed by differently rounding readers
+are refused. Missing timestamps remain supported. A refused export preserves the source and cleaning plan.
+Notebook export is available only from the current local extension host.
 
 ## DuckDB experimental file support
 

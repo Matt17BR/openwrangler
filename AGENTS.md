@@ -17,7 +17,7 @@ Keep behavior in its owning layer. Change a shared interface explicitly instead 
 ## Sources of truth
 
 - `docs/architecture.md` defines product boundaries, protocol and session behavior, engine rules, persistence, and security-sensitive invariants.
-- `docs/decisions/0001-native-r-runtime.md` defines the native R boundary and its supported execution paths.
+- `docs/decisions/0001-native-r-runtime.md` records why R has its own runtime and execution owners; current technical contracts live in `docs/architecture.md`.
 - `docs/feature-parity.md` records supported user-visible behavior and release evidence. `docs/product-roadmap.md` records priorities and deferrals.
 - `docs/reference.md` is generated from public interface registries. Never edit it by hand.
 - `docs/testing.md` owns source suites, editor scenarios, artifact rules, and test ownership. `docs/ci.md` describes hosted checks.
@@ -59,7 +59,7 @@ Read the owning document before changing its boundary. Link to it rather than co
 ## Documentation routing
 
 - Protocol, session, runtime, engine, persistence, or security-boundary changes update `docs/architecture.md` and the owning executable tests.
-- Native R producer, decoder, supported-frame, or execution changes also update `docs/decisions/0001-native-r-runtime.md`, `docs/feature-parity.md`, and `docs/testing.md` as applicable.
+- Native R behavior changes update the architecture contract, with `docs/feature-parity.md` or `docs/testing.md` changes when their public claims or check ownership change. Amend `docs/decisions/0001-native-r-runtime.md` only when the native language boundary, execution ownership, or decision rationale changes.
 - User-visible capabilities, operations, exports, entry points, and limitations update `docs/feature-parity.md` and the relevant `README.md` or `CHANGELOG.md` text.
 - Commands, settings, operations, protocol messages, and notebook MIME types require `npm run generate:reference` and the resulting `docs/reference.md` change.
 - Test commands, fixtures, and editor scenarios update `docs/testing.md`. Hosted CI ownership or job changes also update `docs/ci.md`.
