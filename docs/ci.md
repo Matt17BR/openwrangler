@@ -31,8 +31,9 @@ run their full checks unless `scripts/ci-docs-only.mjs` proves that the tested m
 non-executable `README.md` or `docs/**/*.md` files.
 
 The same proof controls all R source and installed-editor jobs. R execution may also be omitted when every change
-modifies an existing regular, non-executable `.py` file under `python/openwrangler_runtime/` or `python/tests/`, or existing
-`README.md`, `CHANGELOG.md` or `docs/**/*.md`. These R checks do not execute Python files from the allowed paths. The selected
+adds or modifies a regular, non-executable `.py` file under `python/openwrangler_runtime/` or `python/tests/`, or modifies
+existing `README.md`, `CHANGELOG.md` or `docs/**/*.md`. Deletions, renames, mode changes and symlink entries require full R.
+These R checks do not execute Python files from the allowed paths. The selected
 installed R journeys use Python only for Jupyter client readiness; they exclude the mixed-language literate journey.
 The always-required Source and packaged smoke checks retain package validation. Python and
 Windows still run for Python or CHANGELOG changes. Shared/host code, R sources, fixtures, scripts, configuration,
@@ -55,8 +56,9 @@ owner. Parallel Linux shards repeat environment setup on separate workers, and i
 platform workers. Assess total wall time and runner cost together when changing this composition.
 
 The proof binds the checkout's merge commit and both parents to the pull-request event. It reads a bounded,
-NUL-delimited Git diff; additions, deletions, renames, mode changes, changes outside the allowed paths, empty diffs,
-and unavailable or unrecognized evidence select full checks. Changes to the proof or workflow also require full R.
+NUL-delimited Git diff. Additions outside the permitted Python source scope, deletions, renames, mode changes,
+other changes outside the allowed paths, empty diffs and unavailable or unrecognized evidence select full checks.
+Changes to the proof or workflow also require full R.
 A failed proof job or malformed output fails the required result.
 Execution jobs remain cancellable. Their result jobs run even after a failed or canceled dependency, so skipped or
 canceled execution cannot satisfy a required check when full runtime checks were needed.

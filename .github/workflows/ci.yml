@@ -247,7 +247,7 @@ jobs:
           test "$PROOF_RESULT" = success
           case "$R_OMITTABLE:$RUNTIME_RESULT:$MACOS_CALL_RESULT:$MACOS_RESULT:$WINDOWS_CALL_RESULT:$WINDOWS_RESULT" in
             true:skipped:skipped::skipped:)
-              echo 'Native R checks omitted: the tested merge only edits existing regular Python runtime/test source or Markdown documentation. No fresh R execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
+              echo 'Native R checks omitted: the tested merge adds or edits regular Python runtime/test source, or edits existing Markdown documentation. No fresh R execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
               ;;
             false:success:success:success:success:success) ;;
             *) exit 1 ;;
