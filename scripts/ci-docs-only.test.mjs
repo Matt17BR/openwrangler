@@ -65,10 +65,10 @@ test("proves existing README and nested Markdown edits against the exact tested 
   const cwd = repository(context, ["docs/guides/über view.md"]);
   for (const file of ["README.md", "docs/testing.md", "docs/guides/über view.md"]) write(cwd, file);
   const env = merge(cwd);
-  assert.deepEqual(proveRuntimeOmissions({ cwd, env }), { docsOnly: true, rOmittable: true });
+  assert.deepEqual(proveRuntimeOmissions({ cwd, env }), { docsOnly: true, rOmittable: true, pythonOmittable: true });
   const output = join(cwd, "action-output");
   execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
-  assert.equal(readFileSync(output, "utf8"), "docs_only=true\nr_omittable=true\n");
+  assert.equal(readFileSync(output, "utf8"), "docs_only=true\nr_omittable=true\npython_omittable=true\n");
 });
 
 test("proves existing Python source and Markdown edits only for native R", async (context) => {
@@ -92,10 +92,14 @@ test("proves existing Python source and Markdown edits only for native R", async
       const cwd = repository(child, files);
       for (const file of files) write(cwd, file);
       const env = merge(cwd);
-      assert.deepEqual(proveRuntimeOmissions({ cwd, env }), { docsOnly: false, rOmittable: true });
+      assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
+        docsOnly: false,
+        rOmittable: true,
+        pythonOmittable: false
+      });
       const output = join(cwd, "action-output");
       execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
-      assert.equal(readFileSync(output, "utf8"), "docs_only=false\nr_omittable=true\n");
+      assert.equal(readFileSync(output, "utf8"), "docs_only=false\nr_omittable=true\npython_omittable=false\n");
     });
   }
 });
@@ -115,72 +119,135 @@ test("proves added regular Python source only for native R", async (context) => 
       const cwd = repository(child, modified);
       for (const file of [...added, ...modified]) write(cwd, file);
       const env = merge(cwd);
-      assert.deepEqual(proveRuntimeOmissions({ cwd, env }), { docsOnly: false, rOmittable: true });
+      assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
+        docsOnly: false,
+        rOmittable: true,
+        pythonOmittable: false
+      });
       const output = join(cwd, "action-output");
       execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
-      assert.equal(readFileSync(output, "utf8"), "docs_only=false\nr_omittable=true\n");
+      assert.equal(readFileSync(output, "utf8"), "docs_only=false\nr_omittable=true\npython_omittable=false\n");
     });
   }
 });
 
-test("requires native R for deleted or renamed Python source, including alongside additions", async (context) => {
-  const file = "python/openwrangler_runtime/session.py";
-  for (const change of ["add and delete", "delete", "rename", "rename into Python"]) {
-    await context.test(change, (child) => {
-      const cwd = repository(child, [file]);
-      if (change === "add and delete") {
-        write(cwd, "python/tests/new_test.py");
-        rmSync(join(cwd, file));
-      }
-      if (change === "delete") rmSync(join(cwd, file));
-      if (change === "rename") renameSync(join(cwd, file), join(cwd, "python/openwrangler_runtime/renamed.py"));
-      if (change === "rename into Python")
-        renameSync(join(cwd, "src/runtime.py"), join(cwd, "python/openwrangler_runtime/moved.py"));
+test("proves regular R source additions and edits only for Python", async (context) => {
+  const cases = [
+    { added: [], modified: ["r/openwrangler_runtime/frame_contract.R"] },
+    { added: [], modified: ["r/tests/kernel_agent.R"] },
+    { added: ["r/openwrangler_runtime/helper.R"], modified: [] },
+    { added: ["r/tests/new_contract.R"], modified: [] },
+    {
+      added: ["r/openwrangler_runtime/nested/helper.R", "r/tests/new_contract.R"],
+      modified: ["r/openwrangler_runtime/kernel_agent.R", "README.md", "docs/testing.md"]
+    }
+  ];
+  for (const { added, modified } of cases) {
+    await context.test([...added, ...modified].join(", "), (child) => {
+      const cwd = repository(child, modified);
+      for (const file of [...added, ...modified]) write(cwd, file);
       const env = merge(cwd);
-      assert.deepEqual(proveRuntimeOmissions({ cwd, env }), { docsOnly: false, rOmittable: false });
+      assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
+        docsOnly: false,
+        rOmittable: false,
+        pythonOmittable: true
+      });
+      const output = join(cwd, "action-output");
+      execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
+      assert.equal(readFileSync(output, "utf8"), "docs_only=false\nr_omittable=false\npython_omittable=true\n");
     });
   }
 });
 
-test("requires native R for Python mode changes and existing executable or symlink entries", async (context) => {
-  const file = "python/tests/helper.py";
-  for (const mode of ["100755", "120000"]) {
-    for (const existing of [false, true]) {
-      await context.test(`${mode}, existing=${existing}`, (child) => {
-        const cwd = repository(child, [file]);
-        const original = git(cwd, "rev-parse", `HEAD:${file}`);
-        git(cwd, "update-index", "--cacheinfo", `${mode},${original},${file}`);
-        if (existing) {
-          git(cwd, "commit", "--quiet", "-m", "existing special entry");
-          git(cwd, "branch", "--force", "main", "HEAD");
-          // Different bytes are needed even when the entry retains its special mode.
-          write(cwd, "changed-blob", "changed target\n");
-          const changed = git(cwd, "hash-object", "-w", "changed-blob");
-          assert.notEqual(changed, original);
-          git(cwd, "update-index", "--cacheinfo", `${mode},${changed},${file}`);
-        }
-        const env = merge(cwd, false);
-        assert.deepEqual(proveRuntimeOmissions({ cwd, env }), { docsOnly: false, rOmittable: false });
+test("keeps Python required for R changes with CHANGELOG, Python source or shared inputs", async (context) => {
+  for (const added of [false, true]) {
+    for (const other of ["CHANGELOG.md", "python/tests/test_runtime.py", "src/shared/protocol.ts"]) {
+      await context.test(`${other}, added=${added}`, (child) => {
+        const rSource = "r/tests/contract.R";
+        const cwd = repository(child, added ? ["CHANGELOG.md"] : [rSource, other]);
+        write(cwd, rSource);
+        write(cwd, other);
+        assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), {
+          docsOnly: false,
+          rOmittable: false,
+          pythonOmittable: false
+        });
       });
     }
   }
 });
 
-test("requires native R for added executable or symlink Python entries", async (context) => {
-  for (const mode of ["100755", "120000"]) {
-    await context.test(mode, (child) => {
-      const cwd = repository(child);
-      const blob = git(cwd, "rev-parse", "HEAD:README.md");
-      git(cwd, "update-index", "--add", "--cacheinfo", `${mode},${blob},python/tests/added.py`);
-      assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd, false) }), {
-        docsOnly: false,
-        rOmittable: false
+test("requires full owners for deleted or renamed runtime source, including alongside additions", async (context) => {
+  for (const file of ["python/openwrangler_runtime/session.py", "r/openwrangler_runtime/kernel_agent.R"]) {
+    for (const change of ["add and delete", "delete", "rename", "rename into runtime"]) {
+      await context.test(`${file}: ${change}`, (child) => {
+        const cwd = repository(child, [file]);
+        const destination = file.replace(/\.(py|R)$/u, "-new.$1");
+        if (change === "add and delete") {
+          write(cwd, destination);
+          rmSync(join(cwd, file));
+        }
+        if (change === "delete") rmSync(join(cwd, file));
+        if (change === "rename") renameSync(join(cwd, file), join(cwd, destination));
+        if (change === "rename into runtime") renameSync(join(cwd, "src/runtime.py"), join(cwd, destination));
+        const env = merge(cwd);
+        assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
+          docsOnly: false,
+          rOmittable: false,
+          pythonOmittable: false
+        });
       });
-    });
+    }
   }
 });
 
-test("requires full owners for added Markdown or paths outside the Python source scope", async (context) => {
+test("requires full owners for source mode changes and existing executable or symlink entries", async (context) => {
+  for (const file of ["python/tests/helper.py", "r/tests/helper.R"]) {
+    for (const mode of ["100755", "120000"]) {
+      for (const existing of [false, true]) {
+        await context.test(`${file}: ${mode}, existing=${existing}`, (child) => {
+          const cwd = repository(child, [file]);
+          const original = git(cwd, "rev-parse", `HEAD:${file}`);
+          git(cwd, "update-index", "--cacheinfo", `${mode},${original},${file}`);
+          if (existing) {
+            git(cwd, "commit", "--quiet", "-m", "existing special entry");
+            git(cwd, "branch", "--force", "main", "HEAD");
+            // Different bytes are needed even when the entry retains its special mode.
+            write(cwd, "changed-blob", "changed target\n");
+            const changed = git(cwd, "hash-object", "-w", "changed-blob");
+            assert.notEqual(changed, original);
+            git(cwd, "update-index", "--cacheinfo", `${mode},${changed},${file}`);
+          }
+          const env = merge(cwd, false);
+          assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
+            docsOnly: false,
+            rOmittable: false,
+            pythonOmittable: false
+          });
+        });
+      }
+    }
+  }
+});
+
+test("requires full owners for added executable or symlink runtime source", async (context) => {
+  for (const file of ["python/tests/added.py", "r/tests/added.R"]) {
+    for (const mode of ["100755", "120000"]) {
+      await context.test(`${file}: ${mode}`, (child) => {
+        const cwd = repository(child);
+        const blob = git(cwd, "rev-parse", "HEAD:README.md");
+        git(cwd, "update-index", "--add", "--cacheinfo", `${mode},${blob},${file}`);
+        assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd, false) }), {
+          docsOnly: false,
+          rOmittable: false,
+          pythonOmittable: false
+        });
+      });
+    }
+  }
+});
+
+test("requires full owners for added Markdown or paths outside the runtime source scopes", async (context) => {
   for (const file of [
     "docs/new.md",
     "CHANGELOG.md",
@@ -188,51 +255,75 @@ test("requires full owners for added Markdown or paths outside the Python source
     "scripts/new.py",
     "python/pyproject.toml",
     "python/tests-extra/new.py",
-    "python/tests/new.PY"
+    "python/tests/new.PY",
+    "scripts/new.R",
+    "r/tests-extra/new.R",
+    "r/tests/new.r",
+    "r/dependencies/new.R"
   ]) {
     await context.test(file, (child) => {
       const cwd = repository(child);
       write(cwd, file);
-      assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), { docsOnly: false, rOmittable: false });
+      assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), {
+        docsOnly: false,
+        rOmittable: false,
+        pythonOmittable: false
+      });
     });
   }
 });
 
-test("requires native R for control characters in an existing Python path", (context) => {
-  const file = "python/tests/unusual\nname.py";
-  const cwd = repository(context, [file]);
-  write(cwd, file);
-  assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), { docsOnly: false, rOmittable: false });
+test("requires full owners for control characters in runtime source paths", async (context) => {
+  for (const file of ["python/tests/unusual\nname.py", "r/tests/unusual\nname.R"]) {
+    for (const added of [false, true]) {
+      await context.test(`${file}, added=${added}`, (child) => {
+        const cwd = repository(child, added ? [] : [file]);
+        write(cwd, file);
+        assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), {
+          docsOnly: false,
+          rOmittable: false,
+          pythonOmittable: false
+        });
+      });
+    }
+  }
 });
 
-test("requires native R for an added Python path containing a control character", (context) => {
-  const cwd = repository(context);
-  write(cwd, "python/tests/unusual\nname.py");
-  assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), { docsOnly: false, rOmittable: false });
-});
-
-test("requires full owners for an added Python path with invalid UTF-8", (context) => {
-  const cwd = repository(context);
-  const base = git(cwd, "rev-parse", "main");
-  const blob = git(cwd, "rev-parse", "HEAD:README.md");
-  const path = Buffer.concat([Buffer.from("python/tests/"), Buffer.from([0xff]), Buffer.from(".py")]);
-  execFileSync("git", ["update-index", "--add", "-z", "--index-info"], {
-    cwd,
-    input: Buffer.concat([Buffer.from(`100644 ${blob}\t`), path, Buffer.from("\0")]),
-    stdio: ["pipe", "ignore", "pipe"]
-  });
-  git(cwd, "commit", "--quiet", "-m", "add non-UTF-8 path");
-  const head = git(cwd, "rev-parse", "HEAD");
-  // Build the real merge without checking out a filename that Windows cannot represent.
-  const merged = git(cwd, "commit-tree", git(cwd, "write-tree"), "-p", base, "-p", head, "-m", "merge");
-  git(cwd, "update-ref", "HEAD", merged);
-  assert.deepEqual(
-    proveRuntimeOmissions({
-      cwd,
-      env: { CI_EVENT: "pull_request", CI_BASE_REF: "main", CI_BASE_SHA: base, CI_HEAD_SHA: head, CI_MERGE_SHA: merged }
-    }),
-    { docsOnly: false, rOmittable: false }
-  );
+test("requires full owners for an added runtime source path with invalid UTF-8", async (context) => {
+  for (const [directory, extension] of [
+    ["python/tests/", ".py"],
+    ["r/tests/", ".R"]
+  ]) {
+    await context.test(directory, (child) => {
+      const cwd = repository(child);
+      const base = git(cwd, "rev-parse", "main");
+      const blob = git(cwd, "rev-parse", "HEAD:README.md");
+      const path = Buffer.concat([Buffer.from(directory), Buffer.from([0xff]), Buffer.from(extension)]);
+      execFileSync("git", ["update-index", "--add", "-z", "--index-info"], {
+        cwd,
+        input: Buffer.concat([Buffer.from(`100644 ${blob}\t`), path, Buffer.from("\0")]),
+        stdio: ["pipe", "ignore", "pipe"]
+      });
+      git(cwd, "commit", "--quiet", "-m", "add non-UTF-8 path");
+      const head = git(cwd, "rev-parse", "HEAD");
+      // Build the real merge without checking out a filename that Windows cannot represent.
+      const merged = git(cwd, "commit-tree", git(cwd, "write-tree"), "-p", base, "-p", head, "-m", "merge");
+      git(cwd, "update-ref", "HEAD", merged);
+      assert.deepEqual(
+        proveRuntimeOmissions({
+          cwd,
+          env: {
+            CI_EVENT: "pull_request",
+            CI_BASE_REF: "main",
+            CI_BASE_SHA: base,
+            CI_HEAD_SHA: head,
+            CI_MERGE_SHA: merged
+          }
+        }),
+        { docsOnly: false, rOmittable: false, pythonOmittable: false }
+      );
+    });
+  }
 });
 
 test("requires full owners for runtime, metadata, fixture, workflow and script changes", async (context) => {
@@ -259,14 +350,23 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
     "python/openwrangler_runtime/helper.py.bak",
     "vite.config.mts",
     ".npmrc",
-    "r/openwrangler_runtime/frame_contract.R"
+    "r/openwrangler_runtime.R",
+    "r/tests-extra/helper.R",
+    "r/openwrangler_runtime/helper.r",
+    "r/tests/helper.py",
+    "r/openwrangler_runtime/helper.R.bak",
+    "r/dependencies/native-r-contract/lock.json"
   ]) {
     await context.test(file, (child) => {
       const cwd = repository(child, [file]);
       write(cwd, "README.md");
       write(cwd, file);
       const env = merge(cwd);
-      assert.deepEqual(proveRuntimeOmissions({ cwd, env }), { docsOnly: false, rOmittable: false });
+      assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
+        docsOnly: false,
+        rOmittable: false,
+        pythonOmittable: false
+      });
     });
   }
 });
@@ -281,7 +381,11 @@ test("does not hide deletions or renames behind a Markdown destination", async (
       if (change === "rename docs") renameSync(join(cwd, "docs/testing.md"), join(cwd, "docs/renamed.md"));
       if (change === "rename runtime") renameSync(join(cwd, "src/runtime.py"), join(cwd, "docs/runtime.md"));
       const env = merge(cwd);
-      assert.deepEqual(proveRuntimeOmissions({ cwd, env }), { docsOnly: false, rOmittable: false });
+      assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
+        docsOnly: false,
+        rOmittable: false,
+        pythonOmittable: false
+      });
     });
   }
 });
@@ -293,7 +397,11 @@ test("requires full owners for executable or symlink Markdown entries", async (c
       const blob = git(cwd, "rev-parse", "HEAD:README.md");
       git(cwd, "update-index", "--cacheinfo", `${mode},${blob},README.md`);
       const env = merge(cwd, false);
-      assert.deepEqual(proveRuntimeOmissions({ cwd, env }), { docsOnly: false, rOmittable: false });
+      assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
+        docsOnly: false,
+        rOmittable: false,
+        pythonOmittable: false
+      });
     });
   }
 });
@@ -303,7 +411,7 @@ test("handles NUL-delimited paths without treating newline paths as documentatio
   const cwd = repository(context, [file]);
   write(cwd, file);
   const env = merge(cwd);
-  assert.deepEqual(proveRuntimeOmissions({ cwd, env }), { docsOnly: false, rOmittable: false });
+  assert.deepEqual(proveRuntimeOmissions({ cwd, env }), { docsOnly: false, rOmittable: false, pythonOmittable: false });
 });
 
 test("examines changes beyond a 300-file API or workflow filter limit", (context) => {
@@ -312,7 +420,7 @@ test("examines changes beyond a 300-file API or workflow filter limit", (context
   for (const file of files) write(cwd, file);
   write(cwd, "src/runtime.py");
   const env = merge(cwd);
-  assert.deepEqual(proveRuntimeOmissions({ cwd, env }), { docsOnly: false, rOmittable: false });
+  assert.deepEqual(proveRuntimeOmissions({ cwd, env }), { docsOnly: false, rOmittable: false, pythonOmittable: false });
 });
 
 test("falls back to full owners when the bounded Git output is exceeded", (context) => {
@@ -321,7 +429,7 @@ test("falls back to full owners when the bounded Git output is exceeded", (conte
   for (const file of files) write(cwd, file);
   const env = merge(cwd);
   assert.ok(git(cwd, "diff", "--raw", "--no-abbrev", "-z", env.CI_BASE_SHA, env.CI_MERGE_SHA).length > 256 * 1024);
-  assert.deepEqual(proveRuntimeOmissions({ cwd, env }), { docsOnly: false, rOmittable: false });
+  assert.deepEqual(proveRuntimeOmissions({ cwd, env }), { docsOnly: false, rOmittable: false, pythonOmittable: false });
 });
 
 test("requires exact event identities, protected base and two merge parents", (context) => {
@@ -339,14 +447,16 @@ test("requires exact event identities, protected base and two merge parents", (c
   ]) {
     assert.deepEqual(proveRuntimeOmissions({ cwd, env: { ...env, ...change } }), {
       docsOnly: false,
-      rOmittable: false
+      rOmittable: false,
+      pythonOmittable: false
     });
   }
   git(cwd, "checkout", "--quiet", env.CI_HEAD_SHA);
-  assert.deepEqual(proveRuntimeOmissions({ cwd, env }), { docsOnly: false, rOmittable: false });
+  assert.deepEqual(proveRuntimeOmissions({ cwd, env }), { docsOnly: false, rOmittable: false, pythonOmittable: false });
   assert.deepEqual(proveRuntimeOmissions({ cwd, env: { ...env, CI_MERGE_SHA: env.CI_HEAD_SHA } }), {
     docsOnly: false,
-    rOmittable: false
+    rOmittable: false,
+    pythonOmittable: false
   });
 });
 
@@ -359,10 +469,11 @@ test("uses the protected base of the tested merge and rejects stale base identit
   git(cwd, "checkout", "--quiet", "change");
   write(cwd, "README.md");
   const env = merge(cwd);
-  assert.deepEqual(proveRuntimeOmissions({ cwd, env }), { docsOnly: true, rOmittable: true });
+  assert.deepEqual(proveRuntimeOmissions({ cwd, env }), { docsOnly: true, rOmittable: true, pythonOmittable: true });
   assert.deepEqual(proveRuntimeOmissions({ cwd, env: { ...env, CI_BASE_SHA: earlierBase } }), {
     docsOnly: false,
-    rOmittable: false
+    rOmittable: false,
+    pythonOmittable: false
   });
 });
 
@@ -374,25 +485,30 @@ test("depth two is sufficient while missing merge history requires full checks",
     const clone = mkdtempSync(join(tmpdir(), "openwrangler-ci-clone-"));
     context.after(() => rmSync(clone, { recursive: true, force: true }));
     git(cwd, "clone", "--quiet", "--depth", String(depth), pathToFileURL(cwd).href, clone);
-    assert.deepEqual(proveRuntimeOmissions({ cwd: clone, env }), { docsOnly: depth === 2, rOmittable: depth === 2 });
+    assert.deepEqual(proveRuntimeOmissions({ cwd: clone, env }), {
+      docsOnly: depth === 2,
+      rOmittable: depth === 2,
+      pythonOmittable: depth === 2
+    });
   }
 });
 
 test("empty diffs and Git failures select full checks", (context) => {
   const cwd = repository(context);
   const env = merge(cwd);
-  assert.deepEqual(proveRuntimeOmissions({ cwd, env }), { docsOnly: false, rOmittable: false });
+  assert.deepEqual(proveRuntimeOmissions({ cwd, env }), { docsOnly: false, rOmittable: false, pythonOmittable: false });
   rmSync(join(cwd, ".git"), { recursive: true });
-  assert.deepEqual(proveRuntimeOmissions({ cwd, env }), { docsOnly: false, rOmittable: false });
+  assert.deepEqual(proveRuntimeOmissions({ cwd, env }), { docsOnly: false, rOmittable: false, pythonOmittable: false });
   const output = join(cwd, "action-output");
   execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
-  assert.equal(readFileSync(output, "utf8"), "docs_only=false\nr_omittable=false\n");
+  assert.equal(readFileSync(output, "utf8"), "docs_only=false\nr_omittable=false\npython_omittable=false\n");
 });
 
 test("required runtime results reject missing proof and incomplete or canceled execution", (context) => {
   assert.deepEqual(workflow.jobs["docs-proof"].outputs, {
     docs_only: "${{ steps.proof.outputs.docs_only }}",
-    r_omittable: "${{ steps.proof.outputs.r_omittable }}"
+    r_omittable: "${{ steps.proof.outputs.r_omittable }}",
+    python_omittable: "${{ steps.proof.outputs.python_omittable }}"
   });
   const temp = mkdtempSync(join(tmpdir(), "openwrangler-ci-guards-"));
   context.after(() => rmSync(temp, { recursive: true, force: true }));
@@ -414,11 +530,12 @@ test("required runtime results reject missing proof and incomplete or canceled e
     assert.equal(guard.if, undefined);
     assert.equal(guard.shell, "bash");
     assert.equal(guard.env.PROOF_RESULT, "${{ needs.docs-proof.result }}");
-    const omissionOutput = id === "r" ? "r_omittable" : "docs_only";
-    const omissionEnvironment = id === "r" ? "R_OMITTABLE" : "DOCS_ONLY";
+    const omissionOutput = id === "windows" ? "docs_only" : `${id}_omittable`;
+    const omissionEnvironment = omissionOutput.toUpperCase();
     assert.equal(guard.env[omissionEnvironment], `\${{ needs.docs-proof.outputs.${omissionOutput} }}`);
-    if (id === "r") assert.equal(guard.env.DOCS_ONLY, undefined);
-    else assert.equal(guard.env.R_OMITTABLE, undefined);
+    for (const other of ["DOCS_ONLY", "R_OMITTABLE", "PYTHON_OMITTABLE"]) {
+      if (other !== omissionEnvironment) assert.equal(guard.env[other], undefined);
+    }
     assert.equal(guard.env.RUNTIME_RESULT, `\${{ needs.${runtimeId}.result }}`);
     assert.equal(runtime.needs, "docs-proof");
     assert.equal(
@@ -429,7 +546,7 @@ test("required runtime results reject missing proof and incomplete or canceled e
     assert.equal(runtime["runs-on"], id === "windows" ? "windows-latest" : "ubuntu-24.04");
     assert.equal(runtime.steps[0].if, undefined);
     assert.equal(runtime.steps.at(-1).if, undefined);
-    for (const [result, docsOnly, runtimeResult, expectedStatus] of [
+    for (const [result, omittable, runtimeResult, expectedStatus] of [
       ["success", "true", "skipped", 0],
       ["success", "false", "success", 0],
       ["failure", "true", "skipped", 1],
@@ -454,25 +571,28 @@ test("required runtime results reject missing proof and incomplete or canceled e
         env: {
           ...process.env,
           PROOF_RESULT: result,
-          DOCS_ONLY: id === "r" ? "false" : docsOnly,
-          R_OMITTABLE: id === "r" ? docsOnly : docsOnly === "true" ? "false" : "true",
+          DOCS_ONLY: id === "windows" ? omittable : omittable === "true" ? "false" : "true",
+          R_OMITTABLE: id === "r" ? omittable : omittable === "true" ? "false" : "true",
+          PYTHON_OMITTABLE: id === "python" ? omittable : omittable === "true" ? "false" : "true",
           RUNTIME_RESULT: runtimeResult,
-          MACOS_CALL_RESULT: id === "r" && docsOnly === "true" ? "skipped" : "success",
-          MACOS_RESULT: id === "r" && docsOnly === "true" ? "" : "success",
-          WINDOWS_CALL_RESULT: id === "r" && docsOnly === "true" ? "skipped" : "success",
-          WINDOWS_RESULT: id === "r" && docsOnly === "true" ? "" : "success",
+          MACOS_CALL_RESULT: id === "r" && omittable === "true" ? "skipped" : "success",
+          MACOS_RESULT: id === "r" && omittable === "true" ? "" : "success",
+          WINDOWS_CALL_RESULT: id === "r" && omittable === "true" ? "skipped" : "success",
+          WINDOWS_RESULT: id === "r" && omittable === "true" ? "" : "success",
           GITHUB_STEP_SUMMARY: summary
         },
         encoding: "utf8"
       });
       assert.equal(execution.error, undefined);
-      assert.equal(execution.status, expectedStatus, `${id}: ${result}/${JSON.stringify(docsOnly)}/${runtimeResult}`);
-      if (expectedStatus === 0 && docsOnly === "true") {
+      assert.equal(execution.status, expectedStatus, `${id}: ${result}/${JSON.stringify(omittable)}/${runtimeResult}`);
+      if (expectedStatus === 0 && omittable === "true") {
         assert.match(
           readFileSync(summary, "utf8"),
           id === "r"
             ? /Native R checks omitted:.*No fresh R execution is claimed/u
-            : /existing regular Markdown documentation/u
+            : id === "python"
+              ? /Python checks omitted:.*No fresh Python execution is claimed/u
+              : /existing regular Markdown documentation/u
         );
       }
     }
