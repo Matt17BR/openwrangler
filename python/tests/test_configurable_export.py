@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import csv
+import io
 import sys
 from contextlib import nullcontext
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -17,7 +19,7 @@ from openwrangler_runtime.engines import EngineError
 from openwrangler_runtime.engines.duckdb_engine import DuckDBEngine
 from openwrangler_runtime.engines.pandas_engine import PandasEngine
 from openwrangler_runtime.engines.polars_engine import PolarsEngine
-from openwrangler_runtime.export_target import ExportTarget, ExportTargetError, _regular_file_identity
+from openwrangler_runtime.export_target import ExportTarget, ExportTargetError, ExportWriterPath, _regular_file_identity
 from openwrangler_runtime.session import SessionManager
 
 
@@ -793,6 +795,159 @@ def test_native_utf8_csv_export_applies_ascii_dialect_and_header_options(tmp_pat
 
     loaded = pl.read_csv(destination, separator=";", quote_char="'", has_header=False, new_columns=["city", "value"])
     assert loaded.to_dict(as_series=False) == {"city": ["Milan;'North", "Berlin"], "value": [1, 2]}
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize("field", ["delimiter", "quoteChar"])
+@pytest.mark.parametrize(
+    "dtype,values,syntax",
+    [
+        (pl.Int64, [-12, None], "-"),
+        (pl.UInt64, [12, None], "1"),
+        (pl.Float64, [1e20, None], "+"),
+        (pl.Float32, [float("inf"), None], "i"),
+        (pl.Float64, [float("nan"), None], "N"),
+        (pl.Decimal(9, 2), [Decimal("-1.25"), None], "."),
+        (pl.Boolean, [True, None], "t"),
+        (pl.Date, [date(2026, 1, 1), None], "-"),
+        (pl.Date, [3_000_000, None], "+"),
+        (pl.Time, [time(3, 4, 5, 123456), None], ":"),
+        (pl.Datetime("ns", "UTC"), [datetime(2026, 1, 1, tzinfo=timezone.utc), None], "T"),
+        (pl.Float64, [], "."),
+        (pl.Float64, [None, None], "."),
+    ],
+)
+def test_polars_csv_restricted_syntax_refuses_before_writer_or_lazy_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lazy: bool, field: str, dtype: Any, values: list[Any], syntax: str
+) -> None:
+    source = pl.DataFrame(
+        {"value": pl.Series(values, dtype=dtype), "text": pl.Series(['é,"\n'] * len(values), dtype=pl.String)}
+    )
+    before = source.clone()
+    engine = PolarsEngine()
+    frame = engine.ensure_row_ids(source.lazy() if lazy else source, "csv-syntax")
+    evaluated: list[int] = []
+    if lazy:
+
+        def observe(batch: pl.DataFrame) -> pl.DataFrame:
+            evaluated.append(batch.height)
+            return batch
+
+        frame = frame.map_batches(observe, schema=frame.collect_schema(), projection_pushdown=False)
+    destination = tmp_path / "reserved.csv"
+    destination.write_bytes(b"untouched destination\n")
+    identity = _regular_file_identity(destination)
+    writer = ExportWriterPath(destination, *identity)
+    options = {"format": "csv", "delimiter": ",", "quoteChar": '"', "encoding": "utf-8", "header": True}
+    options[field] = syntax
+    with monkeypatch.context() as blocked:
+        blocked.setattr(
+            ExportWriterPath, "open_binary_writer", lambda *_: pytest.fail("unsafe CSV syntax opened the writer")
+        )
+        with pytest.raises(EngineError, match="Polars CSV export"):
+            engine.export_data(frame, writer, options)
+    assert evaluated == []
+    assert source.equals(before)
+    assert destination.read_bytes() == b"untouched destination\n"
+    assert _regular_file_identity(destination) == identity
+
+    options.update(delimiter=",", quoteChar='"')
+    engine.export_data(frame, writer, options)
+    assert destination.read_text(encoding="utf-8") == source.write_csv()
+    assert source.equals(before)
+    assert _regular_file_identity(destination) == identity
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize("header", [False, True])
+@pytest.mark.parametrize("delimiter,quote", [("1", "-"), (".", "t"), ("T", "2"), (";", "'")])
+def test_polars_csv_textlike_syntax_preserves_fields_nulls_and_empty_strings(
+    tmp_path: Path, lazy: bool, header: bool, delimiter: str, quote: str
+) -> None:
+    source = pl.DataFrame(
+        {
+            "null": pl.Series([None, None, None], dtype=pl.Null),
+            "text": ["é-1.tT2;\"'\n", "", None],
+            "category": pl.Series(["a-1.tT2", "", None], dtype=pl.Categorical),
+            "enum": pl.Series(["a-1.tT2", "", None], dtype=pl.Enum(["a-1.tT2", ""])),
+        }
+    )
+    before = source.clone()
+    engine = PolarsEngine()
+    frame = engine.ensure_row_ids(source.lazy() if lazy else source, "hidden-csv-identity")
+    destination = tmp_path / "escaped.csv"
+    engine.export_data(
+        frame,
+        destination,
+        {"format": "csv", "delimiter": delimiter, "quoteChar": quote, "encoding": "utf-8", "header": header},
+    )
+    content = destination.read_text(encoding="utf-8")
+    decoded = list(csv.reader(io.StringIO(content), delimiter=delimiter, quotechar=quote, strict=True))
+    expected = [["" if value is None else value for value in row] for row in source.rows()]
+    assert decoded == ([source.columns] if header else []) + expected
+    loaded = pl.read_csv(
+        destination,
+        separator=delimiter,
+        quote_char=quote,
+        has_header=header,
+        new_columns=source.columns,
+        schema_overrides={name: pl.String for name in source.columns},
+    )
+    assert loaded.to_dict(as_series=False) == source.to_dict(as_series=False)
+    assert source.equals(before)
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize("header", [False, True])
+@pytest.mark.parametrize("delimiter", [",", "\t", ";", "|"])
+@pytest.mark.parametrize("quote", ['"', "'"])
+def test_polars_csv_standard_syntax_retains_native_primitive_values(
+    tmp_path: Path, lazy: bool, header: bool, delimiter: str, quote: str
+) -> None:
+    source = pl.DataFrame(
+        {
+            "signed": [1, -2, None],
+            "unsigned": pl.Series([1, 2, None], dtype=pl.UInt64),
+            "float": [1.25, float("nan"), None],
+            "decimal": pl.Series([Decimal("1.25"), Decimal("-2.50"), None], dtype=pl.Decimal(9, 2)),
+            "bool": [True, False, None],
+            "date": [date(2026, 1, 1), date(2026, 1, 2), None],
+            "time": [time(3, 4, 5, 123456), time(0), None],
+            "datetime": [datetime(2026, 1, 1, 3, 4, 5), datetime(2026, 1, 2), None],
+            "text": ["é,\";'\n", "", None],
+        }
+    )
+    before = source.clone()
+    destination = tmp_path / "standard.csv"
+    PolarsEngine().export_data(
+        source.lazy() if lazy else source,
+        destination,
+        {"format": "csv", "delimiter": delimiter, "quoteChar": quote, "encoding": "utf-8", "header": header},
+    )
+    loaded = pl.read_csv(
+        destination,
+        separator=delimiter,
+        quote_char=quote,
+        has_header=header,
+        new_columns=source.columns,
+        schema_overrides=source.schema,
+    )
+    assert loaded.equals(source)
+    assert source.equals(before)
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize("field", ["delimiter", "quoteChar"])
+def test_polars_csv_unsigned_values_allow_minus_syntax(tmp_path: Path, lazy: bool, field: str) -> None:
+    source = pl.DataFrame({"value": pl.Series([1, 2, None], dtype=pl.UInt64)})
+    options = {"format": "csv", "delimiter": ",", "quoteChar": '"', "encoding": "utf-8", "header": True}
+    options[field] = "-"
+    destination = tmp_path / "unsigned.csv"
+    PolarsEngine().export_data(source.lazy() if lazy else source, destination, options)
+    loaded = pl.read_csv(
+        destination, separator=options["delimiter"], quote_char=options["quoteChar"], schema_overrides=source.schema
+    )
+    assert loaded.equals(source)
 
 
 @pytest.mark.parametrize(

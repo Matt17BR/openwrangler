@@ -130,6 +130,9 @@ Use the existing owners to choose a focused source check:
   Native R's `capture-and-export` case owns CSV delimiter restrictions, bounded presence checks and empty/missing
   columns. Its `group-pivot-and-export` kernel case checks decoded custom-delimiter fields, recoverable refusal and
   correction through the public export transport, with unchanged source and session state.
+  Configurable-export checks also own Polars schema-based CSV syntax refusal before writer opening or lazy execution,
+  safe correction, decoded fields and native null-versus-empty readback. The existing Polars lazy-writer test owns
+  streaming to the exact reserved file object.
 - **Python engines and generated programs:** [Pandas](../python/tests/test_pandas_engine.py),
   [Polars](../python/tests/test_polars_engine.py) and [DuckDB](../python/tests/test_duckdb_engine.py) own native profiles,
   queries, source preservation and engine-specific evaluation bounds. [Operation edges](../python/tests/test_operation_edges.py),
