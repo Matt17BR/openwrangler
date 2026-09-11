@@ -410,6 +410,64 @@ def test_pivot_wider_pandas_live_and_generated_preserve_order_nulls_and_source()
     assert rows(frame) == [("b", "x", 3), ("a", "x", 1), ("b", "y", 4)]
 
 
+@pytest.mark.parametrize("missing", [None, pd.NaT], ids=["None", "NaT"])
+@pytest.mark.parametrize("family", ["integer", "boolean", "float", "decimal", "binary", "mixed"])
+def test_pandas_pivot_wider_object_identifiers_match_generated_admission(family: str, missing: Any) -> None:
+    first, second = {
+        "integer": (1, 2),
+        "boolean": (True, False),
+        "float": (1.5, 2.5),
+        "decimal": (Decimal("1.25"), Decimal("2.25")),
+        "binary": (b"a", b"b"),
+        "mixed": (1, "1"),
+    }[family]
+    frame = pd.DataFrame(
+        {
+            "group": pd.Series([first, missing, second, first], dtype=object),
+            "key": ["x", "x", "x", "y"],
+            "value": pd.Series([10, 20, 30, 40], dtype="Int64"),
+        }
+    )
+    frame.index = pd.Index(["source"] * 4, name="retained")
+    frame.attrs["annotation"] = "retained"
+    before = frame.copy(deep=True)
+    expected = pd.DataFrame(
+        {
+            "group": pd.Series([first, pd.NA, second], dtype="Int64" if family == "integer" else object),
+            "x_value": pd.Series([10, 20, 30], dtype="Int64"),
+            "y_value": pd.Series([40, None, None], dtype="Int64"),
+        }
+    )
+    expected.columns = pd.Index(expected.columns, dtype="object")
+    for actual in _pandas_pivot_results(frame):
+        pd.testing.assert_frame_equal(actual, expected)
+        pd.testing.assert_frame_equal(frame, before)
+        assert frame.attrs == before.attrs
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_pandas_pivot_wider_empty_object_identifiers_keep_nullable_results(empty: bool) -> None:
+    frame = pd.DataFrame(
+        {
+            "group": pd.Series([] if empty else [None, pd.NaT], dtype=object),
+            "key": pd.Series([] if empty else ["x", "y"], dtype="string"),
+            "value": pd.Series([] if empty else [10, 20], dtype="Int64"),
+        }
+    )
+    before = frame.copy(deep=True)
+    expected = pd.DataFrame(
+        {
+            "group": pd.Series([] if empty else [pd.NA], dtype=object),
+            "x_value": pd.Series([] if empty else [10], dtype="Int64"),
+            "y_value": pd.Series([] if empty else [20], dtype="Int64"),
+        }
+    )
+    expected.columns = pd.Index(expected.columns, dtype="object")
+    for actual in _pandas_pivot_results(frame):
+        pd.testing.assert_frame_equal(actual, expected)
+    pd.testing.assert_frame_equal(frame, before)
+
+
 @pytest.mark.parametrize("family", ["categorical", "unsigned", "boolean"])
 def test_pandas_pivot_wider_nullable_allocation_preserves_native_storage(family: str) -> None:
     dtype, values, x_values, y_values = {
@@ -473,7 +531,16 @@ def test_pandas_pivot_wider_generated_allocation_keeps_caller_bindings() -> None
     before = frame.copy(deep=True)
     engine = PandasEngine()
     step = bind(engine, frame)
-    names = ["pd", "np", "_open_wrangler_nullable_pivot_series", "_pandas_nullable_pivot_series"]
+    names = [
+        "pd",
+        "np",
+        "Integral",
+        "Real",
+        "Mapping",
+        "_open_wrangler_nullable_pivot_series",
+        "_pandas_nullable_pivot_series",
+        "_open_wrangler_object_semantic_type",
+    ]
     namespace: dict[str, Any] = dict.fromkeys(names, frame)
     exec(engine.compile_plan([step]), namespace, namespace)
     expected = engine.apply_transform(frame, step)

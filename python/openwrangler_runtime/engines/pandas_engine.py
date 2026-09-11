@@ -18,7 +18,7 @@ from textwrap import indent
 from typing import Any, Literal, cast
 from zoneinfo import ZoneInfo
 
-from .._column_binding import compile_output_collision_guards
+from .._column_binding import _GROUP_KEY_TYPES, compile_output_collision_guards
 from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
 from ..custom_code_scope import (
     custom_code_definition_lines,
@@ -46,12 +46,14 @@ from . import (
     _pandas_group_sum_helpers,
     _pandas_linear_fill_helpers,
     _pandas_min_max_helpers,
+    _pandas_object_type_helpers,
     _pandas_pivot_helpers,
 )
 from ._pandas_arrow_formula_helpers import _open_wrangler_arrow_formula_repair as _pandas_arrow_formula_repair
 from ._pandas_group_sum_helpers import _open_wrangler_native_int64_sum_is_safe as _pandas_native_int64_sum_is_safe
 from ._pandas_linear_fill_helpers import _open_wrangler_fill_linear_gaps as _pandas_fill_linear_gaps
 from ._pandas_min_max_helpers import _open_wrangler_min_max_scale as _pandas_min_max_scale
+from ._pandas_object_type_helpers import _open_wrangler_object_semantic_type as _pandas_object_semantic_type
 from ._pandas_pivot_helpers import _open_wrangler_nullable_pivot_series as _pandas_nullable_pivot_series
 from .base import (
     DEFAULT_STRIP_CHARACTERS,
@@ -1659,7 +1661,7 @@ class PandasEngine(DataFrameEngine):
             if needs_fill_helpers:
                 decimal_imports.extend(["InvalidOperation", "localcontext"])
             lines.append("from decimal import " + ", ".join(dict.fromkeys(decimal_imports)))
-        if needs_missing_helpers:
+        if needs_missing_helpers or needs_nullable_result_helpers:
             lines.append("from numbers import Integral, Real")
         if lines:
             lines.append("")
@@ -1973,8 +1975,8 @@ class PandasEngine(DataFrameEngine):
                     "",
                     "def _open_wrangler_integer_scalar(value):",
                     "    return (",
-                    "        isinstance(value, (int, np.integer))",
-                    "        and not isinstance(value, (bool, np.bool_))",
+                    "        isinstance(value, (int, np.integer, Integral))",
+                    "        and not isinstance(value, bool)",
                     "        and type(value).__name__ != 'timedelta64'",
                     "    )",
                     "",
@@ -2933,11 +2935,10 @@ def _pandas_pivot_wider_identifier_frame(
 
     columns = []
     states: list[Any | None] = []
-    allowed = {"string", "integer", "float", "decimal", "boolean", "datetime", "date", "duration", "binary"}
     for position in identifiers:
         source = _pandas_scalar_values(df.iloc[:, position]).reset_index(drop=True)
         semantic_type = _pandas_semantic_type(source)
-        if semantic_type not in allowed:
+        if semantic_type not in _GROUP_KEY_TYPES:
             raise EngineError(
                 "Pivot wider identifier columns must use the portable group-key scalar family; "
                 f"{str(df.columns[position])!r} is {semantic_type!r}."
@@ -3011,6 +3012,7 @@ def _pandas_pivot_wider(
 
 def _generated_pandas_pivot_wider_helpers() -> list[str]:
     return [
+        getsource(_pandas_object_type_helpers),
         getsource(_pandas_pivot_helpers),
         "def _open_wrangler_pivot_wider(df, names_position, values_position, output_values, output_names):",
         "    def output_key(value):",
@@ -3034,16 +3036,13 @@ def _generated_pandas_pivot_wider_helpers() -> list[str]:
         "        raise ValueError('Pivot wider namesFrom values must be present and match one declared typed key.')",
         "    identifier_columns = []",
         "    key_states = []",
-        (
-            "    allowed_object_kinds = {'string', 'unicode', 'empty', 'boolean', 'integer', "
-            "'floating', 'mixed-integer-float', 'decimal', 'datetime', 'datetime64', "
-            "'timedelta', 'timedelta64', 'bytes', 'date'}"
-        ),
+        f"    allowed_object_types = {tuple(sorted(_GROUP_KEY_TYPES))!r}",
         "    for position in identifiers:",
         "        source = _open_wrangler_scalar_values(df.iloc[:, position]).reset_index(drop=True)",
         (
             "        if pd.api.types.is_object_dtype(source.dtype) and "
-            "pd.api.types.infer_dtype(source, skipna=True) not in allowed_object_kinds:"
+            "_open_wrangler_object_semantic_type(source, _open_wrangler_missing_scalar, "
+            "_open_wrangler_integer_scalar) not in allowed_object_types:"
         ),
         "            raise ValueError('Pivot wider identifier columns must use the portable group-key scalar family.')",
         "        arrow_scalar = False",
@@ -4022,51 +4021,7 @@ def _pandas_semantic_type(series: Any) -> str:
             return "date"
     semantic_type = infer_semantic_type(str(dtype))
     if semantic_type == "string" and series.dtype == object:
-        # Pandas' native classifier is exhaustive but runs in its optimized C
-        # path.  It avoids the prior Python materialization without making UI
-        # capabilities depend on a potentially misleading sample.
-        inferred = pd.api.types.infer_dtype(series, skipna=True)
-        inferred_semantic = {
-            "boolean": "boolean",
-            "integer": "integer",
-            "floating": "float",
-            "mixed-integer-float": "float",
-            "decimal": "decimal",
-            "datetime": "datetime",
-            "datetime64": "datetime",
-            "timedelta": "duration",
-            "timedelta64": "duration",
-            "bytes": "binary",
-        }.get(inferred)
-        if inferred_semantic is not None:
-            return inferred_semantic
-        if inferred in {"mixed", "mixed-integer", "date"}:
-            # infer_dtype intentionally groups homogeneous nested Python
-            # containers under "mixed", and Pandas 3 can classify otherwise
-            # valid object columns containing pd.NaT as mixed/mixed-integer or
-            # collapse datetime to date.  Refine only those ambiguous cases
-            # with the runtime's exact missing-value semantics.
-            values = _pandas_present_values(series)
-            if values and all(isinstance(value, bool) for value in values):
-                return "boolean"
-            if values and all(_pandas_is_integer_scalar(value) for value in values):
-                return "integer"
-            if values and all(isinstance(value, Real) and not isinstance(value, bool) for value in values):
-                return "float"
-            if values and all(isinstance(value, Decimal) for value in values):
-                return "decimal"
-            if values and all(isinstance(value, datetime) for value in values):
-                return "datetime"
-            if values and all(isinstance(value, date) for value in values):
-                return "date"
-            if values and all(isinstance(value, timedelta) for value in values):
-                return "duration"
-            if values and all(isinstance(value, bytes) for value in values):
-                return "binary"
-            if values and all(isinstance(value, list | tuple) for value in values):
-                return "list"
-            if values and all(isinstance(value, Mapping) for value in values):
-                return "struct"
+        return _pandas_object_semantic_type(series, _pandas_is_missing_scalar, _pandas_is_integer_scalar)
     return semantic_type
 
 

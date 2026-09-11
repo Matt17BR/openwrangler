@@ -266,6 +266,10 @@ profiling remains unsupported.
 Polars Pivot Longer accepts compatible lazy categorical columns before their values have been evaluated. Shared
 category mappings retain their dtype; separate mappings and differently ordered Enums remain incompatible.
 
+Pandas Pivot Wider preserves object identifiers containing `NaT` and mixed scalar values in generated code.
+Integer `1` and string `"1"` remain distinct keys. Generated Group By preserves the same integral object-key values
+and dtypes as live execution; existing native type and hashability limits remain.
+
 Native Pandas Arrow `bool8` and UUID columns support logical cell values, profiles, value selections, sorting and
 existing compatible cleaning operations. Nonzero `bool8` storage reads as true; UUIDs use canonical strings.
 Selected rows retain their original native arrays. CSV and Parquet exports preserve the logical values, including

@@ -4,6 +4,7 @@ import json
 from concurrent.futures import CancelledError
 from datetime import date, timedelta
 from decimal import MAX_EMAX, Decimal, localcontext
+from numbers import Integral
 from pathlib import Path
 from typing import Any, Literal
 
@@ -1399,10 +1400,10 @@ def test_pandas_object_schema_inference_is_fast_and_exhaustive() -> None:
 def test_pandas_standard_object_schema_types_do_not_use_the_python_materialization_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def reject_python_scan(_series: Any) -> list[Any]:
+    def reject_python_scan(_value: Any) -> bool:
         raise AssertionError("standard object inference must stay on Pandas' native classifier")
 
-    monkeypatch.setattr(pandas_engine_module, "_pandas_present_values", reject_python_scan)
+    monkeypatch.setattr(pandas_engine_module, "_pandas_is_missing_scalar", reject_python_scan)
     frame = pd.DataFrame(
         {
             "text": pd.Series(["x"] * 10_000, dtype=object),
@@ -1410,6 +1411,46 @@ def test_pandas_standard_object_schema_types_do_not_use_the_python_materializati
         }
     )
     assert [column["type"] for column in PandasEngine().schema(frame)] == ["string", "integer"]
+
+
+@pytest.mark.parametrize("missing", [None, pd.NaT], ids=["None", "NaT"])
+def test_pandas_group_by_registered_integer_keys_keep_nullable_storage_in_generated_code(missing: Any) -> None:
+    class RegisteredInteger:
+        def __init__(self, value: int) -> None:
+            self.value = value
+
+        def __int__(self) -> int:
+            return self.value
+
+        def __hash__(self) -> int:
+            return hash(self.value)
+
+        def __eq__(self, other: object) -> bool:
+            return isinstance(other, RegisteredInteger) and self.value == other.value
+
+        def __repr__(self) -> str:
+            return str(self.value)
+
+    Integral.register(RegisteredInteger)
+    frame = pd.DataFrame(
+        {
+            "group": pd.Series(
+                [RegisteredInteger(1), missing, RegisteredInteger(2), RegisteredInteger(1)], dtype=object
+            ),
+            "value": pd.Series([10, 20, 30, 40], dtype="Int64"),
+        }
+    )
+    frame.index = pd.Index(["source"] * 4, name="retained")
+    frame.attrs["annotation"] = "retained"
+    before = frame.copy(deep=True)
+    engine, operation = _bound_pandas_group(frame, ("sum",))
+    expected = pd.DataFrame(
+        {"group": pd.Series([1, None, 2], dtype="Int64"), "sum": pd.Series([50, 20, 30], dtype="Int64")}
+    )
+    for actual in (engine.apply_transform(frame, operation), _execute_pandas_generated(engine, frame, operation)):
+        pd.testing.assert_frame_equal(actual, expected)
+        pd.testing.assert_frame_equal(frame, before)
+        assert frame.attrs == before.attrs
 
 
 def _bound_pandas_group(frame: pd.DataFrame, operations: tuple[str, ...]) -> tuple[PandasEngine, dict[str, Any]]:
