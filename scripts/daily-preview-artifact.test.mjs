@@ -815,8 +815,8 @@ test("stable-series preparation is deterministic, recoverable, and changes only 
 });
 
 test("source-ahead previews retain the latest stable series until its stable tag exists", (context) => {
-  const source = { preview: false, version: "2.1.3" };
-  const stable = { preview: false, version: "2.0.4" };
+  const source = { preview: false, version: "2.2.0" };
+  const stable = { preview: false, version: "2.1.1" };
   const root = repository(context, { source, stable });
   const sourceSha = git(root, ["rev-parse", "HEAD"]);
   const result = prepareDailyPreviewCommit({
@@ -827,8 +827,8 @@ test("source-ahead previews retain the latest stable series until its stable tag
     },
     root
   });
-  assert.equal(result.version, "2.0.20260828");
-  assert.equal(result.stableTag, "v2.0.4");
+  assert.equal(result.version, "2.1.20260828");
+  assert.equal(result.stableTag, "v2.1.1");
 
   tagStable(root, source.version, sourceSha);
   const retained = inspectDailyPreviewSourceCommit({
@@ -837,7 +837,7 @@ test("source-ahead previews retain the latest stable series until its stable tag
     releaseTag: result.releaseTag,
     root
   });
-  assert.equal(retained.stableTag, "v2.0.4");
+  assert.equal(retained.stableTag, "v2.1.1");
 
   const promotedRoot = repository(context, { source, stable });
   const promotedSourceSha = git(promotedRoot, ["rev-parse", "HEAD"]);
@@ -851,8 +851,10 @@ test("source-ahead previews retain the latest stable series until its stable tag
     },
     root: promotedRoot
   });
-  assert.equal(promoted.version, "2.1.20260828");
-  assert.equal(promoted.stableTag, "v2.1.3");
+  assert.equal(promoted.version, "2.2.20260828");
+  assert.equal(promoted.stableTag, "v2.2.0");
+  assert.ok(result.version.localeCompare(source.version, "en", { numeric: true }) < 0);
+  assert.ok(source.version.localeCompare(promoted.version, "en", { numeric: true }) < 0);
 
   const recoveryRoot = repository(context, { source, stable });
   const recoverySourceSha = git(recoveryRoot, ["rev-parse", "HEAD"]);
@@ -873,7 +875,7 @@ test("source-ahead previews retain the latest stable series until its stable tag
 
   const legacyWrongRoot = repository(context, { source, stable });
   const legacyWrongSource = git(legacyWrongRoot, ["rev-parse", "HEAD"]);
-  const legacyWrongVersion = "2.1.20260828";
+  const legacyWrongVersion = "2.2.20260828";
   writeVersionSources(legacyWrongRoot, { preview: true, version: legacyWrongVersion });
   git(legacyWrongRoot, ["add", "--", ...versionPaths]);
   git(legacyWrongRoot, [

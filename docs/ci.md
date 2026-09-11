@@ -177,7 +177,8 @@ The preview workflow owns scheduled daily publication:
   `pull-requests: read`. Retries retain these outputs and exact notes rather than advancing to a newer publication or
   rereading PR metadata. This adds no release asset and does not change artifact qualification or registry recovery.
 - Release candidate trusts the required checks already attached to protected `main` rather than repeating the source
-  suites. It validates stable metadata, packages once, audits published dependencies, runs pinned VS Code
+  suites. It validates stable metadata and the next minor version against the canonical stable tag, packages once,
+  audits published dependencies, runs pinned VS Code
   installed-performance, and then runs pinned Cursor platform-smoke against the same reverified canonical VSIX.
 - Stable publication selects a successful candidate and promotes its already-recorded bytes. Candidate selection uses
   Node built-ins without installing or caching npm dependencies. The separate promotion job installs its publication

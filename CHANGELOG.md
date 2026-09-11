@@ -1,11 +1,12 @@
 # Changelog
 
-All notable changes to Open Wrangler are documented here. Stable releases follow Semantic Versioning. Preview builds remain unstable.
+All notable changes to Open Wrangler are documented here. Preview builds remain unstable.
 
 ## [Unreleased]
 
 ### Changed
 
+- Each new stable release advances the minor version, including fixes, so it sorts after the preceding daily previews.
 - Generated Pandas code for constant Fill omits unused statistical helpers.
 - Pandas One-hot encoding, Drop Missing Rows, Drop Duplicates and Mark Duplicates avoid repeated full-schema scans
   when binding a wide column selection.

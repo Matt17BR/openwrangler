@@ -80,7 +80,9 @@ The [CI proof owner](../scripts/ci-docs-only.test.mjs) uses real Git histories a
 Its exact scope and omission rules belong in [CI](ci.md#pull-requests), not individual test descriptions here.
 
 The [daily-preview owner](../scripts/daily-preview-artifact.test.mjs) checks source decisions and actual change-note
-ranges; the [publisher owner](../scripts/publish-github-stable-release.test.mjs) checks attribution, published-baseline
+ranges. The [candidate-tag](../scripts/prepare-stable-candidate-tag.test.mjs) and
+[tag-publisher](../scripts/push-stable-release-tag.test.mjs) owners check prospective stable admission and exact historical
+tag recovery. The [publisher owner](../scripts/publish-github-stable-release.test.mjs) checks attribution, published-baseline
 selection, frozen retry inputs and exact body/asset agreement. Publication retries must reuse the first attempt's
 inputs rather than rediscovering release or PR metadata. Follow [Releasing](releasing.md) for artifact and publication
 authority. `docs:check` permits incomplete capabilities in the stable-channel source ledger while validating its

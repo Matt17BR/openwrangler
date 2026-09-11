@@ -498,6 +498,7 @@ function assertFreshTagSource({ expectedCommit, expectedParentCommit, gitRunner,
 }
 
 export function pushExactReleaseTag({
+  beforeCreate,
   expectedCommit,
   expectedParentCommit,
   gitRunner = defaultGitRunner,
@@ -508,6 +509,9 @@ export function pushExactReleaseTag({
   sourceRelation = "exact",
   token
 }) {
+  if (beforeCreate !== undefined && typeof beforeCreate !== "function") {
+    throw new Error("beforeCreate must be a function when new release admission is required.");
+  }
   if (repository !== EXPECTED_REPOSITORY) {
     throw new Error(`Release-tag publication is restricted to ${EXPECTED_REPOSITORY}.`);
   }
@@ -545,6 +549,7 @@ export function pushExactReleaseTag({
     sourceRef,
     sourceRelation
   });
+  beforeCreate?.();
   pushTag({ expectedCommit, gitRunner, releaseTag, root: repositoryRoot, token });
   const after = inspectRemoteTag({ expectedCommit, gitRunner, releaseTag, root: repositoryRoot });
   if (!after.exists) {

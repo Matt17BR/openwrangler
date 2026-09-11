@@ -7,6 +7,7 @@ import {
   fstatSync,
   linkSync,
   lstatSync,
+  mkdirSync,
   mkdtempSync,
   openSync,
   readFileSync,
@@ -22,7 +23,7 @@ import { pushStableReleaseTag } from "./push-stable-release-tag.mjs";
 import { pushExactReleaseTag } from "./release-tag-publisher.mjs";
 
 const repositoryName = "Matt17BR/openwrangler";
-const releaseTag = "v1.2.3";
+const releaseTag = "v2.2.0";
 const token = "github_pat_release_test";
 
 function encodeCredentialToken(value) {
@@ -51,15 +52,37 @@ function git(root, args) {
   }).trim();
 }
 
-function createRepository(context) {
+function writeVersion(root, version) {
+  writeFileSync(
+    join(root, "package.json"),
+    JSON.stringify({ name: "openwrangler", publisher: "Matt17BR", preview: false, version })
+  );
+  writeFileSync(
+    join(root, "package-lock.json"),
+    JSON.stringify({
+      name: "openwrangler",
+      version,
+      lockfileVersion: 3,
+      packages: { "": { name: "openwrangler", version } }
+    })
+  );
+  mkdirSync(join(root, "python/openwrangler_runtime"), { recursive: true });
+  writeFileSync(join(root, "python/openwrangler_runtime/version.py"), `__version__ = "${version}"\n`);
+}
+
+function createRepository(context, version = "2.2.0", priorVersion = "2.1.1") {
   const root = mkdtempSync(join(tmpdir(), "openwrangler-push-tag-"));
   context.after(() => rmSync(root, { force: true, recursive: true }));
   git(root, ["init", "--quiet"]);
   git(root, ["config", "user.email", "release-test@openwrangler.invalid"]);
   git(root, ["config", "user.name", "Open Wrangler Release Test"]);
-  writeFileSync(join(root, "package.json"), '{"name":"openwrangler","version":"1.2.3"}\n', "utf8");
+  writeVersion(root, priorVersion);
+  git(root, ["add", "."]);
+  git(root, ["commit", "--quiet", "-m", "prior stable"]);
+  git(root, ["tag", `v${priorVersion}`]);
+  writeVersion(root, version);
   writeFileSync(join(root, "tracked.txt"), "release\n", "utf8");
-  git(root, ["add", "package.json", "tracked.txt"]);
+  git(root, ["add", "."]);
   git(root, ["commit", "--quiet", "-m", "release"]);
   const head = git(root, ["rev-parse", "HEAD"]);
   git(root, ["update-ref", "refs/remotes/origin/main", head]);
@@ -196,6 +219,30 @@ function publish(repository, runner, overrides = {}) {
     ...overrides
   });
 }
+
+test("a new patch tag is refused before credentials, while its exact public tag remains verifiable", (context) => {
+  const repository = createRepository(context, "2.1.2");
+  const tag = "v2.1.2";
+  const missing = createRunner({ expectedCommit: repository.head, expectedReleaseTag: tag });
+  assert.throws(() => publish(repository, missing.runner, { releaseTag: tag }), /next stable release.*2\.2\.0/u);
+  assert.equal(
+    missing.calls.some((call) => call.args.includes("push")),
+    false
+  );
+  assert.deepEqual(missing.credentialPaths, []);
+  const existing = createRunner({
+    expectedCommit: repository.head,
+    expectedReleaseTag: tag,
+    initialRemote: `${repository.head}\trefs/tags/${tag}\n`
+  });
+  git(repository.root, ["tag", "-d", "v2.1.1"]);
+  assert.deepEqual(publish(repository, existing.runner, { releaseTag: tag }), {
+    created: false,
+    releaseTag: tag,
+    sourceCommit: repository.head
+  });
+  assert.deepEqual(existing.credentialPaths, []);
+});
 
 test("keeps the exact-tag transaction independent from the wrapper's source branch policy", (context) => {
   const repository = createRepository(context);
@@ -535,31 +582,20 @@ test("requires exact repository, version, protected source branch, token, and cl
 });
 
 test("uses main for current v1 and later stable tags", (context) => {
-  const repository = createRepository(context);
-  const fake = createRunner({ expectedCommit: repository.head });
-  assert.deepEqual(publish(repository, fake.runner), {
-    created: true,
-    releaseTag,
-    sourceCommit: repository.head
-  });
-
-  writeFileSync(join(repository.root, "package.json"), '{"name":"openwrangler","version":"2.0.0"}\n', "utf8");
-  git(repository.root, ["add", "package.json"]);
-  git(repository.root, ["commit", "--quiet", "-m", "v2"]);
-  const v2Head = git(repository.root, ["rev-parse", "HEAD"]);
-  git(repository.root, ["update-ref", "refs/remotes/origin/main", v2Head]);
-  const v2Runner = createRunner({ expectedCommit: v2Head, expectedReleaseTag: "v2.0.0" });
-  assert.deepEqual(
-    pushStableReleaseTag({
-      expectedCommit: v2Head,
-      gitRunner: v2Runner.runner,
-      releaseTag: "v2.0.0",
-      repository: repositoryName,
-      root: repository.root,
-      token
-    }),
-    { created: true, releaseTag: "v2.0.0", sourceCommit: v2Head }
-  );
+  for (const [prior, version] of [
+    ["1.1.2", "1.2.0"],
+    ["2.0.4", "2.1.0"]
+  ]) {
+    const repository = createRepository(context, version, prior);
+    const tag = `v${version}`;
+    const fake = createRunner({ expectedCommit: repository.head, expectedReleaseTag: tag });
+    assert.deepEqual(publish(repository, fake.runner, { releaseTag: tag }), {
+      created: true,
+      releaseTag: tag,
+      sourceCommit: repository.head
+    });
+    assert.ok(fake.calls.some((call) => call.args.includes("refs/remotes/origin/main^{commit}")));
+  }
 });
 
 test("strictly rejects duplicate or non-stable package versions before remote access", (context) => {

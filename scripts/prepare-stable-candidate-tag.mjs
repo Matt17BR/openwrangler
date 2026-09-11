@@ -2,6 +2,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { latestStableTagAuthority } from "./daily-preview-artifact.mjs";
+import { classifyNumericReleaseVersion, nextStableReleaseVersion } from "./release-metadata.mjs";
 
 const FULL_COMMIT = /^[0-9a-f]{40}$/u;
 const RELEASE_TAG = /^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
@@ -103,6 +105,37 @@ export function verifyRemoteStableTag({ expectedCommit, releaseTag, requirePrese
   return inspectRemoteStableTagOutput({ expectedCommit, output: result.stdout, releaseTag, requirePresent });
 }
 
+export function assertNextStableRelease({ releaseTag, root, sourceCommit }) {
+  if (!FULL_COMMIT.test(sourceCommit ?? "") || !RELEASE_TAG.test(releaseTag ?? "")) {
+    throw new Error("The next stable release requires one exact source commit and canonical release tag.");
+  }
+  const mainCommit = resolveCommit(root, "refs/remotes/origin/main", "protected main");
+  try {
+    git(root, ["merge-base", "--is-ancestor", sourceCommit, mainCommit]);
+  } catch {
+    throw new Error("The next stable release source must remain on protected main.");
+  }
+  if (
+    localTagExists(root, releaseTag) &&
+    (resolveCommit(root, releaseTag, "RELEASE_TAG") !== sourceCommit ||
+      git(root, ["cat-file", "-t", `refs/tags/${releaseTag}`]).trim() !== "commit")
+  ) {
+    throw new Error("The intended stable candidate tag must be one exact lightweight source ref.");
+  }
+  const stable = latestStableTagAuthority(
+    root,
+    mainCommit,
+    classifyNumericReleaseVersion(releaseTag.slice(1))?.channel === "stable"
+      ? { commit: sourceCommit, tag: releaseTag }
+      : undefined
+  );
+  const version = nextStableReleaseVersion(stable.version);
+  if (releaseTag !== `v${version}` || classifyNumericReleaseVersion(version)?.channel !== "stable") {
+    throw new Error(`The next stable release after ${stable.tag} must be ${version}; received ${releaseTag}.`);
+  }
+  return stable;
+}
+
 export function prepareStableCandidateTag({ expectedCommit, releaseTag, root }) {
   if (typeof expectedCommit !== "string" || !FULL_COMMIT.test(expectedCommit)) {
     throw new Error("EXPECTED_SHA must be one lowercase full Git commit ID.");
@@ -128,7 +161,9 @@ export function prepareStableCandidateTag({ expectedCommit, releaseTag, root }) 
     if (resolveCommit(repositoryRoot, releaseTag, "RELEASE_TAG") !== expectedCommit) {
       throw new Error("The existing RELEASE_TAG does not resolve to EXPECTED_SHA.");
     }
-  } else {
+  }
+  assertNextStableRelease({ releaseTag, root: repositoryRoot, sourceCommit: expectedCommit });
+  if (!existed) {
     git(repositoryRoot, ["tag", "--no-sign", releaseTag, expectedCommit]);
   }
 

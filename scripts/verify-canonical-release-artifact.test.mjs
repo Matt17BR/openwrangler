@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { ZipFile } from "yazl";
 import { CANONICAL_RELEASE_ARTIFACT_PROTOCOL } from "./run-installed-performance.mjs";
+import { CANONICAL_GITHUB_RELEASE_ASSETS } from "./github-release-publisher.mjs";
 import { publishVerifiedGitHubStableRelease } from "./publish-github-stable-release.mjs";
 import { verifyCanonicalReleaseArtifact } from "./verify-canonical-release-artifact.mjs";
 
@@ -19,21 +21,21 @@ const sourceManifest = Object.freeze({
   preview: false
 });
 
-function vsixManifest() {
+function vsixManifest(version) {
   return `<?xml version="1.0" encoding="utf-8"?>
 <PackageManifest xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011">
   <Metadata>
-    <Identity Id="openwrangler" Publisher="Matt17BR" Version="1.0.0" />
+    <Identity Id="openwrangler" Publisher="Matt17BR" Version="${version}" />
     <Properties></Properties>
   </Metadata>
 </PackageManifest>`;
 }
 
-function releaseEntries({ includeRFrameContract = true } = {}) {
+function releaseEntries({ includeRFrameContract = true, version = sourceManifest.version } = {}) {
   const entries = new Map([
     ["[Content_Types].xml", '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>'],
-    ["extension.vsixmanifest", vsixManifest()],
-    ["extension/package.json", JSON.stringify(sourceManifest)],
+    ["extension.vsixmanifest", vsixManifest(version)],
+    ["extension/package.json", JSON.stringify({ ...sourceManifest, version })],
     ["extension/LICENSE.txt", "MIT License\n"],
     ["extension/readme.md", "# Open Wrangler\n"],
     ["extension/changelog.md", "# Changelog\n"],
@@ -59,7 +61,7 @@ function releaseEntries({ includeRFrameContract = true } = {}) {
     ["extension/python/openwrangler_runtime/dependency_integrity.py", "pass\n"],
     ["extension/python/openwrangler_runtime/trusted_pickle_to_parquet.py", "pass\n"],
     ["extension/python/openwrangler_runtime/server.py", "pass\n"],
-    ["extension/python/openwrangler_runtime/version.py", '__version__ = "1.0.0"\n']
+    ["extension/python/openwrangler_runtime/version.py", `__version__ = "${version}"\n`]
   ]);
   if (!includeRFrameContract) {
     entries.delete("extension/r/openwrangler_runtime/frame_contract.R");
@@ -86,7 +88,8 @@ function createVsix(options) {
   });
 }
 
-async function createFixture(context, options) {
+async function createFixture(context, options = {}) {
+  const version = options.version ?? sourceManifest.version;
   const directory = realpathSync.native(mkdtempSync(join(tmpdir(), "openwrangler-canonical-consumer-")));
   context.after(() => rmSync(directory, { force: true, recursive: true }));
   const vsix = await createVsix(options);
@@ -101,10 +104,10 @@ async function createFixture(context, options) {
       {
         protocol: CANONICAL_RELEASE_ARTIFACT_PROTOCOL,
         extensionId: "Matt17BR.openwrangler",
-        extensionVersion: "1.0.0",
+        extensionVersion: version,
         preview: false,
-        releaseTag: "v1.0.0",
-        sourceCommit: expectedCommit,
+        releaseTag: `v${version}`,
+        sourceCommit: options.sourceCommit ?? expectedCommit,
         vsixSha256: digest,
         vsixBytes: vsix.length
       },
@@ -297,4 +300,117 @@ test("stable publication rejects a sidecar replacement before creating a GitHub 
     requests.some(({ method }) => method !== "GET"),
     false
   );
+});
+
+test("verified stable publication checks prospective policy only before mutations", async (context) => {
+  for (const scenario of [
+    { version: "2.1.2", phase: "absent" },
+    { version: "2.2.0", phase: "absent", advanced: true },
+    { version: "2.2.0", phase: "draft", advanced: true },
+    { version: "2.2.0", phase: "absent", admitted: true },
+    { version: "2.1.1", phase: "public" }
+  ]) {
+    const root = mkdtempSync(join(tmpdir(), "ow-stable-admission-"));
+    context.after(() => rmSync(root, { force: true, recursive: true }));
+    const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+    const writeVersion = (version) => {
+      writeFileSync(join(root, "package.json"), JSON.stringify({ ...sourceManifest, version }));
+      writeFileSync(
+        join(root, "package-lock.json"),
+        JSON.stringify({
+          name: "openwrangler",
+          version,
+          lockfileVersion: 3,
+          packages: { "": { name: "openwrangler", version } }
+        })
+      );
+      mkdirSync(join(root, "python/openwrangler_runtime"), { recursive: true });
+      writeFileSync(join(root, "python/openwrangler_runtime/version.py"), `__version__ = "${version}"\n`);
+    };
+    git("init", "--quiet");
+    git("config", "user.name", "Open Wrangler Release Test");
+    git("config", "user.email", "release-test@openwrangler.invalid");
+    const prior = scenario.phase === "public" ? "2.0.0" : "2.1.1";
+    writeVersion(prior);
+    git("add", ".");
+    git("commit", "--quiet", "-m", "prior stable");
+    git("tag", `v${prior}`);
+    writeVersion(scenario.version);
+    git("commit", "--quiet", "-am", "candidate");
+    const sourceCommit = git("rev-parse", "HEAD");
+    const releaseTag = `v${scenario.version}`;
+    git("tag", releaseTag);
+    if (scenario.advanced) {
+      writeVersion("2.3.0");
+      git("commit", "--quiet", "-am", "later stable");
+      git("tag", "v2.3.0");
+    }
+    git("update-ref", "refs/remotes/origin/main", "HEAD");
+    git("checkout", "--quiet", "--detach", sourceCommit);
+    if (scenario.phase === "public") {
+      git("update-ref", "-d", "refs/remotes/origin/main");
+      git("tag", "-d", `v${prior}`);
+    }
+    const fixture = await createFixture(context, { version: scenario.version, sourceCommit });
+    const apiRoot = "https://api.github.com/repos/Matt17BR/openwrangler";
+    const releaseNotes = "Reviewed stable release notes.\n";
+    const assetBytes = CANONICAL_GITHUB_RELEASE_ASSETS.map(({ name }) => readFileSync(join(fixture.directory, name)));
+    const release = {
+      id: 71,
+      name: `Open Wrangler ${releaseTag}`,
+      body: releaseNotes,
+      tag_name: releaseTag,
+      target_commitish: sourceCommit,
+      prerelease: false,
+      draft: scenario.phase === "draft",
+      immutable: scenario.phase === "public",
+      upload_url: "https://uploads.github.com/repos/Matt17BR/openwrangler/releases/71/assets{?name,label}",
+      assets:
+        scenario.phase !== "public"
+          ? []
+          : CANONICAL_GITHUB_RELEASE_ASSETS.map(({ name, contentType }, index) => ({
+              id: index + 1,
+              name,
+              content_type: contentType,
+              label: "",
+              state: "uploaded",
+              url: `${apiRoot}/releases/assets/${index + 1}`,
+              size: assetBytes[index].length,
+              digest: `sha256:${createHash("sha256").update(assetBytes[index]).digest("hex")}`
+            }))
+    };
+    const requests = [];
+    const fetchImpl = async (input, options = {}) => {
+      const url = String(input);
+      const method = options.method ?? "GET";
+      requests.push({ method, url });
+      if (method !== "GET") throw new Error("Permitted new stable draft.");
+      if (url.endsWith(`/git/ref/tags/${releaseTag}`))
+        return Response.json({ object: { sha: sourceCommit, type: "commit" }, ref: `refs/tags/${releaseTag}` });
+      if (url.endsWith(`/releases/tags/${releaseTag}`))
+        return scenario.phase === "public"
+          ? Response.json(release)
+          : Response.json({ message: "Not Found" }, { status: 404 });
+      if (url.includes("/releases?")) return Response.json(scenario.phase === "absent" ? [] : [release]);
+      const asset = /\/releases\/assets\/(\d+)$/u.exec(url);
+      if (asset !== null) return new Response(assetBytes[Number(asset[1]) - 1]);
+      throw new Error(`Unexpected request ${method} ${url}`);
+    };
+    const publication = publishVerifiedGitHubStableRelease({
+      directory: fixture.directory,
+      root,
+      expectedCommit: sourceCommit,
+      sourceCommit,
+      sourcePackageJson: JSON.stringify({ ...sourceManifest, version: scenario.version }),
+      expectImmutable: scenario.phase === "public",
+      fetchImpl,
+      releaseNotes,
+      releaseTag,
+      repository: "Matt17BR/openwrangler",
+      token: "test-token"
+    });
+    if (scenario.phase === "public") assert.equal((await publication).releaseTag, releaseTag);
+    else await assert.rejects(publication, scenario.admitted ? /Permitted new stable draft/u : /next stable release/u);
+    assert.equal(requests.filter(({ method }) => method !== "GET").length, scenario.admitted ? 1 : 0);
+  }
 });

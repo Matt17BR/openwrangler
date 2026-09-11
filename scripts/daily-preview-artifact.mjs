@@ -134,11 +134,19 @@ function inspectStableTagAuthority(root, sourceCommit, tag, expectedCommit) {
   return Object.freeze({ commit, tag, version });
 }
 
-function latestStableTagAuthority(root, sourceCommit) {
+export function latestStableTagAuthority(root, sourceCommit, excludedCandidate) {
   if (!FULL_SHA.test(sourceCommit ?? "")) {
     throw new Error("Stable release tag authority requires one full protected-main source commit.");
   }
   requireFullTagCheckout(root);
+  if (
+    excludedCandidate !== undefined &&
+    (!FULL_SHA.test(excludedCandidate?.commit ?? "") ||
+      !CANONICAL_NUMERIC_RELEASE_TAG.test(excludedCandidate?.tag ?? "") ||
+      classifyNumericReleaseVersion(excludedCandidate.tag.slice(1))?.channel !== "stable")
+  ) {
+    throw new Error("Stable release tag authority can exclude only one exact canonical stable candidate.");
+  }
   const tags = git(root, ["tag", "--no-column", "--merged", sourceCommit, "--list", "--format=%(refname:strip=2)"])
     .split("\n")
     .filter((tag) => tag.length > 0);
@@ -151,6 +159,10 @@ function latestStableTagAuthority(root, sourceCommit) {
       throw new Error(`Reachable numeric release tag ${tag} does not describe a permitted release channel.`);
     }
     if (classification.channel === "stable") {
+      if (tag === excludedCandidate?.tag) {
+        inspectStableTagAuthority(root, sourceCommit, tag, excludedCandidate.commit);
+        continue;
+      }
       stable.push({ tag, version: classification.version });
     }
   }
