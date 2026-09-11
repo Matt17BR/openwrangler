@@ -61,9 +61,10 @@ The scope-only job uses Node and Git without installing npm dependencies or rest
   files, optionally with the allowed Markdown edits. Source still runs these component tests; the native and installed
   harnesses do not consume them. Component additions, nested tests, unit/cross tests and shared fixtures are outside
   this permission.
-- Python, R and Windows execution may also be omitted for edits to the existing release-policy scripts and tests
-  enumerated in [`ci-docs-only.mjs`](../scripts/ci-docs-only.mjs). These edits keep `docs_only=false`, so Source runs
-  Vitest, the Node script owners and the Node 22 build, and packaged smoke retains both Linux VS Code launches.
+- Python, R and Windows execution may also be omitted for edits to the existing release-policy scripts and tests,
+  `scripts/capture-screenshots.mjs` and `scripts/capture-screenshots-readiness.mjs`, enumerated in
+  [`ci-docs-only.mjs`](../scripts/ci-docs-only.mjs). These edits keep `docs_only=false`, so Source runs Vitest, the Node
+  script owners and the Node 22 build, and packaged smoke retains both Linux VS Code launches.
 - Vitest and the minimum/stable VS Code launches may be omitted only for edits to existing `README.md`, `CHANGELOG.md`
   or `docs/**/*.md` files. Windows also omits those documentation-only changes.
 
@@ -79,8 +80,13 @@ Windows packaging; it uses string, integer and UTC-date operations covered by th
 checks. Omitting the native jobs gives up fresh macOS and Windows packaging, R and environment observations. The
 remaining Linux checks do not establish platform equivalence.
 
+The two capture scripts generate real Python-backed browser fixtures, but the omitted native suites do not consume
+these generators. Their required [local browser acceptance](testing.md) still owns fixture execution, images and
+interactions; retained Source and Linux package checks do not replace it. Shared browser and preflight helpers remain
+outside this permission.
+
 These omissions reduce unrelated work for documentation edits, private component tests, isolated engine changes,
-release-policy edits and the allowed installed-harness edits.
+release-policy edits, local screenshot-tool edits and the allowed installed-harness edits.
 They provide no fresh or transferred test result and can delay discovery of unrelated dependency, editor installation
 or hosted-environment regressions.
 Scheduled R 4.4 qualification does not replace R 4.5 coverage. Release qualification remains separate.

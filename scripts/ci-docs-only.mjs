@@ -3,7 +3,9 @@ import { appendFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const releasePolicyFiles = new Set([
+const runtimeOmissionScriptFiles = new Set([
+  "scripts/capture-screenshots.mjs",
+  "scripts/capture-screenshots-readiness.mjs",
   "scripts/release-metadata.mjs",
   "scripts/daily-preview-artifact.mjs",
   "scripts/daily-preview-artifact.test.mjs",
@@ -77,7 +79,10 @@ export function proveRuntimeOmissions({ cwd = process.cwd(), env = process.env }
     }
     if (modified && (path === "README.md" || path === "CHANGELOG.md" || /^docs\/[^\p{Cc}]+\.md$/u.test(path))) continue;
     docsOnly = false;
-    if (modified && (/^src\/test\/[^/\p{Cc}]+\.component\.test\.tsx$/u.test(path) || releasePolicyFiles.has(path)))
+    if (
+      modified &&
+      (/^src\/test\/[^/\p{Cc}]+\.component\.test\.tsx$/u.test(path) || runtimeOmissionScriptFiles.has(path))
+    )
       continue;
     if (pythonSource) {
       pythonOmittable = false;
