@@ -145,7 +145,8 @@ Use the existing owners to choose a focused source check:
   collision cases in those tests; supported behavior belongs in [engine boundaries](architecture.md#engine-boundaries-and-capabilities).
   [Typed cells](../python/tests/test_typed_cells.py) owns exact duration transport, bounded session selections and
   unsupported-precision refusal, including native Pandas stored units and generated selections beyond the nanosecond
-  range. It also checks native duration choice searches against exact labels, counts, limits and missing inputs.
+  range. It also checks native duration choice searches against exact labels, counts, limits and missing inputs,
+  and rejects inferred calendar/unitless duration count labels while retaining paging and session state.
   [Filter logic](../python/tests/test_filter_logic.py) executes live and generated
   duration filters under a changed notebook Decimal context in each editing-capable Python engine.
   The Polars owner also checks native temporal page, choice and profile precision before Python row conversion,

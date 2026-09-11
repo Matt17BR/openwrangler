@@ -471,6 +471,66 @@ def test_temporal_choice_identity_or_refusal_preserves_public_session(monkeypatc
     assert source.attrs == before.attrs and __main__.temporal_count_source is source
 
 
+@pytest.mark.parametrize(
+    "unit,ticks",
+    [
+        ("Y", 1),
+        ("M", 1),
+        ("generic", 1000000000),
+        ("Y", 0),
+        ("M", 0),
+        ("generic", 0),
+        ("Y", None),
+        ("M", None),
+        ("generic", None),
+    ],
+)
+def test_calendar_duration_choices_never_publish_fixed_seconds(monkeypatch: pytest.MonkeyPatch, unit, ticks):
+    import __main__
+
+    value = np.timedelta64("NaT" if ticks is None else ticks, unit)
+    source = pd.DataFrame({"value": pd.Series([value, value, None], dtype=object)})
+    source.index = pd.Index(["same"] * 3, name="original")
+    source.attrs["origin"] = "retained"
+    before = source.copy(deep=True)
+    monkeypatch.setattr(__main__, "calendar_duration_source", source, raising=False)
+    assert typed_selection_value(value, "duration") is None
+    manager = SessionManager()
+    query: dict[str, Any] = {"filters": [], "sort": []}
+    try:
+        opened = manager.open_session(
+            {"kind": "notebookVariable", "label": "calendar duration", "variableName": "calendar_duration_source"},
+            backend="pandas",
+            page_size=3,
+        )
+        metadata = opened["metadata"]
+        session_id, revision = metadata["sessionId"], metadata["revision"]
+        value_id = metadata["schema"][0]["id"]
+        assert opened["page"]["rows"][0]["values"][0] == normalize_cell(value)
+        if ticks is not None and source["value"].value_counts().index.dtype.kind == "m":
+            for call in (
+                lambda: manager.get_column_values(session_id, revision, "value", query),
+                lambda: manager.get_summary(session_id, revision, query, [value_id]),
+            ):
+                with pytest.raises(EngineError, match="NumPy temporal units"):
+                    call()
+        else:
+            expected = [] if ticks is None else [{"value": str(value), "count": 2}]
+            choices = manager.get_column_values(session_id, revision, "value", query)
+            assert choices["values"] == expected and not choices["hasMore"]
+            summary = manager.get_summary(session_id, revision, query, [value_id])["summaries"][0]
+            assert summary["topValues"] == expected and summary["distinctCount"] == len(expected)
+        assert manager.get_column_values(session_id, revision, "value", query, search="not-a-duration")["values"] == []
+        restored = manager.get_page(session_id, revision, 0, 3, query)
+        assert restored["page"] == opened["page"]
+        for key in ("sessionId", "revision", "source"):
+            assert restored["metadata"][key] == metadata[key]
+    finally:
+        manager.close_all()
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
+    assert source.attrs == before.attrs and __main__.calendar_duration_source is source
+
+
 def test_numeric_key_preserves_custom_numeric_and_temporal_native_behavior():
     from openwrangler_runtime.engines.base import normalized_numeric_sum
     from openwrangler_runtime.engines.pandas_engine import _pandas_numeric_key, _pandas_value_counts
