@@ -555,6 +555,75 @@ local({
     assert_true(!file.exists(target), "off-page duration NaN created a CSV artifact")
     assert_identical(serialize(invalid_duration, NULL, version = 3L), before, "refused CSV duration export changed its source")
   })
+  local({
+    original_options <- options(OutDec = ",", digits.secs = 3L)
+    original_timezone <- Sys.getenv("TZ", unset = NA_character_)
+    on.exit({
+      options(original_options)
+      if (is.na(original_timezone)) Sys.unsetenv("TZ") else Sys.setenv(TZ = original_timezone)
+    })
+    Sys.setenv(TZ = "America/New_York")
+    expected_options <- options()
+    cases <- list(
+      list(value = 59.9999998, timezone = "UTC", expected = "1970-01-01 00:01:00"),
+      list(value = -0.0000001, timezone = "UTC", expected = "1970-01-01"),
+      list(value = 1767225600 - 2^-22, timezone = "UTC", expected = "2026-01-01"),
+      list(value = as.double(as.POSIXct("2026-03-29 01:00:00", tz = "UTC")) - 2^-22,
+        timezone = "Europe/Berlin", expected = "2026-03-29 03:00:00"),
+      list(value = as.double(as.POSIXct("2026-10-25 01:00:00", tz = "UTC")) - 2^-22,
+        timezone = "Europe/Berlin", expected = "2026-10-25 02:00:00"),
+      list(value = as.double(as.POSIXct("1930-01-01 01:00:00", tz = "Europe/Amsterdam")) - 2^-22,
+        timezone = "Europe/Amsterdam", expected = "1930-01-01 01:00:00"),
+      list(value = -0.0000001, timezone = NULL, expected = "1969-12-31 19:00:00"),
+      list(value = -0.0000001, timezone = "", expected = "1969-12-31 19:00:00")
+    )
+    for (case in cases) {
+      column <- structure(c(case$value, 1.123456789, NA_real_),
+        class = c("POSIXct", "POSIXt"), tzone = case$timezone, names = c("carry", "ordinary", "missing"))
+      frame <- structure(list(at = column), class = "data.frame", row.names = 1:3)
+      assert_identical(names(frame[[1L]]), c("carry", "ordinary", "missing"), "the timestamp fixture lost its column names")
+      expected <- charToRaw(paste0("\"at\"\n\"", case$expected, "\"\n\"", as.character(column)[[2L]], "\"\n\n"))
+      assert_identical(write_bytes(frame), expected, "CSV timestamp rounding did not carry into the correct local date/time")
+      assert_identical(options(), expected_options, "CSV timestamp formatting changed caller options")
+    }
+    named_frame <- structure(list(at = structure(c(59.9999998, 1, NA_real_),
+      class = c("POSIXct", "POSIXt"), tzone = "UTC", names = c("carry", "ordinary", "missing"))),
+      class = "data.frame", row.names = 1:3)
+    expected <- charToRaw("\"at\"\n\"1970-01-01 00:01:00\"\n\"1970-01-01 00:00:01\"\n\n")
+    for (frame in list(named_frame, tibble::as_tibble(named_frame), data.table::as.data.table(named_frame))) {
+      assert_identical(write_bytes(frame), expected, "timestamp carry changed a supported frame flavor")
+    }
+    for (values in list(numeric(), c(NA_real_, NA_real_), c(Inf, -Inf, NaN, NA_real_), c(59.99999949, 1.9999999))) {
+      column <- structure(values, class = c("POSIXct", "POSIXt"), tzone = "UTC")
+      assert_identical(write_bytes(data.frame(at = column)), write_bytes(data.frame(at = as.character(column))),
+        "CSV timestamp carry changed an unaffected native timestamp field")
+    }
+    late_frame <- data.frame(at = structure(c(rep(1, 65536L), 59.9999998, NA_real_),
+      class = c("POSIXct", "POSIXt"), tzone = "UTC"), control = "keep")
+    expected <- charToRaw(paste0(strrep("\"1970-01-01 00:00:01\":\"keep\"\n", 65536L),
+      "\"1970-01-01 00:01:00\":\"keep\"\n:\"keep\"\n"))
+    assert_identical(write_bytes(late_frame,
+      list(format = "csv", delimiter = ":", quoteChar = "\"", encoding = "utf-8", header = FALSE)),
+      expected, "CSV timestamp carry missed a later slice or changed quoted custom-delimiter output")
+    local({
+      capture <- openwrangler_r_frame_contract$capture_frame(named_frame)
+      before <- serialize(named_frame, NULL, version = 3L)
+      methods <- get(".__S3MethodsTable__.", envir = asNamespace("base"))
+      previous <- get0("as.character.POSIXct", envir = methods, inherits = FALSE)
+      on.exit({
+        if (is.null(previous)) rm("as.character.POSIXct", envir = methods) else assign("as.character.POSIXct", previous, envir = methods)
+      })
+      registerS3method("as.character", "POSIXct", function(...) stop("native timestamp formatter failure", call. = FALSE),
+        envir = asNamespace("base"))
+      target <- tempfile(fileext = ".csv")
+      on.exit(if (file.exists(target)) unlink(target), add = TRUE)
+      assert_error(openwrangler_r_frame_contract$write_csv(capture, target), "export-write-failed")
+      assert_true(!file.exists(target), "a failed timestamp formatter left a CSV artifact")
+      assert_identical(serialize(named_frame, NULL, version = 3L), before, "failed timestamp formatting changed its source")
+    })
+    assert_identical(write_bytes(named_frame), charToRaw("\"at\"\n\"1970-01-01 00:01:00\"\n\"1970-01-01 00:00:01\"\n\n"),
+      "CSV export did not recover after a native timestamp formatter failure")
+  })
   long_text <- strrep("x", 9000L)
   long_source <- data.frame(text = c("safe", long_text))
   long_capture <- openwrangler_r_frame_contract$capture_frame(long_source)

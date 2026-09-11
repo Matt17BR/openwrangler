@@ -416,7 +416,8 @@ CSV export uses UTF-8, double quotes and LF records. Fractional durations retain
 Dates, timestamps and integer64 values are quoted when using custom delimiters. Numeric and logical columns with
 non-missing values refuse delimiters their native text could contain, even when the current values do not contain
 them. Comma, tab, semicolon and pipe remain available; empty and all-missing columns do not impose this restriction.
-Timestamp text can lose precision and omits time-zone information. Review the [export rules](architecture.md#native-r)
+Timestamp rounding carries invalid `:60` seconds into the correct date and local time, including DST transitions.
+Timestamp text can still lose precision and omits time-zone information. Review the [export rules](architecture.md#native-r)
 before using CSV to transfer timestamps.
 
 Parquet export requires `nanoparquet` 0.5.1 or newer in the selected R environment. Timestamps must be exactly

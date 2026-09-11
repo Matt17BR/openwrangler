@@ -127,8 +127,9 @@ Use the existing owners to choose a focused source check:
   [safe file export](../src/test/safeFileExport.unit.test.ts) use real files to check separate destinations, identity
   changes and cleanup. [R private artifacts](../src/test/rPrivateArtifactBoundary.unit.test.ts) check real reads,
   quarantine and zero-byte cleanup. Metadata identity checks do not detect every same-size content change.
-  Native R's `capture-and-export` case owns CSV delimiter restrictions, bounded presence checks and empty/missing
-  columns. Its `group-pivot-and-export` kernel case checks decoded custom-delimiter fields, recoverable refusal and
+  Native R's `capture-and-export` case owns timestamp rounding carry, named-column preservation, native formatter
+  cleanup, CSV delimiter restrictions, bounded checks and empty/missing columns. Its `group-pivot-and-export` kernel
+  case checks timestamp bytes, decoded custom-delimiter fields, recoverable refusal and
   correction through the public export transport, with unchanged source and session state.
   Configurable-export checks also own Polars schema-based CSV syntax refusal before writer opening or lazy execution,
   safe correction, decoded fields and native null-versus-empty readback. The existing Polars lazy-writer test owns

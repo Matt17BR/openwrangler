@@ -898,8 +898,13 @@ available. Only matching type/delimiter combinations require a presence scan, in
 zero-row and all-missing columns remain supported. Plain numeric NaN retains its empty CSV field, while duration
 NaN retains the refusal above. A delimiter refusal precedes artifact creation and does not change source or session
 state. Export does not convert ordinary numeric columns to text or change caller formatting options.
-POSIXct columns retain native R text formatting, which rounds fractional seconds to six decimal places and omits
-both the time-zone name and offset. An explicit column time zone is used; a missing or empty zone uses the R process's
+POSIXct columns retain native R text formatting, which rounds fractional seconds to six decimal places. Immediately
+before writing, the exporter inspects that text in slices of at most 65,536 fields. Only fields ending in invalid
+`:60` seconds are reformatted after carrying their original absolute time to the next whole second. The corrected
+subset retains the column class and time zone, so date and DST transitions follow native R calendar rules; source
+attributes and unaffected text remain unchanged. Formatting stays inside the writer's error handler and failed-artifact
+cleanup. Native text can contain only a date at midnight and omits both the time-zone name and offset.
+An explicit column time zone is used; a missing or empty zone uses the R process's
 time zone, unlike the grid's UTC default. CSV therefore does not guarantee exact timestamp preservation or record
 the zone needed to interpret the exported local time. The R CSV format choice displays these limits before export.
 
