@@ -308,6 +308,162 @@ def test_integer_value_counts_keep_native_success_and_wide_first_labels(offset: 
         pd.testing.assert_series_equal(source, before)
 
 
+@pytest.mark.parametrize("scalar", [np.datetime64, np.timedelta64], ids=["datetime", "duration"])
+@pytest.mark.parametrize("unit", ["2D", "2s", "2ns", "ps", "fs", "as", "1000ps"])
+def test_object_temporal_counts_refuse_noncanonical_inferred_keys(scalar, unit):
+    from openwrangler_runtime.engines.pandas_engine import _pandas_value_counts
+
+    source = pd.Series([scalar(1, unit), scalar(2, unit), scalar(1, unit), None], dtype=object, name="value")
+    before = source.copy(deep=True)
+    for sort in (False, True):
+        try:
+            native = source.value_counts(dropna=True, sort=sort)
+        except ValueError as error:
+            with pytest.raises(ValueError) as failure:
+                _pandas_value_counts(source, sort=sort)
+            assert failure.value.args == error.args
+            continue
+        if native.index.dtype != object and not (scalar is np.timedelta64 and unit == "2ns"):
+            # Even datetime64[1000ps], whose first value is exactly 1ns, is
+            # excluded by this conservative representation policy.
+            with pytest.raises(EngineError, match="NumPy temporal units"):
+                _pandas_value_counts(source, sort=sort)
+        else:
+            pd.testing.assert_series_equal(_pandas_value_counts(source, sort=sort), native)
+    pd.testing.assert_series_equal(source, before, check_exact=True)
+
+
+def test_object_temporal_counts_preserve_ordinary_unhashable_zero_and_nat_values():
+    from openwrangler_runtime.engines.pandas_engine import _pandas_value_counts
+
+    class UnhashableDuration(timedelta):
+        __hash__: Any = None
+
+    controls = [
+        pd.Series([UnhashableDuration(seconds=1), UnhashableDuration(seconds=2)] * 2, dtype=object),
+        pd.Series([np.datetime64(1, "s"), np.datetime64(2, "s"), None], dtype=object),
+        pd.Series([np.timedelta64(1, "ns"), np.timedelta64(2, "ns"), None], dtype=object),
+        pd.Series(pd.to_datetime([1, 2, 1, None], unit="s")),
+        pd.Series(pd.to_timedelta([1, 2, 1, None], unit="s")),
+        pd.Series([], dtype=object),
+    ]
+    units: list[tuple[Literal["s", "ns", "ps"], int]] = [("s", 2), ("ns", 2), ("ps", 1), ("ps", 1000)]
+    for scalar in (np.datetime64, np.timedelta64):
+        for unit in units:
+            controls.append(pd.Series([scalar(0, unit), scalar("NaT", unit), None], dtype=object))
+    for source in controls:
+        before = source.copy(deep=True)
+        for sort in (False, True):
+            try:
+                native = source.value_counts(dropna=True, sort=sort)
+            except ValueError as error:
+                # Some Pandas versions already refuse finer-unit NaT conversion.
+                with pytest.raises(ValueError) as failure:
+                    _pandas_value_counts(source, sort=sort)
+                assert failure.value.args == error.args
+            else:
+                pd.testing.assert_series_equal(_pandas_value_counts(source, sort=sort), native)
+        pd.testing.assert_series_equal(source, before, check_exact=True)
+
+    for neighbor in (np.int64(1), UnhashableDuration(seconds=1)):
+        source = pd.Series([np.timedelta64(1, ("s", 2)), np.timedelta64(2, ("s", 2)), neighbor], dtype=object)
+        before = source.copy(deep=True)
+        native = source.value_counts()
+        if native.index.dtype != object:
+            # Numeric representative restoration must not conceal a narrowed
+            # temporal index, and unhashable neighbors must not bypass refusal.
+            with pytest.raises(EngineError, match="NumPy temporal units"):
+                _pandas_value_counts(source)
+        else:
+            pd.testing.assert_series_equal(_pandas_value_counts(source), native)
+        pd.testing.assert_series_equal(source, before, check_exact=True)
+
+
+@pytest.mark.parametrize("scalar", [np.datetime64, np.timedelta64], ids=["datetime", "duration"])
+def test_temporal_choice_identity_or_refusal_preserves_public_session(monkeypatch: pytest.MonkeyPatch, scalar):
+    import __main__
+
+    values = [scalar(1, "2s"), scalar(2, "2s"), scalar(1, "2s"), scalar(1, "s"), None]
+    source = pd.DataFrame({"value": pd.Series(values, dtype=object), "row": range(len(values))})
+    source.index = pd.Index(["same"] * len(values), name="original")
+    source.attrs["origin"] = "retained"
+    before = source.copy(deep=True)
+    monkeypatch.setattr(__main__, "temporal_count_source", source, raising=False)
+    manager = SessionManager()
+    query: dict[str, Any] = {"filters": [], "sort": []}
+    try:
+        opened = manager.open_session(
+            {"kind": "notebookVariable", "label": "temporal counts", "variableName": "temporal_count_source"},
+            backend="pandas",
+            page_size=10,
+        )
+        metadata = opened["metadata"]
+        session_id, revision = metadata["sessionId"], metadata["revision"]
+        value_id = metadata["schema"][0]["id"]
+        inferred = source["value"].value_counts().index.dtype != object
+        if inferred:
+            for call in (
+                lambda: manager.get_column_values(session_id, revision, "value", query, limit=1),
+                lambda: manager.get_summary(session_id, revision, query, [value_id]),
+            ):
+                with pytest.raises(EngineError, match="NumPy temporal units"):
+                    call()
+        else:
+            choices = manager.get_column_values(session_id, revision, "value", query, limit=1)
+            assert choices["hasMore"] and choices["values"][0]["count"] == 2
+            choice = choices["values"][0]
+            selection = {
+                "filters": [
+                    {
+                        "column": "value",
+                        "type": metadata["schema"][0]["type"],
+                        "predicates": [],
+                        "valueFilter": {
+                            "kind": "values",
+                            "selectedValues": [choice["selectionValue"]],
+                            "includeNulls": False,
+                            "includeNaN": False,
+                        },
+                    }
+                ],
+                "sort": [],
+            }
+            selected = manager.get_page(session_id, revision, 0, 10, selection)["page"]
+            assert [row["values"][1]["raw"] for row in selected["rows"]] == [0, 2]
+            summary = manager.get_summary(session_id, revision, query, [value_id])["summaries"][0]
+            assert summary["topValues"][0] == {"value": choice["value"], "count": 2}
+            assert summary["nullCount"] == 1
+        # Search and viewing filters narrow the source before native counting.
+        narrowed = manager.get_column_values(session_id, revision, "value", query, search=str(values[3]))
+        assert [choice["count"] for choice in narrowed["values"]] == [1]
+        safe_view = {
+            "filters": [
+                {
+                    "column": "row",
+                    "type": "integer",
+                    "predicates": [],
+                    "valueFilter": {
+                        "kind": "values",
+                        "selectedValues": [3],
+                        "includeNulls": False,
+                        "includeNaN": False,
+                    },
+                }
+            ],
+            "sort": [],
+        }
+        summary = manager.get_summary(session_id, revision, safe_view, [value_id])["summaries"][0]
+        assert summary["distinctCount"] == summary["totalCount"] == 1
+        restored = manager.get_page(session_id, revision, 0, 10, query)
+        assert restored["page"] == opened["page"]
+        for key in ("sessionId", "revision", "source"):
+            assert restored["metadata"][key] == metadata[key]
+    finally:
+        manager.close_all()
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
+    assert source.attrs == before.attrs and __main__.temporal_count_source is source
+
+
 def test_numeric_key_preserves_custom_numeric_and_temporal_native_behavior():
     from openwrangler_runtime.engines.base import normalized_numeric_sum
     from openwrangler_runtime.engines.pandas_engine import _pandas_numeric_key, _pandas_value_counts

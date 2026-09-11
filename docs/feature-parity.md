@@ -257,6 +257,12 @@ Datetime value searches also accept displayed midnight labels and a space in pla
 Some duration and subnanosecond object labels still differ from searchable source text; [#1280](https://github.com/Matt17BR/openwrangler/issues/1280)
 tracks these remaining gaps.
 
+On Pandas versions that infer temporal count keys from object columns, profiles and value choices refuse nonzero
+NumPy temporal values with unit multipliers or units finer than nanoseconds. Successful nanosecond-duration counts
+remain available. This conservative restriction includes some exactly representable values, such as `datetime64[1000ps]`,
+and prevents choices from selecting the wrong source rows. Native datetime/duration columns and current Pandas
+object-preserving counts are unaffected. Paging remains available after refusal.
+
 Python datetime filters and explicitly entered Fill values accept fractions up to six digits and timezone offsets
 with or without a colon. These spellings behave consistently on Python 3.10 and newer; malformed offset components
 are rejected.
