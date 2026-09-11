@@ -8,6 +8,11 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 - Generated DuckDB code avoids repeated scans when checking output names in wide results.
 
+### Fixed
+
+- Native R CSV export quotes dates, timestamps and integer64 fields for custom delimiters. It refuses delimiters
+  that could split ordinary numeric or logical fields; comma, tab, semicolon and pipe remain available.
+
 ## [2.2.0] - 2026-09-11
 
 ### Changed

@@ -410,6 +410,9 @@ replace every original `data.table` column, including on single-column inputs, w
 
 CSV export uses UTF-8, double quotes and LF records. Fractional durations retain decimal points regardless of
 `OutDec`; duration NaN refuses export because the writer would otherwise make it indistinguishable from missing.
+Dates, timestamps and integer64 values are quoted when using custom delimiters. Numeric and logical columns with
+non-missing values refuse delimiters their native text could contain, even when the current values do not contain
+them. Comma, tab, semicolon and pipe remain available; empty and all-missing columns do not impose this restriction.
 Timestamp text can lose precision and omits time-zone information. Review the [export rules](architecture.md#native-r)
 before using CSV to transfer timestamps.
 

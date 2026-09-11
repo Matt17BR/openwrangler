@@ -127,6 +127,9 @@ Use the existing owners to choose a focused source check:
   [safe file export](../src/test/safeFileExport.unit.test.ts) use real files to check separate destinations, identity
   changes and cleanup. [R private artifacts](../src/test/rPrivateArtifactBoundary.unit.test.ts) check real reads,
   quarantine and zero-byte cleanup. Metadata identity checks do not detect every same-size content change.
+  Native R's `capture-and-export` case owns CSV delimiter restrictions, bounded presence checks and empty/missing
+  columns. Its `group-pivot-and-export` kernel case checks decoded custom-delimiter fields, recoverable refusal and
+  correction through the public export transport, with unchanged source and session state.
 - **Python engines and generated programs:** [Pandas](../python/tests/test_pandas_engine.py),
   [Polars](../python/tests/test_polars_engine.py) and [DuckDB](../python/tests/test_duckdb_engine.py) own native profiles,
   queries, source preservation and engine-specific evaluation bounds. [Operation edges](../python/tests/test_operation_edges.py),
