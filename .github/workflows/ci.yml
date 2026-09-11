@@ -288,6 +288,15 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
+      - id: proof
+        name: Verify the exact pull-request merge
+        run: node scripts/ci-docs-only.mjs
+        env:
+          CI_EVENT: ${{ github.event_name }}
+          CI_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_MERGE_SHA: ${{ github.sha }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -302,10 +311,20 @@ jobs:
         run: npm run build:test-extension
       - id: packaged_editor
         name: Open the package in minimum and stable VS Code
+        shell: bash
         run: |
-          VSCODE_TEST_VERSION=1.106.0 node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
-          VSCODE_TEST_VERSION=stable node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
+          case "$DOCS_ONLY" in
+            true)
+              echo "Installed VS Code smoke omitted: verified existing Markdown edits only; package validation passed. No fresh installed-editor execution is claimed." >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            false)
+              VSCODE_TEST_VERSION=1.106.0 node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
+              VSCODE_TEST_VERSION=stable node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
+              ;;
+            *) exit 1 ;;
+          esac
         env:
+          DOCS_ONLY: ${{ steps.proof.outputs.docs_only }}
           OPEN_WRANGLER_PACKAGED_EDITORS: vscode
           OPEN_WRANGLER_PACKAGED_MODE: platform-smoke
           OPEN_WRANGLER_TEST_SELECTOR: daily-core
