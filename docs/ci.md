@@ -13,7 +13,8 @@ Every pull request reports the same five required product checks:
   catalog and transport checks, and the other runs the kernel-agent checks. It also requires the existing macOS and Windows
   installed R notebook journeys unless the change is proved independent of R.
 - **Packaged VS Code smoke** builds and verifies one VSIX, then opens those exact bytes with the `platform-smoke` /
-  `daily-core` selector in the declared minimum VS Code 1.106.0 and current stable VS Code.
+  `daily-core` selector in the declared minimum VS Code 1.106.0 and current stable VS Code, subject to the
+  documentation-only launch omission below.
   The job uses the base Python dependencies for CSV editing and saved-notebook rendering.
 - **Windows filesystem and process contracts** runs Windows-specific export, dependency and shutdown cases, dependency
   journal creation races, dependency fixture cleanup, trusted-pickle source identity and descendant cleanup, and the
@@ -38,11 +39,13 @@ builds and R patch changes within the locked minor reuse the same key. Preparati
 version, and every run installs and verifies a fresh private library. GitHub scopes pull-request caches to that PR,
 so reuse is limited to its later jobs, updates and reruns; the weekly R 4.4 job uses a separate lock.
 
-Source contracts, packaged smoke, and the separate required CodeQL gate run for every change. Source runs the same
-scope proof against its own checkout and omits Vitest only for `docs_only=true`. It records the omission without
-claiming fresh TypeScript test execution. All other Source steps, including the supported-Node build, remain required.
-The allowed Markdown files are not inputs to the Vitest suite; formatting, documentation, reference, script and
-package checks retain their actual document validation.
+Source contracts, package validation, and the separate required CodeQL gate run for every change. Source and the
+package job run the same scope proof against their own checkouts. Only `docs_only=true` omits Vitest and the
+minimum/stable VS Code launch step, with explicit summaries that claim no fresh test execution. All other steps remain
+required, including the supported-Node build, Python setup, package/source verification and harness compilation.
+The allowed Markdown files are not inputs to Vitest or the selected installed journey. README and CHANGELOG remain
+shipped content, so packaging still validates their exact source bytes. Formatting, documentation, reference and script
+checks retain their document validation; these checks do not establish the accuracy of every prose claim.
 
 The scope-only job uses Node and Git without installing npm dependencies or restoring the npm cache.
 `scripts/ci-docs-only.mjs` permits the omissions below. All admitted files must be regular and non-executable.
@@ -58,8 +61,8 @@ The scope-only job uses Node and Git without installing npm dependencies or rest
   files, optionally with the allowed Markdown edits. Source still runs these component tests; the native and installed
   harnesses do not consume them. Component additions, nested tests, unit/cross tests and shared fixtures are outside
   this permission.
-- Vitest may be omitted only for edits to existing `README.md`, `CHANGELOG.md` or `docs/**/*.md` files. Windows also
-  omits those documentation-only changes.
+- Vitest and the minimum/stable VS Code launches may be omitted only for edits to existing `README.md`, `CHANGELOG.md`
+  or `docs/**/*.md` files. Windows also omits those documentation-only changes.
 
 Mixed Python/R changes require both runtimes. The Python job does not consume the allowed R or installed-harness files.
 The R checks do not execute the allowed Python files; the selected installed R journeys use Python only for Jupyter client readiness
@@ -70,8 +73,8 @@ or selected runner begins consuming an omitted input, update the proof and its t
 
 These omissions reduce unrelated work for documentation edits, private component tests, isolated engine changes and
 the allowed installed-harness edits.
-They provide no fresh or transferred test result and can delay discovery of unrelated dependency or hosted-environment
-regressions.
+They provide no fresh or transferred test result and can delay discovery of unrelated dependency, editor installation
+or hosted-environment regressions.
 Scheduled R 4.4 qualification does not replace R 4.5 coverage. Release qualification remains separate.
 
 Each runtime has cancellable execution and a short required-result job. The latter reports success only for completed
@@ -91,6 +94,7 @@ NUL-delimited Git diff. Additions outside the permitted runtime source scopes, d
 other changes outside the allowed paths, empty diffs and unavailable or unrecognized evidence select full checks.
 Changes to the proof or workflow also require full execution.
 A failed proof job or malformed output fails the required result.
+Source and package jobs also fail if their local proof fails or returns a malformed omission value.
 Execution jobs remain cancellable. Their result jobs run even after a failed or canceled dependency, so skipped or
 canceled execution cannot satisfy a required check when full runtime checks were needed.
 Branch protection continues to require all five product checks and CodeQL.

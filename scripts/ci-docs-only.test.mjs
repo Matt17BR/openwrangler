@@ -628,7 +628,8 @@ test("Source reuses the exact proof locally without changing job scheduling", ()
   assert.ok(checkoutIndex >= 0 && node24Index > checkoutIndex && proofIndex > node24Index && guardIndex > proofIndex);
   for (const proof of [
     source.steps[proofIndex],
-    workflow.jobs["docs-proof"].steps.find((step) => step.id === "proof")
+    workflow.jobs["docs-proof"].steps.find((step) => step.id === "proof"),
+    workflow.jobs["package-editor"].steps.find((step) => step.id === "proof")
   ]) {
     assert.equal(proof.run, "node scripts/ci-docs-only.mjs");
     assert.deepEqual(proof.env, {
@@ -695,6 +696,106 @@ test("Source omits Vitest only for a successful exact documentation proof", asyn
       assert.equal(readFileSync(marker, "utf8"), invoked ? "--no-install\nvitest\nrun\n" : "");
       if (docsOnly === "true") {
         assert.match(readFileSync(summary, "utf8"), /Vitest omitted:.*No fresh TypeScript test execution is claimed/u);
+      } else {
+        assert.equal(readFileSync(summary, "utf8"), "");
+      }
+    });
+  }
+});
+
+test("package smoke keeps its prerequisites and scheduling before the local documentation decision", () => {
+  const job = workflow.jobs["package-editor"];
+  assert.equal(job.needs, undefined);
+  assert.equal(job.if, undefined);
+  const checkoutIndex = job.steps.findIndex((step) => step.uses?.startsWith("actions/checkout@"));
+  const nodeIndex = job.steps.findIndex((step) => step.uses?.startsWith("actions/setup-node@"));
+  const proofIndex = job.steps.findIndex((step) => step.id === "proof");
+  const guardIndex = job.steps.findIndex((step) => step.id === "packaged_editor");
+  assert.equal(job.steps[checkoutIndex].with["fetch-depth"], 0);
+  assert.equal(job.steps[nodeIndex].with["node-version-file"], ".node-version");
+  assert.ok(checkoutIndex >= 0 && nodeIndex > checkoutIndex && proofIndex > nodeIndex);
+  let previous = proofIndex;
+  for (const run of [
+    "npm ci --ignore-scripts",
+    "python -m pip install -e python",
+    "npm run clean",
+    "npm run build",
+    "npm run package:prepared -- --out openwrangler.vsix",
+    "npm run verify:vsix -- openwrangler.vsix",
+    "npm run build:test-extension"
+  ]) {
+    const index = job.steps.findIndex((step) => step.run === run);
+    assert.ok(index > previous && index < guardIndex, `${run} must remain before the launch decision`);
+    previous = index;
+  }
+  for (const step of job.steps.slice(0, guardIndex + 1)) {
+    assert.equal(step.if, undefined, "proof or prerequisite failure must stop the normal job steps");
+    assert.equal(step["continue-on-error"], undefined);
+  }
+  const guard = job.steps[guardIndex];
+  assert.equal(guard.shell, "bash");
+  assert.deepEqual(guard.env, {
+    DOCS_ONLY: "${{ steps.proof.outputs.docs_only }}",
+    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode",
+    OPEN_WRANGLER_PACKAGED_MODE: "platform-smoke",
+    OPEN_WRANGLER_TEST_SELECTOR: "daily-core"
+  });
+});
+
+test("package smoke omits only verified documentation launches and preserves both editor failures", async (context) => {
+  const guard = workflow.jobs["package-editor"].steps.find((step) => step.id === "packaged_editor");
+  for (const [docsOnly, minimumStatus, stableStatus, expectedStatus, versions] of [
+    ["true", 0, 0, 0, []],
+    ["false", 0, 0, 0, ["1.106.0", "stable"]],
+    ["false", 37, 0, 37, ["1.106.0"]],
+    ["false", 0, 41, 41, ["1.106.0", "stable"]],
+    [undefined, 0, 0, 1, []],
+    ["", 0, 0, 1, []],
+    ["TRUE", 0, 0, 1, []],
+    ["true\nfalse", 0, 0, 1, []]
+  ]) {
+    await context.test(`${JSON.stringify(docsOnly)}/editors=${minimumStatus},${stableStatus}`, (child) => {
+      const temp = mkdtempSync(join(tmpdir(), "openwrangler-ci-package-"));
+      child.after(() => rmSync(temp, { recursive: true, force: true }));
+      const marker = join(temp, "invocation");
+      const summary = join(temp, "summary");
+      writeFileSync(marker, "");
+      writeFileSync(summary, "");
+      writeFileSync(
+        join(temp, "node"),
+        '#!/bin/sh\nprintf \'%s\\n\' "$VSCODE_TEST_VERSION" "$@" >> "$NODE_MARKER"\nif [ "$VSCODE_TEST_VERSION" = 1.106.0 ]; then exit "$MINIMUM_STATUS"; fi\nexit "$STABLE_STATUS"\n',
+        { mode: 0o755 }
+      );
+      const env = {
+        ...process.env,
+        ...guard.env,
+        PATH: `${temp}:${process.env.PATH}`,
+        NODE_MARKER: marker,
+        MINIMUM_STATUS: String(minimumStatus),
+        STABLE_STATUS: String(stableStatus),
+        R_OMITTABLE: "true",
+        PYTHON_OMITTABLE: "true",
+        GITHUB_STEP_SUMMARY: summary
+      };
+      if (docsOnly === undefined) delete env.DOCS_ONLY;
+      else env.DOCS_ONLY = docsOnly;
+      const result = spawnSync("bash", ["--noprofile", "--norc", "-e", "-o", "pipefail", "-c", guard.run], {
+        cwd: temp,
+        env,
+        encoding: "utf8",
+        timeout: 10_000
+      });
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, expectedStatus);
+      assert.equal(
+        readFileSync(marker, "utf8"),
+        versions.map((version) => `${version}\nscripts/run-packaged-editor-tests.mjs\nopenwrangler.vsix\n`).join("")
+      );
+      if (docsOnly === "true") {
+        assert.match(
+          readFileSync(summary, "utf8"),
+          /Installed VS Code smoke omitted:.*No fresh installed-editor execution is claimed/u
+        );
       } else {
         assert.equal(readFileSync(summary, "utf8"), "");
       }
