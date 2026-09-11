@@ -6,15 +6,14 @@ import pixelmatch from "pixelmatch";
 import { chromium } from "playwright-core";
 import { PNG } from "pngjs";
 import { stringifyForInlineScript } from "./capture-screenshots-json.mjs";
-import { createFilterPanelScreenshotReadiness } from "./capture-screenshots-readiness.mjs";
+import {
+  createFilterPanelScreenshotReadiness,
+  createHeaderProfileScreenshotReadiness
+} from "./capture-screenshots-readiness.mjs";
 import { createGridColumnClipboardHarness } from "./grid-column-clipboard-harness.mjs";
 import { resolveAndPreflightAcceptancePython } from "./packaged-python-preflight.mjs";
 import { PUBLIC_MEDIA_PIXEL_RATIO } from "./public-media-contract.mjs";
-import {
-  captureWebviewScreenshot,
-  createWebviewSelectorReadiness,
-  preflightWebviewBrowser
-} from "./webview-browser.mjs";
+import { captureWebviewScreenshot, preflightWebviewBrowser } from "./webview-browser.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const tmpDir = resolve(root, "tmp", "screenshots");
@@ -482,18 +481,17 @@ const byExampleHeaderCount = payloads.exampleDraft.page.columnIds.length;
 if (byExampleHeaderCount !== 2) {
   throw new Error("The by-example preview fixture must expose exactly two projected columns.");
 }
-const byExamplePreviewReadiness = createWebviewSelectorReadiness({
+const byExamplePreviewReadiness = createHeaderProfileScreenshotReadiness({
   description: "by-example preview header profiles",
-  selectors: [
-    { selector: "th[data-grid-column]", count: byExampleHeaderCount },
-    {
-      selector: "th[data-grid-column] > .columnInsight:not(.emptyInsight)",
-      count: byExampleHeaderCount
-    },
-    { selector: "th[data-grid-column] .emptyInsight", count: 0 }
-  ],
-  absentText: [{ selector: "th[data-grid-column] > .columnInsight", text: "Profiling…" }],
-  emptyArrayGlobals: ["openWranglerHarnessErrors"]
+  columnCount: byExampleHeaderCount
+});
+const draftPreviewReadiness = createHeaderProfileScreenshotReadiness({
+  description: "draft preview header profiles",
+  columnCount: payloads.draft.page.columnIds.length
+});
+const summaryFamiliesReadiness = createHeaderProfileScreenshotReadiness({
+  description: "summary-family header profiles",
+  columnCount: payloads.summaryFamilies.page.columnIds.length
 });
 const filterPanelReadiness = createFilterPanelScreenshotReadiness();
 
@@ -515,14 +513,21 @@ writeWebviewHarness(
   {},
   { editorAction: { kind: "editorAction", action: "openOperation", operationKind: "formula" } }
 );
-writeWebviewHarness("draft-preview.html", payloads.draft, {}, "acceptance/draft-preview-dark-1280.png");
+writeWebviewHarness(
+  "draft-preview.html",
+  payloads.draft,
+  {},
+  "acceptance/draft-preview-dark-1280.png",
+  {},
+  { readiness: draftPreviewReadiness }
+);
 writeWebviewHarness(
   "draft-preview-dark-800.html",
   payloads.draft,
   {},
   "acceptance/draft-preview-dark-800.png",
   {},
-  { width: 800 }
+  { width: 800, readiness: draftPreviewReadiness }
 );
 writeWebviewHarness(
   "step-inspection.html",
@@ -693,7 +698,7 @@ writeWebviewHarness(
   {},
   "acceptance/summary-families-dark-800.png",
   {},
-  { width: 800, defaultColumnWidth: 140 }
+  { width: 800, defaultColumnWidth: 140, readiness: summaryFamiliesReadiness }
 );
 writeWebviewHarness(
   "summary-families-dark-zoom-200.html",
@@ -701,7 +706,7 @@ writeWebviewHarness(
   {},
   "acceptance/summary-families-dark-zoom-200.png",
   {},
-  { zoom: 2, defaultColumnWidth: 140 }
+  { zoom: 2, defaultColumnWidth: 140, readiness: summaryFamiliesReadiness }
 );
 const textSummaryColumnId = payloads.summaryFamilies.metadata.schema.find(
   (column) => column.name === "account_note"
