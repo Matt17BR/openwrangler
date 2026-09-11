@@ -537,7 +537,15 @@ integer values and fill conventions, including columns outside the query; other 
 representation, subject to the dictionary chunk-unification behavior above.
 
 Arrow timestamp and duration null masks use native validity, including logical null entries in dictionaries.
-Pages and profile labels retain native context for present nanosecond extrema that Pandas boxes as `NaT`.
+Their NaN masks are false without boxing temporal scalars. Arrow duration filters compare integer storage against
+exactly scaled portable operands, using divisibility and directed bounds instead of converting source units.
+Live and generated filters share this behavior; source values and validity remain unchanged.
+Pages, value choices and profile labels retain native context for present temporal extrema that Pandas boxes as `NaT`.
+Duration output reads native ticks before Pandas can overflow during boxing. Page conversion is limited to the
+projection and row slice; profile conversion follows the top-ten count limit. Choice ranking formats native count
+labels while retaining only the bounded candidates and their original positions for token validation.
+Dictionary durations in seconds, milliseconds and microseconds retain Python timedelta spelling where its range
+permits it. Nanosecond labels stay unchanged; wider values retain native duration text and the existing selection range limit.
 Profile extrema use native aggregation. Supported Fill methods retain native temporal donors and directional
 anchors in live and generated code without changing source arrays.
 Using the minimum nanosecond timestamp as a filter value remains unsupported under the existing microsecond input precision.

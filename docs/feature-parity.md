@@ -265,8 +265,12 @@ Pandas choices and grid selections refuse finer-than-microsecond values instead 
 Duration filters in Pandas, Polars and DuckDB retain exact microseconds when notebook code changes Decimal precision,
 including in generated Python. Calendar and unitless NumPy durations remain displayable but cannot be selected as seconds.
 Previously saved selections with rounded temporal values must be cleared and reselected.
+Object-stored NumPy and Pandas durations can still disagree on counts and selected rows because of native comparison
+and hashing differences; [#1286](https://github.com/Matt17BR/openwrangler/issues/1286) tracks this gap.
 Pandas durations stored in seconds, milliseconds or microseconds remain displayable outside the nanosecond range.
 Their selections retain the existing Python timedelta range; wider values remain visible but cannot be selected.
+Pandas Arrow duration pages, profiles and choices preserve valid int64 extrema and dictionary labels. The minimum
+microsecond value remains selectable; native and generated filters compare it exactly without an overflowing conversion.
 NumPy-backed Pandas duration columns search the labels shown in value choices, including whole days and large durations.
 Sparse, Arrow, categorical and object duration searches retain their existing representation limits.
 Polars Datetime and Duration columns retain nanoseconds in grid cells, value choices and profile labels, and datetime

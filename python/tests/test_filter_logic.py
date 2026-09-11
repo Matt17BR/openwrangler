@@ -7,7 +7,7 @@ from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, localcontext
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import duckdb
 import numpy as np
@@ -1370,5 +1370,77 @@ def test_duration_filters_preserve_microseconds_under_notebook_decimal_context(b
                 assert _filtered_labels(engine.apply_filter_model(frame, model), backend) == ["match", "match"]
                 assert _filtered_labels(_execute_generated_filter(engine, frame, model), backend) == ["match", "match"]
             assert context.prec == 3 and not any(context.flags.values())
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("unit", ["s", "ms", "us", "ns"])
+@pytest.mark.parametrize("dictionary", [False, True])
+def test_pandas_arrow_duration_filters_preserve_native_ticks(unit, dictionary):
+    from fractions import Fraction
+
+    import pyarrow as pa
+
+    ticks = [-(2**63), -(2**63) + 1, -1001, -1000, -999, -1, 0, 1, 999, 1000, 1001, 2**63 - 1, -(2**63), None]
+    chunks = [pa.array(ticks[:7], type=pa.duration(unit)), pa.array(ticks[7:], type=pa.duration(unit))]
+    if dictionary:
+        chunks = [chunk.dictionary_encode() for chunk in chunks]
+    native = pa.chunked_array(chunks)
+    source = pd.DataFrame({"value": pd.Series(pd.arrays.ArrowExtensionArray(native)), "row": range(len(ticks))})
+    source.index = pd.Index(["same"] * len(source), name="original")
+    source.attrs["origin"] = "retained"
+    before = source.copy(deep=True)
+    scale = {"s": 1, "ms": 1000, "us": 1_000_000, "ns": 1_000_000_000}[unit]
+    seconds = [Fraction(value, scale) if value is not None else None for value in ticks]
+    cases = []
+    for name in ("eq", "ne", "gt", "ge", "lt", "le"):
+        predicate = {
+            "kind": "predicate",
+            "operator": {"eq": "equals", "ne": "notEquals", "ge": "gte", "le": "lte"}.get(name, name),
+            "value": "-0.000001",
+        }
+        expected = [
+            i
+            for i, value in enumerate(seconds)
+            if value is not None and getattr(operator, name)(value, Fraction(-1, 1_000_000))
+        ]
+        cases.append(({"predicates": [predicate]}, expected))
+    for lower, upper in (
+        ("-0.000001", "0.000001"),
+        ("0.000001", "-0.000001"),
+        ("-9223372036854.775808", "86399999999999.999999"),
+    ):
+        rule = {"predicates": [{"kind": "predicate", "operator": "between", "value": lower, "secondValue": upper}]}
+        expected = [
+            i for i, value in enumerate(seconds) if value is not None and Fraction(lower) <= value <= Fraction(upper)
+        ]
+        cases.append((rule, expected))
+    selected = ["-9223372036854.775808", "-0.000001", "0", "0.000001"]
+    for include_nulls in (False, True):
+        rule = {
+            "predicates": [],
+            "valueFilter": {
+                "kind": "values",
+                "selectedValues": selected,
+                "includeNulls": include_nulls,
+                "includeNaN": True,
+            },
+        }
+        expected = [
+            i
+            for i, value in enumerate(seconds)
+            if (value is None and include_nulls) or value in set(map(Fraction, selected))
+        ]
+        cases.append((rule, expected))
+    engine = PandasEngine()
+    try:
+        for rule, expected_rows in cases:
+            model = {"filters": [{"column": "value", "type": "duration", **rule}], "sort": []}
+            for result in (engine.apply_filter_model(source, model), _execute_generated_filter(engine, source, model)):
+                pd.testing.assert_frame_equal(result, source.iloc[expected_rows], check_exact=True)
+                assert result.attrs == source.attrs
+        pd.testing.assert_frame_equal(source, before, check_exact=True)
+        assert cast(pd.arrays.ArrowExtensionArray, source["value"].array).__arrow_array__().equals(native)
+        assert source.attrs == before.attrs
     finally:
         engine.close()
