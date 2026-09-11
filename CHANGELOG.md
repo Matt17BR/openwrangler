@@ -4,6 +4,11 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ## [Unreleased]
 
+### Fixed
+
+- Pandas Pivot Wider preserves object identifiers with `NaT` and mixed scalar values in generated code. Generated
+  integer helpers match live scalar admission and preserve Group By key values and dtypes.
+
 ## [2.1.1] - 2026-09-11
 
 ### Added
