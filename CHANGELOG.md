@@ -6,6 +6,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Pandas object duration choices and filters agree on exact counts and selected rows across NumPy, Pandas and Python values.
 - Viewing-filter Undo preserves saved operand objects with keys such as `__proto__` instead of changing the filter value.
 - Pandas Pivot Wider avoids a deprecation warning on empty dataframes in both live execution and generated code.
 - Pandas datetime value search accepts displayed midnight labels and space-separated NumPy datetime labels.

@@ -265,8 +265,12 @@ Pandas choices and grid selections refuse finer-than-microsecond values instead 
 Duration filters in Pandas, Polars and DuckDB retain exact microseconds when notebook code changes Decimal precision,
 including in generated Python. Calendar and unitless NumPy durations remain displayable but cannot be selected as seconds.
 Previously saved selections with rounded temporal values must be cleared and reselected.
-Object-stored NumPy and Pandas durations can still disagree on counts and selected rows because of native comparison
-and hashing differences; [#1286](https://github.com/Matt17BR/openwrangler/issues/1286) tracks this gap.
+Pandas object duration choices count and compare fixed-unit NumPy, ordinary Pandas and Python duration values by
+exact elapsed time. Equal values share one choice with the first source spelling. Live and generated filters retain
+fine-unit neighbors and wide values without converting the source to nanoseconds. Mixed columns containing an
+ordinary NumPy or Pandas duration together with calendar/unitless durations or custom scalar types refuse counts
+and present-value comparisons; paging and null-only filters remain available. Pure custom-only columns keep their
+existing native behavior.
 Pandas durations stored in seconds, milliseconds or microseconds remain displayable outside the nanosecond range.
 Their selections retain the existing Python timedelta range; wider values remain visible but cannot be selected.
 Pandas Arrow duration pages, profiles and choices preserve valid int64 extrema and dictionary labels. The minimum
@@ -280,8 +284,8 @@ padded fractions and either a `T` or space datetime separator.
 Values beyond the existing filter precision remain visible but cannot be selected.
 
 On Pandas versions that infer temporal count keys from object columns, profiles and value choices refuse nonzero
-NumPy temporal values with unit multipliers or units finer than nanoseconds. Successful nanosecond-duration counts
-remain available. This conservative restriction includes some exactly representable values, such as `datetime64[1000ps]`,
+NumPy datetime values with unit multipliers or units finer than nanoseconds. Fixed-unit duration counts use exact
+comparison keys instead. This conservative datetime restriction includes some exactly representable values, such as `datetime64[1000ps]`,
 and prevents choices from selecting the wrong source rows. Profiles and choices also refuse calendar and unitless
 NumPy durations, including zero, when the count index would assign them a fixed unit. Native datetime/duration columns
 and current Pandas object-preserving counts are unaffected. Paging remains available after refusal.

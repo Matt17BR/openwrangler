@@ -425,7 +425,7 @@ def test_temporal_choice_identity_or_refusal_preserves_public_session(monkeypatc
         session_id, revision = metadata["sessionId"], metadata["revision"]
         value_id = metadata["schema"][0]["id"]
         inferred = source["value"].value_counts().index.dtype != object
-        if inferred:
+        if inferred and scalar is np.datetime64:
             for call in (
                 lambda: manager.get_column_values(session_id, revision, "value", query, limit=1),
                 lambda: manager.get_summary(session_id, revision, query, [value_id]),
@@ -873,6 +873,172 @@ def test_duration_cells_keep_exact_seconds_and_portable_selection(value, raw, po
             with pytest.raises(EngineError):
                 coerce_typed_view_value(grid_token, "duration")
         assert context.prec == 3 and not any(context.flags.values())
+
+
+@pytest.mark.parametrize("missing", [False, True])
+@pytest.mark.parametrize(
+    "values,seconds",
+    [
+        ([np.timedelta64(v, "ns") for v in [1000, 1001, 1000]], ["0.000001", "0.000001001", "0.000001"]),
+        (
+            [np.array(v, dtype="timedelta64[2ns]")[()] for v in [1000, 1001, 1000]],
+            ["0.000002", "0.000002002", "0.000002"],
+        ),
+        ([np.array(v, dtype="timedelta64[2s]")[()] for v in [1, 2, 1]], ["2", "4", "2"]),
+        ([pd.Timedelta(v, "ns") for v in [1000, 1001, 1000]], ["0.000001", "0.000001001", "0.000001"]),
+        ([pd.Timedelta(np.timedelta64(86399999913601, "s"))] * 2, ["86399999913601"] * 2),
+        ([np.timedelta64(1000, "ns"), timedelta(microseconds=1), pd.Timedelta(1, "us")], ["0.000001"] * 3),
+        (
+            [
+                np.timedelta64(86399999913601, "s"),
+                timedelta(days=999999999, seconds=1),
+                pd.Timedelta(np.timedelta64(86399999913601, "s")),
+            ],
+            ["86399999913601"] * 3,
+        ),
+        ([np.timedelta64(2**63 - 1, "D"), np.timedelta64(1, "s")], [str((2**63 - 1) * 86400), "1"]),
+        (
+            [np.timedelta64(-1000, "ns"), timedelta(microseconds=-1), np.timedelta64(-1001, "ns")],
+            ["-0.000001", "-0.000001", "-0.000001001"],
+        ),
+    ],
+)
+def test_pandas_object_duration_choices_select_their_exact_counted_rows(values, seconds, missing) -> None:
+    from collections import Counter
+    from fractions import Fraction
+
+    original = list(values)
+    if missing:
+        values = [*values, None, pd.NA, pd.NaT, np.timedelta64("NaT", "ns"), float("nan"), Decimal("NaN")]
+    source = pd.DataFrame({"value": pd.Series(values, dtype=object), "row": range(len(values))})
+    source.index = pd.Index(["same"] * len(source), name="retained")
+    source.attrs = {"origin": "retained"}
+    before = source.copy(deep=True)
+    exact = [Fraction(value) for value in seconds]
+    counts = Counter(exact)
+    labels = {}
+    for value, key in zip(original, exact, strict=True):
+        labels.setdefault(key, str(value))
+    engine = PandasEngine()
+    try:
+        choices, has_more = engine.column_values(source, "value")
+        assert not has_more
+        assert {item["value"]: item["count"] for item in choices} == {
+            labels[key]: count for key, count in counts.items()
+        }
+        summary = engine.summaries(source)[0]
+        assert summary["distinctCount"] == len(counts)
+        assert summary["nullCount"] == (4 if missing else 0)
+        assert summary["nanCount"] == (2 if missing else 0)
+        schema = engine.schema(source)
+        assert schema[0]["type"] == "duration"
+        lineage = source_lineage(schema)
+        for choice in choices:
+            key = next(key for key, label in labels.items() if label == choice["value"])
+            microseconds = key * 1_000_000
+            portable = (
+                microseconds.denominator == 1 and -999999999 * 86400000000 <= microseconds < 1000000000 * 86400000000
+            )
+            assert ("selectionValue" in choice) == portable
+            if not portable:
+                continue
+            expected = [position for position, value in enumerate(exact) if value == key]
+            column_filter = {
+                "column": "value",
+                "type": "duration",
+                "predicates": [],
+                "valueFilter": {
+                    "kind": "values",
+                    "selectedValues": [choice["selectionValue"]],
+                    "includeNulls": missing,
+                    "includeNaN": False,
+                },
+            }
+            if missing:
+                expected += list(range(len(original), len(original) + 4))
+            model = {"filters": [column_filter], "sort": []}
+            step = bind_step(
+                validate_step(
+                    {
+                        "id": "duration",
+                        "kind": "filterRows",
+                        "params": {"filterModel": {"filters": [{**column_filter, "column": lineage[0]}], "sort": []}},
+                    }
+                ),
+                schema,
+                lineage,
+            )
+            scope = {}
+            exec(engine.compile_plan([step]), scope)
+            for result in (
+                engine.apply_filter_model(source, model),
+                engine.apply_transform(source, step),
+                scope["clean_data"](source),
+            ):
+                pd.testing.assert_frame_equal(result, source.iloc[expected], check_exact=True)
+            assert len(expected) == choice["count"] + (4 if missing else 0)
+        pd.testing.assert_frame_equal(source, before, check_exact=True)
+        assert source.attrs == before.attrs
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("family", ["calendar", "unitless", "custom"])
+def test_mixed_object_duration_refusal_preserves_source_and_null_filters(family) -> None:
+    class CustomDuration(timedelta):
+        pass
+
+    resident = (
+        np.timedelta64(1, "Y")
+        if family == "calendar"
+        else np.timedelta64(1)
+        if family == "unitless"
+        else CustomDuration(seconds=2)
+    )
+    source = pd.DataFrame(
+        {"value": pd.Series([np.timedelta64(1, "s"), resident, None], dtype=object), "row": [0, 1, 2]}
+    )
+    source.index = pd.Index(["same"] * len(source), name="original")
+    before = source.copy(deep=True)
+    engine = PandasEngine()
+    try:
+        schema = engine.schema(source)
+        lineage = source_lineage(schema)
+        rule = {
+            "column": "value",
+            "type": "duration",
+            "predicates": [{"kind": "predicate", "operator": "equals", "value": "1"}],
+        }
+        model = {"filters": [rule], "sort": []}
+        step = bind_step(
+            validate_step(
+                {
+                    "id": "mixed-duration",
+                    "kind": "filterRows",
+                    "params": {"filterModel": {"filters": [{**rule, "column": lineage[0]}], "sort": []}},
+                }
+            ),
+            schema,
+            lineage,
+        )
+        scope = {}
+        exec(engine.compile_plan([step]), scope)
+        for call in (
+            lambda: engine.column_values(source, "value"),
+            lambda: engine.summaries(source),
+            lambda: engine.apply_filter_model(source, model),
+            lambda: scope["clean_data"](source),
+        ):
+            with pytest.raises(ValueError, match="Object duration comparisons"):
+                call()
+        page = engine.page(source, 0, 3)
+        assert len(page["rows"]) == 3
+        rule["predicates"] = [{"kind": "predicate", "operator": "isNull"}]
+        pd.testing.assert_frame_equal(engine.apply_filter_model(source, model), source.iloc[[2]])
+        assert engine.column_values(source, "value", search="1 seconds")[0][0]["count"] == 1
+        pd.testing.assert_frame_equal(source, before, check_exact=True)
+    finally:
+        engine.close()
 
 
 def test_numpy_duration_units_keep_fixed_seconds_and_refuse_calendar_values() -> None:
