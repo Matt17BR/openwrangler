@@ -78,6 +78,7 @@ from .base import (
     datetime_visualization,
     decimal_at_scale,
     decode_fill_replacement,
+    duration_seconds_raw,
     ensure_output_columns_available,
     exact_decimal_median,
     exact_integer_median,
@@ -7308,7 +7309,7 @@ def _pandas_temporal_cell(value: Any, scalar: Any) -> dict[str, Any]:
     if pa.types.is_duration(scalar.type):
         return {
             "kind": "duration",
-            "raw": scalar.value / scale,
+            "raw": duration_seconds_raw(scalar.value, scale),
             "display": f"{scalar.value} {scalar.type.unit}",
             "isNull": False,
             "isNaN": False,

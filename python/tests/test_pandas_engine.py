@@ -1690,12 +1690,12 @@ def test_pandas_integer_group_sum_treats_decimal_nan_as_missing_live_and_generat
     ("unit", "expected"),
     [
         ("D", [172_800.0, 86_400.0, 172_800.0, 172_800.0, 86_400.0]),
-        ("ns", [2e-9, 1e-9, 2e-9, 2e-9, 1e-9]),
+        ("ns", ["0.000000002", "0.000000001", "0.000000002", "0.000000002", "0.000000001"]),
     ],
 )
 def test_pandas_numpy_duration_group_keys_and_extrema_remain_durations_live_and_generated(
     unit: Literal["D", "ns"],
-    expected: list[float],
+    expected: list[float | str],
 ) -> None:
     frame = pd.DataFrame(
         {
@@ -1716,7 +1716,7 @@ def test_pandas_numpy_duration_group_keys_and_extrema_remain_durations_live_and_
         )
         cells = page["rows"][0]["values"]
         assert [cell["kind"] for cell in cells] == ["duration"] * 5
-        assert [cell["raw"] for cell in cells] == pytest.approx(expected)
+        assert [cell["raw"] for cell in cells] == expected
 
 
 @pytest.mark.parametrize("source_value", [np.int64(2**63 - 1), np.uint64(2**64 - 1)])

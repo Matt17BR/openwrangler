@@ -268,7 +268,8 @@ def coerce_typed_view_value(value: Any, column_type: str | None, *, preserve_flo
                 return value
             text = str(value)
             if _DURATION_SECONDS_TEXT.fullmatch(text):
-                return timedelta(microseconds=int(Decimal(text) * 1_000_000))
+                numerator, denominator = Decimal(text).as_integer_ratio()
+                return timedelta(microseconds=numerator * 1_000_000 // denominator)
             match = _DURATION_TEXT.fullmatch(text)
             if not match:
                 raise ValueError("expected seconds or '[days, ]HH:MM:SS[.ffffff]'")
@@ -627,7 +628,8 @@ def generated_view_value_helper_lines() -> list[str]:
         "            return value",
         "        text = str(value)",
         "        if re.fullmatch(r'[+-]?(?:\\d+(?:\\.\\d{0,6})?|\\.\\d{1,6})', text):",
-        "            return timedelta(microseconds=int(Decimal(text) * 1000000))",
+        "            numerator, denominator = Decimal(text).as_integer_ratio()",
+        "            return timedelta(microseconds=numerator * 1000000 // denominator)",
         ("        match = re.fullmatch(r'(?:(-?\\d+) days?, )?(\\d{1,2}):(\\d{2}):(\\d{2})(?:\\.(\\d{1,6}))?', text)"),
         "        if not match:",
         "            raise ValueError(\"Duration view-filter values require seconds or '[days, ]HH:MM:SS[.ffffff]'.\")",
@@ -1152,10 +1154,7 @@ def normalize_cell(value: Any) -> dict[str, Any]:
     elif isinstance(value, timedelta):
         kind = "duration"
         display = str(value)
-        if isinstance(value, getattr(sys.modules.get("pandas"), "Timedelta", ())):
-            raw = int(cast(Any, value).value) / 1_000_000_000
-        else:
-            raw = value.total_seconds()
+        raw = _timedelta_raw(value)
     elif is_numpy_duration:
         kind = "duration"
         display = str(value)
@@ -1447,9 +1446,7 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, date):
         return value.isoformat()
     if isinstance(value, timedelta):
-        if isinstance(value, getattr(sys.modules.get("pandas"), "Timedelta", ())):
-            return int(cast(Any, value).value) / 1_000_000_000
-        return value.total_seconds()
+        return _timedelta_raw(value)
     if isinstance(value, bytes):
         return b64encode(value).decode("ascii")
     if isinstance(value, Mapping):
@@ -1463,8 +1460,48 @@ def _is_numpy_scalar_wrapper(value: Any) -> bool:
     return isinstance(value, getattr(sys.modules.get("numpy"), "generic", ()))
 
 
+def duration_seconds_raw(ticks: int, scale: int) -> float | str:
+    """Keep exact seconds as a number when portable, otherwise as decimal text."""
+    candidate = ticks / scale
+    text = str(candidate)
+    if _DURATION_SECONDS_TEXT.fullmatch(text):
+        numerator, denominator = Decimal(text).as_integer_ratio()
+        if numerator * scale == ticks * denominator:
+            return candidate
+    whole, fraction = divmod(abs(ticks), scale)
+    text = str(whole)
+    if fraction:
+        text += "." + str(fraction).rjust(len(str(scale)) - 1, "0").rstrip("0")
+    return ("-" if ticks < 0 else "") + text
+
+
+def _timedelta_raw(value: timedelta) -> float | str:
+    if isinstance(value, getattr(sys.modules.get("pandas"), "Timedelta", ())):
+        return duration_seconds_raw(int(cast(Any, value).value), 1_000_000_000)
+    ticks = (value.days * 86400 + value.seconds) * 1_000_000 + value.microseconds
+    return duration_seconds_raw(ticks, 1_000_000)
+
+
+_NUMPY_DURATION_SECONDS = {
+    "W": (604800, 1),
+    "D": (86400, 1),
+    "h": (3600, 1),
+    "m": (60, 1),
+    "s": (1, 1),
+    "ms": (1, 1_000),
+    "us": (1, 1_000_000),
+    "ns": (1, 1_000_000_000),
+    "ps": (1, 1_000_000_000_000),
+    "fs": (1, 1_000_000_000_000_000),
+    "as": (1, 1_000_000_000_000_000_000),
+}
+
+
 def _numpy_timedelta_raw(value: Any, fallback: str) -> float | str:
-    try:
-        return float(value / type(value)(1, "s"))
-    except (TypeError, ValueError, OverflowError):
+    numpy = sys.modules["numpy"]
+    unit, multiplier = numpy.datetime_data(value.dtype)
+    factor_scale = _NUMPY_DURATION_SECONDS.get(unit)
+    if factor_scale is None:
         return fallback
+    factor, scale = factor_scale
+    return duration_seconds_raw(int(value.view(numpy.int64)) * multiplier * factor, scale)

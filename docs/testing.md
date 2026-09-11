@@ -143,6 +143,9 @@ Use the existing owners to choose a focused source check:
   live and generated results, types and indexes. [Session transactions](../python/tests/test_session_transactions.py)
   cover public Preview/Apply, history, refusal/correction, export and replay. Keep individual numeric, dtype and
   collision cases in those tests; supported behavior belongs in [engine boundaries](architecture.md#engine-boundaries-and-capabilities).
+  [Typed cells](../python/tests/test_typed_cells.py) owns exact duration transport, bounded session selections and
+  unsupported-precision refusal. [Filter logic](../python/tests/test_filter_logic.py) executes live and generated
+  duration filters under a changed notebook Decimal context in each editing-capable Python engine.
 - **Generated source and Custom Code:** [helper selection](../python/tests/test_generated_helpers.py),
   [output columns](../python/tests/test_generated_output_columns.py),
   [Custom Code scope](../python/tests/test_custom_code_scope.py) and [session plans](../python/tests/test_session_plan.py)
