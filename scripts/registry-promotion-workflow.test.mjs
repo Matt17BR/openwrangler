@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { delimiter, join, resolve } from "node:path";
 import test from "node:test";
 import { dump, load } from "js-yaml";
 import { inspectMarketplacePromotionPipeline } from "./marketplace-promotion-workflow.mjs";
@@ -129,21 +131,26 @@ test("Marketplace retains WIF, source and immutable-package boundaries", () => {
   }
 });
 
-test("stable promotion waits for the shared registry owner without holding its lock or forwarding secrets", () => {
+test("stable promotion dispatches the protected registry owner without holding its lock or forwarding secrets", (context) => {
   const stable = load(readFileSync(resolve(root, ".github/workflows/stable-release.yml"), "utf8"));
   const called = load(openVsx);
   const caller = stable.jobs["open-vsx"];
-  assert.equal(caller.uses, "./.github/workflows/open-vsx-promotion.yml");
   assert.equal(caller.needs, "promote");
   assert.equal(caller.if, undefined);
   assert.equal(caller["continue-on-error"], undefined);
   assert.equal(caller.secrets, undefined);
   assert.equal(caller.concurrency, undefined);
-  assert.deepEqual(caller.permissions, { contents: "read" });
-  assert.deepEqual(caller.with, { release_tag: "${{ inputs.release_tag }}" });
-  assert.equal(called.on.workflow_call.inputs.release_tag.required, true);
-  assert.equal(called.on.workflow_call.inputs.release_tag.default, undefined);
-  assert.equal(called.on.workflow_call.secrets, undefined);
+  assert.equal(caller.environment, undefined);
+  assert.deepEqual(caller.permissions, { actions: "write", contents: "read" });
+  assert.equal(caller.steps.length, 1);
+  const dispatch = caller.steps[0];
+  assert.equal(dispatch.if, undefined);
+  assert.equal(dispatch["continue-on-error"], undefined);
+  assert.deepEqual(dispatch.env, {
+    GH_TOKEN: "${{ github.token }}",
+    GITHUB_REPOSITORY: "${{ github.repository }}",
+    RELEASE_TAG: "${{ inputs.release_tag }}"
+  });
   assert.equal(called.jobs.promote.environment, "publishing");
   assert.notEqual(stable.concurrency.group, called.concurrency.group);
   assert.equal(stable.concurrency["cancel-in-progress"], false);
@@ -154,4 +161,41 @@ test("stable promotion waits for the shared registry owner without holding its l
       (step) => !JSON.stringify(step).includes("ovsx") && !JSON.stringify(step).includes("OVSX_PAT")
     )
   );
+
+  const directory = mkdtempSync(join(tmpdir(), "ow-registry-dispatch-"));
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+  const argsFile = join(directory, "args");
+  writeFileSync(
+    join(directory, "gh"),
+    '#!/bin/sh\numask 077\nprintf "%s\\n" "$@" > "$DISPATCH_ARGS_FILE"\nexit "$DISPATCH_EXIT_CODE"\n',
+    { mode: 0o700 }
+  );
+  for (const exitCode of [0, 23]) {
+    const result = spawnSync("bash", ["--noprofile", "--norc", "-e", "-o", "pipefail", "-c", dispatch.run], {
+      cwd: directory,
+      encoding: "utf8",
+      timeout: 10_000,
+      env: {
+        PATH: `${directory}${delimiter}${process.env.PATH}`,
+        GH_TOKEN: "test-only",
+        GITHUB_REPOSITORY: "Matt17BR/openwrangler",
+        RELEASE_TAG: "v2.1.1",
+        DISPATCH_ARGS_FILE: argsFile,
+        DISPATCH_EXIT_CODE: String(exitCode)
+      }
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, exitCode);
+    assert.deepEqual(readFileSync(argsFile, "utf8").trimEnd().split("\n"), [
+      "workflow",
+      "run",
+      "open-vsx-promotion.yml",
+      "--repo",
+      "Matt17BR/openwrangler",
+      "--ref",
+      "main",
+      "--raw-field",
+      "release_tag=v2.1.1"
+    ]);
+  }
 });
