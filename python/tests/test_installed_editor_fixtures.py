@@ -5,42 +5,18 @@ import json
 import shutil
 import subprocess
 import sys
-from collections.abc import Callable
-from importlib import import_module
 from pathlib import Path
-from typing import Literal, Protocol, TypedDict, cast
+from typing import Literal, TypedDict, cast
 
 import polars as pl
 import pytest
 
-
-class _FixtureSpec(Protocol):
-    kind: Literal["csv", "parquet"]
-    rows: int
-    columns: int
-
-    @property
-    def names(self) -> list[str]: ...
-
-    @property
-    def sentinel_rows(self) -> tuple[int, ...]: ...
-
-
-class _FixtureSpecFactory(Protocol):
-    def __call__(self, kind: Literal["csv", "parquet"], rows: int, columns: int) -> _FixtureSpec: ...
-
-
-benchmark_directory = Path(__file__).parents[1] / "benchmarks"
-sys.path.insert(0, str(benchmark_directory))
+python_root = Path(__file__).parents[1]
+sys.path.insert(0, str(python_root))
 try:
-    fixture_contract = import_module("fixture_contract")
-    FixtureSpec = cast(_FixtureSpecFactory, fixture_contract.FixtureSpec)
-    assert_fixture_contract = cast(
-        Callable[[Path, _FixtureSpec], None],
-        fixture_contract.assert_fixture_contract,
-    )
+    from benchmarks import fixture_contract
 finally:
-    sys.path.remove(str(benchmark_directory))
+    sys.path.remove(str(python_root))
 
 
 class _FixtureEvidence(TypedDict):
@@ -156,9 +132,41 @@ def test_installed_editor_fixture_generation_rejects_a_symlink_target(tmp_path: 
     assert not manifest.exists()
 
 
+def test_existing_invalid_fixtures_are_atomically_regenerated_and_fully_validated(tmp_path, monkeypatch) -> None:
+    fixtures = fixture_contract.create_fixtures(tmp_path, smoke=True)
+    specs = fixture_contract.fixture_specs(smoke=True)
+
+    csv_spec = specs["csv"]
+    invalid_csv = pl.DataFrame(
+        {name: pl.int_range(column, csv_spec.rows + column, eager=True) for column, name in enumerate(csv_spec.names)}
+    ).with_row_index("row")
+    interior_row = csv_spec.rows // 2 + 17
+    assert interior_row not in csv_spec.sentinel_rows
+    invalid_csv = invalid_csv.with_columns(
+        pl.when(pl.col("row") == interior_row).then(pl.lit(-1)).otherwise(pl.col("c03")).alias("c03")
+    ).drop("row")
+    invalid_csv.write_csv(fixtures["csv"])
+    pl.DataFrame({"wrong": ["schema"]}).write_parquet(fixtures["parquet"])
+
+    replacements: list[tuple[Path, Path]] = []
+    real_replace = fixture_contract.os.replace
+
+    def observe_replace(source: str | Path, destination: str | Path) -> None:
+        replacements.append((Path(source), Path(destination)))
+        real_replace(source, destination)
+
+    monkeypatch.setattr(fixture_contract.os, "replace", observe_replace)
+    repaired = fixture_contract.create_fixtures(tmp_path, smoke=True)
+
+    assert {destination for _, destination in replacements} == {fixtures["csv"], fixtures["parquet"]}
+    assert all(source.parent == tmp_path and source.name.startswith(".") for source, _ in replacements)
+    for kind, path in repaired.items():
+        fixture_contract.assert_fixture_contract(path, specs[kind])
+
+
 @pytest.mark.parametrize("kind", ["csv", "parquet"])
 def test_fixture_contract_rejects_an_interior_value_tamper(tmp_path: Path, kind: Literal["csv", "parquet"]) -> None:
-    spec = FixtureSpec(kind, rows=101, columns=4)
+    spec = fixture_contract.FixtureSpec(kind, rows=101, columns=4)
     interior_row = 37
     assert interior_row not in spec.sentinel_rows
     frame = pl.DataFrame(
@@ -174,11 +182,11 @@ def test_fixture_contract_rejects_an_interior_value_tamper(tmp_path: Path, kind:
         frame.write_parquet(path)
 
     with pytest.raises(AssertionError, match="invalid value counts by column"):
-        assert_fixture_contract(path, spec)
+        fixture_contract.assert_fixture_contract(path, spec)
 
 
 def test_semantically_equal_csv_with_different_newlines_has_different_bytes(tmp_path: Path) -> None:
-    spec = FixtureSpec("csv", rows=101, columns=4)
+    spec = fixture_contract.FixtureSpec("csv", rows=101, columns=4)
     frame = pl.DataFrame(
         {name: pl.int_range(column, spec.rows + column, eager=True) for column, name in enumerate(spec.names)}
     )
@@ -187,13 +195,13 @@ def test_semantically_equal_csv_with_different_newlines_has_different_bytes(tmp_
     frame.write_csv(canonical)
     alternate.write_bytes(canonical.read_bytes().replace(b"\n", b"\r\n"))
 
-    assert_fixture_contract(canonical, spec)
-    assert_fixture_contract(alternate, spec)
+    fixture_contract.assert_fixture_contract(canonical, spec)
+    fixture_contract.assert_fixture_contract(alternate, spec)
     assert hashlib.sha256(canonical.read_bytes()).digest() != hashlib.sha256(alternate.read_bytes()).digest()
 
 
 def test_semantically_equal_parquet_layout_has_different_bytes(tmp_path: Path) -> None:
-    spec = FixtureSpec("parquet", rows=101, columns=4)
+    spec = fixture_contract.FixtureSpec("parquet", rows=101, columns=4)
     frame = pl.DataFrame(
         {name: pl.int_range(column, spec.rows + column, eager=True) for column, name in enumerate(spec.names)}
     )
@@ -202,8 +210,8 @@ def test_semantically_equal_parquet_layout_has_different_bytes(tmp_path: Path) -
     frame.write_parquet(canonical)
     frame.write_parquet(alternate, compression="uncompressed", row_group_size=17)
 
-    assert_fixture_contract(canonical, spec)
-    assert_fixture_contract(alternate, spec)
+    fixture_contract.assert_fixture_contract(canonical, spec)
+    fixture_contract.assert_fixture_contract(alternate, spec)
     assert hashlib.sha256(canonical.read_bytes()).digest() != hashlib.sha256(alternate.read_bytes()).digest()
 
 
