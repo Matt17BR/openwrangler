@@ -347,10 +347,12 @@ def test_object_temporal_counts_preserve_ordinary_unhashable_zero_and_nat_values
         pd.Series(pd.to_timedelta([1, 2, 1, None], unit="s")),
         pd.Series([], dtype=object),
     ]
-    units: list[tuple[Literal["s", "ns", "ps"], int]] = [("s", 2), ("ns", 2), ("ps", 1), ("ps", 1000)]
-    for scalar in (np.datetime64, np.timedelta64):
-        for unit in units:
-            controls.append(pd.Series([scalar(0, unit), scalar("NaT", unit), None], dtype=object))
+    for kind in ("datetime64", "timedelta64"):
+        for unit in ("2s", "2ns", "ps", "1000ps"):
+            dtype = np.dtype(f"{kind}[{unit}]")
+            zero = np.zeros(1, dtype=dtype)[0]
+            missing = np.array("NaT", dtype=dtype)[()]
+            controls.append(pd.Series([zero, missing, None], dtype=object))
     for source in controls:
         before = source.copy(deep=True)
         for sort in (False, True):
