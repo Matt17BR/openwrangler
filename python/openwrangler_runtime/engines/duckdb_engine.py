@@ -4917,18 +4917,7 @@ def _ow_text(df, kind, params):
 
 def _ow_split_text_columns(df, params):
     output_names = list(params["newColumns"])
-    reserved = [
-        name for name in output_names if name.casefold().startswith("__open_wrangler_internal_row_id_")
-    ]
-    if reserved:
-        raise ValueError(
-            "Splitting text into columns would create Open Wrangler's reserved private row-identity column."
-        )
-    collisions = sorted((set(_ow_columns(df)) & set(output_names)) | {
-        name for name in output_names if output_names.count(name) > 1
-    })
-    if collisions:
-        raise ValueError("Splitting text into columns would create duplicate column names: " + ", ".join(collisions))
+    _ow_check_outputs(_ow_columns(df), output_names, "Splitting text into columns")
     existing_folded = {str(name).casefold() for name in _ow_columns(df)}
     generated_by_fold = {}
     case_collisions = set()

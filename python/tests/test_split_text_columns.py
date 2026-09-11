@@ -28,13 +28,22 @@ def split_step() -> dict[str, Any]:
 
 @pytest.mark.parametrize(
     "new_columns",
-    (["only"], ["same", "same"], ["name"] * 65),
+    (["only"], ["same", "same"], [f"part_{index}" for index in range(65)]),
 )
 def test_split_text_columns_public_decoder_rejects_nonportable_output_sets(new_columns: list[str]) -> None:
     candidate = split_step()
+    candidate["params"]["column"].pop("position")
     candidate["params"]["newColumns"] = new_columns
     with pytest.raises(OperationError):
         validate_step(candidate)
+
+
+@pytest.mark.parametrize("count", [2, 64])
+def test_split_text_columns_public_decoder_accepts_output_count_boundaries(count: int) -> None:
+    candidate = split_step()
+    candidate["params"]["column"].pop("position")
+    candidate["params"]["newColumns"] = [f"part_{index}" for index in range(count)]
+    assert validate_step(candidate) == candidate
 
 
 def rows(frame: Any) -> list[tuple[Any, ...]]:
