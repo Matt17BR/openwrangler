@@ -13224,6 +13224,9 @@ agent$dispose()
 
 if (identical(selected_kernel_agent_case, "group-pivot-and-export")) {
 kernel_agent_case_run_count <- kernel_agent_case_run_count + 1L
+if (!requireNamespace("nanoparquet", quietly = TRUE)) {
+  stop("The R kernel agent test requires nanoparquet", call. = FALSE)
+}
 source("r/tests/kernel_exports.R", local = FALSE)
 source("r/tests/kernel_agent_group_by.R", local = FALSE)
 source("r/tests/kernel_agent_pivot_longer.R", local = FALSE)

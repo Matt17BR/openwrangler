@@ -2,10 +2,6 @@ source("r/openwrangler_runtime/frame_contract.R", local = FALSE)
 source("r/openwrangler_runtime/kernel_exports.R", local = FALSE)
 source("r/openwrangler_runtime/kernel_agent.R", local = FALSE)
 
-if (!requireNamespace("nanoparquet", quietly = TRUE)) {
-  stop("The R kernel agent test requires nanoparquet", call. = FALSE)
-}
-
 assert_identical <- function(actual, expected, message) {
   if (!identical(actual, expected)) {
     stop(sprintf("%s\nExpected: %s\nActual: %s", message, deparse(expected), deparse(actual)), call. = FALSE)

@@ -249,7 +249,7 @@ for (const platform of ["linux", "darwin", "win32"]) {
       purpose: "source-contracts",
       platform
     });
-    const packages = ["jsonlite", "nanoparquet", "bit64"];
+    const packages = ["jsonlite", "bit64"];
     const versions = Object.fromEntries(packages.map((name) => [name, R_ACCEPTANCE_PACKAGE_VERSIONS[name]]));
     assert.deepEqual(prepared.packages, packages);
     assert.equal(versions.bit64, "4.6.0.1");
@@ -277,7 +277,10 @@ for (const platform of ["linux", "darwin", "win32"]) {
     assert.equal(prepared.repository, repositories.repository);
     assert.equal(prepared.supplementalRepository, repositories.supplementalRepository);
     const install = commandCode(prepared.dependencyInstall);
-    assert.match(install, /\.ow_supplemental_packages <- c\("nanoparquet"\)/u);
+    assert.match(install, /\.ow_supplemental_packages <- c\(\)/u);
+    assert.match(install, /\.ow_binary_supplemental_packages <- c\(\)/u);
+    assert.equal(install.match(/utils::install\.packages\(/gu)?.length, 1);
+    assert.equal(install.includes('"nanoparquet"'), false);
     assert.equal(install.includes('"collapse"'), false);
     assert.equal(install.includes('type = "source"'), false);
     assert.equal(install.includes("-j2"), false);
@@ -370,7 +373,12 @@ test("notebook roots retain supplemental installs and private dependency refusal
     const install = commandCode(prepared.dependencyInstall);
     assert.match(install, /\.ow_supplemental_packages <- c\("collapse", "nanoparquet"\)/u);
     assert.equal(install.includes('type = "source"'), platform === "darwin");
-    assert.equal(install.includes('.ow_binary_supplemental_packages <- "nanoparquet"'), platform === "darwin");
+    assert.match(
+      install,
+      platform === "darwin"
+        ? /\.ow_binary_supplemental_packages <- c\("nanoparquet"\)/u
+        : /\.ow_binary_supplemental_packages <- c\("collapse", "nanoparquet"\)/u
+    );
     const serialMake = 'Sys.setenv(MAKEFLAGS = "-s")';
     const parallelMake = 'Sys.setenv(MAKEFLAGS = "-s -j2")';
     assert.equal(install.split("\n")[0], serialMake);
@@ -404,6 +412,7 @@ test("terminal preparation keeps native R ownership without a kernel on each pla
     });
     const install = commandCode(prepared.dependencyInstall);
     assert.match(install, /\.ow_supplemental_packages <- c\("nanoparquet"\)/u);
+    assert.match(install, /\.ow_binary_supplemental_packages <- c\("nanoparquet"\)/u);
     assert.equal(install.includes('"collapse"'), false);
     assert.equal(install.includes('"Rcpp"'), false);
     assert.equal(install.includes('"IRkernel"'), false);

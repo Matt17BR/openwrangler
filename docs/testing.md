@@ -431,9 +431,10 @@ remain in their existing source cases.
 This focused case runs in one R process through the warning-strict wrapper, with a two-minute limit and bounded
 output. Its synthetic fixtures and operations do not launch subprocesses; ordinary direct-child execution is sufficient
 and does not qualify general process-tree cleanup. Preparation uses the existing private-library owner with pinned
-jsonlite, bit64 and nanoparquet roots, including version and namespace checks. Any preparation or test failure retains
+jsonlite and bit64 roots, including version and namespace checks. The separate export case requires nanoparquet;
+numeric preparation skips the empty supplemental package install. Any preparation or test failure retains
 the private root; successful preparation and child exit permit its removal. The subsequent installed-editor journey
-keeps its separate environment and lifetime. The separate R 4.4 qualification remains unchanged.
+keeps its separate environment, nanoparquet dependency and lifetime. The separate R 4.4 qualification remains unchanged.
 
 The macOS default is `platform-lifecycle`. It keeps a paging round trip, the Mark Duplicates form, compact
 column reveal and focus, and Rename inspection, Edit, Undo/Redo, all-row exports, source
