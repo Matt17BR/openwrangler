@@ -488,7 +488,7 @@ export function releasedRNotebookCleanedCsvRow(row: number): string {
     ...Array.from({ length: 20 }, (_, index) => {
       const column = index + 1;
       if (column === 19) {
-        return new Date(Date.UTC(2026, 0, row)).toISOString().slice(0, 10);
+        return `"${new Date(Date.UTC(2026, 0, row)).toISOString().slice(0, 10)}"`;
       }
       if (column === 18) return row % 2 === 1 ? '"A|B"' : '"B"';
       if (row === 1 && column === 20) return "";
