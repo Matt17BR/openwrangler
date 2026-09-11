@@ -151,7 +151,7 @@ def rows(frame: Any) -> list[tuple[Any, ...]]:
 
 def normalized_rows(frame: Any) -> list[tuple[Any, ...]]:
     def normalize(value: Any) -> Any:
-        if value is None or type(value).__name__ in {"NAType", "NaTType"}:
+        if value is None or value is pd.NA or value is pd.NaT:
             return None
         return None if isinstance(value, float) and isnan(value) else value
 

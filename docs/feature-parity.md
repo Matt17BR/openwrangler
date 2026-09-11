@@ -87,7 +87,7 @@ keyboard shortcut overrides text-field editing.
 
 File inputs include CSV, TSV, Parquet, `.xls` and `.xlsx` workbooks, and `.jsonl` and `.ndjson` aliases. The stable
 file entry-point scope excludes Windows Polars JSONL/NDJSON paths containing `*`, `?`, or `[` apart from the structural
-`\\?\C:\` local-drive prefix. This includes parent folder names. The missing literal-path capability remains open in
+`\\?\C:\` local-drive prefix. This includes parent folder names. The missing literal-path capability is documented in
 [#986](https://github.com/Matt17BR/openwrangler/issues/986); the narrower scope does not resolve it. Ordinary Unicode,
 spaces, percent-looking names and closing brackets remain supported. See the precise native path and ownership
 rules in [Architecture](architecture.md#polars); the current evidence does not establish arbitrary UNC, device or
@@ -268,7 +268,11 @@ category mappings retain their dtype; separate mappings and differently ordered 
 
 Pandas Pivot Wider preserves object identifiers containing `NaT` and mixed scalar values in generated code.
 Integer `1` and string `"1"` remain distinct keys. Generated Group By preserves the same integral object-key values
-and dtypes as live execution; existing native type and hashability limits remain.
+and dtypes as live execution. Missing-value checks recognize the actual Pandas `NA` and `NaT` sentinels; similarly
+named custom values retain their values in pages, nested cells, Pivot and Fill. Integral objects with
+temporal-looking class names retain exact Group By keys. Cell rendering checks actual
+NumPy and Pandas scalar types and preserves nanoseconds in Pandas `Timedelta` subclasses. Existing native type and
+hashability limits remain.
 
 Native Pandas Arrow `bool8` and UUID columns support logical cell values, profiles, value selections, sorting and
 existing compatible cleaning operations. Nonzero `bool8` storage reads as true; UUIDs use canonical strings.

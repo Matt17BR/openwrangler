@@ -158,6 +158,17 @@ def test_polars_preparation_preloads_only_an_installed_excel_pyarrow_bridge(
 
 
 def test_polars_file_session_pages_filters_and_summarizes_without_pandas(monkeypatch):
+    import builtins
+
+    original_import = builtins.__import__
+
+    def reject_pandas_import(name, *args, **kwargs):
+        if name == "pandas" or name.startswith("pandas."):
+            raise AssertionError("Polars sessions must not import pandas")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", reject_pandas_import)
+
     def fail_to_pandas(*_args, **_kwargs):
         raise AssertionError("Polars sessions must not convert to pandas")
 

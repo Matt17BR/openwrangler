@@ -23,6 +23,84 @@ from openwrangler_runtime.session import SessionManager
 ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.mark.parametrize("sentinel_name", ["NAType", "NaTType"])
+@pytest.mark.parametrize("operation", ["pivotWider", "fillMissingValues"])
+def test_pandas_missing_sentinel_names_preserve_public_transform_values(
+    monkeypatch: pytest.MonkeyPatch, sentinel_name: str, operation: str
+) -> None:
+    import __main__
+
+    class PresentValue:
+        def __init__(self, label: str) -> None:
+            self.label = label
+
+        def __hash__(self) -> int:
+            return hash(self.label)
+
+        def __eq__(self, other: object) -> bool:
+            return type(other) is type(self) and self.label == getattr(other, "label", None)
+
+        def __str__(self) -> str:
+            return self.label
+
+    scalar_type = type(sentinel_name, (PresentValue,), {})
+    first, second = scalar_type("first"), scalar_type("second")
+    source = pd.DataFrame(
+        {"group": pd.Series([first, second, None], dtype=object), "key": ["x", "y", "x"], "value": [10, 20, 30]}
+    )
+    source.index = pd.Index(["retained"] * 3, name="source")
+    source.attrs["origin"] = "retained"
+    before = source.copy(deep=True)
+    monkeypatch.setattr(__main__, "sentinel_name_source", source, raising=False)
+    manager = SessionManager()
+    try:
+        opened = manager.open_session(
+            {"kind": "notebookVariable", "label": "sentinel names", "variableName": "sentinel_name_source"},
+            backend="pandas",
+            page_size=3,
+            mode="editing",
+        )
+        session_id = opened["metadata"]["sessionId"]
+        references = [{"id": c["id"], "name": c["name"]} for c in opened["metadata"]["schema"]]
+        if operation == "pivotWider":
+            params = {
+                "namesFrom": references[1],
+                "valuesFrom": references[2],
+                "outputs": [
+                    {"key": engine_base.typed_selection_value(key, "string"), "name": key + "_value"}
+                    for key in ["x", "y"]
+                ],
+            }
+        else:
+            params = {"column": references[0], "replacement": {"kind": "string", "value": "filled"}}
+        preview = manager.preview_step(
+            session_id, 0, {"id": "sentinel-names", "kind": operation, "params": params}, 0, 3
+        )
+        applied = manager.apply_draft(session_id, preview["revision"], 0, 3)
+        session = manager.sessions[session_id]
+        assert isinstance(session.engine, PandasEngine)
+        live = session.engine._visible_frame(session.committed)
+        namespace: dict[str, Any] = {}
+        exec(applied["code"], namespace)
+        for result in (live, namespace["clean_data"](source)):
+            assert len(result) == 3
+            assert result["group"].iloc[0] is first
+            assert result["group"].iloc[1] is second
+            if operation == "pivotWider":
+                assert result["group"].iloc[2] is pd.NA
+                assert result["x_value"].tolist() == [10, pd.NA, 30]
+                assert result["y_value"].tolist() == [pd.NA, 20, pd.NA]
+            else:
+                assert result["group"].iloc[2] == "filled"
+                assert result["value"].tolist() == [10, 20, 30]
+        manager.close_session(session_id, applied["revision"])
+    finally:
+        manager.close_all()
+    assert not manager.sessions
+    pd.testing.assert_frame_equal(source, before)
+    assert source.attrs == before.attrs
+
+
 def test_pandas_file_session_matches_protocol():
     manager = SessionManager()
     opened = manager.open_session(
@@ -1414,7 +1492,10 @@ def test_pandas_standard_object_schema_types_do_not_use_the_python_materializati
 
 
 @pytest.mark.parametrize("missing", [None, pd.NaT], ids=["None", "NaT"])
-def test_pandas_group_by_registered_integer_keys_keep_nullable_storage_in_generated_code(missing: Any) -> None:
+@pytest.mark.parametrize("scalar_kind", ["registered", "integer_subclass", "duration_name"])
+def test_pandas_group_by_integral_object_keys_keep_exact_nullable_storage_in_generated_code(
+    missing: Any, scalar_kind: str
+) -> None:
     class RegisteredInteger:
         def __init__(self, value: int) -> None:
             self.value = value
@@ -1432,11 +1513,15 @@ def test_pandas_group_by_registered_integer_keys_keep_nullable_storage_in_genera
             return str(self.value)
 
     Integral.register(RegisteredInteger)
+    scalar_type = (
+        RegisteredInteger
+        if scalar_kind == "registered"
+        else type("timedelta64" if scalar_kind == "duration_name" else "StableInteger", (int,), {})
+    )
+    first, second = 2**53 + 1, 2**53 + 2
     frame = pd.DataFrame(
         {
-            "group": pd.Series(
-                [RegisteredInteger(1), missing, RegisteredInteger(2), RegisteredInteger(1)], dtype=object
-            ),
+            "group": pd.Series([scalar_type(first), missing, scalar_type(second), scalar_type(first)], dtype=object),
             "value": pd.Series([10, 20, 30, 40], dtype="Int64"),
         }
     )
@@ -1445,7 +1530,7 @@ def test_pandas_group_by_registered_integer_keys_keep_nullable_storage_in_genera
     before = frame.copy(deep=True)
     engine, operation = _bound_pandas_group(frame, ("sum",))
     expected = pd.DataFrame(
-        {"group": pd.Series([1, None, 2], dtype="Int64"), "sum": pd.Series([50, 20, 30], dtype="Int64")}
+        {"group": pd.Series([first, None, second], dtype="Int64"), "sum": pd.Series([50, 20, 30], dtype="Int64")}
     )
     for actual in (engine.apply_transform(frame, operation), _execute_pandas_generated(engine, frame, operation)):
         pd.testing.assert_frame_equal(actual, expected)

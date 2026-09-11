@@ -407,6 +407,100 @@ def test_numeric_key_does_not_read_custom_numpy_dtype():
     pd.testing.assert_frame_equal(source, before)
 
 
+@pytest.mark.parametrize(
+    ("scalar_name", "module", "text", "attributes"),
+    [
+        pytest.param("NAType", __name__, "present", {}, id="NAType"),
+        pytest.param("NaTType", __name__, "present", {}, id="NaTType"),
+        pytest.param("bool", __name__, "present", {}, id="bool"),
+        pytest.param("bool_", __name__, "present", {}, id="bool_"),
+        pytest.param("datetime64", __name__, "present", {}, id="datetime64-no-item"),
+        pytest.param("datetime64", __name__, "present", {"item": lambda self: None}, id="datetime64-item-none"),
+        pytest.param("timedelta64", __name__, "NaT", {}, id="timedelta64-NaT"),
+        pytest.param("Timedelta", __name__, "present", {"value": 1_000_000_000}, id="Timedelta"),
+        pytest.param("generic", "numpy", "present", {"item": lambda self: 7}, id="numpy-generic-metadata"),
+    ],
+)
+@pytest.mark.parametrize("nested", [False, True])
+def test_scalar_type_names_preserve_cells_and_nested_json(
+    monkeypatch: pytest.MonkeyPatch,
+    scalar_name: str,
+    module: str,
+    text: str,
+    attributes: dict[str, Any],
+    nested: bool,
+) -> None:
+    import __main__
+
+    class PresentValue:
+        def __str__(self) -> str:
+            return text
+
+        def __eq__(self, _other: object) -> bool:
+            raise AssertionError("sentinel recognition must not invoke scalar equality")
+
+    value = type(scalar_name, (PresentValue,), {"__module__": module, **attributes})()
+    cell_value = {"value": value, "items": [value, pd.NA, pd.NaT]} if nested else value
+    expected_raw = {"value": text, "items": [text, None, None]} if nested else text
+    cell = normalize_cell(cell_value)
+    assert cell["kind"] == ("struct" if nested else "unknown")
+    assert cell["raw"] == expected_raw
+    assert not cell["isNull"] and not cell["isNaN"]
+    source = pd.DataFrame({"value": pd.Series([cell_value], dtype=object)})
+    source.attrs["origin"] = "retained"
+    before = source.copy(deep=True)
+    monkeypatch.setattr(__main__, "sentinel_cell_source", source, raising=False)
+    manager = SessionManager()
+    try:
+        opened = manager.open_session(
+            {"kind": "notebookVariable", "label": "sentinel cell", "variableName": "sentinel_cell_source"},
+            backend="pandas",
+            page_size=1,
+        )
+        actual = opened["page"]["rows"][0]["values"][0]
+        assert actual == cell
+        assert json.loads(json.dumps(actual, allow_nan=False))["raw"] == expected_raw
+        manager.close_session(opened["metadata"]["sessionId"], 0)
+    finally:
+        manager.close_all()
+    assert not manager.sessions
+    assert source.iloc[0, 0] is cell_value
+    pd.testing.assert_frame_equal(source, before)
+    assert source.attrs == before.attrs
+
+
+@pytest.mark.parametrize("pandas_duration", [False, True])
+@pytest.mark.parametrize("nested", [False, True])
+def test_duration_subclasses_preserve_native_value_in_cells(pandas_duration: bool, nested: bool) -> None:
+    if pandas_duration:
+
+        class WrappedDuration(pd.Timedelta):
+            pass
+
+        value = WrappedDuration(1, unit="ns")
+        expected = 1e-9
+    else:
+
+        class Timedelta(timedelta):
+            value = 7_000_000_000
+
+        value = Timedelta(seconds=2)
+        expected = 2.0
+    cell_value = {"value": value} if nested else value
+    cell = normalize_cell(cell_value)
+    assert cell["kind"] == ("struct" if nested else "duration")
+    assert cell["raw"] == ({"value": expected} if nested else expected)
+    source = pd.DataFrame({"value": pd.Series([cell_value], dtype=object)})
+    engine = PandasEngine()
+    try:
+        schema = engine.schema(source)
+        page = engine.page(source, 0, 1, column_projection=[(0, schema[0]["id"])])
+        assert page["rows"][0]["values"][0] == cell
+        assert source.iloc[0, 0] is cell_value
+    finally:
+        engine.close()
+
+
 def test_typed_cells_preserve_values_json_cannot_represent_directly() -> None:
     assert normalize_cell(2**63)["raw"] == str(2**63)
     assert normalize_cell(Decimal("1.2300"))["kind"] == "decimal"

@@ -592,7 +592,13 @@ the existing missing-value rules. Mixed scalar identifiers retain their native r
 structs remain refused. Categories, nullable integer storage, Boolean storage and the existing object fallback follow
 the same allocation policy. Non-object metadata checks, grouping and row restoration retain their existing paths.
 Generated integer helpers use the same `numbers.Integral` admission as live execution, excluding Boolean values and
-NumPy durations, so integral object keys retain the same values and dtypes as live execution.
+actual NumPy duration instances, so integral object keys retain the same values and dtypes as live execution
+without interpreting their class names as temporal types.
+Shared cell normalization and Pandas operations recognize `NA` and `NaT` by identity, not a matching class name.
+The shared boundary consults an already-loaded Pandas module without importing it for other engines; generated
+Pandas code uses its existing module binding. NumPy scalar and temporal handling checks actual native types;
+Pandas `Timedelta` subclasses retain nanoseconds, while ordinary Python timedeltas keep their own value. None,
+floating NaN, Decimal NaN and Arrow temporal validity retain their separate existing rules.
 
 ### Polars
 

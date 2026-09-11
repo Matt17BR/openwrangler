@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import codecs
 import os
+import sys
 from base64 import b64encode
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import nullcontext
@@ -98,6 +99,9 @@ from .base import (
     typed_selection_value,
     validate_numpy_float,
     validate_view_predicate_operator,
+)
+from .base import (
+    is_null_scalar as _is_null_value,
 )
 
 _ASCII_LOWER = "abcdefghijklmnopqrstuvwxyz"
@@ -1856,7 +1860,7 @@ class PandasEngine(DataFrameEngine):
                     "",
                     "",
                     "def _open_wrangler_is_null(value):",
-                    "    return value is None or type(value).__name__ in {'NAType', 'NaTType'}",
+                    "    return value is None or value is pd.NA or value is pd.NaT",
                     "",
                     "",
                     "def _open_wrangler_is_nan(value):",
@@ -1967,7 +1971,7 @@ class PandasEngine(DataFrameEngine):
                     "",
                     "def _open_wrangler_missing_scalar(value):",
                     "    return (",
-                    "        value is None or type(value).__name__ in {'NAType', 'NaTType'} or",
+                    "        value is None or value is pd.NA or value is pd.NaT or",
                     "        (isinstance(value, (float, np.floating)) and np.isnan(value)) or",
                     "        (isinstance(value, Decimal) and value.is_nan())",
                     "    )",
@@ -1977,7 +1981,7 @@ class PandasEngine(DataFrameEngine):
                     "    return (",
                     "        isinstance(value, (int, np.integer, Integral))",
                     "        and not isinstance(value, bool)",
-                    "        and type(value).__name__ != 'timedelta64'",
+                    "        and not isinstance(value, np.timedelta64)",
                     "    )",
                     "",
                     "",
@@ -3784,15 +3788,18 @@ def _pandas_is_missing_scalar(value: Any) -> bool:
     import numpy as np
 
     return (
-        value is None
-        or type(value).__name__ in {"NAType", "NaTType"}
+        _is_null_value(value)
         or (isinstance(value, (float, np.floating)) and np.isnan(value))
         or (isinstance(value, Decimal) and value.is_nan())
     )
 
 
 def _pandas_is_integer_scalar(value: Any) -> bool:
-    return isinstance(value, Integral) and not isinstance(value, bool) and type(value).__name__ != "timedelta64"
+    return (
+        isinstance(value, Integral)
+        and not isinstance(value, bool)
+        and not isinstance(value, getattr(sys.modules.get("numpy"), "timedelta64", ()))
+    )
 
 
 def _pandas_integer_values(series: Any) -> list[int] | None:
@@ -7219,10 +7226,6 @@ def _scalar_mask(series: Any, predicate: Any) -> Any:
         if array is not None:
             return type(series)(array.is_null().to_numpy(), index=series.index, dtype=bool)
     return type(series)([predicate(value) for value in series.array], index=series.index, dtype=bool)
-
-
-def _is_null_value(value: Any) -> bool:
-    return value is None or type(value).__name__ in {"NAType", "NaTType"}
 
 
 def _is_nan_value(value: Any) -> bool:

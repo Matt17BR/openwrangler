@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from abc import ABC, abstractmethod
 from base64 import b64encode
 from bisect import bisect_right
@@ -1075,24 +1076,32 @@ def datetime_isoformat(value: datetime, *, sep: Literal["T", " "] = "T", nanosec
     return f"{text[:fraction]}.{nanoseconds:09d}{text[fraction + 7 :]}"
 
 
+def is_null_scalar(value: Any) -> bool:
+    """Recognize None and genuine Pandas sentinels without importing Pandas."""
+    if value is None:
+        return True
+    pandas = sys.modules.get("pandas")
+    return pandas is not None and (value is getattr(pandas, "NA", None) or value is getattr(pandas, "NaT", None))
+
+
 def normalize_cell(value: Any) -> dict[str, Any]:
-    type_name = type(value).__name__
-    if _is_numpy_scalar_wrapper(value) and type_name not in {"datetime64", "timedelta64"}:
+    numpy = sys.modules.get("numpy")
+    is_numpy_datetime = isinstance(value, getattr(numpy, "datetime64", ()))
+    is_numpy_duration = isinstance(value, getattr(numpy, "timedelta64", ()))
+    if _is_numpy_scalar_wrapper(value) and not (is_numpy_datetime or is_numpy_duration):
         converted = value.item()
         if type(converted) is not type(value):
             return normalize_cell(converted)
-    numpy_datetime = value.item() if type_name == "datetime64" else None
-    pandas_timedelta_value = getattr(value, "value", None)
+    numpy_datetime = value.item() if is_numpy_datetime else None
     is_null = (
-        value is None
-        or type_name in {"NAType", "NaTType"}
-        or (type_name == "datetime64" and numpy_datetime is None)
-        or (type_name == "timedelta64" and str(value) == "NaT")
+        is_null_scalar(value)
+        or (is_numpy_datetime and numpy_datetime is None)
+        or (is_numpy_duration and str(value) == "NaT")
         or (isinstance(value, Decimal) and value.is_nan())
     )
-    is_boolean = isinstance(value, bool) or type_name in {"bool", "bool_"}
-    is_integer = isinstance(value, Integral) and not is_boolean and type_name != "timedelta64"
-    is_real = isinstance(value, Real) and not is_boolean and not is_integer and type_name != "timedelta64"
+    is_boolean = isinstance(value, bool)
+    is_integer = isinstance(value, Integral) and not is_boolean and not is_numpy_duration
+    is_real = isinstance(value, Real) and not is_boolean and not is_integer and not is_numpy_duration
     if is_real:
         validate_numpy_float(value)
     numeric_value = float(str(value)) if is_real else None
@@ -1128,7 +1137,7 @@ def normalize_cell(value: Any) -> dict[str, Any]:
         kind = "decimal"
         display = str(value)
         raw = display
-    elif type_name == "datetime64":
+    elif is_numpy_datetime:
         kind = "datetime"
         display = str(value)
         raw = display
@@ -1140,15 +1149,14 @@ def normalize_cell(value: Any) -> dict[str, Any]:
         kind = "date"
         display = value.isoformat()
         raw = display
-    elif type_name == "Timedelta" and isinstance(pandas_timedelta_value, Integral):
-        kind = "duration"
-        display = str(value)
-        raw = int(pandas_timedelta_value) / 1_000_000_000
     elif isinstance(value, timedelta):
         kind = "duration"
         display = str(value)
-        raw = value.total_seconds()
-    elif type_name == "timedelta64":
+        if isinstance(value, getattr(sys.modules.get("pandas"), "Timedelta", ())):
+            raw = int(cast(Any, value).value) / 1_000_000_000
+        else:
+            raw = value.total_seconds()
+    elif is_numpy_duration:
         kind = "duration"
         display = str(value)
         raw = _numpy_timedelta_raw(value, display)
@@ -1409,18 +1417,18 @@ def _maybe_float(value: Any) -> float | None:
 
 
 def _json_safe(value: Any) -> Any:
-    type_name = type(value).__name__
-    if type_name in {"datetime64", "timedelta64"}:
+    numpy = sys.modules.get("numpy")
+    if isinstance(value, (getattr(numpy, "datetime64", ()), getattr(numpy, "timedelta64", ()))):
         return normalize_cell(value)["raw"]
     if _is_numpy_scalar_wrapper(value):
         converted = value.item()
         if type(converted) is not type(value):
             return _json_safe(converted)
-    if value is None or type_name in {"NAType", "NaTType"} or (isinstance(value, Decimal) and value.is_nan()):
+    if is_null_scalar(value) or (isinstance(value, Decimal) and value.is_nan()):
         return None
     if isinstance(value, str):
         return value
-    if isinstance(value, bool) or type_name in {"bool", "bool_"}:
+    if isinstance(value, bool):
         return bool(value)
     if isinstance(value, Decimal):
         return str(value)
@@ -1438,9 +1446,9 @@ def _json_safe(value: Any) -> Any:
         return datetime_isoformat(value)
     if isinstance(value, date):
         return value.isoformat()
-    if type_name == "Timedelta" and isinstance(getattr(value, "value", None), Integral):
-        return int(value.value) / 1_000_000_000
     if isinstance(value, timedelta):
+        if isinstance(value, getattr(sys.modules.get("pandas"), "Timedelta", ())):
+            return int(cast(Any, value).value) / 1_000_000_000
         return value.total_seconds()
     if isinstance(value, bytes):
         return b64encode(value).decode("ascii")
@@ -1452,7 +1460,7 @@ def _json_safe(value: Any) -> Any:
 
 
 def _is_numpy_scalar_wrapper(value: Any) -> bool:
-    return any(base.__module__ == "numpy" and base.__name__ == "generic" for base in type(value).__mro__)
+    return isinstance(value, getattr(sys.modules.get("numpy"), "generic", ()))
 
 
 def _numpy_timedelta_raw(value: Any, fallback: str) -> float | str:

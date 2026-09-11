@@ -8,6 +8,9 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 - Pandas Pivot Wider preserves object identifiers with `NaT` and mixed scalar values in generated code. Generated
   integer helpers match live scalar admission and preserve Group By key values and dtypes.
+- Pandas Pivot and Fill distinguish actual missing sentinels from same-named custom values. Group By retains exact
+  integral keys with temporal-looking class names. Cell rendering uses native scalar identities and retains
+  nanoseconds in Pandas `Timedelta` subclasses.
 
 ## [2.1.1] - 2026-09-11
 
