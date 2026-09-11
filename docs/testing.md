@@ -205,6 +205,14 @@ after restart, rendered recovery and the remaining file/notebook interactions. G
 fixture Jupyter API backed by real Python through the production bridge. Released Jupyter is qualified separately;
 [`python-notebooks`](#focused-python-notebook-checks) is not the generic file-verification profile.
 
+On POSIX, these runners keep temporary roots under the checkout's `tmp/ow`. The checkout and every temporary-path
+ancestor must satisfy the [kernel temporary-directory rules](architecture.md#notebook-kernel-terminal-and-document-provenance).
+Windows selects the original local user profile's `LOCALAPPDATA/Temp`, then places the isolated home, LocalAppData
+and kernel Temp inside one disposable root there. Missing or non-local `LOCALAPPDATA` fails before editor startup;
+the original profile must retain its normal per-user protections. A private child does not remove the ancestry
+requirement. Existing process-settlement and root-identity checks govern cleanup, including files left by killed
+fixture kernels.
+
 The generic verification journey composes Formula then Custom Code in each editing engine, with Custom Code consuming
 the Formula output. It compares Preview/Apply and complete code, then checks the plan, schema and bounded page after
 runtime restart. It retains each engine's edited clipboard/export path, Pandas Save/cancel, source integrity and cleanup.

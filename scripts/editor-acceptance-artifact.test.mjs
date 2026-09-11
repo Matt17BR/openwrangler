@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, win32 } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import {
@@ -12,7 +12,14 @@ import {
   createEditorAcceptanceArtifactParent,
   sealEditorAcceptanceEvidence
 } from "./editor-acceptance-artifact.mjs";
+import * as editorAcceptance from "./editor-acceptance.mjs";
 import {
+  createEditorAcceptancePrivateRootReceipt,
+  removeEditorAcceptancePrivateRoot
+} from "./packaged-editor-orchestration.mjs";
+import {
+  configureEditorAcceptanceTempRoot,
+  createEditorAcceptanceEnvironmentForPlatform,
   createEditorAcceptanceEnvironment,
   downloadEditorWithRetry,
   resolvePackagedVscodeAcquisitionPlan,
@@ -20,6 +27,110 @@ import {
 } from "./editor-acceptance.mjs";
 
 const repositoryRoot = resolve(import.meta.dirname, "..");
+
+test("editor runner parent selections use the Windows profile or unchanged POSIX checkout", async () => {
+  const environment = { LOCALAPPDATA: "C:\\Users\\Fixture\\AppData\\Local", TMP: "D:\\shared" };
+  for (const runner of ["run-packaged-editor-tests.mjs", "run-extension-tests.mjs", "run-installed-performance.mjs"]) {
+    const source = await readFile(join(repositoryRoot, "scripts", runner), "utf8");
+    const declaration = /const (?:temporaryParent|privateParent) = ([^;]+);/u.exec(source);
+    assert.ok(declaration, `${runner} parent selection`);
+    for (const platform of ["linux", "darwin", "win32"]) {
+      const parent = new Function(
+        "resolve",
+        "resolveEditorAcceptanceTemporaryParent",
+        "root",
+        "environment",
+        `return ${declaration[1]};`
+      )(
+        resolve,
+        (root, selectedEnvironment = environment) =>
+          editorAcceptance.resolveEditorAcceptanceTemporaryParent(root, selectedEnvironment, platform),
+        repositoryRoot,
+        environment
+      );
+      assert.equal(
+        parent,
+        platform === "win32" ? win32.join(environment.LOCALAPPDATA, "Temp") : join(repositoryRoot, "tmp", "ow"),
+        runner
+      );
+    }
+  }
+});
+
+test("Windows temporary parent refuses missing and unsupported original profile paths without a fallback", () => {
+  for (const value of [
+    undefined,
+    "",
+    "relative",
+    "C:relative",
+    "\\root-relative",
+    "\\\\server\\share",
+    "\\\\?\\C:\\profile",
+    "/tmp/profile",
+    "C:\\profile\nother"
+  ]) {
+    assert.throws(
+      () =>
+        editorAcceptance.resolveEditorAcceptanceTemporaryParent(
+          repositoryRoot,
+          { LOCALAPPDATA: value, TEMP: "C:\\fallback", TMP: "C:\\fallback" },
+          "win32"
+        ),
+      /original.*LOCALAPPDATA/u
+    );
+  }
+  assert.equal(
+    editorAcceptance.resolveEditorAcceptanceTemporaryParent(
+      repositoryRoot,
+      { LocalAppData: "C:\\Users\\Fixture\\Local" },
+      "win32"
+    ),
+    "C:\\Users\\Fixture\\Local\\Temp"
+  );
+  assert.throws(
+    () =>
+      editorAcceptance.resolveEditorAcceptanceTemporaryParent(
+        repositoryRoot,
+        { LOCALAPPDATA: "C:\\one", LocalAppData: "C:\\two" },
+        "win32"
+      ),
+    /colliding Windows/u
+  );
+});
+
+for (const platform of ["linux", "win32"]) {
+  test(`private ${platform} profile remains filtered, repeatable and inside its one cleanup root`, async (context) => {
+    const directory = await mkdtemp(join(tmpdir(), "openwrangler-temp-profile-"));
+    context.after(() => rm(directory, { recursive: true, force: true }));
+    const receipt = createEditorAcceptancePrivateRootReceipt(directory, { containedBy: tmpdir() });
+    const environment = { LocalAppData: "C:\\Users\\Fixture\\AppData\\Local", TOKEN: "must-not-inherit" };
+    configureEditorAcceptanceTempRoot(directory, environment, platform);
+    const first = { ...environment };
+    configureEditorAcceptanceTempRoot(directory, environment, platform);
+    assert.deepEqual(environment, first);
+    const filtered = createEditorAcceptanceEnvironmentForPlatform(environment, {}, platform);
+    const local = join(directory, "home", "AppData", "Local");
+    const expectedTemp = platform === "win32" ? join(local, "Temp") : directory;
+    assert.equal(filtered.HOME, join(directory, "home"));
+    assert.equal(filtered.USERPROFILE, join(directory, "home"));
+    for (const name of ["TMP", "TEMP", "TMPDIR"]) assert.equal(filtered[name], expectedTemp);
+    if (platform === "win32") assert.equal(filtered.LOCALAPPDATA, local);
+    assert.equal(filtered.TOKEN, undefined);
+    const ownedFile = join(expectedTemp, "retained-bootstrap-fixture");
+    await writeFile(ownedFile, "owned fixture");
+    const nested = join(directory, "compiler");
+    const compilerEnvironment = { ...filtered };
+    configureEditorAcceptanceTempRoot(nested, compilerEnvironment, platform);
+    assert.deepEqual(environment, first);
+    assert.equal(
+      compilerEnvironment.TEMP,
+      platform === "win32" ? join(nested, "home", "AppData", "Local", "Temp") : nested
+    );
+    assert.equal(await readFile(ownedFile, "utf8"), "owned fixture");
+    removeEditorAcceptancePrivateRoot(receipt, { processTreeVerifiedStopped: true });
+    await assert.rejects(readFile(ownedFile), { code: "ENOENT" });
+  });
+}
 
 test("R checkpoint timing logs only changed fixed labels without changing phase or inactivity deadlines", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-progress-timing-"));

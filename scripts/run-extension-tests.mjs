@@ -3,6 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   configureEditorAcceptanceTempRoot,
+  resolveEditorAcceptanceTemporaryParent,
   collectEditorAcceptancePrivateDiagnosticPaths,
   createEditorAcceptanceEnvironment,
   downloadEditorWithRetry,
@@ -42,7 +43,7 @@ try {
     platform: process.platform
   });
   process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
-  const temporaryParent = resolve(root, "tmp", "ow");
+  const temporaryParent = resolveEditorAcceptanceTemporaryParent(root);
   mkdirSync(temporaryParent, { recursive: true, mode: 0o700 });
   temporaryRoot = mkdtempSync(join(temporaryParent, "x-"));
   temporaryRootReceipt = createEditorAcceptancePrivateRootReceipt(temporaryRoot, {

@@ -6,6 +6,7 @@ import { createVSIX } from "@vscode/vsce";
 import {
   assertJupyterExtensionAcceptanceVsixSnapshot,
   configureEditorAcceptanceTempRoot,
+  resolveEditorAcceptanceTemporaryParent,
   collectEditorAcceptancePrivateDiagnosticPaths,
   createEditorAcceptanceEnvironment,
   createEditorAcceptanceFailure,
@@ -168,7 +169,7 @@ try {
     scope: "evidence-staging",
     editor: "orchestration"
   });
-  const temporaryParent = resolve(root, "tmp", "ow");
+  const temporaryParent = resolveEditorAcceptanceTemporaryParent(root);
   mkdirSync(temporaryParent, { recursive: true, mode: 0o700 });
   temporaryRoot = mkdtempSync(join(temporaryParent, "x-"));
   temporaryRootReceipt = capturePrivateRootReceipt(temporaryRoot, temporaryParent, {

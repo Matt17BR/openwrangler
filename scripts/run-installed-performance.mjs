@@ -26,6 +26,7 @@ import { createVSIX, listFiles } from "@vscode/vsce";
 import {
   EDITOR_ACCEPTANCE_ARTIFACT_RECEIPT_PROTOCOL,
   configureEditorAcceptanceTempRoot,
+  resolveEditorAcceptanceTemporaryParent,
   createEditorAcceptanceEnvironment,
   downloadEditorWithRetry,
   editorAcceptanceProgressPath,
@@ -1305,7 +1306,7 @@ export async function runInstalledPerformance(options, environment = process.env
     throw new Error("Preview-release and performance-evidence provenance are valid only for canonical consumption.");
   }
   assertInstalledPerformanceArtifactPathSeparation(options);
-  const privateParent = resolve(root, "tmp", "ow");
+  const privateParent = resolveEditorAcceptanceTemporaryParent(root, environment);
   mkdirSync(privateParent, { recursive: true, mode: 0o700 });
   const privateRoot = mkdtempSync(join(privateParent, "x-"));
   const privateRootReceipt = createEditorAcceptancePrivateRootReceipt(privateRoot, { containedBy: privateParent });

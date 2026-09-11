@@ -712,6 +712,7 @@ const INHERITED_EDITOR_ENVIRONMENT_KEYS = new Set([
   "HOME",
   "LANG",
   "LANGUAGE",
+  "LOCALAPPDATA",
   "LC_ADDRESS",
   "LC_ALL",
   "LC_COLLATE",
@@ -789,7 +790,22 @@ const DETACHED_SESSION_ENVIRONMENT_KEYS = [
   "XAUTHORITY",
   "XDG_CURRENT_DESKTOP"
 ];
-export function configureEditorAcceptanceTempRoot(path, environment = process.env) {
+export function resolveEditorAcceptanceTemporaryParent(
+  repositoryRoot,
+  environment = process.env,
+  platform = process.platform
+) {
+  if (platform !== "win32") return resolve(repositoryRoot, "tmp", "ow");
+  const localAppData = platformEnvironmentEntries(environment, platform, "temporary-parent").find(
+    ([key]) => key.toUpperCase() === "LOCALAPPDATA"
+  )?.[1];
+  if (typeof localAppData !== "string" || !/^[A-Za-z]:[\\/]/u.test(localAppData) || /[\0\r\n]/u.test(localAppData)) {
+    throw new Error("Windows editor acceptance requires the original absolute local-drive LOCALAPPDATA profile.");
+  }
+  return win32.join(localAppData, "Temp");
+}
+
+export function configureEditorAcceptanceTempRoot(path, environment = process.env, platform = process.platform) {
   const root = resolve(path);
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const privateDirectories = {
@@ -801,17 +817,24 @@ export function configureEditorAcceptanceTempRoot(path, environment = process.en
     XDG_DATA_HOME: join(root, "data"),
     XDG_STATE_HOME: join(root, "state")
   };
+  if (platform === "win32") {
+    privateDirectories.LOCALAPPDATA = join(root, "home", "AppData", "Local");
+    for (const key of Object.keys(environment)) {
+      if (key.toUpperCase() === "LOCALAPPDATA") delete environment[key];
+    }
+  }
   for (const directory of new Set(Object.values(privateDirectories))) {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
   }
   Object.assign(environment, privateDirectories);
   environment[TEMP_ROOT_ENV] = root;
-  // Electron and editor subprocesses create additional temporary files outside
-  // the profile itself. Keep those on the same disposable, quota-independent
-  // filesystem on every desktop platform.
-  environment.TMPDIR = root;
-  environment.TMP = root;
-  environment.TEMP = root;
+  // Keep editor, kernel and compiler temporary data inside this owned cleanup
+  // root. Windows kernels require their profile's exact LocalAppData/Temp.
+  const temporaryDirectory = platform === "win32" ? join(privateDirectories.LOCALAPPDATA, "Temp") : root;
+  if (platform === "win32") mkdirSync(temporaryDirectory, { recursive: true, mode: 0o700 });
+  environment.TMPDIR = temporaryDirectory;
+  environment.TMP = temporaryDirectory;
+  environment.TEMP = temporaryDirectory;
   for (const key of Object.keys(environment)) {
     if (key.toUpperCase() === "HOMEDRIVE" || key.toUpperCase() === "HOMEPATH") delete environment[key];
   }
