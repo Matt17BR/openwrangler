@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from pathlib import Path
 from typing import Any, Literal, cast
 from uuid import UUID
@@ -15,7 +15,12 @@ import pytest
 
 from openwrangler_runtime._column_binding import bind_step
 from openwrangler_runtime.engines import EngineError, PandasEngine
-from openwrangler_runtime.engines.base import infer_semantic_type, normalize_cell, typed_selection_value
+from openwrangler_runtime.engines.base import (
+    coerce_typed_view_value,
+    infer_semantic_type,
+    normalize_cell,
+    typed_selection_value,
+)
 from openwrangler_runtime.lineage import source_lineage
 from openwrangler_runtime.operations import validate_step
 from openwrangler_runtime.session import SessionManager
@@ -636,7 +641,7 @@ def test_duration_subclasses_preserve_native_value_in_cells(pandas_duration: boo
             pass
 
         value = WrappedDuration(1, unit="ns")
-        expected = 1e-9
+        expected = "0.000000001"
     else:
 
         class Timedelta(timedelta):
@@ -668,6 +673,127 @@ def test_typed_cells_preserve_values_json_cannot_represent_directly() -> None:
     assert normalize_cell(date(2026, 7, 15))["raw"] == "2026-07-15"
 
 
+@pytest.mark.parametrize(
+    "value,raw,portable",
+    [
+        (timedelta(seconds=2), 2.0, True),
+        (timedelta(seconds=2, microseconds=123456), 2.123456, True),
+        (timedelta(microseconds=1), "0.000001", True),
+        (timedelta(microseconds=-1), "-0.000001", True),
+        (timedelta(days=100000, microseconds=1), "8640000000.000001", True),
+        (timedelta(days=999999999, microseconds=1), "86399999913600.000001", True),
+        (pd.Timedelta(9 * 10**18 + 1000, "ns"), "9000000000.000001", True),
+        (pd.Timedelta(10**17 + 1, "ns"), "100000000.000000001", False),
+        (np.timedelta64(500000000, "D"), 43200000000000.0, True),
+        (np.array(2**62, dtype="timedelta64[2us]")[()], "9223372036854.775808", True),
+        (np.array(2**62, dtype="timedelta64[1000us]")[()], "4611686018427387.904", False),
+        (np.array(1000, dtype="timedelta64[2ns]")[()], "0.000002", True),
+        (np.array(1, dtype="timedelta64[2ns]")[()], "0.000000002", False),
+        (np.timedelta64(1, "ps"), "0.000000000001", False),
+        (np.timedelta64(-1, "fs"), "-0.000000000000001", False),
+        (np.timedelta64(1, "as"), "0.000000000000000001", False),
+    ],
+)
+def test_duration_cells_keep_exact_seconds_and_portable_selection(value, raw, portable) -> None:
+    with localcontext() as context:
+        context.prec = 3
+        context.clear_flags()
+        cell = normalize_cell(value)
+        assert cell == {"kind": "duration", "raw": raw, "display": str(value), "isNull": False, "isNaN": False}
+        assert normalize_cell({"value": [value]})["raw"] == {"value": [raw]}
+        assert json.loads(json.dumps(cell, allow_nan=False)) == cell
+        token = typed_selection_value(value, "duration")
+        if portable:
+            assert token is not None and token["cell"] == cell
+            numerator, denominator = Decimal(str(raw)).as_integer_ratio()
+            expected = timedelta(microseconds=numerator * 1_000_000 // denominator)
+            assert coerce_typed_view_value(token, "duration") == expected
+        else:
+            assert token is None
+            grid_token = {"kind": "typedSelection", "version": 1, "columnType": "duration", "cell": cell}
+            with pytest.raises(EngineError):
+                coerce_typed_view_value(grid_token, "duration")
+        assert context.prec == 3 and not any(context.flags.values())
+
+
+def test_numpy_duration_units_keep_fixed_seconds_and_refuse_calendar_values() -> None:
+    for unit, seconds in [("W", 604800), ("D", 86400), ("h", 3600), ("m", 60), ("s", 1), ("ms", 0.001)]:
+        value = np.timedelta64(1, unit)
+        assert normalize_cell(value)["raw"] == seconds
+    for value in [np.timedelta64(1, "Y"), np.timedelta64(1, "M"), np.timedelta64(1)]:
+        assert normalize_cell(value)["raw"] == str(value)
+        assert typed_selection_value(value, "duration") is None
+    assert normalize_cell(np.array("NaT", dtype="timedelta64[2ns]")[()])["isNull"]
+
+
+@pytest.mark.parametrize("ticks", [2_123_456_000, 9 * 10**18 + 1000, 10**17 + 1])
+def test_duration_session_choices_and_grid_tokens_keep_source_rows(monkeypatch: pytest.MonkeyPatch, ticks: int) -> None:
+    import __main__
+
+    portable = ticks % 1000 == 0
+    neighbor = 2_120_000_000 if ticks == 2_123_456_000 else 9 * 10**18 + 2000 if portable else 10**17
+    native = np.array([ticks, ticks + 1000, ticks, neighbor, -(2**63)], dtype=np.int64)
+    source = pd.DataFrame({"value": pd.to_timedelta(native, unit="ns"), "row": range(5)})
+    source.index = pd.Index(["same"] * 5, name="original")
+    source.attrs["origin"] = "retained"
+    before = source.copy(deep=True)
+    monkeypatch.setattr(__main__, "duration_selection_source", source, raising=False)
+    manager = SessionManager()
+    try:
+        with localcontext() as context:
+            context.prec = 3
+            opened = manager.open_session(
+                {
+                    "kind": "notebookVariable",
+                    "label": "duration selection",
+                    "variableName": "duration_selection_source",
+                },
+                backend="pandas",
+                page_size=5,
+            )
+            metadata = opened["metadata"]
+            sid, revision = metadata["sessionId"], metadata["revision"]
+            unfiltered = {"filters": [], "sort": []}
+            choice = manager.get_column_values(sid, revision, "value", unfiltered)["values"][0]
+            assert choice["count"] == 2 and choice["value"] == str(pd.Timedelta(ticks, "ns"))
+            cell = opened["page"]["rows"][0]["values"][0]
+            tokens = [{"kind": "typedSelection", "version": 1, "columnType": "duration", "cell": cell}]
+            if portable:
+                tokens.append(choice["selectionValue"])
+            else:
+                assert "selectionValue" not in choice
+            for token in tokens:
+                model = {
+                    "filters": [
+                        {
+                            "column": "value",
+                            "type": "duration",
+                            "predicates": [],
+                            "valueFilter": {
+                                "kind": "values",
+                                "selectedValues": [token],
+                                "includeNulls": False,
+                                "includeNaN": False,
+                            },
+                        }
+                    ],
+                    "sort": [],
+                }
+                if portable:
+                    page = manager.get_page(sid, revision, 0, 5, model)["page"]
+                    assert [row["values"][1]["raw"] for row in page["rows"]] == [0, 2]
+                else:
+                    with pytest.raises(EngineError):
+                        manager.get_page(sid, revision, 0, 5, model)
+            restored = manager.get_page(sid, revision, 0, 5, unfiltered)
+            assert [row["values"][1]["raw"] for row in restored["page"]["rows"]] == list(range(5))
+            assert all(restored["metadata"][key] == metadata[key] for key in ("sessionId", "revision", "source"))
+    finally:
+        manager.close_all()
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
+    assert source.attrs == before.attrs
+
+
 def test_typed_cells_normalize_numpy_and_pandas_scalars() -> None:
     assert normalize_cell(np.int64(7)) == {
         "kind": "integer",
@@ -691,7 +817,7 @@ def test_typed_cells_normalize_numpy_and_pandas_scalars() -> None:
     assert normalize_cell(np.timedelta64(1, "D"))["raw"] == 86_400
     assert normalize_cell(np.timedelta64(1, "ns")) == {
         "kind": "duration",
-        "raw": 1e-9,
+        "raw": "0.000000001",
         "display": "1 nanoseconds",
         "isNull": False,
         "isNaN": False,
@@ -704,7 +830,7 @@ def test_typed_cells_normalize_numpy_and_pandas_scalars() -> None:
     assert normalize_cell(pd.NaT)["kind"] == "null"
     assert normalize_cell(pd.Timestamp("2026-07-15T12:30:00+02:00"))["raw"] == "2026-07-15T12:30:00+02:00"
     assert normalize_cell(timedelta(days=1))["raw"] == 86_400
-    assert normalize_cell(pd.Timedelta(1, unit="ns"))["raw"] == 1e-9
+    assert normalize_cell(pd.Timedelta(1, unit="ns"))["raw"] == "0.000000001"
 
 
 @pytest.mark.parametrize(
@@ -867,7 +993,20 @@ def test_pandas_duration_search_preserves_native_row_text(dictionary: bool, unit
     source.index = pd.Index(["same"] * 4, name="source row")
     before = source.copy(deep=True)
     engine = PandasEngine()
-    first = {"value": f"0 days 00:00:00.{fraction}", "count": 2}
+    first: dict[str, Any] = {"value": f"0 days 00:00:00.{fraction}", "count": 2}
+    if unit == "us":
+        first["selectionValue"] = {
+            "kind": "typedSelection",
+            "version": 1,
+            "columnType": "duration",
+            "cell": {
+                "kind": "duration",
+                "raw": "0.000001",
+                "display": first["value"],
+                "isNull": False,
+                "isNaN": False,
+            },
+        }
     choices, more = engine.column_values(source, "value", limit=1)
     assert choices == [first] and more
     assert engine.column_values(source, "value", search="1") == ([first], False)
@@ -2408,7 +2547,7 @@ def test_pandas_arrow_temporal_validity_keeps_bounded_cells_profiles_and_filters
     assert [cell["isNull"] for cell in cells] == [True, True, False]
     assert cells[-1] == {
         "kind": "duration" if family == "duration" else "datetime",
-        "raw": minimum / 1_000_000_000 if family == "duration" else expected_text,
+        "raw": "-9223372036.854775808" if family == "duration" else expected_text,
         "display": expected_text,
         "isNull": False,
         "isNaN": False,

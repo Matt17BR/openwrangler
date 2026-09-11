@@ -257,6 +257,14 @@ Datetime value searches also accept displayed midnight labels and a space in pla
 Some duration and subnanosecond object labels still differ from searchable source text; [#1280](https://github.com/Matt17BR/openwrangler/issues/1280)
 tracks these remaining gaps.
 
+Python duration cells preserve exact seconds, including large microsecond values and NumPy unit multipliers.
+Pandas choices and grid selections refuse finer-than-microsecond values instead of matching a rounded neighbor.
+Duration filters in Pandas, Polars and DuckDB retain exact microseconds when notebook code changes Decimal precision,
+including in generated Python. Calendar and unitless NumPy durations remain displayable but cannot be selected as seconds.
+Previously saved selections with rounded duration values must be cleared and reselected.
+Polars still loses finer temporal precision while preparing query results; [#1285](https://github.com/Matt17BR/openwrangler/issues/1285)
+tracks that separate limitation.
+
 On Pandas versions that infer temporal count keys from object columns, profiles and value choices refuse nonzero
 NumPy temporal values with unit multipliers or units finer than nanoseconds. Successful nanosecond-duration counts
 remain available. This conservative restriction includes some exactly representable values, such as `datetime64[1000ps]`,

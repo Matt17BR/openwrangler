@@ -1109,6 +1109,16 @@ Typed cells are strict-JSON-safe and preserve the distinctions needed by filteri
 and engine-normalized transformations. Nested and scalar values pass bounded depth, node, text, and byte validation.
 User-derived keys in extension and webview state are held in `Map` or `Set`, not dynamic object properties.
 
+Python duration scalars use exact seconds at this boundary. Ordinary numeric seconds remain numeric when their
+decimal representation preserves the value within the portable microsecond filter syntax; other values use exact
+decimal text. Pandas Arrow temporal extrema use the same conversion with their native validity and units.
+NumPy fixed units and their multipliers are evaluated with integer ticks. Calendar and unitless durations retain
+their display text and cannot be selected as seconds. The duration filter decoder retains its microsecond precision
+and Python timedelta range; finer values refuse selection rather than selecting a rounded neighbor. Live and
+generated decoders use integer arithmetic independently of the notebook's Decimal precision.
+Polars temporal boxing can lose precision before this shared boundary; [#1285](https://github.com/Matt17BR/openwrangler/issues/1285)
+tracks that separate engine limitation.
+
 For framed Python runtime requests, the notebook bridge retains only the current request's marked response, bounded
 by the runtime's 17 MiB frame ceiling. Output before and after that frame is discarded. Framing and decoding failures drain the exact kernel
 execution before returning an error; a complete frame also waits for that execution to settle before publication.

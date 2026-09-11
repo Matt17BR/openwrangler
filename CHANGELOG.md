@@ -9,6 +9,8 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 - Viewing-filter Undo preserves saved operand objects with keys such as `__proto__` instead of changing the filter value.
 - Pandas Pivot Wider avoids a deprecation warning on empty dataframes in both live execution and generated code.
 - Pandas datetime value search accepts displayed midnight labels and space-separated NumPy datetime labels.
+- Pandas duration selections preserve exact microseconds and refuse unsupported finer precision instead of selecting a
+  rounded neighbor. Live and generated duration filters no longer depend on notebook Decimal precision.
 - Refuse affected NumPy temporal profiles and value choices when legacy Pandas could narrow their count keys and
   could select the wrong source rows.
 

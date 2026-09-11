@@ -5,7 +5,7 @@ import operator
 import sys
 from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from pathlib import Path
 from typing import Any
 
@@ -1336,3 +1336,39 @@ def test_duckdb_live_and_generated_duration_selection_retains_distant_microsecon
 
     assert _filtered_labels(engine.apply_filter_model(frame, model), "duckdb") == ["match"]
     assert _filtered_labels(_execute_generated_filter(engine, frame, model), "duckdb") == ["match"]
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+@pytest.mark.parametrize("literal", ["2.123456", "-2.123456", "8640000000.000001"])
+def test_duration_filters_preserve_microseconds_under_notebook_decimal_context(backend, literal):
+    numerator, denominator = Decimal(literal).as_integer_ratio()
+    value = timedelta(microseconds=numerator * 1_000_000 // denominator)
+    records = {
+        "label": ["match", "neighbor", "match", "null"],
+        "value": [value, value + timedelta(microseconds=1), value, None],
+    }
+    engine = _engine(backend)
+    if backend == "pandas":
+        frame = pd.DataFrame(records)
+    elif backend == "polars":
+        frame = pl.DataFrame(records)
+    else:
+        frame = duckdb.sql(
+            "SELECT * FROM (VALUES "
+            f"('match', INTERVAL '{literal} seconds'), "
+            f"('neighbor', INTERVAL '{literal} seconds' + INTERVAL '1 microsecond'), "
+            f"('match', INTERVAL '{literal} seconds'), ('null', NULL)) AS source(label, value)"
+        )
+    try:
+        with localcontext() as context:
+            context.prec = 3
+            context.clear_flags()
+            token = typed_selection_value(value, "duration")
+            assert token is not None
+            for operand in [literal, token]:
+                model = _value_selection_model("duration", operand)
+                assert _filtered_labels(engine.apply_filter_model(frame, model), backend) == ["match", "match"]
+                assert _filtered_labels(_execute_generated_filter(engine, frame, model), backend) == ["match", "match"]
+            assert context.prec == 3 and not any(context.flags.values())
+    finally:
+        engine.close()
