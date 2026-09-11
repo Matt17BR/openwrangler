@@ -2977,7 +2977,9 @@ def _pandas_validate_pivot_wider(
         raise EngineError("Pivot wider would create Open Wrangler's reserved private row-identity column.")
 
     names = _pandas_scalar_values(df.iloc[:, names_position])
-    invalid_type = names.map(lambda value: value is not None and not isinstance(value, str), na_action=None)
+    invalid_type = names.map(lambda value: value is not None and not isinstance(value, str), na_action=None).astype(
+        bool
+    )
     invalid = names.isna() | invalid_type | ~names.isin(output_values)
     if bool(invalid.any()):
         raise EngineError("Pivot wider namesFrom values must be present and match one declared typed key.")
@@ -3091,7 +3093,10 @@ def _generated_pandas_pivot_wider_helpers() -> list[str]:
         '        raise ValueError("Pivot wider would create Open Wrangler\'s reserved private row-identity column.")',
         "    names = _open_wrangler_scalar_values(df.iloc[:, names_position]).reset_index(drop=True)",
         "    values = _open_wrangler_scalar_values(df.iloc[:, values_position]).reset_index(drop=True)",
-        "    invalid_type = names.map(lambda value: value is not None and not isinstance(value, str), na_action=None)",
+        (
+            "    invalid_type = names.map(lambda value: value is not None and not isinstance(value, str), "
+            "na_action=None).astype(bool)"
+        ),
         "    invalid = names.isna() | invalid_type | ~names.isin(output_values)",
         "    if bool(invalid.any()):",
         "        raise ValueError('Pivot wider namesFrom values must be present and match one declared typed key.')",
