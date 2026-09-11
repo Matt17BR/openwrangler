@@ -624,6 +624,28 @@ floating NaN, Decimal NaN and Arrow temporal validity retain their separate exis
 
 ### Polars
 
+CSV export retains native Necessary quoting, which preserves null and empty-string distinctions. Native primitive
+formatters do not escape arbitrary delimiter or quote characters, so eager and lazy exports check the retained schema
+after removing the private row identity. Either syntax character is refused when it occurs in the column type's
+possible native output alphabet:
+
+| Column type                    | Refused delimiter or quote characters |
+| ------------------------------ | ------------------------------------- |
+| Signed integer                 | `-0123456789`                         |
+| Unsigned integer               | `0123456789`                          |
+| Floating point                 | `-+.0123456789einfNaN`                |
+| Decimal                        | `-.0123456789`                        |
+| Boolean                        | characters in `truefalse`             |
+| Date                           | `-+0123456789`                        |
+| Time                           | `:.0123456789`                        |
+| Datetime, including time zones | `-+T:.0123456789`                     |
+
+This conservative type restriction also applies to zero-row, typed all-null and otherwise non-conflicting values.
+It resolves schema metadata without scanning rows or executing a lazy plan, and refuses before opening or truncating
+the export writer. Comma, tab, semicolon and pipe with ordinary quotes remain available. Null, String, Categorical
+and Enum columns retain custom syntax through native escaping. Other unsupported CSV types retain their existing
+native refusal. Export adds no numeric or temporal conversion and does not change caller formatting options.
+
 Profiles and value choices keep temporary count fields distinct from the selected source field. Supported source
 names remain valid in eager and lazy frames, independently of which columns a profile request selects.
 

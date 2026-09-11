@@ -293,6 +293,37 @@ class PolarsEngine(DataFrameEngine):
         row_id = self._row_id_column(frame)
         if row_id is not None:
             frame = frame.drop(row_id)
+        if format_name == "csv":
+            schema = frame.collect_schema() if isinstance(frame, pl.LazyFrame) else frame.schema
+            for dtype in schema.values():
+                # Native primitive formatters do not escape custom CSV syntax. Keep their
+                # formatting and avoid executing a lazy plan just to inspect its values.
+                if dtype.is_signed_integer():
+                    characters = "-0123456789"
+                elif dtype.is_unsigned_integer():
+                    characters = "0123456789"
+                elif dtype.is_float():
+                    characters = "-+.0123456789einfNaN"
+                elif dtype.base_type() == pl.Decimal:
+                    characters = "-.0123456789"
+                elif dtype == pl.Boolean:
+                    characters = "truefalse"
+                elif dtype == pl.Date:
+                    characters = "-+0123456789"
+                elif dtype == pl.Time:
+                    characters = ":.0123456789"
+                elif dtype.base_type() == pl.Datetime:
+                    characters = "-+T:.0123456789"
+                else:
+                    continue
+                for field in ("delimiter", "quoteChar"):
+                    if normalized[field] in characters:
+                        label = "quote character" if field == "quoteChar" else "delimiter"
+                        raise EngineError(
+                            f"Polars CSV export does not support this {label} for {dtype} columns, "
+                            "regardless of their values or row count. Choose comma, tab, semicolon or pipe "
+                            "with a double-quote character."
+                        )
         with (
             path.open_binary_writer()
             if isinstance(path, ExportWriterPath)

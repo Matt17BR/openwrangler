@@ -112,7 +112,10 @@ the full file. Existing LF/CRLF file settings and saved-state keys remain unchan
 CSV/TSV imports preserve native empty fields and whitespace values, including headerless all-null TSV records.
 Files with no bytes or only a UTF-8 BOM open with an empty schema; other blank records follow the selected reader.
 Pandas accepts its supported text encodings and Unicode CSV syntax; Polars CSV export remains UTF-8 with single-byte
-delimiter and quote syntax. Excel accepts exactly one sheet name or zero-based sheet index; delimited syntax characters
+delimiter and quote syntax. Polars refuses syntax characters that its numeric, Boolean or temporal column types could
+emit unescaped, including for empty and all-null columns. Standard comma, tab, semicolon and pipe with ordinary quotes
+remain supported; Null and textlike columns retain custom syntax. See the [Polars export rules](architecture.md#polars).
+Excel accepts exactly one sheet name or zero-based sheet index; delimited syntax characters
 are one Unicode scalar each. Import options may therefore make Pandas the only compatible backend. Direct pickle
 opening is unavailable; the trusted Pandas-only conversion command writes a separate Parquet file.
 
