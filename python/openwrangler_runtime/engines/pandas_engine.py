@@ -5242,7 +5242,7 @@ def _pandas_formula_result(left: Any, right: Any, operator: str) -> Any:
 
     try:
         return _pandas_formula(left, right, operator)
-    except (pa.ArrowInvalid, OverflowError) as error:
+    except (pa.ArrowInvalid, OverflowError, TypeError) as error:
         return _pandas_arrow_formula_repair(left, right, operator, error, _pandas_formula)
 
 
@@ -5414,7 +5414,7 @@ def _generated_pandas_formula_helpers() -> list[str]:
         "",
         "    try:",
         "        return _open_wrangler_formula(left, right, operator)",
-        "    except (pa.ArrowInvalid, OverflowError) as error:",
+        "    except (pa.ArrowInvalid, OverflowError, TypeError) as error:",
         *(f"        {line}" if line else "" for line in getsource(_pandas_arrow_formula_helpers).splitlines()),
         "        return _open_wrangler_arrow_formula_repair(left, right, operator, error, _open_wrangler_formula)",
         "",

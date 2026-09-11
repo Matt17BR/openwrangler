@@ -55,6 +55,42 @@ def _open_wrangler_arrow_formula_repair(
                     return False
             return True
 
+        if isinstance(original_error, (pa.ArrowInvalid, TypeError)) and operator in {
+            "add",
+            "subtract",
+            "multiply",
+            "divide",
+        }:
+            negative_left = (
+                left_type if left_type is not None and pa.types.is_decimal(left_type) and left_type.scale < 0 else None
+            )
+            negative_right = (
+                right_type
+                if right_type is not None and pa.types.is_decimal(right_type) and right_type.scale < 0
+                else None
+            )
+            if (negative_left is not None or negative_right is not None) and all(
+                dtype is not None
+                and pa.types.is_decimal(dtype)
+                or is_integer_column(value, signed_only=False)
+                or type(value) is int
+                for value, dtype in ((left, left_type), (right, right_type))
+            ):
+                # A negative scale needs p-s whole digits, without inspecting or narrowing values.
+                if any(
+                    dtype.precision - dtype.scale > 76 for dtype in (negative_left, negative_right) if dtype is not None
+                ):
+                    raise original_error
+                if negative_left is not None:
+                    left = left.astype(pd.ArrowDtype(pa.decimal256(negative_left.precision - negative_left.scale, 0)))
+                if negative_right is not None and isinstance(right, pd.Series):
+                    right = right.astype(
+                        pd.ArrowDtype(pa.decimal256(negative_right.precision - negative_right.scale, 0))
+                    )
+                return formula(left, right, operator)
+        if isinstance(original_error, TypeError):
+            raise original_error
+
         if operator == "power" and is_integer_column(left) and type(right) is int and 0 < right < 2**64:
             import pyarrow.compute as pc
 

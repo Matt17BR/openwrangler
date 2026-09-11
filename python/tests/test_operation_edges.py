@@ -2865,6 +2865,119 @@ def test_pandas_arrow_formula_capacity_negates_wide_decimal(
         assert frame.attrs == before.attrs
 
 
+@pytest.mark.parametrize(
+    "precision,scale,shape,companion,operator,literal,result_precision,result_scale",
+    [
+        (8, -2, "values", "scalar", "add", 1, 20, 0),
+        (8, -2, "values", "scalar", "subtract", 1, 20, 0),
+        (38, -10, "values", "scalar", "multiply", 2, 68, 0),
+        (40, -10, "values", "scalar", "divide", 3, 70, 20),
+        (8, -2, "small", "scalar", "divide", 3, 30, 20),
+        (8, -2, "empty", "scalar", "divide", 3, 30, 20),
+        (8, -2, "null", "scalar", "divide", 3, 30, 20),
+        (8, -2, "dictionary", "scalar", "divide", 3, 30, 20),
+        (8, -2, "values", "negative", "multiply", 1, 22, 0),
+        (8, -2, "values", "negative", "divide", 1, 22, 12),
+        (8, -2, "values", "integer-left", "subtract", 1, 20, 0),
+        (8, -2, "values", "numpy-left", "subtract", 1, 20, 0),
+        (8, -2, "values", "nullable-left", "subtract", 1, 20, 0),
+        (8, -2, "values", "positive", "divide", 1, 21, 9),
+    ],
+)
+def test_pandas_arrow_formula_capacity_rescales_negative_decimal(
+    precision: int,
+    scale: int,
+    shape: str,
+    companion: str,
+    operator: str,
+    literal: int,
+    result_precision: int,
+    result_scale: int,
+) -> None:
+    from decimal import ROUND_DOWN, Decimal, localcontext
+
+    pa = pytest.importorskip("pyarrow")
+    factory = pa.decimal128 if precision <= 38 else pa.decimal256
+    maximum = Decimal((0, (9,) * precision, 0))
+    coefficients = [maximum, maximum.copy_negate(), Decimal(0), None]
+    if shape == "small":
+        coefficients = [Decimal(1), Decimal(-1), Decimal(0), None]
+    elif shape == "empty":
+        coefficients = []
+    elif shape == "null":
+        coefficients = [None, None]
+    physical = pa.array(coefficients, type=factory(precision, 0))
+    array = pa.Array.from_buffers(factory(precision, scale), len(physical), physical.buffers())
+    array.validate(full=True)
+    if shape == "dictionary":
+        array = pa.DictionaryArray.from_arrays(pa.array([0, 1, 2, None], type=pa.int8()), array)
+    split = len(array) // 2
+    chunks = pa.chunked_array([array.slice(0, split), array.slice(split)])
+    frame = pd.DataFrame({"value": pd.Series(pd.arrays.ArrowExtensionArray(chunks)), "control": range(len(array))})
+    if companion == "negative":
+        frame["right"] = pd.Series(
+            [Decimal("3000"), Decimal("-6000"), None, Decimal("0")], dtype=pd.ArrowDtype(pa.decimal128(8, -3))
+        )
+    elif companion == "positive":
+        frame["right"] = pd.Series([Decimal("3")] * len(frame), dtype=pd.ArrowDtype(pa.decimal128(10, 2)))
+    elif companion.endswith("-left"):
+        dtype = {"integer-left": "int64[pyarrow]", "numpy-left": "int64", "nullable-left": "Int64"}[companion]
+        frame["right"] = pd.Series([1200, -900, 0, 7 if companion == "numpy-left" else None], dtype=dtype)
+    frame.index = pd.Index(["same"] * len(frame), name="source")
+    frame.attrs = {"source": "retained"}
+    before = frame.copy(deep=True)
+    original_array = frame["value"].array
+    runtime = PandasEngine()
+    schema = runtime.schema(frame)
+    lineage = source_lineage(schema)
+    left_position, right_position = (2, 0) if companion.endswith("-left") else (0, 2)
+    operation = bind_step(
+        step(
+            "formula",
+            leftColumn=lineage[left_position],
+            operator=operator,
+            newColumn="result",
+            **({"value": literal} if companion == "scalar" else {"rightColumn": lineage[right_position]}),
+        ),
+        schema,
+        lineage,
+    )
+    runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
+    first = pa.array(frame.iloc[:, left_position].array).to_pylist()
+    second = (
+        [literal] * len(frame)
+        if companion == "scalar"
+        else frame.iloc[:, right_position].array.__arrow_array__().to_pylist()
+    )
+    with localcontext() as context:
+        context.prec = 240
+        arithmetic = {
+            "add": lambda a, b: a + b,
+            "subtract": lambda a, b: a - b,
+            "multiply": lambda a, b: a * b,
+            "divide": lambda a, b: a / b,
+        }[operator]
+        expected_values = [
+            None
+            if a is None or b is None
+            else arithmetic(Decimal(a), Decimal(b)).quantize(Decimal((0, (1,), -result_scale)), rounding=ROUND_DOWN)
+            for a, b in zip(first, second, strict=True)
+        ]
+    expected = pd.Series(
+        expected_values,
+        index=frame.index,
+        name="result",
+        dtype=pd.ArrowDtype(pa.decimal256(result_precision, result_scale)),
+    )
+    for actual in (runtime.apply_transform(frame, operation), execute_generated(runtime, frame, operation)):
+        pd.testing.assert_series_equal(actual["result"], expected)
+        actual["result"].array.__arrow_array__().validate(full=True)
+        pd.testing.assert_frame_equal(actual.iloc[:, :-1], before)
+        pd.testing.assert_frame_equal(frame, before)
+        assert frame["value"].array is original_array
+        assert frame.attrs == before.attrs
+
+
 @pytest.mark.parametrize("right_column", [False, True])
 def test_pandas_arrow_formula_capacity_widens_selected_decimal_columns(right_column: bool) -> None:
     from decimal import Decimal
@@ -2913,6 +3026,8 @@ def test_pandas_arrow_formula_capacity_widens_selected_decimal_columns(right_col
         "decimal-unit-multiply",
         "decimal-unit-divide",
         "decimal-floating-unit",
+        "decimal-negative-scale-power",
+        "decimal-negative-scale-floating",
         "negative-add",
         "negative-subtract",
         "negative-empty",
@@ -2955,6 +3070,9 @@ def test_pandas_arrow_formula_capacity_preserves_successful_native_results(famil
     elif family in {"decimal-add", "decimal-power"}:
         value = pd.Series([Decimal("1.125"), None], dtype=pd.ArrowDtype(pa.decimal128(30, 3)))
         op = "add" if family == "decimal-add" else "power"
+    elif family.startswith("decimal-negative-scale-"):
+        value = pd.Series([Decimal("1200"), None], dtype=pd.ArrowDtype(pa.decimal128(8, -2)))
+        op, operand = ("power", 2) if family.endswith("power") else ("multiply", 0.5)
     elif family.startswith("decimal-unit-") or family == "decimal-floating-unit":
         dtype = pa.decimal256(10, 2) if family != "decimal-floating-unit" else pa.decimal256(76, 76)
         value = pd.Series([Decimal("0.25"), Decimal("-0"), None], dtype=pd.ArrowDtype(dtype))
@@ -3027,6 +3145,9 @@ def test_pandas_arrow_formula_capacity_preserves_successful_native_results(famil
         "decimal-other-factor",
         "decimal-unit-column",
         "decimal-negative-scale",
+        "decimal-negative-scale-intermediate",
+        "decimal-negative-scale-empty",
+        "decimal-negative-scale-null",
     ],
 )
 def test_pandas_arrow_formula_capacity_retains_native_refusals(family: str) -> None:
@@ -3034,7 +3155,7 @@ def test_pandas_arrow_formula_capacity_retains_native_refusals(family: str) -> N
 
     pa = pytest.importorskip("pyarrow")
     value, operand, op = pd.Series([2**64 - 1, None], dtype="uint64[pyarrow]"), 1, "add"
-    error: type[Exception] = pa.ArrowInvalid
+    error: type[Exception] | tuple[type[Exception], ...] = pa.ArrowInvalid
     if family.startswith("negative-"):
         operand = -1
         if family == "negative-underflow":
@@ -3059,9 +3180,13 @@ def test_pandas_arrow_formula_capacity_retains_native_refusals(family: str) -> N
     elif family in {"decimal-other-factor", "decimal-unit-column"}:
         value = pd.Series([Decimal("9" * 76), None], dtype=pd.ArrowDtype(pa.decimal256(76, 0)))
         operand, op = -2, "multiply"
-    elif family == "decimal-negative-scale":
-        value = pd.Series([Decimal("1200"), None], dtype=pd.ArrowDtype(pa.decimal128(8, -2)))
-        error = TypeError
+    elif family.startswith("decimal-negative-scale"):
+        values = (
+            [] if family.endswith("empty") else [None, None] if family.endswith("null") else [Decimal("1200"), None]
+        )
+        precision = 76 if family == "decimal-negative-scale" else 75
+        value = pd.Series(values, dtype=pd.ArrowDtype(pa.decimal256(precision, -1)))
+        error = TypeError if precision == 76 else (TypeError, pa.ArrowInvalid)
     frame = pd.DataFrame({"value": value})
     column_operand = family.startswith("negative-column-") or family == "decimal-unit-column"
     if column_operand:
@@ -3110,6 +3235,87 @@ def test_pandas_arrow_formula_capacity_retains_native_refusals(family: str) -> N
         with pytest.raises(error):
             run()
         pd.testing.assert_frame_equal(frame, before)
+
+
+@pytest.mark.parametrize("generated", [False, True])
+def test_pandas_arrow_formula_capacity_preserves_unrelated_type_errors(
+    monkeypatch: pytest.MonkeyPatch, generated: bool
+) -> None:
+    from openwrangler_runtime.engines import pandas_engine
+
+    pytest.importorskip("pyarrow")
+    original = TypeError("native operand refuses this operation")
+
+    def refuse(*_args: Any) -> Any:
+        raise original
+
+    if generated:
+        namespace: dict[str, Any] = {}
+        exec("\n".join(pandas_engine._generated_pandas_formula_helpers()), namespace)
+        namespace["_open_wrangler_formula"] = refuse
+        formula = namespace["_open_wrangler_formula_result"]
+    else:
+        monkeypatch.setattr(pandas_engine, "_pandas_formula", refuse)
+        formula = pandas_engine._pandas_formula_result
+    # The integer power repair could succeed, but this new exception class must
+    # reach only the negative-scale Decimal owner, not an unrelated repair.
+    with pytest.raises(TypeError) as refused:
+        formula(pd.Series([-1, 0, 1, None], dtype="int64[pyarrow]"), 2, "power")
+    assert refused.value is original
+
+
+@pytest.mark.parametrize("generated", [False, True])
+@pytest.mark.parametrize("negative_on_right", [False, True])
+def test_pandas_arrow_formula_capacity_preserves_custom_decimal_refusal(
+    generated: bool, negative_on_right: bool
+) -> None:
+    from decimal import Decimal
+
+    from openwrangler_runtime.engines import pandas_engine
+
+    pa = pytest.importorskip("pyarrow")
+    calls: list[str] = []
+    original = TypeError("custom Decimal first conversion refuses")
+
+    class OnceRefusingDecimal(Decimal):
+        def as_tuple(self) -> Any:
+            calls.append("as_tuple")
+            if len(calls) == 1:
+                raise original
+            return super().as_tuple()
+
+    frame = pd.DataFrame(
+        {
+            "decimal": pd.Series([Decimal("1200")], dtype=pd.ArrowDtype(pa.decimal128(8, -2))),
+            "custom": pd.Series([OnceRefusingDecimal("1")], dtype=object),
+        }
+    )
+    before = frame.copy(deep=True)
+    runtime = PandasEngine()
+    schema = runtime.schema(frame)
+    assert [column["type"] for column in schema] == ["decimal", "decimal"]
+    lineage = source_lineage(schema)
+    left, right = (1, 0) if negative_on_right else (0, 1)
+    operation = bind_step(
+        step("formula", leftColumn=lineage[left], rightColumn=lineage[right], operator="add", newColumn="result"),
+        schema,
+        lineage,
+    )
+    runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
+    calls.clear()
+    with pytest.raises(TypeError) as native:
+        pandas_engine._pandas_formula(frame.iloc[:, left], frame.iloc[:, right], "add")
+    assert native.value is original
+    assert calls == ["as_tuple"]
+    calls.clear()
+    with pytest.raises(TypeError) as refused:
+        if generated:
+            execute_generated(runtime, frame, operation)
+        else:
+            runtime.apply_transform(frame, operation)
+    assert refused.value is original
+    assert calls == ["as_tuple"]
+    pd.testing.assert_frame_equal(frame, before)
 
 
 @pytest.mark.parametrize("generated", [False, True])

@@ -632,8 +632,17 @@ Selected Decimal128 operands may widen to Decimal256 for add, subtract, multiply
 precision and scale. Native arithmetic determines the result type. After a Decimal256 capacity failure, multiplying
 or dividing the column by the exact integer literal -1 uses native checked negation, preserving its declared
 precision, scale and nulls. Successful native results retain their types. Live and generated Formula apply the same
-policy; By Example remains unchanged. Negative power and other widest or negative-scale Decimal capacity gaps remain
-tracked in [#979](https://github.com/Matt17BR/openwrangler/issues/979).
+policy; By Example remains unchanged.
+
+After native add, subtract, multiply or divide fails on a selected negative-scale Arrow Decimal operand `(p, s)`,
+Formula may rescale that operand exactly to Decimal256 `(p-s, 0)` when its full declared capacity fits 76 digits.
+The other operand must be an Arrow Decimal column, an exact integer literal, or an eligible native/nullable
+integer column of at most 64 bits. Object and custom extension companions do not enter this repair.
+Only selected negative-scale operands gain temporary storage; source arrays and nulls remain unchanged.
+Native arithmetic then determines the output precision, scale and division rounding, and still refuses results
+outside its inferred capacity, including empty or all-null inputs. The new result need not retain the source's
+negative scale. TypeError admission is limited to this repair; other operand errors retain their previous paths.
+Negative power and remaining Decimal capacity gaps stay tracked in [#979](https://github.com/Matt17BR/openwrangler/issues/979).
 
 Convert Type's integer target is nullable signed 64-bit storage. Unsigned or floating values outside that range and
 present infinities are rejected before conversion; failed previews or applies preserve the confirmed session state.
@@ -644,6 +653,8 @@ CSV and Parquet export prepare logical scalar dictionary, `bool8` and UUID colum
 index levels use the same logical values; changed MultiIndex levels are rebuilt from actual row labels so equivalent
 values coalesce. Parquet omits an unrequested index before native dtype inspection. Source arrays, index levels and
 codes remain unchanged. Exported `bool8` and UUID fields use Boolean and string storage respectively.
+Pandas Parquet export refuses retained negative-scale Arrow Decimal columns, including original operands preserved
+by Formula. A successful arithmetic result does not convert those source columns or remove this native writer limit.
 Group By treats input NaN as missing while retaining NaN computed from present aggregate operands. Group By, Pivot
 and grouped Fill use the same missing-value and signed-zero equality for Arrow float32/float64 keys. Integer group
 keys use native factorization codes and restore exact scalar labels; Sparse fill values retain native equality,

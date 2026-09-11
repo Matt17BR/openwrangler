@@ -1389,6 +1389,89 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
         manager.close_all()
 
 
+def test_arrow_formula_negative_scale_preserves_session_and_generated_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+    from decimal import Decimal
+
+    import pandas as pd
+
+    pa = pytest.importorskip("pyarrow")
+    frame = pd.DataFrame(
+        {
+            "value": pd.Series([Decimal("1200"), Decimal("-2500"), None], dtype=pd.ArrowDtype(pa.decimal128(8, -2))),
+            "divisor": pd.Series([1, 0, None], dtype="int64[pyarrow]"),
+        }
+    )
+    frame.index = pd.Index(["same", "same", "last"], name="source row")
+    frame.attrs = {"source": "retained"}
+    original = frame.copy(deep=True)
+    source_array = frame["value"].array
+    expected = pd.Series(
+        [Decimal("400.00000000000000000000"), Decimal("-833.33333333333333333333"), None],
+        index=frame.index,
+        name="result",
+        dtype=pd.ArrowDtype(pa.decimal256(30, 20)),
+    )
+    monkeypatch.setattr(session_runtime, "resolve_notebook_variable", lambda _: frame)
+    manager = SessionManager()
+    try:
+        opened = manager.open_session(
+            {"kind": "notebookVariable", "variableName": "frame"}, backend="pandas", mode="editing", page_size=1
+        )
+        session_id = opened["metadata"]["sessionId"]
+        columns = opened["metadata"]["schema"]
+        operation = {
+            "id": "negative-scale",
+            "kind": "formula",
+            "params": {
+                "leftColumn": {"id": columns[0]["id"], "name": columns[0]["name"]},
+                "operator": "divide",
+                "value": 3,
+                "newColumn": "result",
+            },
+        }
+        preview = manager.preview_step(session_id, 0, json.loads(json.dumps(operation)), 0, 1)
+        session = manager.sessions[session_id]
+        assert session.draft_frame is not None
+        pd.testing.assert_series_equal(session.draft_frame["result"], expected)
+        confirmed = manager.apply_draft(session_id, preview["revision"], 0, 1)
+        pd.testing.assert_series_equal(session.committed["result"], expected)
+        namespace: dict[str, Any] = {}
+        exec(confirmed["code"], namespace)
+        generated = namespace["clean_data"](frame)
+        pd.testing.assert_series_equal(generated["result"], expected)
+        pd.testing.assert_frame_equal(generated.loc[:, original.columns], original)
+        before = session_state(session)
+        invalid = {
+            "id": "hidden-zero",
+            "kind": "formula",
+            "params": {
+                "leftColumn": operation["params"]["leftColumn"],
+                "rightColumn": {"id": columns[1]["id"], "name": columns[1]["name"]},
+                "operator": "divide",
+                "newColumn": "invalid",
+            },
+        }
+        with pytest.raises(pa.ArrowInvalid, match="(?i)divide by zero"):
+            manager.preview_step(session_id, session.revision, invalid, 0, 1)
+        assert session_state(session) == before
+        correction = {**operation, "id": "correction", "params": {**operation["params"], "newColumn": "corrected"}}
+        corrected = manager.preview_step(session_id, session.revision, correction, 0, 1)
+        manager.discard_draft(session_id, corrected["revision"], 0, 1)
+        manager.undo_step(session_id, session.revision, 0, 1)
+        pd.testing.assert_frame_equal(session.committed.loc[:, original.columns], original)
+        manager.redo_step(session_id, session.revision, 0, 1)
+        pd.testing.assert_series_equal(session.committed["result"], expected)
+        assert session.plan == [operation]
+        pd.testing.assert_frame_equal(frame, original)
+        assert frame["value"].array is source_array
+        assert frame.attrs == original.attrs
+    finally:
+        manager.close_all()
+
+
 @pytest.mark.parametrize("promotion", [False, True], ids=["off-page-wrap", "off-page-promotion"])
 def test_pandas_integer_formula_refusal_preserves_draft_history_and_source(tmp_path: Path, promotion: bool) -> None:
     import pandas as pd

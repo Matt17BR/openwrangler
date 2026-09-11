@@ -9,6 +9,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 - Pandas object duration choices and filters agree on exact counts and selected rows across NumPy, Pandas and Python values.
 - Pandas Formula accepts large odd exponents for signed Arrow columns containing only -1, 0, 1 and null values.
 - Pandas Formula can multiply or divide widest Arrow Decimal columns by -1 without losing precision.
+- Pandas Formula supports more negative-scale Arrow Decimal arithmetic through exact rescaling within native capacity.
 - Viewing-filter Undo preserves saved operand objects with keys such as `__proto__` instead of changing the filter value.
 - Pandas Pivot Wider avoids a deprecation warning on empty dataframes in both live execution and generated code.
 - Pandas datetime value search accepts displayed midnight labels and space-separated NumPy datetime labels.
