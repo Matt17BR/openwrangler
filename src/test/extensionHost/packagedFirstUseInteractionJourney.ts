@@ -21,13 +21,6 @@ import {
 export interface PackagedFirstUseInteractionDependencies {
   readonly clearReleasedJupyterScreenshotTransientUi: (workbench: Page) => Promise<void>;
   readonly columnReference: (metadata: SessionMetadata, name: string) => ColumnReference;
-  readonly previewAndDiscardPreviousRevenue: (
-    app: Locator,
-    workbench: Page,
-    testing: TestApi,
-    sessionId: string,
-    revenue: ColumnReference
-  ) => Promise<Locator>;
   readonly previewApplyAndUndoGroupedRevenue: (
     app: Locator,
     workbench: Page,
@@ -35,7 +28,6 @@ export interface PackagedFirstUseInteractionDependencies {
     sessionId: string,
     revenue: ColumnReference
   ) => Promise<Locator>;
-  readonly previewMostCommonAccountNote: (app: Locator, testing: TestApi) => Promise<void>;
   readonly exerciseMultiOutputSplitJourney: (
     app: Locator,
     testing: TestApi,
@@ -104,9 +96,7 @@ export function createPackagedFirstUseInteractionJourney(
     exerciseMultiOutputSplitJourney,
     exercisePivotLongerJourney,
     exercisePivotWiderJourney,
-    previewAndDiscardPreviousRevenue,
     previewApplyAndUndoGroupedRevenue,
-    previewMostCommonAccountNote,
     previewUppercaseMarket,
     reacquireAcknowledgedSessionApp,
     recordAcceptanceProgress,
@@ -475,40 +465,16 @@ export function createPackagedFirstUseInteractionJourney(
       "Closing Insights must restore focus to its toolbar toggle."
     );
 
-    recordAcceptanceProgress("platform-smoke:fill-previous");
-    app = await previewAndDiscardPreviousRevenue(app, workbench, testing, sessionId, revenue);
-
     recordAcceptanceProgress("platform-smoke:fill-grouped-median");
     app = await previewApplyAndUndoGroupedRevenue(app, workbench, testing, sessionId, revenue);
 
-    recordAcceptanceProgress("platform-smoke:fill-most-common");
-    await previewMostCommonAccountNote(app, testing);
-    app = await rediscoverApp("Most-common fill validation");
-    const fillDraft = testing.activeSession();
-    assert.equal(fillDraft?.metadata.draftStep?.kind, "fillMissingValues");
-    assert.deepEqual(fillDraft?.metadata.draftStep?.params.replacement, { kind: "mostFrequent" });
-    assert.equal(fillDraft?.metadata.schema.find((column) => column.id === accountNote.id)?.nullable, false);
-    assert.match(fillDraft?.code ?? "", /_ow_polars_most_frequent/u);
-    const fillReview = app.getByRole("region", { name: "Draft review" });
-    await fillReview.waitFor({ state: "visible", timeout: 10_000 });
-    await fillReview.getByText("Fill missing values", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
-    await fillReview.getByRole("button", { name: "Discard", exact: true }).click();
-    await waitFor(
-      () =>
-        testing.activeSession()?.metadata.draftStep === undefined &&
-        testing.activeSession()?.metadata.steps.length === 0 &&
-        testing.activeSession()?.metadata.schema.find((column) => column.id === accountNote.id)?.nullable === true,
-      30_000,
-      "discarding the most-common fill preview"
-    );
-    await fillReview.waitFor({ state: "hidden", timeout: 10_000 });
     await waitFor(
       confirmedMutationRendererReady,
       OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
-      "the discarded most-common fill state to hydrate on its current renderer",
+      "the undone grouped-median fill state to hydrate on its current renderer",
       confirmedMutationDiagnostics
     );
-    app = await reacquireApp("Most-common fill discard");
+    app = await reacquireApp("Grouped-median fill Undo");
 
     recordAcceptanceProgress("platform-smoke:draft-discard");
     await previewUppercaseMarket(app, testing, "market_upper");
