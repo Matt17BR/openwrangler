@@ -94,7 +94,7 @@ const R_ACCEPTANCE_TIMED_CHECKPOINTS = new Set([
       (section) => ["start", "complete"].map((boundary) => `jupyter-r:coverage:${profile}:${section}:${boundary}`)
     )
   ),
-  ...["comprehensive", "platform-lifecycle"].flatMap((profile) =>
+  ...["comprehensive", "platform-lifecycle", "native-frames"].flatMap((profile) =>
     ["collapse_frame", "collapse_tibble", "collapse_table"].flatMap((frame) =>
       ["start", "notebook-shown", "selection-submitted", "complete"].map(
         (stage) => `jupyter-r:coverage:${profile}:native-frame:${frame}:view-open:${stage}`
