@@ -553,7 +553,9 @@ def _is_native_lazy_frame(frame: Any, backend: Backend) -> bool:
     return False
 
 
-def measure_fixture(path: Path, spec: FixtureSpec, backend: Backend = "polars") -> dict[str, Any]:
+def measure_fixture(
+    path: Path, spec: FixtureSpec, backend: Backend = "polars", *, page_samples: int = SAMPLES
+) -> dict[str, Any]:
     fresh_manager_open_samples: list[float] = []
     manager: SessionManager | None = None
     opened: dict[str, Any] | None = None
@@ -646,9 +648,9 @@ def measure_fixture(path: Path, spec: FixtureSpec, backend: Backend = "polars") 
             cache_bytes,
             column_offset=cached_column_offset,
         )
-        for _ in range(SAMPLES)
+        for _ in range(page_samples)
     ]
-    uncached_offsets = _uncached_offsets(spec.rows, cached_offset)
+    uncached_offsets = _uncached_offsets(spec.rows, cached_offset, page_samples=page_samples)
     uncached_column_offsets = _sample_column_offsets(spec.columns, len(uncached_offsets))
     uncached_samples = [
         _time_page(
@@ -677,7 +679,7 @@ def measure_fixture(path: Path, spec: FixtureSpec, backend: Backend = "polars") 
 
     _close_and_assert_empty(manager, session_id, path)
     retained_sessions = len(manager.sessions)
-    stdio_transport = measure_stdio_transport(path, spec, backend)
+    stdio_transport = measure_stdio_transport(path, spec, backend, page_samples=page_samples)
     first_sample_ms = fresh_manager_open_samples[0]
     warm_reopen_samples = fresh_manager_open_samples[1:]
     warm_reopen_median_ms = median(warm_reopen_samples)
@@ -785,10 +787,12 @@ def _profile_overlap_evidence(
     }
 
 
-def measure_stdio_transport(path: Path, spec: FixtureSpec, backend: Backend = "polars") -> dict[str, Any]:
+def measure_stdio_transport(
+    path: Path, spec: FixtureSpec, backend: Backend = "polars", *, page_samples: int = SAMPLES
+) -> dict[str, Any]:
     """Measure canonical JSON/envelope round trips through the real subprocess."""
     transport_samples: list[float] = []
-    offsets = _uncached_offsets(spec.rows, 0)
+    offsets = _uncached_offsets(spec.rows, 0, page_samples=page_samples)
     column_offsets = _sample_column_offsets(spec.columns, len(offsets))
     with StdioRuntimeClient(backend) as client:
         initialized, initialize_ms = client.request({"kind": "initialize"}, label="initialize")
@@ -959,8 +963,9 @@ def run_benchmark(directory: Path, smoke: bool = False, backend: Backend = "pola
     fixtures = create_fixtures(directory, smoke)
     process_samples.append({"stage": "fixtures-ready", **_process_memory_snapshot(os.getpid())})
     specs = _fixture_specs(smoke)
-    csv = measure_fixture(fixtures["csv"], specs["csv"], backend)
-    parquet = measure_fixture(fixtures["parquet"], specs["parquet"], backend)
+    page_samples = PAGE_CACHE_LIMIT + 1 if smoke else SAMPLES
+    csv = measure_fixture(fixtures["csv"], specs["csv"], backend, page_samples=page_samples)
+    parquet = measure_fixture(fixtures["parquet"], specs["parquet"], backend, page_samples=page_samples)
     process_samples.append({"stage": "benchmark-complete", **_process_memory_snapshot(os.getpid())})
     return {
         "limits": RELEASE_LIMITS,
@@ -1184,7 +1189,7 @@ def _close_and_assert_empty(manager: SessionManager, session_id: str, path: Path
         raise AssertionError(f"Session cleanup retained {len(manager.sessions)} session(s) for {path.name}.")
 
 
-def _uncached_offsets(expected_rows: int, cached_offset: int) -> list[int]:
+def _uncached_offsets(expected_rows: int, cached_offset: int, *, page_samples: int = SAMPLES) -> list[int]:
     page_count = math.ceil(expected_rows / PAGE_SIZE)
     candidate_pages = [page for page in range(page_count) if page * PAGE_SIZE != cached_offset]
     if len(candidate_pages) <= PAGE_CACHE_LIMIT:
@@ -1192,11 +1197,13 @@ def _uncached_offsets(expected_rows: int, cached_offset: int) -> list[int]:
             f"Fixture has only {len(candidate_pages)} uncached blocks; "
             f"need more than the {PAGE_CACHE_LIMIT}-block cache."
         )
-    if len(candidate_pages) <= SAMPLES:
+    if len(candidate_pages) <= page_samples:
         selected_pages = candidate_pages
     else:
         last = len(candidate_pages) - 1
-        selected_pages = [candidate_pages[math.floor((sample / (SAMPLES - 1)) * last)] for sample in range(SAMPLES)]
+        selected_pages = [
+            candidate_pages[math.floor((sample / (page_samples - 1)) * last)] for sample in range(page_samples)
+        ]
     offsets = [page * PAGE_SIZE for page in selected_pages]
     if len(offsets) != len(set(offsets)) or cached_offset in offsets:
         raise AssertionError("Uncached page samples must use unique offsets that exclude the cached block.")

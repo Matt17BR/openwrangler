@@ -161,6 +161,10 @@ responses. Native Windows qualification must establish private-directory behavio
 Installed restart probes observe the expected bundle's existing lease and package/agent origins without triggering
 bootstrap. The bootstrap owner retains complete module-prefix validation.
 
+The runtime benchmark's three backend smoke checks use nine page samples, enough to exceed the eight-entry cache,
+while retaining five fresh opens per format. Smoke timings are diagnostics: their nine-point p95 is the maximum.
+Ordinary and strict benchmark runs retain 20 page samples and their existing qualification rules.
+
 Qualify changed native engine, reader and generated-code behavior on its minimum and current supported dependencies.
 Keep native controls when versions differ: for example, newline-only Polars schemas may differ while preserving the
 reader's actual rows. Extended-precision cases use the platform's real storage and may skip where it is unavailable.

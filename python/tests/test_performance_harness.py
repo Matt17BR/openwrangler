@@ -96,6 +96,8 @@ def test_performance_harness_smoke(tmp_path: Path) -> None:
         assert fixture["pageCache"]["maxEntries"] <= fixture["pageCache"]["limit"] == 8
         assert fixture["pageCache"]["maxBytes"] <= fixture["pageCache"]["byteLimit"] == 16 * 1024 * 1024
         assert fixture["cachedWarmupMs"] >= 0
+        assert len(fixture["cachedSamplesMs"]) == 9
+        assert len(fixture["uncachedSamplesMs"]) == len(fixture["uncachedOffsets"]) == 9
         assert fixture["directRuntimeCachedPageP95Ms"] >= 0
         assert fixture["directRuntimeCacheMissPageP95Ms"] >= 0
         assert len(fixture["uncachedOffsets"]) > fixture["pageCache"]["limit"]
@@ -114,6 +116,13 @@ def test_performance_harness_smoke(tmp_path: Path) -> None:
         assert transport["cacheMissPageP95Ms"] >= 0
         assert len(transport["cacheMissPageSamplesMs"]) == len(transport["cacheMissOffsets"])
         assert len(transport["cacheMissColumnOffsets"]) == len(transport["cacheMissOffsets"])
+        assert len(transport["cacheMissOffsets"]) == len(set(transport["cacheMissOffsets"])) == 9
+        for offsets in (fixture["uncachedOffsets"], transport["cacheMissOffsets"]):
+            assert offsets[0] == 200
+            assert offsets[-1] == fixture["expectedRows"] - 200
+        assert fixture["directRuntimeCachedPageP95Ms"] == max(fixture["cachedSamplesMs"])
+        assert fixture["directRuntimeCacheMissPageP95Ms"] == max(fixture["uncachedSamplesMs"])
+        assert transport["cacheMissPageP95Ms"] == max(transport["cacheMissPageSamplesMs"])
         assert transport["sameSessionContentionColumnOffset"] >= 0
         assert transport["statsStartProof"].startswith("benchmark-only Polars header_stats")
         assert transport["sameSessionStatsDurationMs"] >= 0
@@ -267,6 +276,29 @@ def test_performance_column_sampling_covers_real_horizontal_blocks() -> None:
     assert runtime_performance._sample_column_offsets(8, 4) == [0, 0, 0, 0]
     assert runtime_performance._sample_column_offsets(20, 4) == [16, 0, 16, 0]
     assert runtime_performance._sample_column_offsets(50, 5) == [16, 32, 48, 0, 16]
+
+
+def test_full_benchmark_preserves_twenty_spread_page_samples(tmp_path: Path, monkeypatch) -> None:
+    measured_samples: list[int] = []
+
+    def observe_measurement(_path, _spec, _backend, *, page_samples: int) -> None:
+        measured_samples.append(page_samples)
+        raise StopIteration
+
+    namespace = runtime_performance.run_benchmark.__globals__
+    monkeypatch.setitem(
+        namespace, "create_fixtures", lambda *_: {"csv": tmp_path / "csv", "parquet": tmp_path / "parquet"}
+    )
+    monkeypatch.setitem(namespace, "measure_fixture", observe_measurement)
+    with pytest.raises(StopIteration):
+        runtime_performance.run_benchmark(tmp_path)
+    assert measured_samples == [20]
+    for rows in (100_000, 1_000_000):
+        offsets = runtime_performance._uncached_offsets(rows, 0)
+        assert len(offsets) == len(set(offsets)) == 20
+        assert offsets[0] == 200
+        assert offsets[-1] == rows - 200
+    assert runtime_performance._percentile([*range(1, 20), 1_000], 0.95) == 19
 
 
 def test_existing_invalid_fixtures_are_atomically_regenerated_and_fully_validated(tmp_path, monkeypatch) -> None:
