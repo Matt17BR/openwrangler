@@ -462,7 +462,9 @@ When native counting infers a temporal index from an object column, profiles and
 nonzero NumPy temporal scalars with unit multipliers or picosecond, femtosecond or attosecond units. Successful
 nanosecond-duration counts are exempt. This conservative representation policy prevents legacy Pandas from
 publishing narrowed labels and selection tokens; it also excludes exact values such as `datetime64[1000ps]`.
-Native count failures remain failures. Successful ordinary, zero and NaT inputs retain native results and ordering.
+Calendar and unitless NumPy durations are also refused when the inferred index would give them a fixed unit,
+including zero-valued durations. NaT and successful fixed-unit zero values retain native results and ordering.
+Native count failures remain failures.
 The guard scans only object inputs whose count index became temporal, without another full-column allocation.
 Current Pandas counts that retain an object index and native temporal columns bypass it. For these object columns,
 search and viewing filters narrow the input before counting; refusal leaves paging, source data and session revision intact.
