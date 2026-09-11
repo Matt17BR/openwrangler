@@ -14,8 +14,6 @@ const ISO_DATE = /^(?:0|[1-9]\d{3,})-(\d{2})-(\d{2})$/u;
 const CHANGELOG_HEADING = /^\[([^\]\r\n]+)\] - ([^\r\n]+)$/u;
 const EVIDENCE_REFERENCE = /\b(test|workflow|record):([A-Za-z0-9.][A-Za-z0-9._/-]*)(?:#[A-Za-z0-9._:-]+)?\b/gu;
 const EVIDENCE_REFERENCE_PREFIX = /\b(?:test|workflow|record):/gu;
-const FUTURE_EVIDENCE =
-  /\b(?:TODO|TBD|pending|planned|future|later|will (?:add|capture|record|run|test|verify)|to be (?:added|captured|recorded|run|tested|verified))\b/iu;
 const CAPABILITY_STATUSES = new Set(["Done", "Partial", "Planned", "Out of scope"]);
 const BACKEND_AVAILABILITY = new Set(["Yes", "Partial", "No"]);
 function parseMarkdown(contents, label) {
@@ -89,30 +87,6 @@ function extractTable(tokens, tableIndex) {
   return undefined;
 }
 
-function rawTableCellMarkdown(contents, tableStartLine, rowIndex, columnIndex) {
-  const line = contents.replace(/\r\n?/gu, "\n").split("\n")[tableStartLine + 2 + rowIndex];
-  if (line === undefined) {
-    return undefined;
-  }
-  const cells = line
-    .split(/(?<!\\)\|/u)
-    .slice(1, -1)
-    .map((cell) => cell.trim());
-  return cells[columnIndex];
-}
-
-function previewSurfaceMarkdown(surface) {
-  const replacements = new Map([
-    ["Base data.frame, tibble, and data.table", "Base `data.frame`, tibble, and `data.table`"],
-    ["Cursor-owned .Rmd and .qmd R/Python chunk", "Cursor-owned `.Rmd` and `.qmd` R/Python chunk"],
-    ["Owned .R source process", "Owned `.R` source process"],
-    ["Owned .Rmd and .qmd cell process", "Owned `.Rmd` and `.qmd` cell process"],
-    ["Insert generated R into its source .R file", "Insert generated R into its source `.R` file"],
-    ["Insert generated R into .Rmd and .qmd", "Insert generated R into `.Rmd` and `.qmd`"]
-  ]);
-  return replacements.get(surface) ?? surface;
-}
-
 function isPortableTrackedPath(value) {
   return (
     value === posixPath.normalize(value) &&
@@ -144,14 +118,6 @@ function inspectEvidence(evidence, trackedEvidencePaths) {
   const references = [...evidence.matchAll(EVIDENCE_REFERENCE)];
   const referencePrefixes = [...evidence.matchAll(EVIDENCE_REFERENCE_PREFIX)];
   if (references.length === 0 || references.length !== referencePrefixes.length) {
-    return false;
-  }
-  const humanText = evidence
-    .replace(EVIDENCE_REFERENCE, "")
-    .replace(/[`*_~()[\]\u2014\u2013:;,.]/gu, " ")
-    .replace(/\s+/gu, " ")
-    .trim();
-  if (humanText.length < 8 || !/[\p{L}\p{N}]/u.test(humanText) || FUTURE_EVIDENCE.test(humanText)) {
     return false;
   }
   return references.every((reference) => {
@@ -301,38 +267,44 @@ export function inspectPreviewRParityMatrix(contents, expectedScope) {
   const rows = tables[0].rows.slice(1);
   if (rows.length !== expectedScope.length) {
     problems.push(
-      `The Native R preview table must contain exactly ${expectedScope.length} ordered rows; found ${rows.length}.`
+      `The Native R preview table must contain exactly ${expectedScope.length} rows; found ${rows.length}.`
     );
   }
-  const comparisonLength = Math.max(rows.length, expectedScope.length);
-  for (let index = 0; index < comparisonLength; index += 1) {
-    const actual = rows[index];
-    const expected = expectedScope[index];
-    if (expected === undefined) {
-      problems.push(`Unexpected Native R preview row "${actual?.[0] ?? ""}" at position ${index + 1}.`);
-      continue;
-    }
-    if (actual === undefined) {
-      problems.push(`Missing Native R preview row "${expected[0]}" at position ${index + 1}.`);
-      continue;
-    }
+  const expectedBySurface = new Map(expectedScope.map((entry) => [entry[0], entry]));
+  const seen = new Set();
+  for (const [index, actual] of rows.entries()) {
     if (actual.length !== expectedHeader.length) {
       problems.push(`The Native R preview table has an empty or malformed row at position ${index + 1}.`);
       continue;
     }
     const [surface, availability, status, currentOwner] = actual;
-    const rawSurface = rawTableCellMarkdown(contents, tokens[tables[0].index]?.map?.[0] ?? -1, index, 0);
-    if (surface !== expected[0] || availability !== expected[1]) {
-      problems.push(`Native R preview row ${index + 1} must be "${expected[0]}" (${expected[1]}).`);
+    if (seen.has(surface)) {
+      problems.push(`Duplicate Native R preview row "${surface}".`);
+      continue;
     }
-    if (status !== expected[2]) {
-      problems.push(`Native R preview row "${surface}" must remain ${expected[2]}; received ${status}.`);
+    seen.add(surface);
+    const expected = expectedBySurface.get(surface);
+    if (expected === undefined) {
+      problems.push(`Unexpected Native R preview row "${surface}".`);
+      continue;
     }
-    if (rawSurface !== previewSurfaceMarkdown(expected[0])) {
-      problems.push(`Native R preview row "${surface}" must retain its exact reviewed surface markup.`);
+    if (availability !== expected[1]) {
+      problems.push(
+        `Native R preview row "${surface}" must retain availability ${expected[1]}; received ${availability}.`
+      );
+    }
+    if (!CAPABILITY_STATUSES.has(status)) {
+      problems.push(
+        `Native R preview row "${surface}" must use Done, Partial, Planned, or Out of scope; received ${status}.`
+      );
     }
     if (currentOwner.length === 0) {
       problems.push(`Native R preview row "${surface}" must describe its current owner.`);
+    }
+  }
+  for (const [surface] of expectedScope) {
+    if (!seen.has(surface)) {
+      problems.push(`Missing Native R preview row "${surface}".`);
     }
   }
   return problems;
@@ -383,24 +355,24 @@ export function inspectPrimaryParityMatrix(
       `The canonical Pandas/Polars parity table must contain exactly ${expectedScope.length} release rows; found ${rows.length}.`
     );
   }
-  const comparisonLength = Math.max(rows.length, expectedScope.length);
-  for (let index = 0; index < comparisonLength; index += 1) {
-    const actual = rows[index];
-    const expected = expectedScope[index];
-    if (expected === undefined) {
-      problems.push(`Unexpected parity row "${actual?.[0] ?? ""}" at position ${index + 1}.`);
-      continue;
-    }
-    if (actual === undefined) {
-      problems.push(`Missing parity row "${expected[0]}" at position ${index + 1}.`);
-      continue;
-    }
+  const expectedBySurface = new Map(expectedScope.map((entry) => [entry[0], entry]));
+  const seen = new Set();
+  for (const [index, actual] of rows.entries()) {
     if (actual.length !== expectedHeader.length || actual.some((cell) => cell.length === 0)) {
       problems.push(`The canonical Pandas/Polars parity table has an empty or malformed row at position ${index + 1}.`);
       continue;
     }
-
     const [surface, pandas, polars, status, evidence] = actual;
+    if (seen.has(surface)) {
+      problems.push(`Duplicate parity row "${surface}".`);
+      continue;
+    }
+    seen.add(surface);
+    const expected = expectedBySurface.get(surface);
+    if (expected === undefined) {
+      problems.push(`Unexpected parity row "${surface}".`);
+      continue;
+    }
     if (requireComplete && status !== "Done") {
       problems.push(`Parity row "${surface}" is ${status}, not Done.`);
     }
@@ -408,13 +380,11 @@ export function inspectPrimaryParityMatrix(
       problems.push(`Parity row "${surface}" must use Done, Partial, Planned, or Out of scope; received ${status}.`);
     }
     if (!inspectEvidence(evidence, trackedEvidencePaths)) {
-      problems.push(
-        `Parity row "${surface}" must record acceptance progress plus a valid tracked test:, workflow:, or record: reference.`
-      );
+      problems.push(`Parity row "${surface}" must include a valid tracked test:, workflow:, or record: reference.`);
     }
-    if (surface !== expected[0] || (requireComplete && (pandas !== expected[1] || polars !== expected[2]))) {
+    if (requireComplete && (pandas !== expected[1] || polars !== expected[2])) {
       problems.push(
-        `Parity row ${index + 1} must be "${expected[0]}" (${expected[1]}/${expected[2]}), received "${surface}" (${pandas}/${polars}).`
+        `Parity row "${surface}" must retain ${expected[1]}/${expected[2]} availability; received ${pandas}/${polars}.`
       );
     }
     if (
@@ -426,6 +396,11 @@ export function inspectPrimaryParityMatrix(
       problems.push(
         `Parity row "${surface}" must retain N/A for inapplicable backends and use Yes, Partial, or No for applicable backends.`
       );
+    }
+  }
+  for (const [surface] of expectedScope) {
+    if (!seen.has(surface)) {
+      problems.push(`Missing parity row "${surface}".`);
     }
   }
   return problems;

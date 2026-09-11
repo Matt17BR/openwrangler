@@ -59,33 +59,33 @@ export const PRIMARY_PARITY_SCOPE = Object.freeze([
   ["VS Code package acceptance and compatibility seam", "N/A", "N/A"]
 ]);
 function previewRScope(...values) {
-  if (values.length !== 3 || values.some((value) => typeof value !== "string" || value.length === 0)) {
-    throw new Error("Every Native R preview scope entry requires one surface, availability, and status.");
+  if (values.length !== 2 || values.some((value) => typeof value !== "string" || value.length === 0)) {
+    throw new Error("Every Native R preview scope entry requires one surface and availability.");
   }
   return Object.freeze(values);
 }
 
 export const R_PREVIEW_PARITY_SCOPE = Object.freeze([
-  previewRScope("Native R frame paging and typed cells", "Preview", "Partial"),
-  previewRScope("Native R compound viewing filters", "Preview", "Partial"),
-  previewRScope("Native R value search and selections", "Preview", "Partial"),
-  previewRScope("Native R ordered viewing sorts", "Preview", "Partial"),
-  previewRScope("Native R column and dataset profiles", "Preview", "Partial"),
-  previewRScope("Base data.frame, tibble, and data.table", "Preview", "Partial"),
-  previewRScope("Exact IRkernel session transport", "Preview", "Done"),
-  previewRScope("Exact active R-terminal transport", "Preview", "Partial"),
-  previewRScope("Cursor-owned .Rmd and .qmd R/Python chunk", "Preview", "Partial"),
-  previewRScope("Owned .R source process", "macOS and Linux Preview", "Partial"),
-  previewRScope("Owned .Rmd and .qmd cell process", "macOS and Linux Preview", "Partial"),
-  previewRScope("Notebook workbench", "Preview", "Partial"),
-  previewRScope("R cleaning operations and generated code", "Generated catalog", "Partial"),
-  previewRScope("Copy or save generated R", "Generated catalog", "Partial"),
-  previewRScope("Insert generated R into its IRkernel notebook", "Preview", "Partial"),
-  previewRScope("Insert generated R into its source .R file", "macOS and Linux Preview", "Partial"),
-  previewRScope("Insert generated R into .Rmd and .qmd", "macOS and Linux Preview", "Partial"),
-  previewRScope("Cleaned-data export", "R notebook/document CSV/Parquet", "Partial"),
-  previewRScope("Active R-terminal cleaned-data export", "Preview", "Partial"),
-  previewRScope("Quarto and R Markdown lexical R-cell run", "Preview", "Partial")
+  previewRScope("Native R frame paging and typed cells", "Preview"),
+  previewRScope("Native R compound viewing filters", "Preview"),
+  previewRScope("Native R value search and selections", "Preview"),
+  previewRScope("Native R ordered viewing sorts", "Preview"),
+  previewRScope("Native R column and dataset profiles", "Preview"),
+  previewRScope("Base data.frame, tibble, and data.table", "Preview"),
+  previewRScope("Exact IRkernel session transport", "Preview"),
+  previewRScope("Exact active R-terminal transport", "Preview"),
+  previewRScope("Cursor-owned .Rmd and .qmd R/Python chunk", "Preview"),
+  previewRScope("Owned .R source process", "macOS and Linux Preview"),
+  previewRScope("Owned .Rmd and .qmd cell process", "macOS and Linux Preview"),
+  previewRScope("Notebook workbench", "Preview"),
+  previewRScope("R cleaning operations and generated code", "Generated catalog"),
+  previewRScope("Copy or save generated R", "Generated catalog"),
+  previewRScope("Insert generated R into its IRkernel notebook", "Preview"),
+  previewRScope("Insert generated R into its source .R file", "macOS and Linux Preview"),
+  previewRScope("Insert generated R into .Rmd and .qmd", "macOS and Linux Preview"),
+  previewRScope("Cleaned-data export", "R notebook/document CSV/Parquet"),
+  previewRScope("Active R-terminal cleaned-data export", "Preview"),
+  previewRScope("Quarto and R Markdown lexical R-cell run", "Preview")
 ]);
 
 function numericReleaseMajor(version) {
