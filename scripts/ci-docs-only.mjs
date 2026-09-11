@@ -3,6 +3,21 @@ import { appendFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+const releasePolicyFiles = new Set([
+  "scripts/release-metadata.mjs",
+  "scripts/daily-preview-artifact.mjs",
+  "scripts/daily-preview-artifact.test.mjs",
+  "scripts/prepare-stable-candidate-tag.mjs",
+  "scripts/prepare-stable-candidate-tag.test.mjs",
+  "scripts/release-tag-publisher.mjs",
+  "scripts/push-stable-release-tag.mjs",
+  "scripts/push-stable-release-tag.test.mjs",
+  "scripts/publish-github-stable-release.mjs",
+  "scripts/publish-github-stable-release.test.mjs",
+  "scripts/verify-canonical-release-artifact.mjs",
+  "scripts/verify-canonical-release-artifact.test.mjs"
+]);
+
 export function proveRuntimeOmissions({ cwd = process.cwd(), env = process.env } = {}) {
   const required = { docsOnly: false, rOmittable: false, pythonOmittable: false };
   const { CI_EVENT, CI_BASE_REF, CI_BASE_SHA, CI_HEAD_SHA, CI_MERGE_SHA } = env;
@@ -62,7 +77,8 @@ export function proveRuntimeOmissions({ cwd = process.cwd(), env = process.env }
     }
     if (modified && (path === "README.md" || path === "CHANGELOG.md" || /^docs\/[^\p{Cc}]+\.md$/u.test(path))) continue;
     docsOnly = false;
-    if (modified && /^src\/test\/[^/\p{Cc}]+\.component\.test\.tsx$/u.test(path)) continue;
+    if (modified && (/^src\/test\/[^/\p{Cc}]+\.component\.test\.tsx$/u.test(path) || releasePolicyFiles.has(path)))
+      continue;
     if (pythonSource) {
       pythonOmittable = false;
       continue;
@@ -93,7 +109,7 @@ if (process.argv[1] !== undefined && pathToFileURL(resolve(process.argv[1])).hre
     docsOnly
       ? "Verified existing documentation edits only."
       : rOmittable && pythonOmittable
-        ? "Verified existing component-test and Markdown edits independent of native runtimes."
+        ? "Verified edits permit omission of Python, R and Windows runtime checks."
         : rOmittable
           ? "Verified changes independent of native R."
           : pythonOmittable

@@ -401,7 +401,7 @@ jobs:
           test "$PROOF_RESULT" = success
           case "$R_OMITTABLE:$PYTHON_OMITTABLE:$RUNTIME_RESULT" in
             true:true:skipped)
-              echo 'Windows checks omitted: the tested merge only edits existing component tests or Markdown documentation. No fresh Windows execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
+              echo 'Windows checks omitted: all changed paths permit omission of both native runtimes. No fresh Windows execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
               ;;
             false:false:success|false:true:success|true:false:success) ;;
             *) exit 1 ;;
