@@ -69,7 +69,7 @@ test("R checkpoint timing logs only changed fixed labels without changing phase 
     );
   }
 
-  for (const profile of ["comprehensive", "platform-lifecycle"]) {
+  for (const profile of ["comprehensive", "platform-lifecycle", "native-frames"]) {
     lines.length = 0;
     let clock = 1_000;
     const collapseCheckpoints = ["collapse_frame", "collapse_tibble", "collapse_table"].flatMap((frame) =>
