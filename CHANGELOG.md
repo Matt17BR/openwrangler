@@ -4,6 +4,10 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ## [Unreleased]
 
+### Fixed
+
+- Viewing-filter Undo preserves saved operand objects with keys such as `__proto__` instead of changing the filter value.
+
 ## [2.3.0] - 2026-09-11
 
 ### Changed
