@@ -1633,6 +1633,11 @@ class PandasEngine(DataFrameEngine):
         fill_strategies = {
             _pandas_fill_strategy(step["params"]["replacement"]) for step in plan if step["kind"] == "fillMissingValues"
         }
+        needs_value_fill_statistics = any(
+            step["kind"] == "fillMissingValues"
+            and step["params"]["replacement"]["kind"] in {"mean", "median", "mostFrequent"}
+            for step in plan
+        )
         needs_object_isolation = any(step["kind"] == "customCode" for step in plan)
         needs_nullable_result_helpers = any(step["kind"] in {"groupBy", "byExample", "pivotWider"} for step in plan)
         needs_group_helpers = any(step["kind"] == "groupBy" for step in plan)
@@ -1890,7 +1895,9 @@ class PandasEngine(DataFrameEngine):
                 ]
             )
         if needs_fill_helpers:
-            lines.extend(_generated_pandas_fill_helpers(fill_strategies))
+            lines.extend(
+                _generated_pandas_fill_helpers(fill_strategies, needs_value_statistics=needs_value_fill_statistics)
+            )
         if needs_object_isolation:
             lines.extend(
                 [
@@ -7115,43 +7122,56 @@ def _generated_pandas_fill_grouped_helpers() -> list[str]:
     ]
 
 
-def _generated_pandas_fill_value_helpers() -> list[str]:
-    return [
+def _generated_pandas_fill_value_helpers(*, include_statistics: bool) -> list[str]:
+    lines = [
         "def _open_wrangler_fill_missing(series, missing, replacement_kind, replacement_value):",
         "    original = series",
         "    series = _open_wrangler_scalar_values(series)",
         "    semantic_type = _open_wrangler_fill_semantic_type(series)",
-        "    if replacement_kind in {'mean', 'median', 'mostFrequent'}:",
-        "        if replacement_kind == 'mean' and semantic_type != 'float':",
-        "            raise ValueError('Mean fill requires a floating-point column.')",
-        "        if not missing.any():",
-        "            return original.copy()",
-        "        present = [item for item, is_missing in zip(series.array, missing.array) if not is_missing]",
-        "        fill_value = _open_wrangler_fill_statistic(",
-        "            series, present, replacement_kind, semantic_type, True",
-        "        )",
-        "        return series.copy().mask(missing, fill_value)",
-        "    fill_value = replacement_value",
-        "    if semantic_type == 'decimal':",
-        "        present = [item for item, is_missing in zip(series.array, missing.array) if not is_missing]",
-        "        precision, scale = _open_wrangler_decimal_spec(series, present)",
-        "        fill_value = _open_wrangler_decimal_at_scale(Decimal(fill_value), precision, scale)",
-        "    elif semantic_type == 'datetime':",
-        "        column_aware = _open_wrangler_datetime_awareness(series)",
-        "        value_aware = fill_value.tzinfo is not None and fill_value.utcoffset() is not None",
-        "        if value_aware != column_aware:",
-        "            expected = 'timezone-aware' if column_aware else 'timezone-naive'",
-        "            raise ValueError(f'The replacement datetime must be {expected} to match the selected column.')",
-        "    if not missing.any():",
-        "        return original.copy()",
-        "    target = series.astype('string') if isinstance(series.dtype, pd.CategoricalDtype) else series.copy()",
-        "    return target.mask(missing, fill_value)",
-        "",
-        "",
     ]
+    if include_statistics:
+        lines.extend(
+            [
+                "    if replacement_kind in {'mean', 'median', 'mostFrequent'}:",
+                "        if replacement_kind == 'mean' and semantic_type != 'float':",
+                "            raise ValueError('Mean fill requires a floating-point column.')",
+                "        if not missing.any():",
+                "            return original.copy()",
+                "        present = [item for item, is_missing in zip(series.array, missing.array) if not is_missing]",
+                "        fill_value = _open_wrangler_fill_statistic(",
+                "            series, present, replacement_kind, semantic_type, True",
+                "        )",
+                "        return series.copy().mask(missing, fill_value)",
+            ]
+        )
+    lines.extend(
+        [
+            "    fill_value = replacement_value",
+            "    if semantic_type == 'decimal':",
+            "        present = [item for item, is_missing in zip(series.array, missing.array) if not is_missing]",
+            "        precision, scale = _open_wrangler_decimal_spec(series, present)",
+            "        fill_value = _open_wrangler_decimal_at_scale(Decimal(fill_value), precision, scale)",
+            "    elif semantic_type == 'datetime':",
+            "        column_aware = _open_wrangler_datetime_awareness(series)",
+            "        value_aware = fill_value.tzinfo is not None and fill_value.utcoffset() is not None",
+            "        if value_aware != column_aware:",
+            "            expected = 'timezone-aware' if column_aware else 'timezone-naive'",
+            (
+                "            raise ValueError(f'The replacement datetime must be {expected} "
+                "to match the selected column.')"
+            ),
+            "    if not missing.any():",
+            "        return original.copy()",
+            "    target = series.astype('string') if isinstance(series.dtype, pd.CategoricalDtype) else series.copy()",
+            "    return target.mask(missing, fill_value)",
+            "",
+            "",
+        ]
+    )
+    return lines
 
 
-def _generated_pandas_fill_helpers(strategies: set[str]) -> list[str]:
+def _generated_pandas_fill_helpers(strategies: set[str], *, needs_value_statistics: bool) -> list[str]:
     lines: list[str] = []
     if strategies & {"fallback", "grouped", "linear", "value"}:
         lines.extend(_generated_pandas_fill_type_helpers())
@@ -7159,7 +7179,7 @@ def _generated_pandas_fill_helpers(strategies: set[str]) -> list[str]:
         lines.extend(_generated_pandas_fill_decimal_helpers())
     if strategies & {"fallback", "value"}:
         lines.extend(_generated_pandas_fill_datetime_helpers())
-    if strategies & {"grouped", "value"}:
+    if "grouped" in strategies or needs_value_statistics:
         lines.extend(_generated_pandas_fill_midpoint_helpers())
         lines.extend(_generated_pandas_fill_statistic_helpers())
     if "fallback" in strategies:
@@ -7171,7 +7191,7 @@ def _generated_pandas_fill_helpers(strategies: set[str]) -> list[str]:
     if "grouped" in strategies:
         lines.extend(_generated_pandas_fill_grouped_helpers())
     if "value" in strategies:
-        lines.extend(_generated_pandas_fill_value_helpers())
+        lines.extend(_generated_pandas_fill_value_helpers(include_statistics=needs_value_statistics))
     return lines
 
 

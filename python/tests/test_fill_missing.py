@@ -1244,6 +1244,114 @@ def test_session_fallback_fill_keeps_nullable_metadata_when_rows_remain_unresolv
         manager.close_session(session_id, 2)
 
 
+@pytest.mark.parametrize(
+    "order",
+    [
+        ("constant",),
+        ("mean",),
+        ("median",),
+        ("mode",),
+        ("grouped_mean",),
+        ("grouped_median",),
+        ("grouped_mode",),
+        ("constant", "mean"),
+        ("mean", "constant"),
+        ("constant", "mode"),
+        ("mode", "constant"),
+        ("constant", "grouped_mode"),
+        ("grouped_mode", "constant"),
+        ("grouped_median", "constant", "mode", "mean", "median"),
+    ],
+)
+def test_pandas_generated_fill_selects_statistics_for_the_complete_plan(order: tuple[str, ...]) -> None:
+    engine = PandasEngine()
+    source = pd.DataFrame(
+        {
+            "constant": pd.Series([1, None, 3, None], dtype="Float64"),
+            "mean": pd.Series([1, None, 3, None], dtype="Float64"),
+            "median": pd.Series([1, None, 5, None], dtype="Int64"),
+            "mode": pd.Series(["a", None, "a", "b"], dtype="string"),
+            "grouped_mean": pd.Series([1, None, 3, None], dtype="Float64"),
+            "grouped_median": pd.Series([1, None, 3, None], dtype="Int64"),
+            "grouped_mode": pd.Series(["a", None, "b", None], dtype="string"),
+            "key": pd.Series(["a", "a", "b", "b"], dtype="string"),
+            "_open_wrangler_fill_statistic": [9, 8, 7, 6],
+        }
+    )
+    source.index = pd.Index([7, 7, 3, 3], name="source-row")
+    source.attrs = {"origin": "fill-helper-selection"}
+    before = source.copy(deep=True)
+    replacements: dict[str, dict[str, Any]] = {
+        "constant": {"kind": "float", "value": "0"},
+        "mean": {"kind": "mean"},
+        "median": {"kind": "median"},
+        "mode": {"kind": "mostFrequent"},
+        **{
+            name: {
+                "kind": "groupedStatistic",
+                "statistic": statistic,
+                "keys": [bound_ref("c:source:7", "key", 7)],
+            }
+            for name, statistic in (
+                ("grouped_mean", "mean"),
+                ("grouped_median", "median"),
+                ("grouped_mode", "mostFrequent"),
+            )
+        },
+    }
+    values = {
+        "constant": [1, 0, 3, 0],
+        "mean": [1, 2, 3, 2],
+        "median": [1, 3, 5, 3],
+        "mode": ["a", "a", "a", "b"],
+        "grouped_mean": [1, 1, 3, 3],
+        "grouped_median": [1, 1, 3, 3],
+        "grouped_mode": ["a", "a", "b", "b"],
+    }
+    plan = [
+        fill_step(
+            bound_ref(f"c:source:{list(source.columns).index(name)}", name, list(source.columns).index(name)),
+            replacements[name],
+            step_id=name,
+        )
+        for name in order
+    ]
+    expected = source.copy(deep=True)
+    for name in order:
+        expected[name] = pd.Series(values[name], index=source.index, dtype=source[name].dtype)
+
+    try:
+        code = engine.compile_plan(plan)
+        module = ast.parse(code, feature_version=(3, 10))
+        (entry_point,) = [node for node in module.body if isinstance(node, ast.FunctionDef)]
+        helpers = [node for node in entry_point.body if isinstance(node, ast.FunctionDef)]
+        names = [node.name for node in helpers]
+        assert len(names) == len(set(names))
+        statistics = {"_open_wrangler_float_midpoint", "_open_wrangler_fill_statistic"}
+        assert statistics.intersection(names) == (statistics if set(order) != {"constant"} else set())
+        global_statistics = bool(set(order) & {"mean", "median", "mode"})
+        for helper in helpers:
+            if helper.name == "_open_wrangler_fill_missing":
+                calls_statistics = any(
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "_open_wrangler_fill_statistic"
+                    for node in ast.walk(helper)
+                )
+                assert calls_statistics is global_statistics
+        live = source
+        for operation in plan:
+            live = engine.apply_transform(live, operation)
+        generated = execute_generated(engine, source, plan)
+        for result in (live, generated):
+            pd.testing.assert_frame_equal(result, expected, check_exact=True)
+            assert result.attrs == expected.attrs
+        pd.testing.assert_frame_equal(source, before, check_exact=True)
+        assert source.attrs == before.attrs
+    finally:
+        engine.close()
+
+
 def test_polars_generated_median_fill_emits_only_its_dependencies() -> None:
     engine = PolarsEngine()
     operation = fill_step(bound_ref("c:source:0", "value", 0), {"kind": "median"})

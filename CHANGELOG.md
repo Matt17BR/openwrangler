@@ -4,6 +4,10 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ## [Unreleased]
 
+### Changed
+
+- Generated Pandas code for constant Fill omits unused statistical helpers.
+
 ### Fixed
 
 - Pandas Pivot Wider preserves object identifiers with `NaT` and mixed scalar values in generated code. Generated
