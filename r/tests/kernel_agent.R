@@ -13397,10 +13397,12 @@ local({
   Encoding(utf8) <- "UTF-8"
   original_options <- options(OutDec = ",")
   on.exit(options(original_options), add = TRUE)
-  source_environment$csv_unicode <- data.frame(
+  source_environment$csv_unicode <- structure(list(
     text = c(utf8, NA_character_),
-    duration = structure(c(0.25, NA_real_), class = "difftime", units = "hours")
-  )
+    duration = structure(c(0.25, NA_real_), class = "difftime", units = "hours"),
+    at = structure(c(59.9999998, NA_real_), class = c("POSIXct", "POSIXt"), tzone = "UTC", names = c("carry", "missing"))
+  ), class = "data.frame", row.names = 1:2)
+  assert_identical(names(source_environment$csv_unicode$at), c("carry", "missing"), "the public timestamp fixture lost its names")
   assert_identical(Sys.setlocale("LC_CTYPE", "C"), "C", "public CSV test could not select the C locale")
   source_before <- serialize(source_environment$csv_unicode, NULL, version = 3L)
   opened <- dispatch("openSession", list(sessionId = csv_session, variableName = "csv_unicode", page = page_window()))
@@ -13413,8 +13415,9 @@ local({
   exported <- dispatch("exportData", list(sessionId = csv_session, revision = 0L, exportId = csv_export, options = csv_export_options))
   assert_identical(exported$kind, "dataExported", "Unicode CSV export did not complete")
   chunk <- dispatch("readDataExport", list(sessionId = csv_session, revision = 0L, exportId = csv_export, offset = 0L, limit = 1024L))
-  expected <- c(charToRaw("\"text\",\"duration\"\n\""), as.raw(c(0xc3, 0xa9)), charToRaw("\",0.25\n,\n"))
-  assert_identical(jsonlite::base64_dec(chunk$data), expected, "public CSV export changed UTF-8 text or duration decimals under the caller locale/options")
+  expected <- c(charToRaw("\"text\",\"duration\",\"at\"\n\""), as.raw(c(0xc3, 0xa9)),
+    charToRaw("\",0.25,\"1970-01-01 00:01:00\"\n,,\n"))
+  assert_identical(jsonlite::base64_dec(chunk$data), expected, "public CSV export changed UTF-8 text, duration decimals or timestamp carry under the caller locale/options")
   assert_identical(exported$bytes, length(expected), "public CSV export reported the wrong UTF-8 byte count")
   assert_identical(serialize(source_environment$csv_unicode, NULL, version = 3L), source_before, "public CSV export mutated source text")
   current <- dispatch("getPage", list(sessionId = csv_session, page = page_window()))

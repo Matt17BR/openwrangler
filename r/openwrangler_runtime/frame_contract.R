@@ -9285,6 +9285,30 @@ openwrangler_r_frame_contract <- local({
       {
         connection <- file(target_path, open = "wxb")
         created <- TRUE
+        for (position in seq_along(frame)) {
+          column <- frame[[position]]
+          if (!inherits(column, "POSIXct")) next
+          text <- as.character(column)
+          row_count <- length(text)
+          if (row_count > 0L) {
+            for (start in seq.int(1, row_count, by = 65536)) {
+              positions <- seq.int(start, min(start + 65535, row_count))
+              carry <- positions[which(endsWith(.subset(text, positions), ":60"))]
+              if (length(carry) > 0L) {
+                # Native rounding can leave invalid civil seconds, including across DST changes.
+                rounded <- .subset(column, carry)
+                attributes(rounded) <- NULL
+                rounded <- floor(rounded) + 1
+                attributes(rounded) <- list(
+                  class = attr(column, "class", exact = TRUE),
+                  tzone = attr(column, "tzone", exact = TRUE)
+                )
+                text[carry] <- as.character(rounded)
+              }
+            }
+          }
+          frame[[position]] <- text
+        }
         utils::write.table(
           frame,
           file = connection,

@@ -10,6 +10,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Native R CSV export carries rounded timestamp seconds into the correct date and time instead of emitting invalid `:60` fields.
 - Native R CSV export quotes dates, timestamps and integer64 fields for custom delimiters. It refuses delimiters
   that could split ordinary numeric or logical fields; comma, tab, semicolon and pipe remain available.
 - Polars CSV export refuses custom delimiter or quote characters that could split numeric, Boolean or temporal fields.
