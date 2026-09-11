@@ -640,9 +640,12 @@ the same allocation policy. Non-object metadata checks, grouping and row restora
 Generated integer helpers use the same `numbers.Integral` admission as live execution, excluding Boolean values and
 actual NumPy duration instances, so integral object keys retain the same values and dtypes as live execution
 without interpreting their class names as temporal types.
-Shared cell normalization and Pandas operations recognize `NA` and `NaT` by identity, not a matching class name.
-The shared boundary consults an already-loaded Pandas module without importing it for other engines; generated
-Pandas code uses its existing module binding. NumPy scalar and temporal handling checks actual native types;
+Shared cell normalization and Pandas operations recognize genuine Pandas `NA`/`NaT` by identity and genuine NumPy
+datetime/duration `NaT` through native `isnat`. A matching class name does not make a value missing. Object-column null
+counts, filters, fill donors and type inference use this same scalar rule. Generated Pandas queries and nullable-result
+helpers share one null predicate. The shared boundary consults already-loaded Pandas and NumPy modules without
+importing them for other engines; generated Pandas code uses its existing module bindings. NumPy scalar and temporal
+handling checks actual native types;
 Pandas `Timedelta` subclasses retain their stored unit through the native NumPy scalar, including values outside the
 nanosecond range, while ordinary Python timedeltas keep their own value. None,
 floating NaN, Decimal NaN and Arrow temporal validity retain their separate existing rules.

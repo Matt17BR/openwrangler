@@ -1734,6 +1734,18 @@ class PandasEngine(DataFrameEngine):
         if lines:
             lines.append("")
         lines.extend(["import numpy as np", "import pandas as pd", "", ""])
+        if needs_missing_helpers or needs_nullable_result_helpers:
+            lines.extend(
+                [
+                    "def _open_wrangler_is_null(value):",
+                    "    return (",
+                    "        value is None or value is pd.NA or value is pd.NaT",
+                    "        or isinstance(value, (np.datetime64, np.timedelta64)) and bool(np.isnat(value))",
+                    "    )",
+                    "",
+                    "",
+                ]
+            )
         if any(step["kind"] in {"oneHotEncode", "multiLabelBinarize"} for step in plan):
             lines.extend(
                 [
@@ -1932,10 +1944,6 @@ class PandasEngine(DataFrameEngine):
                     "    return _open_wrangler_dictionary_values(series).array.__arrow_array__()",
                     "",
                     "",
-                    "def _open_wrangler_is_null(value):",
-                    "    return value is None or value is pd.NA or value is pd.NaT",
-                    "",
-                    "",
                     "def _open_wrangler_is_nan(value):",
                     "    if isinstance(value, Decimal):",
                     "        return value.is_nan()",
@@ -2046,7 +2054,7 @@ class PandasEngine(DataFrameEngine):
                     "",
                     "def _open_wrangler_missing_scalar(value):",
                     "    return (",
-                    "        value is None or value is pd.NA or value is pd.NaT or",
+                    "        _open_wrangler_is_null(value) or",
                     "        (isinstance(value, (float, np.floating)) and np.isnan(value)) or",
                     "        (isinstance(value, Decimal) and value.is_nan())",
                     "    )",

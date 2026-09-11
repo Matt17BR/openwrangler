@@ -18,6 +18,7 @@ from openwrangler_runtime.engines import EngineError, PandasEngine
 from openwrangler_runtime.engines.base import (
     coerce_typed_view_value,
     infer_semantic_type,
+    is_null_scalar,
     normalize_cell,
     typed_selection_value,
 )
@@ -692,6 +693,81 @@ def test_scalar_type_names_preserve_cells_and_nested_json(
     assert source.attrs == before.attrs
 
 
+@pytest.mark.parametrize(
+    "missing,present",
+    [(np.timedelta64("NaT", "ns"), np.timedelta64(1, "s")), (np.datetime64("NaT", "ns"), np.datetime64("2024-01-01"))],
+    ids=["duration", "datetime"],
+)
+def test_object_numpy_nat_null_filters_match_grid_and_summary(monkeypatch: pytest.MonkeyPatch, missing, present):
+    import __main__
+
+    values = [missing, missing, pd.NaT, None, float("nan"), present]
+    source = pd.DataFrame({"value": pd.Series(values, dtype=object), "row": range(len(values))})
+    source.index = pd.Index(["same"] * len(values), name="original")
+    source.attrs["origin"] = "retained"
+    before = source.copy(deep=True)
+    monkeypatch.setattr(__main__, "object_nat_source", source, raising=False)
+    manager, engine = SessionManager(), PandasEngine()
+    query: dict[str, Any] = {"filters": [], "sort": []}
+    try:
+        opened = manager.open_session(
+            {"kind": "notebookVariable", "label": "object NaT", "variableName": "object_nat_source"},
+            backend="pandas",
+            page_size=6,
+        )
+        metadata = opened["metadata"]
+        session_id, revision = metadata["sessionId"], metadata["revision"]
+        rows = opened["page"]["rows"]
+        assert [row["values"][1]["raw"] for row in rows if row["values"][0]["isNull"]] == [0, 1, 2, 3]
+        assert [row["values"][1]["raw"] for row in rows if row["values"][0]["isNaN"]] == [4]
+        summary = manager.get_summary(session_id, revision, query, [metadata["schema"][0]["id"]])["summaries"][0]
+        assert summary["nullCount"] == 4 and summary["nanCount"] == 1
+        schema = engine.schema(source)
+        lineage = source_lineage(schema)
+        rules = [
+            ({"predicates": [{"kind": "predicate", "operator": "isNull"}]}, [0, 1, 2, 3]),
+            ({"predicates": [{"kind": "predicate", "operator": "isNotNull"}]}, [4, 5]),
+            (
+                {
+                    "predicates": [],
+                    "valueFilter": {"kind": "values", "selectedValues": [], "includeNulls": True, "includeNaN": False},
+                },
+                [0, 1, 2, 3],
+            ),
+            (
+                {
+                    "predicates": [],
+                    "valueFilter": {"kind": "values", "selectedValues": [], "includeNulls": True, "includeNaN": True},
+                },
+                [0, 1, 2, 3, 4],
+            ),
+        ]
+        for rule, expected_rows in rules:
+            column_filter = {"column": "value", "type": metadata["schema"][0]["type"], **rule}
+            model = {"filters": [column_filter], "sort": []}
+            page = manager.get_page(session_id, revision, 0, 6, model)["page"]
+            assert [row["values"][1]["raw"] for row in page["rows"]] == expected_rows
+            bound_model = {**model, "filters": [{**column_filter, "column": lineage[0]}]}
+            step = bind_step(
+                validate_step({"id": "missing", "kind": "filterRows", "params": {"filterModel": bound_model}}),
+                schema,
+                lineage,
+            )
+            namespace: dict[str, Any] = {}
+            exec(engine.compile_plan([step]), namespace)
+            for result in (engine.apply_transform(source, step), namespace["clean_data"](source)):
+                pd.testing.assert_frame_equal(result, source.iloc[expected_rows], check_exact=True)
+        restored = manager.get_page(session_id, revision, 0, 6, query)
+        assert restored["page"] == opened["page"]
+        for key in ("sessionId", "revision", "source"):
+            assert restored["metadata"][key] == metadata[key]
+    finally:
+        manager.close_all()
+        engine.close()
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
+    assert source.attrs == before.attrs and __main__.object_nat_source is source
+
+
 @pytest.mark.parametrize("pandas_duration", [False, True])
 @pytest.mark.parametrize("nested", [False, True])
 def test_duration_subclasses_preserve_native_value_in_cells(pandas_duration: bool, nested: bool) -> None:
@@ -902,6 +978,12 @@ def test_duration_session_choices_and_grid_tokens_keep_source_rows(
 
 
 def test_typed_cells_normalize_numpy_and_pandas_scalars() -> None:
+    for kind in ("datetime64", "timedelta64"):
+        for unit in ("D", "ns", "2s", "ps"):
+            missing, present = np.array([-(2**63), -(2**63) + 1], dtype=np.int64).view(f"{kind}[{unit}]")
+            assert is_null_scalar(missing) is True
+            assert is_null_scalar(present) is False
+            assert normalize_cell({"value": missing})["raw"] == {"value": None}
     assert normalize_cell(np.int64(7)) == {
         "kind": "integer",
         "raw": 7,

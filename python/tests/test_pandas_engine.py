@@ -1491,8 +1491,19 @@ def test_pandas_standard_object_schema_types_do_not_use_the_python_materializati
     assert [column["type"] for column in PandasEngine().schema(frame)] == ["string", "integer"]
 
 
-@pytest.mark.parametrize("missing", [None, pd.NaT], ids=["None", "NaT"])
-@pytest.mark.parametrize("scalar_kind", ["registered", "integer_subclass", "duration_name"])
+@pytest.mark.parametrize(
+    "missing,scalar_kind",
+    [
+        (None, "registered"),
+        (pd.NaT, "registered"),
+        (None, "integer_subclass"),
+        (pd.NaT, "integer_subclass"),
+        (None, "duration_name"),
+        (pd.NaT, "duration_name"),
+        pytest.param(np.datetime64("NaT", "ns"), "integer_subclass", id="numpy-datetime-nat"),
+        pytest.param(np.timedelta64("NaT", "ns"), "integer_subclass", id="numpy-duration-nat"),
+    ],
+)
 def test_pandas_group_by_integral_object_keys_keep_exact_nullable_storage_in_generated_code(
     missing: Any, scalar_kind: str
 ) -> None:

@@ -1082,11 +1082,14 @@ def datetime_isoformat(value: datetime, *, sep: Literal["T", " "] = "T", nanosec
 
 
 def is_null_scalar(value: Any) -> bool:
-    """Recognize None and genuine Pandas sentinels without importing Pandas."""
+    """Recognize None and genuine Pandas/NumPy nulls without importing either runtime."""
     if value is None:
         return True
     pandas = sys.modules.get("pandas")
-    return pandas is not None and (value is getattr(pandas, "NA", None) or value is getattr(pandas, "NaT", None))
+    if pandas is not None and (value is getattr(pandas, "NA", None) or value is getattr(pandas, "NaT", None)):
+        return True
+    numpy = sys.modules.get("numpy")
+    return numpy is not None and isinstance(value, (numpy.datetime64, numpy.timedelta64)) and bool(numpy.isnat(value))
 
 
 def normalize_cell(value: Any) -> dict[str, Any]:
@@ -1097,13 +1100,7 @@ def normalize_cell(value: Any) -> dict[str, Any]:
         converted = value.item()
         if type(converted) is not type(value):
             return normalize_cell(converted)
-    numpy_datetime = value.item() if is_numpy_datetime else None
-    is_null = (
-        is_null_scalar(value)
-        or (is_numpy_datetime and numpy_datetime is None)
-        or (is_numpy_duration and str(value) == "NaT")
-        or (isinstance(value, Decimal) and value.is_nan())
-    )
+    is_null = is_null_scalar(value) or (isinstance(value, Decimal) and value.is_nan())
     is_boolean = isinstance(value, bool)
     is_integer = isinstance(value, Integral) and not is_boolean and not is_numpy_duration
     is_real = isinstance(value, Real) and not is_boolean and not is_integer and not is_numpy_duration
