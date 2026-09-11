@@ -1209,9 +1209,10 @@ Dependency prompts identify the exact interpreter and requirements; only the lit
 Custom code is trusted arbitrary code in the selected environment, not a sandbox.
 
 Dependency availability and post-install validation accept hard-linked regular module files when the supported
-version, distribution record and import origin agree. Module reads retain file and ancestor identity revalidation,
-including link-count changes during each read, and refuse symlink or reparse traversal. These checks establish
-installed-module provenance; they do not authenticate arbitrary package code.
+version, distribution record and import origin agree. Checks revalidate named ancestor directory objects and the
+final module file, refusing symlink or reparse traversal. Unrelated sibling files and directories may change without
+invalidating module provenance. Module files retain the existing metadata and link-count checks during each read. These
+checks establish installed-module provenance; they do not authenticate arbitrary package code.
 
 Open Wrangler never overwrites source data. Readers validate supported schemes, regular-file identity, and format
 options before runtime startup. Lazy readers revalidate the source around each read. Transformations operate on
