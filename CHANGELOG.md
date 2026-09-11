@@ -7,6 +7,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 ### Fixed
 
 - Viewing-filter Undo preserves saved operand objects with keys such as `__proto__` instead of changing the filter value.
+- Pandas Pivot Wider avoids a deprecation warning on empty dataframes in both live execution and generated code.
 
 ## [2.3.0] - 2026-09-11
 

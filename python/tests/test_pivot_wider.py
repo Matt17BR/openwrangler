@@ -445,6 +445,7 @@ def test_pandas_pivot_wider_object_identifiers_match_generated_admission(family:
         assert frame.attrs == before.attrs
 
 
+@pytest.mark.filterwarnings("error:'or' operations between boolean dtype and string are deprecated:DeprecationWarning")
 @pytest.mark.parametrize("empty", [False, True])
 def test_pandas_pivot_wider_empty_object_identifiers_keep_nullable_results(empty: bool) -> None:
     frame = pd.DataFrame(
