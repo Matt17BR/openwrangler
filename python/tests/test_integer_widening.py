@@ -322,8 +322,8 @@ def test_by_example_integer_division_by_an_unseen_zero_is_portable(engine: Any) 
     assert compiled[:2] == pytest.approx([1.0, 2.0])
     assert isinf(live[2]) and live[2] > 0
     assert isinf(compiled[2]) and compiled[2] > 0
-    assert live[3] is None or type(live[3]).__name__ == "NAType"
-    assert compiled[3] is None or type(compiled[3]).__name__ == "NAType"
+    assert live[3] is None or live[3] is pd.NA
+    assert compiled[3] is None or compiled[3] is pd.NA
     for result in (live_frame, compiled_frame):
         ratio = next(column for column in engine.schema(result) if column["name"] == "ratio")
         page = engine.page(result, 0, 10, column_projection=[(ratio["position"], ratio["id"])])

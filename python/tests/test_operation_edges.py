@@ -61,7 +61,7 @@ def execute_generated(engine: PandasEngine | PolarsEngine, frame: Any, operation
 
 
 def normalized(value: Any) -> Any:
-    if value is None or type(value).__name__ in {"NAType", "NaTType"}:
+    if value is None or value is pd.NA or value is pd.NaT:
         return None
     if isinstance(value, float) and isnan(value):
         return None
