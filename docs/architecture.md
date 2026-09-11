@@ -309,6 +309,10 @@ history regeneration select that name from the same captured source metadata. Fi
 the default name. This preserves source bindings that the generated program would otherwise replace; it does not
 change ordinary Python lookup when the caller shadows builtins.
 
+Generated Pandas and Polars One-hot and Multi-label code rejects results with no visible columns, matching live
+Preview. Empty-row inputs remain valid when a visible column survives. Polars uses the encoded frame directly when
+dropping all original columns leaves no base columns, preserving indicator rows without adding private identities.
+
 Live and generated Custom Code share a compiler that places parsed user statements inside a fixed function template.
 This preserves string values, comments and valid indentation. Python's parser owns line endings and syntax; user-code
 syntax errors retain their original line numbers. Generated programs keep the entered code in a multiline source
