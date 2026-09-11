@@ -314,6 +314,7 @@ Preview. Empty-row inputs remain valid when a visible column survives. Polars us
 dropping all original columns leaves no base columns, preserving indicator rows without adding private identities.
 Pandas validates each selected One-hot column's output names before constructing its indicators. A refusal can
 report the first colliding column; earlier selected columns may already have been evaluated.
+Generated Pandas One-hot names use the live scalar formatting, so compiled plans bind to the same output columns.
 
 Live and generated Custom Code share a compiler that places parsed user statements inside a fixed function template.
 This preserves string values, comments and valid indentation. Python's parser owns line endings and syntax; user-code

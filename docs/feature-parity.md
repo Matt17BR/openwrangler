@@ -314,6 +314,8 @@ Polars By Example supports exact unsigned cancellation and multiplication by zer
 Polars One-hot and Multi-label generated code supports dropping every original column, including on single-column
 inputs. Pandas and Polars generated categorical code rejects results with no visible columns, matching live Preview;
 empty-row inputs remain valid when a visible column is retained.
+Generated Pandas One-hot names preserve native floating-point labels, keeping later column bindings and collision
+checks aligned with live results.
 Polars JSONL/NDJSON reads the selected file on Unix even when its path contains glob syntax or percent-looking text.
 On Windows, ordinary paths and local-drive verbatim paths such as `\\?\C:\data\sample.jsonl` retain exact file identity.
 Paths containing `*`, `?`, or `[` after that prefix, and unsupported verbatim prefixes, remain refused. The remaining

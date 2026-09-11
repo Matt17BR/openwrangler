@@ -2438,7 +2438,7 @@ class PandasEngine(DataFrameEngine):
                 f"{prefix}    {outputs} = [",
                 (
                     f"{prefix}        (value, str(_column_{index}) + "
-                    f"{params.get('prefixSeparator', '_')!r} + str(value))"
+                    f"{params.get('prefixSeparator', '_')!r} + f'{{value}}')"
                 ),
                 f"{prefix}        for value in {values} if str(value)",
                 f"{prefix}    ]",

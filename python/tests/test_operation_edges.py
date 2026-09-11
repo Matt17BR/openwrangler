@@ -865,6 +865,32 @@ def test_pandas_one_hot_preflight_refusal_and_corrected_prefix(early_collision, 
     pd.testing.assert_frame_equal(source, original, check_exact=True)
 
 
+@pytest.mark.parametrize("dtype", ["float32", "Float32"])
+@pytest.mark.parametrize("retained", ["keep", "category_0.1", "category_0.10000000149011612"])
+def test_pandas_one_hot_float_labels_match_live_formatting(dtype, retained) -> None:
+    source = pd.DataFrame({"category": pd.Series([0.1, 0.2, None], dtype=dtype), retained: [7, 8, 9]})
+    source.index = pd.Index([7, 7, 2], name="original-row")
+    source.attrs = {"origin": "one-hot-float-source"}
+    original = source.copy(deep=True)
+    runtime = PandasEngine()
+    operation = bound_step("oneHotEncode", columns=[bound_ref("c:source:0", "category", 0)])
+    names = ["category_0.10000000149011612", "category_0.20000000298023224"]
+
+    if retained == names[0]:
+        with pytest.raises(EngineError, match="duplicate column names"):
+            runtime.apply_transform(source, operation)
+        with pytest.raises(ValueError, match="duplicate column names"):
+            execute_generated(runtime, source, operation)
+    else:
+        expected = original.drop(columns=["category"])
+        expected[names[0]] = pd.array([1, 0, 0], dtype="int8")
+        expected[names[1]] = pd.array([0, 1, 0], dtype="int8")
+        for result in (runtime.apply_transform(source, operation), execute_generated(runtime, source, operation)):
+            pd.testing.assert_frame_equal(result, expected, check_exact=True)
+            assert result.attrs == source.attrs
+    pd.testing.assert_frame_equal(source, original, check_exact=True)
+
+
 @pytest.mark.parametrize("case", ["duplicate", "private", "prior-column", "numeric-label", "native-and-collision"])
 def test_pandas_one_hot_preflight_names_before_current_column_comparison(case, monkeypatch) -> None:
     if case == "duplicate":

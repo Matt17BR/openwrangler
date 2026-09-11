@@ -12,6 +12,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Generated Pandas One-hot code preserves live column names for floating-point categories, including Float32 data.
 - Generated Polars One-hot and Multi-label code preserves indicator rows when every original column is dropped.
 - Generated Pandas and Polars categorical code refuses results with no visible columns, matching live Preview.
 - Pandas Pivot Wider preserves object identifiers with `NaT` and mixed scalar values in generated code. Generated
