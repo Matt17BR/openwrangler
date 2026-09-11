@@ -4,6 +4,8 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-09-12
+
 ### Fixed
 
 - Pandas object duration choices and filters agree on exact counts and selected rows across NumPy, Pandas and Python values.
