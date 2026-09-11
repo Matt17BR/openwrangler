@@ -1,4 +1,5 @@
-import { createHash, randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   closeSync,
@@ -18,13 +19,8 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { TextDecoder } from "node:util";
 import { createVSIX } from "@vscode/vsce";
-import {
-  buildPackageSourceManifest,
-  readGitTrackedModes,
-  serializePackageSourceManifest,
-  validatePackageSourceManifest
-} from "./package-source-manifest.mjs";
 import { classifyNumericReleaseVersion } from "./release-metadata.mjs";
 import { assertReproducibleVsixArchive, canonicalizeVsixArchive } from "./reproducible-vsix.mjs";
 import {
@@ -36,6 +32,14 @@ import { parseStrictJson } from "./strict-json.mjs";
 import { inspectVsixArchive, readBoundedVsixFileSnapshot } from "./vsix-archive.mjs";
 
 const PACKAGE_JSON_MAX_BYTES = 1024 * 1024;
+const MAX_ENTRY_PATH_BYTES = 1024;
+const MAX_GIT_INDEX_ENTRIES = 65_536;
+const MAX_GIT_INDEX_BYTES = 16 * 1024 * 1024;
+const GIT_TIMEOUT_MS = 10_000;
+const GIT_OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u;
+const WINDOWS_RESERVED_BASENAME = /^(?:aux|com[1-9¹²³]|con|lpt[1-9¹²³]|nul|prn)$/iu;
+const WINDOWS_INVALID_CHARACTERS = new Set('<>:"|?*');
+const PORTABLE_MODES = new Set(["100644", "100755"]);
 const PRIVATE_DIRECTORY_PREFIX = ".openwrangler-package-";
 const RAW_CANDIDATE_NAME = "raw-candidate.vsix";
 const CANONICAL_CANDIDATE_NAME = "canonical-candidate.vsix";
@@ -361,14 +365,150 @@ function removePinnedPrivateDirectory(receipt) {
   assertPathAbsent(receipt.path, "Packaging private directory cleaned path");
 }
 
-function freezePackageResult({ output, snapshot, receipt, sourceManifest, sourceManifestBytes }) {
+function portablePathIdentity(path, label) {
+  if (
+    typeof path !== "string" ||
+    path.length === 0 ||
+    path.startsWith("/") ||
+    /^[A-Za-z]:/u.test(path) ||
+    path.includes("\\") ||
+    path !== path.normalize("NFC") ||
+    Buffer.byteLength(path, "utf8") > MAX_ENTRY_PATH_BYTES
+  ) {
+    throw new Error(`${label} must be one normalized portable relative path.`);
+  }
+
+  const segments = path.split("/");
+  for (const segment of segments) {
+    if (
+      segment.length === 0 ||
+      segment === "." ||
+      segment === ".." ||
+      segment.trim() !== segment ||
+      segment.endsWith(".") ||
+      Buffer.byteLength(segment, "utf8") > 255
+    ) {
+      throw new Error(`${label} must be one normalized portable relative path.`);
+    }
+    for (const character of segment) {
+      const codePoint = character.codePointAt(0);
+      if (
+        codePoint === undefined ||
+        codePoint <= 0x1f ||
+        codePoint === 0x7f ||
+        (codePoint >= 0xd800 && codePoint <= 0xdfff) ||
+        WINDOWS_INVALID_CHARACTERS.has(character)
+      ) {
+        throw new Error(`${label} must be one normalized portable relative path.`);
+      }
+    }
+    const basename = segment.split(".", 1)[0];
+    if (basename !== undefined && WINDOWS_RESERVED_BASENAME.test(basename)) {
+      throw new Error(`${label} must be one normalized portable relative path.`);
+    }
+  }
+
+  return path.toUpperCase().toLowerCase().normalize("NFC");
+}
+
+function requireCollisionFreePaths(paths, label) {
+  const identities = paths.map((path) => portablePathIdentity(path, label));
+  const identitySet = new Set(identities);
+  if (identitySet.size !== identities.length) {
+    throw new Error(`${label} contains duplicate, case-colliding, or file-ancestor paths.`);
+  }
+  for (const identity of identities) {
+    const segments = identity.split("/");
+    for (let index = 1; index < segments.length; index += 1) {
+      if (identitySet.has(segments.slice(0, index).join("/"))) {
+        throw new Error(`${label} contains duplicate, case-colliding, or file-ancestor paths.`);
+      }
+    }
+  }
+}
+
+function normalizeTrackedModes(trackedModes) {
+  if (!(trackedModes instanceof Map) || trackedModes.size > MAX_GIT_INDEX_ENTRIES) {
+    throw new TypeError("Package-source tracked modes must be one bounded Map.");
+  }
+  const normalized = new Map();
+  for (const [path, mode] of trackedModes) {
+    portablePathIdentity(path, "Git tracked path");
+    if (!PORTABLE_MODES.has(mode)) {
+      throw new Error("Git tracked files must use portable regular-file modes 100644 or 100755.");
+    }
+    normalized.set(path, mode);
+  }
+  requireCollisionFreePaths([...normalized.keys()], "Git tracked paths");
+  return normalized;
+}
+
+function decodeGitIndexOutput(output) {
+  let bytes;
+  if (typeof output === "string") {
+    bytes = Buffer.from(output, "utf8");
+  } else if (Buffer.isBuffer(output) || output instanceof Uint8Array) {
+    bytes = Buffer.from(output);
+  } else {
+    throw new TypeError("Git tracked-mode runner must return bytes or text.");
+  }
+  if (bytes.length > MAX_GIT_INDEX_BYTES) {
+    throw new Error("Git tracked-mode output exceeds its byte bound.");
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch (error) {
+    throw new Error("Git tracked-mode output must contain valid UTF-8.", { cause: error });
+  }
+}
+
+export function readGitTrackedModes({ cwd = process.cwd(), runGit = execFileSync } = {}) {
+  if (typeof cwd !== "string" || cwd.length === 0 || typeof runGit !== "function") {
+    throw new TypeError("Git tracked-mode reader requires one repository path and runner.");
+  }
+  const output = runGit("git", ["ls-files", "--stage", "-z"], {
+    cwd,
+    encoding: "buffer",
+    maxBuffer: MAX_GIT_INDEX_BYTES,
+    timeout: GIT_TIMEOUT_MS,
+    windowsHide: true
+  });
+  const text = decodeGitIndexOutput(output);
+  if (text.length > 0 && !text.endsWith("\0")) {
+    throw new Error("Git tracked-mode output ended before its NUL record terminator.");
+  }
+  const records = text.length === 0 ? [] : text.slice(0, -1).split("\0");
+  if (records.length > MAX_GIT_INDEX_ENTRIES) {
+    throw new Error("Git tracked-mode output exceeds its entry bound.");
+  }
+  const trackedModes = new Map();
+  for (const record of records) {
+    const separator = record.indexOf("\t");
+    const header = separator === -1 ? "" : record.slice(0, separator);
+    const path = separator === -1 ? "" : record.slice(separator + 1);
+    const match = /^(\d{6}) ([0-9a-f]+) ([0-3])$/u.exec(header);
+    if (match === null || !GIT_OBJECT_ID.test(match[2])) {
+      throw new Error("Git tracked-mode output contains one malformed index record.");
+    }
+    const [, mode, , stage] = match;
+    portablePathIdentity(path, "Git tracked path");
+    if (stage !== "0") {
+      throw new Error("Git tracked-mode output contains an unresolved nonzero index stage.");
+    }
+    if (!PORTABLE_MODES.has(mode)) {
+      throw new Error("Git tracked-mode output contains a symlink, submodule, or unsupported mode.");
+    }
+    if (trackedModes.has(path)) {
+      throw new Error("Git tracked-mode output contains a duplicate path.");
+    }
+    trackedModes.set(path, mode);
+  }
+  return normalizeTrackedModes(trackedModes);
+}
+
+function freezePackageResult({ output, snapshot, receipt }) {
   return Object.freeze({
     bytes: snapshot.bytes.length,
-    packageSourceManifest: sourceManifestBytes.toString("utf8"),
-    packageSourceManifestBytes: sourceManifestBytes.length,
-    packageSourceManifestEntries: sourceManifest.entries.length,
-    packageSourceManifestProtocol: sourceManifest.protocol,
-    packageSourceManifestSha256: createHash("sha256").update(sourceManifestBytes).digest("hex"),
     path: output,
     protocol: receipt.protocol,
     sha256: receipt.canonicalSha256
@@ -398,7 +538,6 @@ export async function packageCurrentChannel(
     assertPackageInventory = assertInstalledPerformancePackageInventory,
     assertPackageSources = assertNoPackageableUntrackedFiles,
     assertSamePackageSources = assertSameInstalledPerformancePackageSources,
-    buildSourceManifest = buildPackageSourceManifest,
     canonicalizeArchive = canonicalizeVsixArchive,
     createVsix = createVSIX,
     inspectArchive = inspectVsixArchive,
@@ -407,10 +546,8 @@ export async function packageCurrentChannel(
     readVsixSnapshot = readBoundedVsixFileSnapshot,
     removeDirectory = removePinnedPrivateDirectory,
     removeOwnedFile = removeOwnedName,
-    serializeSourceManifest = serializePackageSourceManifest,
     syncDirectory = fsyncDirectory,
     unlinkFile = unlinkSync,
-    validateSourceManifest = validatePackageSourceManifest,
     writeCanonicalCandidate = writeExclusiveCanonicalCandidate,
     hooks = {}
   } = {}
@@ -424,7 +561,6 @@ export async function packageCurrentChannel(
       assertPackageInventory,
       assertPackageSources,
       assertSamePackageSources,
-      buildSourceManifest,
       canonicalizeArchive,
       createVsix,
       inspectArchive,
@@ -433,10 +569,8 @@ export async function packageCurrentChannel(
       readVsixSnapshot,
       removeDirectory,
       removeOwnedFile,
-      serializeSourceManifest,
       syncDirectory,
       unlinkFile,
-      validateSourceManifest,
       writeCanonicalCandidate
     },
     hooks
@@ -455,6 +589,9 @@ export async function packageCurrentChannel(
   assertPackageOutputSeparated(output, packageSource, repository);
   assertPathAbsent(output, "Package output");
   const trackedModes = pinGitModes({ cwd: repository });
+  for (const { path } of packageSource.trackedFiles) {
+    if (!trackedModes.has(path)) throw new Error("Package source is missing its tracked Git index mode.");
+  }
 
   let privateDirectory;
   let rawPath;
@@ -511,12 +648,6 @@ export async function packageCurrentChannel(
     const canonicalArchive = await inspectArchive(canonical.bytes);
     assertSameArchiveInventory(rawArchive, canonicalArchive);
     assertPackageInventory(packageSource, canonicalArchive.archiveEntries, canonicalArchive.entryDigests);
-    const sourceManifestBindings = { packageSource, archive: canonicalArchive, trackedModes };
-    const sourceManifest = validateSourceManifest(buildSourceManifest(sourceManifestBindings), sourceManifestBindings);
-    const sourceManifestBytes = serializeSourceManifest(sourceManifest);
-    if (!Buffer.isBuffer(sourceManifestBytes) || sourceManifestBytes.length === 0) {
-      throw new Error("Package-source manifest serialization did not return one non-empty Buffer.");
-    }
 
     stageIdentity = writeCanonicalCandidate(stagePath, canonical.bytes);
     hooks.afterCanonicalStaged?.({ output, privatePath, rawPath, stagePath });
@@ -597,14 +728,10 @@ export async function packageCurrentChannel(
     const finalModes = pinGitModes({ cwd: repository });
     const finalSource = await assertPackageSources();
     assertSamePackageSources(packageSource, finalSource);
-    const finalSourceManifest = validateSourceManifest(sourceManifest, {
-      packageSource: finalSource,
-      archive: finalArchive,
-      trackedModes: finalModes
-    });
-    const finalSourceManifestBytes = serializeSourceManifest(finalSourceManifest);
-    if (!Buffer.isBuffer(finalSourceManifestBytes) || !finalSourceManifestBytes.equals(sourceManifestBytes)) {
-      throw new Error("Package-source manifest bytes changed during final source binding.");
+    for (const { path } of packageSource.trackedFiles) {
+      if (finalModes.get(path) !== trackedModes.get(path)) {
+        throw new Error("Packaged source Git index mode changed during package creation.");
+      }
     }
     requireNamedFileSnapshot(output, publicIdentity, "Published package output", { links: [1n] });
 
@@ -616,9 +743,7 @@ export async function packageCurrentChannel(
     result = freezePackageResult({
       output,
       snapshot: finalSnapshot,
-      receipt: stagedReceipt,
-      sourceManifest,
-      sourceManifestBytes
+      receipt: stagedReceipt
     });
   } catch (error) {
     primaryError = error;

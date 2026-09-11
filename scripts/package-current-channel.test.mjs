@@ -20,9 +20,9 @@ import {
   isPortableHostPackageFileMode,
   isPrivatePackagingDirectoryMode,
   packageCurrentChannel,
+  readGitTrackedModes,
   resolveCurrentChannelPackageArguments
 } from "./package-current-channel.mjs";
-import { parsePackageSourceManifest, validatePackageSourceManifest } from "./package-source-manifest.mjs";
 
 function manifest(version, preview) {
   return JSON.stringify({ preview, version });
@@ -105,9 +105,8 @@ function makeFixture({
   const calls = {
     canonicalAssertions: 0,
     inspections: 0,
-    manifests: 0,
+    gitPins: 0,
     sourcePins: 0,
-    validations: 0,
     vsce: []
   };
   const inspection = archiveInspection(sourcePath);
@@ -123,13 +122,6 @@ function makeFixture({
       calls.sourcePins += 1;
       return pinReceipts[index];
     },
-    buildSourceManifest(bindings) {
-      calls.manifests += 1;
-      assert.equal(bindings.packageSource, pinReceipts[0]);
-      assert.equal(bindings.archive, inspection);
-      assert.deepEqual(bindings.trackedModes, new Map([[sourcePath, "100644"]]));
-      return Object.freeze({ entries: Object.freeze([]), protocol: "test-package-source-manifest" });
-    },
     async canonicalizeArchive(bytes) {
       assert.deepEqual(bytes, RAW_BYTES);
       return Object.freeze({ bytes: Buffer.from(CANONICAL_BYTES), receipt });
@@ -144,16 +136,8 @@ function makeFixture({
       return inspection;
     },
     pinGitModes() {
+      calls.gitPins += 1;
       return new Map([[sourcePath, "100644"]]);
-    },
-    serializeSourceManifest(value) {
-      return Buffer.from(`${JSON.stringify(value)}\n`, "utf8");
-    },
-    validateSourceManifest(value, bindings) {
-      calls.validations += 1;
-      assert.deepEqual(value, { entries: [], protocol: "test-package-source-manifest" });
-      assert.deepEqual(bindings.trackedModes, new Map([[sourcePath, "100644"]]));
-      return value;
     },
     ...dependencyOverrides
   };
@@ -260,21 +244,13 @@ test("packages preview and stable channels with exact locked VSCE options and ca
       assert.equal(result.bytes, CANONICAL_BYTES.length);
       assert.equal(result.protocol, canonicalReceipt(CANONICAL_BYTES).protocol);
       assert.equal(result.sha256, sha256(CANONICAL_BYTES));
-      assert.equal(result.packageSourceManifestProtocol, "test-package-source-manifest");
-      assert.equal(result.packageSourceManifestEntries, 0);
-      assert.match(result.packageSourceManifestSha256, /^[0-9a-f]{64}$/u);
-      assert.ok(result.packageSourceManifestBytes > 0);
-      const returnedManifest = Buffer.from(result.packageSourceManifest, "utf8");
-      assert.equal(returnedManifest.length, result.packageSourceManifestBytes);
-      assert.equal(sha256(returnedManifest), result.packageSourceManifestSha256);
-      assert.deepEqual(JSON.parse(result.packageSourceManifest), {
-        entries: [],
-        protocol: "test-package-source-manifest"
-      });
       assert.equal(fixture.calls.canonicalAssertions, 1, "byte-identical publication must reuse its staged proof");
       assert.equal(fixture.calls.sourcePins, 4, "sources must be pinned before, after raw, after canonical, and final");
-      assert.equal(fixture.calls.manifests, 1);
-      assert.equal(fixture.calls.validations, 2);
+      assert.equal(
+        fixture.calls.gitPins,
+        2,
+        "the complete index must be validated before creation and at final binding"
+      );
       assert.deepEqual(
         readdirSync(fixture.repositoryRoot).sort(),
         ["candidate.vsix", "source.txt"],
@@ -296,33 +272,6 @@ test("uses exact POSIX modes and Windows' writable-bit file-mode contract", () =
   assert.equal(isPortableHostPackageFileMode(0o100666n, { platform: "win32" }), true);
   assert.equal(isPortableHostPackageFileMode(0o100444n, { platform: "win32" }), false);
   assert.throws(() => isPortableHostPackageFileMode(0o644), /bigint mode/u);
-});
-
-test("returns the exact canonical portable manifest bytes without publishing a sidecar", async () => {
-  const fixture = makeFixture();
-  delete fixture.dependencies.buildSourceManifest;
-  delete fixture.dependencies.serializeSourceManifest;
-  delete fixture.dependencies.validateSourceManifest;
-  try {
-    const result = await runFixture(fixture);
-    const manifestBytes = Buffer.from(result.packageSourceManifest, "utf8");
-    assert.equal(manifestBytes.length, result.packageSourceManifestBytes);
-    assert.equal(sha256(manifestBytes), result.packageSourceManifestSha256);
-    const parsed = parsePackageSourceManifest(manifestBytes);
-    assert.equal(parsed.protocol, result.packageSourceManifestProtocol);
-    assert.equal(parsed.entries.length, result.packageSourceManifestEntries);
-    assert.deepEqual(
-      validatePackageSourceManifest(parsed, {
-        packageSource: sourceReceipt(),
-        archive: archiveInspection(),
-        trackedModes: new Map([["source.txt", "100644"]])
-      }),
-      parsed
-    );
-    assert.deepEqual(readdirSync(fixture.repositoryRoot).sort(), ["candidate.vsix", "source.txt"]);
-  } finally {
-    removeFixture(fixture);
-  }
 });
 
 test("rejects contradictory metadata and caller-controlled channel overrides", () => {
@@ -619,5 +568,154 @@ test("write and private-directory cleanup failures cannot leave a canonical publ
     assertNoProducedOutput(cleanupFailure);
   } finally {
     removeFixture(cleanupFailure);
+  }
+});
+
+const objectId = "1".repeat(40);
+
+test("Git tracked-mode reader uses one bounded NUL stage inventory and returns portable modes", () => {
+  let invocation;
+  const trackedModes = readGitTrackedModes({
+    cwd: "/repository",
+    runGit(command, arguments_, options) {
+      invocation = { command, arguments_, options };
+      return Buffer.from(
+        `100644 ${objectId} 0\tREADME.md\0` + `100755 ${"2".repeat(64)} 0\tr/openwrangler_runtime/frame_contract.R\0`
+      );
+    }
+  });
+  assert.deepEqual(
+    [...trackedModes],
+    [
+      ["README.md", "100644"],
+      ["r/openwrangler_runtime/frame_contract.R", "100755"]
+    ]
+  );
+  assert.deepEqual(invocation.command, "git");
+  assert.deepEqual(invocation.arguments_, ["ls-files", "--stage", "-z"]);
+  assert.equal(invocation.options.cwd, "/repository");
+  assert.equal(invocation.options.encoding, "buffer");
+  assert.equal(invocation.options.maxBuffer, 16 * 1024 * 1024);
+  assert.equal(invocation.options.timeout, 10_000);
+});
+
+test("Git tracked-mode reader rejects malformed, unsafe, unresolved, duplicate, and special-mode records", () => {
+  const outputs = [
+    [`120000 ${objectId} 0\tlink\0`, /symlink, submodule, or unsupported mode/u],
+    [`160000 ${objectId} 0\tsubmodule\0`, /symlink, submodule, or unsupported mode/u],
+    [`100644 ${objectId} 1\tconflict\0`, /nonzero index stage/u],
+    [`100644 ${objectId} 0\tREADME.md`, /NUL record terminator/u],
+    [`not-an-index-record\0`, /malformed index record/u],
+    [`100644 ${objectId} 0\t../escape\0`, /normalized portable relative path/u],
+    [`100644 ${objectId} 0\tREADME.md\0` + `100755 ${objectId} 0\tREADME.md\0`, /duplicate path/u],
+    [
+      `100644 ${objectId} 0\tREADME.md\0` + `100644 ${objectId} 0\treadme.md\0`,
+      /duplicate, case-colliding, or file-ancestor/u
+    ],
+    [
+      `100644 ${objectId} 0\ta\0` + `100644 ${objectId} 0\ta-b\0` + `100644 ${objectId} 0\ta/c\0`,
+      /duplicate, case-colliding, or file-ancestor/u
+    ]
+  ];
+  for (const [output, pattern] of outputs) {
+    assert.throws(() => readGitTrackedModes({ runGit: () => output }), pattern);
+  }
+  assert.throws(() => readGitTrackedModes({ runGit: () => Buffer.from([0xff]) }), /valid UTF-8/u);
+  assert.throws(() => readGitTrackedModes({ runGit: () => Buffer.alloc(16 * 1024 * 1024 + 1) }), /byte bound/u);
+  assert.throws(() => readGitTrackedModes({ runGit: () => 42 }), /return bytes or text/u);
+});
+
+test("Git tracked-mode reader rejects nonportable index paths", () => {
+  const unsafePaths = [
+    "/absolute",
+    "C:/absolute",
+    "../escape",
+    "a/../escape",
+    "a\\b",
+    "./dot",
+    "double//segment",
+    "trailing/",
+    "trailing. ",
+    "con.txt",
+    "cafe\u0301.txt"
+  ];
+  for (const path of unsafePaths) {
+    assert.throws(
+      () => readGitTrackedModes({ runGit: () => `100644 ${objectId} 0\t${path}\0` }),
+      /normalized portable relative path/u
+    );
+  }
+});
+
+test("pins packaged Git modes while allowing valid unpackaged mode changes", async () => {
+  for (const mode of ["100644", "100755"]) {
+    let reads = 0;
+    const fixture = makeFixture({
+      dependencyOverrides: {
+        pinGitModes() {
+          reads += 1;
+          return readGitTrackedModes({
+            runGit: () =>
+              `${mode} ${objectId} 0\tsource.txt\0` +
+              `${reads === 1 ? "100644" : "100755"} ${objectId} 0\tunpackaged.txt\0`
+          });
+        }
+      }
+    });
+    try {
+      const result = await runFixture(fixture);
+      assert.equal(reads, 2);
+      assert.deepEqual(readFileSync(result.path), CANONICAL_BYTES);
+      assert.equal(result.sha256, sha256(CANONICAL_BYTES));
+      assert.deepEqual(readdirSync(fixture.repositoryRoot).sort(), ["candidate.vsix", "source.txt"]);
+    } finally {
+      removeFixture(fixture);
+    }
+  }
+});
+
+test("refuses missing or changed packaged modes and unsafe unpackaged index entries with owned cleanup", async () => {
+  const regular = `100644 ${objectId} 0\tsource.txt\0`;
+  const executable = `100755 ${objectId} 0\tsource.txt\0`;
+  const missing = /missing its tracked Git index mode/u;
+  const changed = /Git index mode changed/u;
+  const special = /symlink, submodule, or unsupported mode/u;
+  const cases = [
+    { before: "", after: regular, error: missing, published: false },
+    { before: regular, after: "", error: changed, published: true },
+    { before: executable, after: regular, error: changed, published: true }
+  ];
+  for (const mode of ["120000", "160000"]) {
+    const unsafe = regular + `${mode} ${objectId} 0\tunpackaged\0`;
+    cases.push({ before: unsafe, after: regular, error: special, published: false });
+    cases.push({ before: regular, after: unsafe, error: special, published: true });
+  }
+  for (const { before, after, error, published } of cases) {
+    let reads = 0;
+    let linked = false;
+    const fixture = makeFixture({
+      hooks: {
+        afterLink() {
+          linked = true;
+        }
+      },
+      dependencyOverrides: {
+        pinGitModes() {
+          reads += 1;
+          return readGitTrackedModes({ runGit: () => (reads === 1 ? before : after) });
+        }
+      }
+    });
+    try {
+      await assert.rejects(runFixture(fixture), error);
+      assert.equal(linked, published);
+      assert.equal(fixture.calls.vsce.length, published ? 1 : 0);
+      assert.equal(reads, published ? 2 : 1);
+      assertNoProducedOutput(fixture);
+      assert.deepEqual(readFileSync(join(fixture.repositoryRoot, "source.txt")), SOURCE_BYTES);
+      assert.deepEqual(readdirSync(fixture.repositoryRoot), ["source.txt"]);
+    } finally {
+      removeFixture(fixture);
+    }
   }
 });

@@ -57,8 +57,8 @@ npm run verify:vsix -- openwrangler.vsix
 project. The installed smoke described in [Testing](testing.md) uses this same verified VSIX.
 
 Packaging verifies the staged archive's canonical form, then compares the published descriptor snapshot with those
-exact bytes before reusing its receipt. Final file identity, link count, source inventory and manifest checks remain
-required. A changed output fails and only owned files are removed.
+exact bytes before reusing its receipt. Final file identity, link count, source inventory, Git index modes and package
+metadata checks remain required. A changed output fails and only owned files are removed.
 
 `npm run package:dev` is for local development. Its output is not a release candidate and must not be committed. The
 README installation guidance is editable prose linking to the [source installation steps](../CONTRIBUTING.md).
