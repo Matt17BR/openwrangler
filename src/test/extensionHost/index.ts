@@ -14068,16 +14068,39 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     await jupyter.testing.execute(notebook.uri, setupCode);
 
     recordAcceptanceProgress("verify:notebook:pandas-basic:open");
+    const pandasOpenResponse = testing.observeNextNotebookPanelOpen({
+      uri: notebook.uri.toString(),
+      variableName: "pandas_frame"
+    });
     await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
       variableName: "pandas_frame",
       fileName: notebook.uri
     });
     await waitFor(
-      () => testing.activeSession()?.metadata.source.variableName === "pandas_frame",
+      () => {
+        const response = pandasOpenResponse();
+        if (response?.kind === "error") {
+          throw new Error(
+            `The packaged Pandas notebook variable session failed: ${JSON.stringify({
+              kind: response.kind,
+              code: response.code.slice(0, 80),
+              recoverable: response.recoverable
+            })}.`
+          );
+        }
+        const session = testing.activeSession();
+        return (
+          response?.kind === "sessionOpened" &&
+          session?.sessionId === response.metadata.sessionId &&
+          session?.metadata.source.kind === "notebookVariable" &&
+          session.metadata.source.uri === notebook.uri.toString() &&
+          session.metadata.source.variableName === "pandas_frame"
+        );
+      },
       SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
       "the packaged Pandas notebook variable session",
       () => {
-        const response = testing.panelOpenResponse();
+        const response = pandasOpenResponse();
         return JSON.stringify(
           response?.kind === "error"
             ? { kind: response.kind, code: response.code.slice(0, 80), recoverable: response.recoverable }

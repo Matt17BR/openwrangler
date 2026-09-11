@@ -369,6 +369,31 @@ export class OpenWranglerPanel {
     return OpenWranglerPanel.activePanel?.openResponse ?? [...OpenWranglerPanel.panels].at(-1)?.openResponse;
   }
 
+  static observeNextNotebookPanelOpenForTesting(expected: {
+    uri: string;
+    variableName: string;
+  }): () => OpenWranglerResponse | undefined {
+    const { uri, variableName } = expected;
+    const previousPanels = new WeakSet(OpenWranglerPanel.panels);
+    let observed: OpenWranglerPanel | undefined;
+    return () => {
+      const matches = [...OpenWranglerPanel.panels].filter(
+        (panel) =>
+          !previousPanels.has(panel) &&
+          panel.source.kind === "notebookVariable" &&
+          panel.source.uri === uri &&
+          panel.source.variableName === variableName
+      );
+      if (matches.length > 1) {
+        throw new Error("More than one new notebook panel matches the observed opening.");
+      }
+      observed ??= matches[0];
+      return observed && matches[0] === observed && !observed.disposed && observed.openAttemptGeneration === 1
+        ? observed.openResponse
+        : undefined;
+    };
+  }
+
   static changeActiveImportOptions(): Promise<boolean> {
     const active = OpenWranglerPanel.activePanel;
     if (!active?.panel.active || !canChangeImportOptions(active.source)) return Promise.resolve(false);

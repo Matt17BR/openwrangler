@@ -7003,6 +7003,158 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(request.mock.calls.filter(([candidate]) => candidate.kind === "openSession")).toHaveLength(1);
   });
 
+  it("observes only a fresh exact notebook opening despite old results and unrelated focus", async () => {
+    const source: SessionSource = {
+      kind: "notebookVariable",
+      label: "frame",
+      variableName: "frame",
+      uri: "file:///workspace/example.ipynb"
+    };
+    const old = createPanelHarness(
+      { request: vi.fn() },
+      { source, openResponse: { ...openedResponse, metadata: { ...metadata, source, sessionId: "old" } } }
+    );
+    await old.open();
+    let completeOld!: (response: OpenWranglerResponse) => void;
+    const lateOld = createPanelHarness(
+      { request: vi.fn(() => new Promise<OpenWranglerResponse>((resolve) => (completeOld = resolve))) },
+      { source, delegateOpen: true }
+    );
+    const oldOpening = lateOld.open();
+    const expected = { uri: source.uri!, variableName: source.variableName! };
+    const read = OpenWranglerPanel.observeNextNotebookPanelOpenForTesting(expected);
+    expected.uri = "file:///workspace/changed.ipynb";
+    expected.variableName = "changed";
+    const error: OpenWranglerResponse = {
+      kind: "error",
+      code: "bridge_error",
+      message: "The notebook kernel could not open the session.",
+      recoverable: true
+    };
+    completeOld({ ...error, code: "old_error" });
+    await oldOpening;
+    const unrelated = createPanelHarness(
+      { request: vi.fn(async () => ({ ...error, code: "unrelated_error" })) },
+      { source: { ...source, uri: "file:///workspace/other.ipynb" }, delegateOpen: true }
+    );
+    await unrelated.open();
+    const otherVariable = createPanelHarness(
+      { request: vi.fn(async () => ({ ...error, code: "other_variable_error" })) },
+      { source: { ...source, variableName: "other" }, delegateOpen: true }
+    );
+    await otherVariable.open();
+    expect(read()).toBeUndefined();
+
+    let completeFresh!: (response: OpenWranglerResponse) => void;
+    const fresh = createPanelHarness(
+      { request: vi.fn(() => new Promise<OpenWranglerResponse>((resolve) => (completeFresh = resolve))) },
+      { source, delegateOpen: true, createViaFactory: true }
+    );
+    old.activate();
+    expect(OpenWranglerPanel.openResponseForTesting()?.kind).toBe("sessionOpened");
+    expect(read()).toBeUndefined();
+    completeFresh(error);
+    await fresh.open();
+    unrelated.activate();
+    expect(read()).toEqual(error);
+  });
+
+  it("observes the fresh notebook success independently of the active panel", async () => {
+    const source: SessionSource = {
+      kind: "notebookVariable",
+      label: "frame",
+      variableName: "frame",
+      uri: "file:///workspace/example.ipynb"
+    };
+    const old = createPanelHarness({ request: vi.fn() }, { source });
+    await old.open();
+    const read = OpenWranglerPanel.observeNextNotebookPanelOpenForTesting({
+      uri: source.uri!,
+      variableName: source.variableName!
+    });
+    const response: SessionOpenedResponse = {
+      ...openedResponse,
+      metadata: { ...metadata, source, sessionId: "fresh" }
+    };
+    const fresh = createPanelHarness({ request: vi.fn() }, { source, openResponse: response });
+    await fresh.open();
+    old.activate();
+    expect(read()).toBe(response);
+    expect(OpenWranglerPanel.openResponseForTesting()).toBe(openedResponse);
+  });
+
+  it.each(["before the first read", "after pinning"])("does not observe a notebook retry %s", async (phase) => {
+    const source: SessionSource = {
+      kind: "notebookVariable",
+      label: "frame",
+      variableName: "frame",
+      uri: "file:///workspace/example.ipynb"
+    };
+    const read = OpenWranglerPanel.observeNextNotebookPanelOpenForTesting({
+      uri: source.uri!,
+      variableName: source.variableName!
+    });
+    const error: OpenWranglerResponse = {
+      kind: "error",
+      code: "bridge_error",
+      message: "The first open failed.",
+      recoverable: true
+    };
+    let completeRetry!: (response: OpenWranglerResponse) => void;
+    const request = vi
+      .fn<OpenWranglerBridge["request"]>()
+      .mockResolvedValueOnce(error)
+      .mockImplementationOnce(() => new Promise((resolve) => (completeRetry = resolve)));
+    const harness = createPanelHarness({ request }, { source, delegateOpen: true });
+    await harness.open();
+    if (phase === "after pinning") expect(read()).toEqual(error);
+    const retry = harness.open();
+    expect(read()).toBeUndefined();
+    completeRetry(error);
+    await retry;
+    expect(read()).toBeUndefined();
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retarget an observed notebook panel after disposal", async () => {
+    const source: SessionSource = {
+      kind: "notebookVariable",
+      label: "frame",
+      variableName: "frame",
+      uri: "file:///workspace/example.ipynb"
+    };
+    const read = OpenWranglerPanel.observeNextNotebookPanelOpenForTesting({
+      uri: source.uri!,
+      variableName: source.variableName!
+    });
+    const fresh = createPanelHarness({ request: vi.fn() }, { source });
+    await fresh.open();
+    expect(read()).toBe(openedResponse);
+    fresh.dispose();
+    const replacement = createPanelHarness({ request: vi.fn() }, { source });
+    await replacement.open();
+    expect(read()).toBeUndefined();
+  });
+
+  it.each(["before the first read", "after pinning"])("refuses ambiguous notebook openings %s", async (phase) => {
+    const source: SessionSource = {
+      kind: "notebookVariable",
+      label: "frame",
+      variableName: "frame",
+      uri: "file:///workspace/example.ipynb"
+    };
+    const read = OpenWranglerPanel.observeNextNotebookPanelOpenForTesting({
+      uri: source.uri!,
+      variableName: source.variableName!
+    });
+    const first = createPanelHarness({ request: vi.fn() }, { source });
+    await first.open();
+    if (phase === "after pinning") expect(read()).toBe(openedResponse);
+    const second = createPanelHarness({ request: vi.fn() }, { source });
+    await second.open();
+    expect(read).toThrow("More than one new notebook panel matches the observed opening.");
+  });
+
   it("does not retry a failed live notebook open when renderer readiness arrives later", async () => {
     const source: SessionSource = {
       kind: "notebookVariable",

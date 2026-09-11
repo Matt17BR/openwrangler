@@ -46,6 +46,7 @@ export interface TestApi {
   retirePanelRenderer(sessionId: string): boolean;
   sessionSchedulerState(sessionId: string): SessionSchedulerState | undefined;
   panelOpenResponse(): OpenWranglerResponse | undefined;
+  observeNextNotebookPanelOpen(expected: { uri: string; variableName: string }): () => OpenWranglerResponse | undefined;
   diagnostics(): {
     activeSessionId?: string;
     sessionCount: number;
