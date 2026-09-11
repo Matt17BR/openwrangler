@@ -629,9 +629,11 @@ Only selected operands gain temporary storage. Boolean, Sparse, arbitrary extens
 remain on their existing paths.
 
 Selected Decimal128 operands may widen to Decimal256 for add, subtract, multiply and divide, retaining each operand's
-precision and scale. Native arithmetic determines the result type. Live and generated Formula apply the same policy;
-By Example remains unchanged. Negative power and widest or negative-scale Decimal capacity gaps remain tracked in
-[#979](https://github.com/Matt17BR/openwrangler/issues/979).
+precision and scale. Native arithmetic determines the result type. After a Decimal256 capacity failure, multiplying
+or dividing the column by the exact integer literal -1 uses native checked negation, preserving its declared
+precision, scale and nulls. Successful native results retain their types. Live and generated Formula apply the same
+policy; By Example remains unchanged. Negative power and other widest or negative-scale Decimal capacity gaps remain
+tracked in [#979](https://github.com/Matt17BR/openwrangler/issues/979).
 
 Convert Type's integer target is nullable signed 64-bit storage. Unsigned or floating values outside that range and
 present infinities are rejected before conversion; failed previews or applies preserve the confirmed session state.
