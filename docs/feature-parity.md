@@ -405,7 +405,8 @@ Missing Rows and Drop Duplicates may retain an empty schema; Custom Code output 
 and does not accept integer64 coordinates. Formula accepts exactly representable large integer literals and refuses
 inexact neighbors; ordinary R arithmetic limits still apply. Integer and integer64 aggregate outputs retain their
 native range limits. One-hot encoding refuses a selection that produces no indicators, including solely empty or
-all-missing duration columns. Other selected columns can still contribute categories.
+all-missing duration columns. Other selected columns can still contribute categories. One-hot and Multi-label can
+replace every original `data.table` column, including on single-column inputs, with matching generated R code.
 
 CSV export uses UTF-8, double quotes and LF records. Fractional durations retain decimal points regardless of
 `OutDec`; duration NaN refuses export because the writer would otherwise make it indistinguishable from missing.
