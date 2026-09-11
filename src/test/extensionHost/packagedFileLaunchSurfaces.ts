@@ -4,6 +4,7 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import type { Frame, Locator, Page } from "playwright-core";
 import { assertExactBytes } from "./acceptanceSourceFixture";
+import { consumeLayoutCommittedRendererValue } from "./acknowledgedRenderer";
 import { dismissStaleWorkbenchHover } from "./cleanedDataExport";
 import { captureWorkbenchScreenshot } from "./evidenceSceneCapture";
 import type { TestApi } from "./extensionHostTestApi";
@@ -68,7 +69,8 @@ export interface PackagedFileLaunchSurfacesDependencies {
   readonly waitForOpenWranglerGridTarget: (
     workbench: Page,
     testing: TestApi,
-    expectedSessionId: string
+    expectedSessionId: string,
+    expectedRendererSynchronizationReceipt?: Readonly<{ syncId: string; sessionId: string; revision: number }>
   ) => Promise<{ readonly frame: Frame }>;
   readonly waitForThirdPartyCustomEditorWorkbench: (
     page: Page,
@@ -77,7 +79,6 @@ export interface PackagedFileLaunchSurfacesDependencies {
   ) => Promise<Locator>;
   readonly fileActionMediaHeight: number;
   readonly sessionOpenAcceptanceTimeoutMs: number;
-  readonly webviewDiscoveryTimeoutMs: number;
   readonly workbenchOperationTimeoutMs: number;
   readonly workbenchPlaywrightTimeoutMs: number;
 }
@@ -103,13 +104,11 @@ export function createPackagedFileLaunchSurfaces(
     waitForThirdPartyCustomEditorWorkbench,
     fileActionMediaHeight,
     sessionOpenAcceptanceTimeoutMs,
-    webviewDiscoveryTimeoutMs,
     workbenchOperationTimeoutMs,
     workbenchPlaywrightTimeoutMs
   } = dependencies;
   const PACKAGED_FILE_ACTION_MEDIA_HEIGHT = fileActionMediaHeight;
   const SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS = sessionOpenAcceptanceTimeoutMs;
-  const OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS = webviewDiscoveryTimeoutMs;
   const WORKBENCH_OPERATION_TIMEOUT_MS = workbenchOperationTimeoutMs;
   const WORKBENCH_PLAYWRIGHT_TIMEOUT_MS = workbenchPlaywrightTimeoutMs;
 
@@ -269,13 +268,20 @@ export function createPackagedFileLaunchSurfaces(
       quoteChar: '"',
       hasHeader: true
     });
-    await waitFor(
-      () => testing.panelHydrated(explorerSession.sessionId),
-      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-      "the Explorer-launched dataframe renderer to acknowledge its exact session"
+    const explorerGridTarget = await consumeLayoutCommittedRendererValue(
+      testing,
+      explorerSession.sessionId,
+      explorerSession.metadata.revision,
+      (predicate) =>
+        waitFor(
+          predicate,
+          SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+          "the Explorer-launched dataframe renderer to acknowledge its current session revision"
+        ),
+      (receipt) => waitForOpenWranglerGridTarget(page, testing, explorerSession.sessionId, receipt)
     );
-    assert.equal(await testing.synchronizePanel(explorerSession.sessionId), true);
-    const explorerGridTarget = await waitForOpenWranglerGridTarget(page, testing, explorerSession.sessionId);
+    assert.equal(testing.activeSession()?.sessionId, explorerSession.sessionId);
+    assert.equal(testing.activeSession()?.metadata.revision, explorerSession.metadata.revision);
     const explorerGrid = explorerGridTarget.frame.getByRole("grid", {
       name: `Data grid for ${explorerSession.metadata.source.label}`
     });
@@ -361,38 +367,39 @@ export function createPackagedFileLaunchSurfaces(
       [...PACKAGED_SCREENSHOT_COLUMNS],
       "The file-launch journey must retain every realistic first-use column before interaction."
     );
-    await waitFor(
-      () => testing.panelHydrated(active.metadata.sessionId),
-      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-      "the exact editor-title panel to finish opening and acknowledge its current renderer snapshot",
-      () =>
-        JSON.stringify({
-          sessionId: active.metadata.sessionId,
-          coordinator: testing.diagnostics(),
-          activeTab: activeEditorTabDiagnostic()
-        })
-    );
-    assert.equal(
-      await withAcceptanceOperationDeadline(
-        testing.synchronizePanel(active.metadata.sessionId),
-        OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
-        "the exact editor-title Open Wrangler panel synchronization"
-      ),
-      true,
-      "The editor-title session must own a synchronized Open Wrangler grid panel."
-    );
-    await waitFor(
-      () => {
-        const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
-        return Boolean(
-          tab && isOpenWranglerSessionTab(tab) && tab.label === `Open Wrangler: ${active.metadata.source.label}`
+    const gridTarget = await consumeLayoutCommittedRendererValue(
+      testing,
+      active.sessionId,
+      active.metadata.revision,
+      (predicate) =>
+        waitFor(
+          predicate,
+          SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+          "the exact editor-title panel to finish opening and acknowledge its current renderer snapshot",
+          () =>
+            JSON.stringify({
+              sessionId: active.metadata.sessionId,
+              coordinator: testing.diagnostics(),
+              activeTab: activeEditorTabDiagnostic()
+            })
+        ),
+      async (receipt) => {
+        await waitFor(
+          () => {
+            const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
+            return Boolean(
+              tab && isOpenWranglerSessionTab(tab) && tab.label === `Open Wrangler: ${active.metadata.source.label}`
+            );
+          },
+          10_000,
+          "the editor-title Open Wrangler session tab to remain active",
+          () => JSON.stringify(activeEditorTabDiagnostic())
         );
-      },
-      10_000,
-      "the editor-title Open Wrangler session tab to remain active",
-      () => JSON.stringify(activeEditorTabDiagnostic())
+        return waitForOpenWranglerGridTarget(page, testing, active.sessionId, receipt);
+      }
     );
-    const gridTarget = await waitForOpenWranglerGridTarget(page, testing, active.metadata.sessionId);
+    assert.equal(testing.activeSession()?.sessionId, active.sessionId);
+    assert.equal(testing.activeSession()?.metadata.revision, active.metadata.revision);
     recordAcceptanceProgress("verify:file-launch:title-action:histogram-modes");
     await dismissStaleWorkbenchHover(page);
     const insightsToggle = gridTarget.frame.getByRole("button", { name: "Column profiles and filters" });

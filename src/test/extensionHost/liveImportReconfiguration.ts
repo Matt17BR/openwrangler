@@ -4,7 +4,7 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import type { Frame, Locator, Page } from "playwright-core";
 import type { SessionSource } from "../../shared/protocol";
-import { sameRendererSynchronizationReceipt } from "./acknowledgedRenderer";
+import { consumeLayoutCommittedRendererValue } from "./acknowledgedRenderer";
 import { assertExactBytes } from "./acceptanceSourceFixture";
 import type { TestApi } from "./extensionHostTestApi";
 import { waitForImportRendererRecovery } from "./importRendererRecovery";
@@ -129,7 +129,7 @@ export function createLiveImportReconfiguration(
   const WORKBENCH_OPERATION_TIMEOUT_MS = workbenchOperationTimeoutMs;
   const WORKBENCH_PLAYWRIGHT_TIMEOUT_MS = workbenchPlaywrightTimeoutMs;
 
-  async function focusAndSynchronizeExactSessionPanel(
+  async function focusAndObserveExactSessionPanel(
     workbench: Page,
     testing: TestApi,
     expectedSessionId: string,
@@ -159,42 +159,43 @@ export function createLiveImportReconfiguration(
 
     // Cursor may temporarily retire a custom-editor renderer while its final
     // Quick Input closes. Focusing is one non-mutating user action; require the
-    // exact session's physical grid before asking the host for a fresh,
-    // authoritative renderer acknowledgement.
+    // exact session's physical grid and its existing committed receipt.
     await waitForExactSessionWebviewButton(workbench, testing, expectedSessionId, "Import options");
-    await waitFor(
-      () => testing.panelHydrated(expectedSessionId),
-      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-      "the exact import-reconfigured renderer to acknowledge its current host snapshot",
-      () =>
-        JSON.stringify({
-          expectedSessionId,
-          activeTab: activeEditorTabDiagnostic(),
-          panelHydrated: testing.panelHydrated(expectedSessionId),
-          coordinator: testing.diagnostics()
-        })
-    );
-    assert.equal(
-      await testing.synchronizePanel(expectedSessionId),
-      true,
-      "The focused import-reconfigured renderer must acknowledge one authoritative synchronization."
-    );
-    const receipt = testing.panelSynchronizationReceipt(expectedSessionId);
-    assert.ok(receipt, "The focused import-reconfigured renderer must retain its exact synchronization receipt.");
-    const action = await waitForExactSessionWebviewButton(
-      workbench,
+    const active = testing.activeSession();
+    assert.equal(active?.sessionId, expectedSessionId);
+    assert.ok(active);
+    const renderer = await consumeLayoutCommittedRendererValue(
       testing,
       expectedSessionId,
-      "Import options",
-      true,
-      receipt
+      active.metadata.revision,
+      (predicate) =>
+        waitFor(
+          predicate,
+          SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+          "the exact import-reconfigured renderer to acknowledge its current host snapshot",
+          () =>
+            JSON.stringify({
+              expectedSessionId,
+              activeTab: activeEditorTabDiagnostic(),
+              panelHydrated: testing.panelHydrated(expectedSessionId),
+              coordinator: testing.diagnostics()
+            })
+        ),
+      async (receipt) => ({
+        action: await waitForExactSessionWebviewButton(
+          workbench,
+          testing,
+          expectedSessionId,
+          "Import options",
+          true,
+          receipt
+        ),
+        receipt
+      })
     );
-    assert.equal(
-      sameRendererSynchronizationReceipt(receipt, testing.panelSynchronizationReceipt(expectedSessionId)),
-      true,
-      "The focused import-reconfigured renderer receipt must remain current through physical discovery."
-    );
-    return { action, receipt };
+    assert.equal(testing.activeSession()?.sessionId, expectedSessionId);
+    assert.equal(testing.activeSession()?.metadata.revision, active.metadata.revision);
+    return renderer;
   }
 
   function stableImportReconfigurationSnapshot(active: ReturnType<TestApi["activeSession"]>): unknown {
@@ -429,7 +430,7 @@ export function createLiveImportReconfiguration(
     // The test API can observe replacement metadata while the coordinator is
     // still persisting it. Restore focus after the final Quick Input and require
     // the exact session's physical, authoritative renderer before continuing.
-    await focusAndSynchronizeExactSessionPanel(page, testing, stableSessionId, path.basename(configured.fsPath));
+    await focusAndObserveExactSessionPanel(page, testing, stableSessionId, path.basename(configured.fsPath));
     recordAcceptanceProgress("verify:file-inputs:reconfigure:title-options:renderer-synchronized");
 
     const changed = testing.activeSession();

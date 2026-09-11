@@ -220,8 +220,9 @@ The separate Pandas duplicate/non-string structural journey composes Select, Clo
 values, physical labels, dtypes and indexes through generated replay and restart. Page replay comparisons exclude only
 session-scoped row IDs. Individual operations and native arithmetic remain in their source/generated-code owners.
 
-Ordinary installed R actions and picker acquisition observe the exact session/revision and committed renderer receipt
-without forcing another panel publication. [Picker source tests](../src/test/releasedROperationPicker.unit.test.ts)
+Ordinary installed R actions, picker acquisition, Explorer and editor-title file launches, and completed import-option
+changes observe the exact session/revision and committed renderer receipt without forcing another panel publication.
+[Picker source tests](../src/test/releasedROperationPicker.unit.test.ts)
 check passive success, stale-receipt refusal and the shared ten-second acquisition budget; ordinary session acquisition
 retains its existing thirty-second bound. Dedicated recovery injection, media setup and deliberately synthetic view
 setup retain their explicit synchronization. A missing production publication must fail rather than be repaired by
