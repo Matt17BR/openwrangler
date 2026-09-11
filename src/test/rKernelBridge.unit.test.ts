@@ -1,5 +1,8 @@
+import { readFile } from "node:fs/promises";
+import * as path from "node:path";
 import * as vscode from "vscode";
 import { describe, expect, it, vi } from "vitest";
+import { operationCatalog, operationKinds } from "../shared/operationCatalog.generated";
 import type {
   ConfirmedView,
   CustomCodeTransformStep,
@@ -34,6 +37,22 @@ import {
 } from "./rKernelBridgeTestFixtures";
 
 describe("canonical R kernel bridge", () => {
+  it("binds the exact stable ordering to the R contract, native bridge, and public operation catalog", async () => {
+    const bridge = createBridge(fakeTransport(frameContract()));
+    try {
+      const response = await bridge.request({ kind: "initialize" });
+      if (response.kind !== "initialized") throw new Error("Native R bridge did not initialize.");
+      const operations = response.capabilities.supportedOperations ?? [];
+
+      expect(operations).toEqual(operationKinds);
+      expect(operationCatalog.map(({ kind }) => kind)).toEqual(operationKinds);
+      await expect(catalogKindsFromDirectRContract()).resolves.toEqual(operationKinds);
+      expect(new Set(operations).size).toBe(operationKinds.length);
+    } finally {
+      await bridge.dispose();
+    }
+  });
+
   it.each([
     [120_000.25, 90_000.5, 120_001, 90_001],
     [undefined, undefined, 60_000, 30_000],
@@ -1639,4 +1658,17 @@ function categoricalContract(
 
 function categoricalDiff(addedColumns: readonly string[], removedColumns: readonly string[]): DataDiff {
   return { ...renameDiff(), addedColumns: [...addedColumns], removedColumns: [...removedColumns] };
+}
+
+async function catalogKindsFromDirectRContract(): Promise<readonly string[]> {
+  const source = await readFile(path.resolve("r/tests/complete_catalog_contract.R"), "utf8");
+  const matches = [...source.matchAll(/^catalog_kinds <- c\((?<body>[\s\S]*?)^\)$/gmu)];
+  if (matches.length !== 1) throw new Error("Expected one exact catalog_kinds vector in the direct R contract.");
+  const body = matches[0]?.groups?.body ?? "";
+  const kinds = [...body.matchAll(/"(?<kind>[A-Za-z][A-Za-z0-9]*)"/gu)].map((match) => match.groups?.kind ?? "");
+  const unparsed = body.replace(/"[A-Za-z][A-Za-z0-9]*"/gu, "").replace(/[\s,]/gu, "");
+  if (unparsed.length > 0 || kinds.some((kind) => kind.length === 0)) {
+    throw new Error("The direct R catalog_kinds vector contains an unreviewed expression.");
+  }
+  return kinds;
 }
