@@ -168,7 +168,7 @@ test("proves added regular Python source only for native R", async (context) => 
   }
 });
 
-test("proves regular R source additions and edits and existing R journey edits only for Python", async (context) => {
+test("proves regular R source changes and existing installed-harness edits only for Python", async (context) => {
   const cases = [
     { added: [], modified: ["r/openwrangler_runtime/frame_contract.R"] },
     { added: [], modified: ["r/tests/kernel_agent.R"] },
@@ -178,6 +178,10 @@ test("proves regular R source additions and edits and existing R journey edits o
     { added: ["r/tests/new_contract.R"], modified: ["CHANGELOG.md"] },
     { added: [], modified: ["src/test/extensionHost/releasedRCoreEditing.ts"] },
     { added: [], modified: ["src/test/extensionHost/releasedRRowReduction.ts"] },
+    { added: [], modified: ["src/test/extensionHost/index.ts"] },
+    { added: [], modified: ["src/test/extensionHost/releasedROperationPicker.ts"] },
+    { added: [], modified: ["scripts/editor-acceptance.mjs"] },
+    { added: [], modified: ["scripts/editor-acceptance-artifact.test.mjs"] },
     {
       added: ["r/tests/new_contract.R"],
       modified: [
@@ -217,7 +221,7 @@ test("keeps both runtimes required for R and CHANGELOG changes with Python sourc
     for (const other of [
       "python/tests/test_runtime.py",
       "src/shared/protocol.ts",
-      "src/test/extensionHost/releasedROperationPicker.ts"
+      "src/shared/installedPerformanceFixtureManifest.cjs"
     ]) {
       await context.test(`${other}, added=${added}`, (child) => {
         const rSource = "r/tests/contract.R";
@@ -242,13 +246,13 @@ test("requires full owners for deleted or renamed runtime source, including alon
     "python/openwrangler_runtime/session.py",
     "r/openwrangler_runtime/kernel_agent.R",
     "src/test/extensionHost/releasedRCoreEditing.ts",
-    "src/test/extensionHost/releasedRRowReduction.ts",
+    "scripts/editor-acceptance.mjs",
     "src/test/webview.component.test.tsx"
   ]) {
     for (const change of ["add and delete", "delete", "rename", "rename into runtime"]) {
       await context.test(`${file}: ${change}`, (child) => {
         const cwd = repository(child, [file]);
-        const destination = file.replace(/\.(py|R|tsx?)$/u, "-new.$1");
+        const destination = file.replace(/\.(py|R|tsx?|mjs)$/u, "-new.$1");
         if (change === "add and delete") {
           write(cwd, destination);
           rmSync(join(cwd, file));
@@ -272,7 +276,7 @@ test("requires full owners for source mode changes and existing executable or sy
     "python/tests/helper.py",
     "r/tests/helper.R",
     "src/test/extensionHost/releasedRCoreEditing.ts",
-    "src/test/extensionHost/releasedRRowReduction.ts",
+    "scripts/editor-acceptance-artifact.test.mjs",
     "src/test/webview.component.test.tsx"
   ]) {
     for (const mode of ["100755", "120000"]) {
@@ -307,7 +311,7 @@ test("requires full owners for added executable or symlink runtime source", asyn
     "python/tests/added.py",
     "r/tests/added.R",
     "src/test/extensionHost/releasedRCoreEditing.ts",
-    "src/test/extensionHost/releasedRRowReduction.ts"
+    "scripts/editor-acceptance.mjs"
   ]) {
     for (const mode of ["100755", "120000"]) {
       await context.test(`${file}: ${mode}`, (child) => {
@@ -338,7 +342,7 @@ test("requires full owners for added Markdown or paths outside the runtime sourc
     "r/tests/new.r",
     "r/dependencies/new.R",
     "src/test/extensionHost/releasedRCoreEditing.ts",
-    "src/test/extensionHost/releasedRRowReduction.ts",
+    "scripts/editor-acceptance-artifact.test.mjs",
     "src/test/webview.component.test.tsx"
   ]) {
     await context.test(file, (child) => {
@@ -357,6 +361,7 @@ test("requires full owners for control characters in source paths", async (conte
   for (const file of [
     "python/tests/unusual\nname.py",
     "r/tests/unusual\nname.R",
+    "src/test/extensionHost/unusual\nname.ts",
     "src/test/unusual\nname.component.test.tsx"
   ]) {
     for (const added of [false, true]) {
@@ -431,13 +436,16 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
     "src/test/component.test.tsx",
     "tsconfig.extension-test.json",
     "src/extension/r/rKernelBridge.ts",
-    "src/test/extensionHost/releasedROperationPicker.ts",
+    "src/shared/installedPerformanceFixtureManifest.cjs",
+    "src/test/extensionHost/nested/helper.ts",
     "src/test/extensionHost/releasedRCoreEditing.ts.bak",
     "src/test/extensionHost/releasedRCoreEditing.tsx",
     "src/test/extensionHost-extra/releasedRRowReduction.ts",
     "fixtures/view-literal-contract.json",
     "scripts/r-contract-signal.py",
     "scripts/ci-docs-only.test.mjs",
+    "scripts/editor-acceptance.mjs.bak",
+    "scripts/editor-acceptance-extra.mjs",
     "package-lock.json",
     "python/pyproject.toml",
     "python/README.md",

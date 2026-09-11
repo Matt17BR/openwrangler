@@ -47,9 +47,10 @@ The scope-only job uses Node and Git without installing npm dependencies or rest
 `scripts/ci-docs-only.mjs` permits the omissions below. All admitted files must be regular and non-executable.
 
 - Python may be omitted for additions or edits to `.R` files under `r/openwrangler_runtime/` or `r/tests/`; edits to
-  existing `src/test/extensionHost/releasedRCoreEditing.ts` or `src/test/extensionHost/releasedRRowReduction.ts`; and
-  edits to existing `README.md`, `CHANGELOG.md` or `docs/**/*.md` files. The two journey files retain all R and Windows
-  execution. Other acceptance helpers, including the shared R operation picker, are outside this permission.
+  existing top-level `src/test/extensionHost/*.ts`, `scripts/editor-acceptance.mjs` or
+  `scripts/editor-acceptance-artifact.test.mjs` files; and edits to existing `README.md`, `CHANGELOG.md` or
+  `docs/**/*.md` files. The installed-harness edits retain all R and Windows execution. Added or nested harness files
+  and other scripts are outside this permission.
 - R source and installed-editor execution may be omitted for additions or edits to `.py` files under
   `python/openwrangler_runtime/` or `python/tests/`, and edits to existing `README.md`, `CHANGELOG.md` or `docs/**/*.md`.
 - Python, R and Windows execution may be omitted for edits to existing top-level `src/test/*.component.test.tsx`
@@ -59,15 +60,15 @@ The scope-only job uses Node and Git without installing npm dependencies or rest
 - Vitest may be omitted only for edits to existing `README.md`, `CHANGELOG.md` or `docs/**/*.md` files. Windows also
   omits those documentation-only changes.
 
-Mixed Python/R changes require both runtimes. The Python job does not consume the allowed R files. The R checks do
-not execute the allowed Python files; the selected installed R journeys use Python only for Jupyter client readiness
+Mixed Python/R changes require both runtimes. The Python job does not consume the allowed R or installed-harness files.
+The R checks do not execute the allowed Python files; the selected installed R journeys use Python only for Jupyter client readiness
 and exclude the mixed-language literate journey. The Python and Windows contract suites do not read CHANGELOG;
-Source and packaged smoke retain its validation and package-content checks. Shared/host code, fixtures, scripts,
+Source and packaged smoke retain its validation and package-content checks. Shared/host code, fixtures, other scripts,
 configuration, dependency locks and other paths outside these scopes require full execution. If an affected test suite
 or selected runner begins consuming an omitted input, update the proof and its tests in the same change.
 
 These omissions reduce unrelated work for documentation edits, private component tests, isolated engine changes and
-the allowed R journeys.
+the allowed installed-harness edits.
 They provide no fresh or transferred test result and can delay discovery of unrelated dependency or hosted-environment
 regressions.
 Scheduled R 4.4 qualification does not replace R 4.5 coverage. Release qualification remains separate.

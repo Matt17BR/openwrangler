@@ -69,8 +69,10 @@ export function proveRuntimeOmissions({ cwd = process.cwd(), env = process.env }
     }
     if (
       rSource ||
-      path === "src/test/extensionHost/releasedRCoreEditing.ts" ||
-      path === "src/test/extensionHost/releasedRRowReduction.ts"
+      (modified &&
+        (/^src\/test\/extensionHost\/[^/\p{Cc}]+\.ts$/u.test(path) ||
+          path === "scripts/editor-acceptance.mjs" ||
+          path === "scripts/editor-acceptance-artifact.test.mjs"))
     ) {
       rOmittable = false;
       continue;
