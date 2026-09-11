@@ -144,7 +144,8 @@ Use the existing owners to choose a focused source check:
   cover public Preview/Apply, history, refusal/correction, export and replay. Keep individual numeric, dtype and
   collision cases in those tests; supported behavior belongs in [engine boundaries](architecture.md#engine-boundaries-and-capabilities).
   [Typed cells](../python/tests/test_typed_cells.py) owns exact duration transport, bounded session selections and
-  unsupported-precision refusal. [Filter logic](../python/tests/test_filter_logic.py) executes live and generated
+  unsupported-precision refusal, including native Pandas stored units and generated selections beyond the nanosecond
+  range. [Filter logic](../python/tests/test_filter_logic.py) executes live and generated
   duration filters under a changed notebook Decimal context in each editing-capable Python engine.
   The Polars owner also checks native temporal page, choice and profile precision before Python row conversion,
   with eager/lazy session recovery, generated filtering, padded-fraction search, portable selection keys and a projected

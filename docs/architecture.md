@@ -636,7 +636,8 @@ without interpreting their class names as temporal types.
 Shared cell normalization and Pandas operations recognize `NA` and `NaT` by identity, not a matching class name.
 The shared boundary consults an already-loaded Pandas module without importing it for other engines; generated
 Pandas code uses its existing module binding. NumPy scalar and temporal handling checks actual native types;
-Pandas `Timedelta` subclasses retain nanoseconds, while ordinary Python timedeltas keep their own value. None,
+Pandas `Timedelta` subclasses retain their stored unit through the native NumPy scalar, including values outside the
+nanosecond range, while ordinary Python timedeltas keep their own value. None,
 floating NaN, Decimal NaN and Arrow temporal validity retain their separate existing rules.
 
 ### Polars
