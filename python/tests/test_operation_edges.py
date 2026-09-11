@@ -263,6 +263,62 @@ def test_missing_and_duplicate_row_modes_match_generated_code(engine) -> None:
     assert_records_equal(keep_all_result, execute_generated(engine, duplicate_frame, keep_all))
 
 
+@pytest.mark.parametrize(
+    ("kind", "options", "kept_rows"),
+    [
+        ("dropMissingRows", {"how": "any"}, [0, 2, 3]),
+        ("dropDuplicates", {"keep": "first"}, [0, 1, 3]),
+        ("markDuplicates", {"newColumn": "duplicate"}, [0, 1, 2, 3]),
+    ],
+)
+def test_pandas_row_selection_maps_visible_positions_once_per_operation(
+    monkeypatch: pytest.MonkeyPatch, kind: str, options: dict[str, Any], kept_rows: list[int]
+) -> None:
+    engine = PandasEngine()
+    source = pd.DataFrame(
+        [[10.0, 1.0, "a"], [20.0, None, "b"], [None, 1.0, "a"], [40.0, 2.0, "c"]],
+        columns=cast(Any, ["same", "same", 7]),
+        index=pd.Index([7, 7, 2, 9], name="source_index"),
+    )
+    source.attrs = {"owned": "sentinel"}
+    source_before = source.copy(deep=True)
+    identified = engine.ensure_row_ids(source, "row-selection-map").iloc[:, [0, 3, 1, 2]]
+    row_id = engine.internal_row_id_column(identified)
+    assert row_id is not None
+    before = identified.copy(deep=True)
+    operation = bound_step(
+        kind,
+        columns=[bound_ref("c:source:2", "7", 2), bound_ref("c:source:1", "same", 1)],
+        **options,
+    )
+    visible_positions = engine._visible_positions
+    scans = 0
+
+    def counted_visible_positions(frame: Any) -> list[int]:
+        nonlocal scans
+        scans += 1
+        return visible_positions(frame)
+
+    with monkeypatch.context() as context:
+        context.setattr(engine, "_visible_positions", counted_visible_positions)
+        actual = engine.apply_transform(identified, operation)
+        assert scans == 1
+
+    expected = source.iloc[kept_rows].copy()
+    if kind == "markDuplicates":
+        expected["duplicate"] = [True, False, True, False]
+    generated = execute_generated(engine, source, operation)
+    pd.testing.assert_frame_equal(actual.drop(columns=[row_id]), expected, check_exact=True)
+    pd.testing.assert_frame_equal(actual.drop(columns=[row_id]), generated, check_exact=True)
+    assert actual.attrs == generated.attrs
+    if kind != "markDuplicates":
+        assert actual.attrs == source.attrs
+    pd.testing.assert_series_equal(actual[row_id], before.iloc[kept_rows][row_id], check_exact=True)
+    pd.testing.assert_frame_equal(identified, before, check_exact=True)
+    pd.testing.assert_frame_equal(source, source_before, check_exact=True)
+    assert identified.attrs == before.attrs == source.attrs == source_before.attrs
+
+
 def test_pandas_row_order_operations_target_duplicate_and_integer_labels_positionally() -> None:
     engine = PandasEngine()
     frame = pd.DataFrame(

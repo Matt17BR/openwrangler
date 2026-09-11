@@ -1582,7 +1582,11 @@ class PandasEngine(DataFrameEngine):
             return self._visible_positions(frame)
         if not isinstance(references, list):
             raise EngineError(f"{operation} requires an array of bound column references.")
-        return [self._bound_frame_position(frame, reference, operation) for reference in references]
+        visible_positions = self._visible_positions(frame)
+        return [
+            self._bound_frame_position(frame, reference, operation, visible_positions=visible_positions)
+            for reference in references
+        ]
 
     def _apply_bound_sort_rules(self, frame: Any, rules: Any, operation: str) -> Any:
         if not isinstance(rules, list) or not rules:
