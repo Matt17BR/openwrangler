@@ -1894,8 +1894,8 @@ export async function prepareWindowsEditorProcessSupervisor(
     throw windowsSupervisorBuildCallerFailure("cancelled", buildTimeoutMs, 0);
   }
   const callerDeadline = callerStartedAt + buildTimeoutMs;
-  // Editor subprocess environments intentionally omit this host-only routing
-  // value. Setup commands still belong to the process-owned acceptance root,
+  // Filtered setup-command environments omit this controlled routing value.
+  // Setup commands still belong to the process-owned acceptance root,
   // so recover it from the coordinator environment before using a fallback.
   const configuredRoot = environment[TEMP_ROOT_ENV] ?? process.env[TEMP_ROOT_ENV];
   let buildRoot;
@@ -4510,6 +4510,7 @@ export async function runEditorAcceptancePhase(
     const phaseEnvironment = createEditorAcceptanceEnvironmentForPlatform(
       environment,
       {
+        [TEMP_ROOT_ENV]: environment[TEMP_ROOT_ENV],
         OPEN_WRANGLER_EXTENSION_TESTS: "1",
         OPEN_WRANGLER_TEST_PHASE: phase,
         OPEN_WRANGLER_TEST_SELECTOR: testSelector,
