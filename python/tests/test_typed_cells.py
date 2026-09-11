@@ -684,6 +684,13 @@ def test_typed_cells_preserve_values_json_cannot_represent_directly() -> None:
         (timedelta(days=999999999, microseconds=1), "86399999913600.000001", True),
         (pd.Timedelta(9 * 10**18 + 1000, "ns"), "9000000000.000001", True),
         (pd.Timedelta(10**17 + 1, "ns"), "100000000.000000001", False),
+        (pd.Timedelta(np.timedelta64(10**12, "s")), 1000000000000.0, True),
+        (pd.Timedelta(np.timedelta64(10**15 + 1, "ms")), 1000000000000.001, True),
+        (pd.Timedelta(np.timedelta64(10**18 + 1, "us")), "1000000000000.000001", True),
+        (pd.Timedelta(np.timedelta64(-(10**18 + 1), "us")), "-1000000000000.000001", True),
+        (pd.Timedelta(np.timedelta64(2**63 - 1, "us")), "9223372036854.775807", True),
+        (pd.Timedelta(np.timedelta64(-(2**63 - 1), "us")), "-9223372036854.775807", True),
+        (pd.Timedelta(np.timedelta64(2**63 - 1, "ms")), "9223372036854775.807", False),
         (np.timedelta64(500000000, "D"), 43200000000000.0, True),
         (np.array(2**62, dtype="timedelta64[2us]")[()], "9223372036854.775808", True),
         (np.array(2**62, dtype="timedelta64[1000us]")[()], "4611686018427387.904", False),
@@ -726,19 +733,32 @@ def test_numpy_duration_units_keep_fixed_seconds_and_refuse_calendar_values() ->
     assert normalize_cell(np.array("NaT", dtype="timedelta64[2ns]")[()])["isNull"]
 
 
-@pytest.mark.parametrize("ticks", [2_123_456_000, 9 * 10**18 + 1000, 10**17 + 1])
-def test_duration_session_choices_and_grid_tokens_keep_source_rows(monkeypatch: pytest.MonkeyPatch, ticks: int) -> None:
+@pytest.mark.parametrize(
+    "unit,ticks,adjacent,neighbor,portable",
+    [
+        ("ns", 2_123_456_000, 2_123_457_000, 2_120_000_000, True),
+        ("ns", 9 * 10**18 + 1000, 9 * 10**18 + 2000, 9 * 10**18 + 2000, True),
+        ("ns", 10**17 + 1, 10**17 + 1001, 10**17, False),
+        ("s", 10**12, 10**12 + 1, 0, True),
+        ("ms", 10**15 + 1, 10**15 + 2, 0, True),
+        ("us", 10**18 + 1, 10**18 + 2, 0, True),
+        ("us", -(10**18 + 1), -(10**18 + 2), 0, True),
+        ("ms", 2**63 - 1, 2**63 - 2, 0, False),
+    ],
+)
+def test_duration_session_choices_and_grid_tokens_keep_source_rows(
+    monkeypatch: pytest.MonkeyPatch, unit: str, ticks: int, adjacent: int, neighbor: int, portable: bool
+) -> None:
     import __main__
 
-    portable = ticks % 1000 == 0
-    neighbor = 2_120_000_000 if ticks == 2_123_456_000 else 9 * 10**18 + 2000 if portable else 10**17
-    native = np.array([ticks, ticks + 1000, ticks, neighbor, -(2**63)], dtype=np.int64)
-    source = pd.DataFrame({"value": pd.to_timedelta(native, unit="ns"), "row": range(5)})
+    native = np.array([ticks, adjacent, ticks, neighbor, -(2**63)], dtype=np.int64).view(f"timedelta64[{unit}]")
+    source = pd.DataFrame({"value": native, "row": range(5)})
     source.index = pd.Index(["same"] * 5, name="original")
     source.attrs["origin"] = "retained"
     before = source.copy(deep=True)
     monkeypatch.setattr(__main__, "duration_selection_source", source, raising=False)
     manager = SessionManager()
+    engine = PandasEngine()
     try:
         with localcontext() as context:
             context.prec = 3
@@ -755,7 +775,7 @@ def test_duration_session_choices_and_grid_tokens_keep_source_rows(monkeypatch: 
             sid, revision = metadata["sessionId"], metadata["revision"]
             unfiltered = {"filters": [], "sort": []}
             choice = manager.get_column_values(sid, revision, "value", unfiltered)["values"][0]
-            assert choice["count"] == 2 and choice["value"] == str(pd.Timedelta(ticks, "ns"))
+            assert choice["count"] == 2 and choice["value"] == str(source.iloc[0, 0])
             cell = opened["page"]["rows"][0]["values"][0]
             tokens = [{"kind": "typedSelection", "version": 1, "columnType": "duration", "cell": cell}]
             if portable:
@@ -779,17 +799,44 @@ def test_duration_session_choices_and_grid_tokens_keep_source_rows(monkeypatch: 
                     ],
                     "sort": [],
                 }
+                schema = engine.schema(source)
+                lineage = source_lineage(schema)
+                step = bind_step(
+                    validate_step(
+                        {
+                            "id": "duration-selection",
+                            "kind": "filterRows",
+                            "params": {
+                                "filterModel": {
+                                    "filters": [{**model["filters"][0], "column": lineage[0]}],
+                                    "sort": [],
+                                }
+                            },
+                        }
+                    ),
+                    schema,
+                    lineage,
+                )
+                namespace: dict[str, Any] = {}
+                exec(engine.compile_plan([step]), namespace)
                 if portable:
                     page = manager.get_page(sid, revision, 0, 5, model)["page"]
                     assert [row["values"][1]["raw"] for row in page["rows"]] == [0, 2]
+                    for actual in [engine.apply_transform(source, step), namespace["clean_data"](source)]:
+                        pd.testing.assert_frame_equal(actual, source.iloc[[0, 2]], check_exact=True)
                 else:
                     with pytest.raises(EngineError):
                         manager.get_page(sid, revision, 0, 5, model)
+                    with pytest.raises((EngineError, ValueError)):
+                        engine.apply_transform(source, step)
+                    with pytest.raises((ValueError, OverflowError)):
+                        namespace["clean_data"](source)
             restored = manager.get_page(sid, revision, 0, 5, unfiltered)
             assert [row["values"][1]["raw"] for row in restored["page"]["rows"]] == list(range(5))
             assert all(restored["metadata"][key] == metadata[key] for key in ("sessionId", "revision", "source"))
     finally:
         manager.close_all()
+        engine.close()
     pd.testing.assert_frame_equal(source, before, check_exact=True)
     assert source.attrs == before.attrs
 

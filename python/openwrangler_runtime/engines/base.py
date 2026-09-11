@@ -1161,7 +1161,7 @@ def normalize_cell(value: Any) -> dict[str, Any]:
     elif is_numpy_duration:
         kind = "duration"
         display = str(value)
-        raw = _numpy_timedelta_raw(value, display)
+        raw = _numpy_timedelta_raw(value)
     elif isinstance(value, bytes):
         kind = "binary"
         display = b64encode(value).decode("ascii")
@@ -1480,7 +1480,7 @@ def duration_seconds_raw(ticks: int, scale: int) -> float | str:
 
 def _timedelta_raw(value: timedelta) -> float | str:
     if isinstance(value, getattr(sys.modules.get("pandas"), "Timedelta", ())):
-        return duration_seconds_raw(int(cast(Any, value).value), 1_000_000_000)
+        return _numpy_timedelta_raw(cast(Any, value).asm8)
     ticks = (value.days * 86400 + value.seconds) * 1_000_000 + value.microseconds
     return duration_seconds_raw(ticks, 1_000_000)
 
@@ -1500,11 +1500,11 @@ _NUMPY_DURATION_SECONDS = {
 }
 
 
-def _numpy_timedelta_raw(value: Any, fallback: str) -> float | str:
+def _numpy_timedelta_raw(value: Any) -> float | str:
     numpy = sys.modules["numpy"]
     unit, multiplier = numpy.datetime_data(value.dtype)
     factor_scale = _NUMPY_DURATION_SECONDS.get(unit)
     if factor_scale is None:
-        return fallback
+        return str(value)
     factor, scale = factor_scale
     return duration_seconds_raw(int(value.view(numpy.int64)) * multiplier * factor, scale)
