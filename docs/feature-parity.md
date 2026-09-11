@@ -123,6 +123,7 @@ Cleaned-data export requires no draft and writes the committed plan, never the v
 file destination through the shared [publication boundary](architecture.md#trust-source-integrity-and-export).
 Pandas CSV and Parquet exports require an explicit preserve-or-omit index choice. Pandas and Polars CSV/Parquet writers
 use identity-checked handles before truncation.
+Pandas dataframes retaining negative-scale Arrow Decimal columns cannot be exported to Parquet.
 Script and data exports protect the session's concrete source files even after a rename. They also reject source-path
 replacement during code synchronization or destination selection. If source identity is unavailable, viewing remains
 available and export requires reopening the dataframe.
@@ -222,29 +223,23 @@ and nonnegative integer powers. NumPy, nullable and Sparse integer columns retai
 including exact promotions. Generated code applies the same checks to all affected rows, including those outside
 the displayed page.
 
-Pandas Formula modulo supports Arrow integer columns, including signed and unsigned 64-bit extrema, with matching
-generated code and Parquet output. Null operands remain null; present zero divisors are refused without changing
-the confirmed plan. Other Formula arithmetic repairs eligible UInt64 operand-inference failures and widens selected
-Decimal128 operations to Decimal256, retaining native precision and scale. Decimal256 columns also accept previously
-refused multiplication or division by the integer literal -1, preserving precision, scale and nulls through native
-checked negation. Successful native results keep their types. UInt64 addition and subtraction also accept
-negative integer literals with magnitude at most UInt64 maximum when every result fits UInt64. A UInt64 left column
-also accepts signed right columns, including mixed positive and negative adjustments and signed 64-bit minimum,
-when every repaired result fits UInt64. Addition accepts these columns in either order. Missing operands remain missing.
-Arrow integer multiplication also accepts previously refused products that fit one signed or unsigned 64-bit output
-column, including signed-minimum negation and either operand order. Existing native successes retain their types;
-newly repaired results use Int64 when possible, otherwise UInt64. Unrepresentable results are refused.
-Arrow integer subtraction accepts previously refused differences that fit one UInt64 or Int64 output column,
-including negative results and reversed signed/unsigned operands. Successful native results retain their types;
-repairs prefer UInt64, then Int64. This additional repair accepts integer literals from Int64 minimum to UInt64
-maximum; wider negative literals retain the existing UInt64 path and its capacity limits.
-Signed Arrow integer columns support more exact scalar powers, including `(-3)^40` and `2^63`, when every repaired
-result fits UInt64. Positive integer exponents below 2^64 are eligible after native failure. Odd-power UInt64 repairs
-require nonnegative values. Odd exponents from 2^63+1 through 2^64-1 also accept columns containing only -1, 0, 1
-and null, with a negative value, returning Int64. Existing native successes, nonnegative/empty/all-null repairs and
-other exponent families retain their behavior.
-Negative power and widest or negative-scale Decimal capacity gaps remain
-tracked in [#979](https://github.com/Matt17BR/openwrangler/issues/979).
+Pandas Formula supports exact Arrow integer modulo, selected signed/unsigned addition, subtraction and multiplication,
+and additional positive integer powers. Successful native results keep their types. Modulo preserves nulls and refuses
+a zero divisor when both operands are present. Live execution and generated code agree, and refusals preserve source
+data and the confirmed plan.
+
+Selected Arrow Decimal arithmetic can widen Decimal128 to Decimal256. If native capacity inference rejects Decimal256
+multiplication or division by the integer literal `-1`, Formula uses exact negation while preserving the declared precision
+and scale. Negative-scale Decimal addition, subtraction, multiplication and division also work with another Arrow
+Decimal column, a NumPy, built-in Pandas nullable or Arrow integer column of at most 64 bits, or an exact integer literal,
+when the declared capacity fits Decimal256. Sparse, object and custom extension companions are excluded from this
+additional support. These Decimal repairs preserve nulls; native arithmetic determines the result scale and division
+rounding, so the result need not retain a negative source scale.
+
+Some mathematically representable results still exceed Arrow's inferred capacity and are refused. These Decimal
+capacity restrictions also apply to empty and all-null inputs. Remaining negative-power and Decimal capacity gaps
+stay tracked in [#979](https://github.com/Matt17BR/openwrangler/issues/979). See
+[Pandas numeric and operand rules](architecture.md#pandas) for the exact supported domains and result types.
 
 Formula preserves newly entered large integer literals through preview, apply, saved plans and generated code.
 Polars checks native capacity for these strings on integer columns and for integer arithmetic in saved plans
