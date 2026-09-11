@@ -547,6 +547,25 @@ def test_duckdb_categorical_outputs_reject_casefold_collisions(kind, collision):
         engine.close()
 
 
+def test_duckdb_one_hot_rejects_exact_names_repeated_across_selected_columns():
+    engine = DuckDBEngine()
+    try:
+        frame = duckdb.sql("SELECT * FROM (VALUES ('_y', 'y'), ('_x', 'x')) source(a, a_)")
+        before = snapshot(frame)
+        refs = source_lineage(engine.schema(frame))
+        operation = bind(engine, frame, public_step("oneHotEncode", columns=refs, dropOriginal=True))
+        message = "One-hot encoding would create duplicate column names: a__x, a__y"
+        with pytest.raises(EngineError) as live:
+            engine.apply_transform(frame, operation)
+        assert str(live.value) == message + ". Choose a different prefix or separator."
+        with pytest.raises(ValueError) as emitted:
+            generated(engine, [operation])(frame)
+        assert str(emitted.value) == message
+        assert snapshot(frame) == before
+    finally:
+        engine.close()
+
+
 def test_duckdb_generated_plan_rejects_ambiguous_input_before_native_projection():
     engine = DuckDBEngine()
     try:
