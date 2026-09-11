@@ -11,6 +11,7 @@ interface AcceptanceDirectoryMetadata {
 export interface AcceptanceTemporaryDirectoryDependencies {
   readonly platform: NodeJS.Platform;
   readonly isolatedTempRoot: string;
+  readonly editorTempRoot: string | undefined;
   readonly extensionTests: string | undefined;
   readonly lstat: (candidate: string) => AcceptanceDirectoryMetadata;
   readonly remove: (
@@ -23,6 +24,7 @@ function acceptanceTemporaryDirectoryDependencies(): AcceptanceTemporaryDirector
   return {
     platform: process.platform,
     isolatedTempRoot: tmpdir(),
+    editorTempRoot: process.env.OPEN_WRANGLER_EDITOR_TEMP_ROOT,
     extensionTests: process.env.OPEN_WRANGLER_EXTENSION_TESTS,
     lstat: lstatSync,
     remove: rmSync
@@ -64,15 +66,20 @@ export function cleanupAcceptanceTemporaryDirectory(
       "1",
       "Windows fixture cleanup may be deferred only inside the editor acceptance harness."
     );
-    assert.equal(
-      path.basename(path.dirname(isolatedTempRoot)).toLowerCase(),
-      "ow",
-      "Deferred Windows acceptance fixtures require the runner-owned temp parent."
+    const editorTempRoot = dependencies.editorTempRoot;
+    assert.ok(
+      typeof editorTempRoot === "string" && path.isAbsolute(editorTempRoot),
+      "Deferred Windows acceptance fixtures require the absolute runner-owned temp root."
     );
     assert.match(
-      path.basename(isolatedTempRoot),
+      path.basename(path.resolve(editorTempRoot)),
       /^x-[A-Za-z0-9]+$/u,
       "Deferred Windows acceptance fixtures require the runner-owned random temp root."
+    );
+    assert.equal(
+      path.relative(path.join(editorTempRoot, "home", "AppData", "Local", "Temp"), isolatedTempRoot),
+      "",
+      "Deferred Windows acceptance fixtures require the runner-owned profile Temp directory."
     );
     assert.match(
       path.basename(ownedDirectory),

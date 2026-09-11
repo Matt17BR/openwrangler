@@ -23,31 +23,83 @@ it("keeps large source mismatch diagnostics bounded", () => {
   assert.doesNotMatch(diagnostic, /<Buffer|actual:|expected:/u);
 });
 
-it("settles only direct owned fixture roots at the platform cleanup boundary", () => {
-  const parent = mkdtempSync(path.join(tmpdir(), "openwrangler-cleanup-owner-"));
-  const runnerParent = path.join(parent, "ow");
-  mkdirSync(runnerParent);
-  const isolatedTempRoot = mkdtempSync(path.join(runnerParent, "x-"));
-  const directory = mkdtempSync(path.join(isolatedTempRoot, "openwrangler-cleanup-contract-"));
-  const dependencies = {
-    platform: process.platform,
-    isolatedTempRoot,
-    extensionTests: "1",
-    lstat: lstatSync,
-    remove: rmSync
-  };
-  try {
-    assert.throws(
-      () => cleanupAcceptanceTemporaryDirectory(path.join(directory, "nested"), dependencies),
-      /direct children of the isolated editor temp root/u
-    );
-    cleanupAcceptanceTemporaryDirectory(directory, dependencies);
-    assert.equal(
-      existsSync(directory),
-      process.platform === "win32",
-      "Windows retains fixture roots until job-empty cleanup; other platforms remove them immediately."
-    );
-  } finally {
-    rmSync(parent, { recursive: true, force: true });
+it.each(["linux", "win32"] as const)(
+  "settles only direct owned fixture roots at the %s cleanup boundary",
+  (platform) => {
+    const parent = mkdtempSync(path.join(tmpdir(), "openwrangler-cleanup-owner-"));
+    const runnerParent = path.join(parent, platform === "win32" ? "Temp" : "ow");
+    mkdirSync(runnerParent);
+    const editorTempRoot = mkdtempSync(path.join(runnerParent, "x-"));
+    const isolatedTempRoot =
+      platform === "win32" ? path.join(editorTempRoot, "home", "AppData", "Local", "Temp") : editorTempRoot;
+    mkdirSync(isolatedTempRoot, { recursive: true });
+    const directory = mkdtempSync(path.join(isolatedTempRoot, "openwrangler-cleanup-contract-"));
+    const dependencies = {
+      platform,
+      isolatedTempRoot,
+      editorTempRoot: platform === "win32" ? editorTempRoot : undefined,
+      extensionTests: "1",
+      lstat: lstatSync,
+      remove: rmSync
+    };
+    try {
+      assert.throws(
+        () => cleanupAcceptanceTemporaryDirectory(path.join(directory, "nested"), dependencies),
+        /direct children of the isolated editor temp root/u
+      );
+      if (platform === "win32") {
+        for (const invalidRoot of [undefined, "x-relative"]) {
+          assert.throws(
+            () => cleanupAcceptanceTemporaryDirectory(directory, { ...dependencies, editorTempRoot: invalidRoot }),
+            /absolute runner-owned temp root/u
+          );
+        }
+        assert.throws(
+          () => cleanupAcceptanceTemporaryDirectory(directory, { ...dependencies, editorTempRoot: parent }),
+          /runner-owned random temp root/u
+        );
+        assert.throws(
+          () =>
+            cleanupAcceptanceTemporaryDirectory(directory, {
+              ...dependencies,
+              editorTempRoot: path.join(runnerParent, "x-unrelated")
+            }),
+          /runner-owned profile Temp directory/u
+        );
+        const wrongTemp = path.join(editorTempRoot, "other");
+        mkdirSync(wrongTemp);
+        const wrongFixture = mkdtempSync(path.join(wrongTemp, "openwrangler-cleanup-contract-"));
+        assert.throws(
+          () => cleanupAcceptanceTemporaryDirectory(wrongFixture, { ...dependencies, isolatedTempRoot: wrongTemp }),
+          /runner-owned profile Temp directory/u
+        );
+        assert.throws(
+          () => cleanupAcceptanceTemporaryDirectory(directory, { ...dependencies, extensionTests: undefined }),
+          /inside the editor acceptance harness/u
+        );
+        assert.throws(
+          () =>
+            cleanupAcceptanceTemporaryDirectory(directory, {
+              ...dependencies,
+              lstat: () => ({ isDirectory: () => true, isSymbolicLink: () => true })
+            }),
+          /must remain a real directory/u
+        );
+        const foreignFixture = mkdtempSync(path.join(isolatedTempRoot, "foreign-"));
+        assert.throws(
+          () => cleanupAcceptanceTemporaryDirectory(foreignFixture, dependencies),
+          /Open Wrangler-owned random directory name/u
+        );
+        assert.ok(existsSync(wrongFixture) && existsSync(foreignFixture));
+      }
+      cleanupAcceptanceTemporaryDirectory(directory, dependencies);
+      assert.equal(
+        existsSync(directory),
+        platform === "win32",
+        "Windows retains fixture roots until job-empty cleanup; other platforms remove them immediately."
+      );
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
   }
-});
+);
