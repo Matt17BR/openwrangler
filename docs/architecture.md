@@ -641,6 +641,20 @@ floating NaN, Decimal NaN and Arrow temporal validity retain their separate exis
 
 ### Polars
 
+Native Datetime and Duration columns retain their precision in pages, value choices and profile labels. Pages format
+only the projected, sliced result after its source collection. Choice search and tie ordering use native temporal
+text; exact ticks and labels are retained only for the limited choices. Profile labels are formatted after counting
+or extrema aggregation, including the already collected lazy top-ten payload. These transformations add bounded
+resident-frame work without another source scan or conversion through another dataframe engine.
+
+Datetime labels retain the native unit's three, six or nine fractional digits and exact offset seconds. Portable
+selection keys retain Python ISO fractional spelling; this does not replace native timezone offsets with Python's
+timezone data. Duration text uses Polars' signed-unit format, including at the Int64 minimum. Datetime value search
+accepts either `T` or a space between the date and time, and preserves searches for padded fractions such as `.123000`.
+The shared duration raw conversion and typed-cell selection decoder retain the
+existing microsecond filter precision and minute-offset limit: unsupported values remain visible but refuse
+selection. Date columns and nested temporal values retain their existing behavior.
+
 CSV export retains native Necessary quoting, which preserves null and empty-string distinctions. Native primitive
 formatters do not escape arbitrary delimiter or quote characters, so eager and lazy exports check the retained schema
 after removing the private row identity. Either syntax character is refused when it occurs in the column type's
@@ -1116,8 +1130,7 @@ NumPy fixed units and their multipliers are evaluated with integer ticks. Calend
 their display text and cannot be selected as seconds. The duration filter decoder retains its microsecond precision
 and Python timedelta range; finer values refuse selection rather than selecting a rounded neighbor. Live and
 generated decoders use integer arithmetic independently of the notebook's Decimal precision.
-Polars temporal boxing can lose precision before this shared boundary; [#1285](https://github.com/Matt17BR/openwrangler/issues/1285)
-tracks that separate engine limitation.
+Polars prepares native temporal columns before row boxing so this boundary receives their exact values.
 
 For framed Python runtime requests, the notebook bridge retains only the current request's marked response, bounded
 by the runtime's 17 MiB frame ceiling. Output before and after that frame is discarded. Framing and decoding failures drain the exact kernel

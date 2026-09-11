@@ -11,6 +11,8 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 - Pandas datetime value search accepts displayed midnight labels and space-separated NumPy datetime labels.
 - Pandas duration selections preserve exact microseconds and refuse unsupported finer precision instead of selecting a
   rounded neighbor. Live and generated duration filters no longer depend on notebook Decimal precision.
+- Polars temporal pages, value choices and profile labels retain nanoseconds and datetime offset seconds.
+  Duration value choices now work; selections beyond the filter precision are refused instead of rounded.
 - Refuse affected NumPy temporal profiles and value choices when legacy Pandas could narrow their count keys and
   could select the wrong source rows.
 

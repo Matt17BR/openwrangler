@@ -146,6 +146,9 @@ Use the existing owners to choose a focused source check:
   [Typed cells](../python/tests/test_typed_cells.py) owns exact duration transport, bounded session selections and
   unsupported-precision refusal. [Filter logic](../python/tests/test_filter_logic.py) executes live and generated
   duration filters under a changed notebook Decimal context in each editing-capable Python engine.
+  The Polars owner also checks native temporal page, choice and profile precision before Python row conversion,
+  with eager/lazy session recovery, generated filtering, padded-fraction search, portable selection keys and a projected
+  Parquet scan.
 - **Generated source and Custom Code:** [helper selection](../python/tests/test_generated_helpers.py),
   [output columns](../python/tests/test_generated_output_columns.py),
   [Custom Code scope](../python/tests/test_custom_code_scope.py) and [session plans](../python/tests/test_session_plan.py)

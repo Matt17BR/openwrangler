@@ -261,9 +261,12 @@ Python duration cells preserve exact seconds, including large microsecond values
 Pandas choices and grid selections refuse finer-than-microsecond values instead of matching a rounded neighbor.
 Duration filters in Pandas, Polars and DuckDB retain exact microseconds when notebook code changes Decimal precision,
 including in generated Python. Calendar and unitless NumPy durations remain displayable but cannot be selected as seconds.
-Previously saved selections with rounded duration values must be cleared and reselected.
-Polars still loses finer temporal precision while preparing query results; [#1285](https://github.com/Matt17BR/openwrangler/issues/1285)
-tracks that separate limitation.
+Previously saved selections with rounded temporal values must be cleared and reselected.
+Polars Datetime and Duration columns retain nanoseconds in grid cells, value choices and profile labels, and datetime
+offsets retain seconds. Duration choices now work and use native signed-unit labels, such as `1m 40s 1µs`.
+Datetime labels retain the native unit's three, six or nine fractional digits. Search accepts the displayed labels,
+padded fractions and either a `T` or space datetime separator.
+Values beyond the existing filter precision remain visible but cannot be selected.
 
 On Pandas versions that infer temporal count keys from object columns, profiles and value choices refuse nonzero
 NumPy temporal values with unit multipliers or units finer than nanoseconds. Successful nanosecond-duration counts

@@ -32,6 +32,165 @@ from openwrangler_runtime.session_source import SourceChangedError
 ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize(
+    "dtype,tick,raw,text,portable",
+    [
+        (pl.Duration("ns"), 10**17 + 1, "100000000.000000001", "1157d 9h 46m 40s 1ns", False),
+        (pl.Datetime("ns"), 10**17 + 1, "1973-03-03T09:46:40.000000001", None, False),
+        (pl.Duration("us"), 100000001, 100.000001, "1m 40s 1µs", True),
+        (pl.Duration("ms"), -12345, -12.345, "-12s -345ms", True),
+        (pl.Datetime("ms"), -12345, "1969-12-31T23:59:47.655000", "1969-12-31T23:59:47.655", True),
+        (pl.Datetime("us", "Europe/Berlin"), 100000001, "1970-01-01T01:01:40.000001+01:00", None, True),
+        (
+            pl.Datetime("ns", "Europe/Amsterdam"),
+            -5364662400000000000,
+            "1800-01-01T00:17:30+00:17:30",
+            "1800-01-01T00:17:30.000000000+00:17:30",
+            False,
+        ),
+        (pl.Duration("ns"), -(2**63), "-9223372036.854775808", "-106751d -23h -47m -16s -854775808ns", False),
+        (pl.Datetime("ns"), -(2**63), "1677-09-21T00:12:43.145224192", None, False),
+    ],
+)
+def test_polars_temporal_queries_preserve_native_values_before_row_boxing(
+    monkeypatch: pytest.MonkeyPatch, lazy: bool, dtype: Any, tick: int, raw: Any, text: str | None, portable: bool
+) -> None:
+    import __main__
+
+    ticks = [tick, tick + 1, tick, 0, None]
+    source = pl.DataFrame({"value": pl.Series(ticks, dtype=pl.Int64).cast(dtype), "row": range(5)})
+    before = source.clone()
+    frame = source.lazy() if lazy else source
+    monkeypatch.setattr(__main__, "exact_polars_temporal_source", frame, raising=False)
+    engine = PolarsEngine()
+    manager = SessionManager()
+    view = {"filters": [], "sort": []}
+    try:
+        opened = manager.open_session(
+            {"kind": "notebookVariable", "label": "temporal values", "variableName": "exact_polars_temporal_source"},
+            backend="polars",
+            page_size=5,
+        )
+        metadata = opened["metadata"]
+        sid, revision = metadata["sessionId"], metadata["revision"]
+        schema = metadata["schema"]
+        kind = "duration" if isinstance(dtype, pl.Duration) else "datetime"
+        cell = {"kind": kind, "raw": raw, "display": text or raw, "isNull": False, "isNaN": False}
+        cells = [row["values"][0] for row in opened["page"]["rows"]]
+        assert cells[0] == cells[2] == cell
+        assert cells[0]["raw"] != cells[1]["raw"] and cells[0]["display"] != cells[1]["display"]
+        assert cells[-1]["isNull"] and cells[-1]["raw"] is None
+        choices = manager.get_column_values(sid, revision, "value", view, limit=1)
+        choice = choices["values"][0]
+        assert choice["value"] == cell["display"] and choice["count"] == 2
+        assert len(choices["values"]) == 1
+        searched = manager.get_column_values(sid, revision, "value", view, search=cell["display"], limit=1)
+        assert searched["values"] == [choice]
+        if kind == "datetime":
+            alias = str(cell["display"]).replace("T", " ")
+            assert manager.get_column_values(sid, revision, "value", view, search=alias)["values"] == [choice]
+        summary = manager.get_summary(sid, revision, view, [schema[0]["id"]])["summaries"][0]
+        assert (summary["nullCount"], summary["nanCount"], summary["distinctCount"]) == (1, 0, 3)
+        assert summary["topValues"][0] == {"value": cell["display"], "count": 2}
+        if kind == "datetime":
+            present = [(value, cells[index]["display"]) for index, value in enumerate(ticks) if value is not None]
+            assert summary["visualization"]["min"] == min(present)[1]
+            assert summary["visualization"]["max"] == max(present)[1]
+        token = {"kind": "typedSelection", "version": 1, "columnType": kind, "cell": cell}
+        if portable:
+            assert choice["selectionValue"] == token
+        else:
+            assert "selectionValue" not in choice
+        column_filter = {
+            "column": "value",
+            "type": kind,
+            "predicates": [],
+            "valueFilter": {"kind": "values", "selectedValues": [token], "includeNulls": False, "includeNaN": False},
+        }
+        model = {"filters": [column_filter], "sort": []}
+        lineage = source_lineage(engine.schema(frame))
+        step = bind_step(
+            validate_step(
+                {
+                    "id": "exact-temporal-filter",
+                    "kind": "filterRows",
+                    "params": {"filterModel": {"filters": [{**column_filter, "column": lineage[0]}], "sort": []}},
+                }
+            ),
+            engine.schema(frame),
+            lineage,
+        )
+        namespace: dict[str, Any] = {}
+        exec(engine.compile_plan([step]), namespace)
+        if portable:
+            selected = manager.get_page(sid, revision, 0, 5, model)["page"]
+            assert [row["values"][1]["raw"] for row in selected["rows"]] == [0, 2]
+            for actual in [engine.apply_transform(frame, step), namespace["clean_data"](frame)]:
+                result = actual.collect() if lazy else actual
+                assert result.equals(source[[0, 2]])
+        else:
+            with pytest.raises(EngineError):
+                manager.get_page(sid, revision, 0, 5, model)
+            with pytest.raises((EngineError, ValueError)):
+                engine.apply_transform(frame, step)
+            with pytest.raises(ValueError):
+                namespace["clean_data"](frame)
+        restored = manager.get_page(sid, revision, 0, 5, view)
+        assert [row["values"][1]["raw"] for row in restored["page"]["rows"]] == list(range(5))
+        assert all(restored["metadata"][key] == metadata[key] for key in ("sessionId", "revision", "source"))
+        for empty in [source.head(0), source.tail(1)]:
+            empty_frame = empty.lazy() if lazy else empty
+            assert engine.column_values(empty_frame, "value") == ([], False)
+            assert engine.summaries(empty_frame, [(0, "value")])[0]["nullCount"] == empty.height
+        assert source.equals(before) and source["value"].cast(pl.Int64).to_list() == ticks
+        json.dumps(opened, allow_nan=False)
+    finally:
+        manager.close_all()
+        engine.close()
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize(
+    "unit,scale,whole,fraction",
+    [
+        ("ms", 1_000, "2020-01-01T00:00:00.000", "2020-01-01T00:00:00.123"),
+        ("us", 1_000_000, "2020-01-01T00:00:00.000000", "2020-01-01T00:00:00.123000"),
+        ("ns", 1_000_000_000, "2020-01-01T00:00:00.000000000", "2020-01-01T00:00:00.123000000"),
+    ],
+)
+def test_polars_datetime_choices_keep_fraction_search_and_portable_raw_keys(
+    lazy: bool, unit: Any, scale: int, whole: str, fraction: str
+) -> None:
+    source = pl.DataFrame(
+        {
+            "value": pl.Series([1577836800 * scale, 1577836800 * scale + 123 * (scale // 1000), None]).cast(
+                pl.Datetime(unit)
+            )
+        }
+    )
+    frame = source.lazy() if lazy else source
+    engine = PolarsEngine()
+    try:
+        choices, truncated = engine.column_values(frame, "value")
+        assert not truncated and [item["value"] for item in choices] == [whole, fraction]
+        assert [item["selectionValue"]["cell"]["raw"] for item in choices] == [
+            "2020-01-01T00:00:00",
+            "2020-01-01T00:00:00.123000",
+        ]
+        for needle, expected in [
+            (".000", [choices[0]]),
+            (".000000", [choices[0]] if unit != "ms" else []),
+            (".123000", [choices[1]] if unit != "ms" else []),
+            (".123000000", [choices[1]] if unit == "ns" else []),
+            (fraction, [choices[1]]),
+            (fraction.replace("T", " "), [choices[1]]),
+        ]:
+            assert engine.column_values(frame, "value", search=needle)[0] == expected
+    finally:
+        engine.close()
+
+
 @pytest.mark.parametrize("label", ["integer", "decimal", "bool", "array", "struct", "datetime", "plain"])
 @pytest.mark.parametrize("lazy", [False, True])
 def test_polars_enum_labels_do_not_change_profiles_or_typed_filters(label: str, lazy: bool) -> None:
@@ -607,6 +766,16 @@ def test_real_polars_scan_selects_only_the_page_projection_before_collect(
 ) -> None:
     path = tmp_path / f"projection.{extension}"
     source = pl.DataFrame({"omitted": [10, 20], "selected": [30, 40], "also_omitted": [50, 60]})
+    if extension == "parquet":
+        source = pl.DataFrame(
+            {
+                "omitted": range(257),
+                "selected": pl.Series([10**17 + index + 1 for index in range(257)], dtype=pl.Int64).cast(
+                    pl.Datetime("ns")
+                ),
+                "also_omitted": range(257),
+            }
+        )
     if extension == "csv":
         source.write_csv(path)
     elif extension == "parquet":
@@ -633,7 +802,10 @@ def test_real_polars_scan_selects_only_the_page_projection_before_collect(
 
     def tracked_collect(lazy_frame: pl.LazyFrame, *args: Any, **kwargs: Any) -> pl.DataFrame:
         events.append("collect")
-        return cast(pl.DataFrame, native_collect(lazy_frame, *args, **kwargs))
+        result = cast(pl.DataFrame, native_collect(lazy_frame, *args, **kwargs))
+        assert result.height <= 2
+        assert result.columns == [row_id, "selected"]
+        return result
 
     monkeypatch.setattr(pl.LazyFrame, "select", tracked_select)
     monkeypatch.setattr(pl.LazyFrame, "collect", tracked_collect)
@@ -642,14 +814,21 @@ def test_real_polars_scan_selects_only_the_page_projection_before_collect(
         frame,
         0,
         2,
-        total_rows=2,
+        total_rows=source.height,
         column_projection=[(1, "stable:selected")],
     )
 
-    assert events == ["select", "collect"]
+    if extension == "parquet":
+        # Native text is prepared on the bounded resident frame after the source collect.
+        assert events[:2] == ["select", "collect"]
+        assert all(event == "collect" for event in events[2:])
+    else:
+        assert events == ["select", "collect"]
     assert selected_columns == [[row_id, "selected"]]
     assert page["columnIds"] == ["stable:selected"]
-    assert [row["values"][0]["display"] for row in page["rows"]] == ["30", "40"]
+    assert [row["values"][0]["display"] for row in page["rows"]] == (
+        ["1973-03-03T09:46:40.000000001", "1973-03-03T09:46:40.000000002"] if extension == "parquet" else ["30", "40"]
+    )
 
 
 def test_polars_column_values_and_parquet(tmp_path):
