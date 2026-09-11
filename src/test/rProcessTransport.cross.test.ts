@@ -599,7 +599,7 @@ empty_frame <- data.frame(id = integer(), label = character(), check.names = FAL
       });
       const csv = Buffer.concat(csvChunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
       expect(csv).toContain('"id","label","when","category"\n');
-      expect(csv).toContain('1," alpha ",2026-01-01,"one"\n');
+      expect(csv).toContain('1," alpha ","2026-01-01","one"\n');
       expect(csv).toContain("3,,,\n");
 
       const parquet = await exportedBytes(transport, plainSession, "parquet", applied.revision);
@@ -715,7 +715,7 @@ zero_column_frame <- data.frame(row.names = c("row-1", "row-2", "row-3"))
       expect(integer64.page.schema[0]).toMatchObject({ rawType: "integer64", type: "integer" });
       expect(integer64.page.page.rows.map((row) => row.values[0]?.raw)).toEqual(exactValues);
       expect(await exportedCsv(transport, integer64Session)).toBe(
-        '"exact"\n-9223372036854775807\n9007199254740993\n9223372036854775806\n\n'
+        '"exact"\n"-9223372036854775807"\n"9007199254740993"\n"9223372036854775806"\n\n'
       );
       const reopenedInteger64Session = randomUUID();
       const reopenedInteger64 = await transport.open("integer64_frame", pageWindow(), {
