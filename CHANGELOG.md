@@ -4,6 +4,10 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ## [Unreleased]
 
+### Fixed
+
+- Pandas profiles and value choices preserve built-in Python timedelta labels so displayed values can be searched.
+
 ## [2.4.0] - 2026-09-12
 
 ### Fixed

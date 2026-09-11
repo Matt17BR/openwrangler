@@ -553,7 +553,10 @@ def _pandas_value_counts(series: Any, *, sort: bool = True, duration: bool = Fal
         # Legacy count-index inference can change temporal units or lose precision.
         # Keep native counts, but refuse these representations before
         # their labels or selection tokens can describe a different source value.
+        canonical_python_duration = duration and counts.index.dtype.kind == "m"
         for value in series.array:
+            if canonical_python_duration and type(value) is not timedelta and not _pandas_is_missing_scalar(value):
+                canonical_python_duration = False
             if isinstance(value, (np.datetime64, np.timedelta64)):
                 dtype = value.dtype
                 unit, multiplier = np.datetime_data(dtype)
@@ -567,6 +570,8 @@ def _pandas_value_counts(series: Any, *, sort: bool = True, duration: bool = Fal
                         "These NumPy temporal units are unsupported in profiles and value choices "
                         "with this Pandas version."
                     )
+        if canonical_python_duration:
+            counts.index = pd.Index(cast(Any, counts.index).to_pytimedelta(), dtype=object, name=counts.index.name)
     if keys is series or isinstance(series.dtype, pd.ArrowDtype):
         return counts
     first: dict[Any, Any] = {}

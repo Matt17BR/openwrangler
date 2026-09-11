@@ -879,6 +879,12 @@ def test_duration_cells_keep_exact_seconds_and_portable_selection(value, raw, po
 @pytest.mark.parametrize(
     "values,seconds",
     [
+        ([timedelta(seconds=v) for v in [1, 2, 1]], ["1", "2", "1"]),
+        ([timedelta(microseconds=v) for v in [-1, -2, -1]], ["-0.000001", "-0.000002", "-0.000001"]),
+        (
+            [timedelta.max, timedelta.min, timedelta.max],
+            ["86399999999999.999999", "-86399999913600", "86399999999999.999999"],
+        ),
         ([np.timedelta64(v, "ns") for v in [1000, 1001, 1000]], ["0.000001", "0.000001001", "0.000001"]),
         (
             [np.array(v, dtype="timedelta64[2ns]")[()] for v in [1000, 1001, 1000]],
@@ -928,8 +934,16 @@ def test_pandas_object_duration_choices_select_their_exact_counted_rows(values, 
         }
         summary = engine.summaries(source)[0]
         assert summary["distinctCount"] == len(counts)
+        assert {item["value"]: item["count"] for item in summary["topValues"]} == {
+            labels[key]: count for key, count in counts.items()
+        }
         assert summary["nullCount"] == (4 if missing else 0)
         assert summary["nanCount"] == (2 if missing else 0)
+        if all(type(value) is timedelta for value in original):
+            page = engine.page(source, 0, len(original))
+            assert [row["values"][0]["display"] for row in page["rows"]] == [str(value) for value in original]
+            for choice in choices:
+                assert engine.column_values(source, "value", search=choice["value"]) == ([choice], False)
         schema = engine.schema(source)
         assert schema[0]["type"] == "duration"
         lineage = source_lineage(schema)
@@ -942,6 +956,7 @@ def test_pandas_object_duration_choices_select_their_exact_counted_rows(values, 
             assert ("selectionValue" in choice) == portable
             if not portable:
                 continue
+            assert Fraction(str(choice["selectionValue"]["cell"]["raw"])) == key
             expected = [position for position, value in enumerate(exact) if value == key]
             column_filter = {
                 "column": "value",

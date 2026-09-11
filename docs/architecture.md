@@ -475,7 +475,11 @@ publishing narrowed labels and selection tokens; it also excludes exact values s
 Calendar and unitless NumPy durations are also refused when the inferred index would give them a fixed unit,
 including zero-valued durations. NaT and successful fixed-unit zero values retain native results and ordering.
 Native count failures remain failures.
-The guard scans only object inputs whose count index became temporal, without another full-column allocation.
+Only object inputs whose count index became temporal enter the guard. Its existing scan admits restoring columns
+containing only built-in Python timedeltas and missing values to Python timedelta count labels. Restoration allocates
+Python values and an object index proportional to the distinct keys, which can include every row, without another
+source scan. Profiles and choices retain source spelling, native counts and selection keys; row-text search still
+runs before counting. Custom duration subclasses retain their native labels.
 Current Pandas counts that retain an object index and native temporal columns bypass it. For these object columns,
 search and viewing filters narrow the input before counting; refusal leaves paging, source data and session revision intact.
 

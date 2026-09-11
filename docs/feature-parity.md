@@ -270,6 +270,8 @@ fine-unit neighbors and wide values without converting the source to nanoseconds
 ordinary NumPy or Pandas duration together with calendar/unitless durations or custom scalar types refuse counts
 and present-value comparisons; paging and null-only filters remain available. Pure custom-only columns keep their
 existing native behavior.
+Built-in Python timedelta object columns keep their source spelling in profiles and value choices, so displayed
+labels can be searched without changing counts or selection values.
 Pandas durations stored in seconds, milliseconds or microseconds remain displayable outside the nanosecond range.
 Their selections retain the existing Python timedelta range; wider values remain visible but cannot be selected.
 Pandas Arrow duration pages, profiles and choices preserve valid int64 extrema and dictionary labels. The minimum
