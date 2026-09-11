@@ -394,8 +394,11 @@ def safe_float_midpoint(lower: Any, upper: Any) -> float:
 
 def typed_selection_value(value: Any, column_type: str) -> dict[str, Any] | None:
     """Return the portable selection token for one non-missing scalar value."""
+    return typed_cell_selection_value(normalize_cell(value), column_type)
 
-    cell = normalize_cell(value)
+
+def typed_cell_selection_value(cell: dict[str, Any], column_type: str) -> dict[str, Any] | None:
+    """Admit an already normalized native cell through the same selection decoder."""
     if cell["isNull"] or cell["isNaN"] or cell["kind"] not in _TYPED_SELECTION_CELL_KINDS:
         return None
     token = {

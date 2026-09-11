@@ -58,6 +58,7 @@ from .base import (
     datetime_visualization,
     decimal_at_scale,
     decode_fill_replacement,
+    duration_seconds_raw,
     ensure_output_columns_available,
     exact_decimal_median,
     exact_integer_median,
@@ -74,7 +75,7 @@ from .base import (
     numeric_visualization_from_bin_counts,
     require_datetime_fill_awareness,
     resolve_excel_sheet_selector,
-    typed_selection_value,
+    typed_cell_selection_value,
     validate_view_predicate_operator,
 )
 
@@ -157,6 +158,72 @@ def _polars_validate_pivot_wider(frame: Any, params: Mapping[str, Any]) -> tuple
     if duplicate_eager.item():
         raise EngineError("Pivot wider found duplicate identifier-and-key rows; aggregation is not supported.")
     return identifiers, output_values, output_names, normalized
+
+
+_POLARS_TIME_UNIT_DIGITS = {"ms": 3, "us": 6, "ns": 9}
+
+
+def _polars_query_text(expression: Any, dtype: Any) -> Any:
+    import polars as pl
+
+    if isinstance(dtype, pl.Duration):
+        # Polars' ISO duration formatter overflows at the signed Int64 minimum.
+        return expression.dt.to_string("polars")
+    if isinstance(dtype, pl.Datetime):
+        format_text = f"%Y-%m-%dT%H:%M:%S%.{_POLARS_TIME_UNIT_DIGITS[dtype.time_unit]}f" + (
+            "%::z" if dtype.time_zone else ""
+        )
+        text = expression.dt.to_string(format_text)
+        if dtype.time_zone:
+            text = text.str.replace(r"([+-]\d{2}:\d{2}):00$", "${1}")
+        return text
+    return expression.cast(pl.String)
+
+
+def _polars_prepare_temporal_cells(frame: Any, schema: Mapping[str, Any]) -> Any:
+    import polars as pl
+
+    # Call only after limiting the result: Python row boxing discards nanoseconds.
+    expressions = [
+        pl.struct(
+            pl.col(column).cast(pl.Int64).alias("ticks"),
+            _polars_query_text(pl.col(column), dtype).alias("text"),
+        ).alias(column)
+        for column, dtype in schema.items()
+        if isinstance(dtype, (pl.Duration, pl.Datetime))
+    ]
+    return frame.with_columns(expressions) if expressions else frame
+
+
+def _polars_query_cell(value: Any, dtype: Any) -> dict[str, Any]:
+    import polars as pl
+
+    if not isinstance(dtype, (pl.Duration, pl.Datetime)):
+        return normalize_cell(value)
+    if value["ticks"] is None:
+        return normalize_cell(None)
+    is_duration = isinstance(dtype, pl.Duration)
+    digits = _POLARS_TIME_UNIT_DIGITS[dtype.time_unit]
+    if is_duration:
+        raw = duration_seconds_raw(value["ticks"], 10**digits)
+    else:
+        # Keep portable selection keys in Python ISO form without boxing away native precision.
+        prefix, remainder = value["text"].split(".", 1)
+        fraction, offset = remainder[:digits], remainder[digits:]
+        if int(fraction) == 0:
+            fraction = ""
+        elif digits == 3:
+            fraction += "000"
+        elif digits == 9 and value["ticks"] % 1000 == 0:
+            fraction = fraction[:6]
+        raw = prefix + ("." + fraction if fraction else "") + offset
+    return {
+        "kind": "duration" if is_duration else "datetime",
+        "raw": raw,
+        "display": value["text"],
+        "isNull": False,
+        "isNaN": False,
+    }
 
 
 class PolarsEngine(DataFrameEngine):
@@ -529,13 +596,15 @@ class PolarsEngine(DataFrameEngine):
             sliced = df.select(terminal_columns).slice(offset, limit) if terminal_columns else df.slice(offset, limit)
             if total_rows is None:
                 total_rows = int(df.height)
+        temporal_schema = sliced.schema
+        sliced = _polars_prepare_temporal_cells(sliced, {column: temporal_schema[column] for column in columns})
         rows = []
         for row_number, row in enumerate(sliced.iter_rows(named=True), start=offset):
             rows.append(
                 {
                     "id": f"r:{row_id}:{row.get(row_id)}" if row_id is not None else f"r:{row_number}",
                     "rowNumber": row_number,
-                    "values": [normalize_cell(row.get(column)) for column in columns],
+                    "values": [_polars_query_cell(row.get(column), temporal_schema[column]) for column in columns],
                 }
             )
         return {
@@ -618,7 +687,18 @@ class PolarsEngine(DataFrameEngine):
                     raise EngineError(f"The boolean profile distribution for {column} is missing.")
                 summary["visualization"] = boolean_counts
             elif semantic_type in {"datetime", "date"}:
-                summary["visualization"] = datetime_visualization(series.min(), series.max())
+                if semantic_type == "datetime":
+                    minimum, maximum = (
+                        series.to_frame()
+                        .select(
+                            _polars_query_text(pl.col(column).min(), series.dtype).alias("min"),
+                            _polars_query_text(pl.col(column).max(), series.dtype).alias("max"),
+                        )
+                        .row(0)
+                    )
+                else:
+                    minimum, maximum = series.min(), series.max()
+                summary["visualization"] = datetime_visualization(minimum, maximum)
             else:
                 if semantic_type == "string":
                     summary["text"] = _polars_text_summary(series)
@@ -683,10 +763,14 @@ class PolarsEngine(DataFrameEngine):
                     ]
                 )
             elif semantic_type in {"datetime", "date"}:
+                minimum, maximum = expression.min(), expression.max()
+                if semantic_type == "datetime":
+                    minimum = _polars_query_text(minimum, schema[column])
+                    maximum = _polars_query_text(maximum, schema[column])
                 metric_expressions.extend(
                     [
-                        expression.min().alias(f"{prefix}min"),
-                        expression.max().alias(f"{prefix}max"),
+                        minimum.alias(f"{prefix}min"),
+                        maximum.alias(f"{prefix}max"),
                     ]
                 )
             elif semantic_type == "string":
@@ -714,7 +798,7 @@ class PolarsEngine(DataFrameEngine):
             definitions.append((column, column_id, raw_type, semantic_type, prefix, count_name))
 
         metrics = frame.select(metric_expressions).collect(engine="streaming").row(0, named=True)
-        top_results = self._collect_lazy_top_results(definitions, top_queries)
+        top_results = self._collect_lazy_top_results(definitions, top_queries, schema)
         total_count = int(metrics["__open_wrangler_total"])
 
         numeric_histogram_queries = []
@@ -844,6 +928,7 @@ class PolarsEngine(DataFrameEngine):
         self,
         definitions: list[tuple[str, str, str, str, str, str]],
         queries: list[Any],
+        schema: Mapping[str, Any],
     ) -> list[tuple[list[dict[str, Any]], int]]:
         import polars as pl
 
@@ -862,6 +947,13 @@ class PolarsEngine(DataFrameEngine):
         collected = []
         for definition, result in zip(definitions, results, strict=True):
             column, _, _, semantic_type, _, count_name = definition
+            dtype = schema[column]
+            if isinstance(dtype, (pl.Duration, pl.Datetime)):
+                result = result.with_columns(
+                    pl.col("top").list.eval(
+                        pl.element().struct.with_fields(_polars_query_text(pl.field(column), dtype).alias(column))
+                    )
+                )
             row = result.row(0, named=True)
             top_values = [
                 {
@@ -884,6 +976,8 @@ class PolarsEngine(DataFrameEngine):
         column: str,
         semantic_type: str,
     ) -> tuple[list[dict[str, Any]], int, dict[str, Any] | None]:
+        import polars as pl
+
         valid = series.drop_nulls()
         if semantic_type == "float":
             valid = valid.drop_nans()
@@ -891,7 +985,10 @@ class PolarsEngine(DataFrameEngine):
         try:
             count_name = "count_" if column == "count" else "count"
             counts = valid.value_counts(sort=True, name=count_name)
-            rows = list(counts.head(10).iter_rows(named=True))
+            top = counts.head(10)
+            if isinstance(series.dtype, (pl.Duration, pl.Datetime)):
+                top = top.with_columns(_polars_query_text(pl.col(column), series.dtype))
+            rows = list(top.iter_rows(named=True))
             top_values = [
                 {
                     "value": (
@@ -1029,44 +1126,43 @@ class PolarsEngine(DataFrameEngine):
     ) -> tuple[list[dict[str, Any]], bool]:
         import polars as pl
 
-        if isinstance(frame, pl.LazyFrame):
-            schema = frame.collect_schema()
-            if column not in schema:
-                raise EngineError(f"Unknown Polars column: {column}")
-            column_type = infer_semantic_type(str(schema[column]))
-            expression = pl.col(column).drop_nulls()
-            if column_type == "float":
-                expression = expression.drop_nans()
-            series_df = frame.select(expression)
-        else:
-            df = self.normalize(frame)
-            if column not in df.schema:
-                raise EngineError(f"Unknown Polars column: {column}")
-            column_type = infer_semantic_type(str(df.schema[column]))
-            expression = pl.col(column).drop_nulls()
-            if column_type == "float":
-                expression = expression.drop_nans()
-            series_df = df.select(expression)
+        df = frame if isinstance(frame, pl.LazyFrame) else self.normalize(frame)
+        schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
+        if column not in schema:
+            raise EngineError(f"Unknown Polars column: {column}")
+        dtype = schema[column]
+        column_type = infer_semantic_type(str(dtype))
+        expression = pl.col(column).drop_nulls()
+        if column_type == "float":
+            expression = expression.drop_nans()
+        series_df = df.select(expression)
         if search:
+            needle = str(search).translate(_ASCII_TO_LOWER)
+            if isinstance(dtype, pl.Datetime):
+                needle = needle.replace(" ", "t")
             series_df = series_df.filter(
-                pl.col(column)
-                .cast(pl.Utf8)
+                _polars_query_text(pl.col(column), dtype)
                 .str.replace_many(_ASCII_LOWER_REPLACEMENTS)
-                .str.contains(str(search).translate(_ASCII_TO_LOWER), literal=True)
+                .str.contains(needle, literal=True)
             )
         count_name = "count_" if column == "count" else "count"
         counts = (
             series_df.group_by(column)
             .len(name=count_name)
-            .sort([pl.col(count_name), pl.col(column).cast(pl.String)], descending=[True, False])
+            .sort([pl.col(count_name), _polars_query_text(pl.col(column), dtype)], descending=[True, False])
             .head(limit + 1)
         )
         if isinstance(counts, pl.LazyFrame):
             counts = counts.collect(engine="streaming")
+        counts = _polars_prepare_temporal_cells(counts, {column: dtype})
         values = []
         for row in counts.head(limit).iter_rows(named=True):
-            item: dict[str, Any] = {"value": str(row[column]), "count": int(row[count_name])}
-            selection = typed_selection_value(row[column], column_type)
+            cell = _polars_query_cell(row[column], dtype)
+            item: dict[str, Any] = {
+                "value": cell["display"] if isinstance(dtype, (pl.Duration, pl.Datetime)) else str(row[column]),
+                "count": int(row[count_name]),
+            }
+            selection = typed_cell_selection_value(cell, column_type)
             if selection is not None:
                 item["selectionValue"] = selection
             values.append(item)
