@@ -1116,6 +1116,7 @@ class PandasEngine(DataFrameEngine):
     ) -> tuple[list[dict[str, Any]], bool]:
         from heapq import nsmallest
 
+        import numpy as np
         import pandas as pd
 
         df = self.normalize(frame)
@@ -1124,10 +1125,12 @@ class PandasEngine(DataFrameEngine):
             raise EngineError(f"Unknown Pandas column: {column}")
         series = df.iloc[:, position]
         column_type = _pandas_semantic_type(series)
-        dictionary_string = _pandas_dictionary_value_type(series) is not None and column_type == "string"
+        search_counted_labels = (_pandas_dictionary_value_type(series) is not None and column_type == "string") or (
+            isinstance(series.dtype, np.dtype) and series.dtype.kind == "m"
+        )
         series = _pandas_scalar_values(series).dropna()
         temporal_values = _pandas_arrow_temporal_array(series)
-        if search and not dictionary_string:
+        if search and not search_counted_labels:
             labels = series.astype(str)
             if (
                 temporal_values is not None
@@ -1170,7 +1173,7 @@ class PandasEngine(DataFrameEngine):
             )
             for position, (index, count) in enumerate(value_counts.items())
         )
-        if search and dictionary_string:
+        if search and search_counted_labels:
             needle = str(search).translate(_ASCII_TO_LOWER)
             counts = (
                 (value, count, label) for value, count, label in counts if needle in label.translate(_ASCII_TO_LOWER)

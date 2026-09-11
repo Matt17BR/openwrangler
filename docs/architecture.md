@@ -464,18 +464,23 @@ nanosecond-duration counts are exempt. This conservative representation policy p
 publishing narrowed labels and selection tokens; it also excludes exact values such as `datetime64[1000ps]`.
 Native count failures remain failures. Successful ordinary, zero and NaT inputs retain native results and ordering.
 The guard scans only object inputs whose count index became temporal, without another full-column allocation.
-Current Pandas counts that retain an object index and native temporal columns bypass it. Search and viewing filters
-narrow the input before counting; refusal leaves paging, source data and session revision intact.
+Current Pandas counts that retain an object index and native temporal columns bypass it. For these object columns,
+search and viewing filters narrow the input before counting; refusal leaves paging, source data and session revision intact.
 
 Value-choice ranking retains the leading `limit + 1` labeled candidates and the current input, instead of the full
 label collection. Native counting and ordinary text search remain exhaustive over their inputs. All distinct labels
 are evaluated before publication, so a late formatting failure still refuses the entire request.
 
+Native NumPy `timedelta64` columns and dictionary strings search the counted labels. Duration search uses the same
+scalar labels published in choices, including whole-day clocks and values outside the nanosecond range. It retains
+the full native distinct-count state before searching, without a full-source label array. Sparse, Arrow, categorical
+and object durations keep their original row-text search behavior.
+
 Datetime cells and nested values share one formatter. Pandas Timestamp nanoseconds are inserted into the time
 fraction while preserving the complete native offset, including offset seconds. Ordinary Timestamp profile and
 value-choice labels reuse this formatter with their existing space separator. Other scalar labels retain native string conversion.
-Search retains original per-row text matches and filters before counting, correcting affected timestamp and present
-temporal-extremum text. Datetime searches also recognize a space in place of the ISO `T` separator and the midnight
+Other searches retain original per-row text matches and filter before counting, correcting affected timestamp and
+present temporal-extremum text. Datetime searches also recognize a space in place of the ISO `T` separator and the midnight
 clock omitted from native four-digit-year date-only text. These aliases use one transient string at a time without
 converting values or changing precision. Their additional scan runs only when the search can match an added space
 or midnight clock.
