@@ -166,10 +166,11 @@ The preview workflow owns scheduled daily publication:
   installed-performance, and then runs pinned Cursor platform-smoke against the same reverified canonical VSIX.
 - Stable publication selects a successful candidate and promotes its already-recorded bytes. Candidate selection uses
   Node built-ins without installing or caching npm dependencies. The separate promotion job installs its publication
-  tools and verifies the exact artifact; it does not rebuild the extension. After GitHub publication, a dependent call
-  waits for the shared Open VSX promotion workflow. Preview publication and manual recovery use that same publishing owner.
-  The shared job has its own runner, dependency installation and public artifact download; consolidation removes a
-  second publication implementation, without claiming a faster release.
+  tools and verifies the exact artifact; it does not rebuild the extension. After GitHub publication, a separate job
+  dispatches the shared Open VSX promotion workflow from protected `main`. Preview publication and manual recovery use
+  that same publishing owner. Stable workflow success confirms dispatch; release completion also requires the separate
+  registry results and exact-version, channel and package verification. Open VSX keeps its own runner, dependency
+  installation and public artifact download.
 
 The workflows themselves are authoritative for their current inputs and schedules. See [Releasing](releasing.md) for
 the operator sequence and failed-publication recovery. These release paths are not additional pull-request

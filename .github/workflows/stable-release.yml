@@ -155,10 +155,21 @@ jobs:
         run: node scripts/prepare-stable-candidate-tag.mjs --require-remote
 
   open-vsx:
-    name: Promote the published release to Open VSX
+    name: Dispatch the published release to Open VSX
     needs: promote
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     permissions:
+      actions: write
       contents: read
-    uses: ./.github/workflows/open-vsx-promotion.yml
-    with:
-      release_tag: ${{ inputs.release_tag }}
+    steps:
+      - name: Dispatch the exact public release to Open VSX promotion
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: >-
+          gh workflow run open-vsx-promotion.yml
+          --repo "$GITHUB_REPOSITORY"
+          --ref main
+          --raw-field "release_tag=$RELEASE_TAG"

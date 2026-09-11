@@ -58,19 +58,14 @@ export function inspectOpenVsxPromotionWorkflow(source) {
   )
     problems.push("Open VSX promotion must retain the non-cancelling publication queue.");
   const dispatch = workflow.on?.workflow_dispatch?.inputs?.release_tag;
-  const reusable = workflow.on?.workflow_call?.inputs?.release_tag;
   if (
     !workflow.on?.release?.types?.includes("published") ||
     dispatch?.type !== "string" ||
     dispatch.required !== true ||
-    reusable?.type !== "string" ||
-    reusable.required !== true ||
-    reusable.default !== undefined ||
-    workflow.on.workflow_call.secrets !== undefined ||
     job.env?.RELEASE_TAG !==
       "${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag }}"
   )
-    problems.push("Release events, manual recovery and reusable promotion must bind one explicit release tag.");
+    problems.push("Release events and dispatched promotion must bind one explicit release tag.");
   const steps = job.steps;
   const run = (command) => steps.find((step) => step.run?.trim() === command);
   const checkouts = steps.filter((step) => usesPinnedAction(step, "actions/checkout"));

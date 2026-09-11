@@ -142,9 +142,11 @@ steps below.
 
 The workflow downloads the candidate VSIX, checksum, and provenance receipt and verifies their source and tag binding.
 It then publishes or verifies the exact lightweight tag and GitHub Release. After that job releases the publication
-lock, the stable workflow waits for the shared Open VSX promotion job to download and verify the public release files
-and publish the same VSIX. Preview publication and manual recovery use that same owner. The tag starts the Azure
-Marketplace pipeline, which publishes the same file from the GitHub Release. No publication step rebuilds the extension.
+lock, a separate job dispatches the shared Open VSX promotion workflow from protected `main` with the exact release
+tag. Preview publication and manual recovery use that same owner to download, verify and publish the same VSIX.
+Stable workflow success confirms GitHub publication and accepted Open VSX dispatch. Before declaring publication
+complete, check the separate Open VSX workflow and Azure Marketplace pipeline results and their exact-version,
+channel and package verification. The tag starts Azure Marketplace promotion. No publication step rebuilds the extension.
 
 A moved tag, changed artifact, metadata mismatch, or conflicting registry version stops publication. Never overwrite a
 different public package.
