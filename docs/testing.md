@@ -33,7 +33,7 @@ While iterating, run the smallest relevant owner:
 ```bash
 npx --no-install vitest run src/test/configuration.unit.test.ts
 node scripts/run-python.mjs -m pytest python/tests/test_engine_registry.py -q
-node --test scripts/package-source-manifest.test.mjs
+node --test scripts/package-current-channel.test.mjs
 ```
 
 The ordinary source suites are:
@@ -72,7 +72,7 @@ source suites sequentially. `npm run check:pr` runs both. The release-candidate 
 after these checks pass and does not repeat the source suites.
 
 `test:scripts` runs the explicit Node test selection in [`package.json`](../package.json). The
-[package-source owner](../scripts/package-source-manifest.test.mjs) and
+[packaging owner](../scripts/package-current-channel.test.mjs) and
 [archive owner](../scripts/vsix-archive.test.mjs) check source bindings, corruption refusal and owned cleanup.
 The [R dependency-lock owner](../scripts/r-dependency-lock.test.mjs) checks the actual prepare CLI, cache identity,
 archive validation and refusal before output publication with a controlled R receipt; it does not install packages.
