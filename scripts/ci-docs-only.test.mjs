@@ -107,34 +107,48 @@ test("proves existing component test edits while retaining Source execution", (c
   assert.equal(readFileSync(output, "utf8"), "docs_only=false\nr_omittable=true\npython_omittable=true\n");
 });
 
-test("proves existing release-policy edits while retaining Source and package execution", (context) => {
-  const files = [
-    "scripts/release-metadata.mjs",
-    "scripts/daily-preview-artifact.mjs",
-    "scripts/daily-preview-artifact.test.mjs",
-    "scripts/prepare-stable-candidate-tag.mjs",
-    "scripts/prepare-stable-candidate-tag.test.mjs",
-    "scripts/release-tag-publisher.mjs",
-    "scripts/push-stable-release-tag.mjs",
-    "scripts/push-stable-release-tag.test.mjs",
-    "scripts/publish-github-stable-release.mjs",
-    "scripts/publish-github-stable-release.test.mjs",
-    "scripts/verify-canonical-release-artifact.mjs",
-    "scripts/verify-canonical-release-artifact.test.mjs",
-    "CHANGELOG.md",
-    "docs/ci.md"
-  ];
-  const cwd = repository(context, files);
-  for (const file of files) write(cwd, file);
-  const env = merge(cwd);
-  assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
-    docsOnly: false,
-    rOmittable: true,
-    pythonOmittable: true
-  });
-  const output = join(cwd, "action-output");
-  execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
-  assert.equal(readFileSync(output, "utf8"), "docs_only=false\nr_omittable=true\npython_omittable=true\n");
+test("proves existing script edits while retaining Source and package execution", async (context) => {
+  for (const files of [
+    [
+      "scripts/release-metadata.mjs",
+      "scripts/daily-preview-artifact.mjs",
+      "scripts/daily-preview-artifact.test.mjs",
+      "scripts/prepare-stable-candidate-tag.mjs",
+      "scripts/prepare-stable-candidate-tag.test.mjs",
+      "scripts/release-tag-publisher.mjs",
+      "scripts/push-stable-release-tag.mjs",
+      "scripts/push-stable-release-tag.test.mjs",
+      "scripts/publish-github-stable-release.mjs",
+      "scripts/publish-github-stable-release.test.mjs",
+      "scripts/verify-canonical-release-artifact.mjs",
+      "scripts/verify-canonical-release-artifact.test.mjs",
+      "CHANGELOG.md",
+      "docs/ci.md"
+    ],
+    ["scripts/capture-screenshots.mjs"],
+    ["scripts/capture-screenshots-readiness.mjs"],
+    [
+      "scripts/capture-screenshots.mjs",
+      "scripts/capture-screenshots-readiness.mjs",
+      "README.md",
+      "CHANGELOG.md",
+      "docs/testing.md"
+    ]
+  ]) {
+    await context.test(files.join(", "), (child) => {
+      const cwd = repository(child, files);
+      for (const file of files) write(cwd, file);
+      const env = merge(cwd);
+      assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
+        docsOnly: false,
+        rOmittable: true,
+        pythonOmittable: true
+      });
+      const output = join(cwd, "action-output");
+      execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
+      assert.equal(readFileSync(output, "utf8"), "docs_only=false\nr_omittable=true\npython_omittable=true\n");
+    });
+  }
 });
 
 test("proves existing Python source and Markdown edits only for native R", async (context) => {
@@ -148,6 +162,7 @@ test("proves existing Python source and Markdown edits only for native R", async
       "python/openwrangler_runtime/engines/duckdb_engine.py",
       "python/tests/test_duckdb_engine.py",
       "scripts/release-metadata.mjs",
+      "scripts/capture-screenshots.mjs",
       "src/test/webview.component.test.tsx",
       "README.md",
       "CHANGELOG.md",
@@ -220,6 +235,7 @@ test("proves regular R source changes and existing installed-harness edits only 
         "src/test/webview.component.test.tsx",
         "r/openwrangler_runtime/kernel_agent.R",
         "scripts/release-metadata.mjs",
+        "scripts/capture-screenshots-readiness.mjs",
         "README.md",
         "CHANGELOG.md",
         "docs/testing.md"
@@ -377,6 +393,7 @@ test("requires full owners for added Markdown or paths outside the runtime sourc
     "src/test/extensionHost/releasedRCoreEditing.ts",
     "scripts/editor-acceptance-artifact.test.mjs",
     "scripts/release-metadata.mjs",
+    "scripts/capture-screenshots.mjs",
     "src/test/webview.component.test.tsx"
   ]) {
     await context.test(file, (child) => {
@@ -482,6 +499,9 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
     "scripts/editor-acceptance-extra.mjs",
     "scripts/release-metadata.test.mjs",
     "scripts/release-metadata-extra.mjs",
+    "scripts/capture-screenshots-extra.mjs",
+    "scripts/capture-screenshots-readiness.mjs.bak",
+    "scripts/webview-browser.mjs",
     "package-lock.json",
     "python/pyproject.toml",
     "python/README.md",
@@ -719,6 +739,8 @@ test("Source omits Vitest only for a successful exact documentation proof", asyn
         PATH: `${temp}:${process.env.PATH}`,
         NPX_MARKER: marker,
         NPX_STATUS: String(npxStatus),
+        R_OMITTABLE: "true",
+        PYTHON_OMITTABLE: "true",
         GITHUB_STEP_SUMMARY: summary
       };
       if (docsOnly === undefined) delete env.DOCS_ONLY;
