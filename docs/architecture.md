@@ -600,10 +600,12 @@ The generated repair stays local to the Formula result helper so it adds no note
 
 After native power fails, a signed Arrow integer column and an exact positive scalar exponent below 2^64 can use
 checked UInt64 power. Even exponents take checked magnitudes after widening to Int64; odd exponents require
-nonnegative values through a safe unsigned cast. Repaired results must fit UInt64. Native successes retain their
-types, and overflow or a negative value in an odd-power repair retains the original refusal. The repair adds bounded
-native temporary storage without selected reductions or per-row Python arithmetic. Other exponent and operand
-families keep their existing paths.
+nonnegative values through a safe unsigned cast. These repaired results must fit UInt64. If that attempt also fails
+for an odd exponent from 2^63+1 through 2^64-1, one native min/max scan may admit a column containing only -1, 0, 1
+and null, with at least one -1. Those values are unchanged by the power and return as Int64. Other failed domains
+retain the original refusal. Native successes and existing nonnegative, empty and all-null repairs retain their types.
+The added power path scans only the selected column and uses no per-row Python arithmetic.
+Other exponent and operand families keep their existing paths.
 
 After native subtraction fails, eligible integer operands use an exact Decimal128 intermediate. Integer literals
 on this path range from Int64 minimum to UInt64 maximum. The result returns as UInt64 if it fits, otherwise Int64.

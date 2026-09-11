@@ -237,8 +237,10 @@ including negative results and reversed signed/unsigned operands. Successful nat
 repairs prefer UInt64, then Int64. This additional repair accepts integer literals from Int64 minimum to UInt64
 maximum; wider negative literals retain the existing UInt64 path and its capacity limits.
 Signed Arrow integer columns support more exact scalar powers, including `(-3)^40` and `2^63`, when every repaired
-result fits UInt64. Positive integer exponents below 2^64 are eligible after native failure. Odd-power repairs require
-nonnegative values; existing native successes and other exponent families retain their behavior.
+result fits UInt64. Positive integer exponents below 2^64 are eligible after native failure. Odd-power UInt64 repairs
+require nonnegative values. Odd exponents from 2^63+1 through 2^64-1 also accept columns containing only -1, 0, 1
+and null, with a negative value, returning Int64. Existing native successes, nonnegative/empty/all-null repairs and
+other exponent families retain their behavior.
 Negative power and widest or negative-scale Decimal capacity gaps remain
 tracked in [#979](https://github.com/Matt17BR/openwrangler/issues/979).
 
