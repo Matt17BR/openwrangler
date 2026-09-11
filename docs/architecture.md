@@ -867,6 +867,15 @@ source storage and other non-text columns remain unchanged. Duration storage is 
 values; NaN is refused before artifact creation because the numeric writer would otherwise turn it into missing.
 Missing durations and existing infinity tokens remain unchanged. Invalid text is also refused before creating the
 artifact; export does not apply the page cell-size limit.
+All text and native-formatted Date, POSIXct and integer64 fields are quoted. R's native writer leaves ordinary
+numeric and logical values unquoted, so CSV export conservatively restricts delimiters by column type. With any
+non-missing values, integer columns refuse `-0123456789`, double and duration columns refuse `.0123456789e+-Inf`,
+and logical columns refuse `TRUEFALSE` (each character is a separate delimiter). This includes combinations whose
+current values do not contain the delimiter. Comma, tab, semicolon, pipe and other non-conflicting delimiters remain
+available. Only matching type/delimiter combinations require a presence scan, in slices of at most 65,536 values;
+zero-row and all-missing columns remain supported. Plain numeric NaN retains its empty CSV field, while duration
+NaN retains the refusal above. A delimiter refusal precedes artifact creation and does not change source or session
+state. Export does not convert ordinary numeric columns to text or change caller formatting options.
 POSIXct columns retain native R text formatting, which rounds fractional seconds to six decimal places and omits
 both the time-zone name and offset. An explicit column time zone is used; a missing or empty zone uses the R process's
 time zone, unlike the grid's UTC default. CSV therefore does not guarantee exact timestamp preservation or record

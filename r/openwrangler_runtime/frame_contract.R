@@ -9240,6 +9240,28 @@ openwrangler_r_frame_contract <- local({
           }
         }
       }
+      kind <- capture$descriptor$schema[[index]]$semantics$kind
+      unquoted_characters <- switch(kind,
+        integer = "-0123456789",
+        double = ".0123456789e+-Inf",
+        difftime = ".0123456789e+-Inf",
+        logical = "TRUEFALSE"
+      )
+      if (!is.null(unquoted_characters) && grepl(options$delimiter, unquoted_characters, fixed = TRUE)) {
+        row_count <- length(column)
+        if (row_count > 0L) {
+          for (start in seq.int(1, row_count, by = 65536)) {
+            values <- .subset(column, seq.int(start, min(start + 65535, row_count)))
+            if (any(!is.na(values))) {
+              label <- if (identical(kind, "difftime")) "duration" else kind
+              abort("export-write-failed", paste0(
+                "R CSV export does not support this delimiter for non-missing ", label,
+                " columns, even when their current values do not contain it. Choose comma, tab, semicolon or pipe."
+              ))
+            }
+          }
+        }
+      }
       column
     })
     csv_names <- vapply(names(frame), bounded_utf8, character(1L),
@@ -9272,7 +9294,7 @@ openwrangler_r_frame_contract <- local({
           dec = ".",
           row.names = FALSE,
           col.names = options$header,
-          quote = TRUE,
+          quote = seq_along(frame),
           qmethod = "double"
         )
         flush(connection)

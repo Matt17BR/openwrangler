@@ -470,6 +470,44 @@ local({
   assert_identical(write_bytes(data.frame(text = character())), charToRaw("\"text\"\n"), "empty CSV schema changed")
   assert_identical(write_bytes(data.frame(text = c(NA_character_, NA_character_))), charToRaw("\"text\"\n\n\n"), "CSV missing values changed")
   local({
+    options_for <- function(delimiter) {
+      list(format = "csv", delimiter = delimiter, quoteChar = "\"", encoding = "utf-8", header = TRUE)
+    }
+    restricted <- list(
+      list(value = 2L, delimiters = "-0123456789"),
+      list(value = 1.25, delimiters = ".0123456789e+-Inf"),
+      list(value = FALSE, delimiters = "TRUEFALSE"),
+      list(value = structure(1.25, class = "difftime", units = "hours"), delimiters = ".0123456789e+-Inf")
+    )
+    target <- tempfile(fileext = ".csv")
+    on.exit(if (file.exists(target)) unlink(target))
+    for (case in restricted) {
+      frame <- data.frame(value = case$value)
+      before <- serialize(frame, NULL, version = 3L)
+      capture <- openwrangler_r_frame_contract$capture_frame(frame)
+      for (delimiter in unique(strsplit(case$delimiters, "", fixed = TRUE)[[1L]])) {
+        assert_error(openwrangler_r_frame_contract$write_csv(capture, target, options_for(delimiter)), "export-write-failed")
+        assert_true(!file.exists(target), "a restricted CSV delimiter created an artifact")
+        assert_identical(write_bytes(frame[FALSE, , drop = FALSE], options_for(delimiter)), charToRaw("\"value\"\n"),
+          "a restricted delimiter prevented an empty CSV export")
+        missing <- frame[NA_integer_, , drop = FALSE]
+        assert_identical(write_bytes(missing, options_for(delimiter)), charToRaw("\"value\"\n\n"),
+          "a restricted delimiter prevented an all-missing CSV export")
+      }
+      assert_identical(serialize(frame, NULL, version = 3L), before, "CSV delimiter refusal changed the source")
+    }
+    assert_identical(write_bytes(data.frame(value = c(NA_real_, NaN)), options_for(".")),
+      charToRaw("\"value\"\n\n\n"), "plain numeric NaN changed its existing CSV missing representation")
+    later_value <- data.frame(value = c(rep(NA_real_, 65536L), 1.25))
+    capture <- openwrangler_r_frame_contract$capture_frame(later_value)
+    assert_error(openwrangler_r_frame_contract$write_csv(capture, target, options_for(".")), "export-write-failed")
+    assert_true(!file.exists(target), "CSV delimiter validation missed a value beyond the first presence slice")
+    for (delimiter in c(",", "\t", ";", "|", "§", ":", "N")) {
+      assert_identical(write_bytes(data.frame(value = c(1.25, NA_real_, NaN)), options_for(delimiter)),
+        charToRaw("\"value\"\n1.25\n\n\n"), "a safe custom delimiter changed native numeric CSV values")
+    }
+  })
+  local({
     original_options <- options(OutDec = ",")
     on.exit(options(original_options))
     units <- c("secs", "mins", "hours", "days", "weeks")

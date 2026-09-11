@@ -13453,6 +13453,64 @@ local({
   assert_identical(serialize(source_environment$csv_invalid_duration, NULL, version = 3L), before, "refused duration CSV export changed the source")
 })
 
+local({
+  csv_session <- "abababab-abab-4bab-8bab-abababababab"
+  csv_export <- "bcbcbcbc-bcbc-4cbc-8cbc-bcbcbcbcbcbc"
+  cases <- list(
+    list(value = structure(c(1767225600.25, NA_real_), class = c("POSIXct", "POSIXt"), tzone = "UTC"),
+      delimiter = ":", expected = "2026-01-01 00:00:00.25", refused = FALSE),
+    list(value = as.Date(c("2026-01-01", NA_character_)), delimiter = "-", expected = "2026-01-01", refused = FALSE),
+    list(value = bit64::as.integer64(c("9223372036854775807", NA_character_)),
+      delimiter = "7", expected = "9223372036854775807", refused = FALSE),
+    list(value = c(1.5, NA_real_), delimiter = ".", expected = "1.5", refused = TRUE),
+    list(value = c(12L, NA_integer_), delimiter = "1", expected = "12", refused = TRUE),
+    list(value = c(TRUE, NA), delimiter = "T", expected = "TRUE", refused = TRUE),
+    list(value = structure(c(1.5, NA_real_), class = "difftime", units = "secs"),
+      delimiter = ".", expected = "1.5", refused = TRUE)
+  )
+  on.exit({
+    dispatch("closeDataExport", list(sessionId = csv_session, revision = 0L, exportId = csv_export))
+    dispatch("closeSession", list(sessionId = csv_session))
+    rm("csv_delimiter_frame", envir = source_environment)
+  })
+  for (case in cases) {
+    source_environment$csv_delimiter_frame <- data.frame(value = case$value, control = c("a,\"b\"\né", NA_character_))
+    before <- serialize(source_environment$csv_delimiter_frame, NULL, version = 3L)
+    opened <- dispatch("openSession", list(sessionId = csv_session, variableName = "csv_delimiter_frame", page = page_window()))
+    assert_identical(opened$kind, "page", "the custom-delimiter session did not open")
+    options <- csv_export_options
+    options$delimiter <- case$delimiter
+    exported <- dispatch("exportData", list(sessionId = csv_session, revision = 0L, exportId = csv_export, options = options))
+    if (case$refused) {
+      assert_identical(exported$kind, "error", "a numeric or logical custom delimiter published malformed CSV")
+      assert_identical(exported$requestId, request_id, "CSV delimiter refusal lost request correlation")
+      assert_identical(exported$code, "runtime_error", "CSV delimiter refusal changed the runtime error boundary")
+      assert_identical(exported$recoverable, TRUE, "CSV delimiter refusal was not recoverable")
+      unreadable <- dispatch("readDataExport", list(sessionId = csv_session, revision = 0L, exportId = csv_export, offset = 0L, limit = 1L))
+      assert_identical(unreadable$kind, "error", "a refused custom-delimiter export published readable bytes")
+      options$delimiter <- ","
+      exported <- dispatch("exportData", list(sessionId = csv_session, revision = 0L, exportId = csv_export, options = options))
+    }
+    assert_identical(exported$kind, "dataExported", "a safe custom-delimiter export or correction did not complete")
+    assert_identical(exported$rows, 2L, "custom CSV export changed the row count")
+    assert_identical(exported$columns, 2L, "custom CSV export changed the column count")
+    chunk <- dispatch("readDataExport", list(sessionId = csv_session, revision = 0L, exportId = csv_export, offset = 0L, limit = 1024L))
+    bytes <- jsonlite::base64_dec(chunk$data)
+    assert_identical(length(bytes), exported$bytes, "custom CSV export reported the wrong byte count")
+    decoded <- utils::read.table(text = rawToChar(bytes), sep = options$delimiter, header = TRUE,
+      quote = "\"", colClasses = "character", na.strings = "", comment.char = "", check.names = FALSE)
+    assert_identical(decoded, data.frame(value = c(case$expected, NA_character_), control = c("a,\"b\"\né", NA_character_)),
+      "custom CSV export changed decoded field boundaries or values")
+    current <- dispatch("getPage", list(sessionId = csv_session, page = page_window()))
+    assert_identical(current$page$page, opened$page$page, "CSV delimiter handling changed the confirmed page")
+    assert_identical(serialize(source_environment$csv_delimiter_frame, NULL, version = 3L), before,
+      "CSV delimiter handling changed the source")
+    assert_identical(dispatch("closeDataExport", list(sessionId = csv_session, revision = 0L, exportId = csv_export))$kind,
+      "dataExportClosed", "the custom CSV artifact did not close")
+    assert_identical(dispatch("closeSession", list(sessionId = csv_session))$kind, "closed", "the custom CSV session did not close")
+  }
+})
+
 parquet_ready <- dispatch(
   "exportData",
   list(
