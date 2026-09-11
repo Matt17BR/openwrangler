@@ -1930,27 +1930,40 @@ def test_pandas_empty_dictionary_round_keeps_logical_native_type(
         pd.testing.assert_index_equal(actual.index, frame.index)
 
 
-@pytest.mark.parametrize("right_column", [False, True])
-def test_pandas_dictionary_formula_uses_logical_operands(right_column: bool) -> None:
+@pytest.mark.parametrize("operation", ["divide-left", "divide-right", "wide-odd-power"])
+def test_pandas_dictionary_formula_uses_logical_operands(operation: str) -> None:
     pa = pytest.importorskip("pyarrow")
-    array = pa.DictionaryArray.from_arrays(pa.array([0, 1, 2, None], type=pa.int8()), pa.array([-3, None, 7]))
+    right_column = operation == "divide-right"
+    wide_power = operation == "wide-odd-power"
+    array = pa.DictionaryArray.from_arrays(
+        pa.array([0, 1, 2, None], type=pa.int8()), pa.array([-1, None, 1] if wide_power else [-3, None, 7])
+    )
     frame = pd.DataFrame({"value": pd.arrays.ArrowExtensionArray(pa.chunked_array([array, array])), "other": 2})
     runtime = PandasEngine()
     schema = runtime.schema(frame)
     lineage = source_lineage(schema)
-    params = (
+    params: dict[str, Any] = (
         {"leftColumn": lineage[1], "rightColumn": lineage[0]}
         if right_column
         else {"leftColumn": lineage[0], "value": 2}
     )
-    operation = bind_step(step("formula", **params, operator="divide", newColumn="result"), schema, lineage)
-    runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
+    if wide_power:
+        params["value"] = str(2**64 - 1)
+    bound = bind_step(
+        step("formula", **params, operator="power" if wide_power else "divide", newColumn="result"), schema, lineage
+    )
+    runtime.validate_transform_preflight(frame, bound, runtime.shape(frame))
     logical = frame.copy()
     logical["value"] = logical["value"].astype("int64[pyarrow]")
-    expected = runtime.apply_transform(logical, operation)
-    for actual in (runtime.apply_transform(frame, operation), execute_generated(runtime, frame, operation)):
-        pd.testing.assert_series_equal(actual["result"], expected["result"])
-        assert actual["result"].iloc[0] == pytest.approx(-2 / 3 if right_column else -1.5)
+    expected = (
+        pd.Series([-1, None, 1, None] * 2, name="result", dtype="int64[pyarrow]")
+        if wide_power
+        else runtime.apply_transform(logical, bound)["result"]
+    )
+    for actual in (runtime.apply_transform(frame, bound), execute_generated(runtime, frame, bound)):
+        pd.testing.assert_series_equal(actual["result"], expected)
+        if not wide_power:
+            assert actual["result"].iloc[0] == pytest.approx(-2 / 3 if right_column else -1.5)
         assert actual["value"].array.__arrow_array__().equals(cast(Any, frame["value"].array).__arrow_array__())
 
 
@@ -2554,6 +2567,10 @@ def test_pandas_arrow_formula_capacity_repairs_unsigned_scalars(values, operator
         ),
         ("power", "int64[pyarrow]", [2, 1, 0, None], None, "63", "uint64[pyarrow]", [2**63, 1, 0, None]),
         ("power", "int8[pyarrow]", [2, 1, None], None, "63", "uint64[pyarrow]", [2**63, 1, None]),
+        ("power", "int8[pyarrow]", [-1, 0, 1, None], None, str(2**64 - 1), "int64[pyarrow]", [-1, 0, 1, None]),
+        ("power", "int16[pyarrow]", [-1, None], None, str(2**63 + 1), "int64[pyarrow]", [-1, None]),
+        ("power", "int32[pyarrow]", [-1, 1, None], None, str(2**64 - 1), "int64[pyarrow]", [-1, 1, None]),
+        ("power", "int64[pyarrow]", [-1, 0, None], None, str(2**63 + 1), "int64[pyarrow]", [-1, 0, None]),
         ("power", "int64[pyarrow]", [1, 0, None], None, str(2**64 - 1), "uint64[pyarrow]", [1, 0, None]),
         ("power", "int64[pyarrow]", [None, None], None, str(2**64 - 1), "uint64[pyarrow]", [None, None]),
         ("power", "int8[pyarrow]", [], None, str(2**64 - 1), "uint64[pyarrow]", []),
@@ -2938,6 +2955,9 @@ def test_pandas_arrow_formula_capacity_preserves_successful_native_results(famil
         "below-negative-uint64",
         "above-uint64",
         "power-above-uint64",
+        "wide-odd-power-negative-overflow",
+        "wide-odd-power-positive-overflow",
+        "wide-odd-power-above-uint64",
         "decimal-capacity",
         "decimal-negative-scale",
     ],
@@ -2963,6 +2983,10 @@ def test_pandas_arrow_formula_capacity_retains_native_refusals(family: str) -> N
     elif family == "power-above-uint64":
         value = pd.Series([-1, 0, 1, None], dtype="int64[pyarrow]")
         operand, op, error = 2**64, "power", OverflowError
+    elif family.startswith("wide-odd-power-"):
+        outside = family == "wide-odd-power-above-uint64"
+        value = pd.Series([-1, 0 if outside else -2 if "negative" in family else 2, None], dtype="int64[pyarrow]")
+        operand, op, error = 2**64 + 1 if outside else 2**64 - 1, "power", OverflowError
     elif family == "decimal-capacity":
         value = pd.Series([Decimal("9" * 76), None], dtype=pd.ArrowDtype(pa.decimal256(76, 0)))
     elif family == "decimal-negative-scale":

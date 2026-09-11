@@ -51,6 +51,11 @@ def _open_wrangler_arrow_formula_repair(
                 magnitude = pc.cast(pc.call_function("abs_checked", [first]) if right % 2 == 0 else first, pa.uint64())
                 result = pc.call_function("power_checked", [magnitude, pa.scalar(right, pa.uint64())])
             except pa.ArrowInvalid:
+                if right % 2 == 1 and right >= 2**63:
+                    # These bases retain their value for any positive odd exponent.
+                    bounds = pc.call_function("min_max", [first])
+                    if bounds["min"].as_py() == -1 and bounds["max"].as_py() <= 1:
+                        return pd.Series(pd.arrays.ArrowExtensionArray(first), index=left.index, name=left.name)
                 raise original_error from None
             return pd.Series(pd.arrays.ArrowExtensionArray(result), index=left.index, name=left.name)
 
