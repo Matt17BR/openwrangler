@@ -1325,19 +1325,6 @@ def test_duckdb_live_and_generated_datetime_selection_preserves_offset_instants(
     assert _filtered_labels(_execute_generated_filter(engine, frame, model), "duckdb") == ["match"]
 
 
-def test_duckdb_live_and_generated_duration_selection_retains_distant_microseconds():
-    engine = DuckDBEngine()
-    frame = duckdb.sql(
-        "SELECT * FROM (VALUES "
-        "('match', INTERVAL '8640000000.000001 seconds'), "
-        "('other', INTERVAL '8640000000.000002 seconds')) AS values(label, value)"
-    )
-    model = _value_selection_model("duration", "8640000000.000001")
-
-    assert _filtered_labels(engine.apply_filter_model(frame, model), "duckdb") == ["match"]
-    assert _filtered_labels(_execute_generated_filter(engine, frame, model), "duckdb") == ["match"]
-
-
 @pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
 @pytest.mark.parametrize("literal", ["2.123456", "-2.123456", "8640000000.000001"])
 def test_duration_filters_preserve_microseconds_under_notebook_decimal_context(backend, literal):
