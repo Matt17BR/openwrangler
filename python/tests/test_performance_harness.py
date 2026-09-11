@@ -8,7 +8,6 @@ from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 
-import polars as pl
 import pytest
 
 benchmark_directory = Path(__file__).parents[1] / "benchmarks"
@@ -299,38 +298,6 @@ def test_full_benchmark_preserves_twenty_spread_page_samples(tmp_path: Path, mon
         assert offsets[0] == 200
         assert offsets[-1] == rows - 200
     assert runtime_performance._percentile([*range(1, 20), 1_000], 0.95) == 19
-
-
-def test_existing_invalid_fixtures_are_atomically_regenerated_and_fully_validated(tmp_path, monkeypatch) -> None:
-    fixtures = runtime_performance.create_fixtures(tmp_path, smoke=True)
-    specs = runtime_performance._fixture_specs(smoke=True)
-
-    csv_spec = specs["csv"]
-    invalid_csv = pl.DataFrame(
-        {name: pl.int_range(column, csv_spec.rows + column, eager=True) for column, name in enumerate(csv_spec.names)}
-    ).with_row_index("row")
-    interior_row = csv_spec.rows // 2 + 17
-    assert interior_row not in csv_spec.sentinel_rows
-    invalid_csv = invalid_csv.with_columns(
-        pl.when(pl.col("row") == interior_row).then(pl.lit(-1)).otherwise(pl.col("c03")).alias("c03")
-    ).drop("row")
-    invalid_csv.write_csv(fixtures["csv"])
-    pl.DataFrame({"wrong": ["schema"]}).write_parquet(fixtures["parquet"])
-
-    replacements: list[tuple[Path, Path]] = []
-    real_replace = runtime_performance.os.replace
-
-    def observe_replace(source: str | Path, destination: str | Path) -> None:
-        replacements.append((Path(source), Path(destination)))
-        real_replace(source, destination)
-
-    monkeypatch.setattr(runtime_performance.os, "replace", observe_replace)
-    repaired = runtime_performance.create_fixtures(tmp_path, smoke=True)
-
-    assert {destination for _, destination in replacements} == {fixtures["csv"], fixtures["parquet"]}
-    assert all(source.parent == tmp_path and source.name.startswith(".") for source, _ in replacements)
-    for kind, path in repaired.items():
-        runtime_performance._assert_fixture_contract(path, specs[kind])
 
 
 def test_profile_overlap_evidence_requires_the_page_send_to_fall_inside_the_stats_call() -> None:

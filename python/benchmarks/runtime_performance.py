@@ -21,7 +21,6 @@ from typing import Any, Literal, cast
 import polars as pl
 from fixture_contract import (
     FixtureSpec,
-    assert_fixture_contract,
     create_fixtures,
     fixture_specs,
 )
@@ -112,14 +111,6 @@ RELEASE_GATE_METRICS = {
 
 
 _TRANSPORT_EOF = object()
-
-
-def _fixture_specs(smoke: bool) -> dict[str, FixtureSpec]:
-    return fixture_specs(smoke)
-
-
-def _assert_fixture_contract(path: Path, spec: FixtureSpec) -> None:
-    assert_fixture_contract(path, spec)
 
 
 def _process_memory_snapshot(pid: int) -> dict[str, Any]:
@@ -962,7 +953,7 @@ def run_benchmark(directory: Path, smoke: bool = False, backend: Backend = "pola
     process_samples = [{"stage": "benchmark-started", **_process_memory_snapshot(os.getpid())}]
     fixtures = create_fixtures(directory, smoke)
     process_samples.append({"stage": "fixtures-ready", **_process_memory_snapshot(os.getpid())})
-    specs = _fixture_specs(smoke)
+    specs = fixture_specs(smoke)
     page_samples = PAGE_CACHE_LIMIT + 1 if smoke else SAMPLES
     csv = measure_fixture(fixtures["csv"], specs["csv"], backend, page_samples=page_samples)
     parquet = measure_fixture(fixtures["parquet"], specs["parquet"], backend, page_samples=page_samples)
