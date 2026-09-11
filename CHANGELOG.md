@@ -14,6 +14,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 
 ### Fixed
 
+- Installed Python dependencies remain available when unrelated files or subdirectories change in their parent directories.
 - Native R One-hot and Multi-label preserve rows when replacing every original `data.table` column.
 - Generated Pandas One-hot code preserves live column names for floating-point categories, including Float32 data.
 - Generated Polars One-hot and Multi-label code preserves indicator rows when every original column is dropped.

@@ -147,6 +147,93 @@ def test_dependency_validation_rejects_link_change_during_module_identity_read(
     assert module_path.stat().st_nlink == 3
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX ancestor rechecks use descriptor-relative stat")
+def test_module_identity_rechecks_leaf_after_ancestors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    parent = tmp_path / "module-directory"
+    parent.mkdir()
+    module = parent / "module.py"
+    module.write_bytes(b"VALUE = 1\n")
+    original_stat = os.stat
+    observations = 0
+
+    def stat_with_late_write(path, *args, **kwargs):
+        nonlocal observations
+        observed = original_stat(path, *args, **kwargs)
+        if path == parent.name and kwargs.get("dir_fd") is not None:
+            observations += 1
+            if observations == 2:
+                module.write_bytes(b"VALUE = 222\n")
+        return observed
+
+    monkeypatch.setattr(os, "stat", stat_with_late_write)
+    assert dependency_guard._regular_module_file_identity(str(module)) is None
+    assert observations == 2
+    assert module.read_bytes() == b"VALUE = 222\n"
+
+
+@pytest.mark.parametrize("replace_ancestor", [False, True], ids=["sibling", "replaced-ancestor"])
+def test_module_identity_distinguishes_directory_contents_from_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replace_ancestor: bool,
+) -> None:
+    parent = tmp_path / "module-directory"
+    parent.mkdir()
+    module = parent / "module.py"
+    module.write_bytes(b"VALUE = 1\n")
+    before = module.stat()
+    directory_before = parent.stat()
+    changed = False
+
+    def mutate() -> None:
+        nonlocal changed
+        changed = True
+        if replace_ancestor:
+            parent.rename(tmp_path / "moved-directory")
+            parent.mkdir()
+            module.write_bytes(b"VALUE = 2\n")
+        else:
+            (parent / "sibling").mkdir()
+            os.utime(parent, ns=(directory_before.st_atime_ns, directory_before.st_mtime_ns + 2_000_000_000))
+            assert parent.stat().st_mtime_ns != directory_before.st_mtime_ns
+
+    original_open = os.open
+
+    def open_with_mutation(path: str, flags: int, *, dir_fd: int | None = None) -> int:
+        descriptor = original_open(path, flags, dir_fd=dir_fd)
+        if path == module.name and not changed:
+            mutate()
+        return descriptor
+
+    def trace(frame, event, _arg):
+        if (
+            event == "line"
+            and frame.f_code is dependency_guard._windows_regular_module_file_identity.__code__
+            and frame.f_locals.get("is_file")
+            and not changed
+        ):
+            mutate()
+        return trace
+
+    previous_trace = sys.gettrace()
+    if os.name == "nt":
+        sys.settrace(trace)
+    else:
+        monkeypatch.setattr(os, "open", open_with_mutation)
+    try:
+        observed = dependency_guard._regular_module_file_identity(str(module))
+    finally:
+        sys.settrace(previous_trace)
+    assert changed
+    if replace_ancestor:
+        assert observed is None
+        assert parent.stat().st_ino != directory_before.st_ino
+    else:
+        assert observed is not None
+        assert dependency_guard._stat_entry_identity(module.stat()) == dependency_guard._stat_entry_identity(before)
+        assert module.read_bytes() == b"VALUE = 1\n"
+
+
 def test_dependency_validation_fails_closed_without_pep440_authority(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

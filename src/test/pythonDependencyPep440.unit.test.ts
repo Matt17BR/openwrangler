@@ -115,6 +115,63 @@ describe("selected-interpreter PEP 440 dependency probing", () => {
         );
         await writeFile(modulePath, "VALUE = 1\n", "utf8");
       }
+      const changingPackage = path.join(purelib, fixture.dependency.importModule);
+      await unlink(modulePath);
+      for (const change of ["sibling", "ancestor-replacement"] as const) {
+        await mkdir(changingPackage);
+        const mutationMarker = path.join(root, `observed-${change}`);
+        await writeFile(
+          path.join(changingPackage, "__init__.py"),
+          [
+            "import os, sys",
+            "_probe_file = __file__",
+            "_probe_parent = os.path.dirname(__file__)",
+            "_probe_parent_stat = os.stat(_probe_parent)",
+            "def _probe_leaf_state():",
+            " v = os.stat(_probe_file)",
+            " return (v.st_dev,v.st_ino,v.st_mode,v.st_nlink,v.st_size,v.st_mtime_ns,v.st_ctime_ns)",
+            "_probe_before = _probe_leaf_state()",
+            "_probe_changed = False",
+            "def _probe_mutate():",
+            " global _probe_changed",
+            " _probe_changed = True",
+            ...(change === "sibling"
+              ? [
+                  " os.mkdir(os.path.join(_probe_parent,'sibling'))",
+                  " os.utime(_probe_parent,ns=(_probe_parent_stat.st_atime_ns,_probe_parent_stat.st_mtime_ns+2000000000))",
+                  " assert os.stat(_probe_parent).st_mtime_ns != _probe_parent_stat.st_mtime_ns",
+                  " assert _probe_leaf_state() == _probe_before"
+                ]
+              : [
+                  " os.rename(_probe_parent,_probe_parent+'.moved')",
+                  " os.mkdir(_probe_parent)",
+                  " with open(_probe_file,'w') as output: output.write('VALUE = 2\\n')"
+                ]),
+            ` with open(${JSON.stringify(mutationMarker)},'w') as marker: marker.write('changed')`,
+            "_probe_original_open = os.open",
+            "def _probe_open(filename,*args,**kwargs):",
+            " descriptor = _probe_original_open(filename,*args,**kwargs)",
+            " if filename == '__init__.py' and not _probe_changed: _probe_mutate()",
+            " return descriptor",
+            "def _probe_trace(frame,event,arg):",
+            " if event == 'line' and frame.f_code.co_name == 'windows_identity' and frame.f_locals.get('is_file') and not _probe_changed: _probe_mutate()",
+            " return _probe_trace",
+            "if os.name == 'nt': sys.settrace(_probe_trace)",
+            "else: os.open = _probe_open",
+            ""
+          ].join("\n"),
+          "utf8"
+        );
+        await writeFile(recordPath, `${fixture.dependency.importModule}/__init__.py,,\n`, "utf8");
+        await expect(probeDependencies(executable, [fixture.dependency]), change).resolves.toEqual(
+          change === "sibling" ? { available: [fixture.dependency.importModule], missing: [] } : rejected
+        );
+        expect(readFileSync(mutationMarker, "utf8")).toBe("changed");
+        await rm(changingPackage, { recursive: true });
+        await rm(`${changingPackage}.moved`, { recursive: true, force: true });
+      }
+      await writeFile(modulePath, "VALUE = 1\n", "utf8");
+      await writeFile(recordPath, `${fixture.dependency.importModule}.py,,\n`, "utf8");
       const hardlinkSource = path.join(purelib, "hardlink-source.py");
       await unlink(modulePath);
       await writeFile(hardlinkSource, "VALUE = 1\n", "utf8");

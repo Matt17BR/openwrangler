@@ -2416,6 +2416,10 @@ def _stat_file_identity(
     )
 
 
+def _stat_directory_identity(value: os.stat_result) -> tuple[int, int, int]:
+    return value.st_dev, value.st_ino, value.st_mode
+
+
 def _posix_regular_module_file_identity(
     path: str,
 ) -> tuple[int, int, int, int, int] | None:
@@ -2429,7 +2433,7 @@ def _posix_regular_module_file_identity(
     directory_flags |= getattr(os, "O_NOFOLLOW", 0)
     file_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     descriptors: list[int] = []
-    ancestors: list[tuple[int, str, int, tuple[int, int, int, int, int, int, int]]] = []
+    ancestors: list[tuple[int, str, int, tuple[int, int, int]]] = []
     try:
         current_descriptor = os.open(parts[0], directory_flags)
         descriptors.append(current_descriptor)
@@ -2450,8 +2454,8 @@ def _posix_regular_module_file_identity(
             )
             descriptors.append(child_descriptor)
             opened = os.fstat(child_descriptor)
-            expected = _stat_entry_identity(named)
-            if not stat.S_ISDIR(opened.st_mode) or _stat_entry_identity(opened) != expected:
+            expected = _stat_directory_identity(named)
+            if not stat.S_ISDIR(opened.st_mode) or _stat_directory_identity(opened) != expected:
                 return None
             ancestors.append((current_descriptor, component, child_descriptor, expected))
             current_descriptor = child_descriptor
@@ -2492,10 +2496,17 @@ def _posix_regular_module_file_identity(
             if (
                 not stat.S_ISDIR(named.st_mode)
                 or not stat.S_ISDIR(opened.st_mode)
-                or _stat_entry_identity(named) != expected
-                or _stat_entry_identity(opened) != expected
+                or _stat_directory_identity(named) != expected
+                or _stat_directory_identity(opened) != expected
             ):
                 return None
+        # Directory contents may change independently; recheck the actual leaf after ancestry.
+        current_file = os.stat(filename, dir_fd=current_descriptor, follow_symlinks=False)
+        if (
+            _stat_entry_identity(current_file) != expected_file
+            or _stat_entry_identity(os.fstat(file_descriptor)) != expected_file
+        ):
+            return None
         return _stat_file_identity(named_file)
     except (OSError, ValueError):
         return None
@@ -2539,6 +2550,10 @@ def _windows_file_information_identity(
     )
 
 
+def _windows_directory_information_identity(value: _WindowsFileInformation) -> tuple[int, int, int]:
+    return value.volume_serial, (value.index_high << 32) | value.index_low, value.attributes & 0x00000410
+
+
 def _windows_regular_module_file_identity(
     path: str,
 ) -> tuple[int, int, int, int, int] | None:
@@ -2572,7 +2587,7 @@ def _windows_regular_module_file_identity(
     get_information.restype = ctypes.c_int
     close_handle = kernel32.CloseHandle
     close_handle.argtypes = [ctypes.c_void_p]
-    handles: list[tuple[int, _WindowsFileInformation]] = []
+    handles: list[tuple[int, str, _WindowsFileInformation]] = []
     try:
         current = f"{drive}{os.path.sep}"
         for index, component in enumerate(components):
@@ -2601,21 +2616,41 @@ def _windows_regular_module_file_identity(
             if bool(information.attributes & 0x00000400) or is_directory == is_file:
                 close_handle(ctypes.c_void_p(numeric_handle))
                 return None
-            handles.append((numeric_handle, information))
-        for numeric_handle, expected in handles:
+            handles.append((numeric_handle, current, information))
+        # Access-zero handles do not pin directory names. Reopen each named prefix;
+        # the last iteration validates the named leaf after the ancestor checks.
+        for numeric_handle, named_path, expected in handles:
             current_information = _WindowsFileInformation()
-            if not get_information(ctypes.c_void_p(numeric_handle), ctypes.byref(current_information)) or (
-                current_information.attributes != expected.attributes
-                or current_information.links != expected.links
-                or _windows_file_information_identity(current_information)
-                != _windows_file_information_identity(expected)
-            ):
+            if not get_information(ctypes.c_void_p(numeric_handle), ctypes.byref(current_information)):
                 return None
-        return _windows_file_information_identity(handles[-1][1])
+            is_directory = bool(expected.attributes & 0x00000010)
+            flags = 0x00200000 | (0x02000000 if is_directory else 0)
+            named_handle = create_file(named_path, 0, 0x00000001 | 0x00000002, None, 3, flags, None)
+            if named_handle in {None, 0, ctypes.c_void_p(-1).value}:
+                return None
+            try:
+                named_information = _WindowsFileInformation()
+                if not get_information(ctypes.c_void_p(named_handle), ctypes.byref(named_information)):
+                    return None
+                for observed in (current_information, named_information):
+                    if is_directory:
+                        if _windows_directory_information_identity(observed) != _windows_directory_information_identity(
+                            expected
+                        ):
+                            return None
+                    elif (
+                        observed.attributes != expected.attributes
+                        or observed.links != expected.links
+                        or _windows_file_information_identity(observed) != _windows_file_information_identity(expected)
+                    ):
+                        return None
+            finally:
+                close_handle(ctypes.c_void_p(named_handle))
+        return _windows_file_information_identity(handles[-1][2])
     except (AttributeError, OSError, TypeError, ValueError):
         return None
     finally:
-        for numeric_handle, _information in reversed(handles):
+        for numeric_handle, _path, _information in reversed(handles):
             close_handle(ctypes.c_void_p(numeric_handle))
 
 
