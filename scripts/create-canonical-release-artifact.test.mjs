@@ -35,6 +35,7 @@ import {
   PRIMARY_PARITY_SCOPE,
   R_PREVIEW_PARITY_SCOPE
 } from "./release-readiness.mjs";
+import { inspectPrimaryParityMatrix } from "./release-documents.mjs";
 import {
   assertReproducibleVsixArchive as assertReproducibleArchive,
   canonicalizeVsixArchive
@@ -130,21 +131,9 @@ ${rows}
 `;
 }
 
-function previewRSurface(surface) {
-  const replacements = new Map([
-    ["Base data.frame, tibble, and data.table", "Base `data.frame`, tibble, and `data.table`"],
-    ["Cursor-owned .Rmd and .qmd R/Python chunk", "Cursor-owned `.Rmd` and `.qmd` R/Python chunk"],
-    ["Owned .R source process", "Owned `.R` source process"],
-    ["Owned .Rmd and .qmd cell process", "Owned `.Rmd` and `.qmd` cell process"],
-    ["Insert generated R into its source .R file", "Insert generated R into its source `.R` file"],
-    ["Insert generated R into .Rmd and .qmd", "Insert generated R into `.Rmd` and `.qmd`"]
-  ]);
-  return replacements.get(surface) ?? surface;
-}
-
-function nativeRPreviewMatrix() {
-  const rows = R_PREVIEW_PARITY_SCOPE.map(([surface, availability, status]) => {
-    return `| ${previewRSurface(surface)} | ${availability} | ${status} | Current Native R capability owner |`;
+function nativeRPreviewMatrix(statuses = new Map()) {
+  const rows = R_PREVIEW_PARITY_SCOPE.map(([surface, availability]) => {
+    return `| ${surface} | ${availability} | ${statuses.get(surface) ?? "Partial"} | Current Native R capability owner |`;
   }).join("\n");
   return `## Native R preview
 
@@ -491,19 +480,44 @@ test("source documentation validates incomplete rows, applicability and tracked 
   const partial = parityMatrix(new Map([[PRIMARY_PARITY_SCOPE[0][0], "Partial"]]));
   const firstRow = partial.split("\n").find((line) => line.startsWith(`| ${PRIMARY_PARITY_SCOPE[0][0]} |`));
   const secondRow = partial.split("\n").find((line) => line.startsWith(`| ${PRIMARY_PARITY_SCOPE[1][0]} |`));
+  assert.deepEqual(inspect(partial.replace(`${firstRow}\n${secondRow}`, `${secondRow}\n${firstRow}`)), []);
+  const complete = partial.replace("| Partial |", "| Done |");
+  const completeFirstRow = firstRow.replace("| Partial |", "| Done |");
+  const inspectStrict = (featureParity) =>
+    inspectPrimaryParityMatrix(featureParity, PRIMARY_PARITY_SCOPE, new Set(["scripts/evidence.test.mjs"]));
+  assert.deepEqual(
+    inspectStrict(complete.replace(`${completeFirstRow}\n${secondRow}`, `${secondRow}\n${completeFirstRow}`)),
+    []
+  );
+  for (const incomplete of [
+    partial,
+    complete.replace(completeFirstRow, ""),
+    complete.replace(secondRow, completeFirstRow)
+  ]) {
+    assert.notDeepEqual(inspectStrict(incomplete), []);
+  }
+  for (const referenceText of [
+    "test:scripts/evidence.test.mjs",
+    "Future inputs retain their source; test:scripts/evidence.test.mjs"
+  ]) {
+    assert.deepEqual(
+      inspect(partial.replace("Exact canonical artifact accepted; test:scripts/evidence.test.mjs", referenceText)),
+      []
+    );
+  }
   for (const malformed of [
     partial.replace(firstRow, ""),
     partial.replace(secondRow, firstRow),
-    partial.replace(`${firstRow}\n${secondRow}`, `${secondRow}\n${firstRow}`),
     partial.replace(PRIMARY_PARITY_SCOPE[0][0], "Unknown surface"),
     partial.replace("| Partial |", "| Complete |"),
     partial.replace("| Yes | Yes | Partial |", "| Yes | Maybe | Partial |"),
     partial.replace("| Yes | Yes | Partial |", "| Yes | N/A | Partial |"),
     partial.replace("| N/A | N/A | Done |", "| Yes | N/A | Done |"),
     partial.replace("test:scripts/evidence.test.mjs", "test:scripts/untracked.test.mjs"),
+    partial.replace("test:scripts/evidence.test.mjs", "workflow:scripts/evidence.test.mjs"),
+    partial.replace("test:scripts/evidence.test.mjs", "test:"),
     partial.replace("test:scripts/evidence.test.mjs", "record:../outside.md"),
     partial.replace("Exact canonical artifact accepted; test:scripts/evidence.test.mjs", "Existing limitation"),
-    partial.replace("Exact canonical artifact accepted", "TODO verify later"),
     partial.replace("# Feature parity matrix", "# Different document")
   ]) {
     assert.notDeepEqual(inspect(malformed), [], malformed.split("\n").slice(0, 6).join("\n"));
@@ -512,18 +526,37 @@ test("source documentation validates incomplete rows, applicability and tracked 
 
 test("source documentation retains channel and Native R rules", () => {
   const stable = {
-    featureParity: `${parityMatrix()}\n${nativeRPreviewMatrix()}`,
+    featureParity: `${parityMatrix()}\n${nativeRPreviewMatrix(new Map([[R_PREVIEW_PARITY_SCOPE[1][0], "Done"]]))}`,
     preview: false,
     trackedEvidencePaths: new Set(["scripts/evidence.test.mjs"]),
     version: "2.1.0"
   };
   assert.deepEqual(inspectReleaseDocumentationSource(stable), []);
+  const rRows = stable.featureParity.split("\n").filter((line) => line.startsWith("| Native R "));
+  for (const featureParity of [
+    stable.featureParity.replace(`${rRows[0]}\n${rRows[1]}`, `${rRows[1]}\n${rRows[0]}`),
+    stable.featureParity.replace(
+      "Base data.frame, tibble, and data.table",
+      "Base `data.frame`, tibble, and `data.table`"
+    ),
+    stable.featureParity.replace("| Preview | Partial |", "| Preview | Done |"),
+    stable.featureParity.replace("| Preview | Done |", "| Preview | Partial |")
+  ]) {
+    assert.deepEqual(inspectReleaseDocumentationSource({ ...stable, featureParity }), []);
+  }
   for (const changed of [
     { version: "bad" },
     { preview: undefined },
     { preview: true },
     { featureParity: parityMatrix() },
-    { featureParity: stable.featureParity.replace("| Preview | Partial |", "| Preview | Done |") }
+    { featureParity: stable.featureParity.replace("| Preview | Partial |", "| Yes | Partial |") },
+    { featureParity: stable.featureParity.replace("macOS and Linux Preview", "Preview") },
+    { featureParity: stable.featureParity.replace("| Preview | Partial |", "| Preview | Complete |") },
+    { featureParity: stable.featureParity.replace("## Native R preview", "## Native R stable") },
+    { featureParity: stable.featureParity.replace("Current Native R capability owner", "") },
+    { featureParity: stable.featureParity.replace(rRows[0], "") },
+    { featureParity: stable.featureParity.replace(rRows[1], rRows[0]) },
+    { featureParity: stable.featureParity.replace("Native R frame paging and typed cells", "Unknown R surface") }
   ]) {
     assert.notDeepEqual(inspectReleaseDocumentationSource({ ...stable, ...changed }), []);
   }

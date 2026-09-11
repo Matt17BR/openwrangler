@@ -118,9 +118,11 @@ The workflow verifies the tag, source commit, and stable metadata, then builds t
 SHA-256 checksum and provenance receipt. It also audits the full Node lock, published Python dependencies, and optional
 runtime packages.
 
-Stable qualification requires every required Pandas/Polars row in [feature parity](feature-parity.md) to be Done with
-its expected backend availability and tracked evidence. Ordinary source checks permit documented limitations so
-maintenance can record them accurately; passing those checks does not establish release readiness.
+Stable qualification requires every required Pandas/Polars surface in [feature parity](feature-parity.md) to be Done
+with its expected backend availability and tracked references. These checks validate declarations and reference paths;
+maintainers review whether the cited evidence supports them. Native R remains Preview independently of a row's progress
+status. Ordinary source checks permit documented limitations so maintenance can record them accurately; passing those
+checks does not establish release readiness.
 
 The workflow runs the installed-performance check in pinned VS Code and a bounded platform smoke in pinned Linux
 Cursor against the exact candidate. Cursor does not receive the full VS Code qualification matrix. Both checks use the
