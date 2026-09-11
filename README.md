@@ -36,6 +36,9 @@ For a downloaded VSIX, open the Extensions view and choose **Views and More Acti
 an editor tab, or the editor toolbar. In a Python notebook, run a supported dataframe and choose **Open in Open
 Wrangler** on its output or from the notebook toolbar.
 
+For a quick example, save the [four-row sample CSV](https://raw.githubusercontent.com/Matt17BR/openwrangler/main/fixtures/sample.csv)
+in your workspace.
+
 <a href="https://github.com/Matt17BR/openwrangler/blob/main/docs/images/readme/notebook-pandas.png"><img alt="A live Pandas dataframe output in a VS Code notebook with the Open in Open Wrangler action" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/notebook-pandas.png" width="960"></a>
 
 _Open a live notebook dataframe from its output and continue in the workbench._
@@ -45,6 +48,9 @@ _Open a live notebook dataframe from its output and continue in the workbench._
 Where a form offers column search, changing the search keeps your selections. Changed values and generated code appear
 as a draft. Viewing filters and sorts affect only the current view. Use **Sort rows** or **Filter rows** to add a
 cleaning step.
+
+With that sample, preview **Drop missing rows** on **sales**: Paris disappears from the draft, leaving Milan, Rome,
+and Berlin.
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/main/docs/images/readme/workflow.png"><img alt="A Polars transformation draft with highlighted changed values, Apply and Discard actions, and generated code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/workflow.png" width="960"></a>
 
