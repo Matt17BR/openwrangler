@@ -1375,23 +1375,34 @@ def test_duration_filters_preserve_microseconds_under_notebook_decimal_context(b
 
 
 @pytest.mark.parametrize("unit", ["s", "ms", "us", "ns"])
-@pytest.mark.parametrize("dictionary", [False, True])
-def test_pandas_arrow_duration_filters_preserve_native_ticks(unit, dictionary):
+@pytest.mark.parametrize("storage", ["arrow", "dictionary", "numpy-object", "pandas-object"])
+def test_pandas_duration_filters_preserve_native_ticks(unit, storage):
     from fractions import Fraction
 
     import pyarrow as pa
 
     ticks = [-(2**63), -(2**63) + 1, -1001, -1000, -999, -1, 0, 1, 999, 1000, 1001, 2**63 - 1, -(2**63), None]
-    chunks = [pa.array(ticks[:7], type=pa.duration(unit)), pa.array(ticks[7:], type=pa.duration(unit))]
-    if dictionary:
-        chunks = [chunk.dictionary_encode() for chunk in chunks]
-    native = pa.chunked_array(chunks)
-    source = pd.DataFrame({"value": pd.Series(pd.arrays.ArrowExtensionArray(native)), "row": range(len(ticks))})
+    native = None
+    if storage in {"arrow", "dictionary"}:
+        chunks = [pa.array(ticks[:7], type=pa.duration(unit)), pa.array(ticks[7:], type=pa.duration(unit))]
+        if storage == "dictionary":
+            chunks = [chunk.dictionary_encode() for chunk in chunks]
+        native = pa.chunked_array(chunks)
+        series = pd.Series(pd.arrays.ArrowExtensionArray(native))
+    else:
+        values = [np.timedelta64(value, unit) if value is not None else None for value in ticks]
+        if storage == "pandas-object":
+            values = [pd.Timedelta(value) if value is not None else None for value in values]
+        series = pd.Series(values, dtype=object)
+    source = pd.DataFrame({"value": series, "row": range(len(ticks))})
     source.index = pd.Index(["same"] * len(source), name="original")
     source.attrs["origin"] = "retained"
     before = source.copy(deep=True)
     scale = {"s": 1, "ms": 1000, "us": 1_000_000, "ns": 1_000_000_000}[unit]
-    seconds = [Fraction(value, scale) if value is not None else None for value in ticks]
+    seconds = [
+        Fraction(value, scale) if value is not None and (native is not None or value != -(2**63)) else None
+        for value in ticks
+    ]
     cases = []
     for name in ("eq", "ne", "gt", "ge", "lt", "le"):
         predicate = {
@@ -1440,7 +1451,8 @@ def test_pandas_arrow_duration_filters_preserve_native_ticks(unit, dictionary):
                 pd.testing.assert_frame_equal(result, source.iloc[expected_rows], check_exact=True)
                 assert result.attrs == source.attrs
         pd.testing.assert_frame_equal(source, before, check_exact=True)
-        assert cast(pd.arrays.ArrowExtensionArray, source["value"].array).__arrow_array__().equals(native)
+        if native is not None:
+            assert cast(pd.arrays.ArrowExtensionArray, source["value"].array).__arrow_array__().equals(native)
         assert source.attrs == before.attrs
     finally:
         engine.close()

@@ -24,6 +24,8 @@ def _open_wrangler_object_semantic_type(series, is_missing_scalar, is_integer_sc
     if inferred_semantic is not None:
         return inferred_semantic
     if inferred in {"mixed", "mixed-integer", "date"}:
+        import numpy as np
+
         # Refine containers and ambiguous scalar families using the existing
         # missing-value semantics, including Pandas NaT in object columns.
         values = [value for value in series.array if not is_missing_scalar(value)]
@@ -31,7 +33,7 @@ def _open_wrangler_object_semantic_type(series, is_missing_scalar, is_integer_sc
             return "boolean"
         if values and all(is_integer_scalar(value) for value in values):
             return "integer"
-        if values and all(isinstance(value, Real) and not isinstance(value, bool) for value in values):
+        if values and all(isinstance(value, Real) and not isinstance(value, bool | np.timedelta64) for value in values):
             return "float"
         if values and all(isinstance(value, Decimal) for value in values):
             return "decimal"
@@ -39,7 +41,7 @@ def _open_wrangler_object_semantic_type(series, is_missing_scalar, is_integer_sc
             return "datetime"
         if values and all(isinstance(value, date) for value in values):
             return "date"
-        if values and all(isinstance(value, timedelta) for value in values):
+        if values and all(isinstance(value, timedelta | np.timedelta64) for value in values):
             return "duration"
         if values and all(isinstance(value, bytes) for value in values):
             return "binary"

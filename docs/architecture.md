@@ -373,6 +373,16 @@ Confirmed viewing-filter history preserves admitted operand objects and their ow
 targets and outgoing filter requests hold independent copies; Undo retains the current viewing sorts. JSON operand
 objects keep their serialized shape rather than becoming lookup Maps.
 
+Pandas object duration counts and present-value filters share exact integer comparison keys, measured in attoseconds.
+The existing unit registry supplies fixed NumPy scales and multipliers; source scalars and dtype remain unchanged.
+The shared object classifier retains the duration type when missing scalars make native inference ambiguous.
+Value counts restore the first original spelling through the existing representative map. Filtering prepares keys
+once per selected column and compares every predicate against that preparation in live and generated code; missing
+masks still inspect the original source. Native duration storage and pure Python/custom-only object columns retain
+their existing paths. Mixed ordinary NumPy/Pandas duration columns refuse calendar/unitless or custom residents
+whose comparison semantics cannot share those keys. Homogeneous NumPy and Pandas inputs retain native ticks in their
+stored unit before scaling; mixed inputs preserve each scalar's stored unit.
+
 Float filter values accept explicit `Infinity` and `-Infinity`, plus the historical `inf` and `-inf` spellings used
 in saved Filter Rows steps. These aliases do not admit NaN or finite text that overflows. The shared literal fixture
 defines accepted and rejected forms for live and generated execution.

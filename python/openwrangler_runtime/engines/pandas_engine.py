@@ -44,6 +44,7 @@ from ..portable_regex import (
 from ..trusted_pickle_to_parquet import _source_fingerprint
 from . import (
     _pandas_arrow_formula_helpers,
+    _pandas_duration_helpers,
     _pandas_group_sum_helpers,
     _pandas_linear_fill_helpers,
     _pandas_min_max_helpers,
@@ -51,12 +52,15 @@ from . import (
     _pandas_pivot_helpers,
 )
 from ._pandas_arrow_formula_helpers import _open_wrangler_arrow_formula_repair as _pandas_arrow_formula_repair
+from ._pandas_duration_helpers import _open_wrangler_duration_keys as _pandas_duration_keys
+from ._pandas_duration_helpers import _open_wrangler_duration_operand as _pandas_duration_operand
 from ._pandas_group_sum_helpers import _open_wrangler_native_int64_sum_is_safe as _pandas_native_int64_sum_is_safe
 from ._pandas_linear_fill_helpers import _open_wrangler_fill_linear_gaps as _pandas_fill_linear_gaps
 from ._pandas_min_max_helpers import _open_wrangler_min_max_scale as _pandas_min_max_scale
 from ._pandas_object_type_helpers import _open_wrangler_object_semantic_type as _pandas_object_semantic_type
 from ._pandas_pivot_helpers import _open_wrangler_nullable_pivot_series as _pandas_nullable_pivot_series
 from .base import (
+    _NUMPY_DURATION_SECONDS,
     DEFAULT_STRIP_CHARACTERS,
     INTERNAL_ROW_ID_PREFIX,
     NUMPY_FLOAT_PRECISION_MESSAGE,
@@ -247,11 +251,17 @@ def _pandas_integer_filter(series: Any, method: str, values: Sequence[Any]) -> A
     return getattr(series, method)(np.dtype(dtype).type(value))
 
 
-def _pandas_numeric_filter(series: Any, method: str, values: Sequence[Any]) -> Any:
+def _pandas_numeric_filter(series: Any, method: str, values: Sequence[Any], duration_keys: Any = None) -> Any:
     import operator
 
     import numpy as np
     import pandas as pd
+
+    if duration_keys is not None and duration_keys is not series:
+        operands = [_pandas_duration_operand(value) for value in values]
+        if method == "between":
+            return duration_keys.ge(operands[0]) & duration_keys.le(operands[1])
+        return duration_keys.isin(operands) if method == "isin" else getattr(duration_keys, method)(operands[0])
 
     if isinstance(series.dtype, pd.ArrowDtype):
         import pyarrow as pa
@@ -511,10 +521,10 @@ def _pandas_dense_rank(series: Any, direction: str) -> Any:
     return pd.Series(values, index=series.index, dtype="Int64")
 
 
-def _pandas_value_counts(series: Any, *, sort: bool = True) -> Any:
+def _pandas_value_counts(series: Any, *, sort: bool = True, duration: bool = False) -> Any:
     import pandas as pd
 
-    keys = _pandas_numeric_key(series)
+    keys = _pandas_duration_keys(series, _NUMPY_DURATION_SECONDS) if duration else _pandas_numeric_key(series)
     try:
         counts = keys.value_counts(dropna=True, sort=sort)
     except OverflowError:
@@ -560,19 +570,25 @@ def _pandas_value_counts(series: Any, *, sort: bool = True) -> Any:
     if keys is series or isinstance(series.dtype, pd.ArrowDtype):
         return counts
     first: dict[Any, Any] = {}
-    for original, key in zip(series.array, keys.array, strict=True):
-        if (
-            type(key) in (int, float, bool, Decimal) or _pandas_is_numpy_numeric_key_scalar(key)
-        ) and not _pandas_is_missing_scalar(key):
-            first.setdefault(key, original)
-    # Native counts and duplicated can disagree for unhashable object residents.
-    # Restore numeric labels directly, without pairing those different partitions.
-    representatives = [
-        first.get(value, value)
-        if type(value) in (int, float, bool, Decimal) or _pandas_is_numpy_numeric_key_scalar(value)
-        else value
-        for value in counts.index
-    ]
+    if duration:
+        for original, key in zip(series.array, keys.array, strict=True):
+            if key is not None:
+                first.setdefault(key, original)
+        representatives = [first.get(value, value) for value in counts.index]
+    else:
+        for original, key in zip(series.array, keys.array, strict=True):
+            if (
+                type(key) in (int, float, bool, Decimal) or _pandas_is_numpy_numeric_key_scalar(key)
+            ) and not _pandas_is_missing_scalar(key):
+                first.setdefault(key, original)
+        # Native counts and duplicated can disagree for unhashable object residents.
+        # Restore numeric labels directly, without pairing those different partitions.
+        representatives = [
+            first.get(value, value)
+            if type(value) in (int, float, bool, Decimal) or _pandas_is_numpy_numeric_key_scalar(value)
+            else value
+            for value in counts.index
+        ]
     return pd.Series(
         counts.to_numpy(), index=pd.Index(representatives, dtype=object, name=series.name), name=counts.name
     )
@@ -583,7 +599,7 @@ def _pandas_sort_order(series: Any, ascending: bool, nulls: Literal["first", "la
     return key.sort_values(ascending=ascending, na_position=nulls, kind="stable").index.to_numpy()
 
 
-def _pandas_live_filter_condition(series: Any, condition: _PandasFilterCondition) -> Any:
+def _pandas_live_filter_condition(series: Any, condition: _PandasFilterCondition, duration_keys: Any = None) -> Any:
     import pandas as pd
 
     method = condition.method
@@ -603,7 +619,7 @@ def _pandas_live_filter_condition(series: Any, condition: _PandasFilterCondition
         result = (
             _pandas_integer_filter(series, method, values)
             if condition.column_type == "integer"
-            else _pandas_numeric_filter(series, method, values)
+            else _pandas_numeric_filter(series, method, values, duration_keys)
         )
         if condition.include_nulls:
             result = result | _null_mask(series)
@@ -621,7 +637,7 @@ def _pandas_live_filter_condition(series: Any, condition: _PandasFilterCondition
     elif condition.column_type == "integer":
         result = _pandas_integer_filter(series, method, values)
     else:
-        result = _pandas_numeric_filter(series, method, values)
+        result = _pandas_numeric_filter(series, method, values, duration_keys)
     if condition.negated:
         result = ~result
     if condition.excludes_missing:
@@ -631,10 +647,13 @@ def _pandas_live_filter_condition(series: Any, condition: _PandasFilterCondition
 
 def _pandas_live_column_filter_mask(series: Any, column_filter: Mapping[str, Any], column_type: str) -> Any | None:
     series = _pandas_scalar_values(series)
-    conditions = [
-        _pandas_live_filter_condition(series, condition)
-        for condition in _pandas_filter_conditions(column_filter, column_type)
-    ]
+    specs = _pandas_filter_conditions(column_filter, column_type)
+    duration_keys = (
+        _pandas_duration_keys(series, _NUMPY_DURATION_SECONDS)
+        if column_type == "duration" and any(condition.coerce_values and condition.values for condition in specs)
+        else None
+    )
+    conditions = [_pandas_live_filter_condition(series, condition, duration_keys) for condition in specs]
     if not conditions:
         return None
     mask = conditions[0]
@@ -999,7 +1018,7 @@ class PandasEngine(DataFrameEngine):
             semantic_type = _pandas_semantic_type(series)
             series = _pandas_scalar_values(series)
             null_count, nan_count = _missing_value_counts(series)
-            value_counts = _pandas_value_counts(series)
+            value_counts = _pandas_value_counts(series, duration=semantic_type == "duration")
             top_counts = value_counts.head(10)
             temporal_counts = _pandas_arrow_temporal_array(top_counts.index)
             top_values = [
@@ -1210,7 +1229,7 @@ class PandasEngine(DataFrameEngine):
                     if alias != label:
                         matches[position] = needle in alias.translate(_ASCII_TO_LOWER)
             series = series[matches]
-        value_counts = _pandas_value_counts(series, sort=False)
+        value_counts = _pandas_value_counts(series, sort=False, duration=column_type == "duration")
         temporal_counts = _pandas_arrow_temporal_array(value_counts.index)
         counts = (
             (
@@ -1886,6 +1905,18 @@ class PandasEngine(DataFrameEngine):
         if needs_row_queries or needs_scalar_values or needs_rank_helpers or needs_duplicate_keys:
             lines.extend(_generated_pandas_scalar_helpers())
         if needs_view_value_helpers:
+            if any(
+                step["kind"] == "filterRows"
+                and any(column.get("type") == "duration" for column in step["params"]["filterModel"].get("filters", []))
+                for step in plan
+            ):
+                lines.extend(
+                    [
+                        getsource(_pandas_duration_helpers),
+                        f"_open_wrangler_duration_units = {_NUMPY_DURATION_SECONDS!r}",
+                        "",
+                    ]
+                )
             lines.extend(_generated_pandas_numeric_filter_helpers())
         if needs_row_queries or needs_rank_helpers or needs_duplicate_keys:
             lines.extend(_generated_pandas_row_query_helpers(include_queries=needs_row_queries))
@@ -5633,8 +5664,15 @@ def _generated_pandas_numeric_key_helpers() -> list[str]:
 
 def _generated_pandas_numeric_filter_helpers() -> list[str]:
     return [
-        "def _open_wrangler_numeric_filter(series, method, values):",
+        "def _open_wrangler_numeric_filter(series, method, values, duration_keys=None):",
         "    import operator",
+        "",
+        "    if duration_keys is not None and duration_keys is not series:",
+        "        operands = [_open_wrangler_duration_operand(value) for value in values]",
+        '        if method == "between":',
+        "            return duration_keys.ge(operands[0]) & duration_keys.le(operands[1])",
+        '        return (duration_keys.isin(operands) if method == "isin"',
+        "                else getattr(duration_keys, method)(operands[0]))",
         "",
         "    if isinstance(series.dtype, pd.ArrowDtype):",
         "        import pyarrow as pa",
@@ -5809,18 +5847,26 @@ def _compile_pandas_filter(model: Mapping[str, Any], index: int) -> list[str]:
         position = bound_column_position(column_filter["column"], "filterRows")
         series = f"_filter_series_{index}"
         column_type = column_filter.get("type")
-        conditions = [
-            _pandas_filter_condition_expression(series, condition)
-            for condition in _pandas_filter_conditions(column_filter, column_type)
-        ]
+        specs = _pandas_filter_conditions(column_filter, column_type)
+        keys = (
+            f"_filter_duration_keys_{index}"
+            if column_type == "duration" and any(condition.coerce_values and condition.values for condition in specs)
+            else None
+        )
+        conditions = [_pandas_filter_condition_expression(series, condition, keys) for condition in specs]
         if conditions:
             operator = " | " if column_filter.get("logic") == "or" else " & "
             mask = f"_filter_column_mask_{index}_{column_index}"
             lines.extend(
                 [
                     f"    {series} = _open_wrangler_scalar_values(df.iloc[:, {position}])",
+                    *(
+                        [f"    {keys} = _open_wrangler_duration_keys({series}, _open_wrangler_duration_units)"]
+                        if keys
+                        else []
+                    ),
                     f"    {mask} = (" + operator.join(conditions) + ")",
-                    f"    del {series}",
+                    f"    del {series}" + (f", {keys}" if keys else ""),
                 ]
             )
             column_masks.append(mask)
@@ -5848,8 +5894,11 @@ def _compile_pandas_filter(model: Mapping[str, Any], index: int) -> list[str]:
     return lines
 
 
-def _pandas_filter_condition_expression(series: str, condition: _PandasFilterCondition) -> str:
+def _pandas_filter_condition_expression(
+    series: str, condition: _PandasFilterCondition, duration_keys: str | None = None
+) -> str:
     method = condition.method
+    duration_arg = f", {duration_keys}" if duration_keys else ""
     typed_values = (
         [
             f"_open_wrangler_view_value({value!r}, {condition.column_type!r}"
@@ -5870,7 +5919,7 @@ def _pandas_filter_condition_expression(series: str, condition: _PandasFilterCon
             parts.append(
                 f"_open_wrangler_integer_filter({series}, 'isin', [{', '.join(typed_values)}])"
                 if condition.column_type == "integer"
-                else f"_open_wrangler_numeric_filter({series}, 'isin', [{', '.join(typed_values)}])"
+                else f"_open_wrangler_numeric_filter({series}, 'isin', [{', '.join(typed_values)}]{duration_arg})"
             )
         if condition.include_nulls:
             parts.append(f"_open_wrangler_mask({series}, _open_wrangler_is_null)")
@@ -5884,7 +5933,7 @@ def _pandas_filter_condition_expression(series: str, condition: _PandasFilterCon
     elif condition.column_type == "integer" and method in {"eq", "ne", "gt", "ge", "lt", "le", "between"}:
         result = f"_open_wrangler_integer_filter({series}, {method!r}, [{', '.join(typed_values)}])"
     elif method in {"eq", "ne", "gt", "ge", "lt", "le"}:
-        result = f"_open_wrangler_numeric_filter({series}, {method!r}, [{', '.join(typed_values)}])"
+        result = f"_open_wrangler_numeric_filter({series}, {method!r}, [{', '.join(typed_values)}]{duration_arg})"
     elif method == "contains":
         result = (
             f"{series}.astype(str).str.translate(str.maketrans({_ASCII_UPPER!r}, {_ASCII_LOWER!r}))"
@@ -5893,7 +5942,7 @@ def _pandas_filter_condition_expression(series: str, condition: _PandasFilterCon
     elif method in {"startswith", "endswith"}:
         result = f"{series}.astype(str).str.{method}({str(condition.values[0])!r}, na=False)"
     else:
-        result = f"_open_wrangler_numeric_filter({series}, 'between', [{', '.join(typed_values)}])"
+        result = f"_open_wrangler_numeric_filter({series}, 'between', [{', '.join(typed_values)}]{duration_arg})"
     if condition.negated:
         result = f"~{result}"
     if condition.excludes_missing:

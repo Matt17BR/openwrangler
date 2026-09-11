@@ -150,10 +150,11 @@ Use the existing owners to choose a focused source check:
   Its NumPy `NaT` Session cases compare grid flags, counts and live/generated null filters; the existing Fill Missing
   and Pandas Group By owners cover donor handling and standalone generated nullable keys.
   Arrow duration cases retain native extrema, dictionary spelling and validity, bounded output work, and exact
-  minimum-microsecond Session selections without changing source storage.
+  minimum-microsecond Session selections without changing source storage. Object duration choices must select their
+  counted rows across mixed NumPy, Pandas and Python values; the existing temporal Session owner retains recovery.
   [Filter logic](../python/tests/test_filter_logic.py) executes live and generated
   duration filters under a changed notebook Decimal context in each editing-capable Python engine.
-  Its Arrow duration cases compare native ticks with an independent rational oracle across all supported units,
+  Its native and object duration cases compare stored ticks with an independent rational oracle across all supported units,
   fractional and out-of-range operands, dictionary chunks and null selections.
   The Polars owner also checks native temporal page, choice and profile precision before Python row conversion,
   with eager/lazy session recovery, generated filtering, padded-fraction search, portable selection keys and a projected
