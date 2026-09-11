@@ -1,5 +1,21 @@
 import { createWebviewSelectorReadiness } from "./webview-browser.mjs";
 
+export function createHeaderProfileScreenshotReadiness({ description, columnCount }) {
+  if (!Number.isSafeInteger(columnCount) || columnCount < 1) {
+    throw new TypeError("Header-profile screenshots require a positive exact column count.");
+  }
+  return createWebviewSelectorReadiness({
+    description,
+    selectors: [
+      { selector: "th[data-grid-column]", count: columnCount },
+      { selector: "th[data-grid-column] > .columnInsight:not(.emptyInsight)", count: columnCount },
+      { selector: "th[data-grid-column] .emptyInsight", count: 0 }
+    ],
+    absentText: [{ selector: "th[data-grid-column] > .columnInsight", text: "Profiling…" }],
+    emptyArrayGlobals: ["openWranglerHarnessErrors"]
+  });
+}
+
 const FILTER_PANEL_READINESS_SELECTORS = Object.freeze([
   Object.freeze({
     selector:

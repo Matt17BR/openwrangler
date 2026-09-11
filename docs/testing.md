@@ -103,6 +103,8 @@ compares checked-in screenshots, and runs browser interaction and accessibility 
 layout or popup placement. The [Chromium interaction owner](../scripts/test-webview-accessibility.mjs) uses explicit
 viewports and actual keyboard, pointer and focus behavior; Code Preview readiness observes the published editor and
 visible code, because virtualized offscreen text need not exist in the DOM.
+Draft-preview, summary-family and by-example screenshots wait for their expected header profiles within the existing
+capture deadline. A virtual-time advance alone does not establish that asynchronous profile batches have rendered.
 
 Use the existing owners to choose a focused source check:
 
