@@ -4,6 +4,10 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ## [Unreleased]
 
+### Changed
+
+- Generated DuckDB code avoids repeated scans when checking output names in wide results.
+
 ## [2.2.0] - 2026-09-11
 
 ### Changed
