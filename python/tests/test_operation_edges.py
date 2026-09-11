@@ -813,6 +813,114 @@ def test_categorical_output_collisions_fail_before_creating_duplicate_columns(en
         execute_generated(engine, frame, operation)
 
 
+@pytest.mark.parametrize("early_collision", [False, True])
+def test_pandas_one_hot_preflight_refusal_and_corrected_prefix(early_collision, monkeypatch) -> None:
+    source = pd.DataFrame(
+        {
+            "first": pd.Categorical(["b", "a", None], categories=["unused", "b", "a"]),
+            "second": ["b", "a", None],
+            **({"first_a": [4, 5, 6]} if early_collision else {}),
+            "second_a": [7, 8, 9],
+        }
+    )
+    source.index = pd.Index([7, 7, 2], name="original-row")
+    source.attrs = {"origin": "one-hot-source"}
+    original = source.copy(deep=True)
+    runtime = PandasEngine()
+    operation = bound_step(
+        "oneHotEncode",
+        columns=[bound_ref("c:source:0", "first", 0), bound_ref("c:source:1", "second", 1)],
+    )
+    comparisons = []
+    native_eq = pd.Series.eq
+
+    def record_comparison(series, value, *args, **kwargs):
+        comparisons.append(series.name)
+        return native_eq(series, value, *args, **kwargs)
+
+    monkeypatch.setattr(pd.Series, "eq", record_comparison)
+    collision = "first_a" if early_collision else "second_a"
+    expected_comparisons = [] if early_collision else ["first", "first"]
+    with pytest.raises(EngineError, match=f"duplicate column names: {collision}") as live_error:
+        runtime.apply_transform(source, operation)
+    assert comparisons == expected_comparisons
+
+    comparisons.clear()
+    with pytest.raises(ValueError, match=f"duplicate column names: {collision}") as generated_error:
+        execute_generated(runtime, source, operation)
+    assert comparisons == expected_comparisons
+    if early_collision:
+        # Name validation stops at the first bad selected column.
+        assert "second_a" not in str(live_error.value)
+        assert "second_a" not in str(generated_error.value)
+
+    operation = {**operation, "params": {**operation["params"], "prefixSeparator": "::"}}
+    expected = original.drop(columns=["first", "second"])
+    for name in ["first", "second"]:
+        expected[f"{name}::a"] = pd.array([0, 1, 0], dtype="int8")
+        expected[f"{name}::b"] = pd.array([1, 0, 0], dtype="int8")
+    for result in (runtime.apply_transform(source, operation), execute_generated(runtime, source, operation)):
+        pd.testing.assert_frame_equal(result, expected, check_exact=True)
+        assert result.attrs == expected.attrs == source.attrs
+    pd.testing.assert_frame_equal(source, original, check_exact=True)
+
+
+@pytest.mark.parametrize("case", ["duplicate", "private", "prior-column", "numeric-label", "native-and-collision"])
+def test_pandas_one_hot_preflight_names_before_current_column_comparison(case, monkeypatch) -> None:
+    if case == "duplicate":
+        source = pd.DataFrame({"category": pd.Series([1, "1", None], dtype=object), "keep": [1, 2, 3]})
+        message = "duplicate column names: category_1"
+    elif case == "private":
+        source = pd.DataFrame({"_": ["open_wrangler_internal_row_id_forged", None, ""], "keep": [1, 2, 3]})
+        message = "reserved private row-identity column"
+    elif case == "prior-column":
+        source = pd.DataFrame({"a": ["b_c"] * 3, "a_b": ["c"] * 3, "keep": [1, 2, 3]})
+        message = "duplicate column names: a_b_c"
+    elif case == "numeric-label":
+        source = pd.DataFrame({"": ["7"] * 3, 7: [1, 2, 3]})
+        message = "duplicate column names: 7"
+    else:
+        source = pd.DataFrame({"category": pd.Series([("a", "b")] * 3, dtype=object), "category_('a', 'b')": [1, 2, 3]})
+        message = "duplicate column names: category_"
+    original = source.copy(deep=True)
+    selected = 2 if case == "prior-column" else 1
+    operation = bound_step(
+        "oneHotEncode",
+        columns=[bound_ref(f"c:source:{i}", str(name), i) for i, name in enumerate(source.columns[:selected])],
+        prefixSeparator="" if case == "numeric-label" else "_",
+    )
+    expected_comparisons = ["a"] if case == "prior-column" else []
+    comparisons = []
+    native_eq = pd.Series.eq
+
+    def record_comparison(series, value, *args, **kwargs):
+        comparisons.append(series.name)
+        return native_eq(series, value, *args, **kwargs)
+
+    monkeypatch.setattr(pd.Series, "eq", record_comparison)
+    with pytest.raises(EngineError, match=message):
+        PandasEngine().apply_transform(source, operation)
+    assert comparisons == expected_comparisons
+    comparisons.clear()
+    with pytest.raises(ValueError, match=message):
+        execute_generated(PandasEngine(), source, operation)
+    assert comparisons == expected_comparisons
+    pd.testing.assert_frame_equal(source, original, check_exact=True)
+
+
+@pytest.mark.parametrize("value", [("a", "b"), ["a", "b"]])
+def test_pandas_one_hot_preflight_keeps_native_errors_for_available_names(value) -> None:
+    source = pd.DataFrame({"category": pd.Series([value] * 3, dtype=object), "keep": [1, 2, 3]})
+    original = source.copy(deep=True)
+    operation = bound_step("oneHotEncode", columns=[bound_ref("c:source:0", "category", 0)])
+    error, message = (ValueError, "Lengths must be equal") if isinstance(value, tuple) else (TypeError, "unhashable")
+    with pytest.raises(error, match=message):
+        PandasEngine().apply_transform(source, operation)
+    with pytest.raises(error, match=message):
+        execute_generated(PandasEngine(), source, operation)
+    pd.testing.assert_frame_equal(source, original, check_exact=True)
+
+
 def test_dynamic_categorical_outputs_cannot_enter_the_private_row_identity_namespace(engine) -> None:
     private_suffix = "open_wrangler_internal_row_id_forged"
     frame = frame_for(engine, {"tags": [private_suffix], "value": [1]})

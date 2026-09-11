@@ -7,6 +7,8 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 ### Changed
 
 - Generated Pandas code for constant Fill omits unused statistical helpers.
+- Pandas One-hot encoding checks output names before building each column's indicators, avoiding unnecessary work
+  when names collide.
 
 ### Fixed
 

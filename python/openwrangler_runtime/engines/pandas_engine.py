@@ -1291,15 +1291,26 @@ class PandasEngine(DataFrameEngine):
             positions = [self._bound_frame_position(df, column, kind) for column in params["columns"]]
             names = [bound_column_name(column, kind) for column in params["columns"]]
             separator = params.get("prefixSeparator", "_")
+            existing_names = {
+                str(name)
+                for position, name in enumerate(df.columns)
+                if not params.get("dropOriginal", True) or position not in positions
+            }
             encoded_parts = []
             for position, name in zip(positions, names, strict=True):
                 series = _pandas_scalar_values(df.iloc[:, position])
                 values = sorted(pd.unique(series[series.notna()]), key=str)
-                encoded_parts.extend(
-                    series.eq(value).fillna(False).astype("int8").rename(f"{name}{separator}{value}")
-                    for value in values
-                    if str(value)
+                outputs = [(value, f"{name}{separator}{value}") for value in values if str(value)]
+                # Only overlapping existing names can collide; avoid rescanning prior outputs.
+                ensure_output_columns_available(
+                    existing_names.intersection(name for _, name in outputs),
+                    (name for _, name in outputs),
+                    "One-hot encoding",
                 )
+                encoded_parts.extend(
+                    series.eq(value).fillna(False).astype("int8").rename(name) for value, name in outputs
+                )
+                existing_names.update(name for _, name in outputs)
             encoded = pd.concat(encoded_parts, axis=1) if encoded_parts else pd.DataFrame(index=df.index)
             encoded = encoded.iloc[
                 :, sorted(range(encoded.shape[1]), key=lambda position: str(encoded.columns[position]))
@@ -1309,7 +1320,6 @@ class PandasEngine(DataFrameEngine):
                 if params.get("dropOriginal", True)
                 else df
             )
-            ensure_output_columns_available(base.columns, encoded.columns, "One-hot encoding")
             return pd.concat([base, encoded], axis=1)
         if kind == "multiLabelBinarize":
             position = self._bound_frame_position(df, params["column"], kind)
@@ -2406,6 +2416,8 @@ class PandasEngine(DataFrameEngine):
             names = [bound_column_name(column, kind) for column in params["columns"]]
             pairs = list(zip(positions, names, strict=True))
             parts = f"_encoded_parts_{index}"
+            outputs = f"_encoded_outputs_{index}"
+            existing = f"_encoded_existing_{index}"
             series = f"_encoded_series_{index}"
             values = f"_encoded_values_{index}"
             name = f"_encoded_{index}"
@@ -2416,17 +2428,44 @@ class PandasEngine(DataFrameEngine):
             order = f"_encoded_order_{index}"
             return [
                 f"{prefix}{parts} = []",
+                (
+                    f"{prefix}{existing} = {{str(column) for position, column in enumerate(df.columns) "
+                    f"if not {params.get('dropOriginal', True)!r} or position not in {positions!r}}}"
+                ),
                 f"{prefix}for _position_{index}, _column_{index} in {pairs!r}:",
                 f"{prefix}    {series} = _open_wrangler_scalar_values(df.iloc[:, _position_{index}])",
                 f"{prefix}    {values} = sorted(pd.unique({series}[{series}.notna()]), key=str)",
-                f"{prefix}    {parts}.extend(",
-                f"{prefix}        {series}.eq(value).fillna(False).astype('int8')",
+                f"{prefix}    {outputs} = [",
                 (
-                    f"{prefix}        .rename(str(_column_{index}) + "
+                    f"{prefix}        (value, str(_column_{index}) + "
                     f"{params.get('prefixSeparator', '_')!r} + str(value))"
                 ),
                 f"{prefix}        for value in {values} if str(value)",
+                f"{prefix}    ]",
+                f"{prefix}    {generated} = [column for _, column in {outputs}]",
+                (
+                    f"{prefix}    {reserved} = [column for column in {generated} "
+                    f"if column.casefold().startswith({INTERNAL_ROW_ID_PREFIX.casefold()!r})]"
+                ),
+                f"{prefix}    if {reserved}:",
+                (
+                    f"{prefix}        raise ValueError("
+                    f'"One-hot encoding would create Open Wrangler\'s reserved private row-identity column.")'
+                ),
+                (
+                    f"{prefix}    {collisions} = sorted({existing}.intersection({generated}) | "
+                    f"{{column for column, count in Counter({generated}).items() if count > 1}})"
+                ),
+                f"{prefix}    if {collisions}:",
+                (
+                    f"{prefix}        raise ValueError('One-hot encoding would create duplicate column names: ' "
+                    f"+ ', '.join({collisions}))"
+                ),
+                f"{prefix}    {parts}.extend(",
+                f"{prefix}        {series}.eq(value).fillna(False).astype('int8').rename(column)",
+                f"{prefix}        for value, column in {outputs}",
                 f"{prefix}    )",
+                f"{prefix}    {existing}.update({generated})",
                 f"{prefix}{name} = pd.concat({parts}, axis=1) if {parts} else pd.DataFrame(index=df.index)",
                 f"{prefix}{order} = sorted(range({name}.shape[1]), key=lambda position: str({name}.columns[position]))",
                 f"{prefix}{name} = {name}.iloc[:, {order}]",
@@ -2435,24 +2474,6 @@ class PandasEngine(DataFrameEngine):
                     f"if position not in {positions!r}]].copy() if {params.get('dropOriginal', True)!r} else df"
                 ),
                 f"{prefix}{generated} = [str(column) for column in {name}.columns]",
-                (
-                    f"{prefix}{reserved} = [column for column in {generated} "
-                    f"if column.casefold().startswith({INTERNAL_ROW_ID_PREFIX.casefold()!r})]"
-                ),
-                f"{prefix}if {reserved}:",
-                (
-                    f"{prefix}    raise ValueError("
-                    f'"One-hot encoding would create Open Wrangler\'s reserved private row-identity column.")'
-                ),
-                (
-                    f"{prefix}{collisions} = sorted((set(map(str, {base}.columns)) & set({generated})) | "
-                    f"{{column for column, count in Counter({generated}).items() if count > 1}})"
-                ),
-                f"{prefix}if {collisions}:",
-                (
-                    f"{prefix}    raise ValueError('One-hot encoding would create duplicate column names: ' "
-                    f"+ ', '.join({collisions}))"
-                ),
                 (
                     f"{prefix}if not {generated} and not any("
                     f"not is_internal_row_id_label(column) for column in {base}.columns):"
