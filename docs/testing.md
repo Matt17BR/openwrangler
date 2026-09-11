@@ -305,6 +305,12 @@ row and a loaded icon observed together within ten seconds. Failure details cont
 image-state fields. The editor may choose its gallery or local icon URL; archive verification separately checks the
 packaged icon. The test harness's similar display name cannot satisfy this check.
 
+The broader platform smoke retains grouped median and linear interpolation as representative dynamic Fill forms,
+including generated-code display, preview diffs, visible Apply/Undo, and source integrity. Uppercase retains visible
+Discard and renderer restoration. Previous-value and most-common Fill variants remain covered by the
+[form](../src/test/fillMissingFields.component.test.tsx) and
+[native/generated-code](../python/tests/test_fill_missing.py) owners.
+
 The broader platform smoke checks trusted-pickle publication, unchanged source bytes, worker cleanup, and opening
 the converted Parquet file through the public command. The optional completion-notification action has a direct
 command test; toast visibility is not the conversion-completion signal.
