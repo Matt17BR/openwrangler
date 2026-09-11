@@ -438,82 +438,95 @@ Pandas executes viewing, all catalog operations, profiling, generated code, and 
 Duplicate and non-string labels are addressed positionally after binding. Object-dtype cells are recursively isolated
 before trusted custom code, preview, rollback, or generated-code execution so nested user objects cannot mutate the
 source. Typed null, NaN, decimal, datetime, and wide-integer behavior is normalized at the protocol boundary.
+
 Integer profiles retain exact extrema and sums when floating-point approximations overflow. Each approximate statistic
 is attempted independently; unavailable statistics and histograms are omitted. Native value counting remains first.
 If Pandas cannot build its count index for object-stored ordinary Python integers, native factorization supplies exact
 counts with an object index; requested descending counts keep first-encounter ties. Successful native counts retain
 their existing ordering. This repair does not change stored values or admit custom integer subclasses.
+
 Value-choice ranking retains the leading `limit + 1` labeled candidates and the current input, instead of the full
 label collection. Native counting and ordinary text search remain exhaustive over their inputs. All distinct labels
 are evaluated before publication, so a late formatting failure still refuses the entire request.
+
 Datetime cells and nested values share one formatter. Pandas Timestamp nanoseconds are inserted into the time
 fraction while preserving the complete native offset, including offset seconds. Ordinary Timestamp profile and
 value-choice labels reuse this formatter with their existing space separator. Other scalar labels retain native string conversion. Search keeps
 its original per-row text and counting order, correcting only affected timestamp and present temporal-extremum text.
-Numeric dtypes and dedicated string dtypes bypass the temporal search scan. Ordinary datetime objects retain their existing formatting;
-timestamp conversion and input precision stay with their existing owners.
+Numeric and dedicated string dtypes bypass the temporal search scan. Ordinary datetime objects retain their native formatting.
+
 Native Arrow date32 and date64 columns retain date semantics for schemas, profiles, value selections and sorting,
 including when loaded from Parquet.
+
 Parquet reads repair nullable integer index levels and integer data that ordinary Pandas decoding would convert to
 floating storage. Object columns containing integer children in lists, structs or maps use native Arrow arrays;
 other data columns retain ordinary Pandas decoding. Data and index repair share one supplemental projection through
 the same open file. Its field names, physical types, row count and source fingerprint are checked before publication.
 A changed source is refused; this guard does not persist beyond the read.
+
 Profiles and duplicate comparisons use temporary exact Python values for these Arrow containers because native
 Arrow lacks their count and duplicate kernels. Live and generated comparisons share that conversion policy;
 stored arrays and export types remain unchanged. No comparison keys persist between requests.
-For Dataset statistics, native multi-column duplicate counting can refuse unhashable list, dict, set or NumPy-array
-values. Those specific native TypeErrors leave the duplicate count unavailable while returning exact missing counts.
-Other failures propagate. The calculation tries the native path first and adds no scan of healthy object columns;
-this policy does not change cleaning operations or their generated code.
-Native Arrow `bool8` and UUID Parquet fields reopen as logical booleans and canonical strings. A local schema copy
-repairs only their canonical unsupported Pandas dtype metadata; unrelated invalid metadata retains native refusal.
-The same descriptor and fingerprint guard covers their schema, data and any supplemental index reads.
+
+Dataset statistics reuse per-column missing counts for the total, including Sparse columns, without a second
+aggregate scan. Duplicate counting tries the native path first. Its specific unhashable-value TypeErrors for list,
+dict, set or NumPy-array values leave only the multi-column duplicate count unavailable; other failures propagate.
+Ordinary object columns need no additional validation scan. Cleaning operations retain their separate rules.
+
+Native Arrow `bool8` and UUID Parquet fields reopen as logical booleans and canonical strings. Only their canonical
+unsupported Pandas dtype metadata is adapted; unrelated invalid metadata retains native refusal. Their schema, data
+and supplemental index reads use the same descriptor and source-fingerprint guard described above.
+
 Scalar Arrow dictionaries expose their logical value type while retaining the physical dtype in schema metadata.
 Profiles and query keys use logical values, including null dictionary entries and repeated values across chunks.
 Schema nullability checks native validity masks and referenced codebook entries without decoding value payloads.
 String keys share decoded dictionary entries rather than expanding the text payload once per row. Row selection
 retains encoded columns; it may normalize codebooks or widen their index type when native chunk unification requires
 it. Source arrays remain unchanged.
-Native Arrow `bool8` and UUID columns use logical booleans and canonical UUID strings for pages, queries, profiles
-and selected cleaning operands. Row selection retains their physical arrays; unchanged Fill targets and direct
-copies retain storage as well. Pages prepare only projected rows and leave dictionary scalar iteration bounded by
-the requested page. Arbitrary Arrow extensions do not gain this conversion.
-Object-dtype UUIDs share their canonical string value across those same query, cleaning and export owners.
-Pandas' native inference excludes definite non-UUID inputs; ambiguous inputs are inspected exactly, with an array
-copy allocated only when a UUID is found. Other objects and missing representations remain unchanged. Query results
-select the original physical rows, while derived logical values and exported UUIDs use canonical text.
+
+Native Arrow `bool8` and UUID columns expose logical booleans and canonical strings for pages, queries, profiles
+and selected cleaning operands; arbitrary Arrow extensions do not gain this conversion. Object-dtype UUIDs use
+canonical text for queries, derived cleaning values and export while preserving other objects and missing
+representations. UUID-specific inspection is limited to ambiguous object columns, and replacement arrays are
+allocated only when UUID conversion is needed. Query results select original physical rows; row selection, unchanged
+Fill targets and direct copies retain native storage.
+
+Numeric, text, Convert Type and pivot operations prepare only selected dictionary operands under the existing
+native conversion, arithmetic and output limits. Unrelated columns retain encoded storage. Page scalar and temporal
+context is prepared after row and column projection; dictionary scalar iteration is bounded by the requested page.
+
 Integer filters compare within the native storage range and handle out-of-range operands without floating conversion.
-Sorting, duplicate detection and directional Fill share exact temporary row keys. Row selection preserves Sparse
-integer values and their fill convention, including columns that did not participate in the query.
-Nullable Arrow integer, timestamp and duration keys retain their exact values during duplicate comparison, including
-nanosecond differences. Dataset duplicate counts use the same comparison keys. These temporary keys preserve value
-ordering; temporal keys use integer storage values so present extrema remain distinct from nulls.
-Retained columns and native indexes keep their original representation.
+Sorting, duplicate detection and directional Fill share exact temporary row keys. Nullable Arrow integer, timestamp
+and duration comparisons retain exact values, including nanosecond differences; temporal keys use integer storage
+so present extrema remain distinct from nulls. Dataset duplicate counts use the same keys for these values and for
+single-column Sparse integers. The keys preserve value ordering. Row selection retains native indexes and Sparse
+integer values and fill conventions, including columns outside the query; other retained columns keep their native
+representation, subject to the dictionary chunk-unification behavior above.
+
 Arrow timestamp and duration null masks use native validity, including logical null entries in dictionaries.
 Pages and profile labels retain native context for present nanosecond extrema that Pandas boxes as `NaT`.
-Page context is prepared after row and column projection; profile extrema use native aggregation. Supported Fill
-methods retain native temporal donors and directional anchors in live and generated code. Source arrays stay unchanged.
+Profile extrema use native aggregation. Supported Fill methods retain native temporal donors and directional
+anchors in live and generated code without changing source arrays.
+Using the minimum nanosecond timestamp as a filter value remains unsupported under the existing microsecond input precision.
+
 Linear Fill shares its ordered-gap and coordinate-weight arithmetic between live execution and standalone generated
 code. Target, coordinate and missing-value validation remain with the engine, along with dtype and original row-order
 restoration.
-Using the minimum nanosecond timestamp as a filter value remains unsupported under the existing microsecond input precision.
-Single-column Sparse integer duplicate counts also use the existing exact row keys, retaining native fill conventions.
-The missing-cell total sums the per-column counts, including Sparse columns, without a second aggregate scan.
+
 Mixed object columns compare native NumPy numeric scalars through exact temporary keys. Counts, sorting,
 duplicates, grouping and Pivot share those keys while retaining original source scalars and representative labels.
 Group By retains the first key representative; Pivot retains the first complete identifier row for each group.
+
 Integer filter text remains exact through the webview. Pandas object columns accept exact integer selection tokens
 for integral values; physically floating columns retain their existing floating-token contract. Null and NaN
 selections remain separate. Ordinary native numeric arrays keep their native comparison path.
+
 Finite native NumPy extended floating values must round-trip through binary64 before scalar transport or selected
 query-key preparation. Values that would lose precision or range are refused before display, grouping or ordered
 aggregation can collapse them. Representable values and genuine NaN or infinity retain their existing behavior.
 The guard does not rewrite source values or scan unrelated projected columns. Exact native CSV export and explicit
 Floor or Convert Type operations retain their own conversion rules.
-Numeric, text, Convert Type and pivot operations prepare only their selected dictionary operands. Existing native
-conversion rules, arithmetic limits and output validation apply to those logical values; unrelated columns retain
-their encoded storage.
+
 Formula modulo supports Arrow integer operands using native unsigned magnitudes and the divisor's sign, with no
 floating conversion. The result uses the widest operand width and the divisor's signedness. Integer literals must
 fit within 64-bit capacity at the runtime boundary. Null operands
