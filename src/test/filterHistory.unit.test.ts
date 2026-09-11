@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { FilterModel } from "../shared/filterModel";
+import { isFilterModel } from "../shared/protocolValidation";
 import {
   MAX_CONFIRMED_FILTER_HISTORY,
   confirmLatestFilterUndo,
@@ -8,7 +9,7 @@ import {
   recordConfirmedFilterTransition
 } from "../webviews/filters/filterHistory";
 
-const filterModel = (value: string, sort: FilterModel["sort"] = []): FilterModel => ({
+const filterModel = (value: unknown, sort: FilterModel["sort"] = []): FilterModel => ({
   logic: "and",
   filters: [
     {
@@ -74,5 +75,41 @@ describe("confirmed viewing-filter history", () => {
     const staleTarget = { filters: filterModel("Milan").filters };
 
     expect(confirmLatestFilterUndo(history, staleTarget, initial)).toBe(history);
+  });
+
+  it("preserves accepted JSON operands in independent history and undo copies", () => {
+    const value = JSON.parse('[{"__proto__":{"marker":"kept"},"constructor":"literal"},-0]') as [
+      { __proto__: { marker: string }; constructor: string },
+      number
+    ];
+    const expected = JSON.stringify(value);
+    const previous = filterModel(value);
+    const current = filterModel("Paris", [{ column: "sales", direction: "desc", nulls: "last" }]);
+    expect(isFilterModel(previous)).toBe(true);
+
+    const history = recordConfirmedFilterTransition(emptyConfirmedFilterHistory(), previous, current);
+    value[0].__proto__.marker = "original changed";
+    const undo = latestConfirmedFilterUndo(history, current)!;
+    const saved = history.entries[0]!.filters[0]!.predicates[0]!.value as typeof value;
+    const target = undo.target.filters[0]!.predicates[0]!.value as typeof value;
+    const request = undo.model.filters[0]!.predicates[0]!.value as typeof value;
+    for (const copy of [saved, target, request]) {
+      expect(Object.hasOwn(copy[0], "__proto__")).toBe(true);
+      expect(Object.hasOwn(copy[0], "constructor")).toBe(true);
+      expect(JSON.stringify(copy)).toBe(expected);
+      expect(Object.is(copy[1], -0)).toBe(true);
+    }
+    expect(undo.model.sort).toBe(current.sort);
+
+    request[0].__proto__.marker = "request changed";
+    expect(target[0].__proto__.marker).toBe("kept");
+    expect(saved[0].__proto__.marker).toBe("kept");
+    target[0].constructor = "target changed";
+    expect(request[0].constructor).toBe("literal");
+    expect(saved[0].constructor).toBe("literal");
+    saved[0].__proto__.marker = "history changed";
+    expect(target[0].__proto__.marker).toBe("kept");
+    expect(request[0].__proto__.marker).toBe("request changed");
+    expect(value[0]).toEqual({ ["__proto__"]: { marker: "original changed" }, constructor: "literal" });
   });
 });

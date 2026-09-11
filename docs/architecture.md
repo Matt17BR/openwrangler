@@ -369,6 +369,10 @@ or opaque containers. Python also requires UTF-8-valid strings and keys for resp
 are refused before native work even though the shared syntax guard accepts them. The primitive-string limit applies
 only at the operand root, and request framing retains its existing byte bound.
 
+Confirmed viewing-filter history preserves admitted operand objects and their own keys. History entries, Undo
+targets and outgoing filter requests hold independent copies; Undo retains the current viewing sorts. JSON operand
+objects keep their serialized shape rather than becoming lookup Maps.
+
 Float filter values accept explicit `Infinity` and `-Infinity`, plus the historical `inf` and `-inf` spellings used
 in saved Filter Rows steps. These aliases do not admit NaN or finite text that overflows. The shared literal fixture
 defines accepted and rejected forms for live and generated execution.
