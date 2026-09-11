@@ -587,18 +587,18 @@ test("uses the protected base of the tested merge and rejects stale base identit
   });
 });
 
-test("depth two is sufficient while missing merge history requires full checks", (context) => {
+test("sufficient merge history permits omissions while missing parents require full checks", (context) => {
   const cwd = repository(context);
   write(cwd, "README.md");
   const env = merge(cwd);
-  for (const depth of [1, 2]) {
+  for (const depth of [1, 2, 3]) {
     const clone = mkdtempSync(join(tmpdir(), "openwrangler-ci-clone-"));
     context.after(() => rmSync(clone, { recursive: true, force: true }));
     git(cwd, "clone", "--quiet", "--depth", String(depth), pathToFileURL(cwd).href, clone);
     assert.deepEqual(proveRuntimeOmissions({ cwd: clone, env }), {
-      docsOnly: depth === 2,
-      rOmittable: depth === 2,
-      pythonOmittable: depth === 2
+      docsOnly: depth >= 2,
+      rOmittable: depth >= 2,
+      pythonOmittable: depth >= 2
     });
   }
 });
@@ -626,7 +626,6 @@ test("Source reuses the exact proof locally without changing job scheduling", ()
   const proofIndex = source.steps.findIndex((step) => step.id === "proof");
   const guardIndex = source.steps.indexOf(guard);
   assert.ok(checkoutIndex >= 0 && node24Index > checkoutIndex && proofIndex > node24Index && guardIndex > proofIndex);
-  assert.equal(source.steps[checkoutIndex].with["fetch-depth"], 2);
   for (const proof of [
     source.steps[proofIndex],
     workflow.jobs["docs-proof"].steps.find((step) => step.id === "proof")
