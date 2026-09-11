@@ -264,6 +264,8 @@ including in generated Python. Calendar and unitless NumPy durations remain disp
 Previously saved selections with rounded temporal values must be cleared and reselected.
 Pandas durations stored in seconds, milliseconds or microseconds remain displayable outside the nanosecond range.
 Their selections retain the existing Python timedelta range; wider values remain visible but cannot be selected.
+NumPy-backed Pandas duration columns search the labels shown in value choices, including whole days and large durations.
+Sparse, Arrow, categorical and object duration searches retain their existing representation limits.
 Polars Datetime and Duration columns retain nanoseconds in grid cells, value choices and profile labels, and datetime
 offsets retain seconds. Duration choices now work and use native signed-unit labels, such as `1m 40s 1µs`.
 Datetime labels retain the native unit's three, six or nine fractional digits. Search accepts the displayed labels,

@@ -1104,6 +1104,52 @@ def test_pandas_value_search_filters_original_representations_before_counting(
     pd.testing.assert_frame_equal(source, before, check_exact=True)
 
 
+@pytest.mark.parametrize(
+    "unit,ticks,label",
+    [
+        ("s", 86400, "1 days 00:00:00"),
+        ("s", -86400, "-1 days +00:00:00"),
+        ("ms", 86400000, "1 days 00:00:00"),
+        ("ms", -86400000, "-1 days +00:00:00"),
+        ("us", 86400000000, "1 days 00:00:00"),
+        ("us", -86400000000, "-1 days +00:00:00"),
+        ("ns", 86400000000000, "1 days 00:00:00"),
+        ("ns", -86400000000000, "-1 days +00:00:00"),
+        ("ms", 123, "0 days 00:00:00.123000"),
+        ("us", 123000, "0 days 00:00:00.123000"),
+        ("ns", 123000001, "0 days 00:00:00.123000001"),
+        ("s", 2**63 - 1, "106751991167300 days 15:30:07"),
+        ("s", -(2**63 - 1), "-106751991167301 days +08:29:53"),
+    ],
+)
+def test_pandas_native_duration_search_matches_exact_counted_labels(unit: str, ticks: int, label: str) -> None:
+    native = np.array([ticks, 0, ticks, -(2**63)], dtype=np.int64).view(f"timedelta64[{unit}]")
+    source = pd.DataFrame({"value": native})
+    source.index = pd.Index(["same"] * 4, name="source row")
+    before = source.copy(deep=True)
+    engine = PandasEngine()
+    try:
+        choices, more = engine.column_values(source, "value")
+        assert not more and len(choices) == 2
+        assert choices[0]["value"] == label and choices[0]["count"] == 2
+        assert choices[1]["value"] == "0 days 00:00:00" and choices[1]["count"] == 1
+        assert engine.column_values(source, "value", search=label) == ([choices[0]], False)
+        assert engine.column_values(source, "value", search="days", limit=1) == (choices[:1], True)
+        assert engine.column_values(source, "value", search="not-a-match") == ([], False)
+        if unit == "s" and abs(ticks) == 2**63 - 1:
+            wrong_label = "106751 days 23:47:16.854775807" if ticks > 0 else "-106752 days +00:12:43.145224193"
+            assert engine.column_values(source, "value", search=wrong_label) == ([], False)
+        else:
+            for old_label in source["value"].dropna().astype(str):
+                expected = [choice for choice in choices if old_label in choice["value"]]
+                assert engine.column_values(source, "value", search=old_label) == (expected, False)
+        for empty in [source.iloc[:0], source.iloc[[3]]]:
+            assert engine.column_values(empty, "value", search="00:00:00") == ([], False)
+        pd.testing.assert_frame_equal(source, before, check_exact=True)
+    finally:
+        engine.close()
+
+
 @pytest.mark.parametrize("include_fraction", [False, True])
 def test_pandas_datetime_search_retains_native_midnight_and_padded_fraction_text(include_fraction: bool) -> None:
     midnight = pd.Timestamp("2020-01-01")
