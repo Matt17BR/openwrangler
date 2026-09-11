@@ -603,6 +603,69 @@ def test_polars_all_column_row_operations_are_safe_for_a_zero_column_frame() -> 
     assert generated.shape == (0, 0)
 
 
+@pytest.mark.parametrize("private_position", [0, 1, 3])
+def test_pandas_one_hot_maps_visible_positions_once_per_operation(
+    monkeypatch: pytest.MonkeyPatch, private_position: int
+) -> None:
+    engine = PandasEngine()
+    source = pd.DataFrame(
+        [["left-a", "u", 1], ["left-b", "v", 2]],
+        columns=cast(Any, ["same", "same", 7]),
+        index=pd.Index([7, 7], name="source_index"),
+    )
+    source.attrs = {"owned": "sentinel"}
+    source_before = source.copy(deep=True)
+    identified = engine.ensure_row_ids(source, "one-hot-map")
+    row_id = engine.internal_row_id_column(identified)
+    assert row_id is not None
+    positions = list(range(3))
+    positions.insert(private_position, 3)
+    identified = identified.iloc[:, positions]
+    before = identified.copy(deep=True)
+    operation = bound_step(
+        "oneHotEncode",
+        columns=[bound_ref("c:source:2", "7", 2), bound_ref("c:source:1", "same", 1)],
+        dropOriginal=True,
+    )
+    visible_positions = engine._visible_positions
+    scans = 0
+
+    def counted_visible_positions(frame: Any) -> list[int]:
+        nonlocal scans
+        scans += 1
+        return visible_positions(frame)
+
+    with monkeypatch.context() as context:
+        context.setattr(engine, "_visible_positions", counted_visible_positions)
+        actual = engine.apply_transform(identified, operation)
+        assert scans == 1
+        with pytest.raises(EngineError, match="outside its input schema"):
+            engine._bound_frame_position(
+                identified, operation["params"]["columns"][0], "oneHotEncode", visible_positions=[]
+            )
+        assert scans == 1
+
+    generated = execute_generated(engine, source, operation)
+    pd.testing.assert_frame_equal(actual.drop(columns=[row_id]), generated, check_exact=True)
+    assert list(generated.columns) == ["same", "7_1", "7_2", "same_u", "same_v"]
+    assert generated["same"].tolist() == ["left-a", "left-b"]
+    assert generated["7_1"].tolist() == generated["same_u"].tolist() == [1, 0]
+    assert generated["7_2"].tolist() == generated["same_v"].tolist() == [0, 1]
+    assert actual.attrs == generated.attrs == source.attrs
+    pd.testing.assert_series_equal(actual[row_id], before[row_id], check_exact=True)
+    pd.testing.assert_frame_equal(identified, before, check_exact=True)
+
+    empty_operation = bound_step("oneHotEncode", columns=[], dropOriginal=True)
+    empty_selection = engine.apply_transform(identified, empty_operation)
+    pd.testing.assert_frame_equal(empty_selection, before, check_exact=True)
+    empty_generated = execute_generated(engine, source, empty_operation)
+    pd.testing.assert_frame_equal(empty_selection.drop(columns=[row_id]), empty_generated, check_exact=True)
+    assert empty_selection.attrs == empty_generated.attrs
+    pd.testing.assert_frame_equal(source, source_before, check_exact=True)
+    assert source.attrs == source_before.attrs
+    assert identified.attrs == before.attrs
+
+
 def test_categorical_encoders_ignore_missing_labels_and_match_generated_code(engine) -> None:
     if isinstance(engine, PandasEngine):
         one_hot_frame = pd.DataFrame(

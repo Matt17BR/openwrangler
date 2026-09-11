@@ -1288,7 +1288,11 @@ class PandasEngine(DataFrameEngine):
             result = _pandas_dense_rank(df.iloc[:, position], params["direction"])
             return pd.concat([df, result.rename(params["newColumn"])], axis=1)
         if kind == "oneHotEncode":
-            positions = [self._bound_frame_position(df, column, kind) for column in params["columns"]]
+            visible_positions = self._visible_positions(df)
+            positions = [
+                self._bound_frame_position(df, column, kind, visible_positions=visible_positions)
+                for column in params["columns"]
+            ]
             names = [bound_column_name(column, kind) for column in params["columns"]]
             separator = params.get("prefixSeparator", "_")
             existing_names = {
@@ -1555,9 +1559,11 @@ class PandasEngine(DataFrameEngine):
         row_id = self._row_id_column(frame)
         return frame.drop(columns=[row_id]) if row_id is not None else frame
 
-    def _bound_frame_position(self, frame: Any, reference: Any, operation: str) -> int:
+    def _bound_frame_position(
+        self, frame: Any, reference: Any, operation: str, *, visible_positions: list[int] | None = None
+    ) -> int:
         visible_position = bound_column_position(reference, operation)
-        visible_positions = self._visible_positions(frame)
+        visible_positions = self._visible_positions(frame) if visible_positions is None else visible_positions
         if visible_position >= len(visible_positions):
             raise EngineError(f"{operation} references a column outside its input schema.")
         frame_position = visible_positions[visible_position]
