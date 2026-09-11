@@ -5,8 +5,11 @@ from pathlib import Path
 from typing import Any, cast
 
 import pandas as pd
+import polars as pl
 import pytest
+from polars.testing import assert_frame_equal as assert_polars_frame_equal
 
+from openwrangler_runtime._column_binding import bind_step
 from openwrangler_runtime.engines import EngineError
 from openwrangler_runtime.engines.base import INTERNAL_ROW_ID_PREFIX
 from openwrangler_runtime.session import SessionManager
@@ -452,6 +455,85 @@ def test_every_transform_must_retain_one_visible_column(tmp_path: Path, backend:
     assert runtime.revision == 0
     assert runtime.draft_step is None
     assert runtime.page_cache == before_cache
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "polars-lazy"])
+@pytest.mark.parametrize("kind", ["oneHotEncode", "multiLabelBinarize"])
+@pytest.mark.parametrize("values", [[], [None, None], ["", ""]])
+def test_generated_categorical_rechecks_no_indicator_result(backend, kind, values, monkeypatch) -> None:
+    import __main__
+
+    pandas = backend == "pandas"
+    source: Any = (
+        pd.DataFrame({"only": pd.Series(values, dtype="string")})
+        if pandas
+        else pl.DataFrame({"only": pl.Series(values, dtype=pl.String)})
+    )
+    if pandas:
+        source.index = pd.Index([7] * len(values), name="source-row")
+        source.attrs = {"origin": "categorical-source"}
+    original = source.copy(deep=True) if pandas else source.clone()
+    if backend == "polars-lazy":
+        source = source.lazy()
+    monkeypatch.setattr(__main__, "categorical_empty_source", source, raising=False)
+    manager = SessionManager()
+    try:
+        opened = manager.open_session(
+            {"kind": "notebookVariable", "variableName": "categorical_empty_source"},
+            backend="pandas" if pandas else "polars",
+            mode="editing",
+        )
+        metadata = opened["metadata"]
+        session_id = metadata["sessionId"]
+        runtime = manager.sessions[session_id]
+        operation = (
+            step("empty-output", kind, columns=[ref("c:source:0", "only")])
+            if kind == "oneHotEncode"
+            else step("empty-output", kind, column=ref("c:source:0", "only"), delimiter="|", dropOriginal=True)
+        )
+        before_cache = deepcopy(runtime.page_cache)
+        with pytest.raises(EngineError, match="must leave at least one visible column"):
+            manager.preview_step(session_id, 0, operation, 0, 10)
+        assert runtime.revision == 0
+        assert runtime.draft_step is None
+        assert runtime.page_cache == before_cache
+
+        bound = bind_step(operation, metadata["schema"], runtime.committed_lineage)
+        caller_bindings = {"Any": object(), "is_internal_row_id_label": object()}
+        namespace: dict[str, Any] = dict(caller_bindings)
+        exec(runtime.engine.compile_plan([bound]), namespace)
+        assert all(namespace[name] is value for name, value in caller_bindings.items())
+        clean = namespace["clean_data"]
+        with pytest.raises(ValueError, match="must leave at least one visible column"):
+            clean(source)
+
+        private_name = INTERNAL_ROW_ID_PREFIX.upper() + "SOURCE"
+        private_names: list[Any] = [private_name, (private_name, "")] if pandas else [private_name]
+        for name in private_names:
+            private = original.copy(deep=True) if pandas else original.clone()
+            if pandas:
+                private[name] = range(len(values))
+            else:
+                private = private.with_columns(pl.Series(name, range(len(values))))
+                if backend == "polars-lazy":
+                    private = private.lazy()
+            with pytest.raises(ValueError, match="must leave at least one visible column"):
+                clean(private)
+
+        if pandas:
+            retained = original.assign(retained=pd.Series(range(len(values)), index=original.index, dtype="Int64"))
+            pd.testing.assert_frame_equal(clean(retained), retained[["retained"]])
+            pd.testing.assert_frame_equal(source, original)
+            assert source.attrs == original.attrs
+        else:
+            retained = original.with_columns(pl.Series("retained", range(len(values)), dtype=pl.Int64))
+            assert_polars_frame_equal(
+                clean(retained.lazy() if backend == "polars-lazy" else retained), retained.select("retained")
+            )
+            assert_polars_frame_equal(source.collect() if isinstance(source, pl.LazyFrame) else source, original)
+    finally:
+        manager.close_all()
+    assert not manager.sessions
 
 
 @pytest.mark.parametrize("backend", ["pandas", "polars"])

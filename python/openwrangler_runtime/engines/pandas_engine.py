@@ -1675,6 +1675,15 @@ class PandasEngine(DataFrameEngine):
         if lines:
             lines.append("")
         lines.extend(["import numpy as np", "import pandas as pd", "", ""])
+        if any(step["kind"] in {"oneHotEncode", "multiLabelBinarize"} for step in plan):
+            lines.extend(
+                [
+                    "from typing import Any",
+                    f"_INTERNAL_ROW_ID_PREFIX_CASEFOLD = {INTERNAL_ROW_ID_PREFIX.casefold()!r}",
+                    getsource(is_internal_row_id_label),
+                    "",
+                ]
+            )
         if needs_nullable_result_helpers or "grouped" in fill_strategies:
             lines.extend(
                 [
@@ -2444,6 +2453,11 @@ class PandasEngine(DataFrameEngine):
                     f"{prefix}    raise ValueError('One-hot encoding would create duplicate column names: ' "
                     f"+ ', '.join({collisions}))"
                 ),
+                (
+                    f"{prefix}if not {generated} and not any("
+                    f"not is_internal_row_id_label(column) for column in {base}.columns):"
+                ),
+                f"{prefix}    raise ValueError('A transformation must leave at least one visible column.')",
                 f"{prefix}df = pd.concat([{base}, {name}], axis=1)",
             ]
         if kind == "multiLabelBinarize":
@@ -2488,6 +2502,11 @@ class PandasEngine(DataFrameEngine):
                     f"{prefix}    raise ValueError('Multi-label binarization would create duplicate column names: ' "
                     f"+ ', '.join({collisions}))"
                 ),
+                (
+                    f"{prefix}if not {generated} and not any("
+                    f"not is_internal_row_id_label(column) for column in {base}.columns):"
+                ),
+                f"{prefix}    raise ValueError('A transformation must leave at least one visible column.')",
                 f"{prefix}df = pd.concat([{base}, {name}], axis=1)",
             ]
         if kind == "splitTextColumns":

@@ -64,6 +64,7 @@ from .base import (
     generated_fill_replacement_expression,
     generated_view_value_helper_lines,
     infer_semantic_type,
+    is_internal_row_id_label,
     normalize_cell,
     normalize_page_projection,
     normalize_summary_projection,
@@ -1316,7 +1317,7 @@ class PolarsEngine(DataFrameEngine):
                     for column, value, name in generated
                 ]
             )
-            return base.hstack(encoded)
+            return base.hstack(encoded) if base.width else encoded
         if kind == "multiLabelBinarize":
             # The generated output columns depend on every observed label.
             # Previewing this operation is therefore an explicit user-requested
@@ -1352,7 +1353,8 @@ class PolarsEngine(DataFrameEngine):
             ensure_output_columns_available(base.columns, generated_names, "Multi-label binarization")
             if not expressions:
                 return base
-            return base.hstack(eager.select(expressions))
+            encoded = eager.select(expressions)
+            return base.hstack(encoded) if base.width else encoded
         if kind == "splitTextColumns":
             column = bound_column_name(params["column"], kind)
             output_names = list(params["newColumns"])
@@ -1587,6 +1589,15 @@ class PolarsEngine(DataFrameEngine):
         if lines:
             lines.append("")
         lines.extend(["import polars as pl", ""])
+        if any(step["kind"] in {"oneHotEncode", "multiLabelBinarize"} for step in plan):
+            lines.extend(
+                [
+                    "from typing import Any",
+                    f"_INTERNAL_ROW_ID_PREFIX_CASEFOLD = {INTERNAL_ROW_ID_PREFIX.casefold()!r}",
+                    getsource(is_internal_row_id_label),
+                    "",
+                ]
+            )
         if any(
             step["kind"] == "formula"
             and not step["params"].get("rightColumn")
@@ -2204,8 +2215,10 @@ class PolarsEngine(DataFrameEngine):
                 f"{prefix}        (pl.col(column) == pl.lit(value)).fill_null(False).cast(pl.Int8).alias(name)",
                 f"{prefix}        for column, value, name in {generated}",
                 f"{prefix}    ])",
-                f"{prefix}    df = {base}.hstack({encoded})",
+                f"{prefix}    df = {base}.hstack({encoded}) if {base}.width else {encoded}",
                 f"{prefix}else:",
+                f"{prefix}    if not any(not is_internal_row_id_label(column) for column in {base}.columns):",
+                f"{prefix}        raise ValueError('A transformation must leave at least one visible column.')",
                 f"{prefix}    df = {base}",
             ]
         if kind == "multiLabelBinarize":
@@ -2257,8 +2270,10 @@ class PolarsEngine(DataFrameEngine):
                 f"{prefix}        .alias({params.get('prefix', f'{column}_')!r} + label)",
                 f"{prefix}        for label in {labels}",
                 f"{prefix}    ])",
-                f"{prefix}    df = {base}.hstack({encoded})",
+                f"{prefix}    df = {base}.hstack({encoded}) if {base}.width else {encoded}",
                 f"{prefix}else:",
+                f"{prefix}    if not any(not is_internal_row_id_label(column) for column in {base}.columns):",
+                f"{prefix}        raise ValueError('A transformation must leave at least one visible column.')",
                 f"{prefix}    df = {base}",
             ]
         if kind == "splitTextColumns":

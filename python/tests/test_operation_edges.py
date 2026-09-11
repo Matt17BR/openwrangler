@@ -7,6 +7,7 @@ from typing import Any, cast
 import pandas as pd
 import polars as pl
 import pytest
+from polars.testing import assert_frame_equal as assert_polars_frame_equal
 
 from openwrangler_runtime._column_binding import ColumnBindingError, bind_step
 from openwrangler_runtime.engines import EngineError, PandasEngine, PolarsEngine
@@ -705,6 +706,50 @@ def test_categorical_encoders_ignore_missing_labels_and_match_generated_code(eng
     empty_result = engine.apply_transform(empty_labels_frame, labels)
     assert [list(row) for row in records(empty_result)] == [["tags", "value"], ["tags", "value"]]
     assert_records_equal(empty_result, execute_generated(engine, empty_labels_frame, labels))
+
+
+@pytest.mark.parametrize("kind", ["oneHotEncode", "multiLabelBinarize"])
+@pytest.mark.parametrize("missing_labels", [False, True])
+@pytest.mark.parametrize("retained", [False, True])
+@pytest.mark.parametrize("lazy", [False, True])
+def test_polars_categorical_drop_matches_generated_on_public_source(kind, missing_labels, retained, lazy) -> None:
+    engine = PolarsEngine()
+    if kind == "oneHotEncode":
+        values = ["a", None, "β", ""] if missing_labels else ["a", "b", "a"]
+        operation = bound_step(kind, columns=[bound_ref("c:source:0", "category", 0)])
+        labels = sorted({value for value in values if value})
+        expected_values = {label: [int(value == label) for value in values] for label in labels}
+    else:
+        values = ["a|β", None, "β|β", "||"] if missing_labels else ["a|b", "b", "a"]
+        operation = bound_step(kind, column=bound_ref("c:source:0", "category", 0), delimiter="|", dropOriginal=True)
+        labels = sorted({label for value in values if value for label in value.split("|") if label})
+        expected_values = {
+            label: [int(value is not None and label in value.split("|")) for value in values] for label in labels
+        }
+    original = pl.DataFrame({"category": values})
+    expected = pl.DataFrame(
+        {f"category_{label}": pl.Series(indicators, dtype=pl.Int8) for label, indicators in expected_values.items()}
+    )
+    if retained:
+        original = original.with_columns(pl.Series("retained", range(len(values))))
+        expected = expected.select(pl.Series("retained", range(len(values))), pl.all())
+    source = original.lazy() if lazy else original
+    identified = engine.ensure_row_ids(source, "categorical-drop")
+    row_id = engine.internal_row_id_column(identified)
+    assert row_id is not None
+    identified_before = identified.collect() if isinstance(identified, pl.LazyFrame) else identified
+
+    live = engine.apply_transform(identified, operation)
+    assert isinstance(live, pl.DataFrame)
+    assert live[row_id].equals(identified_before[row_id])
+    assert_polars_frame_equal(live.drop(row_id), expected)
+    for result in (execute_generated(engine, source, operation), engine.apply_transform(source, operation)):
+        assert isinstance(result, pl.DataFrame)
+        assert_polars_frame_equal(result, expected)
+    assert_polars_frame_equal(source.collect() if isinstance(source, pl.LazyFrame) else source, original)
+    assert_polars_frame_equal(
+        identified.collect() if isinstance(identified, pl.LazyFrame) else identified, identified_before
+    )
 
 
 @pytest.mark.parametrize("values", [[], [None, None], ["", "|", "||"], ["red||blue", "red|red", None]])
