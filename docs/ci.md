@@ -19,8 +19,9 @@ Every pull request reports the same five required product checks:
   journal creation races, dependency fixture cleanup, trusted-pickle source identity and descendant cleanup, and the
   DuckDB owner's selected-file import cases against actual local-drive paths.
 
-The Windows worker also runs the kernel bootstrap owner with its selected Python, checking the complete
-bundled-source origin fixtures and native temporary-path refusal.
+The Windows worker also runs the real isolated dependency version and module-origin probe, including copied and
+hard-linked files. Its kernel bootstrap owner checks the complete bundled-source origin fixtures and native
+temporary-path refusal with the selected Python.
 
 The Python runtime job reports the 20 slowest test phases, including fixture setup and teardown, to guide later
 investigation.

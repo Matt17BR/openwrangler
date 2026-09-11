@@ -1185,6 +1185,11 @@ require a trusted workspace. Restricted Mode does not expose a hidden affirmativ
 Dependency prompts identify the exact interpreter and requirements; only the literal modal confirmation may run pip.
 Custom code is trusted arbitrary code in the selected environment, not a sandbox.
 
+Dependency availability and post-install validation accept hard-linked regular module files when the supported
+version, distribution record and import origin agree. Module reads retain file and ancestor identity revalidation,
+including link-count changes during each read, and refuse symlink or reparse traversal. These checks establish
+installed-module provenance; they do not authenticate arbitrary package code.
+
 Open Wrangler never overwrites source data. Readers validate supported schemes, regular-file identity, and format
 options before runtime startup. Lazy readers revalidate the source around each read. Transformations operate on
 session-owned state, not the source variable or source file.

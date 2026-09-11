@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -75,12 +76,18 @@ def test_exact_dependency_normalization_requires_matching_install_and_probe_vers
             dependency_guard._normalize_dependency(invalid, code="invalid_request")
 
 
+@pytest.mark.parametrize("hard_linked", [False, True], ids=["copy", "hardlink"])
 def test_exact_dependency_validation_uses_pep440_equality(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    hard_linked: bool,
 ) -> None:
     dependency = exact_dependency()
     metadata = _install_owned_distribution(tmp_path, monkeypatch, dependency, "2026.7.0")
+    if hard_linked:
+        module_path = metadata.parent.parent / f"{dependency['importModule']}.py"
+        (tmp_path / "cached-module.py").hardlink_to(module_path)
+        assert module_path.stat().st_nlink == 2
     for observed in ("2026.7", "2026.7.0", "2026.7.0+local"):
         _write_distribution_version(metadata, dependency, observed)
         dependency_guard._validate_dependencies([dependency])
@@ -111,6 +118,33 @@ def test_dependency_validation_matches_pep440_contract(
         else:
             with pytest.raises(dependency_guard.GuardError, match="validation_failed"):
                 dependency_guard._validate_dependencies([dependency])
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX module identity reads use descriptor-relative open")
+def test_dependency_validation_rejects_link_change_during_module_identity_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dependency = exact_dependency()
+    metadata = _install_owned_distribution(tmp_path, monkeypatch, dependency, "2026.7.0")
+    module_path = metadata.parent.parent / f"{dependency['importModule']}.py"
+    (tmp_path / "cached-module.py").hardlink_to(module_path)
+    original_open = os.open
+    changed = False
+
+    def open_with_link_change(path: str, flags: int, *, dir_fd: int | None = None) -> int:
+        nonlocal changed
+        descriptor = original_open(path, flags, dir_fd=dir_fd)
+        if path == module_path.name and not changed:
+            (tmp_path / "new-alias.py").hardlink_to(module_path)
+            changed = True
+        return descriptor
+
+    monkeypatch.setattr(os, "open", open_with_link_change)
+    with pytest.raises(dependency_guard.GuardError, match="validation_failed"):
+        dependency_guard._validate_dependencies([dependency])
+    assert changed
+    assert module_path.stat().st_nlink == 3
 
 
 def test_dependency_validation_fails_closed_without_pep440_authority(

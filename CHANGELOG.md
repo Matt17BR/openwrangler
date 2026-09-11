@@ -11,6 +11,7 @@ All notable changes to Open Wrangler are documented here. Stable releases follow
 - Pandas Pivot and Fill distinguish actual missing sentinels from same-named custom values. Group By retains exact
   integral keys with temporal-looking class names. Cell rendering uses native scalar identities and retains
   nanoseconds in Pandas `Timedelta` subclasses.
+- Recognize supported Python dependencies installed with hard links instead of incorrectly reporting them as missing.
 
 ## [2.1.1] - 2026-09-11
 
