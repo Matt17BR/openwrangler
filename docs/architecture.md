@@ -464,8 +464,12 @@ are evaluated before publication, so a late formatting failure still refuses the
 
 Datetime cells and nested values share one formatter. Pandas Timestamp nanoseconds are inserted into the time
 fraction while preserving the complete native offset, including offset seconds. Ordinary Timestamp profile and
-value-choice labels reuse this formatter with their existing space separator. Other scalar labels retain native string conversion. Search keeps
-its original per-row text and counting order, correcting only affected timestamp and present temporal-extremum text.
+value-choice labels reuse this formatter with their existing space separator. Other scalar labels retain native string conversion.
+Search retains original per-row text matches and filters before counting, correcting affected timestamp and present
+temporal-extremum text. Datetime searches also recognize a space in place of the ISO `T` separator and the midnight
+clock omitted from native four-digit-year date-only text. These aliases use one transient string at a time without
+converting values or changing precision. Their additional scan runs only when the search can match an added space
+or midnight clock.
 Numeric and dedicated string dtypes bypass the temporal search scan. Ordinary datetime objects retain their native formatting.
 
 Native Arrow date32 and date64 columns retain date semantics for schemas, profiles, value selections and sorting,

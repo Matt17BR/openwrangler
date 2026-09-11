@@ -253,6 +253,9 @@ this change cannot recover digits already lost.
 Pandas timestamps preserve nanosecond fractions and time-zone offsets that include seconds, such as historical
 Berlin offsets. Grid cells, nested values, profiles and value choices use valid datetime text. Searches recognize
 corrected labels while retaining ordinary value counts. Filter inputs retain microsecond precision and minute-resolution offsets.
+Datetime value searches also accept displayed midnight labels and a space in place of NumPy's ISO `T` separator.
+Some duration and subnanosecond object labels still differ from searchable source text; [#1280](https://github.com/Matt17BR/openwrangler/issues/1280)
+tracks these remaining gaps.
 
 Python datetime filters and explicitly entered Fill values accept fractions up to six digits and timezone offsets
 with or without a colon. These spellings behave consistently on Python 3.10 and newer; malformed offset components
