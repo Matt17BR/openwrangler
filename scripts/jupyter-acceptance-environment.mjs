@@ -32,6 +32,7 @@ import {
   VALUE_R_JUPYTER_SELECTOR,
   PIVOT_WIDER_R_JUPYTER_SELECTOR
 } from "./packaged-r-journey.mjs";
+import { parseOsRelease } from "./prepare-xvfb.mjs";
 
 const CORE_DEPENDENCIES = Object.freeze(["ipykernel", "jupyter-client", "pandas"]);
 const NOTEBOOK_DEPENDENCIES = Object.freeze([...CORE_DEPENDENCIES, "polars", "duckdb", "fsspec", "pytz"]);
@@ -437,8 +438,8 @@ if pip_exit_code != 0:
 `)})`;
 const R_ACCEPTANCE_PRIMARY_SNAPSHOT = "2026-03-10";
 const R_ACCEPTANCE_SUPPLEMENTAL_SNAPSHOT = "2026-06-01";
-export const R_ACCEPTANCE_REPOSITORY = `https://p3m.dev/cran/__linux__/noble/${R_ACCEPTANCE_PRIMARY_SNAPSHOT}`;
-export const R_ACCEPTANCE_SUPPLEMENTAL_REPOSITORY = `https://p3m.dev/cran/__linux__/noble/${R_ACCEPTANCE_SUPPLEMENTAL_SNAPSHOT}`;
+export const R_ACCEPTANCE_REPOSITORY = `https://p3m.dev/cran/${R_ACCEPTANCE_PRIMARY_SNAPSHOT}`;
+export const R_ACCEPTANCE_SUPPLEMENTAL_REPOSITORY = `https://p3m.dev/cran/${R_ACCEPTANCE_SUPPLEMENTAL_SNAPSHOT}`;
 export const R_ACCEPTANCE_PACKAGE_VERSIONS = Object.freeze({
   IRkernel: "1.3.2",
   jsonlite: "2.0.0",
@@ -709,17 +710,30 @@ const R_ACCEPTANCE_COLLAPSE_PROBE = [
   ")",
   'if (!inherits(.ow_indexed, "indexed_frame")) quit(save = "no", status = 17L)'
 ].join("\n");
-export function rAcceptanceRepositories(platform = process.platform) {
+export function rAcceptanceRepositories(platform = process.platform, osReleaseText) {
   if (platform === "linux") {
+    let host;
+    try {
+      host = parseOsRelease(osReleaseText === undefined ? readFileSync("/etc/os-release", "utf8") : osReleaseText);
+    } catch {
+      host = undefined;
+    }
+    let distribution;
+    if (host?.distribution === "ubuntu") {
+      if (host.distributionVersion === "24.04") distribution = "noble";
+      else if (host.distributionVersion === "26.04") distribution = "resolute";
+    }
+    if (distribution) {
+      return Object.freeze({
+        repository: `https://p3m.dev/cran/__linux__/${distribution}/${R_ACCEPTANCE_PRIMARY_SNAPSHOT}`,
+        supplementalRepository: `https://p3m.dev/cran/__linux__/${distribution}/${R_ACCEPTANCE_SUPPLEMENTAL_SNAPSHOT}`
+      });
+    }
+  }
+  if (["linux", "darwin", "win32"].includes(platform)) {
     return Object.freeze({
       repository: R_ACCEPTANCE_REPOSITORY,
       supplementalRepository: R_ACCEPTANCE_SUPPLEMENTAL_REPOSITORY
-    });
-  }
-  if (platform === "darwin" || platform === "win32") {
-    return Object.freeze({
-      repository: `https://p3m.dev/cran/${R_ACCEPTANCE_PRIMARY_SNAPSHOT}`,
-      supplementalRepository: `https://p3m.dev/cran/${R_ACCEPTANCE_SUPPLEMENTAL_SNAPSHOT}`
     });
   }
   throw new Error(`Released-Jupyter R acceptance does not support ${JSON.stringify(platform)}.`);
@@ -748,6 +762,11 @@ function rAcceptanceInstall({ repository, supplementalRepository }, platform, pa
       : [];
   return [
     'Sys.setenv(MAKEFLAGS = "-s")',
+    ...(platform === "linux" && repository.includes("/__linux__/")
+      ? [
+          'options(HTTPUserAgent = sprintf("R/%s R (%s)", getRversion(), paste(getRversion(), R.version["platform"], R.version["arch"], R.version["os"])))'
+        ]
+      : []),
     `.ow_packages <- c(${packages.map((packageName) => JSON.stringify(packageName)).join(", ")})`,
     `.ow_supplemental_packages <- c(${supplementalPackages.map((packageName) => JSON.stringify(packageName)).join(", ")})`,
     `.ow_binary_supplemental_packages <- c(${binarySupplementalPackages.map((packageName) => JSON.stringify(packageName)).join(", ")})`,
@@ -1973,6 +1992,7 @@ export async function prepareJupyterAcceptanceREnvironment(
     containedBy,
     environment = createEditorAcceptanceEnvironment(),
     platform = process.platform,
+    osReleaseText,
     purpose = "literate-documents",
     runCommand = runBoundedEditorCommand
   } = {}
@@ -2028,7 +2048,7 @@ export async function prepareJupyterAcceptanceREnvironment(
   const expectedVersions = packageEntries
     .map(([packageName, version]) => `${JSON.stringify(packageName)} = ${JSON.stringify(version)}`)
     .join(", ");
-  const repositories = rAcceptanceRepositories(platform);
+  const repositories = rAcceptanceRepositories(platform, osReleaseText);
   const canonicalRscript = validateRExecutable(rscript, "Rscript");
   const root = validateNewContainedRDirectory(directory, containedBy);
   const rExecutable = await resolveJupyterAcceptanceRExecutable(canonicalRscript, {

@@ -87,6 +87,42 @@ function preparedPackageInputs(prepared) {
   };
 }
 
+test("R preparation selects matching Ubuntu binaries and source for other hosts", async (t) => {
+  for (const [osReleaseText, distribution] of [
+    ['ID=ubuntu\nVERSION_ID="24.04"\n', "noble"],
+    ["ID=ubuntu\nVERSION_ID=26.04\n", "resolute"],
+    ["ID=ubuntu\nVERSION_ID=22.04\nVERSION_CODENAME=noble\n", undefined],
+    ["ID=debian\nVERSION_ID=13\n", undefined],
+    ["ID=ubuntu\nVERSION_ID=unknown\n", undefined],
+    ["", undefined]
+  ]) {
+    const prefix = `https://p3m.dev/cran/${distribution ? `__linux__/${distribution}/` : ""}`;
+    const expected = {
+      repository: `${prefix}2026-03-10`,
+      supplementalRepository: `${prefix}2026-06-01`
+    };
+    assert.deepEqual(rAcceptanceRepositories("linux", osReleaseText), expected);
+    const fixture = provisioning(t);
+    const prepared = await prepareJupyterAcceptanceREnvironment(fixture.directory, fixture.rscript, {
+      ...fixture.options,
+      purpose: "notebook",
+      platform: "linux",
+      osReleaseText
+    });
+    assert.equal(prepared.repository, expected.repository);
+    assert.equal(prepared.supplementalRepository, expected.supplementalRepository);
+    const userAgent = commandCode(prepared.dependencyInstall)
+      .split("\n")
+      .find((line) => line.startsWith("options(HTTPUserAgent"));
+    assert.equal(
+      userAgent,
+      distribution
+        ? 'options(HTTPUserAgent = sprintf("R/%s R (%s)", getRversion(), paste(getRversion(), R.version["platform"], R.version["arch"], R.version["os"])))'
+        : undefined
+    );
+  }
+});
+
 for (const [scope, selection, packages] of [
   ["default", {}, editorPackages],
   ["literate", { purpose: "literate-documents" }, editorPackages],

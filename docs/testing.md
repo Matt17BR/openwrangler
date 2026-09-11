@@ -442,6 +442,12 @@ library at its reviewed version and load successfully before editor launch. Note
 require the exact private IRkernel readiness probe; terminal preparation creates no kernel or bootstrap receipt.
 All editor purposes retain the exact native R executable and private library environment.
 
+On Ubuntu 24.04 and 26.04, preparation selects the matching Noble or Resolute snapshot and sends the selected R
+version and architecture in its HTTP user agent. This lets the package server supply compatible binaries while
+retaining source installation for packages without one. Other Linux distributions and unrecognized host metadata
+use the dated source repositories. The supported binary distributions and required header are described in
+[Posit's binary configuration guide](https://docs.posit.co/rspm/admin/serving-binaries/).
+
 The hosted macOS R job installs Homebrew's current `zeromq` formula before private R preparation. IRkernel's
 `pbdZMQ` dependency discovers that system library during its source build, avoiding bundled ZeroMQ compilation.
 This system dependency follows Homebrew updates; the R package pins stay unchanged. Local preparation keeps
