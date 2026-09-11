@@ -312,8 +312,9 @@ change ordinary Python lookup when the caller shadows builtins.
 Generated Pandas and Polars One-hot and Multi-label code rejects results with no visible columns, matching live
 Preview. Empty-row inputs remain valid when a visible column survives. Polars uses the encoded frame directly when
 dropping all original columns leaves no base columns, preserving indicator rows without adding private identities.
-Pandas maps visible column positions once per One-hot transformation and validates each selected reference against
-that map. It validates each selected column's output names before constructing its indicators. A refusal can
+Pandas maps visible column positions once per One-hot, Drop Missing Rows, Drop Duplicates or Mark Duplicates
+transformation and validates each selected reference against that map. One-hot validates each selected column's
+output names before constructing its indicators. A refusal can
 report the first colliding column; earlier selected columns may already have been evaluated.
 Generated Pandas One-hot names use the live scalar formatting, so compiled plans bind to the same output columns.
 
