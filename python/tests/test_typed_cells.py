@@ -779,7 +779,32 @@ def test_pandas_datetime_search_retains_native_midnight_and_padded_fraction_text
             False,
         )
     else:
-        assert engine.column_values(source, "value", search="00:00:00") == ([], False)
+        choices, more = engine.column_values(source, "value")
+        assert not more and len(choices) == 2
+        assert engine.column_values(source, "value", search="00:00:00") == (choices, False)
+        assert engine.column_values(source, "value", search="00:00:00", limit=1) == (choices[:1], True)
+    for choice in engine.column_values(source, "value")[0]:
+        matches, more = engine.column_values(source, "value", search=choice["value"])
+        assert not more and choice in matches
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
+
+
+@pytest.mark.parametrize("fraction", ["000001", "000000123"])
+def test_pandas_object_datetime_search_accepts_displayed_and_original_labels(fraction: str) -> None:
+    first = np.datetime64(f"2024-01-01T00:00:00.{fraction}")
+    second = np.datetime64(f"2024-01-02T00:00:00.{fraction}")
+    source = pd.DataFrame({"value": pd.Series([first, second, first, None], dtype=object)})
+    source.index = pd.Index(["same"] * 4, name="source row")
+    before = source.copy(deep=True)
+    engine = PandasEngine()
+    choices, more = engine.column_values(source, "value", limit=1)
+    assert more and len(choices) == 1
+    choice = choices[0]
+    assert choice["count"] == 2
+    assert choice.get("selectionValue") == typed_selection_value(first, "datetime")
+    for search in (choice["value"], str(first), str(first).replace("T", " ")):
+        assert engine.column_values(source, "value", search=search) == ([choice], False)
+    assert engine.column_values(source, "value", search="2024-01-01 00:00:01") == ([], False)
     pd.testing.assert_frame_equal(source, before, check_exact=True)
 
 

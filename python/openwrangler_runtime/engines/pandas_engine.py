@@ -1124,7 +1124,22 @@ class PandasEngine(DataFrameEngine):
                         if label != str(value):
                             labels.iloc[position] = label
             folded = labels.str.translate(_ASCII_TO_LOWER)
-            series = series[folded.str.contains(str(search).translate(_ASCII_TO_LOWER), na=False, regex=False)]
+            needle = str(search).translate(_ASCII_TO_LOWER)
+            matches = folded.str.contains(needle, na=False, regex=False)
+            # These aliases can add only a space-containing match or part of the midnight clock.
+            if column_type == "datetime" and (" " in needle or needle in "00:00:00"):
+                from re import fullmatch
+
+                matches = matches.to_numpy(dtype=bool, copy=True)
+                for position, label in enumerate(labels):
+                    if matches[position]:
+                        continue
+                    alias = label.replace("T", " ")
+                    if len(alias) == 10 and fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", alias):
+                        alias += " 00:00:00"
+                    if alias != label:
+                        matches[position] = needle in alias.translate(_ASCII_TO_LOWER)
+            series = series[matches]
         value_counts = _pandas_value_counts(series, sort=False)
         temporal_counts = _pandas_arrow_temporal_array(value_counts.index)
         counts = (
