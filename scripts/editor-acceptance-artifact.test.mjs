@@ -116,6 +116,45 @@ for (const platform of ["linux", "win32"]) {
     for (const name of ["TMP", "TEMP", "TMPDIR"]) assert.equal(filtered[name], expectedTemp);
     if (platform === "win32") assert.equal(filtered.LOCALAPPDATA, local);
     assert.equal(filtered.TOKEN, undefined);
+    assert.equal(filtered.OPEN_WRANGLER_EDITOR_TEMP_ROOT, undefined);
+    const jupyterEnvironment = {
+      dataDir: join(directory, "data"),
+      runtimeDir: join(directory, "runtime"),
+      configDir: join(directory, "config"),
+      path: join(directory, "kernels")
+    };
+    await mkdir(jupyterEnvironment.path);
+    let spawnedEnvironment;
+    await assert.rejects(
+      editorAcceptance.runEditorAcceptancePhase(
+        {
+          editor: { key: "vscode", name: "VS Code", version: "1.137.0", executable: process.execPath },
+          workspace: directory,
+          userData: join(directory, "user-data"),
+          extensions: join(directory, "extensions"),
+          developmentPaths: [],
+          testModule: join(directory, "test.js"),
+          phase: "jupyter-r",
+          resultPath: join(directory, "result.json"),
+          requiresWorkbenchCdp: true,
+          jupyterEnvironment
+        },
+        {
+          environment,
+          platform,
+          reserveDebugPort: async () => 31000,
+          spawnProcess: (_executable, _args, options) => {
+            spawnedEnvironment = options.env;
+            throw new Error("Controlled phase spawn boundary; no process started.");
+          }
+        }
+      ),
+      /Controlled phase spawn boundary/u
+    );
+    assert.equal(spawnedEnvironment.OPEN_WRANGLER_EDITOR_TEMP_ROOT, directory);
+    assert.equal(spawnedEnvironment.OPEN_WRANGLER_EXTENSION_TESTS, "1");
+    assert.equal(spawnedEnvironment.TEMP, expectedTemp);
+    assert.equal(spawnedEnvironment.TOKEN, undefined);
     const ownedFile = join(expectedTemp, "retained-bootstrap-fixture");
     await writeFile(ownedFile, "owned fixture");
     const nested = join(directory, "compiler");
