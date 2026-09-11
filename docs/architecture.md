@@ -458,6 +458,15 @@ If Pandas cannot build its count index for object-stored ordinary Python integer
 counts with an object index; requested descending counts keep first-encounter ties. Successful native counts retain
 their existing ordering. This repair does not change stored values or admit custom integer subclasses.
 
+When native counting infers a temporal index from an object column, profiles and value choices refuse present,
+nonzero NumPy temporal scalars with unit multipliers or picosecond, femtosecond or attosecond units. Successful
+nanosecond-duration counts are exempt. This conservative representation policy prevents legacy Pandas from
+publishing narrowed labels and selection tokens; it also excludes exact values such as `datetime64[1000ps]`.
+Native count failures remain failures. Successful ordinary, zero and NaT inputs retain native results and ordering.
+The guard scans only object inputs whose count index became temporal, without another full-column allocation.
+Current Pandas counts that retain an object index and native temporal columns bypass it. Search and viewing filters
+narrow the input before counting; refusal leaves paging, source data and session revision intact.
+
 Value-choice ranking retains the leading `limit + 1` labeled candidates and the current input, instead of the full
 label collection. Native counting and ordinary text search remain exhaustive over their inputs. All distinct labels
 are evaluated before publication, so a late formatting failure still refuses the entire request.

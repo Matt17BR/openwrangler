@@ -504,6 +504,25 @@ def _pandas_value_counts(series: Any, *, sort: bool = True) -> Any:
         )
         if sort:
             counts = counts.sort_values(ascending=False, kind="stable")
+    if series.dtype == object and counts.index.dtype.kind in {"M", "m"}:
+        import numpy as np
+
+        # Legacy count-index inference can lose unit multipliers or subnanosecond
+        # precision. Keep native counts, but refuse these representations before
+        # their labels or selection tokens can describe a different source value.
+        for value in series.array:
+            if isinstance(value, (np.datetime64, np.timedelta64)):
+                dtype = value.dtype
+                unit, multiplier = np.datetime_data(dtype)
+                if multiplier != 1 or unit in {"ps", "fs", "as"}:
+                    if dtype.kind == "m" and unit == "ns":
+                        continue
+                    if np.isnat(value) or int(value.view(np.int64)) == 0:
+                        continue
+                    raise EngineError(
+                        "These NumPy temporal units are unsupported in profiles and value choices "
+                        "with this Pandas version."
+                    )
     if keys is series or isinstance(series.dtype, pd.ArrowDtype):
         return counts
     first: dict[Any, Any] = {}
