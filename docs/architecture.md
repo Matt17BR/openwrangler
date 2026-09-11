@@ -951,6 +951,7 @@ conversion; integer64 conversion, text-length means and variance retain their se
 One-hot encoding derives indicators only from present categories with nonempty labels. Empty and all-missing
 duration columns contribute no categories; if no selected column contributes an indicator, the operation refuses
 before publishing a result. Other selected columns can still supply valid categories.
+One-hot and Multi-label preserve row counts and row-name mode when replacing every original `data.table` column.
 Generated One-hot code normalizes text before choosing categories and comparing indicator values, matching live
 execution across text encodings. It validates the complete input before formatting distinct category labels.
 Multi-label encoding retains its per-row text preparation.

@@ -1439,6 +1439,60 @@ assert_identical(get("categorical_table", envir = .GlobalEnv), categorical_table
 rm("categorical_table", "open_wrangler_result", envir = .GlobalEnv)
 assert_identical(dispatch("closeSession", list(sessionId = categorical_table_session_id))$kind, "closed", "the R categorical data.table session did not close")
 
+for (categorical_row_names in list(c(NA_integer_, -3L), c("first", "second", "third"))) {
+  for (categorical_kind in c("oneHotEncode", "multiLabelBinarize")) {
+    categorical_one_hot <- identical(categorical_kind, "oneHotEncode")
+    source_environment$categorical_single <- data.table::data.table(
+      category = if (categorical_one_hot) c("a", "b", "a") else c("a|b", "b", "a")
+    )
+    data.table::setattr(source_environment$categorical_single, "row.names", categorical_row_names)
+    categorical_single_before <- serialize(source_environment$categorical_single, NULL, version = 3L)
+    categorical_single_opened <- dispatch("openSession", list(
+      sessionId = categorical_table_session_id, variableName = "categorical_single", page = page_window()
+    ))
+    assert_identical(categorical_single_opened$kind, "page", "a single-column categorical data.table did not open")
+    categorical_single_reference <- list(id = "r:c:0", name = "category")
+    categorical_single_params <- if (categorical_one_hot) {
+      list(columns = I(list(categorical_single_reference)), dropOriginal = TRUE)
+    } else {
+      list(column = categorical_single_reference, delimiter = "|", prefix = "category_", dropOriginal = TRUE)
+    }
+    categorical_single_preview <- dispatch("previewStep", list(
+      sessionId = categorical_table_session_id, revision = 0L,
+      step = list(id = "categorical-single", kind = categorical_kind, params = categorical_single_params),
+      page = page_window()
+    ))
+    assert_identical(categorical_single_preview$kind, "stepPreview", "categorical encoding lost all data.table rows after dropping its last input column")
+    assert_identical(categorical_single_preview$page$frameSemantics$rowNames, categorical_single_opened$page$frameSemantics$rowNames, "categorical encoding changed the live row-name mode")
+    assert_identical(
+      lapply(categorical_single_preview$page$page$rows, function(row) row[c("id", "rowLabel")]),
+      lapply(categorical_single_opened$page$page$rows, function(row) row[c("id", "rowLabel")]),
+      "categorical encoding changed live row identities or labels"
+    )
+    categorical_single_environment <- new.env(parent = baseenv())
+    categorical_single_environment$categorical_single <- unserialize(categorical_single_before)
+    eval(parse(text = categorical_single_preview$code), envir = categorical_single_environment)
+    categorical_single_generated <- categorical_single_environment$open_wrangler_result
+    assert_identical(class(categorical_single_generated), c("data.table", "data.frame"), "categorical encoding changed data.table class")
+    assert_identical(.row_names_info(categorical_single_generated, type = 0L), categorical_row_names, "categorical encoding changed canonical row names")
+    assert_identical(names(categorical_single_generated), c("category_a", "category_b"), "categorical encoding changed its output columns")
+    assert_identical(categorical_single_generated$category_a, c(1L, 0L, 1L), "categorical encoding changed the first indicator")
+    assert_identical(categorical_single_generated$category_b, if (categorical_one_hot) c(0L, 1L, 0L) else c(1L, 1L, 0L), "categorical encoding changed the second indicator")
+    categorical_single_generated_page <- jsonlite::fromJSON(
+      openwrangler_r_frame_contract$encode_page(openwrangler_r_frame_contract$capture_frame(categorical_single_generated)),
+      simplifyVector = FALSE
+    )
+    assert_identical(
+      lapply(categorical_single_preview$page$page$rows, `[[`, "values"),
+      lapply(categorical_single_generated_page$page$rows, `[[`, "values"),
+      "single-column data.table generated categorical code disagrees with Preview"
+    )
+    assert_identical(serialize(source_environment$categorical_single, NULL, version = 3L), categorical_single_before, "categorical Preview mutated its source")
+    assert_identical(serialize(categorical_single_environment$categorical_single, NULL, version = 3L), categorical_single_before, "generated categorical code mutated its source")
+    assert_identical(dispatch("closeSession", list(sessionId = categorical_table_session_id))$kind, "closed", "the single-column categorical data.table session did not close")
+  }
+}
+
 categorical_family_values <- list(
   tibble::as_tibble(data.frame(category = c("b", "a"), value = 1:2), .name_repair = "minimal"),
   collapse::qDF(data.frame(category = c("b", "a"), value = 1:2)),

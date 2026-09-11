@@ -4617,9 +4617,9 @@ openwrangler_r_frame_contract <- local({
       .subset(attr(value, "names", exact = TRUE), retained_positions),
       generated_names
     )
-    expected_columns <- length(retained_positions) + generated_count
     if (identical(inspected$flavor, "r.data.table")) {
       result <- isolated_snapshot(value, inspected$flavor)
+      result_row_names <- .row_names_info(result, type = 0L)
       dropped <- without_values(seq_len(inspected$descriptor$shape$columns), retained_positions)
       if (length(dropped) != 0L) data.table::set(result, j = dropped, value = NULL)
       result_classes <- class(result)
@@ -4629,6 +4629,7 @@ openwrangler_r_frame_contract <- local({
         result[[storage_length(result) + 1L]] <- generated_columns[[index]]
       }
       attr(result, "names") <- c(retained_names, generated_names)
+      attr(result, "row.names") <- result_row_names
       class(result) <- result_classes
       if (!identical(attr(result, "names", exact = TRUE), result_names)) {
         abort("internal-error", "an R data.table categorical operation changed output order")
