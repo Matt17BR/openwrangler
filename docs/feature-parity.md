@@ -316,8 +316,8 @@ inputs. Pandas and Polars generated categorical code rejects results with no vis
 empty-row inputs remain valid when a visible column is retained.
 Polars JSONL/NDJSON reads the selected file on Unix even when its path contains glob syntax or percent-looking text.
 On Windows, ordinary paths and local-drive verbatim paths such as `\\?\C:\data\sample.jsonl` retain exact file identity.
-Paths containing `*`, `?`, or `[` after that prefix, and unsupported verbatim prefixes, remain refused. Full Windows
-literal-path support remains open in [#986](https://github.com/Matt17BR/openwrangler/issues/986).
+Paths containing `*`, `?`, or `[` after that prefix, and unsupported verbatim prefixes, remain refused. The remaining
+Windows literal-path limits are recorded in [#986](https://github.com/Matt17BR/openwrangler/issues/986).
 
 Unnamed columns support viewing, profiling, keyboard selection, and copy. Their cell menus, header sorts, profile
 actions, and Filters / Sorts consistently disable name-addressed actions without leaving a page request pending.
