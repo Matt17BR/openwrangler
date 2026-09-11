@@ -2286,6 +2286,7 @@ async function verifyGridKeyboardWorkflow(browser) {
         activeBins: element.querySelectorAll(".numericHistogramBin.active").length,
         ariaLabel: control.getAttribute("aria-label") ?? "",
         captionTitle: caption.getAttribute("title") ?? "",
+        captionWhiteSpace: getComputedStyle(caption).whiteSpace,
         status,
         totalBars: bars.length,
         visibleBars: bars.filter((bar) => {
@@ -2300,6 +2301,7 @@ async function verifyGridKeyboardWorkflow(browser) {
     if (
       !state ||
       state.activeBins !== 1 ||
+      state.captionWhiteSpace !== "nowrap" ||
       state.totalBars === 0 ||
       state.visibleBars !== state.totalBars ||
       !usesSelectedMode ||
