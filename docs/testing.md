@@ -275,6 +275,9 @@ setup retain their explicit synchronization. A missing production publication mu
 the ordinary assertion path. Page assertions use the existing read-only request option so inspecting returned rows
 does not replace the visible page or retire the renderer's view context. Requests that deliberately change the view
 or exercise recovery keep their own mutation path.
+The released-Jupyter DuckDB journey waits for the exact panel's committed renderer after inline open and toolbar
+reopen before changing filters. Far-row inspection is read-only; filter persistence and recovery still use committed
+view requests. These page assertions report bounded error codes and recoverability when a request fails.
 
 The R value journey retains Find and Replace, Formula's visible precision refusal and correction, Format Datetime,
 Capitalize and both dynamic Pivot forms. Repeated numeric and text catalog checks belong to native owners; remote

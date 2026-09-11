@@ -2821,19 +2821,35 @@ async function exerciseReleasedJupyterExtension(
         notebookInsert: false
       });
       await assertReleasedSessionPage(testing, duckdbRelation, "3400001", "released-jupyter-duckdb-native-page");
+      await synchronizedSessionApp(
+        workbench,
+        testing,
+        duckdbRelation.sessionId,
+        "The released-Jupyter DuckDB panel must finish opening before its view changes.",
+        OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS
+      );
 
-      const farDuckdbPage = await testing.request({
-        kind: "getPage",
-        columnOffset: 0,
-        columnLimit: 4,
-        viewRequestId: "released-jupyter-duckdb-native-far-page",
-        sessionId: duckdbRelation.sessionId,
-        revision: duckdbRelation.metadata.revision,
-        offset: 99_990,
-        limit: 10,
-        filterModel: duckdbRelation.metadata.filterModel
-      });
-      assert.equal(farDuckdbPage.kind, "page");
+      const farDuckdbPage = await testing.request(
+        {
+          kind: "getPage",
+          columnOffset: 0,
+          columnLimit: 4,
+          viewRequestId: "released-jupyter-duckdb-native-far-page",
+          sessionId: duckdbRelation.sessionId,
+          revision: duckdbRelation.metadata.revision,
+          offset: 99_990,
+          limit: 10,
+          filterModel: duckdbRelation.metadata.filterModel
+        },
+        { ephemeralPage: true }
+      );
+      assert.equal(
+        farDuckdbPage.kind,
+        "page",
+        farDuckdbPage.kind === "error"
+          ? `Far native DuckDB page failed (${farDuckdbPage.code.slice(0, 80)}, recoverable=${farDuckdbPage.recoverable}).`
+          : "Far native DuckDB page must resolve."
+      );
       if (farDuckdbPage.kind !== "page") throw new Error("The far native DuckDB page did not resolve.");
       assert.equal(farDuckdbPage.page.totalRows, 100_000);
       assert.equal(farDuckdbPage.page.rows[0]?.values[0]?.display, "3499991");
@@ -2865,7 +2881,13 @@ async function exerciseReleasedJupyterExtension(
         limit: 10,
         filterModel: filteredDuckdbModel
       });
-      assert.equal(filteredDuckdbPage.kind, "page");
+      assert.equal(
+        filteredDuckdbPage.kind,
+        "page",
+        filteredDuckdbPage.kind === "error"
+          ? `Filtered native DuckDB page failed (${filteredDuckdbPage.code.slice(0, 80)}, recoverable=${filteredDuckdbPage.recoverable}).`
+          : "Filtered native DuckDB page must resolve."
+      );
       if (filteredDuckdbPage.kind !== "page") {
         throw new Error("The filtered and sorted native DuckDB page did not resolve.");
       }
@@ -2949,6 +2971,13 @@ async function exerciseReleasedJupyterExtension(
         "3499997",
         "released-jupyter-duckdb-toolbar-restored-page"
       );
+      await synchronizedSessionApp(
+        workbench,
+        testing,
+        reopenedDuckdbRelation.sessionId,
+        "The reopened DuckDB panel must finish restoring its view before the filter is cleared.",
+        OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS
+      );
 
       const unfilteredReopenedDuckdbPage = await testing.request({
         kind: "getPage",
@@ -2961,7 +2990,13 @@ async function exerciseReleasedJupyterExtension(
         limit: 10,
         filterModel: { logic: "and", filters: [], sort: [] }
       });
-      assert.equal(unfilteredReopenedDuckdbPage.kind, "page");
+      assert.equal(
+        unfilteredReopenedDuckdbPage.kind,
+        "page",
+        unfilteredReopenedDuckdbPage.kind === "error"
+          ? `Reopened native DuckDB page failed (${unfilteredReopenedDuckdbPage.code.slice(0, 80)}, recoverable=${unfilteredReopenedDuckdbPage.recoverable}).`
+          : "Reopened native DuckDB page must resolve."
+      );
       if (unfilteredReopenedDuckdbPage.kind !== "page") {
         throw new Error("The complete native DuckDB toolbar page did not resolve.");
       }
@@ -2979,7 +3014,13 @@ async function exerciseReleasedJupyterExtension(
         limit: 10,
         filterModel: filteredDuckdbModel
       });
-      assert.equal(recoveryDuckdbPage.kind, "page");
+      assert.equal(
+        recoveryDuckdbPage.kind,
+        "page",
+        recoveryDuckdbPage.kind === "error"
+          ? `Native DuckDB recovery page failed (${recoveryDuckdbPage.code.slice(0, 80)}, recoverable=${recoveryDuckdbPage.recoverable}).`
+          : "Native DuckDB recovery page must resolve."
+      );
       if (recoveryDuckdbPage.kind !== "page") {
         throw new Error("The native DuckDB recovery view did not resolve.");
       }
