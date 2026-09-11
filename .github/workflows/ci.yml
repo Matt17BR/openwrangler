@@ -358,6 +358,7 @@ jobs:
         run: >-
           npx --no-install vitest run
           src/test/dependencyInstaller.unit.test.ts
+          src/test/pythonDependencyPep440.unit.test.ts
           src/test/processShutdown.unit.test.ts
           src/test/kernelRuntimeBootstrap.unit.test.ts
         env:

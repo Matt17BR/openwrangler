@@ -51,6 +51,9 @@ Open Wrangler targets desktop VS Code and editors based on it. Release-candidate
 VS Code. Bounded Linux Cursor platform smoke is one concrete compatibility example. It covers representative grid,
 cleaning, export, and recovery flows, but not the full VS Code qualification matrix.
 
+Supported Python dependencies installed as hard links are recognized within the existing
+[version and module-origin checks](architecture.md#trust-source-integrity-and-export).
+
 Filter choices retain their counts while selecting values in the same column. Changes to the other filters, sort
 or AND/OR logic clear affected choices; Search loads the current choices without changing existing selections.
 Opening value filters from a header, the Filters tab or Show More selects the requested column with fresh search input.

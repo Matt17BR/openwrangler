@@ -2461,7 +2461,7 @@ def _posix_regular_module_file_identity(
             dir_fd=current_descriptor,
             follow_symlinks=False,
         )
-        if not stat.S_ISREG(named_file.st_mode) or named_file.st_nlink != 1:
+        if not stat.S_ISREG(named_file.st_mode):
             return None
         file_descriptor = os.open(
             filename,
@@ -2478,7 +2478,6 @@ def _posix_regular_module_file_identity(
         expected_file = _stat_entry_identity(named_file)
         if (
             not stat.S_ISREG(opened_file.st_mode)
-            or opened_file.st_nlink != 1
             or _stat_entry_identity(opened_file) != expected_file
             or _stat_entry_identity(current_file) != expected_file
         ):
@@ -2599,11 +2598,7 @@ def _windows_regular_module_file_identity(
                 close_handle(ctypes.c_void_p(numeric_handle))
                 return None
             is_directory = bool(information.attributes & 0x00000010)
-            if (
-                bool(information.attributes & 0x00000400)
-                or is_directory == is_file
-                or (is_file and information.links != 1)
-            ):
+            if bool(information.attributes & 0x00000400) or is_directory == is_file:
                 close_handle(ctypes.c_void_p(numeric_handle))
                 return None
             handles.append((numeric_handle, information))

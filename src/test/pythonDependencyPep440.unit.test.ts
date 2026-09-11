@@ -119,9 +119,10 @@ describe("selected-interpreter PEP 440 dependency probing", () => {
       await unlink(modulePath);
       await writeFile(hardlinkSource, "VALUE = 1\n", "utf8");
       await link(hardlinkSource, modulePath);
-      await expect(probeDependencies(executable, [fixture.dependency]), "hard-linked module").resolves.toEqual(
-        rejected
-      );
+      await expect(probeDependencies(executable, [fixture.dependency]), "hard-linked module").resolves.toEqual({
+        available: [fixture.dependency.importModule],
+        missing: []
+      });
       await unlink(modulePath);
       await unlink(hardlinkSource);
       await writeFile(modulePath, "VALUE = 1\n", "utf8");
