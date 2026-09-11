@@ -6,6 +6,7 @@ import importlib.metadata
 import json
 import os
 import re
+import shlex
 import sys
 from pathlib import Path
 from typing import Any
@@ -251,16 +252,14 @@ def test_python_310_ipython_branch_remains_package_and_workflow_only() -> None:
     assert json.dumps(dependency.identifier) not in host_block
     assert f"    {dependency.identifier}:" not in host_block
 
-    workflow = authority.WORKFLOW_PATH.read_text(encoding="utf-8")
-    workflow_block = workflow.split(f"{authority.WORKFLOW_START}\n", 1)[1].split(f"\n{authority.WORKFLOW_END}", 1)[0]
-    for case in dependency.executable_qualification_cases:
-        row = (
-            f"          - id: {json.dumps(dependency.identifier)}\n"
-            f"            python: {json.dumps(case.python_version)}\n"
-            f"            version: {json.dumps(case.version)}\n"
-            f"            requirement: {json.dumps(f'{dependency.distribution}=={case.version}')}"
-        )
-        assert workflow_block.count(row) == 1
+    cohorts = authority.qualification_cohorts(dependencies)
+    actual = {
+        (python_version, version)
+        for (python_version, _), members in cohorts.items()
+        for member, version in members
+        if member.identifier == "ipython"
+    }
+    assert actual == {(case.python_version, case.version) for case in dependency.executable_qualification_cases}
 
 
 def test_every_descriptor_uses_the_runtime_guard_pep440_rules() -> None:
@@ -357,7 +356,7 @@ def _temporary_consumers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tup
         encoding="utf-8",
     )
     workflow.write_text(
-        authority.WORKFLOW_PATH.read_text(encoding="utf-8").replace('version: "1.35.2"', 'version: "0.1.0"', 1),
+        authority.WORKFLOW_PATH.read_text(encoding="utf-8").replace("polars==1.35.2", "polars==0.1.0", 1),
         encoding="utf-8",
     )
     monkeypatch.setattr(authority, "PYPROJECT_PATH", pyproject)
@@ -550,61 +549,166 @@ def test_installed_dependencies_exercise_the_probe_contract(
 def test_generated_cohort_job_maps_each_qualification_once() -> None:
     dependencies = authority.load_authority()
     workflow = authority.WORKFLOW_PATH.read_text(encoding="utf-8")
-    expected = tuple(
-        (
-            dependency.identifier,
-            case.python_version,
-            case.version,
-            f"{dependency.distribution}=={case.version}",
-        )
+    expected = sorted(
+        (dependency.identifier, case.python_version, case.version)
         for dependency in dependencies
         for case in dependency.executable_qualification_cases
     )
+    cohorts = authority.qualification_cohorts(dependencies)
+    actual = sorted(
+        (dependency.identifier, python_version, version)
+        for (python_version, _), members in cohorts.items()
+        for dependency, version in members
+    )
+    assert actual == expected
+
     rendered = authority._render_workflow(dependencies, workflow)
     repinned_workflow = re.sub(r"@[0-9a-f]{40}", f"@{'a' * 40}", workflow)
     repinned = authority._render_workflow(dependencies, repinned_workflow)
     assert f"actions/checkout@{'a' * 40}" in repinned
     assert f"actions/setup-python@{'a' * 40}" in repinned
-    assert rendered.count("          - id: ") == len(expected)
-    expected_install = 'python -m pip install -e "python[dev]" "' + "$" + '{{ matrix.requirement }}"'
-    assert expected_install in rendered
-    for identifier, python_version, version, requirement in expected:
-        row = (
-            f"          - id: {json.dumps(identifier)}\n"
-            f"            python: {json.dumps(python_version)}\n"
-            f"            version: {json.dumps(version)}\n"
-            f"            requirement: {json.dumps(requirement)}"
-        )
-        assert rendered.count(row) == 1
-    assert {
-        (python_version, version) for identifier, python_version, version, _ in expected if identifier == "ipython"
-    } == {
-        ("3.10", "8.39.0"),
-        ("3.12", "9.15.0"),
-        ("3.12", "9.16.1"),
-    }
+    rows = re.findall(r"          - python: (.+)\n            cohort: (.+)\n            requirements: (.+)", rendered)
+    assert len(rows) == len(cohorts)
+    assert {(json.loads(python), json.loads(ordinal)) for python, ordinal, _ in rows} == set(cohorts)
+    command = re.search(r"        run: (python -m pip install[^\n]+)", rendered)
+    assert command is not None
+    for raw_python, raw_cohort, raw_requirements in rows:
+        key = (json.loads(raw_python), json.loads(raw_cohort))
+        requirements = json.loads(raw_requirements)
+        expected_arguments = [f"{dependency.distribution}=={version}" for dependency, version in cohorts[key]]
+        assert shlex.split(requirements) == expected_arguments
+        assert shlex.split(command[1].replace("${{ matrix.requirements }}", requirements)) == [
+            "python",
+            "-m",
+            "pip",
+            "install",
+            "-e",
+            "python[dev]",
+            *expected_arguments,
+        ]
+
+
+def test_cohorts_retain_middle_versions_and_interleaved_python_cases(tmp_path: Path) -> None:
+    raw = _authority_json()
+    pandas = next(item for item in raw["dependencies"] if item["id"] == "pandas")
+    pandas["qualification"]["qualifiedCases"] = [
+        {"pythonVersion": "3.12", "version": "2.3.3"},
+        {"pythonVersion": "3.11", "version": "2.4.0"},
+        {"pythonVersion": "3.12", "version": "2.5.0"},
+        {"pythonVersion": "3.12", "version": "3.0.5"},
+    ]
+    dependencies = authority.load_authority(_write_authority(tmp_path / "authority.json", raw))
+    cohorts = authority.qualification_cohorts(dependencies)
+    actual = [
+        (python_version, ordinal, version)
+        for (python_version, ordinal), members in cohorts.items()
+        for dependency, version in members
+        if dependency.identifier == "pandas"
+    ]
+    assert actual == [("3.12", "1", "2.3.3"), ("3.12", "2", "2.5.0"), ("3.11", "1", "2.4.0"), ("3.12", "3", "3.0.5")]
+    assert [(member.identifier, version) for member, version in cohorts[("3.10", "1")]] == [("ipython", "8.39.0")]
 
 
 def test_exact_qualified_dependency_probe(tmp_path: Path) -> None:
-    identifier = os.environ.get("OPENWRANGLER_QUALIFIED_DEPENDENCY_ID")
     python_version = os.environ.get("OPENWRANGLER_QUALIFIED_PYTHON_VERSION")
-    version = os.environ.get("OPENWRANGLER_QUALIFIED_DEPENDENCY_VERSION")
-    if identifier is None and python_version is None and version is None:
+    ordinal = os.environ.get("OPENWRANGLER_QUALIFIED_COHORT")
+    if python_version is None and ordinal is None:
         pytest.skip("workflow-only exact-version qualification probe")
-    assert identifier is not None
-    assert python_version is not None
-    assert version is not None
-    assert python_version == ".".join(str(part) for part in sys.version_info[:2])
-    matches = tuple(dependency for dependency in authority.load_authority() if dependency.identifier == identifier)
-    assert len(matches) == 1
-    dependency = matches[0]
-    assert (
-        authority.QualificationCase(python_version=python_version, version=version)
-        in dependency.executable_qualification_cases
+    assert python_version is not None and python_version == ".".join(str(part) for part in sys.version_info[:2]), (
+        "qualified_python_mismatch"
     )
-    module = _import_qualified_module(dependency, version)
-    _exercise_dependency(dependency, module, tmp_path)
+    assert ordinal is not None, "qualified_cohort_missing"
+    members = authority.qualification_cohorts(authority.load_authority()).get((python_version, ordinal))
+    assert members, "qualified_cohort_unknown"
+    for dependency, version in members:
+        print(f"Qualifying {dependency.identifier}=={version} on Python {python_version}", flush=True)
+        module = _import_qualified_module(dependency, version)
+        _exercise_dependency(dependency, module, tmp_path)
     _exercise_openwrangler_runtime(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("python_version", "ordinal", "error"),
+    [
+        (None, "1", "qualified_python_mismatch"),
+        ("current", None, "qualified_cohort_missing"),
+        ("3.99", "1", "qualified_python_mismatch"),
+        ("current", "", "qualified_cohort_unknown"),
+        ("current", "0", "qualified_cohort_unknown"),
+        ("current", "01", "qualified_cohort_unknown"),
+        ("current", "99", "qualified_cohort_unknown"),
+        ("current", "1\n", "qualified_cohort_unknown"),
+    ],
+)
+def test_exact_cohort_probe_refuses_missing_or_unknown_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, python_version: str | None, ordinal: str | None, error: str
+) -> None:
+    if python_version == "current":
+        python_version = ".".join(str(part) for part in sys.version_info[:2])
+    for name, value in (
+        ("OPENWRANGLER_QUALIFIED_PYTHON_VERSION", python_version),
+        ("OPENWRANGLER_QUALIFIED_COHORT", ordinal),
+    ):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+    monkeypatch.setattr(
+        sys.modules[__name__], "_import_qualified_module", lambda *_: pytest.fail("import before refusal")
+    )
+    with pytest.raises(AssertionError, match=f"^{error}"):
+        test_exact_qualified_dependency_probe(tmp_path)
+
+
+def test_exact_cohort_probe_checks_each_member_then_runtime_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (python_version, ordinal), members = next(iter(authority.qualification_cohorts(authority.load_authority()).items()))
+    monkeypatch.setattr(sys, "version_info", tuple(int(part) for part in python_version.split(".")))
+    monkeypatch.setenv("OPENWRANGLER_QUALIFIED_PYTHON_VERSION", python_version)
+    monkeypatch.setenv("OPENWRANGLER_QUALIFIED_COHORT", ordinal)
+    calls = []
+    module = object()
+
+    def imported(dependency: authority.Dependency, version: str) -> object:
+        calls.append(("import", dependency.identifier, version))
+        return module
+
+    def exercised(dependency: authority.Dependency, actual_module: Any, actual_path: Path) -> None:
+        assert actual_module is module and actual_path == tmp_path
+        calls.append(("api", dependency.identifier))
+
+    monkeypatch.setattr(sys.modules[__name__], "_import_qualified_module", imported)
+    monkeypatch.setattr(sys.modules[__name__], "_exercise_dependency", exercised)
+    monkeypatch.setattr(
+        sys.modules[__name__], "_exercise_openwrangler_runtime", lambda path: calls.append(("runtime", path))
+    )
+    test_exact_qualified_dependency_probe(tmp_path)
+    assert calls == [
+        entry
+        for dependency, version in members
+        for entry in (("import", dependency.identifier, version), ("api", dependency.identifier))
+    ] + [("runtime", tmp_path)]
+    capsys.readouterr()
+    calls.clear()
+    failure = RuntimeError("member API failed")
+
+    def refused(*_: Any) -> None:
+        raise failure
+
+    monkeypatch.setattr(sys.modules[__name__], "_exercise_dependency", refused)
+    with pytest.raises(RuntimeError) as caught:
+        test_exact_qualified_dependency_probe(tmp_path)
+    assert caught.value is failure
+    first, version = members[0]
+    assert calls == [("import", first.identifier, version)]
+    assert capsys.readouterr().out == f"Qualifying {first.identifier}=={version} on Python {python_version}\n"
+
+
+def test_qualified_module_binding_rejects_wrong_version() -> None:
+    dependency = next(item for item in authority.load_authority() if item.identifier == "fsspec")
+    with pytest.raises(AssertionError, match="^qualified_distribution_version_mismatch$"):
+        _import_qualified_module(dependency, "0.0.0")
 
 
 def test_qualified_module_binding_rejects_local_shadowing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

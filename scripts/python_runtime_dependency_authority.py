@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import stat
 import tempfile
 from dataclasses import dataclass
@@ -621,6 +622,20 @@ def _generated_workflow_action_use(workflow_source: str, action: str) -> str:
     return matches[0]
 
 
+def qualification_cohorts(
+    dependencies: tuple[Dependency, ...],
+) -> dict[tuple[str, str], tuple[tuple[Dependency, str], ...]]:
+    cohorts: dict[tuple[str, str], list[tuple[Dependency, str]]] = {}
+    for dependency in dependencies:
+        ordinals: dict[str, int] = {}
+        for case in dependency.executable_qualification_cases:
+            ordinal = ordinals.get(case.python_version, 0) + 1
+            ordinals[case.python_version] = ordinal
+            key = (case.python_version, str(ordinal))
+            cohorts.setdefault(key, []).append((dependency, case.version))
+    return {key: tuple(members) for key, members in cohorts.items()}
+
+
 def _render_workflow(dependencies: tuple[Dependency, ...], workflow_source: str) -> str:
     checkout_action = _generated_workflow_action_use(
         workflow_source, "actions/checkout"
@@ -630,7 +645,7 @@ def _render_workflow(dependencies: tuple[Dependency, ...], workflow_source: str)
     )
     lines = [
         "  python-runtime-dependency-cohorts:",
-        "    name: Exact Python dependency (${{ matrix.id }} ${{ matrix.version }}, Python ${{ matrix.python }})",
+        "    name: Exact Python dependencies (Python ${{ matrix.python }}, cohort ${{ matrix.cohort }})",
         "    runs-on: ubuntu-24.04",
         "    timeout-minutes: 15",
         "    strategy:",
@@ -638,16 +653,19 @@ def _render_workflow(dependencies: tuple[Dependency, ...], workflow_source: str)
         "      matrix:",
         "        include:",
     ]
-    for dependency in dependencies:
-        for case in dependency.executable_qualification_cases:
-            lines.extend(
-                (
-                    f"          - id: {json.dumps(dependency.identifier)}",
-                    f"            python: {json.dumps(case.python_version)}",
-                    f"            version: {json.dumps(case.version)}",
-                    f"            requirement: {json.dumps(f'{dependency.distribution}=={case.version}')}",
-                )
+    for (python_version, ordinal), members in qualification_cohorts(
+        dependencies
+    ).items():
+        requirements = shlex.join(
+            f"{dependency.distribution}=={version}" for dependency, version in members
+        )
+        lines.extend(
+            (
+                f"          - python: {json.dumps(python_version)}",
+                f"            cohort: {json.dumps(ordinal)}",
+                f"            requirements: {json.dumps(requirements)}",
             )
+        )
     lines.extend(
         (
             "    steps:",
@@ -655,17 +673,16 @@ def _render_workflow(dependencies: tuple[Dependency, ...], workflow_source: str)
             f"      - uses: {setup_python_action}",
             "        with:",
             "          python-version: ${{ matrix.python }}",
-            "      - name: Install Open Wrangler and exact qualified dependency",
-            '        run: python -m pip install -e "python[dev]" "${{ matrix.requirement }}"',
-            "      - name: Exercise exact qualified dependency",
+            "      - name: Install Open Wrangler and exact qualified dependencies",
+            '        run: python -m pip install -e "python[dev]" ${{ matrix.requirements }}',
+            "      - name: Exercise exact qualified dependencies",
             "        run: >-",
             "          python -m pytest",
             "          python/tests/test_runtime_dependency_authority.py::test_exact_qualified_dependency_probe",
             "          -q",
             "        env:",
-            "          OPENWRANGLER_QUALIFIED_DEPENDENCY_ID: ${{ matrix.id }}",
             "          OPENWRANGLER_QUALIFIED_PYTHON_VERSION: ${{ matrix.python }}",
-            "          OPENWRANGLER_QUALIFIED_DEPENDENCY_VERSION: ${{ matrix.version }}",
+            "          OPENWRANGLER_QUALIFIED_COHORT: ${{ matrix.cohort }}",
         )
     )
     return "\n".join(lines)

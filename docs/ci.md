@@ -139,6 +139,15 @@ Windows runtime contracts for this small dependency set. Its package installatio
 
 ## Scheduled and release workflows
 
+The weekly cross-platform workflow groups the dependency authority's exact qualification cases by Python version
+and ordinal within each dependency. Each declared tuple appears once, including intermediate versions and the
+Python 3.10 IPython compatibility case. The current groups install ten and five exact requirements on Python 3.12,
+and one on Python 3.10, alongside `python[dev]`. Other packages resolve through the declared ranges.
+Each group verifies every member's version, module origin and API behavior, then runs the three-engine runtime smoke
+once. Joint groups reduce repeated setup and check selected versions together. They give up some combinations with
+one old dependency and otherwise current packages, and separate job outcomes for each dependency. A failed member
+is named in the probe output. The other cross-platform and native R jobs remain separate.
+
 The weekly Polars runtime benchmark installs the core Python runtime dependencies and runs the full CSV/Parquet
 measurement with strict thresholds.
 

@@ -62,93 +62,37 @@ jobs:
 
   # BEGIN GENERATED PYTHON RUNTIME DEPENDENCY COHORTS
   python-runtime-dependency-cohorts:
-    name: Exact Python dependency (${{ matrix.id }} ${{ matrix.version }}, Python ${{ matrix.python }})
+    name: Exact Python dependencies (Python ${{ matrix.python }}, cohort ${{ matrix.cohort }})
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         include:
-          - id: "polars"
-            python: "3.12"
-            version: "1.35.2"
-            requirement: "polars==1.35.2"
-          - id: "polars"
-            python: "3.12"
-            version: "1.44.1"
-            requirement: "polars==1.44.1"
-          - id: "duckdb"
-            python: "3.12"
-            version: "1.5.4"
-            requirement: "duckdb==1.5.4"
-          - id: "duckdb"
-            python: "3.12"
-            version: "1.5.5"
-            requirement: "duckdb==1.5.5"
-          - id: "fsspec"
-            python: "3.12"
-            version: "2026.7.0"
-            requirement: "fsspec==2026.7.0"
-          - id: "pytz"
-            python: "3.12"
-            version: "2026.3.post1"
-            requirement: "pytz==2026.3.post1"
-          - id: "pandas"
-            python: "3.12"
-            version: "2.3.3"
-            requirement: "pandas==2.3.3"
-          - id: "pandas"
-            python: "3.12"
-            version: "3.0.5"
-            requirement: "pandas==3.0.5"
-          - id: "pyarrow"
-            python: "3.12"
-            version: "25.0.0"
-            requirement: "pyarrow==25.0.0"
-          - id: "pyarrow"
-            python: "3.12"
-            version: "25.0.1"
-            requirement: "pyarrow==25.0.1"
-          - id: "openpyxl"
-            python: "3.12"
-            version: "3.1.5"
-            requirement: "openpyxl==3.1.5"
-          - id: "xlrd"
-            python: "3.12"
-            version: "2.0.2"
-            requirement: "xlrd==2.0.2"
-          - id: "ipython"
-            python: "3.10"
-            version: "8.39.0"
-            requirement: "ipython==8.39.0"
-          - id: "ipython"
-            python: "3.12"
-            version: "9.15.0"
-            requirement: "ipython==9.15.0"
-          - id: "ipython"
-            python: "3.12"
-            version: "9.16.1"
-            requirement: "ipython==9.16.1"
-          - id: "fastexcel"
-            python: "3.12"
-            version: "0.20.2"
-            requirement: "fastexcel==0.20.2"
+          - python: "3.12"
+            cohort: "1"
+            requirements: "polars==1.35.2 duckdb==1.5.4 fsspec==2026.7.0 pytz==2026.3.post1 pandas==2.3.3 pyarrow==25.0.0 openpyxl==3.1.5 xlrd==2.0.2 ipython==9.15.0 fastexcel==0.20.2"
+          - python: "3.12"
+            cohort: "2"
+            requirements: "polars==1.44.1 duckdb==1.5.5 pandas==3.0.5 pyarrow==25.0.1 ipython==9.16.1"
+          - python: "3.10"
+            cohort: "1"
+            requirements: "ipython==8.39.0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python }}
-      - name: Install Open Wrangler and exact qualified dependency
-        run: python -m pip install -e "python[dev]" "${{ matrix.requirement }}"
-      - name: Exercise exact qualified dependency
+      - name: Install Open Wrangler and exact qualified dependencies
+        run: python -m pip install -e "python[dev]" ${{ matrix.requirements }}
+      - name: Exercise exact qualified dependencies
         run: >-
           python -m pytest
           python/tests/test_runtime_dependency_authority.py::test_exact_qualified_dependency_probe
           -q
         env:
-          OPENWRANGLER_QUALIFIED_DEPENDENCY_ID: ${{ matrix.id }}
           OPENWRANGLER_QUALIFIED_PYTHON_VERSION: ${{ matrix.python }}
-          OPENWRANGLER_QUALIFIED_DEPENDENCY_VERSION: ${{ matrix.version }}
+          OPENWRANGLER_QUALIFIED_COHORT: ${{ matrix.cohort }}
   # END GENERATED PYTHON RUNTIME DEPENDENCY COHORTS
 
   r-4-4-scheduled-qualification:
