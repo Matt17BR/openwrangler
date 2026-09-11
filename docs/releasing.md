@@ -25,10 +25,19 @@ source commit chooses `x.y`; the workflow requires a full checkout to prove that
 `1.99.YYYYMMDD` compatibility series. For example, daily previews remain `2.0.YYYYMMDD` until a stable `v2.1.0` tag
 becomes reachable, after which they use `2.1.YYYYMMDD`.
 
-The dated patch field is intentional and is not a stable patch number. It may be numerically higher than a
-conventional patch in the same minor line. An intended manual stable release normally advances the minor `y`, so a
-release after the 2.0 preview line may be `2.1.0`. Reserve a major `x` increment for a substantially larger feature or
-architectural shift.
+Every new stable release uses `x.(y+1).0`, where `x.y` comes from the latest canonical stable tag reachable from
+protected `main`, including when the release contains only fixes. Reserve a major `x` increment for a separately
+reviewed major-release decision and policy change. The normal release path refuses same-minor patch releases, skipped minors and automatic major bumps.
+Existing releases and their recovery remain valid.
+
+This keeps updates in order: `2.1.1 < 2.1.20260911 < 2.2.0 < 2.2.20260911 < 2.3.0`. The same UTC date may appear in
+different preview series after a stable release. A version-only commit or candidate does not advance the preview
+series; the canonical stable tag does. Existing preview versions and qualified artifacts are never rewritten.
+
+VS Code updates preview users to a higher stable version while retaining their eligibility for later, higher previews
+([VS Code publishing documentation](https://code.visualstudio.com/api/working-with-extensions/publishing-extension#pre-release-extensions)).
+The explicit package and registry channel flags still distinguish stable and preview releases; ordering alone does
+not establish artifact ancestry or runtime compatibility.
 
 Every preview requires `package.json.preview` to be `true`; every stable release requires it to be `false`. Package
 verification rejects a VSIX whose embedded manifest uses the wrong channel.
@@ -114,7 +123,8 @@ set to the same tag. Recovery verifies the existing tag and GitHub files and nev
 From protected `main`, dispatch `.github/workflows/release-candidate.yml` with `release_tag` set to the reviewed stable
 tag. Use a new first-attempt run; do not rerun a failed or cancelled candidate.
 
-The workflow verifies the tag, source commit, and stable metadata, then builds the VSIX once. It binds that VSIX to a
+The workflow verifies the tag, source commit, stable metadata and next minor version before creating its local candidate
+tag, then builds the VSIX once. It binds that VSIX to a
 SHA-256 checksum and provenance receipt. It also audits the full Node lock, published Python dependencies, and optional
 runtime packages.
 
@@ -150,8 +160,9 @@ Stable workflow success confirms GitHub publication and accepted Open VSX dispat
 complete, check the separate Open VSX workflow and Azure Marketplace pipeline results and their exact-version,
 channel and package verification. The tag starts Azure Marketplace promotion. No publication step rebuilds the extension.
 
-A moved tag, changed artifact, metadata mismatch, or conflicting registry version stops publication. Never overwrite a
-different public package.
+A moved tag, changed artifact, metadata mismatch, or conflicting registry version stops publication. New stable tags
+and GitHub release mutations recheck the next minor against current protected `main`; exact public historical releases
+remain verifiable without applying the future-version rule. Never overwrite a different public package.
 
 ## Recovery
 

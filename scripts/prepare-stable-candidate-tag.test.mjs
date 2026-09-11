@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { inspectRemoteStableTagOutput, prepareStableCandidateTag } from "./prepare-stable-candidate-tag.mjs";
+import {
+  assertNextStableRelease,
+  inspectRemoteStableTagOutput,
+  prepareStableCandidateTag
+} from "./prepare-stable-candidate-tag.mjs";
 
 function git(root, args) {
   return execFileSync("git", args, {
@@ -15,18 +19,40 @@ function git(root, args) {
   }).trim();
 }
 
-function createRepository(context) {
+function writeVersion(root, version) {
+  writeFileSync(
+    join(root, "package.json"),
+    JSON.stringify({ name: "openwrangler", publisher: "Matt17BR", preview: false, version })
+  );
+  writeFileSync(
+    join(root, "package-lock.json"),
+    JSON.stringify({
+      name: "openwrangler",
+      version,
+      lockfileVersion: 3,
+      packages: { "": { name: "openwrangler", version } }
+    })
+  );
+  mkdirSync(join(root, "python/openwrangler_runtime"), { recursive: true });
+  writeFileSync(join(root, "python/openwrangler_runtime/version.py"), `__version__ = "${version}"\n`);
+}
+
+function createRepository(context, version = "2.2.0") {
   const root = mkdtempSync(join(tmpdir(), "openwrangler-stable-tag-"));
   context.after(() => rmSync(root, { recursive: true, force: true }));
   git(root, ["init", "--quiet"]);
   git(root, ["config", "user.email", "release-test@openwrangler.invalid"]);
   git(root, ["config", "user.name", "Open Wrangler Release Test"]);
+  writeVersion(root, "2.1.1");
   writeFileSync(join(root, "tracked.txt"), "first\n", "utf8");
-  git(root, ["add", "tracked.txt"]);
+  git(root, ["add", "."]);
   git(root, ["commit", "--quiet", "-m", "first"]);
   const first = git(root, ["rev-parse", "HEAD"]);
+  git(root, ["tag", "v2.1.1"]);
+  writeVersion(root, version);
   writeFileSync(join(root, "tracked.txt"), "second\n", "utf8");
   git(root, ["commit", "--quiet", "-am", "second"]);
+  git(root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
   return { first, head: git(root, ["rev-parse", "HEAD"]), root };
 }
 
@@ -34,22 +60,73 @@ test("creates one unpushed local intended tag and then verifies it idempotently"
   const repository = createRepository(context);
   const first = prepareStableCandidateTag({
     expectedCommit: repository.head,
-    releaseTag: "v1.0.0",
+    releaseTag: "v2.2.0",
     root: repository.root
   });
   assert.deepEqual(first, {
     created: true,
-    releaseTag: "v1.0.0",
+    releaseTag: "v2.2.0",
     sourceCommit: repository.head
   });
-  assert.equal(git(repository.root, ["rev-parse", "v1.0.0^{commit}"]), repository.head);
+  assert.equal(git(repository.root, ["rev-parse", "v2.2.0^{commit}"]), repository.head);
 
   const second = prepareStableCandidateTag({
     expectedCommit: repository.head,
-    releaseTag: "v1.0.0",
+    releaseTag: "v2.2.0",
     root: repository.root
   });
   assert.equal(second.created, false);
+});
+
+test("new stable candidates advance exactly one minor and reset the patch", (context) => {
+  for (const version of ["2.1.2", "2.1.0", "2.2.1", "2.3.0", "3.0.0", "2.2.20260911"]) {
+    const repository = createRepository(context, version);
+    assert.throws(
+      () =>
+        prepareStableCandidateTag({
+          expectedCommit: repository.head,
+          releaseTag: `v${version}`,
+          root: repository.root
+        }),
+      /next stable release.*2\.2\.0/u,
+      version
+    );
+    assert.equal(git(repository.root, ["tag", "--list", `v${version}`]), "");
+  }
+});
+
+test("candidate admission refuses missing authority and malformed excluded tags", (context) => {
+  for (const fault of ["missing stable", "annotated candidate", "incoherent candidate"]) {
+    const repository = createRepository(context);
+    if (fault === "missing stable") git(repository.root, ["tag", "-d", "v2.1.1"]);
+    if (fault === "annotated candidate") git(repository.root, ["tag", "-a", "-m", "candidate", "v2.2.0"]);
+    if (fault === "incoherent candidate") {
+      writeVersion(repository.root, "2.2.1");
+      git(repository.root, ["commit", "--quiet", "-am", "wrong candidate metadata"]);
+      repository.head = git(repository.root, ["rev-parse", "HEAD"]);
+      git(repository.root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+      git(repository.root, ["tag", "v2.2.0"]);
+    }
+    assert.throws(
+      () => prepareStableCandidateTag({ expectedCommit: repository.head, releaseTag: "v2.2.0", root: repository.root }),
+      /No canonical stable|exact lightweight|coherent stable version metadata/u,
+      fault
+    );
+  }
+});
+
+test("publication admission uses current protected-main stable history", (context) => {
+  const repository = createRepository(context);
+  prepareStableCandidateTag({ expectedCommit: repository.head, releaseTag: "v2.2.0", root: repository.root });
+  writeVersion(repository.root, "2.3.0");
+  git(repository.root, ["commit", "--quiet", "-am", "later stable"]);
+  git(repository.root, ["tag", "v2.3.0"]);
+  git(repository.root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+  git(repository.root, ["checkout", "--quiet", "--detach", repository.head]);
+  assert.throws(
+    () => assertNextStableRelease({ sourceCommit: repository.head, releaseTag: "v2.2.0", root: repository.root }),
+    /next stable release after v2\.3\.0 must be 2\.4\.0/u
+  );
 });
 
 test("rejects an existing release tag bound to another commit", (context) => {

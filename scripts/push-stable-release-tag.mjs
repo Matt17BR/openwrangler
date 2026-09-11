@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { assertNextStableRelease } from "./prepare-stable-candidate-tag.mjs";
 import { pushExactReleaseTag } from "./release-tag-publisher.mjs";
 import { classifyNumericReleaseVersion, releaseSourcePolicyForVersion } from "./release-metadata.mjs";
 
@@ -16,6 +17,12 @@ function stableSourceRef(releaseTag) {
 export function pushStableReleaseTag(options) {
   return pushExactReleaseTag({
     ...options,
+    beforeCreate: () =>
+      assertNextStableRelease({
+        root: options.root,
+        releaseTag: options.releaseTag,
+        sourceCommit: options.expectedCommit
+      }),
     sourceRef: stableSourceRef(options?.releaseTag)
   });
 }

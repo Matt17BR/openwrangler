@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { withPinnedCanonicalReleaseAssets } from "./canonical-release-assets.mjs";
 import { parseGitHubImmutableReleaseExpectation, publishGitHubRelease } from "./github-release-publisher.mjs";
 import { readReleaseNotesFromCommit } from "./release-notes.mjs";
+import { assertNextStableRelease } from "./prepare-stable-candidate-tag.mjs";
 import { verifyPinnedCanonicalReleaseArtifact } from "./verify-canonical-release-artifact.mjs";
 
 const FULL_COMMIT = /^[0-9a-f]{40}$/u;
@@ -37,6 +38,7 @@ export async function publishVerifiedGitHubStableRelease({
   releaseTag,
   releaseNotes,
   repository,
+  root,
   sourceCommit,
   sourcePackageJson,
   token
@@ -53,7 +55,10 @@ export async function publishVerifiedGitHubStableRelease({
     const assets = pinned.assets.map(({ bytes, contentType, name }) => ({ bytes, contentType, name }));
     const result = await publishGitHubStableRelease({
       assets,
-      beforeMutation: pinned.assertUnchanged,
+      beforeMutation() {
+        pinned.assertUnchanged();
+        assertNextStableRelease({ root, releaseTag: receipt.releaseTag, sourceCommit: receipt.sourceCommit });
+      },
       expectImmutable,
       expectedCommit: receipt.sourceCommit,
       fetchImpl,
@@ -80,6 +85,7 @@ async function runCli() {
     expectImmutable: parseGitHubImmutableReleaseExpectation(process.env.GITHUB_IMMUTABLE_RELEASES_EXPECTED),
     expectedCommit: process.env.EXPECTED_SHA,
     repository: process.env.GITHUB_REPOSITORY,
+    root,
     releaseTag: process.env.RELEASE_TAG,
     releaseNotes: readReleaseNotesFromCommit({
       commit: sourceCommit,

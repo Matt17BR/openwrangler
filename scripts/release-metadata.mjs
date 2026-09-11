@@ -107,6 +107,14 @@ export function classifyNumericReleaseVersion(version) {
   });
 }
 
+export function nextStableReleaseVersion(stableVersion) {
+  const parts = numericVersionParts(stableVersion);
+  if (parts === undefined || classifyNumericReleaseVersion(stableVersion)?.channel !== "stable") {
+    throw new Error("The next stable release requires one canonical prior stable version.");
+  }
+  return `${parts[0]}.${parts[1] + 1n}.0`;
+}
+
 export function inspectReleaseMetadata({ releaseTag, packageJson }) {
   const problems = [];
   let manifest;
