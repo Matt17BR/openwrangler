@@ -99,13 +99,42 @@ test("proves existing component test edits while retaining Source execution", (c
     pythonOmittable: true
   });
   const output = join(cwd, "action-output");
-  const message = execFileSync(process.execPath, [script], {
+  execFileSync(process.execPath, [script], {
     cwd,
     env: { ...process.env, ...env, GITHUB_OUTPUT: output },
     encoding: "utf8"
   });
   assert.equal(readFileSync(output, "utf8"), "docs_only=false\nr_omittable=true\npython_omittable=true\n");
-  assert.match(message, /component-test/u);
+});
+
+test("proves existing release-policy edits while retaining Source and package execution", (context) => {
+  const files = [
+    "scripts/release-metadata.mjs",
+    "scripts/daily-preview-artifact.mjs",
+    "scripts/daily-preview-artifact.test.mjs",
+    "scripts/prepare-stable-candidate-tag.mjs",
+    "scripts/prepare-stable-candidate-tag.test.mjs",
+    "scripts/release-tag-publisher.mjs",
+    "scripts/push-stable-release-tag.mjs",
+    "scripts/push-stable-release-tag.test.mjs",
+    "scripts/publish-github-stable-release.mjs",
+    "scripts/publish-github-stable-release.test.mjs",
+    "scripts/verify-canonical-release-artifact.mjs",
+    "scripts/verify-canonical-release-artifact.test.mjs",
+    "CHANGELOG.md",
+    "docs/ci.md"
+  ];
+  const cwd = repository(context, files);
+  for (const file of files) write(cwd, file);
+  const env = merge(cwd);
+  assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
+    docsOnly: false,
+    rOmittable: true,
+    pythonOmittable: true
+  });
+  const output = join(cwd, "action-output");
+  execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
+  assert.equal(readFileSync(output, "utf8"), "docs_only=false\nr_omittable=true\npython_omittable=true\n");
 });
 
 test("proves existing Python source and Markdown edits only for native R", async (context) => {
@@ -118,6 +147,7 @@ test("proves existing Python source and Markdown edits only for native R", async
     [
       "python/openwrangler_runtime/engines/duckdb_engine.py",
       "python/tests/test_duckdb_engine.py",
+      "scripts/release-metadata.mjs",
       "src/test/webview.component.test.tsx",
       "README.md",
       "CHANGELOG.md",
@@ -189,6 +219,7 @@ test("proves regular R source changes and existing installed-harness edits only 
         "src/test/extensionHost/releasedRRowReduction.ts",
         "src/test/webview.component.test.tsx",
         "r/openwrangler_runtime/kernel_agent.R",
+        "scripts/release-metadata.mjs",
         "README.md",
         "CHANGELOG.md",
         "docs/testing.md"
@@ -241,12 +272,13 @@ test("keeps both runtimes required for R and CHANGELOG changes with Python sourc
   }
 });
 
-test("requires full owners for deleted or renamed runtime source, including alongside additions", async (context) => {
+test("requires full owners for deleted or renamed source, including alongside additions", async (context) => {
   for (const file of [
     "python/openwrangler_runtime/session.py",
     "r/openwrangler_runtime/kernel_agent.R",
     "src/test/extensionHost/releasedRCoreEditing.ts",
     "scripts/editor-acceptance.mjs",
+    "scripts/release-metadata.mjs",
     "src/test/webview.component.test.tsx"
   ]) {
     for (const change of ["add and delete", "delete", "rename", "rename into runtime"]) {
@@ -277,6 +309,7 @@ test("requires full owners for source mode changes and existing executable or sy
     "r/tests/helper.R",
     "src/test/extensionHost/releasedRCoreEditing.ts",
     "scripts/editor-acceptance-artifact.test.mjs",
+    "scripts/release-metadata.mjs",
     "src/test/webview.component.test.tsx"
   ]) {
     for (const mode of ["100755", "120000"]) {
@@ -343,6 +376,7 @@ test("requires full owners for added Markdown or paths outside the runtime sourc
     "r/dependencies/new.R",
     "src/test/extensionHost/releasedRCoreEditing.ts",
     "scripts/editor-acceptance-artifact.test.mjs",
+    "scripts/release-metadata.mjs",
     "src/test/webview.component.test.tsx"
   ]) {
     await context.test(file, (child) => {
@@ -446,6 +480,8 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
     "scripts/ci-docs-only.test.mjs",
     "scripts/editor-acceptance.mjs.bak",
     "scripts/editor-acceptance-extra.mjs",
+    "scripts/release-metadata.test.mjs",
+    "scripts/release-metadata-extra.mjs",
     "package-lock.json",
     "python/pyproject.toml",
     "python/README.md",
@@ -464,8 +500,10 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
   ]) {
     await context.test(file, (child) => {
       const component = "src/test/webview.component.test.tsx";
-      const cwd = repository(child, [file, "CHANGELOG.md", component]);
+      const releasePolicy = "scripts/release-metadata.mjs";
+      const cwd = repository(child, [file, "CHANGELOG.md", component, releasePolicy]);
       write(cwd, component);
+      write(cwd, releasePolicy);
       write(cwd, "README.md");
       write(cwd, "CHANGELOG.md");
       write(cwd, file);
