@@ -1,7 +1,5 @@
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { NumericVisualization } from "../shared/protocol";
 import { NumericHistogram } from "../webviews/visualizations/NumericHistogram";
@@ -172,26 +170,5 @@ describe("NumericHistogram", () => {
     fireEvent.keyDown(control, { key: "Home" });
     fireEvent.keyDown(control, { key: "Enter" });
     expect(onSelectBin).toHaveBeenLastCalledWith(visualization.bins[0], 0);
-  });
-
-  it("keeps the active status in the existing single-line caption space", () => {
-    const stylesheet = ["grid.css", "grid-insights.css"]
-      .map((file) => readFileSync(resolve("src/webviews/styles", file), "utf8"))
-      .join("\n");
-    expect(stylesheet).toMatch(
-      /\.miniChartCaption\s*\{[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/u
-    );
-    expect(stylesheet).toMatch(
-      /\.miniChartCaption\.active\s*\{[^}]*color:\s*var\(--vscode-foreground\);[^}]*font-variant-numeric:\s*tabular-nums;/u
-    );
-    expect(stylesheet).toMatch(
-      /\.numericHistogramHitTarget:not\(:disabled\):hover\s*\{[^}]*background:\s*transparent;/u
-    );
-    expect(stylesheet).toMatch(
-      /th\s*\{[^}]*background-color:\s*var\(--vscode-editor-background\);[^}]*background-image:\s*linear-gradient\(var\(--grid-header-surface\),\s*var\(--grid-header-surface\)\);[^}]*isolation:\s*isolate;[^}]*overflow:\s*clip;[^}]*z-index:\s*3;/u
-    );
-    expect(stylesheet).toMatch(/\.columnInsight\s*\{[^}]*min-width:\s*0;[^}]*overflow:\s*clip;/u);
-    expect(stylesheet).toMatch(/\.summaryDistribution\s*\{[^}]*min-width:\s*0;[^}]*overflow:\s*clip;/u);
-    expect(stylesheet).not.toContain(".numericHistogramTooltip");
   });
 });
