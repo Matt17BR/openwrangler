@@ -1177,7 +1177,6 @@ def test_duckdb_generated_code_emits_only_reachable_helpers() -> None:
             assert empty_source.fetchall() == [(99, 2)]
             assert calls == [99]
         plain_code = engine.compile_plan(plain_plan)
-        assert "from collections import Counter" not in plain_code
         assert "def _ow_text(" in plain_code
         assert "def _ow_assign(" in plain_code
         assert "def _ow_query(" in plain_code
@@ -1190,7 +1189,6 @@ def test_duckdb_generated_code_emits_only_reachable_helpers() -> None:
         )
         for plan in categorical_plans:
             code = engine.compile_plan(plan)
-            assert "from collections import Counter" in code
             assert "def _ow_pivot_wider(" not in code
             assert_same_relation(
                 engine.apply_transform(source_relation(), plan[0]),

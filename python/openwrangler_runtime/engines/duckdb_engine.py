@@ -1284,11 +1284,7 @@ class DuckDBEngine(DataFrameEngine):
         clean_data_lines.append("    return df")
         clean_data = "\n".join(clean_data_lines)
         generated_helpers = select_generated_helpers(_generated_helper_source(), clean_data)
-        uses_counter = any(step["kind"] in {"oneHotEncode", "multiLabelBinarize"} for step in plan)
-
         lines = [*(custom_code_prelude_lines() if has_custom_code else [])]
-        if uses_counter:
-            lines.extend(["from collections import Counter", ""])
         if generated_helpers:
             lines.extend([generated_helpers, ""])
         lines = [clean_data_lines[0], *indent("\n".join(lines), "    ").splitlines()]
@@ -4812,10 +4808,12 @@ def _ow_mark_duplicates(df, columns, target):
 
 
 def _ow_check_outputs(existing, generated, operation):
+    from collections import Counter
+
     generated = [str(name) for name in generated]
     if any(name.casefold().startswith('__open_wrangler_internal_row_id_') for name in generated):
         raise ValueError(operation + " would create Open Wrangler's reserved private row-identity column.")
-    duplicates = {name for name in generated if generated.count(name) > 1}
+    duplicates = {name for name, count in Counter(generated).items() if count > 1}
     collisions = sorted(duplicates | (set(map(str, existing)) & set(generated)))
     if collisions:
         raise ValueError(operation + " would create duplicate column names: " + ", ".join(collisions))
