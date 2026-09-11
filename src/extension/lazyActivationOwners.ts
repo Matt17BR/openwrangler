@@ -136,6 +136,7 @@ export interface OpenWranglerTestApi {
   requestExecutionCheckpoint: SessionCoordinator["testingRequestExecutionCheckpoint"];
   sessionSchedulerState: SessionCoordinator["testingSessionSchedulerState"];
   panelOpenResponse(): OpenWranglerResponse | undefined;
+  observeNextNotebookPanelOpen(expected: { uri: string; variableName: string }): () => OpenWranglerResponse | undefined;
   diagnostics: SessionCoordinator["diagnostics"];
   restartRuntime(reason?: string): void;
   runtimeGeneration(): number;
@@ -890,6 +891,7 @@ export class LazyActivationOwners implements vscode.Disposable {
         session.coordinator.testingRequestExecutionCheckpoint(sessionId, requestKind, viewRequestId),
       sessionSchedulerState: (sessionId) => session.coordinator.testingSessionSchedulerState(sessionId),
       panelOpenResponse: () => OpenWranglerPanel.openResponseForTesting(),
+      observeNextNotebookPanelOpen: (expected) => OpenWranglerPanel.observeNextNotebookPanelOpenForTesting(expected),
       diagnostics: () => session.coordinator.diagnostics(),
       restartRuntime: (reason) => python.bridge.restart(reason),
       runtimeGeneration: () => python.bridge.runtimeGeneration,

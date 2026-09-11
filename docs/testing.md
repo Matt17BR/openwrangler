@@ -213,6 +213,12 @@ the original profile must retain its normal per-user protections. A private chil
 requirement. Existing process-settlement and root-identity checks govern cleanup, including files left by killed
 fixture kernels.
 
+The first generic Pandas notebook launch observes the unique new panel for its exact notebook and variable,
+independently of focus. A terminal error from that panel's first open attempt fails the wait immediately with bounded
+kind, code and recoverability diagnostics; an older panel or retry cannot satisfy it, and the reader cannot switch away
+from a panel it has observed. Pending opens retain the existing 75-second deadline, and success must match the active
+session to the observed panel's session.
+
 The generic verification journey composes Formula then Custom Code in each editing engine, with Custom Code consuming
 the Formula output. It compares Preview/Apply and complete code, then checks the plan, schema and bounded page after
 runtime restart. It retains each engine's edited clipboard/export path, Pandas Save/cancel, source integrity and cleanup.
