@@ -907,6 +907,10 @@ def test_index_is_lazy_and_close_releases_without_an_action(monkeypatch: pytest.
         def __init__(self) -> None:
             self.action_calls = 0
 
+        def count(self) -> int:
+            self.action_calls += 1
+            return 0
+
     class SourceFrame:
         columns = ["value"]
         isStreaming = False
@@ -945,6 +949,11 @@ def test_index_is_lazy_and_close_releases_without_an_action(monkeypatch: pytest.
     assert source.with_column_calls == 1
     assert engine.shape(indexed) == {"rows": None, "columns": 1}
 
+    engine._paging_frame = indexed
+    engine._paging_anchors[0] = 1
     engine.close()
+    assert engine._indexed_frame is None
+    assert engine._paging_frame is None
+    assert engine._paging_anchors == {}
     engine.close()
     assert indexed.action_calls == 0

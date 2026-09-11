@@ -203,8 +203,6 @@ def test_mixed_profile_fixture_is_native_ordered_and_complete(
     finally:
         engine.close()
 
-    assert spark_session.range(1).count() == 1
-
 
 def test_column_values_use_one_guarded_terminal_action(
     spark_session: Any,
@@ -230,8 +228,6 @@ def test_column_values_use_one_guarded_terminal_action(
         assert collected_projections == [("count", "__ow_value", "__ow_profile_total_bytes")]
     finally:
         engine.close()
-
-    assert spark_session.range(1).count() == 1
 
 
 def test_fused_summaries_match_per_column_objects_and_canonical_utf8_bytes(spark_session: Any) -> None:
@@ -311,8 +307,6 @@ def test_fused_summaries_match_per_column_objects_and_canonical_utf8_bytes(spark
     finally:
         engine.close()
 
-    assert spark_session.range(1).count() == 1
-
 
 def test_batched_terminal_summaries_match_temporal_complex_and_interval_bytes(spark_session: Any) -> None:
     frame = spark_session.sql(
@@ -361,8 +355,6 @@ def test_batched_terminal_summaries_match_temporal_complex_and_interval_bytes(sp
         assert batched[9]["topValues"][0]["count"] == 2
     finally:
         engine.close()
-
-    assert spark_session.range(1).count() == 1
 
 
 def test_numeric_histogram_is_exact_for_a_large_filtered_view(spark_session: Any) -> None:
@@ -463,8 +455,6 @@ def test_numeric_summaries_publish_lossless_wide_integer_and_decimal_extrema(
     finally:
         engine.close()
 
-    assert spark_session.range(1).count() == 1
-
 
 def test_numeric_summaries_publish_typed_zero_for_all_missing_domains(spark_session: Any) -> None:
     frame = spark_session.createDataFrame(
@@ -492,8 +482,6 @@ def test_numeric_summaries_publish_typed_zero_for_all_missing_domains(spark_sess
         assert summaries[2]["numeric"] == {"sum": 0.0}
     finally:
         engine.close()
-
-    assert spark_session.range(1).count() == 1
 
 
 def test_text_summaries_are_exact_native_unicode_aggregates(
@@ -537,8 +525,6 @@ def test_text_summaries_are_exact_native_unicode_aggregates(
         assert summaries[1]["nullCount"] == 6
     finally:
         engine.close()
-
-    assert spark_session.range(1).count() == 1
 
 
 def test_maps_and_nested_maps_use_canonical_native_profile_keys(spark_session: Any) -> None:
@@ -618,8 +604,6 @@ def test_maps_and_nested_maps_use_canonical_native_profile_keys(spark_session: A
     finally:
         engine.close()
 
-    assert spark_session.range(1).count() == 1
-
 
 def test_nested_decimals_keep_exact_page_precision(spark_session: Any) -> None:
     exact = "12345678901234567890.123456789012345678"
@@ -648,8 +632,6 @@ def test_nested_decimals_keep_exact_page_precision(spark_session: Any) -> None:
         }
     finally:
         engine.close()
-
-    assert spark_session.range(1).count() == 1
 
 
 def test_nested_negative_zero_uses_native_profile_equality(spark_session: Any) -> None:
@@ -691,8 +673,6 @@ def test_nested_negative_zero_uses_native_profile_equality(spark_session: Any) -
             assert values[0]["count"] == 2
     finally:
         engine.close()
-
-    assert spark_session.range(1).count() == 1
 
 
 @pytest.mark.parametrize(
@@ -744,8 +724,6 @@ def test_large_variable_width_page_values_use_one_guarded_terminal_collection(
     finally:
         engine.close()
 
-    assert spark_session.range(1).count() == 1
-
 
 def test_large_profile_values_fail_without_transporting_terminal_values(
     spark_session: Any,
@@ -793,8 +771,6 @@ def test_large_profile_values_fail_without_transporting_terminal_values(
         assert all("__ow_group_key" not in projection for projection in collected_projections)
     finally:
         engine.close()
-
-    assert spark_session.range(1).count() == 1
 
 
 def test_batched_profile_values_fail_without_transporting_terminal_values(
@@ -844,8 +820,6 @@ def test_batched_profile_values_fail_without_transporting_terminal_values(
     finally:
         engine.close()
 
-    assert spark_session.range(1).count() == 1
-
 
 def test_complex_page_depth_and_node_budgets_are_authoritative(
     spark_session: Any,
@@ -887,8 +861,6 @@ def test_complex_page_depth_and_node_budgets_are_authoritative(
         assert page["rows"][0]["values"][1]["raw"] == [1, 2, 3, 4]
     finally:
         engine.close()
-
-    assert spark_session.range(1).count() == 1
 
 
 def test_page_protocol_byte_budget_accepts_only_the_exact_boundary(

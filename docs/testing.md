@@ -172,6 +172,11 @@ Actual Windows local-drive tests do not qualify UNC/network shares; lexical chec
 evidence. Spark Classic and Connect retain their own native bounded-viewing owners and prerequisites; local-engine
 results do not qualify them. Support and release evidence remain governed by [feature parity](feature-parity.md).
 
+The PySpark [lazy-index/close unit](../python/tests/test_pyspark_engine.py) checks reference release and absence of
+Spark actions during cleanup. Native [paging](../python/tests/test_pyspark_paging.py) and
+[session lifecycle](../python/tests/test_pyspark_session_lifecycle.py) retain Classic and Connect session-survival checks;
+profile tests retain their data, serialization and action bounds without repeating those post-close Spark jobs.
+
 The shared [`fixtures/view-literal-contract.json`](../fixtures/view-literal-contract.json) owns filter spellings
 supported by Python and native R. Python-specific extreme offsets remain in Python owners because R retains its own
 parser limits. Live and standalone comparisons use independently constructed native values rather than widening the
