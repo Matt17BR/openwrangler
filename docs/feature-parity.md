@@ -88,9 +88,12 @@ Undo closes the editor for a removed step. Failed Undo and editors whose target 
 The button and registered command share the normal draft, pending-work and trusted-execution gates; no default
 keyboard shortcut overrides text-field editing.
 
-File inputs include CSV, TSV, Parquet, `.xls` and `.xlsx` workbooks, and `.jsonl` and `.ndjson` aliases. The stable
-file entry-point scope excludes Windows Polars JSONL/NDJSON paths containing `*`, `?`, or `[` apart from the structural
-`\\?\C:\` local-drive prefix. This includes parent folder names. The missing literal-path capability is documented in
+File inputs include CSV, TSV, Parquet, `.xls` and `.xlsx` workbooks, and `.jsonl` and `.ndjson` aliases.
+Polars JSONL/NDJSON reads the selected file on Unix even when its path contains glob syntax or percent-looking text.
+On Windows, ordinary paths and local-drive verbatim paths such as `\\?\C:\data\sample.jsonl` retain exact file identity.
+The stable file entry-point scope excludes Windows Polars JSONL/NDJSON paths containing `*`, `?`, or `[` apart from the
+structural `\\?\C:\` local-drive prefix. This includes parent folder names; unsupported verbatim prefixes are also refused.
+The missing literal-path capability is documented in
 [#986](https://github.com/Matt17BR/openwrangler/issues/986); the narrower scope does not resolve it. Ordinary Unicode,
 spaces, percent-looking names and closing brackets remain supported. See the precise native path and ownership
 rules in [Architecture](architecture.md#polars); the current evidence does not establish arbitrary UNC, device or
@@ -101,32 +104,41 @@ Pandas instead, set `openWrangler.defaultBackend` to `pandas` in Settings, then 
 and select the same file. This uses Pandas' native parser, inferred types and eager snapshot costs; it is not a
 transparent Polars substitution. The setting affects future file opens, while existing sessions keep their engine.
 
-Pandas supports duplicate and non-string labels and exposes named index or MultiIndex row labels independently of
-ordinary columns. Column operations bind those inputs by stable identity and position, but name-addressed viewing
-filters and sorts fail closed when multiple columns share the same name string. Column choices add position labels when ordinary spaces,
-tabs or line breaks would make different names appear identical. Literal names resembling position labels remain
-distinguishable. Operations and viewing queries retain the original column names. Generated Python checks destination names before appending
-or renaming a column. Harmless extra columns and valid in-place replacements remain supported, including after earlier steps.
-Generated DuckDB refuses case-insensitive input and intermediate-column collisions, including categorical and Custom Code
-results, before later expressions can read the wrong column. Case-only Rename remains supported.
-Generated Pandas and Polars Custom Code refuses a zero-column result at the same step as live Preview.
-Typed zero-row results, Series and Custom Code that creates a source's first column remain supported.
-Pandas CSV and Parquet exports require an explicit preserve-or-omit index choice. Polars uses native string column
-names. Custom Code checks lazy output expressions beyond the displayed columns before confirmation, with the same
-check in generated code. Other operations keep their native lazy evaluation and operation-specific guards. These checks
-do not snapshot inputs or guarantee all later queries will succeed. One-hot encoding, multi-label encoding and Custom
-Code may materialize their results.
 Import inference preserves UTF-8 characters crossing its sample boundary and recognizes uniform CR records.
 Polars receives the detected line ending; Import Options can override it with **CR** or **LF or CRLF**. Polars requires
 consistent record endings. A sample without complete records may need an explicit choice; inference does not validate
 the full file. Existing LF/CRLF file settings and saved-state keys remain unchanged.
+
 CSV/TSV imports preserve native empty fields and whitespace values, including headerless all-null TSV records.
 Files with no bytes or only a UTF-8 BOM open with an empty schema; other blank records follow the selected reader.
-Pandas accepts its supported text encodings
-and Unicode CSV syntax; Polars CSV export remains UTF-8 with single-byte delimiter and quote syntax. Excel accepts
-exactly one sheet name or zero-based sheet index; delimited syntax characters are one Unicode scalar each. Import
-options may therefore make Pandas the only compatible backend. Direct pickle opening is unavailable; the trusted
-Pandas-only conversion command writes a separate Parquet file.
+Pandas accepts its supported text encodings and Unicode CSV syntax; Polars CSV export remains UTF-8 with single-byte
+delimiter and quote syntax. Excel accepts exactly one sheet name or zero-based sheet index; delimited syntax characters
+are one Unicode scalar each. Import options may therefore make Pandas the only compatible backend. Direct pickle
+opening is unavailable; the trusted Pandas-only conversion command writes a separate Parquet file.
+
+Cleaned-data export requires no draft and writes the committed plan, never the viewing filters or sorts, to a local
+file destination through the shared [publication boundary](architecture.md#trust-source-integrity-and-export).
+Pandas CSV and Parquet exports require an explicit preserve-or-omit index choice. Pandas and Polars CSV/Parquet writers
+use identity-checked handles before truncation.
+Script and data exports protect the session's concrete source files even after a rename. They also reject source-path
+replacement during code synchronization or destination selection. If source identity is unavailable, viewing remains
+available and export requires reopening the dataframe.
+
+Pandas supports duplicate and non-string labels and exposes named index or MultiIndex row labels independently of
+ordinary columns. Column operations bind those inputs by stable identity and position, but name-addressed viewing
+filters and sorts fail closed when multiple columns share the same name string. Column choices add position labels when ordinary spaces,
+tabs or line breaks would make different names appear identical. Literal names resembling position labels remain
+distinguishable. Operations and viewing queries retain the original column names. Polars uses native string column names.
+Generated Python checks destination names before appending or renaming a column. Harmless extra columns and valid
+in-place replacements remain supported, including after earlier steps.
+Generated DuckDB refuses case-insensitive input and intermediate-column collisions, including categorical and Custom Code
+results, before later expressions can read the wrong column. Case-only Rename remains supported.
+Generated Pandas and Polars Custom Code refuses a zero-column result at the same step as live Preview.
+Typed zero-row results, Series and Custom Code that creates a source's first column remain supported.
+Custom Code checks lazy output expressions beyond the displayed columns before confirmation, with the same
+check in generated code. Other operations keep their native lazy evaluation and operation-specific guards. These checks
+do not snapshot inputs or guarantee all later queries will succeed. One-hot encoding, multi-label encoding and Custom
+Code may materialize their results.
 
 Python live entry points include the notebook toolbar, Jupyter Variables, linked MIME output, and `.py` or `# %%`
 execution through Python Interactive. MIME v2 is a static capture, not session or export data: it is capped at 10,000
@@ -138,31 +150,25 @@ output; live reopening follows the [notebook recovery order](architecture.md#not
 so the host loads the verified bundle before `show` is imported. Windows notebook patch-version and temporary-directory
 limits are in the
 [compatibility notes](../README.md#compatibility-and-limits).
-Cleaned-data export requires no draft and writes the committed plan, never the viewing filters or sorts, to a local
-file destination through the shared publication boundary.
-Script and data exports protect the session's concrete source files even after a rename. They also reject source-path
-replacement during code synchronization or destination selection. If source identity is unavailable, viewing remains
-available and export requires reopening the dataframe.
 
 Generated Python keeps import and helper bindings local. Pandas and Polars notebook inputs named like those bindings
 remain available after executing the program; an input named `clean_data` uses the generated function `clean_data_1`.
-Public kernel, session-history and Custom Code scope tests cover this behavior. The
-[architecture contract](architecture.md#engine-boundaries-and-capabilities) describes scope and caller limitations.
+The [architecture contract](architecture.md#engine-boundaries-and-capabilities) describes scope and caller limitations.
 
-Python Custom Code preserves multiline and continued string values, comments and valid indentation. Syntax errors
-refer to the entered code's lines. Source tests compare native and complete generated execution with ordinary Python.
+Live and generated Python Custom Code preserve multiline and continued string values, comments and valid indentation.
+Syntax errors refer to the entered code's lines.
 
 Discovery selections remain bound to their originating Python kernel until the initial session opens. Direct active-R
 opens likewise retain the terminal selected when the command starts. Replacing either runtime before that open
-completes requires a new open action; discovery and bridge regression tests cover these transitions.
+completes requires a new open action.
 With no notebook open, the Operations view offers **Start R and show dataframes…** after the R terminal closes.
 R terminal discovery can start before R's first prompt; short command lines avoid truncation by terminal startup input.
 
-Canceling file-editor or Code Preview resolution stops deferred setup without replacing an existing view. The file,
-lazy-provider, and native-view owner tests cover cancellation during loading and file preflight.
+Canceling file-editor or Code Preview resolution stops deferred setup without replacing an existing view, including
+during loading or file preflight.
 
 Delayed grid navigation preserves newer header and control focus. Column drags stop after host view restoration,
-a logical-view change or disabled controls. Existing App, clipboard and resize component owners cover these changes.
+a logical-view change or disabled controls.
 
 Dense Rank appends ranks from a numeric column without reordering rows. For `[20, 10, 20, missing]`, ascending ranks
 are `[2, 1, 2, missing]`; descending ranks are `[1, 2, 1, missing]`. It ranks the cleaning input independently of viewing
@@ -174,10 +180,8 @@ Mark Duplicates adds a Boolean column for reviewing repeated selected keys witho
 cleaning input. Pandas, Polars, DuckDB file sessions and native R preserve their existing duplicate-key semantics,
 including supported missing and classed values. Select at least one comparison column and a fresh output name.
 
-Min-max Scale preserves ratios for finite extremes and exact numeric ranges in live and generated code. The Python
-engine matrix is in `python/tests/test_min_max_scale.py`; native R cases remain in
-`r/tests/complete_catalog_contract.R`. Pandas and Polars CSV/Parquet writers use identity-checked handles before
-truncation, with replacement-race coverage in `python/tests/test_configurable_export.py`.
+Min-max Scale preserves ratios for finite extremes and exact numeric ranges in live and generated code for the Python
+editing engines and native R.
 
 Floor and Ceiling retain exact integer and Decimal values in the Python editing engines, with matching generated
 code. Pandas Convert Type rejects values outside its signed integer target instead of wrapping them. The operation
@@ -195,8 +199,7 @@ multiplication producing UInt128. Earlier versions and nonnumeric or prerelease 
 before previewing; scalar forms retain their existing behavior.
 
 Polars datetime formatting preserves native time zones and nanosecond fractions in live and generated code.
-`python/tests/test_operation_edges.py` covers eager/lazy frames, native temporal and text inputs, nulls, and source
-identity.
+Eager and lazy frames support native temporal and text inputs, including nulls, without modifying the source.
 
 Polars grouped median Fill works on the declared minimum runtime, including native integer and Decimal targets.
 Its live and generated paths preserve exact values and retain fractional-median and Decimal-scale refusals.
@@ -316,15 +319,10 @@ inputs. Pandas and Polars generated categorical code rejects results with no vis
 empty-row inputs remain valid when a visible column is retained.
 Generated Pandas One-hot names preserve native floating-point labels, keeping later column bindings and collision
 checks aligned with live results.
-Polars JSONL/NDJSON reads the selected file on Unix even when its path contains glob syntax or percent-looking text.
-On Windows, ordinary paths and local-drive verbatim paths such as `\\?\C:\data\sample.jsonl` retain exact file identity.
-Paths containing `*`, `?`, or `[` after that prefix, and unsupported verbatim prefixes, remain refused. The remaining
-Windows literal-path limits are recorded in [#986](https://github.com/Matt17BR/openwrangler/issues/986).
 
 Unnamed columns support viewing, profiling, keyboard selection, and copy. Their cell menus, header sorts, profile
 actions, and Filters / Sorts consistently disable name-addressed actions without leaving a page request pending.
-App regressions check these actions against the host message decoder. Toggling an ordinary value preserves null and
-NaN selections. Supported scalar selections remain
+Toggling an ordinary value preserves null and NaN selections. Supported scalar selections remain
 checked beside their corresponding typed values. Saved Filter Rows steps accept historical `inf` and `-inf` values
 without dropping the cleaning plan during replay.
 Python and native R reject malformed viewing structures before execution. Native R applies the same array and
@@ -335,8 +333,8 @@ Recognized Polars panic exceptions return a request error in standalone and note
 confirmed state for a follow-up request. This does not recover a native process crash.
 
 Multi-column cleaning forms support search, including Select/Drop columns, Drop missing rows, Drop duplicates, Mark duplicates,
-One-hot encoding, Group keys, and Transform by example. Search retains hidden selections and their required order;
-operation-builder tests verify the exact submitted references, saved selections, and optional full-schema defaults.
+One-hot encoding, Group keys, and Transform by example. Search retains hidden and saved column selections so Preview
+submits their original references in the required order. Searching alone leaves optional full-schema defaults unchanged.
 If a schema change removes selected columns, forms retain those dependencies until the user explicitly clears them.
 The repair message explains when this will select all columns. A nonempty search remains clearable after the schema
 shrinks to one or zero available columns.
