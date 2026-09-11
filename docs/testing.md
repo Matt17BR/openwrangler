@@ -242,8 +242,11 @@ after restart, rendered recovery and the remaining file/notebook interactions. G
 fixture Jupyter API backed by real Python through the production bridge. Released Jupyter is qualified separately;
 [`python-notebooks`](#focused-python-notebook-checks) is not the generic file-verification profile.
 
-On POSIX, these runners keep temporary roots under the checkout's `tmp/ow`. The checkout and every temporary-path
-ancestor must satisfy the [kernel temporary-directory rules](architecture.md#notebook-kernel-terminal-and-document-provenance).
+On POSIX, these runners use the inherited system temporary directory when its canonical ancestry satisfies the
+[kernel temporary-directory rules](architecture.md#notebook-kernel-terminal-and-document-provenance), otherwise a
+protected `/tmp`. If neither parent is safe, preparation fails before editor startup. Runner roots remain private and
+independent of checkout permissions.
+
 Windows selects the original local user profile's `LOCALAPPDATA/Temp`, then places the isolated home, LocalAppData
 and kernel Temp inside one disposable root there. Missing or non-local `LOCALAPPDATA` fails before editor startup;
 the original profile must retain its normal per-user protections. A private child does not remove the ancestry

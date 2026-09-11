@@ -21,7 +21,7 @@ import {
 } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
+import { dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
 import { performance } from "node:perf_hooks";
 import { Transform } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
@@ -790,12 +790,37 @@ const DETACHED_SESSION_ENVIRONMENT_KEYS = [
   "XAUTHORITY",
   "XDG_CURRENT_DESKTOP"
 ];
-export function resolveEditorAcceptanceTemporaryParent(
-  repositoryRoot,
-  environment = process.env,
-  platform = process.platform
-) {
-  if (platform !== "win32") return resolve(repositoryRoot, "tmp", "ow");
+export function resolveEditorAcceptanceTemporaryParent(environment = process.env, platform = process.platform) {
+  if (platform !== "win32") {
+    const effectiveUid = process.geteuid?.();
+    if (effectiveUid === undefined) throw new Error("Editor acceptance requires a protected POSIX temporary parent.");
+    const inherited = environment.TMPDIR || environment.TMP || environment.TEMP;
+    for (const candidate of [inherited, "/tmp"]) {
+      if (typeof candidate !== "string" || !isAbsolute(candidate) || /[\0\r\n]/u.test(candidate)) continue;
+      try {
+        const parent = realpathSync(candidate);
+        let protectedAncestry = true;
+        // Match the kernel bootstrap's POSIX ancestry rule before preparing an editor.
+        // A private runner child cannot protect a group-writable checkout above it.
+        for (let component = parent; ; component = dirname(component)) {
+          const metadata = lstatSync(component);
+          if (
+            !metadata.isDirectory() ||
+            (metadata.uid !== 0 && metadata.uid !== effectiveUid) ||
+            ((metadata.mode & 0o022) !== 0 && (metadata.mode & 0o1000) === 0)
+          ) {
+            protectedAncestry = false;
+            break;
+          }
+          if (dirname(component) === component) break;
+        }
+        if (protectedAncestry) return parent;
+      } catch (error) {
+        if (!["ENOENT", "ENOTDIR", "EACCES", "EPERM", "ELOOP"].includes(error?.code)) throw error;
+      }
+    }
+    throw new Error("Editor acceptance requires a protected POSIX temporary parent; check TMPDIR and /tmp ancestry.");
+  }
   const localAppData = platformEnvironmentEntries(environment, platform, "temporary-parent").find(
     ([key]) => key.toUpperCase() === "LOCALAPPDATA"
   )?.[1];

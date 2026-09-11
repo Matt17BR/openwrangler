@@ -43,7 +43,7 @@ try {
     platform: process.platform
   });
   process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
-  const temporaryParent = resolveEditorAcceptanceTemporaryParent(root);
+  const temporaryParent = resolveEditorAcceptanceTemporaryParent();
   mkdirSync(temporaryParent, { recursive: true, mode: 0o700 });
   temporaryRoot = mkdtempSync(join(temporaryParent, "x-"));
   temporaryRootReceipt = createEditorAcceptancePrivateRootReceipt(temporaryRoot, {

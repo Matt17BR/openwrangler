@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import fs from "node:fs";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join, resolve, win32 } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import {
@@ -28,34 +30,45 @@ import {
 
 const repositoryRoot = resolve(import.meta.dirname, "..");
 
-test("editor runner parent selections use the Windows profile or unchanged POSIX checkout", async () => {
-  const environment = { LOCALAPPDATA: "C:\\Users\\Fixture\\AppData\\Local", TMP: "D:\\shared" };
-  for (const runner of ["run-packaged-editor-tests.mjs", "run-extension-tests.mjs", "run-installed-performance.mjs"]) {
-    const source = await readFile(join(repositoryRoot, "scripts", runner), "utf8");
-    const declaration = /const (?:temporaryParent|privateParent) = ([^;]+);/u.exec(source);
-    assert.ok(declaration, `${runner} parent selection`);
-    for (const platform of ["linux", "darwin", "win32"]) {
-      const parent = new Function(
-        "resolve",
-        "resolveEditorAcceptanceTemporaryParent",
-        "root",
-        "environment",
-        `return ${declaration[1]};`
-      )(
-        resolve,
-        (root, selectedEnvironment = environment) =>
-          editorAcceptance.resolveEditorAcceptanceTemporaryParent(root, selectedEnvironment, platform),
-        repositoryRoot,
-        environment
-      );
-      assert.equal(
-        parent,
-        platform === "win32" ? win32.join(environment.LOCALAPPDATA, "Temp") : join(repositoryRoot, "tmp", "ow"),
-        runner
-      );
-    }
+test(
+  "POSIX editor roots avoid writable checkout and inherited temporary ancestry",
+  { skip: process.platform === "win32" },
+  async (t) => {
+    const systemParent = await realpath("/tmp");
+    const fixture = await mkdtemp(join(systemParent, "openwrangler-temp-parent-"));
+    t.after(() => rm(fixture, { recursive: true, force: true }));
+    const unsafe = join(fixture, "shared");
+    const privateChild = join(unsafe, "private");
+    await mkdir(unsafe, { mode: 0o775 });
+    await chmod(unsafe, 0o775);
+    await mkdir(privateChild, { mode: 0o700 });
+    const safe = join(fixture, "protected");
+    await mkdir(safe, { mode: 0o700 });
+
+    assert.equal(editorAcceptance.resolveEditorAcceptanceTemporaryParent({ TMPDIR: privateChild }), systemParent);
+    assert.equal(editorAcceptance.resolveEditorAcceptanceTemporaryParent({ TMPDIR: safe, TMP: privateChild }), safe);
+    assert.equal(editorAcceptance.resolveEditorAcceptanceTemporaryParent({ TMP: safe }), safe);
+    assert.equal(fs.statSync(unsafe).mode & 0o777, 0o775);
+    assert.equal(fs.statSync(privateChild).mode & 0o777, 0o700);
+
+    const originalStat = fs.lstatSync;
+    const mock = t.mock.method(fs, "lstatSync", (path, ...args) => {
+      const metadata = originalStat(path, ...args);
+      return path === systemParent
+        ? { ...metadata, mode: (metadata.mode & ~0o1777) | 0o777, isDirectory: () => true }
+        : metadata;
+    });
+    syncBuiltinESMExports();
+    t.after(() => {
+      mock.mock.restore();
+      syncBuiltinESMExports();
+    });
+    assert.throws(
+      () => editorAcceptance.resolveEditorAcceptanceTemporaryParent({ TMPDIR: privateChild }),
+      /protected POSIX temporary parent/u
+    );
   }
-});
+);
 
 test("Windows temporary parent refuses missing and unsupported original profile paths without a fallback", () => {
   for (const value of [
@@ -72,7 +85,6 @@ test("Windows temporary parent refuses missing and unsupported original profile 
     assert.throws(
       () =>
         editorAcceptance.resolveEditorAcceptanceTemporaryParent(
-          repositoryRoot,
           { LOCALAPPDATA: value, TEMP: "C:\\fallback", TMP: "C:\\fallback" },
           "win32"
         ),
@@ -80,17 +92,12 @@ test("Windows temporary parent refuses missing and unsupported original profile 
     );
   }
   assert.equal(
-    editorAcceptance.resolveEditorAcceptanceTemporaryParent(
-      repositoryRoot,
-      { LocalAppData: "C:\\Users\\Fixture\\Local" },
-      "win32"
-    ),
+    editorAcceptance.resolveEditorAcceptanceTemporaryParent({ LocalAppData: "C:\\Users\\Fixture\\Local" }, "win32"),
     "C:\\Users\\Fixture\\Local\\Temp"
   );
   assert.throws(
     () =>
       editorAcceptance.resolveEditorAcceptanceTemporaryParent(
-        repositoryRoot,
         { LOCALAPPDATA: "C:\\one", LocalAppData: "C:\\two" },
         "win32"
       ),
