@@ -147,6 +147,8 @@ Use the existing owners to choose a focused source check:
   unsupported-precision refusal, including native Pandas stored units and generated selections beyond the nanosecond
   range. It also checks native duration choice searches against exact labels, counts, limits and missing inputs,
   and rejects inferred calendar/unitless duration count labels while retaining paging and session state.
+  Its NumPy `NaT` Session cases compare grid flags, counts and live/generated null filters; the existing Fill Missing
+  and Pandas Group By owners cover donor handling and standalone generated nullable keys.
   [Filter logic](../python/tests/test_filter_logic.py) executes live and generated
   duration filters under a changed notebook Decimal context in each editing-capable Python engine.
   The Polars owner also checks native temporal page, choice and profile precision before Python row conversion,

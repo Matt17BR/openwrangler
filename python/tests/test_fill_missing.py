@@ -3577,6 +3577,44 @@ def test_pandas_dictionary_fallback_uses_declared_type_without_present_target_va
             pd.testing.assert_series_equal(actual["value"], expected)
 
 
+@pytest.mark.parametrize("strategy", ["constant", "fallback", "directional", "mostFrequent", "grouped"])
+def test_pandas_numpy_nat_fill_matches_generated_code(strategy: str) -> None:
+    import numpy as np
+
+    source = pd.DataFrame(
+        {
+            "value": pd.Series(
+                ["kept", np.datetime64("NaT", "ns"), np.timedelta64("NaT", "ns"), None, "kept"], dtype=object
+            ),
+            "order": range(5),
+            "donor": pd.Series(["unused", "filled", "filled", "filled", "unused"], dtype=object),
+            "group": ["same"] * 5,
+        }
+    )
+    source.index = pd.Index(["same"] * 5, name="original")
+    source.attrs["origin"] = "preserved"
+    replacement: dict[str, Any] = {
+        "constant": {"kind": "string", "value": "filled"},
+        "fallback": {"kind": "fallbackColumns", "columns": [{"id": "c:source:2", "name": "donor"}]},
+        "directional": {
+            "kind": "directional",
+            "direction": "forward",
+            "orderBy": [{"column": {"id": "c:source:1", "name": "order"}, "direction": "asc", "nulls": "last"}],
+        },
+        "mostFrequent": {"kind": "mostFrequent"},
+        "grouped": {
+            "kind": "groupedStatistic",
+            "statistic": "mostFrequent",
+            "keys": [{"id": "c:source:3", "name": "group"}],
+        },
+    }[strategy]
+    filled = "filled" if strategy in {"constant", "fallback"} else "kept"
+    expected = pd.Series(["kept", filled, filled, filled, "kept"], index=source.index, name="value", dtype=object)
+    for actual in _pandas_fill_public_outputs(source, replacement):
+        pd.testing.assert_series_equal(actual["value"], expected)
+        assert actual.attrs == source.attrs
+
+
 def test_pandas_dictionary_fill_treats_valid_nan_and_null_entries_as_missing() -> None:
     from pickle import dumps
 

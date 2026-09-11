@@ -257,6 +257,9 @@ Datetime value searches also accept displayed midnight labels and a space in pla
 Some duration and subnanosecond object labels still differ from searchable source text; [#1280](https://github.com/Matt17BR/openwrangler/issues/1280)
 tracks these remaining gaps.
 
+Pandas object columns treat NumPy datetime and duration `NaT` as null in profiles, filters and cleaning operations,
+including generated code. Floating NaN remains separate.
+
 Python duration cells preserve exact seconds, including large microsecond values and NumPy unit multipliers.
 Pandas choices and grid selections refuse finer-than-microsecond values instead of matching a rounded neighbor.
 Duration filters in Pandas, Polars and DuckDB retain exact microseconds when notebook code changes Decimal precision,
