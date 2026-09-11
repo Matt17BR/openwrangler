@@ -2808,6 +2808,63 @@ def test_pandas_arrow_formula_capacity_widens_decimal_without_changing_declared_
         pd.testing.assert_frame_equal(frame, before)
 
 
+@pytest.mark.parametrize(
+    "precision,scale,shape",
+    [
+        (76, 0, "values"),
+        (76, 76, "values"),
+        (60, 30, "values"),
+        (76, 76, "empty"),
+        (76, 76, "null"),
+        (76, 76, "dictionary"),
+    ],
+)
+@pytest.mark.parametrize("operator", ["multiply", "divide"])
+def test_pandas_arrow_formula_capacity_negates_wide_decimal(
+    precision: int, scale: int, shape: str, operator: str
+) -> None:
+    from decimal import Decimal
+
+    pa = pytest.importorskip("pyarrow")
+    dtype = pa.decimal256(precision, scale)
+    maximum = Decimal((0, (9,) * precision, -scale))
+    values = [maximum, maximum.copy_negate(), Decimal("-0"), None]
+    if shape == "empty":
+        values = []
+    elif shape == "null":
+        values = [None, None]
+    arrow = pa.array(values, type=dtype)
+    if shape == "dictionary":
+        arrow = pa.DictionaryArray.from_arrays(pa.array([0, 1, 2, None], type=pa.int8()), arrow)
+    split = len(arrow) // 2
+    chunks = pa.chunked_array([arrow.slice(0, split), arrow.slice(split)])
+    frame = pd.DataFrame({"value": pd.Series(pd.arrays.ArrowExtensionArray(chunks))})
+    frame.index = pd.Index(["same"] * len(frame), name="source")
+    frame.attrs = {"source": "retained"}
+    before = frame.copy(deep=True)
+    original_array = frame["value"].array
+    runtime = PandasEngine()
+    schema = runtime.schema(frame)
+    lineage = source_lineage(schema)
+    operation = bind_step(
+        step("formula", leftColumn=lineage[0], value=-1, operator=operator, newColumn="result"), schema, lineage
+    )
+    runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
+    expected = pd.Series(
+        [value.copy_negate() if value is not None else None for value in values],
+        index=frame.index,
+        name="result",
+        dtype=pd.ArrowDtype(dtype),
+    )
+    for actual in (runtime.apply_transform(frame, operation), execute_generated(runtime, frame, operation)):
+        pd.testing.assert_series_equal(actual["result"], expected)
+        actual["result"].array.__arrow_array__().validate(full=True)
+        pd.testing.assert_frame_equal(actual.iloc[:, :-1], before)
+        pd.testing.assert_frame_equal(frame, before)
+        assert frame["value"].array is original_array
+        assert frame.attrs == before.attrs
+
+
 @pytest.mark.parametrize("right_column", [False, True])
 def test_pandas_arrow_formula_capacity_widens_selected_decimal_columns(right_column: bool) -> None:
     from decimal import Decimal
@@ -2853,6 +2910,9 @@ def test_pandas_arrow_formula_capacity_widens_selected_decimal_columns(right_col
         "integer-divide",
         "decimal-add",
         "decimal-power",
+        "decimal-unit-multiply",
+        "decimal-unit-divide",
+        "decimal-floating-unit",
         "negative-add",
         "negative-subtract",
         "negative-empty",
@@ -2895,6 +2955,11 @@ def test_pandas_arrow_formula_capacity_preserves_successful_native_results(famil
     elif family in {"decimal-add", "decimal-power"}:
         value = pd.Series([Decimal("1.125"), None], dtype=pd.ArrowDtype(pa.decimal128(30, 3)))
         op = "add" if family == "decimal-add" else "power"
+    elif family.startswith("decimal-unit-") or family == "decimal-floating-unit":
+        dtype = pa.decimal256(10, 2) if family != "decimal-floating-unit" else pa.decimal256(76, 76)
+        value = pd.Series([Decimal("0.25"), Decimal("-0"), None], dtype=pd.ArrowDtype(dtype))
+        op = "divide" if family.endswith("divide") else "multiply"
+        operand = -1.0 if family == "decimal-floating-unit" else -1
     if family.startswith("negative-column-"):
         operand = pd.Series([-1] * len(value), dtype="int64[pyarrow]")
     elif family.startswith("mixed-column-"):
@@ -2959,6 +3024,8 @@ def test_pandas_arrow_formula_capacity_preserves_successful_native_results(famil
         "wide-odd-power-positive-overflow",
         "wide-odd-power-above-uint64",
         "decimal-capacity",
+        "decimal-other-factor",
+        "decimal-unit-column",
         "decimal-negative-scale",
     ],
 )
@@ -2989,11 +3056,14 @@ def test_pandas_arrow_formula_capacity_retains_native_refusals(family: str) -> N
         operand, op, error = 2**64 + 1 if outside else 2**64 - 1, "power", OverflowError
     elif family == "decimal-capacity":
         value = pd.Series([Decimal("9" * 76), None], dtype=pd.ArrowDtype(pa.decimal256(76, 0)))
+    elif family in {"decimal-other-factor", "decimal-unit-column"}:
+        value = pd.Series([Decimal("9" * 76), None], dtype=pd.ArrowDtype(pa.decimal256(76, 0)))
+        operand, op = -2, "multiply"
     elif family == "decimal-negative-scale":
         value = pd.Series([Decimal("1200"), None], dtype=pd.ArrowDtype(pa.decimal128(8, -2)))
         error = TypeError
     frame = pd.DataFrame({"value": value})
-    column_operand = family.startswith("negative-column-")
+    column_operand = family.startswith("negative-column-") or family == "decimal-unit-column"
     if column_operand:
         right = [-1, None]
         if family in {"negative-column-underflow", "negative-column-overflow"}:

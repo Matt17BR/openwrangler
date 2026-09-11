@@ -225,7 +225,9 @@ the displayed page.
 Pandas Formula modulo supports Arrow integer columns, including signed and unsigned 64-bit extrema, with matching
 generated code and Parquet output. Null operands remain null; present zero divisors are refused without changing
 the confirmed plan. Other Formula arithmetic repairs eligible UInt64 operand-inference failures and widens selected
-Decimal128 operations to Decimal256, retaining native precision and scale. UInt64 addition and subtraction also accept
+Decimal128 operations to Decimal256, retaining native precision and scale. Decimal256 columns also accept previously
+refused multiplication or division by the integer literal -1, preserving precision, scale and nulls through native
+checked negation. Successful native results keep their types. UInt64 addition and subtraction also accept
 negative integer literals with magnitude at most UInt64 maximum when every result fits UInt64. A UInt64 left column
 also accepts signed right columns, including mixed positive and negative adjustments and signed 64-bit minimum,
 when every repaired result fits UInt64. Addition accepts these columns in either order. Missing operands remain missing.

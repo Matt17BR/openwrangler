@@ -12,6 +12,19 @@ def _open_wrangler_arrow_formula_repair(
         left_type = left.dtype.pyarrow_dtype if isinstance(left.dtype, pd.ArrowDtype) else None
         right_type = right.dtype.pyarrow_dtype if isinstance(getattr(right, "dtype", None), pd.ArrowDtype) else None
 
+        if (
+            isinstance(original_error, pa.ArrowInvalid)
+            and left_type is not None
+            and pa.types.is_decimal256(left_type)
+            and type(right) is int
+            and right == -1
+            and operator in {"multiply", "divide"}
+        ):
+            import pyarrow.compute as pc
+
+            result = pc.call_function("negate_checked", [pa.array(left.array)])
+            return pd.Series(pd.arrays.ArrowExtensionArray(result), index=left.index, name=left.name)
+
         def is_integer_column(value: Any, *, signed_only: bool = True) -> bool:
             if not isinstance(value, pd.Series) or isinstance(value.dtype, pd.SparseDtype):
                 return False
