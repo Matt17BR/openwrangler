@@ -16,6 +16,8 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 - Pandas `timedelta64` value search matches the displayed whole-day and large-duration labels.
 - Legacy Pandas no longer offers fixed-second choices for calendar or unitless NumPy durations.
 - Pandas treats object-stored NumPy `NaT` consistently as null in profiles, filters and cleaning operations.
+- Pandas Arrow durations remain readable at int64 extrema, with exact filtering for portable values and preserved
+  dictionary labels.
 - Polars temporal pages, value choices and profile labels retain nanoseconds and datetime offset seconds.
   Duration value choices now work; selections beyond the filter precision are refused instead of rounded.
 - Refuse affected NumPy temporal profiles and value choices when legacy Pandas could narrow their count keys and

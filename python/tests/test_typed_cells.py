@@ -170,8 +170,10 @@ def test_pandas_picker_limit_boundaries_keep_exact_values_and_has_more(limit: in
         assert source.attrs == before.attrs
 
 
-@pytest.mark.parametrize("limit", [1, 7])
-def test_pandas_picker_retains_only_bounded_temporary_labels(monkeypatch: pytest.MonkeyPatch, limit: int) -> None:
+@pytest.mark.parametrize("limit,duration", [(1, False), (7, False), (7, True)])
+def test_pandas_picker_retains_only_bounded_temporary_labels(
+    monkeypatch: pytest.MonkeyPatch, limit: int, duration: bool
+) -> None:
     import weakref
 
     from openwrangler_runtime.engines import pandas_engine
@@ -193,12 +195,21 @@ def test_pandas_picker_retains_only_bounded_temporary_labels(monkeypatch: pytest
         return label
 
     monkeypatch.setattr(pandas_engine, "_pandas_temporal_text", observe_label)
-    source = pd.DataFrame({"value": range(511, -1, -1)})
+    if duration:
+        import pyarrow as pa
+
+        source = pd.DataFrame({"value": pd.Series(range(511, -1, -1), dtype=pd.ArrowDtype(pa.duration("us")))})
+    else:
+        source = pd.DataFrame({"value": range(511, -1, -1)})
     before = source.copy(deep=True)
     choices, more = PandasEngine().column_values(source, "value", limit=limit)
-    expected = sorted(range(512), key=str)[:limit]
+    expected = sorted((pd.Timedelta(value, "us") if duration else value for value in range(512)), key=str)[:limit]
     assert choices == [
-        {"value": str(value), "count": 1, "selectionValue": typed_selection_value(value, "integer")}
+        {
+            "value": str(value),
+            "count": 1,
+            "selectionValue": typed_selection_value(value, "duration" if duration else "integer"),
+        }
         for value in expected
     ]
     assert more and evaluated_labels == len(source)
@@ -208,6 +219,11 @@ def test_pandas_picker_retains_only_bounded_temporary_labels(monkeypatch: pytest
     assert len(live_labels) <= limit
     del choices
     assert not live_labels
+    if duration:
+        evaluated_labels = 0
+        summary = PandasEngine().summaries(source)[0]
+        assert len(summary["topValues"]) == 10 and evaluated_labels == 10
+        assert summary["distinctCount"] == len(source)
     pd.testing.assert_frame_equal(source, before, check_exact=True)
 
 
@@ -870,25 +886,39 @@ def test_numpy_duration_units_keep_fixed_seconds_and_refuse_calendar_values() ->
 
 
 @pytest.mark.parametrize(
-    "unit,ticks,adjacent,neighbor,portable",
+    "unit,ticks,adjacent,neighbor,portable,storage",
     [
-        ("ns", 2_123_456_000, 2_123_457_000, 2_120_000_000, True),
-        ("ns", 9 * 10**18 + 1000, 9 * 10**18 + 2000, 9 * 10**18 + 2000, True),
-        ("ns", 10**17 + 1, 10**17 + 1001, 10**17, False),
-        ("s", 10**12, 10**12 + 1, 0, True),
-        ("ms", 10**15 + 1, 10**15 + 2, 0, True),
-        ("us", 10**18 + 1, 10**18 + 2, 0, True),
-        ("us", -(10**18 + 1), -(10**18 + 2), 0, True),
-        ("ms", 2**63 - 1, 2**63 - 2, 0, False),
+        ("ns", 2_123_456_000, 2_123_457_000, 2_120_000_000, True, "numpy"),
+        ("ns", 9 * 10**18 + 1000, 9 * 10**18 + 2000, 9 * 10**18 + 2000, True, "numpy"),
+        ("ns", 10**17 + 1, 10**17 + 1001, 10**17, False, "numpy"),
+        ("s", 10**12, 10**12 + 1, 0, True, "numpy"),
+        ("ms", 10**15 + 1, 10**15 + 2, 0, True, "numpy"),
+        ("us", 10**18 + 1, 10**18 + 2, 0, True, "numpy"),
+        ("us", -(10**18 + 1), -(10**18 + 2), 0, True, "numpy"),
+        ("ms", 2**63 - 1, 2**63 - 2, 0, False, "numpy"),
+        ("us", -(2**63), -(2**63) + 1, 0, True, "arrow"),
+        ("us", -(2**63), -(2**63) + 1, 0, True, "dictionary"),
     ],
 )
 def test_duration_session_choices_and_grid_tokens_keep_source_rows(
-    monkeypatch: pytest.MonkeyPatch, unit: str, ticks: int, adjacent: int, neighbor: int, portable: bool
+    monkeypatch: pytest.MonkeyPatch, unit: str, ticks: int, adjacent: int, neighbor: int, portable: bool, storage: str
 ) -> None:
+    import pyarrow as pa
+
     import __main__
 
-    native = np.array([ticks, adjacent, ticks, neighbor, -(2**63)], dtype=np.int64).view(f"timedelta64[{unit}]")
-    source = pd.DataFrame({"value": native, "row": range(5)})
+    array: pa.Array | None = None
+    if storage == "numpy":
+        native = np.array([ticks, adjacent, ticks, neighbor, -(2**63)], dtype=np.int64).view(f"timedelta64[{unit}]")
+        source = pd.DataFrame({"value": native, "row": range(5)})
+    else:
+        native_array: pa.Array = pa.array([ticks, adjacent, ticks, neighbor, None], type=pa.duration(unit))
+        if storage == "dictionary":
+            native_array = native_array.dictionary_encode()
+        array = native_array
+        source = pd.DataFrame(
+            {"value": pd.Series(native_array, dtype=pd.ArrowDtype(native_array.type)), "row": range(5)}
+        )
     source.index = pd.Index(["same"] * 5, name="original")
     source.attrs["origin"] = "retained"
     before = source.copy(deep=True)
@@ -911,8 +941,11 @@ def test_duration_session_choices_and_grid_tokens_keep_source_rows(
             sid, revision = metadata["sessionId"], metadata["revision"]
             unfiltered = {"filters": [], "sort": []}
             choice = manager.get_column_values(sid, revision, "value", unfiltered)["values"][0]
-            assert choice["count"] == 2 and choice["value"] == str(source.iloc[0, 0])
+            expected_label = str(source.iloc[0, 0]) if storage == "numpy" else "-9223372036854775808 us"
+            assert choice["count"] == 2 and choice["value"] == expected_label
             cell = opened["page"]["rows"][0]["values"][0]
+            if storage != "numpy":
+                assert cell["raw"] == "-9223372036854.775808" and not cell["isNull"]
             tokens = [{"kind": "typedSelection", "version": 1, "columnType": "duration", "cell": cell}]
             if portable:
                 tokens.append(choice["selectionValue"])
@@ -959,7 +992,15 @@ def test_duration_session_choices_and_grid_tokens_keep_source_rows(
                     page = manager.get_page(sid, revision, 0, 5, model)["page"]
                     assert [row["values"][1]["raw"] for row in page["rows"]] == [0, 2]
                     for actual in [engine.apply_transform(source, step), namespace["clean_data"](source)]:
-                        pd.testing.assert_frame_equal(actual, source.iloc[[0, 2]], check_exact=True)
+                        if storage == "numpy":
+                            pd.testing.assert_frame_equal(actual, source.iloc[[0, 2]], check_exact=True)
+                        else:
+                            assert array is not None
+                            pd.testing.assert_series_equal(actual["row"], source["row"].iloc[[0, 2]])
+                            assert actual.attrs == source.attrs and actual.columns.equals(source.columns)
+                            actual_array = cast(pd.arrays.ArrowExtensionArray, actual["value"].array).__arrow_array__()
+                            assert actual_array.type == array.type
+                            assert actual_array.cast(pa.duration(unit)).cast(pa.int64()).to_pylist() == [ticks, ticks]
                 else:
                     with pytest.raises(EngineError):
                         manager.get_page(sid, revision, 0, 5, model)
@@ -973,7 +1014,17 @@ def test_duration_session_choices_and_grid_tokens_keep_source_rows(
     finally:
         manager.close_all()
         engine.close()
-    pd.testing.assert_frame_equal(source, before, check_exact=True)
+    if storage == "numpy":
+        pd.testing.assert_frame_equal(source, before, check_exact=True)
+    else:
+        assert array is not None
+        assert (
+            cast(pd.arrays.ArrowExtensionArray, source["value"].array)
+            .__arrow_array__()
+            .equals(pa.chunked_array([array]))
+        )
+        assert source.index.equals(before.index) and source.columns.equals(before.columns)
+        pd.testing.assert_series_equal(source["row"], before["row"], check_exact=True)
     assert source.attrs == before.attrs
 
 
@@ -2836,3 +2887,121 @@ def test_pandas_arrow_temporal_validity_keeps_bounded_cells_profiles_and_filters
             assert native.cast(arrow_type).equals(expected_array)
     pd.testing.assert_frame_equal(source, before)
     assert cast(pd.arrays.ArrowExtensionArray, source["value"].array).__arrow_array__().equals(array)
+
+
+@pytest.mark.parametrize("dictionary", [False, True])
+@pytest.mark.parametrize(
+    "unit,scale,positive,negative,dictionary_positive,dictionary_negative",
+    [
+        ("s", 1, "0 days 00:02:03", "-1 days +23:57:57", "0:02:03", "-1 day, 23:57:57"),
+        ("ms", 1000, "0 days 00:00:00.123000", "-1 days +23:59:59.877000", "0:00:00.123000", "-1 day, 23:59:59.877000"),
+        (
+            "us",
+            1000000,
+            "0 days 00:00:00.000123",
+            "-1 days +23:59:59.999877",
+            "0:00:00.000123",
+            "-1 day, 23:59:59.999877",
+        ),
+        (
+            "ns",
+            1000000000,
+            "0 days 00:00:00.000000123",
+            "-1 days +23:59:59.999999877",
+            "0 days 00:00:00.000000123",
+            "-1 days +23:59:59.999999877",
+        ),
+    ],
+)
+def test_pandas_arrow_duration_outputs_preserve_units_labels_and_projection(
+    monkeypatch: pytest.MonkeyPatch,
+    dictionary: bool,
+    unit: str,
+    scale: int,
+    positive: str,
+    negative: str,
+    dictionary_positive: str,
+    dictionary_negative: str,
+) -> None:
+    import pyarrow as pa
+
+    from openwrangler_runtime.engines import pandas_engine
+
+    minimum, maximum = -(2**63), 2**63 - 1
+    ticks = [minimum, maximum, minimum, 0, 123, -123, None, None]
+    dtype = pa.duration(unit)
+    if dictionary:
+        chunks = [
+            pa.DictionaryArray.from_arrays(
+                pa.array([0, 1, 0, 2], type=pa.int8()), pa.array([minimum, maximum, 0], type=dtype)
+            ),
+            pa.DictionaryArray.from_arrays(
+                pa.array([2, 1, 0, None], type=pa.int8()), pa.array([None, -123, 123], type=dtype)
+            ),
+        ]
+    else:
+        chunks = [pa.array(ticks[:4], type=dtype), pa.array(ticks[4:], type=dtype)]
+    array = pa.chunked_array(chunks)
+    source = pd.DataFrame({"value": pd.Series(array, dtype=pd.ArrowDtype(array.type)), "row": range(len(ticks))})
+    source.index = pd.Index(["same"] * len(ticks), name="original")
+    source.attrs["origin"] = "preserved"
+    before = source.copy(deep=True)
+    engine = PandasEngine()
+    page = engine.page(source, 0, len(ticks))
+    cells = [row["values"][0] for row in page["rows"]]
+    for cell, stored in zip(cells, ticks, strict=True):
+        if stored is None:
+            assert cell == normalize_cell(None)
+            continue
+        assert cell["kind"] == "duration" and not cell["isNull"] and not cell["isNaN"]
+        numerator, denominator = Decimal(str(cell["raw"])).as_integer_ratio()
+        assert numerator * scale == stored * denominator
+        microseconds, remainder = divmod(stored * 1_000_000, scale)
+        token = {"kind": "typedSelection", "version": 1, "columnType": "duration", "cell": cell}
+        if remainder == 0 and -999999999 * 86400000000 <= microseconds <= 999999999 * 86400000000 + 86399999999:
+            assert coerce_typed_view_value(token, "duration") == timedelta(microseconds=microseconds)
+        else:
+            with pytest.raises(EngineError):
+                coerce_typed_view_value(token, "duration")
+    assert [cell["display"] for cell in cells[4:6]] == (
+        [dictionary_positive, dictionary_negative] if dictionary else [positive, negative]
+    )
+    if dictionary and unit == "us":
+        assert cells[0]["display"] == "-106751992 days, 19:59:05.224192"
+    summary = engine.summaries(source, [(0, "value")])[0]
+    assert (summary["nullCount"], summary["nanCount"], summary["distinctCount"]) == (2, 0, 5)
+    assert summary["topValues"][0] == {"value": f"{minimum} {unit}", "count": 2}
+    choices, more = engine.column_values(source, "value", limit=1)
+    assert more and len(choices) == 1 and choices[0]["count"] == 2 and choices[0]["value"] == f"{minimum} {unit}"
+    if unit == "us":
+        assert coerce_typed_view_value(choices[0]["selectionValue"], "duration") == timedelta(microseconds=minimum)
+    else:
+        assert "selectionValue" not in choices[0]
+    for empty in (source.iloc[:0], source.iloc[-2:]):
+        assert engine.column_values(empty, "value") == ([], False)
+        assert engine.summaries(empty, [(0, "value")])[0]["nullCount"] == len(empty)
+
+    temporal_array = pandas_engine._pandas_arrow_temporal_array
+    observed_lengths = []
+
+    def observe_temporal_values(values: Any) -> Any:
+        result = temporal_array(values)
+        if result is not None and pa.types.is_duration(result.type):
+            observed_lengths.append(len(result))
+        return result
+
+    monkeypatch.setattr(pandas_engine, "_pandas_arrow_temporal_array", observe_temporal_values)
+    projected = engine.page(source, 1, 3, column_projection=[(1, "row"), (0, "value")])
+    assert observed_lengths and max(observed_lengths) <= 3
+    assert [row["rowNumber"] for row in projected["rows"]] == [1, 2, 3]
+    assert [row["values"] for row in projected["rows"]] == [
+        [normalize_cell(position), cells[position]] for position in (1, 2, 3)
+    ]
+    observed_lengths.clear()
+    engine.page(source, 0, 1, column_projection=[(1, "row")])
+    assert observed_lengths == []
+    assert cast(pd.arrays.ArrowExtensionArray, source["value"].array).__arrow_array__().equals(array)
+    assert source.index.equals(before.index) and source.columns.equals(before.columns) and source.attrs == before.attrs
+    pd.testing.assert_series_equal(source["row"], before["row"], check_exact=True)
+    json.dumps([page, choices, summary], allow_nan=False)
+    engine.close()

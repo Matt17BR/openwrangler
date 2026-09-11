@@ -97,7 +97,7 @@ from .base import (
     require_datetime_fill_awareness,
     resolve_excel_sheet_selector,
     safe_float_midpoint,
-    typed_selection_value,
+    typed_cell_selection_value,
     validate_numpy_float,
     validate_view_predicate_operator,
 )
@@ -252,6 +252,38 @@ def _pandas_numeric_filter(series: Any, method: str, values: Sequence[Any]) -> A
 
     import numpy as np
     import pandas as pd
+
+    if isinstance(series.dtype, pd.ArrowDtype):
+        import pyarrow as pa
+
+        dtype = series.dtype.pyarrow_dtype
+        if pa.types.is_duration(dtype):
+            # Compare native ticks; converting the source to a finer unit can overflow.
+            storage = series.astype(pd.ArrowDtype(pa.int64()))
+            scale = {"s": 1, "ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}[dtype.unit]
+            bounds = [
+                divmod(((value.days * 86_400 + value.seconds) * 1_000_000 + value.microseconds) * scale, 1_000_000)
+                for value in values
+            ]
+            if method == "isin":
+                return _pandas_integer_filter(storage, "isin", [floor for floor, remainder in bounds if remainder == 0])
+            floor, remainder = bounds[0]
+            ceiling = floor + (remainder != 0)
+            if method == "between":
+                return _pandas_integer_filter(storage, "ge", [ceiling]) & _pandas_integer_filter(
+                    storage, "le", [bounds[1][0]]
+                )
+            if method in {"eq", "ne"}:
+                if remainder:
+                    return pd.Series(method == "ne", index=series.index, name=series.name, dtype=bool)
+                return _pandas_integer_filter(storage, method, [floor])
+            method, threshold = {
+                "ge": ("ge", ceiling),
+                "gt": ("ge", floor + 1),
+                "le": ("le", floor),
+                "lt": ("le", ceiling - 1),
+            }[method]
+            return _pandas_integer_filter(storage, method, [threshold])
 
     if method == "between":
         return _pandas_numeric_filter(series, "ge", values[:1]) & _pandas_numeric_filter(series, "le", values[1:])
@@ -899,10 +931,20 @@ class PandasEngine(DataFrameEngine):
         ]
         row_id_token = self._row_id_token(df.columns[row_id_position]) if row_id_position is not None else None
         rows = []
+        records = zip(
+            *(
+                _pandas_temporal_output_values(
+                    sliced.iloc[:, position],
+                    temporal_columns[position - value_offset] if position >= value_offset else None,
+                )
+                for position in range(sliced.shape[1])
+            ),
+            strict=True,
+        )
         row_axis = self.row_axis(df)
         one_level_multi_index = isinstance(df.index, pd.MultiIndex) and df.index.nlevels == 1
         for row_number, (row_label, row) in enumerate(
-            zip(sliced.index, sliced.itertuples(index=False, name=None), strict=True),
+            zip(sliced.index, records, strict=True),
             start=offset,
         ):
             identity = self._page_row_identity(row[0]) if row_id_position is not None else row_number
@@ -967,7 +1009,11 @@ class PandasEngine(DataFrameEngine):
                     ),
                     "count": int(value),
                 }
-                for position, (index, value) in enumerate(top_counts.items())
+                for position, (index, value) in enumerate(
+                    zip(
+                        _pandas_temporal_output_values(top_counts.index, temporal_counts), top_counts.array, strict=True
+                    )
+                )
             ]
             summary: dict[str, Any] = {
                 "columnId": column_id,
@@ -1139,7 +1185,7 @@ class PandasEngine(DataFrameEngine):
                 or pd.api.types.is_object_dtype(series.dtype)
                 or isinstance(series.dtype, pd.CategoricalDtype)
             ):
-                for position, value in enumerate(series.array):
+                for position, value in enumerate(_pandas_temporal_output_values(series.array, temporal_values)):
                     scalar = temporal_values[position] if temporal_values is not None else None
                     if (type(value) is pd.Timestamp and value.nanosecond) or (
                         scalar is not None and scalar.is_valid and type(value).__name__ == "NaTType"
@@ -1171,19 +1217,29 @@ class PandasEngine(DataFrameEngine):
                 index,
                 count,
                 _pandas_temporal_text(index, temporal_counts[position] if temporal_counts is not None else None),
+                position,
             )
-            for position, (index, count) in enumerate(value_counts.items())
+            for position, (index, count) in enumerate(
+                zip(
+                    _pandas_temporal_output_values(value_counts.index, temporal_counts), value_counts.array, strict=True
+                )
+            )
         )
         if search and search_counted_labels:
             needle = str(search).translate(_ASCII_TO_LOWER)
             counts = (
-                (value, count, label) for value, count, label in counts if needle in label.translate(_ASCII_TO_LOWER)
+                (value, count, label, position)
+                for value, count, label, position in counts
+                if needle in label.translate(_ASCII_TO_LOWER)
             )
         counts = nsmallest(limit + 1, counts, key=lambda item: (-int(item[1]), item[2]))
         values = []
-        for index, count, label in counts[:limit]:
+        for index, count, label, position in counts[:limit]:
             item: dict[str, Any] = {"value": label, "count": int(count)}
-            selection = typed_selection_value(index, column_type)
+            selection = typed_cell_selection_value(
+                _pandas_temporal_cell(index, temporal_counts[position] if temporal_counts is not None else None),
+                column_type,
+            )
             if selection is not None:
                 item["selectionValue"] = selection
             values.append(item)
@@ -1958,9 +2014,11 @@ class PandasEngine(DataFrameEngine):
                     "",
                     "",
                     "def _open_wrangler_mask(series, predicate):",
-                    "    if predicate is _open_wrangler_is_null:",
+                    "    if predicate is _open_wrangler_is_null or predicate is _open_wrangler_is_nan:",
                     "        array = _open_wrangler_arrow_temporal_array(series)",
                     "        if array is not None:",
+                    "            if predicate is _open_wrangler_is_nan:",
+                    "                return pd.Series(False, index=series.index, dtype=bool)",
                     "            return pd.Series(array.is_null().to_numpy(), index=series.index, dtype=bool)",
                     (
                         "    return pd.Series([predicate(value) for value in series.array], "
@@ -5578,6 +5636,38 @@ def _generated_pandas_numeric_filter_helpers() -> list[str]:
         "def _open_wrangler_numeric_filter(series, method, values):",
         "    import operator",
         "",
+        "    if isinstance(series.dtype, pd.ArrowDtype):",
+        "        import pyarrow as pa",
+        "",
+        "        dtype = series.dtype.pyarrow_dtype",
+        "        if pa.types.is_duration(dtype):",
+        "            # Compare native ticks; converting the source to a finer unit can overflow.",
+        "            storage = series.astype(pd.ArrowDtype(pa.int64()))",
+        '            scale = {"s": 1, "ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}[dtype.unit]',
+        "            bounds = [",
+        "                divmod(",
+        "                    ((value.days * 86_400 + value.seconds) * 1_000_000 + value.microseconds) * scale,",
+        "                    1_000_000)",
+        "                for value in values",
+        "            ]",
+        '            if method == "isin":',
+        '                return _open_wrangler_integer_filter(storage, "isin",',
+        "                    [floor for floor, remainder in bounds if remainder == 0])",
+        "            floor, remainder = bounds[0]",
+        "            ceiling = floor + (remainder != 0)",
+        '            if method == "between":',
+        '                return (_open_wrangler_integer_filter(storage, "ge", [ceiling])',
+        '                    & _open_wrangler_integer_filter(storage, "le", [bounds[1][0]]))',
+        '            if method in {"eq", "ne"}:',
+        "                if remainder:",
+        '                    return pd.Series(method == "ne", index=series.index, name=series.name, dtype=bool)',
+        "                return _open_wrangler_integer_filter(storage, method, [floor])",
+        "            method, threshold = {",
+        '                "ge": ("ge", ceiling), "gt": ("ge", floor + 1),',
+        '                "le": ("le", floor), "lt": ("le", ceiling - 1),',
+        "            }[method]",
+        "            return _open_wrangler_integer_filter(storage, method, [threshold])",
+        "",
         '    if method == "between":',
         '        return (_open_wrangler_numeric_filter(series, "ge", values[:1])',
         '                & _open_wrangler_numeric_filter(series, "le", values[1:]))',
@@ -7310,6 +7400,33 @@ def _pandas_arrow_temporal_array(series: Any) -> Any:
     return _pandas_dictionary_values(series).array.__arrow_array__()
 
 
+def _pandas_temporal_output_values(values: Any, array: Any) -> Iterable[Any]:
+    if array is None:
+        yield from values
+        return
+    import pyarrow as pa
+
+    if not pa.types.is_duration(array.type):
+        yield from values
+        return
+    import numpy as np
+    import pandas as pd
+
+    dictionary = _pandas_dictionary_value_type(values) is not None
+    unit = array.type.unit
+    for scalar in array:
+        if not scalar.is_valid:
+            yield pd.NA
+            continue
+        if dictionary and unit != "ns":
+            microseconds = scalar.value * {"s": 1_000_000, "ms": 1_000, "us": 1}[unit]
+            days, remainder = divmod(microseconds, 86_400_000_000)
+            if -999_999_999 <= days <= 999_999_999:
+                yield timedelta(days=days, microseconds=remainder)
+                continue
+        yield pd.Timedelta(np.timedelta64(scalar.value, unit))
+
+
 def _pandas_temporal_cell(value: Any, scalar: Any) -> dict[str, Any]:
     if scalar is None or type(value).__name__ != "NaTType":
         return normalize_cell(value)
@@ -7343,9 +7460,11 @@ def _pandas_temporal_text(value: Any, scalar: Any) -> str:
 
 
 def _scalar_mask(series: Any, predicate: Any) -> Any:
-    if predicate is _is_null_value:
+    if predicate is _is_null_value or predicate is _is_nan_value:
         array = _pandas_arrow_temporal_array(series)
         if array is not None:
+            if predicate is _is_nan_value:
+                return type(series)(False, index=series.index, dtype=bool)
             return type(series)(array.is_null().to_numpy(), index=series.index, dtype=bool)
     return type(series)([predicate(value) for value in series.array], index=series.index, dtype=bool)
 
