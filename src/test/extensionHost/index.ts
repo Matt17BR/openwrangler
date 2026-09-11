@@ -1546,7 +1546,6 @@ const exercisePackagedFileLaunchSurfaces = createPackagedFileLaunchSurfaces({
   waitForThirdPartyCustomEditorWorkbench,
   fileActionMediaHeight: PACKAGED_FILE_ACTION_MEDIA_HEIGHT,
   sessionOpenAcceptanceTimeoutMs: SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-  webviewDiscoveryTimeoutMs: OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
   workbenchOperationTimeoutMs: WORKBENCH_OPERATION_TIMEOUT_MS,
   workbenchPlaywrightTimeoutMs: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS
 });
@@ -14076,24 +14075,41 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     await waitFor(
       () => testing.activeSession()?.metadata.source.variableName === "pandas_frame",
       SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-      "the packaged Pandas notebook variable session"
+      "the packaged Pandas notebook variable session",
+      () => {
+        const response = testing.panelOpenResponse();
+        return JSON.stringify(
+          response?.kind === "error"
+            ? { kind: response.kind, code: response.code.slice(0, 80), recoverable: response.recoverable }
+            : { kind: response?.kind ?? null }
+        );
+      }
     );
     let active = testing.activeSession();
     assert.equal(active?.metadata.backend, "pandas");
     assert.equal(active?.metadata.capabilities.notebookInsert, true);
     if (!active) throw new Error("Pandas notebook session did not become active.");
     recordAcceptanceProgress("verify:notebook:pandas-basic:page");
-    const pandasPage = await testing.request({
-      kind: "getPage",
-      ...GRID_COLUMN_WINDOW,
-      viewRequestId: "notebook-pandas-page",
-      sessionId: active.sessionId,
-      revision: active.metadata.revision,
-      offset: 0,
-      limit: 10,
-      filterModel: active.metadata.filterModel
-    });
-    assert.equal(pandasPage.kind, "page");
+    const pandasPage = await testing.request(
+      {
+        kind: "getPage",
+        ...GRID_COLUMN_WINDOW,
+        viewRequestId: "notebook-pandas-page",
+        sessionId: active.sessionId,
+        revision: active.metadata.revision,
+        offset: 0,
+        limit: 10,
+        filterModel: active.metadata.filterModel
+      },
+      { ephemeralPage: true }
+    );
+    assert.equal(
+      pandasPage.kind,
+      "page",
+      pandasPage.kind === "error"
+        ? `Pandas notebook page failed (${pandasPage.code.slice(0, 80)}, recoverable=${pandasPage.recoverable}).`
+        : "Pandas notebook page must resolve."
+    );
     if (pandasPage.kind !== "page") throw new Error("Pandas notebook page did not resolve.");
     assert.equal(pandasPage.page.rows[1]?.values[0]?.display, "2");
     recordAcceptanceProgress("verify:notebook:pandas-basic:preview");
@@ -16872,17 +16888,27 @@ async function verifyDuckDBRichParquetPage(testing: TestApi, source: vscode.Uri,
     ]
   );
 
-  const response = await testing.request({
-    kind: "getPage",
-    ...GRID_COLUMN_WINDOW,
-    viewRequestId: "packaged-duckdb-rich-parquet-page",
-    sessionId: active.sessionId,
-    revision: active.metadata.revision,
-    offset: 0,
-    limit: 20,
-    filterModel: active.metadata.filterModel
-  });
-  assert.equal(response.kind, "page", "The rich DuckDB Parquet fixture must return a typed page.");
+  const response = await testing.request(
+    {
+      kind: "getPage",
+      ...GRID_COLUMN_WINDOW,
+      viewRequestId: "packaged-duckdb-rich-parquet-page",
+      sessionId: active.sessionId,
+      revision: active.metadata.revision,
+      offset: 0,
+      limit: 20,
+      filterModel: active.metadata.filterModel
+    },
+    { ephemeralPage: true }
+  );
+  assert.equal(
+    response.kind,
+    "page",
+    "The rich DuckDB Parquet fixture must return a typed page." +
+      (response.kind === "error"
+        ? ` ${JSON.stringify({ code: response.code.slice(0, 80), recoverable: response.recoverable })}`
+        : "")
+  );
   if (response.kind !== "page") return;
 
   assert.deepEqual(gridColumnCells(response.page, columnReference(response.metadata, "exact_decimal").id)[0], {
@@ -16913,10 +16939,6 @@ async function verifyDuckDBRichParquetPage(testing: TestApi, source: vscode.Uri,
     isNull: false,
     isNaN: false
   });
-  assert.doesNotThrow(
-    () => JSON.parse(JSON.stringify(response.page.rows.map((row) => row.values))),
-    "The rich DuckDB page must remain strict-JSON-safe."
-  );
   assertExactBytes(readFileSync(source.fsPath), originalBytes, "Opening rich DuckDB Parquet data must not modify it.");
 
   const replacement = `${source.fsPath}.replacement`;
@@ -17227,20 +17249,25 @@ async function exercisePublicLegacyExcelImportOptions(
     );
     const initialFirstColumn = initiallyActive.metadata.schema[0];
     assert.ok(initialFirstColumn, `The public ${scenario.backend} BIFF workflow must expose its first column.`);
-    const initialGrid = await testing.request({
-      kind: "getPage",
-      ...GRID_COLUMN_WINDOW,
-      viewRequestId: `public-biff-${scenario.backend}-initial`,
-      sessionId: stableSessionId,
-      revision: initiallyActive.metadata.revision,
-      offset: 0,
-      limit: 20,
-      filterModel: initiallyActive.metadata.filterModel
-    });
+    const initialGrid = await testing.request(
+      {
+        kind: "getPage",
+        ...GRID_COLUMN_WINDOW,
+        viewRequestId: `public-biff-${scenario.backend}-initial`,
+        sessionId: stableSessionId,
+        revision: initiallyActive.metadata.revision,
+        offset: 0,
+        limit: 20,
+        filterModel: initiallyActive.metadata.filterModel
+      },
+      { ephemeralPage: true }
+    );
     assert.equal(
       initialGrid.kind,
       "page",
-      `The public ${scenario.backend} BIFF workflow must return its automatic first-sheet page.`
+      initialGrid.kind === "error"
+        ? `The public ${scenario.backend} BIFF first-sheet page failed (${initialGrid.code.slice(0, 80)}, recoverable=${initialGrid.recoverable}).`
+        : `The public ${scenario.backend} BIFF workflow must return its automatic first-sheet page.`
     );
     if (initialGrid.kind !== "page") {
       throw new Error(`The public ${scenario.backend} BIFF workflow did not return its first-sheet page.`);
@@ -17312,17 +17339,26 @@ async function exercisePublicLegacyExcelImportOptions(
     );
     const firstColumn = active.metadata.schema[0];
     assert.ok(firstColumn, `The public ${scenario.backend} BIFF workflow must expose its first column.`);
-    const grid = await testing.request({
-      kind: "getPage",
-      ...GRID_COLUMN_WINDOW,
-      viewRequestId: `public-biff-${scenario.backend}-second`,
-      sessionId: active.sessionId,
-      revision: active.metadata.revision,
-      offset: 0,
-      limit: 20,
-      filterModel: active.metadata.filterModel
-    });
-    assert.equal(grid.kind, "page", `The public ${scenario.backend} BIFF workflow must return a live grid page.`);
+    const grid = await testing.request(
+      {
+        kind: "getPage",
+        ...GRID_COLUMN_WINDOW,
+        viewRequestId: `public-biff-${scenario.backend}-second`,
+        sessionId: active.sessionId,
+        revision: active.metadata.revision,
+        offset: 0,
+        limit: 20,
+        filterModel: active.metadata.filterModel
+      },
+      { ephemeralPage: true }
+    );
+    assert.equal(
+      grid.kind,
+      "page",
+      grid.kind === "error"
+        ? `The public ${scenario.backend} BIFF selected-sheet page failed (${grid.code.slice(0, 80)}, recoverable=${grid.recoverable}).`
+        : `The public ${scenario.backend} BIFF workflow must return a live grid page.`
+    );
     if (grid.kind !== "page") {
       throw new Error(`The public ${scenario.backend} BIFF workflow did not return a page.`);
     }

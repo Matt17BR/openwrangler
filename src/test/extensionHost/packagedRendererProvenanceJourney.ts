@@ -377,17 +377,26 @@ export function createPackagedRendererProvenanceJourneys(dependencies: PackagedR
       assert.deepEqual(active.metadata.filteredShape, { rows: 1, columns: 1 });
       assert.equal(active.metadata.capabilities.editable, true);
       assert.equal(active.metadata.capabilities.notebookInsert, true);
-      const provenancePage = await testing.request({
-        kind: "getPage",
-        ...GRID_COLUMN_WINDOW,
-        viewRequestId: "notebook-renderer-provenance-page",
-        sessionId: active.sessionId,
-        revision: active.metadata.revision,
-        offset: 0,
-        limit: 10,
-        filterModel: active.metadata.filterModel
-      });
-      assert.equal(provenancePage.kind, "page");
+      const provenancePage = await testing.request(
+        {
+          kind: "getPage",
+          ...GRID_COLUMN_WINDOW,
+          viewRequestId: "notebook-renderer-provenance-page",
+          sessionId: active.sessionId,
+          revision: active.metadata.revision,
+          offset: 0,
+          limit: 10,
+          filterModel: active.metadata.filterModel
+        },
+        { ephemeralPage: true }
+      );
+      assert.equal(
+        provenancePage.kind,
+        "page",
+        provenancePage.kind === "error"
+          ? `Renderer provenance page failed (${provenancePage.code.slice(0, 80)}, recoverable=${provenancePage.recoverable}).`
+          : "Renderer provenance page must resolve."
+      );
       if (provenancePage.kind !== "page") throw new Error("Renderer provenance page did not resolve.");
       assert.equal(
         provenancePage.page.rows[0]?.values[0]?.display,
