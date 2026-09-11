@@ -141,8 +141,9 @@ literate-documents lane.
 The `macos-r` and `windows-r` jobs first run the existing private R artifact filesystem tests in Node, before private
 R dependencies or editor preparation. These exercise real file cleanup and refusal of replaced files and directories
 on each platform without launching R or an editor.
-The released-Jupyter jobs then run the canonical `kernel:numeric-portability` source case
-before opening the editor. It checks the platform-sensitive arithmetic, selections and generated programs without
+The released-Jupyter jobs then run the canonical `kernel:numeric-portability` source case with private jsonlite and
+bit64 dependencies before opening the editor. Parquet dependencies remain with the separate export and editor owners.
+It checks the platform-sensitive arithmetic, selections and generated programs without
 repeating the broad Linux operation and export suites. macOS uses the bounded `platform-lifecycle` journey; Windows
 keeps its representative journey. See [Testing](testing.md#native-r-editor-dependencies) for their coverage and bounds.
 These local R jobs install only Jupyter's Python client and its dependencies for the kernel-readiness probe. Python

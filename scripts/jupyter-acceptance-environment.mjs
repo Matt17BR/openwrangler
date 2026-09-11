@@ -727,6 +727,9 @@ export function rAcceptanceRepositories(platform = process.platform) {
 
 function rAcceptanceInstall({ repository, supplementalRepository }, platform, packages) {
   const supplementalPackages = ["collapse", "nanoparquet"].filter((packageName) => packages.includes(packageName));
+  const binarySupplementalPackages = supplementalPackages.filter(
+    (packageName) => platform !== "darwin" || packageName !== "collapse"
+  );
   const nativeCollapseInstall =
     platform === "darwin" && packages.includes("collapse")
       ? [
@@ -747,9 +750,7 @@ function rAcceptanceInstall({ repository, supplementalRepository }, platform, pa
     'Sys.setenv(MAKEFLAGS = "-s")',
     `.ow_packages <- c(${packages.map((packageName) => JSON.stringify(packageName)).join(", ")})`,
     `.ow_supplemental_packages <- c(${supplementalPackages.map((packageName) => JSON.stringify(packageName)).join(", ")})`,
-    platform === "darwin"
-      ? '.ow_binary_supplemental_packages <- "nanoparquet"'
-      : ".ow_binary_supplemental_packages <- .ow_supplemental_packages",
+    `.ow_binary_supplemental_packages <- c(${binarySupplementalPackages.map((packageName) => JSON.stringify(packageName)).join(", ")})`,
     ".ow_core_packages <- setdiff(.ow_packages, .ow_supplemental_packages)",
     '.ow_library <- normalizePath(Sys.getenv("R_LIBS_USER"), winslash = "/", mustWork = TRUE)',
     '.ow_install_started <- proc.time()[["elapsed"]]',
@@ -762,13 +763,17 @@ function rAcceptanceInstall({ repository, supplementalRepository }, platform, pa
     ")",
     'cat(sprintf("OPEN_WRANGLER_R_INSTALL:core:%d\\n", as.integer(round(1000 * (proc.time()[["elapsed"]] - .ow_install_started)))))',
     '.ow_install_started <- proc.time()[["elapsed"]]',
-    "utils::install.packages(",
-    "  .ow_binary_supplemental_packages,",
-    "  lib = .ow_library,",
-    `  repos = ${JSON.stringify(supplementalRepository)},`,
-    "  dependencies = NA,",
-    "  quiet = TRUE",
-    ")",
+    ...(binarySupplementalPackages.length > 0
+      ? [
+          "utils::install.packages(",
+          "  .ow_binary_supplemental_packages,",
+          "  lib = .ow_library,",
+          `  repos = ${JSON.stringify(supplementalRepository)},`,
+          "  dependencies = NA,",
+          "  quiet = TRUE",
+          ")"
+        ]
+      : []),
     'cat(sprintf("OPEN_WRANGLER_R_INSTALL:supplemental:%d\\n", as.integer(round(1000 * (proc.time()[["elapsed"]] - .ow_install_started)))))',
     ...nativeCollapseInstall
   ].join("\n");
@@ -2005,7 +2010,7 @@ export async function prepareJupyterAcceptanceREnvironment(
   }
 
   const packageEntries = Object.entries(R_ACCEPTANCE_PACKAGE_VERSIONS).filter(([packageName]) => {
-    if (purpose === "source-contracts") return ["jsonlite", "nanoparquet", "bit64"].includes(packageName);
+    if (purpose === "source-contracts") return ["jsonlite", "bit64"].includes(packageName);
     if (packageName === "bit64") return false;
     if (focusedNotebook && ["Rcpp", "collapse"].includes(packageName)) return false;
     if (
