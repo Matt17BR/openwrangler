@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import duckdb
@@ -12,6 +13,7 @@ from openwrangler_runtime.engines.pandas_engine import PandasEngine
 from openwrangler_runtime.engines.polars_engine import PolarsEngine
 from openwrangler_runtime.lineage import derive_lineage
 from openwrangler_runtime.operations import OperationError, validate_step
+from openwrangler_runtime.session import SessionManager
 
 
 def split_step() -> dict[str, Any]:
@@ -103,6 +105,74 @@ def test_split_text_columns_duckdb_live_and_generated_preserve_literal_parts_and
 
     assert rows(DuckDBEngine().apply_transform(frame, split_step())) == expected
     assert rows(execute_generated(DuckDBEngine(), frame)) == expected
+
+
+def test_split_text_columns_duckdb_nul_delimiter_preserves_public_and_generated_values(tmp_path: Path) -> None:
+    values = ["\0left", "right\0", "a\0\0b", "quo'te\\slash\né😀\0tail", "", None, "\0"]
+    parts = [
+        ["", "left", None],
+        ["right", "", None],
+        ["a", "", "b"],
+        ["quo'te\\slash\né😀", "tail", None],
+        ["", None, None],
+        [None, None, None],
+        ["", "", None],
+    ]
+    expected = [(value, *fields) for value, fields in zip(values, parts, strict=True)]
+    source = tmp_path / "nul-text.parquet"
+    with duckdb.connect() as connection:
+        original = connection.sql(
+            "SELECT * FROM (VALUES " + ", ".join("(?::VARCHAR)" for _ in values) + ") source(value)", params=values
+        )
+        original.write_parquet(str(source))
+    source_bytes = source.read_bytes()
+    source_stat = source.stat()
+    manager = SessionManager()
+    try:
+        opened = manager.open_session(
+            {"kind": "file", "path": str(source)}, backend="duckdb", mode="editing", page_size=len(values)
+        )
+        session_id = opened["metadata"]["sessionId"]
+        selected = opened["metadata"]["schema"][0]
+        step = split_step()
+        step["params"]["column"] = {key: selected[key] for key in ("id", "name")}
+        step["params"]["delimiter"] = "\0"
+        preview = manager.preview_step(session_id, 0, step, 0, len(values))
+        applied = manager.apply_draft(session_id, preview["revision"], 0, len(values))
+        assert applied["kind"] == "planUpdated" and applied["revision"] == 2
+        for response in (preview, applied):
+            assert [tuple(cell["raw"] for cell in row["values"]) for row in response["page"]["rows"]] == expected
+            assert [row["id"] for row in response["page"]["rows"]] == [row["id"] for row in opened["page"]["rows"]]
+        assert [column["id"] for column in applied["metadata"]["schema"]] == [
+            selected["id"],
+            "c:step:split-many:0",
+            "c:step:split-many:1",
+            "c:step:split-many:2",
+        ]
+        assert [column["rawType"] for column in applied["metadata"]["schema"]] == ["VARCHAR"] * 4
+        session = manager.sessions[session_id]
+        assert isinstance(session.engine, DuckDBEngine)
+        live = session.engine._terminal_rows(session.committed, "SELECT value, first, second, third FROM ow")
+        assert live == expected
+        namespace: dict[str, Any] = {}
+        exec(applied["code"], namespace)
+        with duckdb.connect() as caller:
+            native = caller.read_parquet(str(source))
+            assert native.fetchall() == [(value,) for value in values]
+            caller.execute("CREATE MACRO decode(value) AS 'substituted'")
+            caller.execute("CREATE MACRO from_hex(value) AS '00'::BLOB")
+            generated = namespace["clean_data"](native)
+            assert generated.fetchall() == expected
+            assert [str(dtype) for dtype in generated.types] == ["VARCHAR"] * 4
+            assert native.fetchall() == [(value,) for value in values]
+            assert caller.execute("SELECT decode(NULL), from_hex(NULL)").fetchone() == ("substituted", b"00")
+        assert source.read_bytes() == source_bytes
+        assert (source.stat().st_dev, source.stat().st_ino) == (source_stat.st_dev, source_stat.st_ino)
+        assert manager.get_page(session_id, 2, 0, len(values), {"filters": [], "sort": []})["kind"] == "page"
+        manager.close_session(session_id, 2)
+        assert not manager.sessions
+    finally:
+        manager.close_all()
 
 
 @pytest.mark.parametrize(
