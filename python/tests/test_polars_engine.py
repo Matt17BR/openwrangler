@@ -39,6 +39,7 @@ ROOT = Path(__file__).resolve().parents[2]
         (pl.Duration("ns"), 10**17 + 1, "100000000.000000001", "1157d 9h 46m 40s 1ns", False),
         (pl.Datetime("ns"), 10**17 + 1, "1973-03-03T09:46:40.000000001", None, False),
         (pl.Duration("us"), 100000001, 100.000001, "1m 40s 1µs", True),
+        (pl.Duration("us"), 1, "0.000001", "1µs", True),
         (pl.Duration("ms"), -12345, -12.345, "-12s -345ms", True),
         (pl.Datetime("ms"), -12345, "1969-12-31T23:59:47.655000", "1969-12-31T23:59:47.655", True),
         (pl.Datetime("us", "Europe/Berlin"), 100000001, "1970-01-01T01:01:40.000001+01:00", None, True),
@@ -92,7 +93,7 @@ def test_polars_temporal_queries_preserve_native_values_before_row_boxing(
             assert manager.get_column_values(sid, revision, "value", view, search=alias)["values"] == [choice]
         summary = manager.get_summary(sid, revision, view, [schema[0]["id"]])["summaries"][0]
         assert (summary["nullCount"], summary["nanCount"], summary["distinctCount"]) == (1, 0, 3)
-        assert summary["topValues"][0] == {"value": cell["display"], "count": 2}
+        assert summary["topValues"][0] == choice
         if kind == "datetime":
             present = [(value, cells[index]["display"]) for index, value in enumerate(ticks) if value is not None]
             assert summary["visualization"]["min"] == min(present)[1]
@@ -101,12 +102,17 @@ def test_polars_temporal_queries_preserve_native_values_before_row_boxing(
         if portable:
             assert choice["selectionValue"] == token
         else:
-            assert "selectionValue" not in choice
+            assert choice["selectionValue"] is None
         column_filter = {
             "column": "value",
             "type": kind,
             "predicates": [],
-            "valueFilter": {"kind": "values", "selectedValues": [token], "includeNulls": False, "includeNaN": False},
+            "valueFilter": {
+                "kind": "values",
+                "selectedValues": [summary["topValues"][0]["selectionValue"] if portable else token],
+                "includeNulls": False,
+                "includeNaN": False,
+            },
         }
         model = {"filters": [column_filter], "sort": []}
         lineage = source_lineage(engine.schema(frame))
@@ -944,7 +950,10 @@ def test_lazy_polars_count_labels_keep_projected_and_full_profiles(
                 0,
                 2,
             )
-            assert summary["topValues"] == [{"value": "True", "count": 2}, {"value": "False", "count": 1}]
+            assert summary["topValues"] == [
+                {"value": "True", "count": 2, "selectionValue": typed_selection_value(True, "boolean")},
+                {"value": "False", "count": 1, "selectionValue": typed_selection_value(False, "boolean")},
+            ]
             assert summary["visualization"] == {"kind": "boolean", "trueCount": 2, "falseCount": 1}
         assert __main__.projected_count_source is source
         assert source.explain() == before
@@ -1625,14 +1634,18 @@ def test_polars_eager_numeric_summaries_never_materialize_python_value_lists(
     integer = summaries["integer"]
     assert (integer["totalCount"], integer["nullCount"], integer["nanCount"]) == (4_097, 1, 0)
     assert integer["distinctCount"] == 101
-    assert integer["topValues"][0] == {"value": "0", "count": 41}
+    assert integer["topValues"][0] == {"value": "0", "count": 41, "selectionValue": typed_selection_value(0, "integer")}
     assert integer["numeric"]["exactMin"]["display"] == "0"
     assert integer["numeric"]["exactMax"]["display"] == "100"
     assert len(integer["visualization"]["bins"]) == 20
     assert sum(bin_["count"] for bin_ in integer["visualization"]["bins"]) == 4_096
     floating = summaries["floating"]
     assert (floating["totalCount"], floating["nullCount"], floating["nanCount"]) == (4_097, 1, 1)
-    assert floating["topValues"][0] == {"value": "0.0", "count": 41}
+    assert floating["topValues"][0] == {
+        "value": "0.0",
+        "count": 41,
+        "selectionValue": typed_selection_value(0.0, "float"),
+    }
     assert sum(bin_["count"] for bin_ in floating["visualization"]["bins"]) == 4_093
 
 
@@ -1835,7 +1848,7 @@ def test_polars_summary_excludes_null_and_nan_from_values_and_numeric_metrics(la
     assert summary["nullCount"] == 1
     assert summary["nanCount"] == 1
     assert summary["distinctCount"] == 1
-    assert summary["topValues"] == [{"value": "1.0", "count": 2}]
+    assert summary["topValues"] == [{"value": "1.0", "count": 2, "selectionValue": typed_selection_value(1.0, "float")}]
     assert summary["numeric"] == {
         "min": 1.0,
         "max": 1.0,
@@ -1885,13 +1898,13 @@ def test_lazy_polars_nested_summaries_keep_exact_display_counts():
 
     assert summaries[0]["distinctCount"] == 2
     assert summaries[0]["topValues"] == [
-        {"value": "[1,2]", "count": 2},
-        {"value": "[3]", "count": 1},
+        {"value": "[1,2]", "count": 2, "selectionValue": None},
+        {"value": "[3]", "count": 1, "selectionValue": None},
     ]
     assert summaries[1]["distinctCount"] == 2
     assert summaries[1]["topValues"] == [
-        {"value": '{"x":1}', "count": 2},
-        {"value": '{"x":2}', "count": 1},
+        {"value": '{"x":1}', "count": 2, "selectionValue": None},
+        {"value": '{"x":2}', "count": 1, "selectionValue": None},
     ]
 
 

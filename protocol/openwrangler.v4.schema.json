@@ -660,7 +660,10 @@
       "properties": {
         "value": { "type": "string" },
         "count": { "type": "integer", "minimum": 0 },
-        "selectionValue": { "$ref": "#/definitions/TypedSelectionToken" }
+        "selectionValue": {
+          "description": "Exact selection token; null means selection is unavailable. Omission retains legacy raw-value selection.",
+          "anyOf": [{ "$ref": "#/definitions/TypedSelectionToken" }, { "type": "null" }]
+        }
       }
     },
     "NumericSummary": {

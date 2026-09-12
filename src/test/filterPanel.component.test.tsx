@@ -8,7 +8,7 @@ import type { SessionMetadata, TypedSelectionToken, ValuesResponse } from "../sh
 import { MAX_VIEW_VALUE_TEXT_CHARACTERS, MAX_VIEW_VALUE_TEXT_UTF16_CODE_UNITS } from "../shared/viewValueLimits";
 import { FilterPanel } from "../webviews/filters/FilterPanel";
 import { matchesLegacySelection, selectionValueKey } from "../webviews/filters/filterPresentation";
-import { metadata } from "./filterSummary.testFixtures";
+import { metadata, valueActionChoices } from "./filterSummary.testFixtures";
 
 const values = new Map<string, ValuesResponse>([
   [
@@ -31,6 +31,80 @@ const cityRequest = { column: "city" };
 const salesRequest = { column: "sales" };
 
 describe("FilterPanel", () => {
+  it("keeps unavailable values visible and saved raw selections removable without dispatching a new value", () => {
+    const onApply = vi.fn();
+    const onRequestValues = vi.fn();
+    const initial: FilterModel = {
+      filters: [
+        {
+          column: "city",
+          type: "string",
+          predicates: [],
+          valueFilter: {
+            kind: "values",
+            selectedValues: ["1 nanoseconds"],
+            includeNulls: true,
+            includeNaN: false
+          }
+        }
+      ],
+      sort: []
+    };
+    const Harness = ({ unavailable }: { unavailable: boolean }) => {
+      const [model, setModel] = useState(initial);
+      const choices = unavailable
+        ? valueActionChoices
+        : [{ value: valueActionChoices[0].value, count: valueActionChoices[0].count }, ...valueActionChoices.slice(1)];
+      return (
+        <FilterPanel
+          metadata={metadata}
+          model={model}
+          columnRequest={cityRequest}
+          values={new Map([["city", { ...values.get("city")!, values: choices }]])}
+          onApply={(next) => {
+            onApply(next);
+            setModel(next);
+          }}
+          onRequestValues={onRequestValues}
+        />
+      );
+    };
+    const rendered = render(<Harness unavailable={false} />);
+    expect(screen.getByRole("checkbox", { name: /1 nanoseconds/u })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /1 nanoseconds/u })).toBeEnabled();
+    expect(onApply).not.toHaveBeenCalled();
+    rendered.rerender(<Harness unavailable />);
+    const unavailable = screen.getByRole("checkbox", { name: /1 nanoseconds/u });
+    expect(unavailable).toBeChecked();
+    expect(unavailable).toBeDisabled();
+    expect(unavailable).toHaveAccessibleDescription("Exact selection is unavailable for this value.");
+    fireEvent.click(unavailable);
+    fireEvent.keyDown(unavailable, { key: " " });
+    expect(onApply).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByRole("textbox", { name: /Search values/u }), { target: { value: "1 nanoseconds" } });
+    fireEvent.keyDown(screen.getByRole("textbox", { name: /Search values/u }), { key: "Enter" });
+    expect(onRequestValues).toHaveBeenLastCalledWith("city", "1 nanoseconds");
+    fireEvent.click(screen.getByRole("button", { name: 'Remove equals "1 nanoseconds" filter from city' }));
+    expect(onApply.mock.lastCall?.[0].filters[0].valueFilter).toMatchObject({
+      selectedValues: [],
+      includeNulls: true,
+      includeNaN: false
+    });
+    fireEvent.click(screen.getByRole("checkbox", { name: /0 days 00:00:00.000001/u }));
+    expect(onApply.mock.lastCall?.[0].filters[0].valueFilter).toMatchObject({
+      selectedValues: [valueActionChoices[1].selectionValue],
+      includeNulls: true,
+      includeNaN: false
+    });
+    fireEvent.click(screen.getByRole("checkbox", { name: /Berlin/u }));
+    expect(onApply.mock.lastCall?.[0].filters[0].valueFilter.selectedValues).toEqual([
+      valueActionChoices[1].selectionValue,
+      "Berlin"
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "Clear filter for city" }));
+    expect(onApply.mock.lastCall?.[0].filters).toEqual([]);
+  });
+
   it.each(["Filter column", "Sort column"])("keeps %s navigable when an unnamed column is selected", (selectorName) => {
     const onApply = vi.fn();
     const onRequestValues = vi.fn();

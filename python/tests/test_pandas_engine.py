@@ -1015,7 +1015,10 @@ def test_pandas_wide_profiles_keep_exact_values_when_approximations_overflow(
         assert summary["columnId"] == column["id"]
         present = [value for value in values if type(value) is int]
         counts = [(str(value), present.count(value)) for value in dict.fromkeys(present)]
-        expected_top = [{"value": value, "count": count} for value, count in sorted(counts, key=lambda item: -item[1])]
+        expected_top = [
+            {"value": value, "count": count, "selectionValue": engine_base.typed_selection_value(int(value), "integer")}
+            for value, count in sorted(counts, key=lambda item: -item[1])
+        ]
         assert (summary["totalCount"], summary["nullCount"], summary["nanCount"]) == (
             len(values),
             len(values) - len(present),
@@ -1283,7 +1286,7 @@ def test_pandas_mixed_display_text_summary_streams_without_changing_profile_byte
     summaries = PandasEngine().summaries(frame, [(0, "c:category"), (1, "c:object")])
     encoded = json.dumps(summaries, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
 
-    assert encoded == (
+    expected = json.loads(
         b'[{"columnId":"c:category","column":"category","type":"string","rawType":"category",'
         b'"totalCount":6,"nullCount":0,"nanCount":1,"distinctCount":2,"topValues":'
         b'[{"value":"1","count":3},{"value":"200","count":2}],"text":'
@@ -1296,6 +1299,13 @@ def test_pandas_mixed_display_text_summary_streams_without_changing_profile_byte
         b'{"kind":"categorical","categories":[{"value":"b\'\\\\x00\'","count":3},'
         b'{"value":"x","count":1}],"otherCount":0}}]'
     )
+
+    for summary, scalars in zip(expected, ([1, 200], [b"\x00", "x"]), strict=True):
+        for item, scalar in zip(summary["topValues"], scalars, strict=True):
+            item["selectionValue"] = engine_base.typed_selection_value(scalar, "string")
+        for item, scalar in zip(summary["visualization"]["categories"], scalars, strict=True):
+            item["selectionValue"] = engine_base.typed_selection_value(scalar, "string")
+    assert encoded == json.dumps(expected, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
 
 
 def test_pandas_summary_omits_non_finite_statistics_but_keeps_finite_histogram_values():
@@ -1373,14 +1383,22 @@ def test_pandas_eager_numeric_summaries_never_materialize_python_value_lists(
     integer = summaries["integer"]
     assert (integer["totalCount"], integer["nullCount"], integer["nanCount"]) == (4_097, 1, 0)
     assert integer["distinctCount"] == 101
-    assert integer["topValues"][0] == {"value": "0", "count": 41}
+    assert integer["topValues"][0] == {
+        "value": "0",
+        "count": 41,
+        "selectionValue": engine_base.typed_selection_value(0, "integer"),
+    }
     assert integer["numeric"]["exactMin"]["display"] == "0"
     assert integer["numeric"]["exactMax"]["display"] == "100"
     assert len(integer["visualization"]["bins"]) == 20
     assert sum(bin_["count"] for bin_ in integer["visualization"]["bins"]) == 4_096
     floating = summaries["floating"]
     assert (floating["totalCount"], floating["nullCount"], floating["nanCount"]) == (4_097, 1, 1)
-    assert floating["topValues"][0] == {"value": "0.0", "count": 41}
+    assert floating["topValues"][0] == {
+        "value": "0.0",
+        "count": 41,
+        "selectionValue": engine_base.typed_selection_value(0.0, "float"),
+    }
     assert sum(bin_["count"] for bin_ in floating["visualization"]["bins"]) == 4_093
 
 

@@ -6,7 +6,8 @@ import type {
   FilterModel,
   NumericBin,
   PredicateFilter,
-  TypedSelectionToken
+  TypedSelectionToken,
+  ValueCount
 } from "./protocol.generated";
 
 export type { ColumnFilter, ColumnType, FilterModel, PredicateFilter };
@@ -162,6 +163,12 @@ export const removeViewColumnFilter = (model: FilterModel, column: string): Filt
   ...model,
   filters: model.filters.filter((filter) => filter.column !== column && isActiveColumnFilter(filter))
 });
+
+export const valueSelectionUnavailableReason = "Exact selection is unavailable for this value.";
+
+/** Omitted tokens retain raw compatibility; explicit null must never become a new raw selection. */
+export const valueCountSelectionValue = (item: ValueCount): TypedSelectionToken | string | null =>
+  item.selectionValue === undefined ? item.value : item.selectionValue;
 
 export const viewValueSelectionFilter = (column: ColumnSchema, value: unknown): ColumnFilter => ({
   column: column.name,

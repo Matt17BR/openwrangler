@@ -1035,8 +1035,7 @@ class PySparkEngine(DataFrameEngine):
                 "count": int(row["count"]),
             }
             selection = typed_selection_value(value, column_type)
-            if selection is not None:
-                item["selectionValue"] = selection
+            item["selectionValue"] = selection
             values.append(item)
         _validate_profile_protocol_size(values, "column values")
         return values, len(rows) > limit

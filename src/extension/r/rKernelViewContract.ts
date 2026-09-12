@@ -88,6 +88,7 @@ export function assertRColumnValuesContract(
       entry.count > countDomain ||
       entry.count > countDomain - returnedCount ||
       entry.selectionValue === undefined ||
+      entry.selectionValue === null ||
       entry.selectionValue.columnType !== expectedType
     ) {
       throw new Error("The R kernel returned values with incompatible typed selections or row counts.");

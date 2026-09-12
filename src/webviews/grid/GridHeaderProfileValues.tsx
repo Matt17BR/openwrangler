@@ -7,7 +7,12 @@ import type {
   ColumnVisualization,
   SessionMetadata
 } from "../../shared/protocol";
-import { viewNumericBinFilter, viewValueSelectionFilter } from "../../shared/filterModel";
+import {
+  valueCountSelectionValue,
+  valueSelectionUnavailableReason,
+  viewNumericBinFilter,
+  viewValueSelectionFilter
+} from "../../shared/filterModel";
 import { ProfileValueToggle } from "../ProfileValueToggle";
 import { numericExtremumDisplay } from "../numericSummary";
 import {
@@ -409,6 +414,7 @@ function MiniChart({
         aria-label={`${visualization.sampled ? "Sampled " : ""}categorical distribution${categoryLabel ? `: ${categoryLabel}` : " with no values"}.`}
       >
         {visibleCategories.map((category, index) => {
+          const selectionValue = valueCountSelectionValue(category);
           const description = describeProfileValue(category.value || "Empty string", category.count, denominator);
           const contents = (
             <>
@@ -425,7 +431,12 @@ function MiniChart({
               className="categoryMiniRow interactive"
               key={`${category.value}-${index}`}
               aria-label={`Filter ${column.name} to ${category.value || "empty string"}; ${description}`}
-              onClick={() => onApplyFilter(viewValueSelectionFilter(column, category.selectionValue ?? category.value))}
+              aria-description={selectionValue === null ? valueSelectionUnavailableReason : undefined}
+              title={selectionValue === null ? valueSelectionUnavailableReason : undefined}
+              disabled={selectionValue === null}
+              onClick={() => {
+                if (selectionValue !== null) onApplyFilter(viewValueSelectionFilter(column, selectionValue));
+              }}
             >
               {contents}
             </button>

@@ -1412,7 +1412,10 @@ export interface NumericBin {
 export interface ValueCount {
   value: string;
   count: number;
-  selectionValue?: TypedSelectionToken1;
+  /**
+   * Exact selection token; null means selection is unavailable. Omission retains legacy raw-value selection.
+   */
+  selectionValue?: TypedSelectionToken1 | null;
 }
 /**
  * Typed representative for a distinct-value group whose display text alone is ambiguous.

@@ -871,8 +871,7 @@ class DuckDBEngine(DataFrameEngine):
         for value, count in rows[:limit]:
             item: dict[str, Any] = {"value": normalize_cell(value)["display"], "count": int(count)}
             selection = typed_selection_value(value, column_type)
-            if selection is not None:
-                item["selectionValue"] = selection
+            item["selectionValue"] = selection
             values.append(item)
         return values, len(rows) > limit
 

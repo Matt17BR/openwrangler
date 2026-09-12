@@ -17,6 +17,8 @@ import {
   removeViewColumnFilter,
   replaceViewColumnFilter,
   supportsTypedViewComparison,
+  valueCountSelectionValue,
+  valueSelectionUnavailableReason,
   viewColumnNameUnavailableReason,
   viewPredicateOperators
 } from "../../shared/filterModel";
@@ -477,18 +479,27 @@ export function FilterPanel({
             </small>
           )}
           {(columnValueResponse?.values ?? []).map((item) => {
-            const selectionValue = item.selectionValue ?? item.value;
-            const selectionKey = selectionValueKey(selectionValue);
+            const selectionValue = valueCountSelectionValue(item);
+            // A saved raw selection remains visible and removable in the active-filter controls.
+            const selectionKey = selectionValueKey(selectionValue ?? item.value);
             return (
-              <label key={selectionKey} className="checkboxRow">
+              <label
+                key={selectionKey}
+                className="checkboxRow"
+                title={selectionValue === null ? valueSelectionUnavailableReason : undefined}
+              >
                 <input
                   type="checkbox"
                   checked={
                     selectedValues.has(selectionKey) ||
-                    legacySelectedValues.some(([, selected]) => matchesLegacySelection(selected, selectionValue))
+                    (selectionValue !== null &&
+                      legacySelectedValues.some(([, selected]) => matchesLegacySelection(selected, selectionValue)))
                   }
-                  disabled={valueControlsDisabled || !supportsTypedComparison}
-                  onChange={() => toggleValue(selectionValue)}
+                  disabled={valueControlsDisabled || !supportsTypedComparison || selectionValue === null}
+                  aria-description={selectionValue === null ? valueSelectionUnavailableReason : undefined}
+                  onChange={() => {
+                    if (selectionValue !== null) toggleValue(selectionValue);
+                  }}
                 />
                 <span>{item.value}</span>
                 <small>{item.count}</small>

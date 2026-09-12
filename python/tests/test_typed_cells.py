@@ -39,7 +39,11 @@ def test_mixed_numeric_keys_preserve_profiles_duplicates_and_original_rows(float
     engine = PandasEngine()
     summary = engine.summaries(source.iloc[[0, 1, 3, 4, 5, 6]])[0]
     assert summary["distinctCount"] == 2
-    assert summary["topValues"][0] == {"value": str(first), "count": 2}
+    assert summary["topValues"][0] == {
+        "value": str(first),
+        "count": 2,
+        "selectionValue": typed_selection_value(first, "float"),
+    }
     assert summary["nullCount"] == 1 and summary["nanCount"] == 2
     assert engine.header_stats(source[["value"]])["duplicateRows"] == 1
     view = engine.apply_filter_model(
@@ -136,7 +140,7 @@ def test_mixed_numeric_counts_retain_first_labels_and_native_containers(first, r
     assert any(item["value"] == str(fraction) and item["count"] == 1 for item in counts)
     summary = engine.summaries(source)[0]
     assert summary["distinctCount"] == 6
-    assert summary["topValues"][0] == {"value": str(representative), "count": 2}
+    assert summary["topValues"][0] == counts[0]
     assert summary["nullCount"] == 2 and summary["nanCount"] == 3
     pd.testing.assert_frame_equal(source, before)
     assert all(actual is original for actual, original in zip(source["value"].array, values, strict=True))
@@ -184,7 +188,14 @@ def test_pandas_picker_retains_only_bounded_temporary_labels(
     live_labels: weakref.WeakSet[ObservedLabel] = weakref.WeakSet()
     peak_labels = 0
     evaluated_labels = 0
+    selection_decodes = 0
     original_format = pandas_engine._pandas_temporal_text
+    original_selection = pandas_engine.typed_cell_selection_value
+
+    def observe_selection(cell: Any, column_type: str) -> Any:
+        nonlocal selection_decodes
+        selection_decodes += 1
+        return original_selection(cell, column_type)
 
     def observe_label(value: Any, scalar: Any) -> str:
         nonlocal peak_labels, evaluated_labels
@@ -195,6 +206,7 @@ def test_pandas_picker_retains_only_bounded_temporary_labels(
         return label
 
     monkeypatch.setattr(pandas_engine, "_pandas_temporal_text", observe_label)
+    monkeypatch.setattr(pandas_engine, "typed_cell_selection_value", observe_selection)
     if duration:
         import pyarrow as pa
 
@@ -220,9 +232,9 @@ def test_pandas_picker_retains_only_bounded_temporary_labels(
     del choices
     assert not live_labels
     if duration:
-        evaluated_labels = 0
+        evaluated_labels = selection_decodes = 0
         summary = PandasEngine().summaries(source)[0]
-        assert len(summary["topValues"]) == 10 and evaluated_labels == 10
+        assert len(summary["topValues"]) == evaluated_labels == selection_decodes == 10
         assert summary["distinctCount"] == len(source)
     pd.testing.assert_frame_equal(source, before, check_exact=True)
 
@@ -455,7 +467,7 @@ def test_temporal_choice_identity_or_refusal_preserves_public_session(monkeypatc
             selected = manager.get_page(session_id, revision, 0, 10, selection)["page"]
             assert [row["values"][1]["raw"] for row in selected["rows"]] == [0, 2]
             summary = manager.get_summary(session_id, revision, query, [value_id])["summaries"][0]
-            assert summary["topValues"][0] == {"value": choice["value"], "count": 2}
+            assert summary["topValues"][0] == choice
             assert summary["nullCount"] == 1
         # Search and viewing filters narrow the source before native counting.
         narrowed = manager.get_column_values(session_id, revision, "value", query, search=str(values[3]))
@@ -532,7 +544,7 @@ def test_calendar_duration_choices_never_publish_fixed_seconds(monkeypatch: pyte
                 with pytest.raises(EngineError, match="NumPy temporal units"):
                     call()
         else:
-            expected = [] if ticks is None else [{"value": str(value), "count": 2}]
+            expected = [] if ticks is None else [{"value": str(value), "count": 2, "selectionValue": None}]
             choices = manager.get_column_values(session_id, revision, "value", query)
             assert choices["values"] == expected and not choices["hasMore"]
             summary = manager.get_summary(session_id, revision, query, [value_id])["summaries"][0]
@@ -953,7 +965,7 @@ def test_pandas_object_duration_choices_select_their_exact_counted_rows(values, 
             portable = (
                 microseconds.denominator == 1 and -999999999 * 86400000000 <= microseconds < 1000000000 * 86400000000
             )
-            assert ("selectionValue" in choice) == portable
+            assert (choice["selectionValue"] is not None) == portable
             if not portable:
                 continue
             assert Fraction(str(choice["selectionValue"]["cell"]["raw"])) == key
@@ -1151,7 +1163,7 @@ def test_duration_session_choices_and_grid_tokens_keep_source_rows(
             if portable:
                 tokens.append(choice["selectionValue"])
             else:
-                assert "selectionValue" not in choice
+                assert choice["selectionValue"] is None
             for token in tokens:
                 model = {
                     "filters": [
@@ -1321,7 +1333,9 @@ def test_timestamp_cells_preserve_fraction_offset_and_instant(zone, clock, offse
     label = expected.replace("T", " ")
     engine = PandasEngine()
     summary = engine.summaries(source)[0]
-    assert summary["topValues"] == [{"value": label, "count": 1}]
+    assert summary["topValues"] == [
+        {"value": label, "count": 1, "selectionValue": typed_selection_value(value, "datetime")}
+    ]
     assert summary["visualization"] == {"kind": "datetime", "min": label, "max": label}
     choices, more = engine.column_values(source, "when")
     assert not more and len(choices) == 1
@@ -1403,10 +1417,10 @@ def test_timestamp_parquet_session_preserves_exact_page_text(tmp_path: Path, zon
         summary = manager.get_summary(
             metadata["sessionId"], metadata["revision"], query, [metadata["schema"][0]["id"]]
         )["summaries"][0]
-        assert summary["topValues"] == [{"value": label, "count": 1}]
+        assert summary["topValues"] == [{"value": label, "count": 1, "selectionValue": None}]
         assert summary["visualization"] == {"kind": "datetime", "min": label, "max": label}
         choices = manager.get_column_values(metadata["sessionId"], metadata["revision"], "when", query)
-        assert choices["values"] == [{"value": label, "count": 1}]
+        assert choices["values"] == [{"value": label, "count": 1, "selectionValue": None}]
         assert (
             manager.get_column_values(metadata["sessionId"], metadata["revision"], "when", query, search=label)[
                 "values"
@@ -1443,7 +1457,7 @@ def test_pandas_duration_search_preserves_native_row_text(dictionary: bool, unit
     source.index = pd.Index(["same"] * len(source), name="source row")
     before = source.copy(deep=True)
     engine = PandasEngine()
-    first: dict[str, Any] = {"value": f"0 days 00:00:00.{fraction}", "count": 2}
+    first: dict[str, Any] = {"value": f"0 days 00:00:00.{fraction}", "count": 2, "selectionValue": None}
     if unit == "us":
         first["selectionValue"] = {
             "kind": "typedSelection",
@@ -1594,10 +1608,12 @@ def test_pandas_native_duration_categories_search_counts_and_unused_labels(
             category_position = next(
                 position for position, value in enumerate(categories) if str(value) == choice["value"]
             )
-            assert ("selectionValue" in choice) == (unit != "ns" or category_ticks[category_position] % 1000 == 0)
+            assert (choice["selectionValue"] is not None) == (
+                unit != "ns" or category_ticks[category_position] % 1000 == 0
+            )
             matches = [item for item in choices if choice["value"] in item["value"]]
             assert engine.column_values(source, "value", search=choice["value"]) == (matches, False)
-            if "selectionValue" in choice:
+            if choice["selectionValue"] is not None:
                 assert choice["selectionValue"]["cell"]["raw"] == normalize_cell(categories[category_position])["raw"]
                 selected = engine.apply_filter_model(
                     source,
@@ -1788,7 +1804,7 @@ def test_pandas_sparse_duration_choices_preserve_physical_values_and_membership(
         assert engine.page(source.iloc[:0], 0, 5)["rows"] == []
 
         token = typed_cell_selection_value(expected, "duration")
-        assert ("selectionValue" in selected) == (token is not None)
+        assert (selected["selectionValue"] is not None) == (token is not None)
         selections = [([], True, [3])]
         if token is not None:
             assert selected["selectionValue"]["cell"]["raw"] == expected["raw"]
@@ -2049,7 +2065,7 @@ def test_pandas_sparse_duration_fill_keeps_exact_native_storage(kind: str, monke
             item["value"]: item["count"] for item in choices
         }
         token = typed_selection_value(canonical, "duration")
-        assert ("selectionValue" in choice) == (token is not None)
+        assert (choice["selectionValue"] is not None) == (token is not None)
         model = {
             "filters": [
                 {
@@ -2288,7 +2304,9 @@ def test_pandas_temporal_categories_publish_exact_cells_and_selection_values(sto
         first = choices[0]
         microseconds = seconds * 1000000
         portable = microseconds.denominator == 1 and -999999999 * 86400000000 <= microseconds < 1000000000 * 86400000000
-        assert ("selectionValue" in first) == portable
+        assert (first["selectionValue"] is not None) == portable
+        summary = engine.summaries(source)[0]
+        assert summary["topValues"][0] == first
         selection_cases = []
         if portable:
             assert first["selectionValue"]["cell"] == cell
@@ -2300,7 +2318,7 @@ def test_pandas_temporal_categories_publish_exact_cells_and_selection_values(sto
                         "predicates": [],
                         "valueFilter": {
                             "kind": "values",
-                            "selectedValues": [first["selectionValue"]],
+                            "selectedValues": [summary["topValues"][0]["selectionValue"]],
                             "includeNulls": False,
                             "includeNaN": False,
                         },
@@ -2309,9 +2327,7 @@ def test_pandas_temporal_categories_publish_exact_cells_and_selection_values(sto
                 "sort": [],
             }
             selection_cases.append((model, [0, 2]))
-        summary = engine.summaries(source)[0]
         assert summary["nullCount"] == 1 and summary["nanCount"] == 0 and summary["distinctCount"] == 2
-        assert summary["topValues"][0] == {"value": first["value"], "count": 2}
         lengths = [len(str(row["values"][0]["display"])) for row in page["rows"][:3]]
         assert summary["text"] == {
             "emptyCount": 0,
@@ -3877,12 +3893,12 @@ def test_pandas_arrow_temporal_validity_keeps_bounded_cells_profiles_and_filters
     }
     summary = engine.summaries(source, [(0, schema[0]["id"])])[0]
     assert (summary["nullCount"], summary["nanCount"], summary["distinctCount"]) == (2, 0, 2)
-    assert summary["topValues"][0] == {"value": expected_text, "count": 2}
+    assert summary["topValues"][0] == {"value": expected_text, "count": 2, "selectionValue": None}
     if family != "duration":
         assert summary["visualization"]["min"] == expected_text
     choices, more = engine.column_values(source, "value", limit=1)
     # The existing datetime selection decoder does not carry nanosecond precision.
-    assert choices == [{"value": expected_text, "count": 2}] and more
+    assert choices == [{"value": expected_text, "count": 2, "selectionValue": None}] and more
     assert engine.column_values(source, "value", search=expected_text) == (choices, False)
     for empty in [source.iloc[:0], source.iloc[[1, 2]]]:
         assert engine.column_values(empty, "value") == ([], False)
@@ -4007,13 +4023,13 @@ def test_pandas_arrow_duration_outputs_preserve_units_labels_and_projection(
         assert cells[0]["display"] == "-106751992 days, 19:59:05.224192"
     summary = engine.summaries(source, [(0, "value")])[0]
     assert (summary["nullCount"], summary["nanCount"], summary["distinctCount"]) == (2, 0, 5)
-    assert summary["topValues"][0] == {"value": f"{minimum} {unit}", "count": 2}
     choices, more = engine.column_values(source, "value", limit=1)
+    assert summary["topValues"][0] == choices[0]
     assert more and len(choices) == 1 and choices[0]["count"] == 2 and choices[0]["value"] == f"{minimum} {unit}"
     if unit == "us":
         assert coerce_typed_view_value(choices[0]["selectionValue"], "duration") == timedelta(microseconds=minimum)
     else:
-        assert "selectionValue" not in choices[0]
+        assert choices[0]["selectionValue"] is None
     assert engine.column_values(source, "value", search="NaT") == ([], False)
     if dictionary:
         matches, more = engine.column_values(source, "value", search=positive)

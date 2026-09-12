@@ -198,7 +198,7 @@ button.categoryMiniRow.interactive {
   width: 100%;
 }
 
-button.categoryMiniRow.interactive:hover,
+button.categoryMiniRow.interactive:not(:disabled):hover,
 button.categoryMiniRow.interactive:focus-visible {
   background: var(--vscode-list-hoverBackground);
   border-color: var(--vscode-focusBorder, var(--vscode-panel-border));

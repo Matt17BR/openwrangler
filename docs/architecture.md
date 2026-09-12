@@ -1213,6 +1213,14 @@ Viewing filters and sorts address columns by name and require a unique, non-empt
 profile actions, and the filter panel share that eligibility check. Unnamed columns still support viewing, profiling,
 selection, and copy; their name-based actions explain why they are unavailable.
 
+Value choices and profile representatives distinguish exact selection from display text. In `ValueCount`, a typed
+`selectionValue` is the admitted filter operand, explicit `null` means no exact selection is available, and an omitted
+field retains raw-value compatibility. Native R value lists still require typed tokens at their narrower boundary.
+Picker, summary and header actions honor availability without parsing labels.
+Unavailable values keep their labels, counts and search behavior; existing saved selections remain removable.
+Pandas and Polars prepare profile tokens only for their already-bounded top values, with native temporal precision
+retained. The existing filter decoder owns admission; this does not expand its precision or range.
+
 Typed cells are strict-JSON-safe and preserve the distinctions needed by filtering, rendering, saved notebook output,
 and engine-normalized transformations. Nested and scalar values pass bounded depth, node, text, and byte validation.
 User-derived keys in extension and webview state are held in `Map` or `Set`, not dynamic object properties.
