@@ -277,18 +277,40 @@ def _assert_pandas_row_query(frame, model, expected_rows, *, sort_only=False):
         engine.apply_transform(frame, bound),
         namespace["clean_data"](frame),
     ]
+    expected_dtypes = [
+        frame.iloc[:, position].array.take(np.array([], dtype=np.intp), allow_fill=False).dtype
+        if not expected_rows and isinstance(dtype, pd.SparseDtype)
+        else dtype
+        for position, dtype in enumerate(frame.dtypes)
+    ]
     for result in results:
         assert result["row"].tolist() == expected_rows
-        assert result.dtypes.tolist() == frame.dtypes.tolist()
+        assert result.dtypes.tolist() == expected_dtypes
         assert result.attrs == frame.attrs
         pd.testing.assert_index_equal(result.columns, frame.columns)
         pd.testing.assert_index_equal(result.index, frame.index.take(expected_rows))
         for position in range(frame.shape[1]):
-            expected = frame.iloc[:, position].to_numpy(dtype=object)[expected_rows]
-            actual = result.iloc[:, position].to_numpy(dtype=object)
+            if isinstance(frame.dtypes.iloc[position], pd.ArrowDtype):
+                original_values = frame.iloc[:, position].array.__arrow_array__().to_pylist()
+                expected = [original_values[row] for row in expected_rows]
+                actual = result.iloc[:, position].array.__arrow_array__().to_pylist()
+            else:
+                expected = frame.iloc[:, position].to_numpy(dtype=object)[expected_rows]
+                actual = result.iloc[:, position].to_numpy(dtype=object)
             for value, original in zip(actual, expected, strict=True):
                 assert pd.isna(value) if pd.isna(original) else value == original
-    pd.testing.assert_frame_equal(frame, before)
+    pd.testing.assert_index_equal(frame.columns, before.columns)
+    pd.testing.assert_index_equal(frame.index, before.index)
+    assert frame.dtypes.tolist() == before.dtypes.tolist()
+    for position, dtype in enumerate(frame.dtypes):
+        if isinstance(dtype, pd.ArrowDtype):
+            assert (
+                frame.iloc[:, position].array.__arrow_array__().equals(before.iloc[:, position].array.__arrow_array__())
+            )
+        else:
+            pd.testing.assert_series_equal(frame.iloc[:, position], before.iloc[:, position])
+    assert frame.attrs == before.attrs
+    return results
 
 
 def _integer_query_frame(values, dtype):
@@ -460,6 +482,46 @@ def test_pandas_sparse_integer_filters_and_sorting_preserve_returned_values(fill
                 )
                 expected = missing_rows + rows if nulls == "first" else rows + missing_rows
                 _assert_pandas_row_query(frame, query, expected, sort_only=sort_only)
+
+
+@pytest.mark.parametrize("storage", ["sparse-duration", "dictionary"])
+def test_pandas_combined_sorts_preserve_native_keys_and_empty_results(storage):
+    ticks = None
+    if storage == "sparse-duration":
+        ticks = np.array([0, 1, 2, -(2**63), 3, 0, 2, 1], dtype=np.int64)
+        native = ticks.view("timedelta64[2s]")
+        keys = pd.arrays.SparseArray(native, dtype=pd.SparseDtype(native.dtype, np.timedelta64(0, "s")))
+        expected = [3, 5, 7, 1, 2, 6, 4]
+    else:
+        import pyarrow as pa
+
+        chunks = [
+            pa.DictionaryArray.from_arrays(pa.array([0, 1, 2, None], type=pa.int8()), pa.array(["z", None, "a"])),
+            pa.DictionaryArray.from_arrays(pa.array([1, 0, 2, 1], type=pa.int8()), pa.array(["b", "z", None])),
+        ]
+        keys = pd.arrays.ArrowExtensionArray(pa.chunked_array(chunks))
+        expected = [6, 1, 3, 2, 5, 4, 7]
+    frame = pd.DataFrame({"key": keys, "tie": [1, 0, 1, 0, 1, 0, 1, 1], "row": range(8)})
+    frame.index = pd.MultiIndex.from_tuples([("same", 7)] * len(frame), names=["group", "index"])
+    frame.attrs = {"source": "unchanged"}
+    model = {
+        "filters": [
+            {"column": "row", "type": "integer", "predicates": [{"kind": "predicate", "operator": "gt", "value": "0"}]}
+        ],
+        "sort": [
+            {"column": "key", "direction": "asc", "nulls": "first"},
+            {"column": "tie", "direction": "desc", "nulls": "last"},
+        ],
+    }
+    for operand, rows in [("0", expected), ("100", [])]:
+        model["filters"][0]["predicates"][0]["value"] = operand
+        results = _assert_pandas_row_query(frame, model, rows)
+        if ticks is not None:
+            for result in results:
+                array = result["key"].array
+                actual_ticks = np.zeros(len(result), dtype=np.int64)
+                actual_ticks[array.sp_index.indices] = array.sp_values.view(np.int64)
+                np.testing.assert_array_equal(actual_ticks, ticks[rows])
 
 
 def _value_selection_model(column_type: str, value: Any) -> dict[str, Any]:

@@ -21,6 +21,7 @@ from openwrangler_runtime.engines import (
     PolarsEngine,
     SessionDataShape,
 )
+from openwrangler_runtime.engines import pandas_engine as pandas_runtime
 from openwrangler_runtime.engines.base import EngineCapabilities, SummaryColumnProjection
 from openwrangler_runtime.session import (
     PAGE_CACHE_LIMIT,
@@ -704,13 +705,18 @@ def test_filter_and_sort_changes_invalidate_pages_but_keep_total_rows_exact(tmp_
     assert engine.filter_calls == 2
 
 
-def test_view_queries_cannot_replace_the_confirmed_page_filter_before_preview(tmp_path) -> None:
+def test_view_queries_cannot_replace_the_confirmed_page_filter_before_preview(tmp_path, monkeypatch) -> None:
     manager, _ = counting_manager()
     opened = manager.open_session(source(write_values(tmp_path, 5)), backend="pandas", page_size=2)
     session_id = opened["metadata"]["sessionId"]
     session = manager.sessions[session_id]
     old_profile_filter = greater_than(0)
+    old_profile_filter["sort"] = [
+        {"column": "name", "direction": "desc", "nulls": "first"},
+        {"column": "value", "direction": "asc", "nulls": "last"},
+    ]
     confirmed_page_filter = greater_than(2)
+    original = session.original.copy(deep=True)
 
     page = manager.get_page(session_id, 0, 0, 2, confirmed_page_filter)
     assert page["page"]["totalRows"] == 2
@@ -720,17 +726,30 @@ def test_view_queries_cannot_replace_the_confirmed_page_filter_before_preview(tm
     cache_items = list(session.page_cache.items())
 
     summary = manager.get_summary(session_id, 0, old_profile_filter, ["c:source:1"])
-    values = manager.get_column_values(session_id, 0, "value", old_profile_filter)
+    take_widths = []
+    take_rows = pandas_runtime._pandas_take_rows
+
+    def observe_take(frame, positions):
+        take_widths.append(frame.shape[1])
+        return take_rows(frame, positions)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(pandas_runtime, "_pandas_take_rows", observe_take)
+        values = manager.get_column_values(session_id, 0, "value", old_profile_filter)
+    assert take_widths.count(session.original.shape[1]) <= 1
     stats = manager.get_dataset_stats(session_id, 0, old_profile_filter)
 
     assert summary["summaries"][0]["totalCount"] == 4
-    assert {item["value"] for item in values["values"]} == {"1", "2", "3", "4"}
+    assert [(item["value"], item["count"]) for item in values["values"]] == [(str(value), 1) for value in range(1, 5)]
+    assert [item["selectionValue"]["cell"]["raw"] for item in values["values"]] == [1, 2, 3, 4]
     assert stats["stats"]["missingCells"] == 0
     assert session.filter_model == confirmed_page_filter
     assert session.filtered is filtered_identity
     assert session.filtered_shape == filtered_shape
     assert session.view_generation == generation
     assert list(session.page_cache.items()) == cache_items
+    assert manager.get_page(session_id, 0, 0, 2, confirmed_page_filter)["page"] is page["page"]
+    pd.testing.assert_frame_equal(session.original, original)
 
     preview = manager.preview_step(session_id, 0, formula_step("double"), 0, 2)
 
