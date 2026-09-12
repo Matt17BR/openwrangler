@@ -20,8 +20,10 @@ const runtimeOmissionScriptFiles = new Set([
   "scripts/verify-canonical-release-artifact.test.mjs"
 ]);
 
+const rEditorOmissionTestFiles = new Set(["r/tests/kernel_agent.R", "r/tests/frame_contract.R"]);
+
 export function proveRuntimeOmissions({ cwd = process.cwd(), env = process.env } = {}) {
-  const required = { docsOnly: false, rOmittable: false, pythonOmittable: false };
+  const required = { docsOnly: false, rOmittable: false, pythonOmittable: false, rEditorOmittable: false };
   const { CI_EVENT, CI_BASE_REF, CI_BASE_SHA, CI_HEAD_SHA, CI_MERGE_SHA } = env;
   if (
     CI_EVENT !== "pull_request" ||
@@ -68,6 +70,7 @@ export function proveRuntimeOmissions({ cwd = process.cwd(), env = process.env }
   let docsOnly = true;
   let rOmittable = true;
   let pythonOmittable = true;
+  let rEditorOmittable = true;
   for (let index = 0; index < records.length; index += 2) {
     const modified = /^:100644 100644 [0-9a-f]{40} [0-9a-f]{40} M$/u.test(records[index]);
     const path = records[index + 1];
@@ -79,6 +82,11 @@ export function proveRuntimeOmissions({ cwd = process.cwd(), env = process.env }
     }
     if (modified && (path === "README.md" || path === "CHANGELOG.md" || /^docs\/[^\p{Cc}]+\.md$/u.test(path))) continue;
     docsOnly = false;
+    if (modified && rEditorOmissionTestFiles.has(path)) {
+      rOmittable = false;
+      continue;
+    }
+    rEditorOmittable = false;
     if (
       modified &&
       (/^src\/test\/[^/\p{Cc}]+\.component\.test\.tsx$/u.test(path) || runtimeOmissionScriptFiles.has(path))
@@ -100,25 +108,27 @@ export function proveRuntimeOmissions({ cwd = process.cwd(), env = process.env }
     }
     return required;
   }
-  return { docsOnly, rOmittable, pythonOmittable };
+  return { docsOnly, rOmittable, pythonOmittable, rEditorOmittable: !docsOnly && rEditorOmittable };
 }
 
 if (process.argv[1] !== undefined && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   if (process.argv.length !== 2) throw new Error("The CI documentation proof takes no arguments.");
-  const { docsOnly, rOmittable, pythonOmittable } = proveRuntimeOmissions();
+  const { docsOnly, rOmittable, pythonOmittable, rEditorOmittable } = proveRuntimeOmissions();
   appendFileSync(
     process.env.GITHUB_OUTPUT,
-    `docs_only=${docsOnly}\nr_omittable=${rOmittable}\npython_omittable=${pythonOmittable}\n`
+    `docs_only=${docsOnly}\nr_omittable=${rOmittable}\npython_omittable=${pythonOmittable}\nr_editor_omittable=${rEditorOmittable}\n`
   );
   console.log(
     docsOnly
       ? "Verified existing documentation edits only."
-      : rOmittable && pythonOmittable
-        ? "Verified edits permit omission of Python, R and Windows runtime checks."
-        : rOmittable
-          ? "Verified changes independent of native R."
-          : pythonOmittable
-            ? "Verified changes independent of Python."
-            : "Full runtime checks required."
+      : rEditorOmittable
+        ? "Verified R test edits permit omission of installed R editor journeys; source checks remain required."
+        : rOmittable && pythonOmittable
+          ? "Verified edits permit omission of Python, R and Windows runtime checks."
+          : rOmittable
+            ? "Verified changes independent of native R."
+            : pythonOmittable
+              ? "Verified changes independent of Python."
+              : "Full runtime checks required."
   );
 }

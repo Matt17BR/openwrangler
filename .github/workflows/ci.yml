@@ -20,6 +20,7 @@ jobs:
       docs_only: ${{ steps.proof.outputs.docs_only }}
       r_omittable: ${{ steps.proof.outputs.r_omittable }}
       python_omittable: ${{ steps.proof.outputs.python_omittable }}
+      r_editor_omittable: ${{ steps.proof.outputs.r_editor_omittable }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -241,6 +242,7 @@ jobs:
     uses: ./.github/workflows/released-jupyter.yml
     with:
       target: macos-r
+      omit_editor: ${{ needs.docs-proof.outputs.r_editor_omittable == 'true' }}
 
   r-windows:
     needs: docs-proof
@@ -248,6 +250,7 @@ jobs:
     uses: ./.github/workflows/released-jupyter.yml
     with:
       target: windows-r
+      omit_editor: ${{ needs.docs-proof.outputs.r_editor_omittable == 'true' }}
 
   r:
     name: Native R frame, kernel, and transport contracts
