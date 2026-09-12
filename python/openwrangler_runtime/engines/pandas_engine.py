@@ -58,8 +58,8 @@ from ._pandas_group_sum_helpers import _open_wrangler_native_int64_sum_is_safe a
 from ._pandas_linear_fill_helpers import _open_wrangler_fill_linear_gaps as _pandas_fill_linear_gaps
 from ._pandas_min_max_helpers import _open_wrangler_min_max_scale as _pandas_min_max_scale
 from ._pandas_object_type_helpers import _open_wrangler_object_semantic_type as _pandas_object_semantic_type
-from ._pandas_pivot_helpers import _open_wrangler_nullable_pivot_series as _pandas_nullable_pivot_series
 from ._pandas_pivot_helpers import _open_wrangler_pivot_wider_names_valid as _pandas_pivot_wider_names_valid
+from ._pandas_pivot_helpers import _open_wrangler_pivot_wider_result as _pandas_pivot_wider_result
 from .base import (
     _NUMPY_DURATION_SECONDS,
     DEFAULT_STRIP_CHARACTERS,
@@ -3269,53 +3269,17 @@ def _pandas_pivot_wider(
     values_position: int,
     outputs: Sequence[Mapping[str, Any]],
 ) -> Any:
-    import pandas as pd
-
-    identifiers, output_values, output_names, identifier_frame, key_states = _pandas_validate_pivot_wider(
-        df, names_position, values_position, outputs
-    )
+    prepared = _pandas_validate_pivot_wider(df, names_position, values_position, outputs)
     names = _pandas_scalar_values(df.iloc[:, names_position]).reset_index(drop=True)
     values = _pandas_scalar_values(df.iloc[:, values_position]).reset_index(drop=True)
-    if identifiers:
-        group_codes = identifier_frame.groupby(
-            list(identifier_frame.columns), sort=False, dropna=False, observed=True
-        ).ngroup()
-        first_rows = ~group_codes.duplicated()
-        result = identifier_frame.loc[first_rows].reset_index(drop=True)
-        result.columns = pd.Index(
-            [df.columns[position] for position in identifiers], dtype="object", tupleize_cols=False
-        )
-        for output_position, uniques in enumerate(key_states):
-            if uniques is not None:
-                # Joint groups retain their first identifier row, including equal numeric representations.
-                original = _pandas_scalar_values(df.iloc[:, identifiers[output_position]])
-                positions = pd.Series(
-                    first_rows.index[first_rows], index=result.index, name=result.columns[output_position]
-                )
-                restored = _pandas_restore_group_key(positions, original.to_numpy(dtype=object))
-            else:
-                restored = _pandas_restore_group_key(result.iloc[:, output_position], uniques)
-            if pd.api.types.is_float_dtype(restored.dtype):
-                zeros = restored.eq(0).fillna(False)
-                if zeros.any():
-                    # Pivot displays the first identifier row, not the globally canonical zero key.
-                    original = _pandas_scalar_values(df.iloc[:, identifiers[output_position]]).reset_index(drop=True)
-                    restored = restored.mask(zeros, original.loc[first_rows].reset_index(drop=True))
-            result.isetitem(output_position, restored)
-        group_count = len(result)
-    else:
-        group_count = 1 if len(df) else 0
-        group_codes = pd.Series([0] * len(df), dtype="int64")
-        result = pd.DataFrame(index=range(group_count))
-
-    for key_value, output_name in zip(output_values, output_names, strict=True):
-        output = _pandas_nullable_pivot_series(values, group_count, output_name)
-        mask = names.eq(key_value)
-        target = group_codes.loc[mask].astype("int64").to_list()
-        if target:
-            output.iloc[target] = values.loc[mask].array
-        result[output_name] = output.array
-    return result.reset_index(drop=True)
+    return _pandas_pivot_wider_result(
+        df,
+        prepared,
+        names,
+        values,
+        scalar_values=_pandas_scalar_values,
+        restore_group_key=_pandas_restore_group_key,
+    )
 
 
 def _generated_pandas_pivot_wider_helpers() -> list[str]:
@@ -3386,47 +3350,9 @@ def _generated_pandas_pivot_wider_helpers() -> list[str]:
             "        raise ValueError('Pivot wider found duplicate identifier-and-key rows; "
             "aggregation is not supported.')"
         ),
-        "    if identifiers:",
-        (
-            "        group_codes = identifier_frame.groupby(list(identifier_frame.columns), sort=False, "
-            "dropna=False, observed=True).ngroup()"
-        ),
-        "        first_rows = ~group_codes.duplicated()",
-        "        result = identifier_frame.loc[first_rows].reset_index(drop=True)",
-        (
-            "        result.columns = pd.Index([df.columns[p] for p in identifiers], "
-            "dtype='object', tupleize_cols=False)"
-        ),
-        "        for output_position, uniques in enumerate(key_states):",
-        "            if uniques is not None:",
-        "                original = _open_wrangler_scalar_values(df.iloc[:, identifiers[output_position]])",
-        "                positions = pd.Series(first_rows.index[first_rows],",
-        "                                      index=result.index, name=result.columns[output_position])",
-        "                restored = _open_wrangler_restore_group_key(positions, original.to_numpy(dtype=object))",
-        "            else:",
-        "                restored = _open_wrangler_restore_group_key(result.iloc[:, output_position], uniques)",
-        "            if pd.api.types.is_float_dtype(restored.dtype):",
-        "                zeros = restored.eq(0).fillna(False)",
-        "                if zeros.any():",
-        (
-            "                    original = _open_wrangler_scalar_values("
-            "df.iloc[:, identifiers[output_position]]).reset_index(drop=True)"
-        ),
-        "                    restored = restored.mask(zeros, original.loc[first_rows].reset_index(drop=True))",
-        "            result.isetitem(output_position, restored)",
-        "        group_count = len(result)",
-        "    else:",
-        "        group_count = 1 if len(df) else 0",
-        "        group_codes = pd.Series([0] * len(df), dtype='int64')",
-        "        result = pd.DataFrame(index=range(group_count))",
-        "    for key_value, output_name in zip(output_values, output_names, strict=True):",
-        "        output = _open_wrangler_nullable_pivot_series(values, group_count, output_name)",
-        "        mask = names.eq(key_value)",
-        "        target = group_codes.loc[mask].astype('int64').to_list()",
-        "        if target:",
-        "            output.iloc[target] = values.loc[mask].array",
-        "        result[output_name] = output.array",
-        "    return result.reset_index(drop=True)",
+        "    return _open_wrangler_pivot_wider_result(",
+        "        df, (identifiers, output_values, output_names, identifier_frame, key_states), names, values,",
+        "        scalar_values=_open_wrangler_scalar_values, restore_group_key=_open_wrangler_restore_group_key)",
         "",
         "",
     ]

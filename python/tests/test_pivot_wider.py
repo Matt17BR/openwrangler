@@ -74,10 +74,12 @@ def test_pandas_mixed_numeric_pivot_retains_each_joint_groups_first_identifier_r
     monkeypatch.setattr(pandas_engine, "_pandas_pivot_wider_identifier_frame", preparation)
 
     identifiers = [np.float32(-0.0), np.float32(0.0), 1, np.float32(1.0)]
+    id_column = ("id", "raw")
+    partition_column = ("partition", "raw")
     source = pd.DataFrame(
         {
-            "id": pd.Series(identifiers, dtype=object),
-            "partition": ["a", "b", "c", "d"],
+            id_column: pd.Series(identifiers, dtype=object),
+            partition_column: ["a", "b", "c", "d"],
             "key": pd.Series(["x"] * 4, dtype="string"),
             "value": pd.Series([10, 20, 30, 40], dtype="Int64"),
         }
@@ -91,8 +93,12 @@ def test_pandas_mixed_numeric_pivot_retains_each_joint_groups_first_identifier_r
     live = runtime.apply_transform(source, operation)
     assert preparation.call_count == 2
     for result in (live, execute_generated(runtime, source, operation)):
-        assert result["partition"].tolist() == ["a", "b", "c", "d"]
-        assert all(actual is expected for actual, expected in zip(result["id"].array, identifiers, strict=True))
+        pd.testing.assert_index_equal(
+            result.columns,
+            pd.Index([id_column, partition_column, "x_value", "y_value"], dtype="object", tupleize_cols=False),
+        )
+        assert result[partition_column].tolist() == ["a", "b", "c", "d"]
+        assert all(actual is expected for actual, expected in zip(result[id_column].array, identifiers, strict=True))
         pd.testing.assert_series_equal(result["x_value"], pd.Series([10, 20, 30, 40], dtype="Int64", name="x_value"))
         assert result["y_value"].isna().all()
     pd.testing.assert_frame_equal(source, before)
@@ -551,10 +557,15 @@ def test_pandas_pivot_wider_generated_allocation_keeps_caller_bindings() -> None
         "_open_wrangler_nullable_pivot_series",
         "_pandas_nullable_pivot_series",
         "_open_wrangler_pivot_wider_names_valid",
+        "_open_wrangler_pivot_wider_result",
+        "_open_wrangler_scalar_values",
+        "_open_wrangler_restore_group_key",
         "_open_wrangler_object_semantic_type",
     ]
     namespace: dict[str, Any] = dict.fromkeys(names, frame)
-    exec(engine.compile_plan([step]), namespace, namespace)
+    code = engine.compile_plan([step])
+    assert "openwrangler_runtime" not in code
+    exec(code, namespace, namespace)
     expected = engine.apply_transform(frame, step)
     for _ in range(2):
         pd.testing.assert_frame_equal(namespace["clean_data"](frame), expected)
