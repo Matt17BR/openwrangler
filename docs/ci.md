@@ -194,7 +194,8 @@ The released-Jupyter jobs then run the canonical `kernel:numeric-portability` so
 bit64 dependencies before opening the editor. Parquet dependencies remain with the separate export and editor owners.
 It checks the platform-sensitive arithmetic, selections and generated programs without
 repeating the broad Linux operation and export suites. macOS uses the bounded `platform-lifecycle` journey; Windows
-keeps its representative journey. See [Testing](testing.md#native-r-editor-dependencies) for their coverage and bounds.
+keeps its representative journey and opens the three ordinary collapse fixtures. Cursor, remote and focused profiles
+are unchanged. See [Testing](testing.md#native-r-editor-dependencies) for their coverage and bounds.
 These local R jobs install only Jupyter's Python client and its dependencies for the kernel-readiness probe. Python
 dataframe engines and development tools remain with the jobs that execute them.
 The Windows R job does not restore or save a pip cache with setup-python, avoiding the larger cache shared with
@@ -222,8 +223,11 @@ Scheduled previews and stable releases use separate workflows:
   reads PR metadata to freeze change notes. [Daily preview](releasing.md#daily-preview) owns version derivation,
   publication and recovery.
 - `release-candidate.yml` uses protected-main source checks, audits dependencies, and checks one canonical artifact in
-  pinned VS Code installed-performance and pinned Cursor platform-smoke.
-  [Release candidate](releasing.md#release-candidate) owns dispatch prerequisites and failed-candidate handling.
+  pinned VS Code installed-performance and pinned Cursor platform-smoke. A required Linux/macOS/Windows matrix then
+  runs the default R notebook journey against that same supplied artifact, with only the test harness built locally.
+  It retains private R preparation and exact failure-artifact ownership without repeating source suites or packaging.
+  [Release candidate](releasing.md#release-candidate) owns dispatch prerequisites, failed-candidate handling and the
+  qualification still required for stable R support.
 - `stable-release.yml` selects a successful candidate using Node built-ins, then installs publication tools in a separate
   job and promotes the recorded bytes without rebuilding. It dispatches shared Open VSX promotion; workflow success does
   not establish completion of both registries. [Stable publication](releasing.md#stable-publication) owns completion

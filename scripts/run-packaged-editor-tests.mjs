@@ -1011,6 +1011,7 @@ try {
                   ...editor,
                   version: await readEditorVersion(editor, userData, extensions, sandboxArgs, editorEnvironment)
                 };
+                console.log(`Packaged editor: ${identifiedEditor.name} ${identifiedEditor.version}`);
                 if (genericPackagedPhasesEnabled) {
                   writeCorrelatedProgress(progressPaths.setup, runIds.setup, "setup", "setup:install-extension");
                   await runBoundedEditorCliCommand(

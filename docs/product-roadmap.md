@@ -22,8 +22,9 @@ are ready. The generated [reference](reference.md) lists commands, settings, ope
 ## Release priorities
 
 Stable releases require the Pandas and Polars rows named in [feature parity](feature-parity.md) and must follow the
-[release process](releasing.md). Native R Preview, experimental DuckDB, and the PySpark viewer stay outside that gate
-while their labels and limitations remain accurate.
+[release process](releasing.md), including its required R notebook candidate checks. R support is Preview until fresh
+results and reliability review support graduation. Experimental DuckDB and the PySpark viewer stay outside the
+required capability table while their labels and limitations remain accurate.
 
 Fixes for data loss, runtime corruption, and release publication take priority over adding another backend.
 

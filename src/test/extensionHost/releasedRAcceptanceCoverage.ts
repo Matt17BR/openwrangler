@@ -96,7 +96,10 @@ export function releasedRCoreAcceptanceCoverageProfile(
 ): ReleasedRAcceptanceCoverageProfile {
   if (editor === "cursor") return RELEASED_R_REPRESENTATIVE_COVERAGE;
   if (platform === "darwin") return RELEASED_R_PLATFORM_LIFECYCLE_COVERAGE;
-  return platform === "win32" ? RELEASED_R_REPRESENTATIVE_COVERAGE : RELEASED_R_COMPREHENSIVE_COVERAGE;
+  if (platform === "win32") {
+    return Object.freeze({ ...RELEASED_R_REPRESENTATIVE_COVERAGE, openCollapseSessions: true });
+  }
+  return RELEASED_R_COMPREHENSIVE_COVERAGE;
 }
 
 export function releasedRCandidateCoreAcceptanceCoverageProfile(
