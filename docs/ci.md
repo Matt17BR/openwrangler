@@ -8,7 +8,8 @@ Every pull request reports the same five required product checks:
   protocol/reference checks, documentation checks, dependency-lock checks, licenses, `npm run test:scripts`, and Vitest.
   Lint, Node 24 type checking and Vitest follow the documentation-only scope below.
   It then builds the same checkout with Node 22.17.0 against the already-installed locked dependencies.
-- **Python runtime contracts** runs Ruff, Pyright, and Pytest with the declared Python and PySpark dependencies.
+- **Python runtime contracts** runs Ruff, Pyright, and Pytest with the declared Python dependencies. Native PySpark
+  checks follow the narrow Arrow Formula omission below.
 - **Native R frame, kernel, and transport contracts** installs the R 4.5 lock on two Linux workers: one runs frame,
   catalog and transport checks, and the other runs the kernel-agent checks. It also requires the existing macOS and Windows
   source and package jobs unless the change is proved independent of R. Their installed notebook journeys follow the
@@ -62,6 +63,11 @@ The scope-only job uses Node and Git without installing npm dependencies or rest
   and other scripts are outside this permission.
 - R source and installed-editor execution may be omitted for additions or edits to `.py` files under
   `python/openwrangler_runtime/` or `python/tests/`, and edits to existing `README.md`, `CHANGELOG.md` or `docs/**/*.md`.
+- Native Spark may be omitted only when the existing
+  `python/openwrangler_runtime/engines/_pandas_arrow_formula_helpers.py` is modified, optionally with edits to existing
+  `python/tests/test_operation_edges.py`, `python/tests/test_session_transactions.py` and the allowed Markdown files.
+  Test or documentation edits alone do not qualify. Additions, deletions, renames, mode changes and other inputs keep
+  native Spark execution required.
 - Only the macOS and Windows editor steps may be omitted when at least one of the existing
   `r/tests/kernel_agent.R` or `r/tests/frame_contract.R` files is modified, optionally with the allowed Markdown edits.
   Both Linux shards and platform source, artifact-cleanup, package and harness checks remain required. Additions,
@@ -83,6 +89,15 @@ and exclude the mixed-language literate journey. The Python and Windows contract
 Source and packaged smoke retain its validation and package-content checks. Shared/host code, fixtures, configuration
 and dependency locks require full execution, as do scripts and other paths outside these scopes. If an affected test suite
 or selected runner begins consuming an omitted input, update the proof and its tests in the same change.
+
+The `native_spark_omittable` proof changes only the Python worker's Spark installation requirement. Pandas stays
+below version 3, Java remains installed, and the same Ruff, Pyright and full Pytest commands run. Without Spark,
+the existing optional-import gates skip native Classic/Connect frame, transport, profile, lifecycle and decoder-type
+checks; fake Spark and shared-runtime controls still run. The helper belongs to Pandas live and generated Formula
+execution, and its two test companions currently exercise local dataframe engines, including Viewing and Session
+behavior. Changes that introduce a Spark dependency or test into these owners must revise their omission eligibility
+in the same change. This gives up fresh native Spark and environment evidence; retained local-engine checks do not
+establish Spark equivalence. Missing or malformed proof values stop dependency setup, and pip failures fail the job.
 
 The allowed release scripts govern version and publication decisions. Their version classifier is also consumed by macOS and
 Windows packaging; it uses string, integer and UTC-date operations covered by the retained Node and Linux package
