@@ -1,152 +1,99 @@
-name: Cross-platform runtime
+name: Prepared macOS R CLI availability experiment
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "17 4 * * 1"
 
 permissions:
   contents: read
 
-concurrency:
-  group: cross-platform-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
-  runtime:
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            python: "3.12"
-          - os: windows-latest
-            python: "3.14"
-    runs-on: ${{ matrix.os }}
+  observe:
+    name: Exercise prepared helper admission and real R CLI availability
+    runs-on: macos-26
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version-file: .node-version
-          cache: npm
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: ${{ matrix.python }}
-          cache: pip
-      - run: npm ci --ignore-scripts
-      - run: python -m pip install -e "python[dev]"
-      - run: npm run test:python-environment-smoke
-      - run: python -m pytest python/tests -q
-      - run: npm run test:extension-host
-        env:
-          VSCODE_TEST_VERSION: stable
-      - run: npm run test:scripts:native
-        if: ${{ runner.os == 'Windows' }}
-
-  dependency-guard-windows:
-    name: Dependency guard (Windows, Python ${{ matrix.python }})
-    runs-on: windows-latest
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        python: ["3.10", "3.12"]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: ${{ matrix.python }}
-      - run: python -m pip install pytest
-      - run: python -m pytest python/tests/test_dependency_guard.py -q
-
-  # BEGIN GENERATED PYTHON RUNTIME DEPENDENCY COHORTS
-  python-runtime-dependency-cohorts:
-    name: Exact Python dependencies (Python ${{ matrix.python }}, cohort ${{ matrix.cohort }})
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - python: "3.12"
-            cohort: "1"
-            requirements: "polars==1.35.2 duckdb==1.5.4 fsspec==2026.7.0 pytz==2026.3.post1 pandas==2.3.3 pyarrow==25.0.0 openpyxl==3.1.5 xlrd==2.0.2 ipython==9.15.0 fastexcel==0.20.2"
-          - python: "3.12"
-            cohort: "2"
-            requirements: "polars==1.44.1 duckdb==1.5.5 pandas==3.0.5 pyarrow==25.0.1 ipython==9.16.1"
-          - python: "3.10"
-            cohort: "1"
-            requirements: "ipython==8.39.0"
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: ${{ matrix.python }}
-      - name: Install Open Wrangler and exact qualified dependencies
-        run: python -m pip install -e "python[dev]" ${{ matrix.requirements }}
-      - name: Exercise exact qualified dependencies
-        run: >-
-          python -m pytest
-          python/tests/test_runtime_dependency_authority.py::test_exact_qualified_dependency_probe
-          -q
-        env:
-          OPENWRANGLER_QUALIFIED_PYTHON_VERSION: ${{ matrix.python }}
-          OPENWRANGLER_QUALIFIED_COHORT: ${{ matrix.cohort }}
-  # END GENERATED PYTHON RUNTIME DEPENDENCY COHORTS
-
-  r-4-4-scheduled-qualification:
-    name: Scheduled R 4.4 lock qualification
-    if: ${{ !cancelled() }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version-file: .node-version
-          cache: npm
-      - name: Select Python for Linux process supervision
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+          package-manager-cache: false
+      - id: python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
-      - uses: r-lib/actions/setup-r@465b7d8e732ca3921382b1674c59bada9cbf3399 # v2.13.0
-        with:
-          r-version: "4.4.3"
-          use-public-rspm: false
-      - name: Install the declared system requirement
+      - name: Build the experimental dependency before the consumer
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends libx11-dev
-          dpkg-query --show --showformat='libx11-dev=${Version}\n' libx11-dev
+          python - <<'PYBUILD'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import platform
+          import subprocess
+          import tempfile
+          import time
+
+          root = Path(tempfile.mkdtemp(prefix="ow-macos-cli-", dir=os.environ["RUNNER_TEMP"])).resolve()
+          source = Path("scripts/r-contract-macos-experiment.c").resolve()
+          binary = root / "native-helper"
+          source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+          assert source_hash == "0167543e6b3a72aea394f46706d133c26fbc571141f4d03053a943878c3abd33"
+          started = time.perf_counter()
+          report = {"sourceSha256": source_hash, "platform": platform.platform(),
+                    "machine": platform.machine(), "compilerTreeCleanupQualified": False}
+          try:
+              result = subprocess.run(
+                  ["xcrun", "clang", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
+                   str(source), "-o", str(binary)], capture_output=True, timeout=20)
+              report.update(returncode=result.returncode,
+                            diagnostics=(result.stdout + result.stderr)[-8192:].decode("utf8", "replace"))
+              assert result.returncode == 0, "Experimental helper compilation failed."
+              binary.chmod(0o500)
+              report["helperSha256"] = hashlib.sha256(binary.read_bytes()).hexdigest()
+          finally:
+              report["compileWallMs"] = (time.perf_counter() - started) * 1000
+              (root / "preparation.json").write_text(json.dumps(report, indent=2) + "\n")
+              with open(os.environ["GITHUB_ENV"], "a") as output:
+                  output.write(f"OPEN_WRANGLER_EXPERIMENT_MACOS_ROOT={root}\n")
+          with open(os.environ["GITHUB_ENV"], "a") as output:
+              output.write(f"OPEN_WRANGLER_EXPERIMENT_MACOS_HELPER={binary}\n")
+              output.write(f"OPEN_WRANGLER_EXPERIMENT_MACOS_HELPER_SHA256={report['helperSha256']}\n")
+              output.write(f"OPEN_WRANGLER_EXPERIMENT_MACOS_SOURCE_SHA256={source_hash}\n")
+          print(json.dumps(report))
+          PYBUILD
+      - uses: r-lib/actions/setup-r@465b7d8e732ca3921382b1674c59bada9cbf3399
+        with:
+          r-version: "4.5.2"
+          use-public-rspm: true
+      - id: rscript
+        name: Locate the real selected Rscript
+        shell: Rscript {0}
+        run: |
+          version <- as.character(getRversion())
+          if (!identical(version, "4.5.2")) stop("Expected hosted R 4.5.2, got ", version, ".")
+          executable <- normalizePath(file.path(R.home("bin"), "Rscript"), winslash = "/", mustWork = TRUE)
+          if (!nzchar(executable) || grepl("[\r\n]", executable)) stop("Rscript resolved to an unsafe path.")
+          output <- Sys.getenv("GITHUB_OUTPUT")
+          if (!nzchar(output)) stop("GITHUB_OUTPUT is not available.")
+          cat(sprintf("executable=%s\nversion=%s\n", executable, version), file = output, append = TRUE)
       - run: npm ci --ignore-scripts
-      - id: r_prepare
-        run: >-
-          node scripts/r-dependency-lock.mjs prepare
-          --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.4.lock.json
-          --rscript "$(command -v Rscript)"
-          --library "$RUNNER_TEMP/openwrangler-r-contract-4.4-scheduled-library"
-          --archives "$RUNNER_TEMP/openwrangler-r-contract-4.4-scheduled-archives"
-          --receipt "$RUNNER_TEMP/openwrangler-r-contract-4.4-scheduled-receipt.json"
-      - id: r_cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ steps.r_prepare.outputs.archives }}
-          key: ${{ steps.r_prepare.outputs.cache-key }}
-          fail-on-cache-miss: false
-      - run: >-
-          node scripts/r-dependency-lock.mjs install
-          --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.4.lock.json
-          --rscript "$(command -v Rscript)"
-          --library "${{ steps.r_prepare.outputs.library }}"
-          --archives "${{ steps.r_prepare.outputs.archives }}"
-          --receipt "${{ steps.r_prepare.outputs.receipt }}"
-          --cache-hit "${{ steps.r_cache.outputs.cache-hit == 'true' }}"
-      - if: ${{ steps.r_cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ steps.r_prepare.outputs.archives }}
-          key: ${{ steps.r_prepare.outputs.cache-key }}
-      - run: npm run test:r-contract
+      - name: Prepare the existing source-contract packages and observe actual defaults
         env:
-          R_LIBS_USER: ${{ steps.r_prepare.outputs.library }}
+          OPEN_WRANGLER_TEST_RSCRIPT: ${{ steps.rscript.outputs.executable }}
+          OPEN_WRANGLER_TEST_PYTHON: ${{ steps.python.outputs.python-path }}
+        run: node scripts/r-contract-macos-experiment-check.mjs prepare-and-observe
+      - name: Retain only bounded preparation and experiment receipts
+        if: always() && env.OPEN_WRANGLER_EXPERIMENT_MACOS_ROOT != ''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: macos-r-preparation-experiment
+          path: |
+            ${{ env.OPEN_WRANGLER_EXPERIMENT_MACOS_ROOT }}/preparation.json
+            ${{ env.OPEN_WRANGLER_EXPERIMENT_MACOS_ROOT }}/r-preparation.json
+            ${{ env.OPEN_WRANGLER_EXPERIMENT_MACOS_ROOT }}/result.json
+          if-no-files-found: error
+          retention-days: 7
