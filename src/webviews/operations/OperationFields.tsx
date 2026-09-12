@@ -401,8 +401,18 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
           defaultValue={initialColumnReference("column", textColumns[0]?.id)}
           emptyMessage="No text columns are available. Cast a column to text first."
         />
-        <TextField name="find" label="Find (blank matches empty boundaries)" defaultValue={param("find")} />
-        <TextField name="replacement" label="Replace with" defaultValue={param("replacement")} />
+        <TextField
+          name="find"
+          label="Find (blank matches empty boundaries)"
+          defaultValue={param("find")}
+          description="Regex patterns use the selected engine's native syntax."
+        />
+        <TextField
+          name="replacement"
+          label="Replace with"
+          defaultValue={param("replacement")}
+          description={`In regex mode, use ${metadata.backend === "polars" ? "$1" : "\\1"} for the first capture group.`}
+        />
         <CheckboxField name="regex" label="Use regular expression" defaultChecked={params.regex === true} />
         <TextField name="newColumn" label="Output column (blank replaces in place)" defaultValue={param("newColumn")} />
       </>

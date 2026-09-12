@@ -73,6 +73,10 @@ A newer page request takes precedence over a pending recovery refresh.
 When a Python dataset shrinks, paging can return the valid empty end and the grid moves back within the remaining rows.
 If the recovered grid cannot be read, Open Wrangler reports the failure and keeps any existing complete view.
 
+Find and Replace uses the selected engine's native regex syntax. In regex replacements, `$1` inserts the first
+capture group in Polars; Pandas, DuckDB and R use `\1`. With regular expressions off, replacement text is literal.
+Extract regex group uses its separate portable pattern subset.
+
 The operation catalog search exposes its accessible name before and after entering a query.
 Removing a focused form row or clearing unavailable selections keeps keyboard focus inside the operation dialog.
 Column search keeps arrow and page-key navigation aligned with the displayed results when cleaning changes the schema.
