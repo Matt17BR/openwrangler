@@ -6,6 +6,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Pandas Formula widens eligible signed column-to-column powers when narrow Arrow storage would overflow but the result fits Int64.
 - Value and profile actions no longer offer filters that cannot represent the displayed value exactly. Pandas and
   Polars profiles use exact filter values where supported; unavailable values remain visible and searchable.
 - Pandas Sparse duration cells, choices and selections preserve unit multipliers and missing values. Displayed

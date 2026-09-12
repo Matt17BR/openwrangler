@@ -1104,6 +1104,7 @@ def test_arrow_integer_modulo_publishes_exports_and_retains_state_after_zero_ref
         "signed-even-power",
         "signed-odd-power",
         "signed-wide-odd-power",
+        "signed-column-power",
         "uint64-negative-column-add",
         "uint64-negative-column-subtract",
         "uint64-mixed-column-add",
@@ -1133,7 +1134,8 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
     unit_literal = 1 if family.startswith("decimal-identity-") else -1
     wide_odd_power = family == "signed-wide-odd-power"
     odd_power = family in {"signed-odd-power", "signed-wide-odd-power"}
-    signed_power = family in {"signed-even-power", "signed-odd-power", "signed-wide-odd-power"}
+    column_power = family == "signed-column-power"
+    signed_power = family in {"signed-even-power", "signed-odd-power", "signed-wide-odd-power", "signed-column-power"}
     signed_subtract = family == "uint64-signed-subtract"
     signed_add = family == "signed-add"
     negative_literal = family in {"uint64-negative-add", "uint64-negative-subtract", "uint64-negative-multiply"}
@@ -1167,13 +1169,18 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
         series = pd.Series([Decimal("-0"), maximum, None], dtype=pd.ArrowDtype(pa.decimal256(76, scale)))
     if signed_power:
         series = pd.Series([0, -1 if wide_odd_power else 2 if odd_power else -3, None], dtype="int64[pyarrow]")
-        if odd_power:
+        if column_power:
+            series = pd.Series([-6, 5, None], dtype="int8[pyarrow]")
+        if odd_power or column_power:
             assert isinstance(series.array, pd.arrays.ArrowExtensionArray)
             array = series.array.__arrow_array__()
             series = pd.Series(pd.arrays.ArrowExtensionArray(pa.chunked_array([array.slice(0, 1), array.slice(1)])))
     if signed_add:
         series = pd.Series([2**63 - 1, -4, None], dtype="int64[pyarrow]")
     frame = pd.DataFrame({"value": series, "divisor": pd.Series([1, 0, None], dtype="int64[pyarrow]")})
+    if column_power:
+        frame["divisor"] = pd.Series([3, 3, None], dtype="int8[pyarrow]")
+        frame["unsafeAdjustment"] = pd.Series([3, 28, None], dtype="int8[pyarrow]")
     if odd_power:
         frame["divisor"] = pd.Series([1, -2, None] if wide_odd_power else [2, -1, None], dtype="int64[pyarrow]")
     if negative_column:
@@ -1212,7 +1219,11 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
             operation["params"]["value"] = unit_literal
         if signed_power:
             operation["params"]["operator"] = "power"
-            operation["params"]["value"] = str(2**64 - 1) if wide_odd_power else "63" if odd_power else "40"
+            if column_power:
+                operation["params"].pop("value")
+                operation["params"]["rightColumn"] = {"id": columns[1]["id"], "name": columns[1]["name"]}
+            else:
+                operation["params"]["value"] = str(2**64 - 1) if wide_odd_power else "63" if odd_power else "40"
         elif negative_literal:
             operation["params"]["operator"] = family.removeprefix("uint64-negative-")
             operation["params"]["value"] = "-1"
@@ -1228,6 +1239,8 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
         unsigned_expected = [1, 2**64 - 3, None]
         if signed_add:
             unsigned_expected = [2**63 + 4, 1, None]
+        elif column_power:
+            unsigned_expected = [-216, 125, None]
         elif signed_power:
             unsigned_expected = [0, -1 if wide_odd_power else 2**63 if odd_power else 3**40, None]
         elif signed_subtract:
@@ -1256,7 +1269,7 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
             name="result",
             dtype=(
                 "int64[pyarrow]"
-                if wide_odd_power or signed_subtract or family == "uint64-negative-multiply"
+                if column_power or wide_odd_power or signed_subtract or family == "uint64-negative-multiply"
                 else "uint64[pyarrow]"
             )
             if unsigned or signed_power or signed_add
@@ -1312,9 +1325,12 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
             invalid["params"]["operator"] = operation["params"]["operator"]
             invalid["params"]["value"] = -2
         if signed_power:
-            invalid["params"].pop("rightColumn")
             invalid["params"]["operator"] = "power"
-            invalid["params"]["value"] = str(2**64 + 1) if wide_odd_power else "64" if odd_power else "42"
+            if column_power:
+                invalid["params"]["rightColumn"] = {"id": columns[2]["id"], "name": columns[2]["name"]}
+            else:
+                invalid["params"].pop("rightColumn")
+                invalid["params"]["value"] = str(2**64 + 1) if wide_odd_power else "64" if odd_power else "42"
         elif signed_subtract:
             invalid["params"]["operator"] = "subtract"
             invalid["params"]["value"] = str(-(2**63))

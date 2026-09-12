@@ -231,6 +231,8 @@ and additional positive integer powers. Eligible signed additions widen to Int64
 complete result must fit one output type. Successful native results keep their types. Modulo preserves nulls and refuses
 a zero divisor when both operands are present. Live execution and generated code agree, and refusals preserve source
 data and the confirmed plan.
+Column-to-column powers can widen eligible signed integers to Int64 when narrow Arrow storage would overflow;
+negative exponents and results outside Int64 remain subject to their existing limits.
 
 Selected Arrow Decimal arithmetic can widen Decimal128 to Decimal256. If native capacity inference rejects Decimal256
 multiplication or division by the integer literals `1` or `-1`, Formula preserves or negates the values without changing the declared precision
