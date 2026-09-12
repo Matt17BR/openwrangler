@@ -654,10 +654,13 @@ The generated repair stays local to the Formula result helper so it adds no note
 
 After native column-to-column power reports a capacity error, eligible signed integer bases and signed or
 8–32-bit unsigned integer exponents widen to Int64 for checked native power. At least one operand must be
-Arrow-backed, and the complete result must fit Int64. UInt64 exponent columns retain their existing repair path.
-Negative exponents and remaining overflows retain the original refusal. This path allocates only selected operand
-and result buffers; it adds no extrema scan. Successful native results, including empty and all-null results, keep
-their existing types.
+Arrow-backed. If checked Int64 power fails, safe UInt64 casts of those prepared operands may produce a checked
+UInt64 result. The additional path requires nonnegative values throughout both selected columns, including values
+paired with the other operand's null; it does not take magnitudes or infer per-row signs. Preparation failures,
+negative exponents and remaining overflows retain the original refusal. UInt64 exponent columns retain their
+existing repair path. Only selected operands and results gain temporary storage; the UInt64 attempt adds two native
+casts and one checked power, with no extrema scan. Successful native and Int64 results, including empty and all-null
+results, keep their types.
 
 After native power fails, a signed Arrow integer column and an exact positive scalar exponent below 2^64 can use
 checked UInt64 power. Even exponents take checked magnitudes after widening to Int64; odd exponents require

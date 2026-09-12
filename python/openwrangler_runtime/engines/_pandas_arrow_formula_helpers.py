@@ -114,7 +114,12 @@ def _open_wrangler_arrow_formula_repair(
             try:
                 first = pc.cast(pa.array(left.array), pa.int64())
                 second = pc.cast(pa.array(cast(pd.Series, right).array), pa.int64())
-                result = pc.call_function("power_checked", [first, second])
+                try:
+                    result = pc.call_function("power_checked", [first, second])
+                except pa.ArrowInvalid:
+                    first = pc.cast(first, pa.uint64())
+                    second = pc.cast(second, pa.uint64())
+                    result = pc.call_function("power_checked", [first, second])
             except pa.ArrowInvalid:
                 raise original_error from None
             return pd.Series(pd.arrays.ArrowExtensionArray(result), index=left.index, name=left.name)
