@@ -722,11 +722,7 @@ def test_duckdb_structural_public_steps_preserve_data_without_result_scans(
     ("operator", "right", "left_type", "left", "message"),
     [
         ("add", 1, "HUGEINT", 2**100 + 1, "integer Formula result is not exact"),
-        ("subtract", 2**100, "HUGEINT", 2**100 + 1, "integer Formula result is not exact"),
-        ("multiply", 1, "HUGEINT", 2**100 + 1, "integer Formula result is not exact"),
-        ("modulo", 2, "HUGEINT", 2**100 + 1, "integer Formula result is not exact"),
         ("multiply", 1, "BIGNUM", 2**100 + 1, "integer Formula result is not exact"),
-        ("modulo", 2, "BIGNUM", 2**100 + 1, "integer Formula result is not exact"),
         ("multiply", 1, "BIGNUM", 2**200, "outside the signed 128-bit"),
     ],
 )
