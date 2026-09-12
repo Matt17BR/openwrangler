@@ -17,12 +17,14 @@ def _open_wrangler_arrow_formula_repair(
             and left_type is not None
             and pa.types.is_decimal256(left_type)
             and type(right) is int
-            and right == -1
+            and right in {-1, 1}
             and operator in {"multiply", "divide"}
         ):
-            import pyarrow.compute as pc
+            result = left.array.__arrow_array__()
+            if right == -1:
+                import pyarrow.compute as pc
 
-            result = pc.call_function("negate_checked", [pa.array(left.array)])
+                result = pc.call_function("negate_checked", [result])
             return pd.Series(pd.arrays.ArrowExtensionArray(result), index=left.index, name=left.name)
 
         def is_integer_column(value: Any, *, signed_only: bool = True) -> bool:

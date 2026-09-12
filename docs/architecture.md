@@ -651,9 +651,10 @@ storage. Boolean, Sparse, arbitrary extension, floating and Decimal operands rem
 
 Selected Decimal128 operands may widen to Decimal256 for add, subtract, multiply and divide, retaining each operand's
 precision and scale. Native arithmetic determines the result type. After a Decimal256 capacity failure, multiplying
-or dividing the column by the exact integer literal -1 uses native checked negation, preserving its declared
-precision, scale and nulls. Successful native results retain their types. Live and generated Formula apply the same
-policy; By Example remains unchanged.
+or dividing the column by the exact integer literal 1 preserves its values, while -1 uses native checked negation.
+Both retain the declared precision, scale and nulls. The identity result wraps the unchanged immutable Arrow storage
+in an independent Pandas array, so assigning to the result cannot change the source. Successful native results retain
+their types. Live and generated Formula apply the same policy; By Example remains unchanged.
 
 After native add, subtract, multiply or divide fails on a selected negative-scale Arrow Decimal operand `(p, s)`,
 Formula may rescale that operand exactly to Decimal256 `(p-s, 0)` when its full declared capacity fits 76 digits.
