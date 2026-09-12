@@ -107,7 +107,8 @@ def test_mixed_profile_fixture_is_native_ordered_and_complete(
         assert [column["name"] for column in schema] == list(PROFILE_COLUMN_NAMES)
         projection = summary_projection(schema)
 
-        score = engine.summaries(indexed, [projection[1]])[0]
+        summaries = engine.summaries(indexed, projection)
+        score = summaries[1]
         assert score["columnId"] == "profile:score"
         assert score["column"] == "score"
         assert score["totalCount"] == 96
@@ -116,26 +117,6 @@ def test_mixed_profile_fixture_is_native_ordered_and_complete(
         assert score["numeric"]["min"] == -1_000_000.25
         assert score["numeric"]["max"] == 1_000_000.75
         assert sum(bin_["count"] for bin_ in score["visualization"]["bins"]) == 92
-        assert len(collected_projections) == 3
-        assert (
-            sum(
-                bool(columns) and all(column.startswith("__ow_summary_") for column in columns)
-                for columns in collected_projections
-            )
-            == 1
-        )
-        assert collected_projections.count(("count", "__ow_value", "__ow_profile_total_bytes")) == 1
-        assert (
-            sum(
-                bool(columns) and all(column.startswith("__ow_hist_") for column in columns)
-                for columns in collected_projections
-            )
-            == 1
-        )
-
-        collected_projections.clear()
-        optimized_plans.clear()
-        summaries = engine.summaries(indexed, projection)
         assert [summary["columnId"] for summary in summaries] == [column_id for _position, column_id in projection]
         assert [summary["column"] for summary in summaries] == list(PROFILE_COLUMN_NAMES)
         assert summaries[2]["rawType"] == "decimal(18,2)"

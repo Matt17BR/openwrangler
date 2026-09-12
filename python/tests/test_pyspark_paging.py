@@ -343,7 +343,25 @@ def test_projected_progressive_paging_filters_sorts_and_profiles_are_native_and_
         assert [row["values"][0]["raw"] for row in sorted_page["rows"]] == [-1.0, 2.0, 2.0]
         assert [row["values"][1]["display"] for row in sorted_page["rows"]] == ["ÄLPHA", "Beta", "Beta"]
 
+        summary_start = len(collected_projections)
         summary = engine.summaries(indexed, [(1, "amount-id")])[0]
+        summary_projections = collected_projections[summary_start:]
+        assert len(summary_projections) == 3
+        assert (
+            sum(
+                bool(columns) and all(column.startswith("__ow_summary_") for column in columns)
+                for columns in summary_projections
+            )
+            == 1
+        )
+        assert summary_projections.count(("count", "__ow_value", "__ow_profile_total_bytes")) == 1
+        assert (
+            sum(
+                bool(columns) and all(column.startswith("__ow_hist_") for column in columns)
+                for columns in summary_projections
+            )
+            == 1
+        )
         assert summary["columnId"] == "amount-id"
         assert summary["totalCount"] == 5
         assert summary["nullCount"] == 1
