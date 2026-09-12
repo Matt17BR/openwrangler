@@ -4753,7 +4753,7 @@ assert_identical(
 cast_off_page_closed <- dispatch("closeSession", list(sessionId = cast_off_page_session_id))
 assert_identical(cast_off_page_closed$kind, "closed", "the off-page R Cast session did not close")
 
-large_factor_levels <- sprintf("level-%06d-%s", seq_len(100000L), strrep("x", 90L))
+large_factor_levels <- sprintf("level-%06d-%s", seq_len(2000L), strrep("x", 5137L))
 source_environment$large_factor <- data.frame(
   value = factor(large_factor_levels[[1L]], levels = large_factor_levels),
   check.names = FALSE

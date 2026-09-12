@@ -220,7 +220,9 @@ contracts fail on unexpected warnings even if they handle a later error. Preserv
 The [complete R catalog](../r/tests/complete_catalog_contract.R) compares native live and complete generated frames,
 including source and metadata preservation. Numeric portability uses independent binary64 references and raw-bit
 comparisons through interpreted and compiled programs. Frame, kernel, decoder and process owners separately check
-primitive values, public mutations and correlated transport. Linux interactive transport controls use a real PTY;
+primitive values, public mutations and correlated transport. Frame capture checks the factor-level count limit;
+kernel mutation checks use fewer, longer levels to exercise the full response byte limit.
+Linux interactive transport controls use a real PTY;
 portable parser controls retain one-expression and physical-line byte bounds. Operation semantics and arithmetic policy belong in
 [the native R architecture contract](architecture.md#native-r); do not repeat the catalog in installed UI journeys.
 
