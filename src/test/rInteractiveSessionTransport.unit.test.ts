@@ -1098,7 +1098,6 @@ describe("interactive R session transport", () => {
     const requestKinds: string[] = [];
     const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
       temporaryParent,
-      disposalSettlementMs: 20,
       runSelection: async (code) => {
         const { requestPath, responsePath } = mailboxPaths(code);
         const request = JSON.parse(await readFile(requestPath, "utf8")) as { requestId: string; kind: string };
@@ -1111,15 +1110,29 @@ describe("interactive R session transport", () => {
       }
     });
     const discovery = transport.discoverVariables();
-    await dispatched;
-    await expect(transport.dispose()).rejects.toThrow("will finish cleanup when that exact request returns");
-    expect(await readdir(temporaryParent)).toHaveLength(1);
+    try {
+      await dispatched;
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const disposal = expect(transport.dispose()).rejects.toThrow(
+        "will finish cleanup when that exact request returns"
+      );
+      await vi.advanceTimersByTimeAsync(5_000);
+      await disposal;
+      vi.useRealTimers();
+      expect(await readdir(temporaryParent)).toHaveLength(1);
 
-    release();
-    await expect(discovery).resolves.toEqual({ variables: [], truncated: false });
-    await vi.waitFor(async () => expect(await readdir(temporaryParent)).toEqual([]));
+      release();
+      await expect(discovery).resolves.toEqual({ variables: [], truncated: false });
+    } finally {
+      vi.useRealTimers();
+      release();
+      await discovery.catch(() => undefined);
+      await transport.dispose().catch(() => undefined);
+      // The cached disposal rejection does not join the deferred filesystem cleanup.
+      await vi.waitFor(async () => expect(await readdir(temporaryParent)).toEqual([]));
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
     expect(requestKinds).toEqual(["discoverInteractiveVariables", "teardownInteractiveRuntime"]);
-    await rm(temporaryParent, { recursive: true, force: true });
   });
 
   it("returns an authoritative response before reporting response-artifact cleanup failure on disposal", async () => {
