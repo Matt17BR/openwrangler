@@ -505,8 +505,8 @@ Duplicate and non-string labels are addressed positionally after binding. Object
 before trusted custom code, preview, rollback, or generated-code execution so nested user objects cannot mutate the
 source. Typed null, NaN, decimal, datetime, and wide-integer behavior is normalized at the protocol boundary.
 
-Split text into columns limits Pandas' literal split to the requested output count in live and generated code.
-It keeps the first requested fields and discards one possible remainder, preserving empty fields and null padding.
+Pandas literal Split limits tokenization to the selected field or requested output count in live and generated code.
+It preserves the selected index, empty fields and null results, discarding one possible remainder.
 The remainder can still contain a large tail; input conversion, copied source columns and outputs retain their existing costs.
 
 Integer profiles retain exact extrema and sums when floating-point approximations overflow. Each approximate statistic

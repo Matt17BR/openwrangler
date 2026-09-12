@@ -1166,6 +1166,45 @@ def test_text_operations(engine_and_frame):
     assert_semantically_equal(transformed, execute_generated(engine, frame, plan))
 
 
+@pytest.mark.parametrize("storage", ["python", "pyarrow"])
+@pytest.mark.parametrize(
+    ("index", "expected"),
+    [(1, ["b", "", "", None, None, None]), (2**64, [None] * 6)],
+)
+def test_pandas_scalar_split_preserves_selected_fields_and_absent_parts(storage, index, expected):
+    with pd.option_context("mode.string_storage", storage):
+        frame = pd.DataFrame(
+            {
+                "text": pd.Series(["a||b||c||discard", "left||||tail", "head||", "plain", "", None], dtype="string"),
+                "untouched": range(6),
+            }
+        )
+        frame.index = pd.Index([4, 4, 2, 2, 8, 8], name="source rows")
+        frame.attrs = {"source": "scalar split"}
+        before = frame.copy(deep=True)
+        source_index, source_values = frame.index, frame["text"].array
+        operation = bound_step(
+            "split",
+            "splitText",
+            column=bound_ref("c:source:0", "text", 0),
+            delimiter="||",
+            index=index,
+            newColumn="part",
+        )
+        engine = PandasEngine()
+        try:
+            result = assert_pandas_live_matches_generated(engine, frame, operation)
+            assert result["part"].dtype == object
+            assert result["part"].isna().tolist() == [value is None for value in expected]
+            assert result["part"].dropna().tolist() == [value for value in expected if value is not None]
+            pd.testing.assert_frame_equal(result.iloc[:, :2], before, check_exact=True)
+            pd.testing.assert_frame_equal(frame, before, check_exact=True)
+            assert frame.attrs == before.attrs
+            assert frame.index is source_index and frame["text"].array is source_values
+        finally:
+            engine.close()
+
+
 def test_numeric_datetime_grouping_and_custom_code(engine_and_frame):
     engine, frame = engine_and_frame
     numeric_plan = [
