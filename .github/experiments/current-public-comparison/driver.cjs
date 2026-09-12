@@ -69,11 +69,12 @@ exports.run = async function () {
   assert(workspace, "Missing isolated workspace");
   const request = JSON.parse(fs.readFileSync(path.join(workspace, "request.json"), "utf8"));
   assert(["ow", "dw"].includes(request.product) && [100000, 1000000].includes(request.rows));
-  assert(["pilot", "study"].includes(request.mode));
+  assert.equal(request.mode, "pilot", "Temporary grid diagnostic rejects study");
+  assert.equal(request.product, "dw");
   assert.notEqual(process.env.OPEN_WRANGLER_EXTENSION_TESTS, "1");
   const { chromium } = createRequire(path.join(request.repo, "package.json"))("playwright-core");
   const owner = await import(pathToFileURL(path.join(request.repo, "scripts/editor-acceptance.mjs")).href);
-  const receipt = { id: request.id, setup: {}, samples: [], status: "pending" };
+  const receipt = { purpose: "public-grid-diagnostic", id: request.id, setup: {}, samples: [], status: "pending" };
   let browser,
     opened,
     sourceNotebook,
@@ -125,36 +126,41 @@ exports.run = async function () {
         .flatMap((c) => c.pages())
         .flatMap((p) => p.frames())
         .slice(0, 64));
-    captureEntryState = async (point) => {
-      const state = await page.evaluate(readPublicEntryDomState);
-      const picker = page.locator(".quick-input-widget:visible");
-      state.picker.locatorCount = await picker.count();
-      state.picker.locatorVisible = state.picker.locatorCount === 1 ? await picker.isVisible() : null;
-      state.picker.accessibleOptions = await picker.getByRole("option").count();
-      const menus = page.locator(".context-view.monaco-menu-container"),
-        visibleMenus = page.locator(".context-view.monaco-menu-container:visible");
-      state.menu.totalContainers = await menus.count();
-      state.menu.visibleContainers = await visibleMenus.count();
-      state.menu.accessibleItems = await visibleMenus.getByRole("menuitem").count();
-      state.menu.accessibleViewData = await visibleMenus
-        .getByRole("menuitem", { name: "View data", exact: true })
-        .count();
-      const toolbar = page.locator(
-        ".notebook-editor:visible .notebook-toolbar-container:visible, .notebookOverlay:visible .notebook-toolbar-container:visible"
-      );
-      state.toolbar.accessibleViewData = await toolbar.getByRole("button", { name: "View data", exact: true }).count();
-      const overflow = toolbar.getByRole("button", { name: /^More Actions(?:\.\.\.)?$/ });
-      const count = await overflow.count();
-      state.toolbar.overflow = { count };
-      if (count === 1) {
-        const expanded = await overflow.getAttribute("aria-expanded");
-        Object.assign(state.toolbar.overflow, {
-          visible: await overflow.isVisible(),
-          enabled: await overflow.isEnabled(),
-          expanded: expanded === "true" ? true : expanded === "false" ? false : null
-        });
+    captureEntryState = async (point, metadata) => {
+      let state = metadata;
+      if (!state) {
+        state = await page.evaluate(readPublicEntryDomState);
+        const picker = page.locator(".quick-input-widget:visible");
+        state.picker.locatorCount = await picker.count();
+        state.picker.locatorVisible = state.picker.locatorCount === 1 ? await picker.isVisible() : null;
+        state.picker.accessibleOptions = await picker.getByRole("option").count();
+        const menus = page.locator(".context-view.monaco-menu-container"),
+          visibleMenus = page.locator(".context-view.monaco-menu-container:visible");
+        state.menu.totalContainers = await menus.count();
+        state.menu.visibleContainers = await visibleMenus.count();
+        state.menu.accessibleItems = await visibleMenus.getByRole("menuitem").count();
+        state.menu.accessibleViewData = await visibleMenus
+          .getByRole("menuitem", { name: "View data", exact: true })
+          .count();
+        const toolbar = page.locator(
+          ".notebook-editor:visible .notebook-toolbar-container:visible, .notebookOverlay:visible .notebook-toolbar-container:visible"
+        );
+        state.toolbar.accessibleViewData = await toolbar
+          .getByRole("button", { name: "View data", exact: true })
+          .count();
+        const overflow = toolbar.getByRole("button", { name: /^More Actions(?:\.\.\.)?$/ });
+        const count = await overflow.count();
+        state.toolbar.overflow = { count };
+        if (count === 1) {
+          const expanded = await overflow.getAttribute("aria-expanded");
+          Object.assign(state.toolbar.overflow, {
+            visible: await overflow.isVisible(),
+            enabled: await overflow.isEnabled(),
+            expanded: expanded === "true" ? true : expanded === "false" ? false : null
+          });
+        }
       }
-      state.millisecondsFromFirstClick = opened === undefined ? null : performance.now() - opened;
+      state.millisecondsFromFirstInteraction = opened === undefined ? null : performance.now() - opened;
       const observations = { ...receipt.entryDiagnostics, [point]: state };
       assert(Buffer.byteLength(JSON.stringify(observations), "utf8") <= 8192, "Entry diagnostic exceeds 8192 bytes");
       receipt.entryDiagnostics = observations;
@@ -294,23 +300,37 @@ exports.run = async function () {
     const grid = async () => {
       await consent();
       const matches = [];
-      for (const frame of frames()) {
-        const roots = frame.locator('[role="grid"],table');
-        for (let i = 0; i < Math.min(await roots.count(), 8); i++) {
+      const candidates = browser
+        .contexts()
+        .flatMap((context) => context.pages())
+        .flatMap((candidate) => candidate.frames());
+      receipt.gridDiscovery = {
+        frames: candidates.length,
+        frameLimit: 64,
+        rootLimit: 8,
+        maximumRootCount: 0,
+        complete: false
+      };
+      assert(candidates.length <= 64, "DIAGNOSTIC_GATE:incomplete-frame-discovery");
+      for (const frame of candidates) {
+        const roots = frame.locator('[role="grid"]');
+        const count = await roots.count();
+        receipt.gridDiscovery.maximumRootCount = Math.max(receipt.gridDiscovery.maximumRootCount, count);
+        assert(count <= 8, "DIAGNOSTIC_GATE:incomplete-grid-discovery");
+        for (let i = 0; i < count; i++) {
           const root = roots.nth(i);
           if (!(await root.isVisible()) || (await root.getAttribute("aria-busy")) === "true") continue;
-          const rows = await root.getAttribute("aria-rowcount"),
-            columns = await root.getAttribute("aria-colcount");
-          if ([String(request.rows), String(request.rows + 1)].includes(rows) && ["20", "21"].includes(columns))
-            matches.push({ frame, root });
+          const columns = await root.getAttribute("aria-colcount");
+          if (["20", "21"].includes(columns)) matches.push({ frame, root });
         }
       }
-      assert(matches.length <= 1, "PILOT_GATE:ambiguous-full-grid");
+      receipt.gridDiscovery.complete = true;
+      assert(matches.length <= 1, "DIAGNOSTIC_GATE:ambiguous-product-grid");
       return matches[0] || false;
     };
     const columnCell = (row, index) =>
       row.locator(`td[aria-colindex="${index}"],[role="gridcell"][aria-colindex="${index}"]`);
-    const rowCells = async (root, wantedId) => {
+    const rowCells = async (root, wantedId, sentinelOnly = false) => {
       const offset = (await root.getAttribute("aria-colcount")) === "21" ? 2 : 1;
       const rows = root.locator('tr,[role="row"]');
       for (let i = 0; i < Math.min(await rows.count(), 100); i++) {
@@ -319,6 +339,7 @@ exports.run = async function () {
         if (!(await visible(first))) continue;
         const id = (await first.innerText()).replaceAll(",", "").trim();
         if (wantedId !== undefined && id !== String(wantedId)) continue;
+        if (sentinelOnly) return { first };
         const values = [];
         for (let j = 0; j < 4; j++) {
           const cell = columnCell(row, offset + j);
@@ -328,6 +349,93 @@ exports.run = async function () {
         if (values.length === 4) return { values, first };
       }
       return false;
+    };
+    const gridRows = (root) => {
+      const integer = (value) =>
+        /^\d+$/.test(value ?? "") && Number.isSafeInteger(Number(value)) ? Number(value) : null;
+      const rows = [...root.querySelectorAll('tr,[role="row"]')];
+      const visible = rows.slice(0, 100).filter((row) => row.checkVisibility({ checkVisibilityCSS: true }));
+      const indices = visible.map((row) => integer(row.getAttribute("aria-rowindex")));
+      const valid = indices.filter((value) => value !== null);
+      return {
+        ariaRowcount: integer(root.getAttribute("aria-rowcount")),
+        ariaColcount: integer(root.getAttribute("aria-colcount")),
+        renderedRows: rows.length,
+        scannedRows: Math.min(rows.length, 100),
+        rowScanTruncated: rows.length > 100,
+        visibleRows: visible.length,
+        missingOrInvalidIndices: indices.length - valid.length,
+        minimumObservedRowIndex: valid.length ? Math.min(...valid) : null,
+        maximumObservedRowIndex: valid.length ? Math.max(...valid) : null
+      };
+    };
+    const gridMetadata = async (target) => {
+      const state = { grid: await target.root.evaluate(gridRows), status: [], statusCounts: [], markers: {} };
+      const outsideContent = (element) => {
+        const excluded =
+          '[role="grid"],pre,code,input,textarea,[contenteditable="true"],.monaco-editor,[role="complementary"],[role="region"][aria-label*="profile" i],[role="region"][aria-label*="summary" i]';
+        return (
+          element.checkVisibility({ checkVisibilityCSS: true }) &&
+          !element.closest(excluded) &&
+          !element.querySelector(excluded)
+        );
+      };
+      const number = "(?:\\d{1,3}(?:,\\d{3})+|\\d+)";
+      const patterns = [
+        ["rows", new RegExp(`^(?:Rows?\\s*:?\\s*(${number})|(${number})\\s+rows?)$`, "i")],
+        ["columns", new RegExp(`^(?:Columns?\\s*:?\\s*(${number})|(${number})\\s+columns?)$`, "i")],
+        ["showing", new RegExp(`^Showing\\s+(${number})\\s*[-–]\\s*(${number})\\s+of\\s+(${number})\\s+rows?$`, "i")],
+        ["shape", new RegExp(`^(${number})\\s+rows?\\s*(?:[×x,·|]\\s*|\\s+)(${number})\\s+columns?$`, "i")]
+      ];
+      for (const [kind, pattern] of patterns) {
+        const candidates = target.frame.getByText(pattern);
+        const total = await candidates.count();
+        let matching = 0,
+          invalid = 0,
+          retained = 0;
+        for (let i = 0; i < Math.min(total, 32); i++) {
+          const item = candidates.nth(i);
+          if (!(await item.evaluate(outsideContent))) continue;
+          const match = pattern.exec((await item.innerText()).trim());
+          if (!match) continue;
+          const counts = match
+            .slice(1)
+            .filter((value) => value !== undefined)
+            .map((value) => Number(value.replaceAll(",", "")));
+          if (counts.some((value) => !Number.isSafeInteger(value))) {
+            invalid++;
+            continue;
+          }
+          matching++;
+          if (state.status.length < 8) {
+            state.status.push({ kind, counts });
+            retained++;
+          }
+        }
+        state.statusCounts.push({
+          kind,
+          candidates: total,
+          scanned: Math.min(total, 32),
+          matching,
+          invalid,
+          retained,
+          truncated: total > 32 || matching > retained
+        });
+      }
+      for (const [kind, pattern] of [
+        ["sample", /\bsampl(?:e|ed|ing)\b/i],
+        ["truncate", /\btruncat(?:e|ed|ion)\b/i],
+        ["loading", /\bloading\b/i]
+      ]) {
+        const candidates = target.frame.getByText(pattern);
+        const total = await candidates.count();
+        let observed = false;
+        for (let i = 0; i < Math.min(total, 32); i++) {
+          if (await candidates.nth(i).evaluate(outsideContent)) observed = true;
+        }
+        state.markers[kind] = { observed, candidates: total, scanned: Math.min(total, 32), truncated: total > 32 };
+      }
+      return state;
     };
     const metric = (text, labels) => {
       const match = new RegExp(`(?:${labels})\\s*[:=]?\\s*([\\d,.]+)\\s*([kmb]?)(?![%\\w])`, "i").exec(text);
@@ -350,7 +458,7 @@ exports.run = async function () {
         Math.abs(nulls.value + (nan?.value || 0) - expected) <= nulls.tolerance + (nan?.tolerance || 0)
       );
     };
-    for (const sampleName of ["fresh-session-first-open", "same-session-reopen"]) {
+    for (const sampleName of ["fresh-session-first-open"]) {
       opened = undefined;
       const sample = {
         name: sampleName,
@@ -385,7 +493,7 @@ exports.run = async function () {
       await execute(1);
       sample.entryRoute = request.product === "ow" ? "inline-open" : "notebook-view-data";
       sample.toolbarOverflowUsed = false;
-      sample.metrics.pickerMs = 0;
+      sample.metrics.pickerInteractionMs = 0;
       if (request.product === "ow") {
         const action = await poll(async () => {
           await consent();
@@ -412,7 +520,28 @@ exports.run = async function () {
               assert(await overflow.isEnabled(), "PILOT_GATE:disabled-notebook-overflow");
               checkpoint(`${sampleName}:open`);
               opened = performance.now();
-              await overflow.click();
+              sample.overflowActivation = "focus-enter";
+              await overflow.focus();
+              const focus = await overflow.evaluate((element) => ({
+                focused: element.getRootNode().activeElement === element,
+                button: element.getAttribute("role") === "button",
+                hasPopup: element.getAttribute("aria-haspopup") === "true",
+                collapsed: element.getAttribute("aria-expanded") === "false",
+                ariaEnabled: element.getAttribute("aria-disabled") !== "true",
+                disabledClass: Boolean(element.closest(".disabled"))
+              }));
+              receipt.entryDiagnostics = { overflowActivation: focus };
+              assert(
+                focus.focused &&
+                  focus.button &&
+                  focus.hasPopup &&
+                  focus.collapsed &&
+                  focus.ariaEnabled &&
+                  !focus.disabledClass &&
+                  (await overflow.isEnabled()),
+                "DIAGNOSTIC_GATE:overflow-keyboard-focus-state"
+              );
+              await page.keyboard.press("Enter");
               sample.toolbarOverflowUsed = true;
             }
           }
@@ -475,16 +604,73 @@ exports.run = async function () {
           return matches[0] || false;
         }, "public-comparison-variable");
         await option.click();
-        sample.metrics.pickerMs = performance.now() - pickerStarted;
+        sample.metrics.pickerInteractionMs = performance.now() - pickerStarted;
       }
-      sample.metrics.entryMs = performance.now() - opened;
+      sample.metrics.entryInteractionMs = performance.now() - opened;
       checkpoint(`${sampleName}:grid`);
-      const target = await poll(grid, "full-grid-shape");
+      const target = await poll(grid, "diagnostic-product-grid");
       const productTab = vscode.window.tabGroups.activeTabGroup.activeTab;
       assert(
         productTab?.input instanceof vscode.TabInputWebview && productTab !== notebookTab,
         "Pilot gate: exact product webview tab"
       );
+      if (receipt.purpose === "public-grid-diagnostic") {
+        sample.gridObservation = {
+          firstSentinelObserved: null,
+          lastSentinelObserved: null,
+          navigationAttempted: false,
+          rowRangeChanged: null
+        };
+        const initialMetadata = await gridMetadata(target);
+        await captureEntryState("gridInitial", initialMetadata);
+        let first;
+        try {
+          first = await poll(() => rowCells(target.root, 0, true), "diagnostic-first-c00");
+          sample.gridObservation.firstSentinelObserved = true;
+        } catch (error) {
+          sample.gridObservation.firstSentinelObserved = false;
+          save();
+          throw error;
+        }
+        checkpoint(`${sampleName}:diagnostic-navigation`);
+        sample.gridObservation.navigationAttempted = true;
+        let checkingLast = false;
+        try {
+          await first.first.click();
+          await page.keyboard.press("Control+End");
+          const before = initialMetadata.grid;
+          await poll(async () => {
+            const after = await target.root.evaluate(gridRows);
+            return (
+              before.minimumObservedRowIndex !== null &&
+              before.maximumObservedRowIndex !== null &&
+              after.minimumObservedRowIndex !== null &&
+              after.maximumObservedRowIndex !== null &&
+              (after.minimumObservedRowIndex !== before.minimumObservedRowIndex ||
+                after.maximumObservedRowIndex !== before.maximumObservedRowIndex)
+            );
+          }, "diagnostic-row-range-progress");
+          sample.gridObservation.rowRangeChanged = true;
+          await page.keyboard.press("Home");
+          checkingLast = true;
+          await poll(() => rowCells(target.root, request.rows - 1, true), "diagnostic-last-c00");
+          sample.gridObservation.lastSentinelObserved = true;
+        } catch (error) {
+          if (sample.gridObservation.rowRangeChanged === null) sample.gridObservation.rowRangeChanged = false;
+          if (checkingLast) sample.gridObservation.lastSentinelObserved = false;
+          save();
+          throw error;
+        } finally {
+          try {
+            await captureEntryState("gridAfterNavigation", await gridMetadata(target));
+          } catch {
+            receipt.gridDiagnosticReadFailed = true;
+            save();
+          }
+        }
+        sample.metrics.observationsFromFirstInteractionMs = performance.now() - opened;
+        throw new Error("GRID_DIAGNOSTIC:observations-complete; comparison not run");
+      }
       const initial = await poll(() => rowCells(target.root, 0), "first-data-row");
       sample.metrics.firstRowMs = performance.now() - opened;
       sample.fullShapeVerified = true;

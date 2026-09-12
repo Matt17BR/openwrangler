@@ -14,7 +14,7 @@ const { values: args } = parseArgs({
 });
 for (const key of ["repo", "artifact", "python", "out", "mode"]) assert(args[key], `Missing --${key}`);
 assert(process.env.GITHUB_ACTIONS === "true" && process.env.RUNNER_OS === "Linux", "Hosted Linux only");
-assert(["pilot", "study"].includes(args.mode));
+assert.equal(args.mode, "pilot", "Temporary grid diagnostic rejects study");
 assert(args.mode !== "study" || args.freeze, "Study requires a reviewed passing pilot freeze");
 // Keep the venv launcher path: resolving its Python symlink would select the base environment.
 const repo = realpathSync(args.repo),
@@ -109,6 +109,7 @@ assert.equal(
   "9188fb7ccb836c8d4bc62372adb46d81c2e82aa998404b066fc31f1b51b5bc48"
 );
 const report = {
+  purpose: "public-grid-diagnostic",
   mode: args.mode,
   artifact: {
     sourceCommit,
@@ -257,7 +258,7 @@ try {
   const pairs = args.mode === "pilot" ? 1 : 4;
   for (const rows of [100_000, 1_000_000])
     for (let pair = 0; pair < pairs; pair++) {
-      for (const product of pair % 2 ? ["dw", "ow"] : ["ow", "dw"]) {
+      for (const product of ["dw"]) {
         requireUninterrupted();
         const id = `${rows}-${pair}-${product}`,
           session = { id, rows, pair, product, status: "pending" };
