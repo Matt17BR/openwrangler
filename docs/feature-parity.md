@@ -230,7 +230,7 @@ a zero divisor when both operands are present. Live execution and generated code
 data and the confirmed plan.
 
 Selected Arrow Decimal arithmetic can widen Decimal128 to Decimal256. If native capacity inference rejects Decimal256
-multiplication or division by the integer literal `-1`, Formula uses exact negation while preserving the declared precision
+multiplication or division by the integer literals `1` or `-1`, Formula preserves or negates the values without changing the declared precision
 and scale. Negative-scale Decimal addition, subtraction, multiplication and division also work with another Arrow
 Decimal column, a NumPy, built-in Pandas nullable or Arrow integer column of at most 64 bits, or an exact integer literal,
 when the declared capacity fits Decimal256. Sparse, object and custom extension companions are excluded from this

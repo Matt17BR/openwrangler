@@ -6,6 +6,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Pandas Formula preserves wide Arrow Decimal values when multiplying or dividing by integer 1.
 - Pandas Formula widens eligible signed integer additions instead of rejecting sums that fit Int64 or UInt64.
 - Pandas temporal categories preserve exact values, missing counts and directional Fill anchors. Duration choices
   select the correct stored rows in live and generated filters without narrowing other categories.

@@ -1114,6 +1114,8 @@ def test_arrow_integer_modulo_publishes_exports_and_retains_state_after_zero_ref
         "decimal-divide",
         "decimal-negate-multiply",
         "decimal-negate-divide",
+        "decimal-identity-multiply",
+        "decimal-identity-divide",
     ],
 )
 def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_state(
@@ -1127,7 +1129,8 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
     pa = pytest.importorskip("pyarrow")
     pq = pytest.importorskip("pyarrow.parquet")
     unsigned = family.startswith("uint64")
-    decimal_negation = family.startswith("decimal-negate-")
+    decimal_unit = family.startswith(("decimal-negate-", "decimal-identity-"))
+    unit_literal = 1 if family.startswith("decimal-identity-") else -1
     wide_odd_power = family == "signed-wide-odd-power"
     odd_power = family in {"signed-odd-power", "signed-wide-odd-power"}
     signed_power = family in {"signed-even-power", "signed-odd-power", "signed-wide-odd-power"}
@@ -1158,7 +1161,7 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
         if unsigned
         else pd.Series([Decimal("1.125"), Decimal("-2.500"), None], dtype=pd.ArrowDtype(pa.decimal128(30, 3)))
     )
-    if decimal_negation:
+    if decimal_unit:
         scale = 76 if family.endswith("multiply") else 0
         maximum = Decimal((0, (9,) * 76, -scale))
         series = pd.Series([Decimal("-0"), maximum, None], dtype=pd.ArrowDtype(pa.decimal256(76, scale)))
@@ -1204,9 +1207,9 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
         }
         if signed_add:
             operation["params"].update(operator="add", value="5")
-        if decimal_negation:
-            operation["params"]["operator"] = family.removeprefix("decimal-negate-")
-            operation["params"]["value"] = -1
+        if decimal_unit:
+            operation["params"]["operator"] = family.rsplit("-", 1)[1]
+            operation["params"]["value"] = unit_literal
         if signed_power:
             operation["params"]["operator"] = "power"
             operation["params"]["value"] = str(2**64 - 1) if wide_odd_power else "63" if odd_power else "40"
@@ -1259,9 +1262,14 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
             if unsigned or signed_power or signed_add
             else pd.ArrowDtype(pa.decimal256(50, 3 if family == "decimal-multiply" else 23)),
         )
-        if decimal_negation:
+        if decimal_unit:
             negative = Decimal("-0." + "9" * 76) if family.endswith("multiply") else Decimal("-" + "9" * 76)
-            expected = pd.Series([Decimal("0"), negative, None], index=frame.index, name="result", dtype=series.dtype)
+            expected = pd.Series(
+                [Decimal("0"), negative.copy_abs() if unit_literal == 1 else negative, None],
+                index=frame.index,
+                name="result",
+                dtype=series.dtype,
+            )
         preview = manager.preview_step(session_id, 0, json.loads(json.dumps(operation)), 0, 1)
         session = manager.sessions[session_id]
         assert session.draft_frame is not None
@@ -1299,7 +1307,7 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
         if signed_add:
             invalid["params"].pop("rightColumn")
             invalid["params"].update(operator="add", value="1")
-        if decimal_negation:
+        if decimal_unit:
             invalid["params"].pop("rightColumn")
             invalid["params"]["operator"] = operation["params"]["operator"]
             invalid["params"]["value"] = -2
@@ -1340,7 +1348,7 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
                 match="too large"
                 if wide_odd_power
                 else "Decimal precision"
-                if decimal_negation
+                if decimal_unit
                 else "not in range"
                 if family == "uint64-negative-multiply"
                 else "(?i)overflow|divide by zero",
@@ -1384,7 +1392,7 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
         pd.testing.assert_index_equal(reopened.index, frame.index)
         pd.testing.assert_frame_equal(frame, original)
         assert frame.attrs == original.attrs
-        if signed_subtract or family == "uint64-negative-multiply" or signed_power or signed_add or decimal_negation:
+        if signed_subtract or family == "uint64-negative-multiply" or signed_power or signed_add or decimal_unit:
             undone = manager.undo_step(session_id, session.revision, 0, 1)
             assert undone["action"] == "undo"
             assert session.plan == []
