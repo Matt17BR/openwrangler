@@ -503,7 +503,11 @@ Raw aliases preserve original positive matches; unused categories match only dis
 a mask across native category counts, then takes and formats only observed category values. Strings and the positional
 lookup grow with observed categories, without expanding strings to every row or bounding them by the requested limit.
 Unsearched choices skip this allocation. Non-text missing entries are not aliases; corrected display labels remain searchable.
-Sparse, noncategorical Arrow-backed and object durations keep their original row-text search behavior.
+Direct and dictionary-encoded Arrow duration columns search counted display labels and native raw text after the
+existing dictionary decode. This preserves the corrected label for a valid minimum tick without accepting its
+misleading native `NaT` spelling. Native counts and raw text grow with all distinct values before filtering, even for
+an absent query; unsearched choices skip raw-text allocation. Sparse and object durations keep their original
+row-text search behavior.
 Categorical timestamp and duration output reads stored values through category codes, preserving Arrow validity and
 NumPy duration multipliers. Temporal-category null masks use missing codes, so valid Arrow extrema remain present.
 Directional Fill repeats the native categorical anchor rather than assigning a boxed scalar that can change its value.

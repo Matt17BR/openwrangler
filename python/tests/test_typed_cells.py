@@ -1078,7 +1078,9 @@ def test_numpy_duration_units_keep_fixed_seconds_and_refuse_calendar_values() ->
         ("us", -(10**18 + 1), -(10**18 + 2), 0, True, "numpy"),
         ("ms", 2**63 - 1, 2**63 - 2, 0, False, "numpy"),
         ("us", -(2**63), -(2**63) + 1, 0, True, "arrow"),
+        ("us", 1, 2, 0, True, "arrow"),
         ("us", -(2**63), -(2**63) + 1, 0, True, "dictionary"),
+        ("us", 1, 2, 0, True, "dictionary"),
     ],
 )
 def test_duration_session_choices_and_grid_tokens_keep_source_rows(
@@ -1122,11 +1124,21 @@ def test_duration_session_choices_and_grid_tokens_keep_source_rows(
             sid, revision = metadata["sessionId"], metadata["revision"]
             unfiltered = {"filters": [], "sort": []}
             choice = manager.get_column_values(sid, revision, "value", unfiltered)["values"][0]
-            expected_label = str(source.iloc[0, 0]) if storage == "numpy" else "-9223372036854775808 us"
+            expected_label = (
+                str(source.iloc[0, 0])
+                if storage == "numpy"
+                else "0 days 00:00:00.000001"
+                if ticks == 1
+                else "-9223372036854775808 us"
+            )
             assert choice["count"] == 2 and choice["value"] == expected_label
             cell = opened["page"]["rows"][0]["values"][0]
             if storage != "numpy":
-                assert cell["raw"] == "-9223372036854.775808" and not cell["isNull"]
+                assert cell["raw"] == ("0.000001" if ticks == 1 else "-9223372036854.775808") and not cell["isNull"]
+            if storage in {"arrow", "dictionary"}:
+                searched = manager.get_column_values(sid, revision, "value", unfiltered, search=choice["value"])
+                assert searched["values"] == [choice] and not searched["hasMore"]
+                choice = searched["values"][0]
             tokens = [{"kind": "typedSelection", "version": 1, "columnType": "duration", "cell": cell}]
             if portable:
                 tokens.append(choice["selectionValue"])
@@ -1406,12 +1418,21 @@ def test_pandas_duration_search_preserves_native_row_text(dictionary: bool, unit
     pa = pytest.importorskip("pyarrow")
     value_type = pa.duration(unit)
     array = (
-        pa.DictionaryArray.from_arrays(pa.array([0, 1, 0, None], type=pa.int8()), pa.array([1, 2], type=value_type))
+        pa.chunked_array(
+            [
+                pa.DictionaryArray.from_arrays(
+                    pa.array([0, 1], type=pa.int8()), pa.array([1, 2, 999, None], type=value_type)
+                ),
+                pa.DictionaryArray.from_arrays(
+                    pa.array([1, 2, None], type=pa.int8()), pa.array([2, 1, None, 555], type=value_type)
+                ),
+            ]
+        )
         if dictionary
         else pa.array([1, 2, 1, None], type=value_type)
     )
     source = pd.DataFrame({"value": pd.Series(array, dtype=pd.ArrowDtype(array.type))})
-    source.index = pd.Index(["same"] * 4, name="source row")
+    source.index = pd.Index(["same"] * len(source), name="source row")
     before = source.copy(deep=True)
     engine = PandasEngine()
     first: dict[str, Any] = {"value": f"0 days 00:00:00.{fraction}", "count": 2}
@@ -1432,13 +1453,25 @@ def test_pandas_duration_search_preserves_native_row_text(dictionary: bool, unit
     assert choices == [first] and more
     assert engine.column_values(source, "value", search="1") == ([first], False)
     # Pandas 2 and 3 have different native vector text for Arrow durations.
-    # Search follows those original row representations, before counted values box as Timedelta.
+    # Decoded duration columns also match their displayed clocks.
     native_text = pd.Series(pa.array([1], type=value_type), dtype=pd.ArrowDtype(value_type)).astype(str).iloc[0]
     assert native_text in {"1 nanoseconds" if unit == "ns" else "1 microseconds", first["value"]}
     for search in ("0", "days", "00:00"):
-        expected = ([first], True) if native_text == first["value"] else ([], False)
-        assert engine.column_values(source, "value", search=search, limit=1) == expected
-    pd.testing.assert_frame_equal(source, before, check_exact=True)
+        assert engine.column_values(source, "value", search=search, limit=1) == ([first], True)
+    assert engine.column_values(source, "value", search=native_text) == ([first], False)
+    assert engine.column_values(source, "value", search=first["value"]) == ([first], False)
+    if dictionary:
+        pd.testing.assert_index_equal(source.index, before.index, exact=True)
+        pd.testing.assert_index_equal(source.columns, before.columns, exact=True)
+        assert source.attrs == before.attrs
+        actual = cast(pd.arrays.ArrowExtensionArray, source["value"].array).__arrow_array__()
+        original = cast(pd.arrays.ArrowExtensionArray, before["value"].array).__arrow_array__()
+        assert actual.type == original.type
+        for actual_chunk, original_chunk in zip(actual.chunks, original.chunks, strict=True):
+            assert actual_chunk.indices.equals(original_chunk.indices)
+            assert actual_chunk.dictionary.equals(original_chunk.dictionary)
+    else:
+        pd.testing.assert_frame_equal(source, before, check_exact=True)
 
 
 @pytest.mark.parametrize(
@@ -3497,8 +3530,32 @@ def test_pandas_arrow_duration_outputs_preserve_units_labels_and_projection(
         assert coerce_typed_view_value(choices[0]["selectionValue"], "duration") == timedelta(microseconds=minimum)
     else:
         assert "selectionValue" not in choices[0]
+    assert engine.column_values(source, "value", search="NaT") == ([], False)
+    if dictionary:
+        matches, more = engine.column_values(source, "value", search=positive)
+        assert not more and len(matches) == 1
+        assert matches[0]["value"] == positive and matches[0]["count"] == 1
+    else:
+        from collections import Counter
+
+        all_choices, all_more = engine.column_values(source, "value")
+        assert not all_more
+        displayed = [str(cell["display"]) for cell in cells if not cell["isNull"]]
+        raw = source["value"].dropna().astype(str).tolist()
+        effective = [
+            label if stored == minimum else text
+            for stored, label, text in zip([tick for tick in ticks if tick is not None], displayed, raw, strict=True)
+        ]
+        for search in dict.fromkeys([*displayed, *effective, "NaT", "[not-a-duration]"]):
+            expected = Counter(
+                label for label, text in zip(displayed, effective, strict=True) if search in label or search in text
+            )
+            matches = [item for item in all_choices if item["value"] in expected]
+            assert all(item["count"] == expected[item["value"]] for item in matches)
+            assert engine.column_values(source, "value", search=search) == (matches, False)
     for empty in (source.iloc[:0], source.iloc[-2:]):
         assert engine.column_values(empty, "value") == ([], False)
+        assert engine.column_values(empty, "value", search=positive) == ([], False)
         assert engine.summaries(empty, [(0, "value")])[0]["nullCount"] == len(empty)
 
     temporal_array = pandas_engine._pandas_arrow_temporal_array
