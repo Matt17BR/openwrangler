@@ -264,8 +264,11 @@ def _pandas_numeric_filter(series: Any, method: str, values: Sequence[Any], dura
             return duration_keys.ge(operands[0]) & duration_keys.le(operands[1])
         return duration_keys.isin(operands) if method == "isin" else getattr(duration_keys, method)(operands[0])
 
-    if method == "isin" and isinstance(series.dtype, pd.CategoricalDtype):
-        dtype = series.cat.categories.dtype
+    if method == "isin" and isinstance(series.dtype, (pd.CategoricalDtype, pd.SparseDtype)):
+        sparse = isinstance(series.dtype, pd.SparseDtype)
+        dtype = cast(pd.SparseDtype, series.dtype).subtype if sparse else series.cat.categories.dtype
+        if sparse and not values:
+            return series.isin([])
         arrow_duration = False
         if isinstance(dtype, pd.ArrowDtype):
             import pyarrow as pa
@@ -274,12 +277,16 @@ def _pandas_numeric_filter(series: Any, method: str, values: Sequence[Any], dura
         if (isinstance(dtype, np.dtype) and dtype.kind == "m" or arrow_duration) and all(
             type(value) is timedelta for value in values
         ):
-            # Keep native category lookup from narrowing wide categories to the operand unit.
+            # Keep native lookup in the source unit rather than narrowing the source to the operand unit.
             unit, multiplier = (
                 (dtype.pyarrow_dtype.unit, 1) if isinstance(dtype, pd.ArrowDtype) else np.datetime_data(dtype)
             )
             if multiplier == 0 and values:
                 raise ValueError("Cannot select categorical durations with a zero unit multiplier.")
+            if sparse and unit not in {"s", "ms", "us", "ns"}:
+                if multiplier == 1 and unit in {"W", "D", "h", "m"}:
+                    return series.isin(list(values))
+                raise ValueError("This Sparse duration unit is unsupported for value membership.")
             scale = {"s": 1, "ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}[unit]
             denominator = 1_000_000 * multiplier
             bounds = [
@@ -556,8 +563,13 @@ def _pandas_dense_rank(series: Any, direction: str) -> Any:
 
 
 def _pandas_value_counts(series: Any, *, sort: bool = True, duration: bool = False) -> Any:
+    import numpy as np
     import pandas as pd
 
+    if isinstance(series.dtype, pd.SparseDtype) and series.dtype.subtype.kind == "m":
+        unit, multiplier = np.datetime_data(series.dtype.subtype)
+        if unit not in {"s", "ms", "us", "ns"} and not (multiplier == 1 and unit in {"W", "D", "h", "m"}):
+            raise EngineError("This Sparse duration unit is unsupported in profiles and value choices.")
     keys = _pandas_duration_keys(series, _NUMPY_DURATION_SECONDS) if duration else _pandas_numeric_key(series)
     try:
         counts = keys.value_counts(dropna=True, sort=sort)
@@ -823,7 +835,7 @@ class PandasEngine(DataFrameEngine):
         format_name = normalized["format"]
         df = self._visible_frame(self.normalize(frame))
         preserve_index = normalized["rowAxisPolicy"] == "preserve"
-        df = _pandas_scalar_export_frame(df, preserve_index)
+        df = _pandas_scalar_export_frame(df, preserve_index, for_csv=format_name == "csv")
         with path.open_binary_writer() if isinstance(path, ExportWriterPath) else nullcontext(path) as destination:
             if format_name == "csv":
                 df.to_csv(
@@ -1002,8 +1014,12 @@ class PandasEngine(DataFrameEngine):
         )
         row_axis = self.row_axis(df)
         one_level_multi_index = isinstance(df.index, pd.MultiIndex) and df.index.nlevels == 1
+        row_labels = sliced.index
+        if isinstance(sliced.index.dtype, pd.SparseDtype) and sliced.index.dtype.subtype.kind == "m":
+            index_values = _pandas_scalar_values(pd.Series(sliced.index.array, copy=False))
+            row_labels = _pandas_temporal_output_values(index_values, None)
         for row_number, (row_label, row) in enumerate(
-            zip(sliced.index, records, strict=True),
+            zip(row_labels, records, strict=True),
             start=offset,
         ):
             identity = self._page_row_identity(row[0]) if row_id_position is not None else row_number
@@ -1231,6 +1247,7 @@ class PandasEngine(DataFrameEngine):
             raise EngineError(f"Unknown Pandas column: {column}")
         series = df.iloc[:, position]
         column_type = _pandas_semantic_type(series)
+        sparse_duration = isinstance(series.dtype, pd.SparseDtype) and series.dtype.subtype.kind == "m"
         arrow_duration_categories = (
             isinstance(series.dtype, pd.CategoricalDtype)
             and isinstance(series.cat.categories.dtype, pd.ArrowDtype)
@@ -1238,6 +1255,7 @@ class PandasEngine(DataFrameEngine):
         )
         search_counted_labels = (
             arrow_duration_categories
+            or sparse_duration
             or (_pandas_dictionary_value_type(series) is not None and column_type == "string")
             or (isinstance(series.dtype, np.dtype) and series.dtype.kind == "m")
             or (
@@ -1246,7 +1264,9 @@ class PandasEngine(DataFrameEngine):
                 and series.cat.categories.dtype.kind == "m"
             )
         )
-        series = _pandas_scalar_values(series).dropna()
+        series = _pandas_scalar_values(series)
+        if not sparse_duration:
+            series = series.dropna()
         arrow_duration_values = isinstance(series.dtype, pd.ArrowDtype) and series.dtype.kind == "m"
         search_counted_labels = search_counted_labels or arrow_duration_values
         temporal_values = _pandas_arrow_temporal_array(series)
@@ -1310,6 +1330,8 @@ class PandasEngine(DataFrameEngine):
                     for position, raw in zip(observed, native.astype(str), strict=True)
                     if isinstance(raw, str)
                 }
+            elif sparse_duration and np.datetime_data(cast(pd.SparseDtype, series.dtype).subtype)[1] != 1:
+                raw_labels = dict(enumerate(value_counts.index.astype(str)))
             counts = (
                 (value, count, label, position)
                 for value, count, label, position in counts
@@ -4218,6 +4240,43 @@ def _pandas_scalar_values(series: Any) -> Any:
     import pandas as pd
 
     series = _pandas_dictionary_values(series)
+    dtype = series.dtype
+    if isinstance(dtype, pd.SparseDtype) and dtype.subtype.kind == "m":
+        from datetime import timedelta
+
+        import numpy as np
+
+        unit, multiplier = np.datetime_data(dtype.subtype)
+        if multiplier == 0:
+            raise EngineError("Sparse durations with a zero unit multiplier are unsupported.")
+        fill = dtype.fill_value
+        if series.array.sp_index.ngaps and not pd.isna(fill):
+            ratio = _NUMPY_DURATION_SECONDS.get(unit)
+            if isinstance(fill, pd.Timedelta):
+                fill = fill.asm8
+            if type(fill) is np.timedelta64:
+                fill_unit, fill_multiplier = np.datetime_data(fill.dtype)
+                fill_ratio = _NUMPY_DURATION_SECONDS.get(fill_unit)
+                if fill_ratio is None or fill_multiplier == 0:
+                    raise EngineError("Sparse duration fills require exact fixed-unit values.")
+                numerator = int(fill.view(np.int64)) * fill_multiplier * fill_ratio[0]
+                denominator = fill_ratio[1]
+            elif isinstance(fill, timedelta):
+                from operator import index
+
+                days, seconds, microseconds = index(fill.days), index(fill.seconds), index(fill.microseconds)
+                numerator = (days * 86_400 + seconds) * 1_000_000 + microseconds
+                denominator = 1_000_000
+            else:
+                raise EngineError("Sparse duration fills require exact fixed-unit values.")
+            if ratio is None:
+                raise EngineError("Sparse duration fills require exact fixed-unit values.")
+            ticks, remainder = divmod(numerator * ratio[1], denominator * multiplier * ratio[0])
+            if remainder or not -(2**63) < ticks < 2**63:
+                raise EngineError("The Sparse duration fill cannot be represented exactly in its stored unit.")
+            canonical = np.asarray(ticks, dtype=dtype.subtype)[()]
+            native = pd.arrays.SparseArray(series.array, dtype=pd.SparseDtype(dtype.subtype, canonical), copy=False)
+            return pd.Series(native, index=series.index, name=series.name, copy=False)
     if series.dtype == object:
         if pd.api.types.infer_dtype(series, skipna=True) not in {"mixed", "mixed-integer"}:
             return series
@@ -4337,13 +4396,25 @@ def _pandas_preserve_integer_result(value: Any) -> Any:
     return _pandas_normalize_integer_series(value, enforce_envelope=False)
 
 
-def _pandas_scalar_export_frame(df: Any, preserve_index: bool) -> Any:
+def _pandas_scalar_export_frame(df: Any, preserve_index: bool, *, for_csv: bool = False) -> Any:
+    import numpy as np
     import pandas as pd
+
+    def export_values(series: Any) -> Any:
+        if (
+            for_csv
+            and len(df)
+            and isinstance(series.dtype, pd.SparseDtype)
+            and series.dtype.subtype.kind == "m"
+            and np.datetime_data(series.dtype.subtype)[1] != 1
+        ):
+            raise EngineError("CSV export does not support Sparse duration unit multipliers.")
+        return _pandas_scalar_values(series)
 
     result = df
     for position in range(df.shape[1]):
         series = df.iloc[:, position]
-        logical = _pandas_scalar_values(series)
+        logical = export_values(series)
         if logical is series:
             continue
         if result is df:
@@ -4357,7 +4428,7 @@ def _pandas_scalar_export_frame(df: Any, preserve_index: bool) -> Any:
             if isinstance(level, pd.RangeIndex):
                 continue
             series = pd.Series(level.array, copy=False)
-            logical = _pandas_scalar_values(series)
+            logical = export_values(series)
             if logical is not series:
                 changed[position] = logical.array
         if changed:
@@ -5756,8 +5827,11 @@ def _generated_pandas_numeric_filter_helpers() -> list[str]:
         '        return (duration_keys.isin(operands) if method == "isin"',
         "                else getattr(duration_keys, method)(operands[0]))",
         "",
-        '    if method == "isin" and isinstance(series.dtype, pd.CategoricalDtype):',
-        "        dtype = series.cat.categories.dtype",
+        '    if method == "isin" and isinstance(series.dtype, (pd.CategoricalDtype, pd.SparseDtype)):',
+        "        sparse = isinstance(series.dtype, pd.SparseDtype)",
+        "        dtype = series.dtype.subtype if sparse else series.cat.categories.dtype",
+        "        if sparse and not values:",
+        "            return series.isin([])",
         "        arrow_duration = False",
         "        if isinstance(dtype, pd.ArrowDtype):",
         "            import pyarrow as pa",
@@ -5766,13 +5840,17 @@ def _generated_pandas_numeric_filter_helpers() -> list[str]:
         "        if (",
         '            isinstance(dtype, np.dtype) and dtype.kind == "m" or arrow_duration',
         "        ) and all(type(value) is timedelta for value in values):",
-        "            # Keep native category lookup from narrowing wide categories to the operand unit.",
+        "            # Keep native lookup in the source unit rather than narrowing the source to the operand unit.",
         "            unit, multiplier = (",
         "                (dtype.pyarrow_dtype.unit, 1)",
         "                if isinstance(dtype, pd.ArrowDtype) else np.datetime_data(dtype)",
         "            )",
         "            if multiplier == 0 and values:",
         '                raise ValueError("Cannot select categorical durations with a zero unit multiplier.")',
+        '            if sparse and unit not in {"s", "ms", "us", "ns"}:',
+        '                if multiplier == 1 and unit in {"W", "D", "h", "m"}:',
+        "                    return series.isin(list(values))",
+        '                raise ValueError("This Sparse duration unit is unsupported for value membership.")',
         '            scale = {"s": 1, "ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}[unit]',
         "            denominator = 1_000_000 * multiplier",
         "            bounds = [",
@@ -6735,6 +6813,46 @@ def _generated_pandas_scalar_helpers() -> list[str]:
         "    import pandas as pd",
         "",
         "    series = _open_wrangler_dictionary_values(series)",
+        "    dtype = series.dtype",
+        '    if isinstance(dtype, pd.SparseDtype) and dtype.subtype.kind == "m":',
+        "        from datetime import timedelta",
+        "",
+        "        import numpy as np",
+        "",
+        "        unit, multiplier = np.datetime_data(dtype.subtype)",
+        "        if multiplier == 0:",
+        '            raise ValueError("Sparse durations with a zero unit multiplier are unsupported.")',
+        "        fill = dtype.fill_value",
+        "        if series.array.sp_index.ngaps and not pd.isna(fill):",
+        f"            units = {_NUMPY_DURATION_SECONDS!r}",
+        "            ratio = units.get(unit)",
+        "            if isinstance(fill, pd.Timedelta):",
+        "                fill = fill.asm8",
+        "            if type(fill) is np.timedelta64:",
+        "                fill_unit, fill_multiplier = np.datetime_data(fill.dtype)",
+        "                fill_ratio = units.get(fill_unit)",
+        "                if fill_ratio is None or fill_multiplier == 0:",
+        '                    raise ValueError("Sparse duration fills require exact fixed-unit values.")',
+        "                numerator = int(fill.view(np.int64)) * fill_multiplier * fill_ratio[0]",
+        "                denominator = fill_ratio[1]",
+        "            elif isinstance(fill, timedelta):",
+        "                from operator import index",
+        "",
+        "                days, seconds, microseconds = index(fill.days), index(fill.seconds), index(fill.microseconds)",
+        "                numerator = (days * 86_400 + seconds) * 1_000_000 + microseconds",
+        "                denominator = 1_000_000",
+        "            else:",
+        '                raise ValueError("Sparse duration fills require exact fixed-unit values.")',
+        "            if ratio is None:",
+        '                raise ValueError("Sparse duration fills require exact fixed-unit values.")',
+        "            ticks, remainder = divmod(numerator * ratio[1], denominator * multiplier * ratio[0])",
+        "            if remainder or not -(2**63) < ticks < 2**63:",
+        "                raise ValueError(",
+        '                    "The Sparse duration fill cannot be represented exactly in its stored unit.")',
+        "            canonical = np.asarray(ticks, dtype=dtype.subtype)[()]",
+        "            native = pd.arrays.SparseArray(",
+        "                series.array, dtype=pd.SparseDtype(dtype.subtype, canonical), copy=False)",
+        "            return pd.Series(native, index=series.index, name=series.name, copy=False)",
         "    if series.dtype == object:",
         '        if pd.api.types.infer_dtype(series, skipna=True) not in {"mixed", "mixed-integer"}:',
         "            return series",
@@ -7592,8 +7710,14 @@ def _pandas_temporal_output_values(values: Any, array: Any) -> Iterable[Any]:
 
     categorical = isinstance(values.dtype, pd.CategoricalDtype)
     if array is None:
+        dtype = values.dtype.subtype if isinstance(values.dtype, pd.SparseDtype) else values.dtype
+        if isinstance(dtype, np.dtype) and dtype.kind == "m":
+            unit, multiplier = np.datetime_data(dtype)
+            if multiplier != 1 and unit in {"W", "D", "h", "m", "s", "ms", "us", "ns"}:
+                yield from values.to_numpy(copy=False)
+                return
         if categorical:
-            categories = values.dtype.categories
+            categories = cast(pd.CategoricalDtype, values.dtype).categories
             dtype = categories.dtype
             if isinstance(dtype, np.dtype) and dtype.kind == "m" and np.datetime_data(dtype)[1] != 1:
                 native = categories.to_numpy(copy=False)

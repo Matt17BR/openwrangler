@@ -6,6 +6,8 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Pandas Sparse duration cells, choices and selections preserve unit multipliers, and displayed duration labels can
+  be searched. Unsupported counting, selection and CSV representations refuse instead of reporting altered values.
 - Pandas Formula preserves wide Arrow Decimal values when multiplying or dividing by integer 1.
 - Pandas Formula widens eligible signed integer additions instead of rejecting sums that fit Int64 or UInt64.
 - Pandas temporal categories preserve exact values, missing counts and directional Fill anchors. Duration choices
