@@ -417,7 +417,37 @@ exports.run = async function () {
           checkpoint(`${sampleName}:open`);
           opened = performance.now();
         }
-        await action.click();
+        if (sample.toolbarOverflowUsed) {
+          sample.entryActivation = "menu-hover-enter";
+          // Native menu hover updates its focused action before keyboard activation.
+          await action.hover();
+          const focus = await action.evaluate((element) => {
+            const root = element.getRootNode();
+            return {
+              focused: root.activeElement === element,
+              rootIsShadow: root instanceof ShadowRoot,
+              menuItem: element.getAttribute("role") === "menuitem",
+              hasPopup: element.getAttribute("aria-haspopup") === "true",
+              expanded: element.getAttribute("aria-expanded") === "true",
+              disabled: element.getAttribute("aria-disabled") === "true"
+            };
+          });
+          const observations = {
+            ...receipt.entryDiagnostics,
+            activation: { entryActivation: sample.entryActivation, ...focus }
+          };
+          assert(
+            Buffer.byteLength(JSON.stringify(observations), "utf8") <= 8192,
+            "Entry diagnostic exceeds 8192 bytes"
+          );
+          receipt.entryDiagnostics = observations;
+          save();
+          assert(focus.focused, "PILOT_GATE:view-data-menu-focus");
+          await page.keyboard.press("Enter");
+        } else {
+          sample.entryActivation = "button-click";
+          await action.click();
+        }
         const pickerStarted = performance.now();
         checkpoint(`${sampleName}:variable-picker`);
         await captureEntryState("beforePicker");
@@ -429,7 +459,7 @@ exports.run = async function () {
             matches = [];
           for (let i = 0; i < Math.min(await options.count(), 64); i++) {
             const item = options.nth(i),
-              label = item.locator(".label-name");
+              label = item.locator(".quick-input-list-row:first-child .label-name");
             if ((await visible(label)) && (await label.innerText()).trim() === "comparison_frame") matches.push(item);
           }
           assert(matches.length <= 1, "PILOT_GATE:ambiguous-comparison-variable");
