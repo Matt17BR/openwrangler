@@ -132,16 +132,29 @@ exports.run = async function () {
       state.picker.locatorCount = await picker.count();
       state.picker.locatorVisible = state.picker.locatorCount === 1 ? await picker.isVisible() : null;
       state.picker.accessibleOptions = await picker.getByRole("option").count();
-      state.menu.accessibleViewData = await page
-        .locator(".context-view.monaco-menu-container:visible")
+      const menus = page.locator(".context-view.monaco-menu-container"),
+        visibleMenus = page.locator(".context-view.monaco-menu-container:visible");
+      state.menu.totalContainers = await menus.count();
+      state.menu.visibleContainers = await visibleMenus.count();
+      state.menu.accessibleItems = await visibleMenus.getByRole("menuitem").count();
+      state.menu.accessibleViewData = await visibleMenus
         .getByRole("menuitem", { name: "View data", exact: true })
         .count();
-      state.toolbar.accessibleViewData = await page
-        .locator(
-          ".notebook-editor:visible .notebook-toolbar-container:visible, .notebookOverlay:visible .notebook-toolbar-container:visible"
-        )
-        .getByRole("button", { name: "View data", exact: true })
-        .count();
+      const toolbar = page.locator(
+        ".notebook-editor:visible .notebook-toolbar-container:visible, .notebookOverlay:visible .notebook-toolbar-container:visible"
+      );
+      state.toolbar.accessibleViewData = await toolbar.getByRole("button", { name: "View data", exact: true }).count();
+      const overflow = toolbar.getByRole("button", { name: /^More Actions(?:\.\.\.)?$/ });
+      const count = await overflow.count();
+      state.toolbar.overflow = { count };
+      if (count === 1) {
+        const expanded = await overflow.getAttribute("aria-expanded");
+        Object.assign(state.toolbar.overflow, {
+          visible: await overflow.isVisible(),
+          enabled: await overflow.isEnabled(),
+          expanded: expanded === "true" ? true : expanded === "false" ? false : null
+        });
+      }
       state.millisecondsFromFirstClick = opened === undefined ? null : performance.now() - opened;
       const observations = { ...receipt.entryDiagnostics, [point]: state };
       assert(Buffer.byteLength(JSON.stringify(observations), "utf8") <= 8192, "Entry diagnostic exceeds 8192 bytes");
@@ -956,8 +969,6 @@ exports.run = async function () {
     save();
     throw new Error(`Public comparison failed at ${stage}`);
   } finally {
-    if (vscode.window.activeNotebookEditor) await vscode.window.activeNotebookEditor.notebook.save().catch(() => {});
-    await vscode.commands.executeCommand("workbench.action.closeAllEditors").catch(() => {});
     await browser?.close().catch(() => {});
   }
 };
