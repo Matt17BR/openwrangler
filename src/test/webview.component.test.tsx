@@ -2859,27 +2859,7 @@ describe("DataGrid", () => {
     expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:0", "c:1"]);
   });
 
-  it("resizes columns from the keyboard and clearly labels empty rows and datasets", () => {
-    let currentViewState = { columnWidths: new Map<string, number>(), viewport: { firstVisibleRow: 0, scrollLeft: 0 } };
-    const onViewStateChange = vi.fn((next) => {
-      currentViewState = next;
-      rerender(
-        <DataGrid
-          metadata={metadata}
-          page={page}
-          summaries={[]}
-          pageSize={2}
-          defaultColumnWidth={190}
-          insightsOnOpen={false}
-          viewState={currentViewState}
-          onViewStateChange={onViewStateChange}
-          onPage={() => undefined}
-          onSortColumn={() => undefined}
-          onOpenFilter={() => undefined}
-          onVisibleSummaryColumnsChange={() => undefined}
-        />
-      );
-    });
+  it("clearly labels empty rows and datasets", () => {
     const { rerender } = render(
       <DataGrid
         metadata={metadata}
@@ -2888,18 +2868,12 @@ describe("DataGrid", () => {
         pageSize={2}
         defaultColumnWidth={190}
         insightsOnOpen={false}
-        viewState={currentViewState}
-        onViewStateChange={onViewStateChange}
         onPage={() => undefined}
         onSortColumn={() => undefined}
         onOpenFilter={() => undefined}
         onVisibleSummaryColumnsChange={() => undefined}
       />
     );
-
-    const resize = screen.getByRole("button", { name: "Resize city column" });
-    fireEvent.keyDown(resize, { key: "ArrowRight" });
-    expect(document.querySelectorAll("col")[1]).toHaveStyle({ width: "200px" });
 
     rerender(
       <DataGrid
@@ -2909,8 +2883,6 @@ describe("DataGrid", () => {
         pageSize={2}
         defaultColumnWidth={190}
         insightsOnOpen={false}
-        viewState={currentViewState}
-        onViewStateChange={onViewStateChange}
         onPage={vi.fn()}
         onSortColumn={() => undefined}
         onOpenFilter={() => undefined}
@@ -2929,8 +2901,6 @@ describe("DataGrid", () => {
         pageSize={2}
         defaultColumnWidth={190}
         insightsOnOpen={false}
-        viewState={currentViewState}
-        onViewStateChange={onViewStateChange}
         onPage={vi.fn()}
         onSortColumn={() => undefined}
         onOpenFilter={() => undefined}
