@@ -11,11 +11,12 @@ import type {
 } from "../../shared/filterModel";
 import { MAX_VIEW_VALUE_TEXT_UTF16_CODE_UNITS, truncateViewValueTextToCodePoints } from "../../shared/viewValueLimits";
 import {
+  compactColumnFilter,
   countViewColumnNames,
   isActiveColumnFilter,
   prioritizeSortRule,
   removeViewColumnFilter,
-  replaceViewColumnFilter,
+  replaceViewFilterEntry,
   supportsTypedViewComparison,
   valueCountSelectionValue,
   valueSelectionUnavailableReason,
@@ -175,9 +176,14 @@ export function FilterPanel({
     return <section className="panel">Preparing filters...</section>;
   }
 
-  const updateFilter = (nextFilter: ColumnFilter) => {
+  const updateFilter = (nextFilter: ColumnFilter, targetFilter = activeFilter) => {
     if (disabled || !filterSupported || !nextFilter.column) return;
-    onApply(replaceViewColumnFilter(model, nextFilter));
+    if (targetFilter) {
+      onApply(replaceViewFilterEntry(model, targetFilter, nextFilter));
+    } else {
+      const compactFilter = compactColumnFilter(nextFilter);
+      if (compactFilter) onApply({ ...model, filters: [...model.filters, compactFilter] });
+    }
   };
 
   const removeColumnFilter = (column: string) => {
@@ -187,33 +193,39 @@ export function FilterPanel({
 
   const removePredicate = (filter: ColumnFilter, index: number) => {
     if (disabled || !filterSupported) return;
-    updateFilter({
-      ...filter,
-      predicates: filter.predicates.filter((_, candidateIndex) => candidateIndex !== index)
-    });
+    updateFilter(
+      { ...filter, predicates: filter.predicates.filter((_, candidateIndex) => candidateIndex !== index) },
+      filter
+    );
   };
 
   const removeSelectedValue = (filter: ColumnFilter, value: unknown) => {
     if (disabled || !filterSupported || !filter.valueFilter) return;
     const key = selectionValueKey(value);
-    updateFilter({
-      ...filter,
-      valueFilter: {
-        ...filter.valueFilter,
-        selectedValues: filter.valueFilter.selectedValues.filter((candidate) => selectionValueKey(candidate) !== key)
-      }
-    });
+    updateFilter(
+      {
+        ...filter,
+        valueFilter: {
+          ...filter.valueFilter,
+          selectedValues: filter.valueFilter.selectedValues.filter((candidate) => selectionValueKey(candidate) !== key)
+        }
+      },
+      filter
+    );
   };
 
   const removeValueFlag = (filter: ColumnFilter, flag: "includeNulls" | "includeNaN") => {
     if (disabled || !filterSupported || !filter.valueFilter) return;
-    updateFilter({
-      ...filter,
-      valueFilter: {
-        ...filter.valueFilter,
-        [flag]: false
-      }
-    });
+    updateFilter(
+      {
+        ...filter,
+        valueFilter: {
+          ...filter.valueFilter,
+          [flag]: false
+        }
+      },
+      filter
+    );
   };
 
   const toggleValue = (value: unknown) => {
@@ -813,25 +825,30 @@ function ActiveFilterOverview({
   onRemoveSelectedValue,
   onRemoveValueFlag
 }: ActiveFilterOverviewProps) {
+  const filteredColumnCount = new Set(filters.map((filter) => filter.column)).size;
   return (
     <section className="activeFilterOverview" aria-label="Active filters">
       <header>
         <strong>Active filters</strong>
         <span className="mutedText">
-          {filters.length} filtered {filters.length === 1 ? "column" : "columns"}
+          {filteredColumnCount} filtered {filteredColumnCount === 1 ? "column" : "columns"}
         </span>
       </header>
       {filters.length === 0 ? (
         <p className="mutedText">No active filters.</p>
       ) : (
         <div className="activeFilterList">
-          {filters.map((filter) => {
+          {filters.map((filter, filterIndex) => {
             const columnLabel = activeFilterColumnLabel(filter.column, metadata);
             const conditionCount = activeFilterConditionCount(filter);
             const valueChoiceCount = activeFilterValueChoiceCount(filter);
             const rowLogic = filter.logic === "or" ? "any" : "all";
             return (
-              <section key={filter.column} className="activeFilterGroup" aria-label={`${columnLabel} filters`}>
+              <section
+                key={`${filterIndex}:${filter.column}`}
+                className="activeFilterGroup"
+                aria-label={`${columnLabel} filters`}
+              >
                 <header>
                   <span>
                     <strong>{columnLabel}</strong>

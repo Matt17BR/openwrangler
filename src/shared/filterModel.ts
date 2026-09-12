@@ -169,6 +169,21 @@ export const viewFilterRemovalSignature = (filters: readonly ColumnFilter[], col
   return group.length > 0 ? JSON.stringify(group) : undefined;
 };
 
+/** Replace or remove only the exact viewing-filter entry that supplied an individual action. */
+export const replaceViewFilterEntry = (
+  model: FilterModel,
+  targetEntry: ColumnFilter,
+  nextEntry: ColumnFilter
+): FilterModel => {
+  const index = model.filters.indexOf(targetEntry);
+  if (index < 0) return model;
+  const compactEntry = compactColumnFilter(nextEntry);
+  const filters = [...model.filters];
+  if (compactEntry) filters[index] = compactEntry;
+  else filters.splice(index, 1);
+  return { ...model, filters };
+};
+
 /**
  * Replace the active viewing filter for one displayed column while preserving
  * every other filter and the current sort order.

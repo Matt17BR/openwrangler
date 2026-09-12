@@ -122,7 +122,76 @@ function renderFocusSequence(initial: FocusViewState, requestIds = { apply: "cle
   };
 }
 
+const duplicateColumnModel: FilterModel = {
+  logic: "or",
+  filters: [
+    {
+      column: "city",
+      type: "string",
+      logic: "and",
+      valueFilter: { kind: "values", selectedValues: ["Milan"], includeNulls: true, includeNaN: false },
+      predicates: [{ kind: "predicate", operator: "notEquals", value: "Berlin" }]
+    },
+    { column: "city", type: "string", predicates: [{ kind: "predicate", operator: "notEquals", value: "Rome" }] },
+    { column: "sales", type: "float", predicates: [{ kind: "predicate", operator: "gt", value: 10 }] }
+  ],
+  sort: [{ column: "sales", direction: "desc", nulls: "last" }]
+};
+
 describe("ActiveFilterBar", () => {
+  it.each(["and", "or"] as const)("removes only the selected same-column entry with %s logic", (logic) => {
+    const [first, sibling, sales] = duplicateColumnModel.filters;
+    const model: FilterModel = {
+      ...duplicateColumnModel,
+      logic,
+      filters: logic === "and" ? [first, sibling, sales] : [sibling, first, sales]
+    };
+    const original = JSON.stringify(model);
+    const onApply = vi.fn();
+    const view = (current: FilterModel) => (
+      <ActiveFilterBar metadata={metadata} model={current} canUndo={false} onApply={onApply} onUndo={() => undefined} />
+    );
+    const rendered = render(view(model));
+    const withoutValue = { ...first, valueFilter: { ...first.valueFilter!, selectedValues: [] } };
+    const withoutFlags = { column: first.column, type: first.type, logic: first.logic, predicates: first.predicates };
+    const removals = [
+      { label: 'Remove equals "Milan" filter from city', entry: withoutValue },
+      { label: "Remove is null filter from city", entry: withoutFlags },
+      { label: 'Remove does not equal "Berlin" filter from city', entry: undefined }
+    ];
+    for (const removal of removals) {
+      fireEvent.click(screen.getByRole("button", { name: removal.label }));
+      const next = onApply.mock.lastCall![0] as FilterModel;
+      const filters = removal.entry
+        ? logic === "and"
+          ? [removal.entry, sibling, sales]
+          : [sibling, removal.entry, sales]
+        : [sibling, sales];
+      expect(next).toEqual({ ...model, filters });
+      expect(next.filters).toContain(sibling);
+      expect(next.filters.at(-1)).toBe(sales);
+      expect(next.sort).toBe(model.sort);
+      expect(JSON.stringify(model)).toBe(original);
+      rendered.rerender(view(next));
+      expect(screen.queryByRole("button", { name: removal.label })).not.toBeInTheDocument();
+    }
+    expect(screen.getByRole("button", { name: 'Remove does not equal "Rome" filter from city' })).toBeVisible();
+    expect(screen.getByText(`2 filtered columns; match ${logic === "or" ? "any" : "all"}`)).toBeVisible();
+  });
+
+  it("removes every rendered same-column group after a whole-column clear", () => {
+    const onApply = vi.fn();
+    const view = (current: FilterModel) => (
+      <ActiveFilterBar metadata={metadata} model={current} canUndo={false} onApply={onApply} onUndo={() => undefined} />
+    );
+    const rendered = render(view(duplicateColumnModel));
+
+    rendered.rerender(view({ ...duplicateColumnModel, filters: [duplicateColumnModel.filters[2]] }));
+    expect(screen.queryAllByRole("group", { name: /city filters/u })).toHaveLength(0);
+    expect(screen.getByRole("group", { name: "sales filters" })).toBeVisible();
+    expect(screen.getByText("1 filtered column; match any")).toBeVisible();
+  });
+
   it("keeps every typed filter visible and removes rules individually without changing sorts", () => {
     const onApply = vi.fn();
     const Harness = () => {
