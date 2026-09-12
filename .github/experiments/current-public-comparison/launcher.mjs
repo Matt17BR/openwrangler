@@ -305,6 +305,7 @@ try {
           "extensions.autoCheckUpdates": false,
           "workbench.startupEditor": "none",
           "window.zoomLevel": 0,
+          "window.newWindowDimensions": "fullscreen",
           "window.dialogStyle": "custom",
           "files.simpleDialog.enable": true
         });

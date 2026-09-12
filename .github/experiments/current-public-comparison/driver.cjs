@@ -120,6 +120,16 @@ exports.run = async function () {
       "workbench"
     );
     page.setDefaultTimeout(5000);
+    receipt.setup.workbenchGeometry = await page.evaluate(() => ({
+      innerWidth: window.innerWidth,
+      innerHeight: window.innerHeight,
+      screenWidth: window.screen.width,
+      screenHeight: window.screen.height,
+      availableWidth: window.screen.availWidth,
+      availableHeight: window.screen.availHeight,
+      devicePixelRatio: window.devicePixelRatio
+    }));
+    assert(Object.values(receipt.setup.workbenchGeometry).every(Number.isFinite), "Invalid workbench geometry");
     const frames = (publicFrames = () =>
       browser
         .contexts()
@@ -510,88 +520,15 @@ exports.run = async function () {
         );
         const action = await poll(async () => {
           await consent();
-          if (!sample.toolbarOverflowUsed) {
-            const direct = toolbar.getByRole("button", { name: "View data", exact: true });
-            assert((await direct.count()) <= 1, "PILOT_GATE:ambiguous-view-data");
-            if (await visible(direct)) return direct;
-            const overflow = toolbar.getByRole("button", { name: /^More Actions(?:\.\.\.)?$/ });
-            assert((await overflow.count()) <= 1, "PILOT_GATE:ambiguous-notebook-overflow");
-            if (await visible(overflow)) {
-              assert(await overflow.isEnabled(), "PILOT_GATE:disabled-notebook-overflow");
-              checkpoint(`${sampleName}:open`);
-              opened = performance.now();
-              sample.overflowActivation = "focus-enter";
-              const focus = await overflow.evaluate((element) => {
-                element.focus();
-                return {
-                  connected: element.isConnected,
-                  tag: element.tagName === "A" ? "a" : element.tagName === "BUTTON" ? "button" : "other",
-                  tabIndex: element.tabIndex,
-                  focused: element.getRootNode().activeElement === element,
-                  button: element.getAttribute("role") === "button",
-                  hasPopup: element.getAttribute("aria-haspopup") === "true",
-                  collapsed: element.getAttribute("aria-expanded") === "false",
-                  ariaEnabled: element.getAttribute("aria-disabled") !== "true",
-                  disabledClass: Boolean(element.closest(".disabled"))
-                };
-              });
-              receipt.entryDiagnostics = { overflowActivation: focus };
-              assert(
-                focus.connected &&
-                  focus.focused &&
-                  focus.button &&
-                  focus.hasPopup &&
-                  focus.collapsed &&
-                  focus.ariaEnabled &&
-                  !focus.disabledClass,
-                "DIAGNOSTIC_GATE:overflow-keyboard-focus-state"
-              );
-              await page.keyboard.press("Enter");
-              sample.toolbarOverflowUsed = true;
-            }
-          }
-          if (!sample.toolbarOverflowUsed) return false;
-          const item = page
-            .locator(".context-view.monaco-menu-container:visible")
-            .getByRole("menuitem", { name: "View data", exact: true });
-          assert((await item.count()) <= 1, "PILOT_GATE:ambiguous-view-data-menu");
-          return (await visible(item)) ? item : false;
+          const direct = toolbar.getByRole("button", { name: "View data", exact: true });
+          assert((await direct.count()) <= 1, "PILOT_GATE:ambiguous-view-data");
+          return (await visible(direct)) ? direct : false;
         }, "public-view-data");
         assert(await action.isEnabled(), "PILOT_GATE:disabled-view-data");
-        if (opened === undefined) {
-          checkpoint(`${sampleName}:open`);
-          opened = performance.now();
-        }
-        if (sample.toolbarOverflowUsed) {
-          sample.entryActivation = "menu-hover-enter";
-          // Native menu hover updates its focused action before keyboard activation.
-          await action.hover();
-          const focus = await action.evaluate((element) => {
-            const root = element.getRootNode();
-            return {
-              focused: root.activeElement === element,
-              rootIsShadow: root instanceof ShadowRoot,
-              menuItem: element.getAttribute("role") === "menuitem",
-              hasPopup: element.getAttribute("aria-haspopup") === "true",
-              expanded: element.getAttribute("aria-expanded") === "true",
-              disabled: element.getAttribute("aria-disabled") === "true"
-            };
-          });
-          const observations = {
-            ...receipt.entryDiagnostics,
-            activation: { entryActivation: sample.entryActivation, ...focus }
-          };
-          assert(
-            Buffer.byteLength(JSON.stringify(observations), "utf8") <= 8192,
-            "Entry diagnostic exceeds 8192 bytes"
-          );
-          receipt.entryDiagnostics = observations;
-          assert(focus.focused, "PILOT_GATE:view-data-menu-focus");
-          await page.keyboard.press("Enter");
-        } else {
-          sample.entryActivation = "button-click";
-          await action.click();
-        }
+        checkpoint(`${sampleName}:open`);
+        opened = performance.now();
+        sample.entryActivation = "button-click";
+        await action.click();
         const pickerStarted = performance.now();
         checkpoint(`${sampleName}:variable-picker`);
         const option = await poll(async () => {
