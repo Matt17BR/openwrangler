@@ -1491,6 +1491,140 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(harness.htmlAssignmentCount).toBe(originalAssignments);
     expect(harness.posted).toEqual([]);
   });
+
+  it.each([
+    { code: "engine_error", sessionId: "session", expectedCode: "engine_error", matches: true, sinkThrows: false },
+    { code: "private_customer_token", sessionId: undefined, expectedCode: "other", matches: null, sinkThrows: false },
+    {
+      code: "stale_request",
+      sessionId: "private-other-session",
+      expectedCode: "stale_request",
+      matches: false,
+      sinkThrows: true
+    }
+  ])("records bounded Apply failure $expectedCode without changing its response", async (scenario) => {
+    const failure: OpenWranglerResponse = {
+      kind: "error",
+      code: scenario.code,
+      message: "Private dataframe contents must not enter the diagnostic.",
+      detail: "Private generated code must not enter the diagnostic.",
+      recoverable: false,
+      ...(scenario.sessionId === undefined ? {} : { sessionId: scenario.sessionId })
+    };
+    const request = vi.fn(async () => failure);
+    const reportDiagnostic = vi.fn((_message: string) => {
+      if (scenario.sinkThrows) throw new Error("Diagnostic sink unavailable");
+    });
+    const harness = createPanelHarness(
+      { request, reportDiagnostic },
+      { openResponse: { ...openedResponse, metadata: { ...metadata, revision: 7 } } }
+    );
+    await harness.open();
+    harness.posted.length = 0;
+
+    await harness.receive({
+      kind: "runtimeRequest",
+      request: { kind: "applyDraft", offset: 0, limit: 200, columnOffset: 0, columnLimit: 16 }
+    });
+
+    expect(request).toHaveBeenCalledOnce();
+    expect(harness.posted).toEqual([failure]);
+    expect(reportDiagnostic).toHaveBeenCalledExactlyOnceWith(
+      `Open Wrangler Apply returned an error: ${JSON.stringify({
+        code: scenario.expectedCode,
+        recoverable: false,
+        requestedRevision: 7,
+        responseSessionMatches: scenario.matches
+      })}`
+    );
+  });
+
+  it.each(["successful Apply", "other request error", "thrown Apply"] as const)(
+    "does not report a returned Apply failure for %s",
+    async (scenario) => {
+      const response: OpenWranglerResponse =
+        scenario === "successful Apply"
+          ? {
+              kind: "planUpdated",
+              action: "apply",
+              revision: 1,
+              metadata: { ...metadata, revision: 1 },
+              page,
+              code: "clean_df = df"
+            }
+          : { kind: "error", code: "engine_error", message: "Refused", recoverable: true };
+      const request = vi.fn(async () => {
+        if (scenario === "thrown Apply") throw new Error("Forwarding failed");
+        return response;
+      });
+      const reportDiagnostic = vi.fn();
+      const harness = createPanelHarness({ request, reportDiagnostic });
+      await harness.open();
+      harness.posted.length = 0;
+      await harness.receive({
+        kind: "runtimeRequest",
+        request: {
+          kind: scenario === "other request error" ? "discardDraft" : "applyDraft",
+          offset: 0,
+          limit: 200,
+          columnOffset: 0,
+          columnLimit: 16
+        }
+      });
+      expect(request).toHaveBeenCalledOnce();
+      expect(reportDiagnostic).not.toHaveBeenCalled();
+      expect(harness.posted).toContainEqual(
+        scenario === "thrown Apply"
+          ? { kind: "error", code: "bridge_error", message: "Forwarding failed", recoverable: true }
+          : response
+      );
+    }
+  );
+
+  it.each(["disposed", "recovery-held"] as const)(
+    "records a returned Apply failure while its publication is %s",
+    async (state) => {
+      let notify!: (replacement: SessionRuntimeReplacement) => void;
+      const result = deferred<OpenWranglerResponse>();
+      const request = vi.fn(async () => result.promise);
+      const reportDiagnostic = vi.fn();
+      const harness = createPanelHarness({
+        request,
+        reportDiagnostic,
+        onDidReplaceRuntime: (listener) => {
+          notify = listener;
+          return { dispose() {} };
+        }
+      });
+      await harness.open();
+      harness.posted.length = 0;
+      const applying = harness.receive({
+        kind: "runtimeRequest",
+        request: { kind: "applyDraft", offset: 0, limit: 200, columnOffset: 0, columnLimit: 16 }
+      });
+      await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+      if (state === "disposed") harness.dispose();
+      else
+        notify({
+          sessionId: metadata.sessionId,
+          isCurrent: () => true,
+          captureView: () => () => true,
+          readPage: vi.fn()
+        });
+      result.resolve({
+        kind: "error",
+        code: "engine_error",
+        message: "Refused",
+        recoverable: true,
+        sessionId: metadata.sessionId
+      });
+      await applying;
+      expect(reportDiagnostic).toHaveBeenCalledExactlyOnceWith(
+        'Open Wrangler Apply returned an error: {"code":"engine_error","recoverable":true,"requestedRevision":0,"responseSessionMatches":true}'
+      );
+      expect(harness.posted.some((message) => (message as { kind?: string }).kind === "error")).toBe(false);
+    }
+  );
   afterEach(() => {
     while (liveHarnesses.length) liveHarnesses.pop()?.dispose();
     delete (window as unknown as { showQuickPick?: unknown }).showQuickPick;
