@@ -6,6 +6,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Pandas native duration categories search displayed labels with correct counts and exclude nonmatching categories.
 - Pandas profiles and value choices preserve built-in Python timedelta labels so displayed values can be searched.
 
 ## [2.4.0] - 2026-09-12

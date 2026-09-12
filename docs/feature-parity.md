@@ -276,8 +276,10 @@ Pandas durations stored in seconds, milliseconds or microseconds remain displaya
 Their selections retain the existing Python timedelta range; wider values remain visible but cannot be selected.
 Pandas Arrow duration pages, profiles and choices preserve valid int64 extrema and dictionary labels. The minimum
 microsecond value remains selectable; native and generated filters compare it exactly without an overflowing conversion.
-NumPy-backed Pandas duration columns search the labels shown in value choices, including whole days and large durations.
-Sparse, Arrow, categorical and object duration searches retain their existing representation limits.
+NumPy-backed Pandas duration columns and categories search the labels shown in value choices, including whole days
+and large durations. Matching unused duration categories remain available with zero counts.
+Some wide native-duration category selections can still fail.
+Sparse, Arrow-backed (including Arrow-backed categories) and object duration searches retain their existing representation limits.
 Polars Datetime and Duration columns retain nanoseconds in grid cells, value choices and profile labels, and datetime
 offsets retain seconds. Duration choices now work and use native signed-unit labels, such as `1m 40s 1µs`.
 Datetime labels retain the native unit's three, six or nine fractional digits. Search accepts the displayed labels,

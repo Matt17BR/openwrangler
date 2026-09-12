@@ -487,10 +487,13 @@ Value-choice ranking retains the leading `limit + 1` labeled candidates and the 
 label collection. Native counting and ordinary text search remain exhaustive over their inputs. All distinct labels
 are evaluated before publication, so a late formatting failure still refuses the entire request.
 
-Native NumPy `timedelta64` columns and dictionary strings search the counted labels. Duration search uses the same
-scalar labels published in choices, including whole-day clocks and values outside the nanosecond range. It retains
-the full native distinct-count state before searching, without a full-source label array. Sparse, Arrow, categorical
-and object durations keep their original row-text search behavior.
+Native NumPy `timedelta64` columns, categories with that native dtype, and dictionary strings search the counted labels.
+Matching unused duration categories retain their zero counts; nonmatching categories do not fill search results.
+Duration search uses the same scalar labels published in choices, including whole-day clocks and values outside the
+nanosecond range. It retains the full native distinct-count state before searching, without a full-source label array.
+Sparse, Arrow-backed
+(including Arrow-backed categories) and object durations keep their original row-text search behavior.
+Categorical filtering still uses native comparison; some wide native-duration category selections can still fail.
 
 Datetime cells and nested values share one formatter. Pandas Timestamp nanoseconds are inserted into the time
 fraction while preserving the complete native offset, including offset seconds. Ordinary Timestamp profile and
