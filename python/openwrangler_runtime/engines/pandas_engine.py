@@ -263,6 +263,39 @@ def _pandas_numeric_filter(series: Any, method: str, values: Sequence[Any], dura
             return duration_keys.ge(operands[0]) & duration_keys.le(operands[1])
         return duration_keys.isin(operands) if method == "isin" else getattr(duration_keys, method)(operands[0])
 
+    if method == "isin" and isinstance(series.dtype, pd.CategoricalDtype):
+        dtype = series.cat.categories.dtype
+        arrow_duration = False
+        if isinstance(dtype, pd.ArrowDtype):
+            import pyarrow as pa
+
+            arrow_duration = pa.types.is_duration(dtype.pyarrow_dtype)
+        if (isinstance(dtype, np.dtype) and dtype.kind == "m" or arrow_duration) and all(
+            type(value) is timedelta for value in values
+        ):
+            # Keep native category lookup from narrowing wide categories to the operand unit.
+            unit, multiplier = (
+                (dtype.pyarrow_dtype.unit, 1) if isinstance(dtype, pd.ArrowDtype) else np.datetime_data(dtype)
+            )
+            if multiplier == 0 and values:
+                raise ValueError("Cannot select categorical durations with a zero unit multiplier.")
+            scale = {"s": 1, "ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}[unit]
+            denominator = 1_000_000 * multiplier
+            bounds = [
+                divmod(((value.days * 86_400 + value.seconds) * 1_000_000 + value.microseconds) * scale, denominator)
+                for value in values
+            ]
+            # Arrow keeps the minimum int64 tick as a value; NumPy reserves it for NaT.
+            minimum = -(2**63) if isinstance(dtype, pd.ArrowDtype) else -(2**63) + 1
+            ticks = [floor for floor, remainder in bounds if not remainder and minimum <= floor < 2**63]
+            if isinstance(dtype, pd.ArrowDtype):
+                import pyarrow as pa
+
+                operands = pd.array(pa.array(ticks, type=dtype.pyarrow_dtype), dtype=dtype)
+            else:
+                operands = np.asarray(ticks, dtype=dtype)
+            return series.isin(operands)
+
     if isinstance(series.dtype, pd.ArrowDtype):
         import pyarrow as pa
 
@@ -951,7 +984,8 @@ class PandasEngine(DataFrameEngine):
                 prepared.isetitem(position, values)
         sliced = prepared
         temporal_columns = [
-            _pandas_arrow_temporal_array(sliced.iloc[:, value_offset + index]) for index in range(len(positions))
+            _pandas_arrow_temporal_array(sliced.iloc[:, value_offset + index], categorical=True)
+            for index in range(len(positions))
         ]
         row_id_token = self._row_id_token(df.columns[row_id_position]) if row_id_position is not None else None
         rows = []
@@ -1025,7 +1059,7 @@ class PandasEngine(DataFrameEngine):
             null_count, nan_count = _missing_value_counts(series)
             value_counts = _pandas_value_counts(series, duration=semantic_type == "duration")
             top_counts = value_counts.head(10)
-            temporal_counts = _pandas_arrow_temporal_array(top_counts.index)
+            temporal_counts = _pandas_arrow_temporal_array(top_counts.index, categorical=True)
             top_values = [
                 {
                     "value": _pandas_temporal_text(
@@ -1241,7 +1275,7 @@ class PandasEngine(DataFrameEngine):
                         matches[position] = needle in alias.translate(_ASCII_TO_LOWER)
             series = series[matches]
         value_counts = _pandas_value_counts(series, sort=False, duration=column_type == "duration")
-        temporal_counts = _pandas_arrow_temporal_array(value_counts.index)
+        temporal_counts = _pandas_arrow_temporal_array(value_counts.index, categorical=True)
         counts = (
             (
                 index,
@@ -2057,6 +2091,11 @@ class PandasEngine(DataFrameEngine):
                     "",
                     "def _open_wrangler_mask(series, predicate):",
                     "    if predicate is _open_wrangler_is_null or predicate is _open_wrangler_is_nan:",
+                    "        if (isinstance(series.dtype, pd.CategoricalDtype)",
+                    "                and series.cat.categories.dtype.kind in {'M', 'm'}):",
+                    "            if predicate is _open_wrangler_is_null:",
+                    "                return series.isna()",
+                    "            return pd.Series(False, index=series.index, dtype=bool)",
                     "        array = _open_wrangler_arrow_temporal_array(series)",
                     "        if array is not None:",
                     "            if predicate is _open_wrangler_is_nan:",
@@ -4028,8 +4067,10 @@ def _pandas_text_summary(series: Any) -> dict[str, int | float]:
     import pandas as pd
 
     inferred = pd.api.types.infer_dtype(series, skipna=True) if pd.api.types.is_object_dtype(series.dtype) else None
-    categorical_strings = isinstance(series.dtype, pd.CategoricalDtype) and all(
-        isinstance(value, str) for value in series.cat.categories
+    categorical_strings = (
+        isinstance(series.dtype, pd.CategoricalDtype)
+        and series.cat.categories.dtype.kind not in {"M", "m"}
+        and all(isinstance(value, str) for value in series.cat.categories)
     )
     if isinstance(series.dtype, pd.StringDtype) or categorical_strings or inferred in {"string", "unicode", "empty"}:
         text = series if isinstance(series.dtype, pd.StringDtype) else series.astype("string")
@@ -4054,13 +4095,28 @@ def _pandas_text_summary(series: Any) -> dict[str, int | float]:
     value_count = 0
     if isinstance(series.dtype, pd.CategoricalDtype):
         category_counts = series.cat.codes.value_counts(sort=False)
-        values_and_counts = (
-            (series.cat.categories[int(code)], int(count)) for code, count in category_counts.items() if int(code) >= 0
-        )
+        if series.cat.categories.dtype.kind in {"M", "m"}:
+            category_counts = category_counts[category_counts.index >= 0]
+            values = pd.Categorical.from_codes(category_counts.index, dtype=series.dtype)
+            temporal = _pandas_arrow_temporal_array(values, categorical=True)
+            cells_and_counts = (
+                (_pandas_temporal_cell(value, temporal[position] if temporal is not None else None), int(count))
+                for position, (value, count) in enumerate(
+                    zip(_pandas_temporal_output_values(values, temporal), category_counts.array, strict=True)
+                )
+            )
+        else:
+            cells_and_counts = (
+                (normalize_cell(series.cat.categories[int(code)]), int(count))
+                for code, count in category_counts.items()
+                if int(code) >= 0
+            )
     else:
-        values_and_counts = ((value, 1) for value in series.array if not _pandas_is_missing_scalar(value))
-    for value, count in values_and_counts:
-        length = len(str(normalize_cell(value)["display"]))
+        cells_and_counts = (
+            (normalize_cell(value), 1) for value in series.array if not _pandas_is_missing_scalar(value)
+        )
+    for cell, count in cells_and_counts:
+        length = len(str(cell["display"]))
         empty_count += count if length == 0 else 0
         minimum_length = length if minimum_length is None or length < minimum_length else minimum_length
         maximum_length = length if maximum_length is None or length > maximum_length else maximum_length
@@ -5685,6 +5741,42 @@ def _generated_pandas_numeric_filter_helpers() -> list[str]:
         '        return (duration_keys.isin(operands) if method == "isin"',
         "                else getattr(duration_keys, method)(operands[0]))",
         "",
+        '    if method == "isin" and isinstance(series.dtype, pd.CategoricalDtype):',
+        "        dtype = series.cat.categories.dtype",
+        "        arrow_duration = False",
+        "        if isinstance(dtype, pd.ArrowDtype):",
+        "            import pyarrow as pa",
+        "",
+        "            arrow_duration = pa.types.is_duration(dtype.pyarrow_dtype)",
+        "        if (",
+        '            isinstance(dtype, np.dtype) and dtype.kind == "m" or arrow_duration',
+        "        ) and all(type(value) is timedelta for value in values):",
+        "            # Keep native category lookup from narrowing wide categories to the operand unit.",
+        "            unit, multiplier = (",
+        "                (dtype.pyarrow_dtype.unit, 1)",
+        "                if isinstance(dtype, pd.ArrowDtype) else np.datetime_data(dtype)",
+        "            )",
+        "            if multiplier == 0 and values:",
+        '                raise ValueError("Cannot select categorical durations with a zero unit multiplier.")',
+        '            scale = {"s": 1, "ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}[unit]',
+        "            denominator = 1_000_000 * multiplier",
+        "            bounds = [",
+        "                divmod(",
+        "                    ((value.days * 86_400 + value.seconds) * 1_000_000 + value.microseconds) * scale,",
+        "                    denominator)",
+        "                for value in values",
+        "            ]",
+        "            # Arrow keeps the minimum int64 tick as a value; NumPy reserves it for NaT.",
+        "            minimum = -(2**63) if isinstance(dtype, pd.ArrowDtype) else -(2**63) + 1",
+        "            ticks = [floor for floor, remainder in bounds if not remainder and minimum <= floor < 2**63]",
+        "            if isinstance(dtype, pd.ArrowDtype):",
+        "                import pyarrow as pa",
+        "",
+        "                operands = pd.array(pa.array(ticks, type=dtype.pyarrow_dtype), dtype=dtype)",
+        "            else:",
+        "                operands = np.asarray(ticks, dtype=dtype)",
+        "            return series.isin(operands)",
+        "",
         "    if isinstance(series.dtype, pd.ArrowDtype):",
         "        import pyarrow as pa",
         "",
@@ -6207,6 +6299,7 @@ def _pandas_fill_missing_directional(
     """Fill complete missing runs in calculation order, then restore source order."""
 
     import numpy as np
+    import pandas as pd
 
     series = frame.iloc[:, target_position]
     missing = _null_mask(series) | _nan_mask(series)
@@ -6241,7 +6334,11 @@ def _pandas_fill_missing_directional(
         if (max_gap is None or gap_size <= max_gap) and 0 <= anchor < len(result):
             try:
                 result.iloc[start:end] = (
-                    ordered_temporal[anchor] if ordered_temporal is not None else ordered.iloc[anchor]
+                    ordered.array[anchor : anchor + 1].repeat(gap_size)
+                    if isinstance(ordered.dtype, pd.CategoricalDtype)
+                    else ordered_temporal[anchor]
+                    if ordered_temporal is not None
+                    else ordered.iloc[anchor]
                 )
                 filled = True
             except (TypeError, ValueError, OverflowError) as error:
@@ -7144,10 +7241,11 @@ def _generated_pandas_fill_directional_helpers() -> list[str]:
         "        anchor = start - 1 if direction == 'forward' else end",
         "        if (max_gap is None or gap_size <= max_gap) and 0 <= anchor < len(result):",
         "            try:",
-        (
-            "                result.iloc[start:end] = ordered_temporal[anchor] if "
-            "ordered_temporal is not None else ordered.iloc[anchor]"
-        ),
+        "                result.iloc[start:end] = (",
+        "                    ordered.array[anchor:anchor + 1].repeat(gap_size)",
+        "                    if isinstance(ordered.dtype, pd.CategoricalDtype)",
+        "                    else ordered_temporal[anchor] if ordered_temporal is not None else ordered.iloc[anchor]",
+        "                )",
         "                filled = True",
         "            except (TypeError, ValueError, OverflowError) as error:",
         (
@@ -7447,9 +7545,22 @@ def _generated_pandas_fill_helpers(strategies: set[str], *, needs_value_statisti
     return lines
 
 
-def _pandas_arrow_temporal_array(series: Any) -> Any:
+def _pandas_arrow_temporal_array(series: Any, *, categorical: bool = False) -> Any:
     import pandas as pd
 
+    # Decode category codes only for output; execution retains native categorical storage.
+    if categorical and isinstance(series.dtype, pd.CategoricalDtype):
+        values = series if isinstance(series, pd.Categorical) else series.array
+        dtype = values.categories.dtype
+        if not isinstance(dtype, pd.ArrowDtype):
+            return None
+        import pyarrow as pa
+
+        if pa.types.is_timestamp(dtype.pyarrow_dtype) or pa.types.is_duration(dtype.pyarrow_dtype):
+            return cast(
+                "pd.arrays.ArrowExtensionArray", values.categories.array.take(values.codes, allow_fill=True)
+            ).__arrow_array__()
+        return None
     if not isinstance(series.dtype, pd.ArrowDtype):
         return None
     import pyarrow as pa
@@ -7461,18 +7572,34 @@ def _pandas_arrow_temporal_array(series: Any) -> Any:
 
 
 def _pandas_temporal_output_values(values: Any, array: Any) -> Iterable[Any]:
+    import numpy as np
+    import pandas as pd
+
+    categorical = isinstance(values.dtype, pd.CategoricalDtype)
     if array is None:
+        if categorical:
+            categories = values.dtype.categories
+            dtype = categories.dtype
+            if isinstance(dtype, np.dtype) and dtype.kind == "m" and np.datetime_data(dtype)[1] != 1:
+                native = categories.to_numpy(copy=False)
+                codes = values.codes if isinstance(values, pd.Categorical) else values.array.codes
+                yield from (native[code] if code >= 0 else pd.NaT for code in codes)
+                return
         yield from values
         return
     import pyarrow as pa
 
     if not pa.types.is_duration(array.type):
-        yield from values
+        if categorical:
+            yield from (
+                pd.Timestamp(scalar.value, unit=array.type.unit, tz=array.type.tz) if scalar.is_valid else pd.NA
+                for scalar in array
+            )
+        else:
+            yield from values
         return
-    import numpy as np
-    import pandas as pd
 
-    dictionary = _pandas_dictionary_value_type(values) is not None
+    dictionary = _pandas_dictionary_value_type(values) is not None or categorical
     unit = array.type.unit
     for scalar in array:
         if not scalar.is_valid:
@@ -7521,6 +7648,10 @@ def _pandas_temporal_text(value: Any, scalar: Any) -> str:
 
 def _scalar_mask(series: Any, predicate: Any) -> Any:
     if predicate is _is_null_value or predicate is _is_nan_value:
+        import pandas as pd
+
+        if isinstance(series.dtype, pd.CategoricalDtype) and series.cat.categories.dtype.kind in {"M", "m"}:
+            return series.isna() if predicate is _is_null_value else pd.Series(False, index=series.index, dtype=bool)
         array = _pandas_arrow_temporal_array(series)
         if array is not None:
             if predicate is _is_nan_value:

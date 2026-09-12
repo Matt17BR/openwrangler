@@ -1443,3 +1443,210 @@ def test_pandas_duration_filters_preserve_native_ticks(unit, storage):
         assert source.attrs == before.attrs
     finally:
         engine.close()
+
+
+@pytest.mark.parametrize("unit", ["s", "ms", "us", "ns", "2s", "3ms", "2us", "3ns"])
+@pytest.mark.parametrize("ordered", [False, True])
+def test_pandas_categorical_duration_selections_preserve_native_ticks(unit, ordered):
+    from fractions import Fraction
+
+    ticks = [2**63 - 1, 1000, 1, 0, -1, -1000, -(2**63) + 1]
+    categories = np.asarray(ticks, dtype=np.int64).view(f"timedelta64[{unit}]")
+    codes = [0, 1, 2, 3, 4, 5, 6, 0, -1]
+    frame = pd.DataFrame(
+        {"value": pd.Categorical.from_codes(codes, categories=categories, ordered=ordered), "row": range(len(codes))}
+    )
+    frame.index = pd.Index(["same"] * len(frame), name="retained")
+    frame.attrs = {"origin": "retained"}
+    before = frame.copy(deep=True)
+    base_unit, multiplier = np.datetime_data(categories.dtype)
+    scale = {"s": 1, "ms": 1000, "us": 1_000_000, "ns": 1_000_000_000}[base_unit]
+    seconds = [Fraction(ticks[code] * multiplier, scale) if code >= 0 else None for code in codes]
+    selections = [
+        [],
+        [timedelta(0)],
+        [timedelta(microseconds=-1), timedelta(microseconds=1)],
+        [timedelta(seconds=1), timedelta(milliseconds=1), timedelta(microseconds=1)],
+        [timedelta(seconds=2), timedelta(milliseconds=3), timedelta(microseconds=2), timedelta(microseconds=3)],
+        [
+            timedelta(microseconds=2**63 - 1),
+            timedelta(microseconds=-(2**63) + 1),
+            timedelta(microseconds=-(2**63)),
+        ],
+        [timedelta(microseconds=2**63 + 1)],
+        [timedelta.min, timedelta.max],
+    ]
+    engine = PandasEngine()
+    try:
+        assert frame["value"].cat.categories.dtype == np.dtype(f"timedelta64[{unit}]")
+        assert engine.schema(frame)[0]["type"] == "string"
+        for selected in selections:
+            exact = {
+                Fraction((value.days * 86_400 + value.seconds) * 1_000_000 + value.microseconds, 1_000_000)
+                for value in selected
+            }
+            tokens = [typed_selection_value(value, "string") for value in selected]
+            assert all(token is not None for token in tokens)
+            for include_nulls in (False, True):
+                model = {
+                    "filters": [
+                        {
+                            "column": "value",
+                            "type": "string",
+                            "predicates": [],
+                            "valueFilter": {
+                                "kind": "values",
+                                "selectedValues": tokens,
+                                "includeNulls": include_nulls,
+                                "includeNaN": True,
+                            },
+                        }
+                    ],
+                    "sort": [],
+                }
+                expected = [i for i, value in enumerate(seconds) if value in exact or value is None and include_nulls]
+                for result in (
+                    engine.apply_filter_model(frame, model),
+                    _execute_generated_filter(engine, frame, model),
+                ):
+                    pd.testing.assert_frame_equal(result, frame.iloc[expected], check_exact=True)
+                    assert result.attrs == frame.attrs
+        pd.testing.assert_frame_equal(frame, before, check_exact=True)
+        assert frame.attrs == before.attrs
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("codes", [[], [-1, -1], [1, -1, 1]], ids=["empty", "missing", "unused-wide"])
+def test_pandas_categorical_duration_selections_preserve_missing_and_unused_categories(codes):
+    categories = np.asarray([2**63 - 1, 0], dtype=np.int64).view("timedelta64[us]")
+    frame = pd.DataFrame({"value": pd.Categorical.from_codes(codes, categories=categories), "row": range(len(codes))})
+    frame.index = pd.Index(["same"] * len(frame), name="retained")
+    before = frame.copy(deep=True)
+    engine = PandasEngine()
+    try:
+        for value in (timedelta(0), timedelta(microseconds=2**63 - 1)):
+            token = typed_selection_value(value, "string")
+            assert token is not None
+            model = _value_selection_model("string", token)
+            for include_nulls in (False, True):
+                model["filters"][0]["valueFilter"]["includeNulls"] = include_nulls
+                expected = [
+                    i
+                    for i, code in enumerate(codes)
+                    if code == 1 and value == timedelta(0) or code == -1 and include_nulls
+                ]
+                for result in (
+                    engine.apply_filter_model(frame, model),
+                    _execute_generated_filter(engine, frame, model),
+                ):
+                    pd.testing.assert_frame_equal(result, frame.iloc[expected], check_exact=True)
+        pd.testing.assert_frame_equal(frame, before, check_exact=True)
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize(
+    "unit,codes",
+    [(unit, [0, 1, 2, 3, 4, 5, 6, 0, -1]) for unit in ("s", "ms", "us", "ns")]
+    + [("us", []), ("us", [-1, -1]), ("s", [5, -1, 5])],
+)
+def test_pandas_arrow_categorical_duration_membership_preserves_native_ticks(unit, codes):
+    from fractions import Fraction
+
+    import pyarrow as pa
+
+    from openwrangler_runtime.engines import pandas_engine
+
+    ticks = [-(2**63), 2**63 - 1, 86399999913601, 1000, 1, 0, -1]
+    dtype = pd.ArrowDtype(pa.duration(unit))
+    categories = pd.Index(pd.array(pa.array(ticks, type=dtype.pyarrow_dtype), dtype=dtype))
+    series = pd.Series(
+        pd.Categorical.from_codes(codes, categories=categories, ordered=True),
+        index=pd.Index(["same"] * len(codes), name="retained"),
+        name="value",
+    )
+    before = series.copy(deep=True)
+    scale = {"s": 1, "ms": 1000, "us": 1_000_000, "ns": 1_000_000_000}[unit]
+    seconds = [Fraction(ticks[code], scale) if code >= 0 else None for code in codes]
+    namespace = {"np": np, "pd": pd, "timedelta": timedelta}
+    exec("\n".join(pandas_engine._generated_pandas_numeric_filter_helpers()), namespace, namespace)
+    for selected in [
+        [],
+        [timedelta(0)],
+        [timedelta(microseconds=-1), timedelta(microseconds=1)],
+        [timedelta(seconds=86399999913601)],
+        [timedelta(microseconds=-(2**63)), timedelta(microseconds=2**63 - 1)],
+        [timedelta(microseconds=-(2**63) - 1), timedelta(microseconds=2**63)],
+        [timedelta.min, timedelta.max],
+    ]:
+        exact = {
+            Fraction((value.days * 86_400 + value.seconds) * 1_000_000 + value.microseconds, 1_000_000)
+            for value in selected
+        }
+        expected = pd.Series([value in exact for value in seconds], index=series.index, name=series.name, dtype=bool)
+        for helper in (pandas_engine._pandas_numeric_filter, namespace["_open_wrangler_numeric_filter"]):
+            pd.testing.assert_series_equal(helper(series, "isin", selected), expected)
+    pd.testing.assert_series_equal(series, before, check_exact=True)
+    assert series.cat.categories.array.__arrow_array__().cast(pa.int64()).to_pylist() == ticks
+
+
+@pytest.mark.parametrize("storage", ["numpy", "arrow"])
+def test_pandas_categorical_duration_filter_fallbacks_retain_native_semantics(storage):
+    import pyarrow as pa
+
+    from openwrangler_runtime.engines import pandas_engine
+
+    class CustomDuration(timedelta):
+        pass
+
+    values = (
+        np.asarray([0, 1, -(2**63)], dtype=np.int64).view("timedelta64[us]")
+        if storage == "numpy"
+        else pd.array(pa.array([0, 1, None], type=pa.duration("us")), dtype=pd.ArrowDtype(pa.duration("us")))
+    )
+    series = pd.Series(pd.Categorical(values))
+    before = series.copy(deep=True)
+    namespace = {"np": np, "pd": pd, "timedelta": timedelta}
+    exec("\n".join(pandas_engine._generated_pandas_numeric_filter_helpers()), namespace, namespace)
+    for method, values in [
+        ("isin", [timedelta(microseconds=1), "0 days"]),
+        ("isin", [CustomDuration(microseconds=1)]),
+        ("isin", [pd.Timedelta(1, "us")]),
+        ("isin", ["0 days"]),
+        ("eq", [timedelta(microseconds=1)]),
+    ]:
+        expected = series.isin(values) if method == "isin" else series.eq(values[0])
+        for helper in (pandas_engine._pandas_numeric_filter, namespace["_open_wrangler_numeric_filter"]):
+            pd.testing.assert_series_equal(helper(series, method, values), expected)
+    pd.testing.assert_series_equal(series, before)
+
+
+def test_pandas_categorical_duration_selections_refuse_zero_unit_operands():
+    categories = np.asarray([0, 1, 2], dtype=np.int64).view("timedelta64[0s]")
+    frame = pd.DataFrame({"value": pd.Categorical.from_codes([0, 1, 2, -1], categories=categories), "row": range(4)})
+    frame.index = pd.Index(["same"] * len(frame), name="retained")
+    before = frame.copy(deep=True)
+    token = typed_selection_value(timedelta(0), "string")
+    assert token is not None
+    model = _value_selection_model("string", token)
+    engine = PandasEngine()
+    try:
+        for apply in (engine.apply_filter_model, lambda source, rule: _execute_generated_filter(engine, source, rule)):
+            with pytest.raises(ValueError, match="zero unit multiplier"):
+                apply(frame, model)
+        model["filters"][0]["valueFilter"]["selectedValues"] = []
+        for include_nulls in (False, True):
+            model["filters"][0]["valueFilter"]["includeNulls"] = include_nulls
+            positions = [3] if include_nulls else [0, 1, 2, 3]
+            for result in (engine.apply_filter_model(frame, model), _execute_generated_filter(engine, frame, model)):
+                assert result["row"].tolist() == positions
+                assert result["value"].cat.codes.tolist() == [[0, 1, 2, -1][position] for position in positions]
+                assert result["value"].cat.categories is frame["value"].cat.categories
+                assert result.index.equals(frame.index.take(positions))
+        assert frame["value"].cat.codes.tolist() == before["value"].cat.codes.tolist()
+        assert frame["value"].cat.categories.dtype == categories.dtype
+        assert frame["value"].cat.categories.asi8.tolist() == [0, 1, 2]
+        assert frame["row"].tolist() == before["row"].tolist() and frame.index.equals(before.index)
+    finally:
+        engine.close()

@@ -3195,6 +3195,10 @@ def _pandas_fill_public_outputs(source: pd.DataFrame, replacement: dict[str, Any
                 original_array = cast(Any, original.array).__arrow_array__()
                 # Arrow equality treats valid NaN as unequal, including in unchanged codebooks.
                 assert actual_array.equals(original_array) or dumps(actual_array) == dumps(original_array)
+            elif isinstance(original.dtype, pd.CategoricalDtype):
+                assert actual.dtype == original.dtype
+                pd.testing.assert_series_equal(actual.cat.codes, original.cat.codes)
+                assert actual.cat.categories.equals(original.cat.categories)
             else:
                 pd.testing.assert_series_equal(actual, original)
     return results
@@ -3340,6 +3344,42 @@ def test_pandas_dictionary_directional_fill_retains_unfilled_target(family: str,
                 .__arrow_array__()
                 .equals(cast(Any, source["value"].array).__arrow_array__())
             )
+
+
+@pytest.mark.parametrize(
+    "family,unit,ticks",
+    [("duration", "ns", -(2**63)), ("duration", "us", -(2**63)), ("timestamp", "ns", -(2**63)), ("numpy", "2s", 1)],
+)
+@pytest.mark.parametrize("direction", ["forward", "backward"])
+def test_pandas_directional_fill_preserves_temporal_category_storage(family, unit, ticks, direction) -> None:
+    import numpy as np
+
+    if family == "numpy":
+        categories = pd.Index(np.array([ticks, 0], dtype=np.int64).view(f"timedelta64[{unit}]"))
+    else:
+        arrow_type = pa.duration(unit) if family == "duration" else pa.timestamp(unit)
+        categories = pd.Index(pd.Series(pa.array([ticks, 0], type=arrow_type), dtype=pd.ArrowDtype(arrow_type)))
+    codes = [0, -1, -1, 1] if direction == "forward" else [1, -1, -1, 0]
+    expected_codes = [0, 0, 0, 1] if direction == "forward" else [1, 0, 0, 0]
+    source = pd.DataFrame(
+        {"value": pd.Categorical.from_codes(codes, categories=categories, ordered=True), "order": range(4)}
+    )
+    source.index = pd.Index(["same"] * 4, name="retained")
+    source.attrs["origin"] = "retained"
+    expected = source.copy(deep=True)
+    expected["value"] = pd.Categorical.from_codes(expected_codes, categories=categories, ordered=True)
+    replacement = {
+        "kind": "directional",
+        "direction": direction,
+        "orderBy": [{"column": {"id": "c:source:1", "name": "order"}, "direction": "asc", "nulls": "last"}],
+        "maxGap": 2,
+    }
+    for result in _pandas_fill_public_outputs(source, replacement):
+        assert result["value"].dtype == expected["value"].dtype
+        assert result["value"].cat.codes.tolist() == expected_codes
+        assert result["value"].cat.categories.equals(categories)
+        pd.testing.assert_series_equal(result["order"], expected["order"])
+        assert result.attrs == source.attrs
 
 
 @pytest.mark.parametrize("strategy", ["fallback", "grouped", "linear"])
