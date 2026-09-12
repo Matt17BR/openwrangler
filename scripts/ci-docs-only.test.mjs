@@ -10,6 +10,8 @@ import { proveRuntimeOmissions } from "./ci-docs-only.mjs";
 import { createRContractPhases, selectRContractPhases } from "./run-r-contract-tests.mjs";
 
 const script = resolve(import.meta.dirname, "ci-docs-only.mjs");
+const arrowFormulaHelper = "python/openwrangler_runtime/engines/_pandas_arrow_formula_helpers.py";
+const arrowFormulaTests = ["python/tests/test_operation_edges.py", "python/tests/test_session_transactions.py"];
 const workflow = load(readFileSync(resolve(import.meta.dirname, "../.github/workflows/ci.yml"), "utf8"));
 const releasedJupyter = load(
   readFileSync(resolve(import.meta.dirname, "../.github/workflows/released-jupyter.yml"), "utf8")
@@ -75,13 +77,14 @@ test("proves existing Markdown edits against the exact tested merge", async (con
         docsOnly: true,
         rOmittable: true,
         pythonOmittable: true,
-        rEditorOmittable: false
+        rEditorOmittable: false,
+        nativeSparkOmittable: false
       });
       const output = join(cwd, "action-output");
       execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
       assert.equal(
         readFileSync(output, "utf8"),
-        "docs_only=true\nr_omittable=true\npython_omittable=true\nr_editor_omittable=false\n"
+        "docs_only=true\nr_omittable=true\npython_omittable=true\nr_editor_omittable=false\nnative_spark_omittable=false\n"
       );
     });
   }
@@ -101,7 +104,8 @@ test("proves existing component test edits while retaining Source execution", (c
     docsOnly: false,
     rOmittable: true,
     pythonOmittable: true,
-    rEditorOmittable: false
+    rEditorOmittable: false,
+    nativeSparkOmittable: false
   });
   const output = join(cwd, "action-output");
   execFileSync(process.execPath, [script], {
@@ -111,7 +115,7 @@ test("proves existing component test edits while retaining Source execution", (c
   });
   assert.equal(
     readFileSync(output, "utf8"),
-    "docs_only=false\nr_omittable=true\npython_omittable=true\nr_editor_omittable=false\n"
+    "docs_only=false\nr_omittable=true\npython_omittable=true\nr_editor_omittable=false\nnative_spark_omittable=false\n"
   );
 });
 
@@ -129,13 +133,14 @@ test("proves the two existing R test edits can omit only installed editor execut
         docsOnly: false,
         rOmittable: false,
         pythonOmittable: true,
-        rEditorOmittable: true
+        rEditorOmittable: true,
+        nativeSparkOmittable: false
       });
       const output = join(cwd, "action-output");
       execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
       assert.equal(
         readFileSync(output, "utf8"),
-        "docs_only=false\nr_omittable=false\npython_omittable=true\nr_editor_omittable=true\n"
+        "docs_only=false\nr_omittable=false\npython_omittable=true\nr_editor_omittable=true\nnative_spark_omittable=false\n"
       );
     });
   }
@@ -202,13 +207,14 @@ test("proves existing script edits while retaining Source and package execution"
         docsOnly: false,
         rOmittable: true,
         pythonOmittable: true,
-        rEditorOmittable: false
+        rEditorOmittable: false,
+        nativeSparkOmittable: false
       });
       const output = join(cwd, "action-output");
       execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
       assert.equal(
         readFileSync(output, "utf8"),
-        "docs_only=false\nr_omittable=true\npython_omittable=true\nr_editor_omittable=false\n"
+        "docs_only=false\nr_omittable=true\npython_omittable=true\nr_editor_omittable=false\nnative_spark_omittable=false\n"
       );
     });
   }
@@ -241,14 +247,68 @@ test("proves existing Python source and Markdown edits only for native R", async
         docsOnly: false,
         rOmittable: true,
         pythonOmittable: false,
-        rEditorOmittable: false
+        rEditorOmittable: false,
+        nativeSparkOmittable: false
       });
       const output = join(cwd, "action-output");
       execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
       assert.equal(
         readFileSync(output, "utf8"),
-        "docs_only=false\nr_omittable=true\npython_omittable=false\nr_editor_omittable=false\n"
+        "docs_only=false\nr_omittable=true\npython_omittable=false\nr_editor_omittable=false\nnative_spark_omittable=false\n"
       );
+    });
+  }
+});
+
+test("omits native Spark only with an existing Arrow Formula helper modification", async (context) => {
+  for (const files of [
+    [arrowFormulaHelper],
+    [arrowFormulaHelper, arrowFormulaTests[0]],
+    [arrowFormulaHelper, ...arrowFormulaTests, "README.md", "CHANGELOG.md", "docs/architecture.md"]
+  ]) {
+    await context.test(files.join(", "), (child) => {
+      const cwd = repository(child, files);
+      for (const file of files) write(cwd, file);
+      const env = merge(cwd);
+      assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
+        docsOnly: false,
+        rOmittable: true,
+        pythonOmittable: false,
+        rEditorOmittable: false,
+        nativeSparkOmittable: true
+      });
+      const output = join(cwd, "action-output");
+      execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
+      assert.equal(
+        readFileSync(output, "utf8"),
+        "docs_only=false\nr_omittable=true\npython_omittable=false\nr_editor_omittable=false\nnative_spark_omittable=true\n"
+      );
+    });
+  }
+});
+
+test("keeps native Spark for companion-only edits or other inputs alongside Arrow Formula", async (context) => {
+  const cases = [
+    [...arrowFormulaTests, "docs/testing.md"],
+    ...[
+      "python/openwrangler_runtime/engines/pandas_engine.py",
+      "python/openwrangler_runtime/engines/base.py",
+      "python/openwrangler_runtime/session.py",
+      "python/tests/test_pyspark_engine.py",
+      "python/tests/conftest.py",
+      "python/tests/pyspark_connect_test_support.py",
+      "python/pyproject.toml",
+      "package-lock.json",
+      ".github/workflows/ci.yml",
+      "scripts/ci-docs-only.mjs",
+      "scripts/ci-docs-only.test.mjs"
+    ].map((file) => [arrowFormulaHelper, ...arrowFormulaTests, file])
+  ];
+  for (const files of cases) {
+    await context.test(files.join(", "), (child) => {
+      const cwd = repository(child, [arrowFormulaHelper, ...files]);
+      for (const file of files) write(cwd, file);
+      assert.equal(proveRuntimeOmissions({ cwd, env: merge(cwd) }).nativeSparkOmittable, false);
     });
   }
 });
@@ -258,6 +318,9 @@ test("proves added regular Python source only for native R", async (context) => 
     { added: ["python/openwrangler_runtime/helper.py"], modified: [] },
     { added: ["python/tests/test_helper.py"], modified: [] },
     { added: ["python/openwrangler_runtime/nested/__init__.py"], modified: [] },
+    { added: [arrowFormulaHelper], modified: arrowFormulaTests },
+    { added: [arrowFormulaTests[0]], modified: [arrowFormulaHelper] },
+    { added: ["python/tests/new_formula.py"], modified: [arrowFormulaHelper] },
     {
       added: ["python/openwrangler_runtime/helper.py", "python/tests/test_helper.py"],
       modified: ["python/openwrangler_runtime/session.py", "README.md", "CHANGELOG.md", "docs/testing.md"]
@@ -272,13 +335,14 @@ test("proves added regular Python source only for native R", async (context) => 
         docsOnly: false,
         rOmittable: true,
         pythonOmittable: false,
-        rEditorOmittable: false
+        rEditorOmittable: false,
+        nativeSparkOmittable: false
       });
       const output = join(cwd, "action-output");
       execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
       assert.equal(
         readFileSync(output, "utf8"),
-        "docs_only=false\nr_omittable=true\npython_omittable=false\nr_editor_omittable=false\n"
+        "docs_only=false\nr_omittable=true\npython_omittable=false\nr_editor_omittable=false\nnative_spark_omittable=false\n"
       );
     });
   }
@@ -325,13 +389,14 @@ test("proves regular R source changes and existing installed-harness edits only 
         docsOnly: false,
         rOmittable: false,
         pythonOmittable: true,
-        rEditorOmittable: false
+        rEditorOmittable: false,
+        nativeSparkOmittable: false
       });
       const output = join(cwd, "action-output");
       execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
       assert.equal(
         readFileSync(output, "utf8"),
-        "docs_only=false\nr_omittable=false\npython_omittable=true\nr_editor_omittable=false\n"
+        "docs_only=false\nr_omittable=false\npython_omittable=true\nr_editor_omittable=false\nnative_spark_omittable=false\n"
       );
     });
   }
@@ -356,7 +421,8 @@ test("keeps both runtimes required for R and CHANGELOG changes with Python sourc
           docsOnly: false,
           rOmittable: false,
           pythonOmittable: false,
-          rEditorOmittable: false
+          rEditorOmittable: false,
+          nativeSparkOmittable: false
         });
       });
     }
@@ -365,6 +431,8 @@ test("keeps both runtimes required for R and CHANGELOG changes with Python sourc
 
 test("requires full owners for deleted or renamed source, including alongside additions", async (context) => {
   for (const file of [
+    arrowFormulaHelper,
+    arrowFormulaTests[1],
     "python/openwrangler_runtime/session.py",
     "r/openwrangler_runtime/kernel_agent.R",
     "r/tests/kernel_agent.R",
@@ -389,7 +457,8 @@ test("requires full owners for deleted or renamed source, including alongside ad
           docsOnly: false,
           rOmittable: false,
           pythonOmittable: false,
-          rEditorOmittable: false
+          rEditorOmittable: false,
+          nativeSparkOmittable: false
         });
       });
     }
@@ -398,6 +467,7 @@ test("requires full owners for deleted or renamed source, including alongside ad
 
 test("requires full owners for source mode changes and existing executable or symlink entries", async (context) => {
   for (const file of [
+    arrowFormulaHelper,
     "python/tests/helper.py",
     "r/tests/kernel_agent.R",
     "src/test/extensionHost/releasedRCoreEditing.ts",
@@ -425,7 +495,8 @@ test("requires full owners for source mode changes and existing executable or sy
             docsOnly: false,
             rOmittable: false,
             pythonOmittable: false,
-            rEditorOmittable: false
+            rEditorOmittable: false,
+            nativeSparkOmittable: false
           });
         });
       }
@@ -449,7 +520,8 @@ test("requires full owners for added executable or symlink runtime source", asyn
           docsOnly: false,
           rOmittable: false,
           pythonOmittable: false,
-          rEditorOmittable: false
+          rEditorOmittable: false,
+          nativeSparkOmittable: false
         });
       });
     }
@@ -482,7 +554,8 @@ test("requires full owners for added Markdown or paths outside the runtime sourc
         docsOnly: false,
         rOmittable: false,
         pythonOmittable: false,
-        rEditorOmittable: false
+        rEditorOmittable: false,
+        nativeSparkOmittable: false
       });
     });
   }
@@ -503,7 +576,8 @@ test("requires full owners for control characters in source paths", async (conte
           docsOnly: false,
           rOmittable: false,
           pythonOmittable: false,
-          rEditorOmittable: false
+          rEditorOmittable: false,
+          nativeSparkOmittable: false
         });
       });
     }
@@ -541,7 +615,13 @@ test("requires full owners for an added runtime source path with invalid UTF-8",
             CI_MERGE_SHA: merged
           }
         }),
-        { docsOnly: false, rOmittable: false, pythonOmittable: false, rEditorOmittable: false }
+        {
+          docsOnly: false,
+          rOmittable: false,
+          pythonOmittable: false,
+          rEditorOmittable: false,
+          nativeSparkOmittable: false
+        }
       );
     });
   }
@@ -613,7 +693,8 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
         docsOnly: false,
         rOmittable: false,
         pythonOmittable: false,
-        rEditorOmittable: false
+        rEditorOmittable: false,
+        nativeSparkOmittable: false
       });
     });
   }
@@ -633,7 +714,8 @@ test("does not hide deletions or renames behind a Markdown destination", async (
         docsOnly: false,
         rOmittable: false,
         pythonOmittable: false,
-        rEditorOmittable: false
+        rEditorOmittable: false,
+        nativeSparkOmittable: false
       });
     });
   }
@@ -651,7 +733,8 @@ test("requires full owners for executable or symlink Markdown entries", async (c
           docsOnly: false,
           rOmittable: false,
           pythonOmittable: false,
-          rEditorOmittable: false
+          rEditorOmittable: false,
+          nativeSparkOmittable: false
         });
       });
     }
@@ -667,7 +750,8 @@ test("handles NUL-delimited paths without treating newline paths as documentatio
     docsOnly: false,
     rOmittable: false,
     pythonOmittable: false,
-    rEditorOmittable: false
+    rEditorOmittable: false,
+    nativeSparkOmittable: false
   });
 });
 
@@ -681,7 +765,8 @@ test("examines changes beyond a 300-file API or workflow filter limit", (context
     docsOnly: false,
     rOmittable: false,
     pythonOmittable: false,
-    rEditorOmittable: false
+    rEditorOmittable: false,
+    nativeSparkOmittable: false
   });
 });
 
@@ -695,14 +780,17 @@ test("falls back to full owners when the bounded Git output is exceeded", (conte
     docsOnly: false,
     rOmittable: false,
     pythonOmittable: false,
-    rEditorOmittable: false
+    rEditorOmittable: false,
+    nativeSparkOmittable: false
   });
 });
 
 test("requires exact event identities, protected base and two merge parents", (context) => {
-  const cwd = repository(context);
+  const cwd = repository(context, [arrowFormulaHelper]);
+  write(cwd, arrowFormulaHelper);
   write(cwd, "README.md");
   const env = merge(cwd);
+  assert.equal(proveRuntimeOmissions({ cwd, env }).nativeSparkOmittable, true);
   for (const change of [
     { CI_EVENT: "push" },
     { CI_EVENT: "merge_group" },
@@ -716,7 +804,8 @@ test("requires exact event identities, protected base and two merge parents", (c
       docsOnly: false,
       rOmittable: false,
       pythonOmittable: false,
-      rEditorOmittable: false
+      rEditorOmittable: false,
+      nativeSparkOmittable: false
     });
   }
   git(cwd, "checkout", "--quiet", env.CI_HEAD_SHA);
@@ -724,13 +813,15 @@ test("requires exact event identities, protected base and two merge parents", (c
     docsOnly: false,
     rOmittable: false,
     pythonOmittable: false,
-    rEditorOmittable: false
+    rEditorOmittable: false,
+    nativeSparkOmittable: false
   });
   assert.deepEqual(proveRuntimeOmissions({ cwd, env: { ...env, CI_MERGE_SHA: env.CI_HEAD_SHA } }), {
     docsOnly: false,
     rOmittable: false,
     pythonOmittable: false,
-    rEditorOmittable: false
+    rEditorOmittable: false,
+    nativeSparkOmittable: false
   });
 });
 
@@ -747,18 +838,21 @@ test("uses the protected base of the tested merge and rejects stale base identit
     docsOnly: true,
     rOmittable: true,
     pythonOmittable: true,
-    rEditorOmittable: false
+    rEditorOmittable: false,
+    nativeSparkOmittable: false
   });
   assert.deepEqual(proveRuntimeOmissions({ cwd, env: { ...env, CI_BASE_SHA: earlierBase } }), {
     docsOnly: false,
     rOmittable: false,
     pythonOmittable: false,
-    rEditorOmittable: false
+    rEditorOmittable: false,
+    nativeSparkOmittable: false
   });
 });
 
 test("sufficient merge history permits omissions while missing parents require full checks", (context) => {
-  const cwd = repository(context);
+  const cwd = repository(context, [arrowFormulaHelper]);
+  write(cwd, arrowFormulaHelper);
   write(cwd, "README.md");
   const env = merge(cwd);
   for (const depth of [1, 2, 3]) {
@@ -766,10 +860,11 @@ test("sufficient merge history permits omissions while missing parents require f
     context.after(() => rmSync(clone, { recursive: true, force: true }));
     git(cwd, "clone", "--quiet", "--depth", String(depth), pathToFileURL(cwd).href, clone);
     assert.deepEqual(proveRuntimeOmissions({ cwd: clone, env }), {
-      docsOnly: depth >= 2,
+      docsOnly: false,
       rOmittable: depth >= 2,
-      pythonOmittable: depth >= 2,
-      rEditorOmittable: false
+      pythonOmittable: false,
+      rEditorOmittable: false,
+      nativeSparkOmittable: depth >= 2
     });
   }
 });
@@ -781,20 +876,22 @@ test("empty diffs and Git failures select full checks", (context) => {
     docsOnly: false,
     rOmittable: false,
     pythonOmittable: false,
-    rEditorOmittable: false
+    rEditorOmittable: false,
+    nativeSparkOmittable: false
   });
   rmSync(join(cwd, ".git"), { recursive: true });
   assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
     docsOnly: false,
     rOmittable: false,
     pythonOmittable: false,
-    rEditorOmittable: false
+    rEditorOmittable: false,
+    nativeSparkOmittable: false
   });
   const output = join(cwd, "action-output");
   execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
   assert.equal(
     readFileSync(output, "utf8"),
-    "docs_only=false\nr_omittable=false\npython_omittable=false\nr_editor_omittable=false\n"
+    "docs_only=false\nr_omittable=false\npython_omittable=false\nr_editor_omittable=false\nnative_spark_omittable=false\n"
   );
 });
 
@@ -1015,12 +1112,98 @@ test("package smoke omits only verified documentation launches and preserves bot
   }
 });
 
+test("Python keeps its full checks and installs Spark unless the exact proof permits omission", async (context) => {
+  const job = workflow.jobs["python-runtime"];
+  const guard = job.steps.find((step) => step.name === "Install Python test dependencies");
+  assert.equal(guard.shell, "bash");
+  assert.equal(guard.if, undefined);
+  assert.equal(guard["continue-on-error"], undefined);
+  assert.deepEqual(guard.env, {
+    NATIVE_SPARK_OMITTABLE: "${{ needs.docs-proof.outputs.native_spark_omittable }}"
+  });
+  const guardIndex = job.steps.indexOf(guard);
+  for (const command of ["npm ci --ignore-scripts", 'python -m pip install -e "python[dev]"']) {
+    const index = job.steps.findIndex((step) => step.run === command);
+    assert.ok(index >= 0 && index < guardIndex);
+    assert.equal(job.steps[index].if, undefined);
+  }
+  assert.deepEqual(job.steps.find((step) => step.uses?.startsWith("actions/setup-java@")).with, {
+    distribution: "temurin",
+    "java-version": "17"
+  });
+  assert.deepEqual(
+    job.steps.slice(guardIndex + 1).map((step) => step.run),
+    [
+      "python -m ruff check python scripts/r-contract-signal.py\npython -m ruff format --check python scripts/r-contract-signal.py\n",
+      "node scripts/run-pyright.mjs python",
+      "python -m pytest python/tests -q --durations=20"
+    ]
+  );
+  for (const step of job.steps.slice(guardIndex + 1)) {
+    assert.equal(step.if, undefined);
+    assert.equal(step["continue-on-error"], undefined);
+  }
+  for (const [omittable, pipStatus, expectedStatus] of [
+    ["true", 0, 0],
+    ["false", 0, 0],
+    ["true", 37, 37],
+    ["false", 38, 38],
+    [undefined, 0, 1],
+    ["", 0, 1],
+    ["TRUE", 0, 1],
+    ["true\nfalse", 0, 1]
+  ]) {
+    await context.test(`${JSON.stringify(omittable)}/pip=${pipStatus}`, (child) => {
+      const temp = mkdtempSync(join(tmpdir(), "openwrangler-ci-spark-"));
+      child.after(() => rmSync(temp, { recursive: true, force: true }));
+      const marker = join(temp, "invocation");
+      const summary = join(temp, "summary");
+      writeFileSync(marker, "");
+      writeFileSync(summary, "");
+      writeFileSync(
+        join(temp, "python"),
+        '#!/bin/sh\nprintf \'%s\\n\' "$@" >> "$COMMAND_MARKER"\nexit "$PIP_STATUS"\n',
+        { mode: 0o755 }
+      );
+      const env = {
+        ...process.env,
+        PATH: `${temp}:${process.env.PATH}`,
+        COMMAND_MARKER: marker,
+        PIP_STATUS: String(pipStatus),
+        GITHUB_STEP_SUMMARY: summary
+      };
+      if (omittable === undefined) delete env.NATIVE_SPARK_OMITTABLE;
+      else env.NATIVE_SPARK_OMITTABLE = omittable;
+      const result = spawnSync("bash", ["--noprofile", "--norc", "-e", "-o", "pipefail", "-c", guard.run], {
+        cwd: temp,
+        env,
+        encoding: "utf8",
+        timeout: 10_000
+      });
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, expectedStatus);
+      assert.deepEqual(
+        readFileSync(marker, "utf8").split("\n").filter(Boolean),
+        omittable === "true" || omittable === "false"
+          ? ["-m", "pip", "install", "pandas>=2.2,<3.0", ...(omittable === "false" ? ["pyspark[connect]==4.2.0"] : [])]
+          : []
+      );
+      if (omittable === "true" && pipStatus === 0) {
+        assert.match(readFileSync(summary, "utf8"), /no fresh native Spark execution is claimed/u);
+      } else {
+        assert.equal(readFileSync(summary, "utf8"), "");
+      }
+    });
+  }
+});
+
 test("required runtime results reject missing proof and incomplete or canceled execution", (context) => {
   assert.deepEqual(workflow.jobs["docs-proof"].outputs, {
     docs_only: "${{ steps.proof.outputs.docs_only }}",
     r_omittable: "${{ steps.proof.outputs.r_omittable }}",
     python_omittable: "${{ steps.proof.outputs.python_omittable }}",
-    r_editor_omittable: "${{ steps.proof.outputs.r_editor_omittable }}"
+    r_editor_omittable: "${{ steps.proof.outputs.r_editor_omittable }}",
+    native_spark_omittable: "${{ steps.proof.outputs.native_spark_omittable }}"
   });
   const temp = mkdtempSync(join(tmpdir(), "openwrangler-ci-guards-"));
   context.after(() => rmSync(temp, { recursive: true, force: true }));

@@ -21,6 +21,7 @@ jobs:
       r_omittable: ${{ steps.proof.outputs.r_omittable }}
       python_omittable: ${{ steps.proof.outputs.python_omittable }}
       r_editor_omittable: ${{ steps.proof.outputs.r_editor_omittable }}
+      native_spark_omittable: ${{ steps.proof.outputs.native_spark_omittable }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -121,7 +122,21 @@ jobs:
           java-version: "17"
       - run: npm ci --ignore-scripts
       - run: python -m pip install -e "python[dev]"
-      - run: python -m pip install "pandas>=2.2,<3.0" "pyspark[connect]==4.2.0"
+      - name: Install Python test dependencies
+        shell: bash
+        run: |
+          set -- "pandas>=2.2,<3.0"
+          case "$NATIVE_SPARK_OMITTABLE" in
+            true) ;;
+            false) set -- "$@" "pyspark[connect]==4.2.0" ;;
+            *) exit 1 ;;
+          esac
+          python -m pip install "$@"
+          if [ "$NATIVE_SPARK_OMITTABLE" = true ]; then
+            echo 'Native Spark Classic and Connect checks omitted for verified Pandas Arrow Formula edits. Full pytest and fake/shared controls remain; no fresh native Spark execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+        env:
+          NATIVE_SPARK_OMITTABLE: ${{ needs.docs-proof.outputs.native_spark_omittable }}
       - name: Python lint and formatting
         run: |
           python -m ruff check python scripts/r-contract-signal.py
