@@ -23,6 +23,10 @@ const runtimeOmissionScriptFiles = new Set([
 const rEditorOmissionTestFiles = new Set(["r/tests/kernel_agent.R", "r/tests/frame_contract.R"]);
 const nativeSparkOmissionFiles = new Set([
   "python/openwrangler_runtime/engines/_pandas_arrow_formula_helpers.py",
+  "python/openwrangler_runtime/engines/pandas_engine.py",
+  "python/openwrangler_runtime/engines/duckdb_engine.py",
+  "python/tests/test_duckdb_engine.py",
+  "python/tests/test_split_text_columns.py",
   "python/tests/test_operation_edges.py",
   "python/tests/test_session_transactions.py"
 ]);

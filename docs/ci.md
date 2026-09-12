@@ -64,9 +64,10 @@ The scope-only job uses Node and Git without installing npm dependencies or rest
 - R source and installed-editor execution may be omitted for additions or edits to `.py` files under
   `python/openwrangler_runtime/` or `python/tests/`, and edits to existing `README.md`, `CHANGELOG.md` or `docs/**/*.md`.
 - Native Spark may be omitted for modifications to one or more of the existing
-  `python/openwrangler_runtime/engines/_pandas_arrow_formula_helpers.py`, `python/tests/test_operation_edges.py` and
-  `python/tests/test_session_transactions.py` files, optionally with the allowed Markdown edits. Each test owner
-  qualifies independently of a helper change. Documentation-only edits do not set this omission flag. Additions,
+  `python/openwrangler_runtime/engines/_pandas_arrow_formula_helpers.py`, `pandas_engine.py` and `duckdb_engine.py`
+  files, or `python/tests/test_operation_edges.py`, `test_session_transactions.py`, `test_duckdb_engine.py` and
+  `test_split_text_columns.py`, optionally with the allowed Markdown edits. Each owner qualifies independently.
+  Documentation-only edits do not set this omission flag. Additions,
   deletions, renames, mode changes and other inputs keep native Spark execution required.
 - Only the macOS and Windows editor steps may be omitted when at least one of the existing
   `r/tests/kernel_agent.R` or `r/tests/frame_contract.R` files is modified, optionally with the allowed Markdown edits.
@@ -93,9 +94,12 @@ or selected runner begins consuming an omitted input, update the proof and its t
 The `native_spark_omittable` proof changes only the Python worker's Spark installation requirement. Pandas stays
 below version 3, Java remains installed, and the same Ruff, Pyright and full Pytest commands run. Without Spark,
 the existing optional-import gates skip native Classic/Connect frame, transport, profile, lifecycle and decoder-type
-checks; fake Spark and shared-runtime controls still run. The helper belongs to Pandas live and generated Formula
-execution, and the two test owners currently exercise local dataframe engines, including Viewing and Session
-behavior. Changes that introduce a Spark dependency or test into these owners must revise their omission eligibility
+checks; fake Spark and shared-runtime controls still run. The admitted engines, helper and test owners currently
+exercise local dataframe behavior. Engine implementations load lazily, and automatic detection returns recognized
+Spark frames before reaching DuckDB or Pandas. Missing Spark or unsupported values can still reach those later
+detectors; the retained registry and fallback tests cover that behavior without native Spark. Polars detection runs
+before Spark, so its production owner remains outside this permission. Changes that introduce a Spark dependency
+or test into admitted owners must revise their omission eligibility
 in the same change. This gives up fresh native Spark and environment evidence; retained local-engine checks do not
 establish Spark equivalence. Missing or malformed proof values stop dependency setup, and pip failures fail the job.
 
