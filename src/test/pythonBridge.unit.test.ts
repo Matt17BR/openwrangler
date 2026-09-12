@@ -1288,6 +1288,139 @@ describe("PythonBridge dependency installation", () => {
     vi.mocked(pythonEnvironment.probeDependencies).mockReset();
   });
 
+  it.each(["ready", "missing"] as const)(
+    "installs the original file requirements after another file becomes %s",
+    async (otherState) => {
+      const { bridge, internals, launchDependencyInstall } = createDependencyHarness();
+      const folder = workspaceFolder("vscode-remote://ssh-remote+example/workspace", "workspace", 0);
+      vi.spyOn(vscode.workspace, "getWorkspaceFolder").mockReturnValue(folder);
+      const source = { ...remoteSourceAt("/workspace/A.xlsx"), kind: "file" as const };
+      const other = remoteSourceAt("/workspace/B.csv");
+      const excelDependency = requiredDependencies("pandas", source).filter((item) => item.importModule === "openpyxl");
+      const otherDependencies = requiredDependencies("polars", other);
+      vi.mocked(pythonEnvironment.probeDependencies).mockImplementation(async (_environment, dependencies) => ({
+        missing: dependencies.some((item) => item.importModule === "openpyxl")
+          ? excelDependency.map((item) => item.installSpec)
+          : otherState === "missing"
+            ? otherDependencies.map((item) => item.installSpec)
+            : [],
+        available: []
+      }));
+      const warning = vi.spyOn(vscode.window, "showWarningMessage").mockImplementation(async () => {
+        // Another file may replace the global command target while A's modal is open.
+        await internals.prepareRequest(openSessionRequest(other));
+        return "Install" as never;
+      });
+
+      await expect(
+        internals.prepareRequest({ ...openSessionRequest(source), backend: "pandas" })
+      ).resolves.toMatchObject({
+        kind: "error",
+        code: "missing_dependencies"
+      });
+      await internals.prepareRequest(openSessionRequest(other));
+      expect(internals.lastMissingDependencies?.requirements).toEqual(
+        otherState === "missing" ? otherDependencies.map((item) => item.installSpec) : undefined
+      );
+
+      await expect(bridge.installFileDependencies(source, "pandas")).resolves.toBe(true);
+
+      expect(warning).toHaveBeenCalledWith(
+        `Install ${excelDependency.map((item) => item.installSpec).join(", ")} into ${missingDependencies().environment.executable}?`,
+        { modal: true, detail: "Open Wrangler never installs packages without this confirmation." },
+        "Install"
+      );
+      expect(launchDependencyInstall).toHaveBeenCalledWith(missingDependencies().environment, excelDependency, {
+        helperPath: join("/extension", "python", "openwrangler_runtime", "dependency_guard.py")
+      });
+    }
+  );
+
+  it.each(["ready", "declined"] as const)(
+    "rechecks a file whose dependency action is %s without package writes",
+    async (state) => {
+      const { bridge, internals, launchDependencyInstall } = createDependencyHarness();
+      const source = remoteFileSource();
+      vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({
+        missing: state === "ready" ? [] : ["pandas>=2.3.3,<4"],
+        available: []
+      });
+      const warning = vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue(undefined);
+
+      await expect(bridge.installFileDependencies(source, "pandas")).resolves.toBe(state === "ready");
+
+      expect(launchDependencyInstall).not.toHaveBeenCalled();
+      expect(warning).toHaveBeenCalledTimes(state === "ready" ? 0 : 1);
+      if (state === "declined") expect(internals.lastMissingDependencies?.requirements).toEqual(["pandas>=2.3.3,<4"]);
+    }
+  );
+
+  it("does not prompt after a file dependency preflight is cancelled", async () => {
+    const { bridge, launchDependencyInstall } = createDependencyHarness();
+    const probe = deferred<{ missing: string[]; available: string[] }>();
+    vi.mocked(pythonEnvironment.probeDependencies).mockReturnValue(probe.promise);
+    const warning = vi.spyOn(vscode.window, "showWarningMessage");
+    const cancellation = new ManualCancellation();
+    const action = bridge.installFileDependencies(remoteFileSource(), "pandas", { cancellation });
+    await vi.waitFor(() => expect(pythonEnvironment.probeDependencies).toHaveBeenCalledOnce());
+    cancellation.cancel();
+    probe.resolve({ missing: ["pandas>=2.3.3,<4"], available: [] });
+
+    await expect(action).resolves.toBe(false);
+    expect(warning).not.toHaveBeenCalled();
+    expect(launchDependencyInstall).not.toHaveBeenCalled();
+  });
+
+  it("keeps a source-bound install separate from another file action", async () => {
+    const { bridge, launchDependencyInstall } = createDependencyHarness();
+    vi.mocked(pythonEnvironment.probeDependencies).mockImplementation(async (_environment, dependencies) => ({
+      missing: dependencies.map((item) => item.installSpec),
+      available: []
+    }));
+    const choice = deferred<"Install">();
+    const warning = vi
+      .spyOn(vscode.window, "showWarningMessage")
+      .mockReturnValue(choice.promise as unknown as Thenable<never>);
+    const first = bridge.installFileDependencies(remoteSourceAt("/workspace/A.csv"), "pandas");
+    await vi.waitFor(() => expect(warning).toHaveBeenCalledOnce());
+
+    await expect(bridge.installFileDependencies(remoteSourceAt("/workspace/B.csv"), "polars")).resolves.toBe(false);
+    expect(launchDependencyInstall).not.toHaveBeenCalled();
+    choice.resolve("Install");
+    await expect(first).resolves.toBe(true);
+    expect(warning).toHaveBeenCalledOnce();
+    expect(launchDependencyInstall).toHaveBeenCalledWith(
+      missingDependencies().environment,
+      requiredDependencies("pandas", remoteSourceAt("/workspace/A.csv")),
+      expect.any(Object)
+    );
+  });
+
+  it("aborts a cancelled file install at READY without authorizing writes", async () => {
+    const { bridge, raw, launchDependencyInstall } = createDependencyHarness();
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: ["pandas>=2.3.3,<4"], available: [] });
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
+    const controlled = controlledDependencyInstall(undefined, true);
+    launchDependencyInstall.mockReturnValue(controlled.operation);
+    const cancellation = new ManualCancellation();
+    const action = bridge.installFileDependencies(remoteFileSource(), "pandas", { cancellation });
+    try {
+      await vi.waitFor(() => expect(launchDependencyInstall).toHaveBeenCalledOnce());
+      cancellation.cancel();
+      controlled.publishReady();
+      await expect(action).resolves.toBe(false);
+      expect(controlled.operation.authorizeWrites).not.toHaveBeenCalled();
+      expect(controlled.operation.abortBeforeWrites).toHaveBeenCalledOnce();
+      expect(raw.dependencyMutations.size).toBe(1);
+    } finally {
+      cancellation.cancel();
+      controlled.publishReady();
+      controlled.closeSuccessfully();
+      await action;
+    }
+    await vi.waitFor(() => expect(raw.dependencyMutations.size).toBe(0));
+  });
+
   it("requires the exact production modal and retains its diagnostic when the user cancels", async () => {
     const { bridge, internals, launchDependencyInstall } = createDependencyHarness();
     const warning = vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue(undefined);
@@ -2644,6 +2777,7 @@ describe("PythonBridge dependency guard recovery", () => {
     expect(response).toMatchObject({ kind: "error", code: "dependency_environment_uncertain", recoverable: true });
     expect((response as ErrorResponse).detail).toContain("Revalidate Runtime Dependencies");
     expect(JSON.stringify(response)).not.toContain(TEST_DEPENDENCY_TOKEN);
+    await expect(bridge.installFileDependencies(remoteFileSource(), "polars")).resolves.toEqual(response);
     expect([...raw.dependencyEnvironmentUncertainty.values()]).toEqual([
       expect.objectContaining({ environment, token: TEST_DEPENDENCY_TOKEN })
     ]);

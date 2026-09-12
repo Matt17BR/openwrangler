@@ -932,6 +932,7 @@ export class OpenWranglerPanel {
 
   private enqueueImportOptionsChange(): Promise<void> {
     const generation = ++this.openAttemptGeneration;
+    this.sessionOpenCancellation?.cancel();
     this.importChangeCancellation?.cancel();
     const task = this.importChangeTail.catch(() => undefined).then(() => this.changeImportOptions(generation));
     this.importChangeTail = task.catch(() => undefined);
@@ -949,6 +950,7 @@ export class OpenWranglerPanel {
 
   private enqueueBackendChange(): Promise<void> {
     const generation = ++this.openAttemptGeneration;
+    this.sessionOpenCancellation?.cancel();
     this.importChangeCancellation?.cancel();
     const task = this.importChangeTail.catch(() => undefined).then(() => this.changeBackend(generation));
     this.importChangeTail = task.catch(() => undefined);
@@ -997,23 +999,48 @@ export class OpenWranglerPanel {
   private installRuntimeDependencies(): Promise<void> {
     if (this.runtimeDependencyInstallTask) return this.runtimeDependencyInstallTask;
     const task = (async () => {
+      const generation = this.openAttemptGeneration;
+      const source = this.source;
+      const backend = this.backend;
       await this.opening?.catch(() => undefined);
       if (
         this.disposed ||
+        generation !== this.openAttemptGeneration ||
         this.sessionId ||
+        this.source.kind !== "file" ||
         this.openResponse?.kind !== "error" ||
         this.openResponse.code !== "missing_dependencies"
       ) {
         return;
       }
-      await this.postRendererMessage({ kind: "runtimeDependencyInstallState", busy: true });
+      const cancellation = new vscode.CancellationTokenSource();
+      this.sessionOpenCancellation?.cancel();
+      this.sessionOpenCancellation?.dispose();
+      this.sessionOpenCancellation = cancellation;
+      const isCurrent = (): boolean =>
+        !this.disposed &&
+        !this.sessionId &&
+        generation === this.openAttemptGeneration &&
+        this.source === source &&
+        this.backend === backend &&
+        !cancellation.token.isCancellationRequested;
       try {
-        const installed = await vscode.commands.executeCommand<boolean>("openWrangler.installRuntimeDependencies");
-        if (!installed || this.disposed || this.sessionId) return;
+        await this.postRendererMessage({ kind: "runtimeDependencyInstallState", busy: true });
+        if (!isCurrent()) return;
+        const ready = await this.bridge.installFileDependencies?.(source, backend, {
+          cancellation: cancellation.token
+        });
+        if (!ready || !isCurrent()) return;
+        if (ready !== true) {
+          this.openResponse = ready;
+          await this.post(ready);
+          if (isCurrent() && this.rendererSync.rendererReady) this.scheduleRendererSynchronization(false);
+          return;
+        }
         this.openResponse = undefined;
         await this.open();
       } catch (error) {
-        if (!this.disposed) {
+        if (isCurrent()) {
           await this.post({
             kind: "error",
             code: "dependency_install_failed",
@@ -1022,6 +1049,10 @@ export class OpenWranglerPanel {
           });
         }
       } finally {
+        if (this.sessionOpenCancellation === cancellation) {
+          this.sessionOpenCancellation = undefined;
+          cancellation.dispose();
+        }
         if (!this.disposed) {
           await this.postRendererMessage({ kind: "runtimeDependencyInstallState", busy: false });
         }

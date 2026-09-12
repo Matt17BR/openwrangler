@@ -35,6 +35,24 @@ import {
 } from "./rKernelBridgeTestFixtures";
 
 describe("SessionCoordinator", () => {
+  it("delegates a file dependency action before a session exists with its captured intent", async () => {
+    const coordinator = new SessionCoordinator();
+    const installFileDependencies = vi.fn(async () => true);
+    const request = vi.fn();
+    const bridge = coordinator.createBridge({ request, installFileDependencies });
+    const source = { kind: "file" as const, label: "A.xlsx", path: "/workspace/A.xlsx" };
+    const cancellation = new vscode.CancellationTokenSource();
+    try {
+      await expect(
+        bridge.installFileDependencies?.(source, "pandas", { cancellation: cancellation.token })
+      ).resolves.toBe(true);
+      expect(installFileDependencies).toHaveBeenCalledWith(source, "pandas", { cancellation: cancellation.token });
+      expect(request).not.toHaveBeenCalled();
+    } finally {
+      cancellation.dispose();
+      coordinator.dispose();
+    }
+  });
   it.each(["runtime", "staged persistence"])(
     "retires an old filtered page held at %s before a snapshot view is confirmed",
     async (heldAt) => {

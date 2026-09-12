@@ -9,7 +9,7 @@ import type {
   SessionSource
 } from "../shared/protocol";
 import { isSessionBoundRequest, PROTOCOL_VERSION } from "../shared/protocol";
-import type { BridgeRequestOptions, OpenWranglerBridge } from "./dataBridge";
+import type { BridgeRequestOptions, CancellationTokenLike, OpenWranglerBridge } from "./dataBridge";
 import { getSetting } from "./configuration";
 import { DependencyGuardCommandError } from "./dependencyGuardProtocol";
 import {
@@ -130,6 +130,7 @@ interface RuntimeSlot {
 interface PreparedRequest {
   readonly request: OpenWranglerRequest | ErrorResponse;
   readonly processSelection?: ProcessSelection;
+  readonly missingTarget?: MissingDependencies;
 }
 
 interface DependencyInstallOperation {
@@ -147,6 +148,7 @@ interface DependencyInstallOperation {
   quiescence?: Promise<void>;
   uncertainty?: unknown;
   boundPicklePreflight?: TrustedPicklePythonPreflight;
+  cancellation?: CancellationTokenLike;
   target?: MissingDependencies;
 }
 
@@ -697,6 +699,41 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     return this.beginDependencyInstallation();
   }
 
+  async installFileDependencies(
+    source: SessionSource,
+    backend: DataBackend | undefined,
+    options: BridgeRequestOptions = {}
+  ): Promise<boolean | ErrorResponse> {
+    if (
+      source.kind !== "file" ||
+      this.disposed ||
+      !vscode.workspace.isTrusted ||
+      options.cancellation?.isCancellationRequested
+    ) {
+      return false;
+    }
+    const release = this.retainRuntime(this.runtimeSlot(pythonSelectionScope(sourceResource(source)).key));
+    try {
+      const prepared = await this.prepareRequestForDispatch({
+        kind: "openSession",
+        source,
+        backend,
+        pageSize: 1,
+        columnOffset: 0,
+        columnLimit: 1
+      });
+      if (this.disposed || !vscode.workspace.isTrusted || options.cancellation?.isCancellationRequested) return false;
+      if (prepared.request.kind === "openSession") return true;
+      if (!prepared.missingTarget) return prepared.request.kind === "error" ? prepared.request : false;
+      return await this.beginDependencyInstallation({
+        target: prepared.missingTarget,
+        cancellation: options.cancellation
+      });
+    } finally {
+      release();
+    }
+  }
+
   async installTrustedPickleDependencies(preflight: TrustedPicklePythonPreflight): Promise<boolean> {
     const owner = this.trustedPicklePreflights.get(preflight);
     if (!owner?.missingTarget || !this.isTrustedPicklePreflightOwnerCurrent(owner)) return false;
@@ -1179,7 +1216,8 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   }
 
   private beginDependencyInstallation(bound?: {
-    preflight: TrustedPicklePythonPreflight;
+    preflight?: TrustedPicklePythonPreflight;
+    cancellation?: CancellationTokenLike;
     target: MissingDependencies;
   }): Promise<boolean> {
     if (this.disposed) {
@@ -1190,11 +1228,14 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     }
     const existing = this.dependencyInstallOperation;
     if (existing?.promise) {
-      return !bound || existing.boundPicklePreflight === bound.preflight ? existing.promise : Promise.resolve(false);
+      return !bound || (bound.preflight && existing.boundPicklePreflight === bound.preflight)
+        ? existing.promise
+        : Promise.resolve(false);
     }
     const operation: DependencyInstallOperation = {
       phase: "confirming",
       boundPicklePreflight: bound?.preflight,
+      cancellation: bound?.cancellation,
       target: bound?.target
     };
     this.dependencyInstallOperation = operation;
@@ -1358,7 +1399,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     }
     if (!completed || this.disposed) return false;
 
-    const currentTarget = operation.boundPicklePreflight ? undefined : this.lastMissingDependencies;
+    const currentTarget = operation.target ? undefined : this.lastMissingDependencies;
     this.releaseDependencyInstallOperation(operation);
     if (!currentTarget) {
       void vscode.window.showInformationMessage("Open Wrangler runtime dependencies were installed.");
@@ -1474,9 +1515,12 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       ? Boolean(
           boundOwner && boundOwner.missingTarget === missing && this.isTrustedPicklePreflightOwnerCurrent(boundOwner)
         )
-      : this.lastMissingDependencies === missing;
+      : operation.target
+        ? operation.target === missing
+        : this.lastMissingDependencies === missing;
     return (
       !this.disposed &&
+      !operation.cancellation?.isCancellationRequested &&
       vscode.workspace.isTrusted &&
       this.isCurrentEnvironmentSelection(missing.selection) &&
       missing.selectionEpoch === missing.selection.epoch &&
@@ -1536,6 +1580,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   ): boolean {
     return (
       !this.disposed &&
+      !operation.cancellation?.isCancellationRequested &&
       vscode.workspace.isTrusted &&
       this.dependencyInstallOperation === operation &&
       operation.authorizationEpoch === authorizationEpoch &&
@@ -2197,7 +2242,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     const selectedFailure = failures[0];
     const selectedRequirements = [...(selectedFailure?.missing ?? [])];
     const selectedRequirementSet = new Set(selectedRequirements);
-    this.lastMissingDependencies = {
+    const missingTarget: MissingDependencies = {
       environment,
       dependencies: (selectedFailure?.dependencies ?? [])
         .filter((dependency) => selectedRequirementSet.has(dependency.installSpec))
@@ -2206,7 +2251,9 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       selection,
       selectionEpoch: selection.epoch
     };
+    this.lastMissingDependencies = missingTarget;
     return {
+      missingTarget,
       request: {
         kind: "error",
         code: "missing_dependencies",

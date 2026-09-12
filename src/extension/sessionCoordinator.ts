@@ -150,6 +150,8 @@ export class SessionCoordinator implements vscode.Disposable {
     sourceProtection ??= confirmedOrigin?.kind === "textDocument" ? confirmedOrigin.sourceProtection : undefined;
     return {
       request: (request, options) => this.request(delegate, request, options, confirmedOrigin, sourceProtection),
+      installFileDependencies: (source, backend, options) =>
+        delegate.installFileDependencies?.(source, backend, options) ?? Promise.resolve(false),
       onDidReplaceRuntime: (listener) =>
         this.runtimeReplacementEmitter.event(({ owner, replacement }) => {
           if (owner === delegate) listener(replacement);
