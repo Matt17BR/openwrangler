@@ -95,7 +95,10 @@ stable-release scope; the experimental and Preview capabilities below have addit
 | R ordinary tibble — Preview               | Yes     | Supported operations, native R      | CSV / Parquet, with limits |
 | R ordinary `data.table` — Preview         | Yes     | Supported operations, native R      | CSV / Parquet, with limits |
 
-**Native R remains Preview even in stable extension releases.** Default `collapse::qDF()`, `qTBL()` and `qDT()` outputs
+**R support is Preview.** Supported R frames can be viewed, cleaned and exported, but stable extension publication
+does not yet qualify these R workflows against the exact release package. The
+[first stable R notebook scope](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#first-stable-r-notebook-scope)
+defines the remaining qualification work. Default `collapse::qDF()`, `qTBL()` and `qDT()` outputs
 use the three R frame paths above. Grouped or rowwise tibbles, collapse `GRP_df` / `indexed_frame` objects, and unsupported
 classes or attributes are refused. Input support does not imply support for every operation in those packages:
 generated R uses one native dialect with class-specific operations, rather than selectable dplyr or collapse dialects.

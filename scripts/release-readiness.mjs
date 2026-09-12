@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { SaxesParser } from "saxes";
-import { inspectChangelog, inspectPreviewRParityMatrix, inspectPrimaryParityMatrix } from "./release-documents.mjs";
+import { inspectChangelog, inspectNativeRPreview, inspectPrimaryParityMatrix } from "./release-documents.mjs";
 import { classifyNumericReleaseVersion, NUMERIC_RELEASE_VERSION } from "./release-metadata.mjs";
 import { DuplicateJsonKeyError, parseStrictJson } from "./strict-json.mjs";
 import { inspectVsixArchive, readBoundedVsixFileSnapshot } from "./vsix-archive.mjs";
@@ -58,36 +58,6 @@ export const PRIMARY_PARITY_SCOPE = Object.freeze([
   ["Installed-editor first-usable-grid performance", "Yes", "Yes"],
   ["VS Code package acceptance and compatibility seam", "N/A", "N/A"]
 ]);
-function previewRScope(...values) {
-  if (values.length !== 2 || values.some((value) => typeof value !== "string" || value.length === 0)) {
-    throw new Error("Every Native R preview scope entry requires one surface and availability.");
-  }
-  return Object.freeze(values);
-}
-
-export const R_PREVIEW_PARITY_SCOPE = Object.freeze([
-  previewRScope("Native R frame paging and typed cells", "Preview"),
-  previewRScope("Native R compound viewing filters", "Preview"),
-  previewRScope("Native R value search and selections", "Preview"),
-  previewRScope("Native R ordered viewing sorts", "Preview"),
-  previewRScope("Native R column and dataset profiles", "Preview"),
-  previewRScope("Base data.frame, tibble, and data.table", "Preview"),
-  previewRScope("Exact IRkernel session transport", "Preview"),
-  previewRScope("Exact active R-terminal transport", "Preview"),
-  previewRScope("Cursor-owned .Rmd and .qmd R/Python chunk", "Preview"),
-  previewRScope("Owned .R source process", "macOS and Linux Preview"),
-  previewRScope("Owned .Rmd and .qmd cell process", "macOS and Linux Preview"),
-  previewRScope("Notebook workbench", "Preview"),
-  previewRScope("R cleaning operations and generated code", "Generated catalog"),
-  previewRScope("Copy or save generated R", "Generated catalog"),
-  previewRScope("Insert generated R into its IRkernel notebook", "Preview"),
-  previewRScope("Insert generated R into its source .R file", "macOS and Linux Preview"),
-  previewRScope("Insert generated R into .Rmd and .qmd", "macOS and Linux Preview"),
-  previewRScope("Cleaned-data export", "R notebook/document CSV/Parquet"),
-  previewRScope("Active R-terminal cleaned-data export", "Preview"),
-  previewRScope("Quarto and R Markdown lexical R-cell run", "Preview")
-]);
-
 function numericReleaseMajor(version) {
   const match = typeof version === "string" ? NUMERIC_RELEASE_VERSION.exec(version) : null;
   return match === null ? undefined : BigInt(match.groups?.major ?? "");
@@ -95,7 +65,7 @@ function numericReleaseMajor(version) {
 
 function stableRParityProblems(featureParity, version) {
   const major = numericReleaseMajor(version);
-  return major !== undefined && major >= 2n ? inspectPreviewRParityMatrix(featureParity, R_PREVIEW_PARITY_SCOPE) : [];
+  return major !== undefined && major >= 2n ? inspectNativeRPreview(featureParity) : [];
 }
 
 function parseJsonObject(contents, label, problems) {
@@ -375,10 +345,6 @@ export function inspectPreviewReleaseReadiness({
   return [...new Set(problems)];
 }
 
-export function inspectPreviewRParitySource({ featureParity }) {
-  return inspectPreviewRParityMatrix(featureParity, R_PREVIEW_PARITY_SCOPE);
-}
-
 export function inspectReleaseDocumentationSource({
   featureParity,
   preview,
@@ -403,7 +369,7 @@ export function inspectReleaseDocumentationSource({
     return problems;
   }
   return classification.channel === "preview"
-    ? inspectPreviewRParitySource({ featureParity })
+    ? inspectNativeRPreview(featureParity)
     : [
         ...inspectPrimaryParityMatrix(featureParity, PRIMARY_PARITY_SCOPE, trackedEvidencePaths, {
           requireComplete: false

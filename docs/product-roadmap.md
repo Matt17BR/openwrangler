@@ -6,7 +6,8 @@ are ready. The generated [reference](reference.md) lists commands, settings, ope
 ## Current supported scope
 
 - Pandas and Polars are the main editing engines for files and supported Python notebook variables.
-- Native R remains **Preview** even when it is included in a stable Open Wrangler release. Base `data.frame`, tibble,
+- R support is **Preview** until its [first stable notebook scope](feature-parity.md#first-stable-r-notebook-scope)
+  meets the defined native and exact-candidate qualification criteria. Base `data.frame`, tibble,
   and `data.table` values use R directly through the documented notebook, terminal, and document paths.
 - DuckDB is experimental. File sessions support native editing and export; notebook `DuckDBPyRelation` values are
   view-only. Open Wrangler does not yet browse `.duckdb` catalogs, schemas, tables, views, or arbitrary SQL.

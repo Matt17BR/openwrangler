@@ -446,32 +446,50 @@ publication when their public labels and limits remain accurate.
 
 ## Native R preview
 
-Native R keeps the **Preview** label in every release channel. These rows describe current capability and limits;
-none is a stable-release gate. The [architecture](architecture.md#native-r) owns native values, generated-code
-agreement, precision, session ownership and transport rules.
+Preview describes the support and release-qualification commitment. Native R already supports paging, typed
+filters, sorts, profiles, cleaning, generated R and data export within the limits below. Stable extension publication
+does not yet require those workflows to pass against its exact candidate package. A source or platform test passing
+does not by itself change that commitment.
 
-| Surface                                       | Availability                    | Status  | Current owner                                                       |
-| --------------------------------------------- | ------------------------------- | ------- | ------------------------------------------------------------------- |
-| Native R frame paging and typed cells         | Preview                         | Partial | Projected native frame contracts, empty subsets and installed pages |
-| Native R compound viewing filters             | Preview                         | Partial | Native predicate contracts and installed value paths                |
-| Native R value search and selections          | Preview                         | Partial | Typed selection and bounded search contracts                        |
-| Native R ordered viewing sorts                | Preview                         | Partial | Native stable-sort contracts and editor paths                       |
-| Native R column and dataset profiles          | Preview                         | Partial | Exact and sampled native profile contracts                          |
-| Base `data.frame`, tibble, and `data.table`   | Preview                         | Partial | Native discovery, paging, query, and profile contracts              |
-| Exact IRkernel session transport              | Preview                         | Done    | Exact-kernel ownership and supported desktop-host journeys          |
-| Exact active R-terminal transport             | Preview                         | Partial | Official-R-terminal discovery and callback contracts                |
-| Cursor-owned `.Rmd` and `.qmd` R/Python chunk | Preview                         | Partial | Executor-aware exact-origin contracts                               |
-| Owned `.R` source process                     | macOS and Linux Preview         | Partial | Owned-process lifecycle contracts                                   |
-| Owned `.Rmd` and `.qmd` cell process          | macOS and Linux Preview         | Partial | Lexical-cell and owned-process contracts                            |
-| Notebook workbench                            | Preview                         | Partial | Installed viewing/editing and verified kernel-restart recovery      |
-| R cleaning operations and generated code      | Generated catalog               | Partial | Native live/generated values, metadata, and replay contracts        |
-| Copy or save generated R                      | Generated catalog               | Partial | Editable-buffer copy and atomic script-save contracts               |
-| Insert generated R into its IRkernel notebook | Preview                         | Partial | Exact-document insertion contracts                                  |
-| Insert generated R into its source `.R` file  | macOS and Linux Preview         | Partial | Exact-document insertion and supported-host rerun                   |
-| Insert generated R into `.Rmd` and `.qmd`     | macOS and Linux Preview         | Partial | Exact-document insertion contracts                                  |
-| Cleaned-data export                           | R notebook/document CSV/Parquet | Partial | Native writers and host-owned atomic publication                    |
-| Active R-terminal cleaned-data export         | Preview                         | Partial | Native streaming and host-owned atomic publication                  |
-| Quarto and R Markdown lexical R-cell run      | Preview                         | Partial | Exact lexical-cell routing contracts                                |
+| Entry path                                          | Current support                                                                    | Generated code and data export                         |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| IRkernel notebook in desktop VS Code                | Preview on Linux, macOS and Windows; exact notebook, kernel and variable ownership | Copy, save, notebook insertion, CSV and Parquet        |
+| Active terminal managed by the official R extension | Preview on Linux; exact terminal and process ownership                             | Copy, save, CSV and Parquet; no document for insertion |
+| Managed `.R`, `.Rmd` or `.qmd` document             | Preview on Linux and macOS; exact document/version and owned R process             | Copy, save, source-document insertion, CSV and Parquet |
+| IRkernel notebook in Cursor on Linux                | Experimental editor compatibility with narrower coverage                           | Only the capabilities of its documented execution path |
+
+The [architecture](architecture.md#native-r) defines frame, precision, source and transport guarantees.
+[Testing](testing.md#native-r-editor-dependencies) identifies the native and installed checks for each path.
+
+### First stable R notebook scope
+
+The first stable R promise will cover ordinary base `data.frame`, tibble and `data.table` values in IRkernel notebooks
+in desktop VS Code on Linux, macOS and Windows. It includes viewing, the supported cleaning catalog and history,
+generated R copy/save/insertion, CSV/Parquet export and kernel-restart recovery. The frame and export limitations below
+are part of that promise, including the ordinary default collapse outputs. Terminal, managed-document and Cursor paths
+can keep separate Preview or experimental status.
+
+Graduation requires:
+
+1. The existing native frame, complete operation catalog, kernel and transport owners pass for the candidate source
+   and the supported R qualification cohorts. Reuse matching protected-source evidence; do not repeat every operation
+   in an installed editor.
+2. One immutable candidate VSIX passes the existing representative IRkernel journeys on Linux, macOS and Windows.
+   Together they must cover base/tibble/data.table values, viewing, editing/history, source preservation, generated
+   code, export/insertion and restart ownership. Record the exact package, source, editor and R versions with the
+   original results. [Releasing](releasing.md#release-candidate) owns artifact handling.
+3. Resolve any material failure in that selected scope before promotion. Preserve original failures and explain the
+   disposition of known risks. The historical [collapse-frame timeout](https://github.com/Matt17BR/openwrangler/issues/1088)
+   is unresolved; a later pass does not establish its cause, and a recurrence in candidate qualification blocks
+   promotion. [R test-runner cleanup](https://github.com/Matt17BR/openwrangler/issues/955) concerns source-test CLI
+   containment and is not evidence of an IRkernel product failure.
+4. Bind the existing release qualification to these R results before changing the notebook support label. Update this
+   guide, README and release notes together. Passing documentation checks does not establish stable R support.
+
+The immediate missing work is a required, reviewed R notebook qualification on the same immutable release candidate,
+with the selected-scope reliability review above. Unsupported grouped/indexed objects, full Quarto rendering, Windows
+managed-document execution and alternate dplyr/collapse code dialects do not block this narrower scope. No new full
+installed-operation matrix is required.
 
 Supported frames are base `data.frame`, tibble and `data.table`, including ordinary default `collapse::qDF()`,
 `qTBL()` and `qDT()` outputs. Grouped `GRP_df`, `indexed_frame`, unsupported attributes and unsupported cell classes
