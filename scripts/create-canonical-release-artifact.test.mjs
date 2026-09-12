@@ -30,11 +30,7 @@ import {
   validateCanonicalReleaseProvenance,
   validatePreviewReleaseProvenance
 } from "./create-canonical-release-artifact.mjs";
-import {
-  inspectReleaseDocumentationSource,
-  PRIMARY_PARITY_SCOPE,
-  R_PREVIEW_PARITY_SCOPE
-} from "./release-readiness.mjs";
+import { inspectReleaseDocumentationSource, PRIMARY_PARITY_SCOPE } from "./release-readiness.mjs";
 import { inspectPrimaryParityMatrix } from "./release-documents.mjs";
 import {
   assertReproducibleVsixArchive as assertReproducibleArchive,
@@ -131,15 +127,10 @@ ${rows}
 `;
 }
 
-function nativeRPreviewMatrix(statuses = new Map()) {
-  const rows = R_PREVIEW_PARITY_SCOPE.map(([surface, availability]) => {
-    return `| ${surface} | ${availability} | ${statuses.get(surface) ?? "Partial"} | Current Native R capability owner |`;
-  }).join("\n");
+function nativeRPreviewDisclosure() {
   return `## Native R preview
 
-| Surface | Availability | Status | Current owner |
-| --- | --- | --- | --- |
-${rows}
+R notebook viewing, cleaning and export are Preview while exact-candidate qualification is pending.
 `;
 }
 
@@ -308,7 +299,7 @@ async function createStableV2Fixture(context) {
   const version = "2.0.0";
   const manifest = { ...stablePackage, version };
   return await createFixture(context, {
-    featureParity: `${parityMatrix()}\n${nativeRPreviewMatrix()}`,
+    featureParity: `${parityMatrix()}\n${nativeRPreviewDisclosure()}`,
     manifest
   });
 }
@@ -420,10 +411,7 @@ test("publishes exact stable 2.x bytes with Native R retained as preview", async
 
   assert.equal(receipt.releaseTag, "v2.0.0");
   assert.equal(receipt.sourceCommit, fixture.expectedCommit);
-  assert.match(
-    readFileSync(join(fixture.root, "docs/feature-parity.md"), "utf8"),
-    /\| Native R frame paging and typed cells \| Preview \| Partial \| Current Native R capability owner \|/u
-  );
+  assert.ok(readFileSync(join(fixture.root, "docs/feature-parity.md"), "utf8").endsWith(nativeRPreviewDisclosure()));
   assert.equal(runGit(fixture.root, ["ls-files", "docs/performance"]), "");
   assert.deepEqual(readFileSync(join(fixture.outputDirectory, "openwrangler.vsix")), fixture.candidateBytes);
   assert.equal(
@@ -524,45 +512,63 @@ test("source documentation validates incomplete rows, applicability and tracked 
   }
 });
 
-test("source documentation retains channel and Native R rules", () => {
+test("source documentation retains channel rules and visible Native R support disclosure", () => {
+  const disclosure = nativeRPreviewDisclosure();
   const stable = {
-    featureParity: `${parityMatrix()}\n${nativeRPreviewMatrix(new Map([[R_PREVIEW_PARITY_SCOPE[1][0], "Done"]]))}`,
+    featureParity: `${parityMatrix()}\n${disclosure}`,
     preview: false,
     trackedEvidencePaths: new Set(["scripts/evidence.test.mjs"]),
     version: "2.1.0"
   };
   assert.deepEqual(inspectReleaseDocumentationSource(stable), []);
-  const rRows = stable.featureParity.split("\n").filter((line) => line.startsWith("| Native R "));
-  for (const featureParity of [
-    stable.featureParity.replace(`${rRows[0]}\n${rRows[1]}`, `${rRows[1]}\n${rRows[0]}`),
-    stable.featureParity.replace(
-      "Base data.frame, tibble, and data.table",
-      "Base `data.frame`, tibble, and `data.table`"
-    ),
-    stable.featureParity.replace("| Preview | Partial |", "| Preview | Done |"),
-    stable.featureParity.replace("| Preview | Done |", "| Preview | Partial |")
+  for (const body of [
+    "R support is **Preview**. See [qualification](releasing.md).",
+    `| Entry path | Current support |
+| --- | --- |
+| IRkernel notebook | Preview |`,
+    "R notebook support is Preview.\n\n### Graduation\n\nQualify the immutable candidate."
   ]) {
-    assert.deepEqual(inspectReleaseDocumentationSource({ ...stable, featureParity }), []);
+    assert.deepEqual(
+      inspectReleaseDocumentationSource({
+        ...stable,
+        featureParity: `${parityMatrix()}\n## Native R preview\n\n${body}`
+      }),
+      []
+    );
   }
-  for (const changed of [
-    { version: "bad" },
-    { preview: undefined },
-    { preview: true },
-    { featureParity: parityMatrix() },
-    { featureParity: stable.featureParity.replace("| Preview | Partial |", "| Yes | Partial |") },
-    { featureParity: stable.featureParity.replace("macOS and Linux Preview", "Preview") },
-    { featureParity: stable.featureParity.replace("| Preview | Partial |", "| Preview | Complete |") },
-    { featureParity: stable.featureParity.replace("## Native R preview", "## Native R stable") },
-    { featureParity: stable.featureParity.replace("Current Native R capability owner", "") },
-    { featureParity: stable.featureParity.replace(rRows[0], "") },
-    { featureParity: stable.featureParity.replace(rRows[1], rRows[0]) },
-    { featureParity: stable.featureParity.replace("Native R frame paging and typed cells", "Unknown R surface") }
-  ]) {
+  for (const changed of [{ version: "bad" }, { preview: undefined }, { preview: true }]) {
     assert.notDeepEqual(inspectReleaseDocumentationSource({ ...stable, ...changed }), []);
   }
+  for (const hiddenOrMissing of [
+    "",
+    `\`\`\`md\n${disclosure}\n\`\`\``,
+    `<!--\n${disclosure}\n-->`,
+    disclosure
+      .split("\n")
+      .map((line) => `> ${line}`)
+      .join("\n"),
+    `${disclosure}\n${disclosure}`,
+    disclosure.replace("## Native R preview", "## Native R stable"),
+    disclosure.replace("## Native R preview", "## **Native R preview**"),
+    `${disclosure}\n## Native R stable\n\nSupported.`,
+    "## Native R preview\n\n",
+    "## Native R preview\n\n## Other capabilities\n\nSupported.",
+    `<div hidden>\n\n${disclosure}\n</div>`,
+    "## Native R preview\n\n<span hidden>Preview support</span>"
+  ]) {
+    assert.notDeepEqual(
+      inspectReleaseDocumentationSource({ ...stable, featureParity: `${parityMatrix()}\n${hiddenOrMissing}` }),
+      [],
+      hiddenOrMissing
+    );
+  }
+  assert.deepEqual(
+    inspectReleaseDocumentationSource({ ...stable, version: "1.0.0", featureParity: parityMatrix() }),
+    []
+  );
   const preview = {
     ...stable,
-    featureParity: nativeRPreviewMatrix(),
+    featureParity: disclosure,
     preview: true,
     version: previewPackage.version
   };

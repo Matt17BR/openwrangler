@@ -55,6 +55,8 @@ R needs its own producer, decoder, native tests and generated-code checks. The s
 numeric capacity, package behavior or platform support across engines. Source preservation, trust, bounded transport
 and exact cleanup still apply to every path.
 
-Native R remains a Preview capability independently of the extension's release channel. Its presence in a stable
-package does not turn it into stable R support. New user-facing claims need direct native and generated-code evidence,
-plus installed evidence for the host path advertised. [Testing](../testing.md) and [CI](../ci.md) own those checks.
+R support is currently Preview because stable extension publication does not yet require R qualification against its
+exact candidate package. The [first stable R notebook scope](../feature-parity.md#first-stable-r-notebook-scope) defines
+finite graduation criteria; terminal and document paths can be assessed separately. New claims need direct native and
+generated-code evidence plus installed evidence for the advertised host path. [Testing](../testing.md) and [CI](../ci.md)
+own those checks.

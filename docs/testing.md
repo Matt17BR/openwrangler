@@ -555,6 +555,13 @@ provenance triple. It does not repeat protected-main source checks. The candidat
 
 Stable publication uses this verified VSIX and does not rebuild it.
 
+This ordinary candidate flow does not qualify R support. The
+[first stable R notebook scope](feature-parity.md#first-stable-r-notebook-scope) requires its representative IRkernel
+journeys to consume that same supplied VSIX on Linux, macOS and Windows, alongside matching native source evidence.
+Use the existing core/native-frame/restart selectors and platform profiles for their distinct responsibilities;
+do not duplicate the complete native operation catalog in installed tests. Keep original failures, package identity,
+source-preservation assertions and the existing time and cleanup bounds.
+
 The optional [competitor comparison](performance-comparison.md) is archived; its `comparison:*` commands are no longer
 available. Direct installed-performance, weekly runtime performance and Data Wrangler coexistence checks remain.
 
