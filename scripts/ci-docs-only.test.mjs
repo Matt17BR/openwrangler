@@ -260,10 +260,14 @@ test("proves existing Python source and Markdown edits only for native R", async
   }
 });
 
-test("omits native Spark only with an existing Arrow Formula helper modification", async (context) => {
+test("omits native Spark for nonempty subsets of the existing local-engine owners", async (context) => {
   for (const files of [
     [arrowFormulaHelper],
+    [arrowFormulaTests[0]],
+    [arrowFormulaTests[1]],
     [arrowFormulaHelper, arrowFormulaTests[0]],
+    [arrowFormulaHelper, arrowFormulaTests[1]],
+    [...arrowFormulaTests, "docs/testing.md"],
     [arrowFormulaHelper, ...arrowFormulaTests, "README.md", "CHANGELOG.md", "docs/architecture.md"]
   ]) {
     await context.test(files.join(", "), (child) => {
@@ -287,23 +291,20 @@ test("omits native Spark only with an existing Arrow Formula helper modification
   }
 });
 
-test("keeps native Spark for companion-only edits or other inputs alongside Arrow Formula", async (context) => {
+test("keeps native Spark for other inputs alongside the eligible local-engine owners", async (context) => {
   const cases = [
-    [...arrowFormulaTests, "docs/testing.md"],
-    ...[
-      "python/openwrangler_runtime/engines/pandas_engine.py",
-      "python/openwrangler_runtime/engines/base.py",
-      "python/openwrangler_runtime/session.py",
-      "python/tests/test_pyspark_engine.py",
-      "python/tests/conftest.py",
-      "python/tests/pyspark_connect_test_support.py",
-      "python/pyproject.toml",
-      "package-lock.json",
-      ".github/workflows/ci.yml",
-      "scripts/ci-docs-only.mjs",
-      "scripts/ci-docs-only.test.mjs"
-    ].map((file) => [arrowFormulaHelper, ...arrowFormulaTests, file])
-  ];
+    "python/openwrangler_runtime/engines/pandas_engine.py",
+    "python/openwrangler_runtime/engines/base.py",
+    "python/openwrangler_runtime/session.py",
+    "python/tests/test_pyspark_engine.py",
+    "python/tests/conftest.py",
+    "python/tests/pyspark_connect_test_support.py",
+    "python/pyproject.toml",
+    "package-lock.json",
+    ".github/workflows/ci.yml",
+    "scripts/ci-docs-only.mjs",
+    "scripts/ci-docs-only.test.mjs"
+  ].map((file) => [arrowFormulaHelper, ...arrowFormulaTests, file]);
   for (const files of cases) {
     await context.test(files.join(", "), (child) => {
       const cwd = repository(child, [arrowFormulaHelper, ...files]);

@@ -21,8 +21,8 @@ const runtimeOmissionScriptFiles = new Set([
 ]);
 
 const rEditorOmissionTestFiles = new Set(["r/tests/kernel_agent.R", "r/tests/frame_contract.R"]);
-const arrowFormulaHelper = "python/openwrangler_runtime/engines/_pandas_arrow_formula_helpers.py";
-const arrowFormulaTestFiles = new Set([
+const nativeSparkOmissionFiles = new Set([
+  "python/openwrangler_runtime/engines/_pandas_arrow_formula_helpers.py",
   "python/tests/test_operation_edges.py",
   "python/tests/test_session_transactions.py"
 ]);
@@ -83,7 +83,6 @@ export function proveRuntimeOmissions({ cwd = process.cwd(), env = process.env }
   let pythonOmittable = true;
   let rEditorOmittable = true;
   let nativeSparkOmittable = true;
-  let arrowFormulaModified = false;
   for (let index = 0; index < records.length; index += 2) {
     const modified = /^:100644 100644 [0-9a-f]{40} [0-9a-f]{40} M$/u.test(records[index]);
     const path = records[index + 1];
@@ -94,8 +93,7 @@ export function proveRuntimeOmissions({ cwd = process.cwd(), env = process.env }
       return required;
     }
     if (modified && (path === "README.md" || path === "CHANGELOG.md" || /^docs\/[^\p{Cc}]+\.md$/u.test(path))) continue;
-    nativeSparkOmittable &&= modified && (path === arrowFormulaHelper || arrowFormulaTestFiles.has(path));
-    if (modified && path === arrowFormulaHelper) arrowFormulaModified = true;
+    nativeSparkOmittable &&= modified && nativeSparkOmissionFiles.has(path);
     docsOnly = false;
     if (modified && rEditorOmissionTestFiles.has(path)) {
       rOmittable = false;
@@ -128,7 +126,7 @@ export function proveRuntimeOmissions({ cwd = process.cwd(), env = process.env }
     rOmittable,
     pythonOmittable,
     rEditorOmittable: !docsOnly && rEditorOmittable,
-    nativeSparkOmittable: nativeSparkOmittable && arrowFormulaModified
+    nativeSparkOmittable: !docsOnly && nativeSparkOmittable
   };
 }
 
