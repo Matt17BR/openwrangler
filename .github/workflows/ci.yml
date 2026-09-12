@@ -196,6 +196,7 @@ jobs:
           sudo apt-get install --yes --no-install-recommends libx11-dev
           dpkg-query --show --showformat='libx11-dev=${Version}\n' libx11-dev
       - run: npm ci --ignore-scripts
+        if: ${{ matrix.shard != 'kernel-agent' }}
       - id: r_prepare
         name: Prepare R dependencies
         run: >-

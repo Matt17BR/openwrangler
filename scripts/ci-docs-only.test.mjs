@@ -1186,6 +1186,9 @@ test("CI schedules every existing native R phase on two workers and cancellation
   assert.equal(runtime.strategy?.["fail-fast"], false);
   const entries = runtime.strategy.matrix.include;
   assert.equal(entries.length, 2);
+  const npmInstall = runtime.steps.filter((step) => step.run === "npm ci --ignore-scripts");
+  assert.equal(npmInstall.length, 1);
+  assert.equal(npmInstall[0].if, "${{ matrix.shard != 'kernel-agent' }}");
   const commands = runtime.steps.filter(
     (step) => step.run?.includes("scripts/run-r-contract-tests.mjs") || step.run === "npm run test:scripts:native"
   );
@@ -1201,7 +1204,12 @@ test("CI schedules every existing native R phase on two workers and cancellation
   const scheduled = [];
   for (const entry of entries) {
     assert.equal(typeof entry.native_cancellation, "boolean");
-    scheduled.push(...selectRContractPhases(phases, { kind: "shard", id: entry.shard }).map((phase) => phase.id));
+    const selected = selectRContractPhases(phases, { kind: "shard", id: entry.shard });
+    if (entry.shard === "kernel-agent") {
+      assert.equal(entry.native_cancellation, false);
+      assert.ok(selected.every((phase) => phase.command === "unused-Rscript"));
+    }
+    scheduled.push(...selected.map((phase) => phase.id));
   }
   assert.equal(entries.filter((entry) => entry.native_cancellation).length, 1);
   assert.deepEqual(scheduled.sort(), phases.map((phase) => phase.id).sort());
