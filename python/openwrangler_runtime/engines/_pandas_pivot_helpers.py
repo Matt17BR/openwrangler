@@ -17,3 +17,11 @@ def _open_wrangler_nullable_pivot_series(values, size, name):
         return pd.Series(pd.array([pd.NA] * size, dtype=dtype), name=name)
     except (TypeError, ValueError):
         return pd.Series([None] * size, dtype="object", name=name)
+
+
+def _open_wrangler_pivot_wider_names_valid(names, output_values):
+    invalid_type = names.map(lambda value: value is not None and not isinstance(value, str), na_action=None).astype(
+        bool
+    )
+    invalid = names.isna() | invalid_type | ~names.isin(output_values)
+    return not bool(invalid.any())
