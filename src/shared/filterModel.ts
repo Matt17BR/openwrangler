@@ -141,6 +141,34 @@ export const compactFilterModel = (model: FilterModel): FilterModel => ({
   sort: model.sort
 });
 
+export interface ViewFilterRemovalTarget {
+  readonly column: string;
+  readonly expectedSessionId: string;
+  readonly expectedFilterSignature: string;
+}
+
+export const isViewFilterRemovalTarget = (value: unknown): value is ViewFilterRemovalTarget => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const target = value as Record<string, unknown>;
+  const fields = ["column", "expectedSessionId", "expectedFilterSignature"];
+  return (
+    Object.keys(target).length === fields.length &&
+    Object.keys(target).every((field) => fields.includes(field)) &&
+    fields.every(
+      (field) => Object.hasOwn(target, field) && typeof target[field] === "string" && target[field].length > 0
+    )
+  );
+};
+
+/** Clear removes the complete active same-name group, independently of other filters and sorts. */
+export const viewFilterRemovalSignature = (filters: readonly ColumnFilter[], column: string): string | undefined => {
+  const group = filters
+    .filter((filter) => filter.column === column)
+    .map(compactColumnFilter)
+    .filter((filter): filter is ColumnFilter => filter !== undefined);
+  return group.length > 0 ? JSON.stringify(group) : undefined;
+};
+
 /**
  * Replace the active viewing filter for one displayed column while preserving
  * every other filter and the current sort order.

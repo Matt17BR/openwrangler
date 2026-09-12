@@ -46,6 +46,23 @@ const filtered: FilterModel = {
 };
 
 describe("App view-state model", () => {
+  it("requires bound native filter removal fields", () => {
+    const action = {
+      kind: "editorAction",
+      action: "clearFilterColumn",
+      column: "city",
+      expectedSessionId: "session",
+      expectedFilterSignature: JSON.stringify([cityFilter])
+    };
+    expect(decodeAppHostMessage(action)).toEqual(action);
+    for (const field of ["column", "expectedSessionId", "expectedFilterSignature"] as const) {
+      for (const invalid of [undefined, null, 1, ""]) {
+        expect(decodeAppHostMessage({ ...action, [field]: invalid })).toBeUndefined();
+      }
+    }
+    expect(decodeAppHostMessage({ kind: "editorAction", action: "clearFilterColumn", column: "city" })).toBeUndefined();
+  });
+
   it("decodes the Redo editor action with checked session and revision fields", () => {
     const action = { kind: "editorAction", action: "redoStep", expectedSessionId: "session", expectedRevision: 3 };
     expect(decodeAppHostMessage(action)).toEqual(action);

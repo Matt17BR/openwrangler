@@ -7,7 +7,7 @@ import type {
   SessionMetadata,
   ValuesResponse
 } from "../shared/protocol";
-import type { FilterModel } from "../shared/filterModel";
+import { isViewFilterRemovalTarget, type FilterModel, type ViewFilterRemovalTarget } from "../shared/filterModel";
 import { operationKinds } from "../shared/operationCatalog.generated";
 import { isColumnSchemaArray, isDataDiff, isOpenWranglerResponse } from "../shared/protocolValidation";
 import { SESSION_OPEN_PROGRESS_STAGES, type SessionOpenProgressStage } from "../shared/sessionOpenProgress";
@@ -55,7 +55,7 @@ type StepEditorActionMessage = {
 
 type OtherEditorActionMessage = {
   kind: "editorAction";
-  action: Exclude<NonSortEditorAction, StepEditorActionMessage["action"]>;
+  action: Exclude<NonSortEditorAction, StepEditorActionMessage["action"] | "clearFilterColumn">;
   expectedSessionId?: string;
   expectedRevision?: number;
   operationKind?: OperationKind;
@@ -63,7 +63,16 @@ type OtherEditorActionMessage = {
   column?: string;
 };
 
-export type EditorActionMessage = ViewSortEditorActionMessage | StepEditorActionMessage | OtherEditorActionMessage;
+type ViewFilterRemovalEditorActionMessage = {
+  kind: "editorAction";
+  action: "clearFilterColumn";
+} & ViewFilterRemovalTarget;
+
+export type EditorActionMessage =
+  | ViewSortEditorActionMessage
+  | ViewFilterRemovalEditorActionMessage
+  | StepEditorActionMessage
+  | OtherEditorActionMessage;
 
 export interface ViewSortActionTarget {
   column: string;
@@ -304,9 +313,16 @@ export function decodeAppHostMessage(value: unknown) {
             isNonNegativeInteger(value.expectedRevision)
             ? (value as StepEditorActionMessage)
             : undefined;
+        case "clearFilterColumn": {
+          const target = {
+            column: value.column,
+            expectedSessionId: value.expectedSessionId,
+            expectedFilterSignature: value.expectedFilterSignature
+          };
+          return isViewFilterRemovalTarget(target) ? { kind: value.kind, action: value.action, ...target } : undefined;
+        }
         case "editLatest":
         case "selectStep":
-        case "clearFilterColumn":
         case "openFilters":
         case "applyDraft":
         case "discardDraft":

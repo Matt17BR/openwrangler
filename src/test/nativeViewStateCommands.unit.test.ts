@@ -658,6 +658,88 @@ describe("native state and presentation commands", () => {
     expect(nativeMocks.sendEditorActionForSession).not.toHaveBeenCalled();
   });
 
+  it("binds native filter removal to the originating session and complete column group", async () => {
+    const original = noDraftSnapshot();
+    const city = {
+      column: "city",
+      type: "string" as const,
+      predicates: [{ kind: "predicate" as const, operator: "equals" as const, value: "Milan" }]
+    };
+    original.viewState.filterModel = { filters: [city], sort: [] };
+    const registered = register(original);
+    const node = treeChildren("openWrangler.filters")[0]!;
+    const { arguments: args } = node.command as { arguments: unknown[] };
+
+    const replacement = noDraftSnapshot();
+    replacement.sessionId = "replacement";
+    replacement.metadata = { ...replacement.metadata, sessionId: "replacement" };
+    replacement.viewState.filterModel = original.viewState.filterModel;
+    registered.setActiveSession(replacement);
+    await command("openWrangler.clearViewFilterColumn")(...args);
+    expect(nativeMocks.sendEditorAction).not.toHaveBeenCalled();
+
+    const changed = noDraftSnapshot();
+    changed.viewState.filterModel = {
+      filters: [{ ...city, predicates: [{ kind: "predicate", operator: "equals", value: "Paris" }] }],
+      sort: []
+    };
+    registered.setActiveSession(changed);
+    await command("openWrangler.clearViewFilterColumn")(...args);
+    expect(nativeMocks.sendEditorAction).not.toHaveBeenCalled();
+
+    changed.viewState.filterModel.filters = [city, changed.viewState.filterModel.filters[0]!];
+    registered.setActiveSession(changed);
+    await command("openWrangler.clearViewFilterColumn")(...args);
+    expect(nativeMocks.sendEditorAction).not.toHaveBeenCalled();
+
+    // A saved filter remains removable without a current schema target. Siblings and sorts are independent.
+    changed.metadata = { ...changed.metadata, schema: [] };
+    changed.viewState.filterModel = {
+      filters: [
+        {
+          ...city,
+          valueFilter: { kind: "values", selectedValues: [], includeNulls: false, includeNaN: false }
+        },
+        { column: "sales", type: "float", predicates: [{ kind: "predicate", operator: "gt", value: 10 }] }
+      ],
+      sort: [{ column: "sales", direction: "desc", nulls: "last" }]
+    };
+    registered.setActiveSession(changed);
+    await command("openWrangler.clearViewFilterColumn")(...structuredClone(args));
+    expect(nativeMocks.sendEditorAction).toHaveBeenCalledExactlyOnceWith({
+      action: "clearFilterColumn",
+      column: "city",
+      expectedSessionId: original.sessionId,
+      expectedFilterSignature: JSON.stringify([city])
+    });
+
+    nativeMocks.sendEditorAction.mockClear();
+    const hiddenColumn = Object.defineProperty(
+      {
+        expectedSessionId: original.sessionId,
+        expectedFilterSignature: JSON.stringify([city]),
+        action: "undoStep"
+      },
+      "column",
+      { value: "city" }
+    );
+    for (const target of [
+      "city",
+      undefined,
+      {},
+      { column: "city", expectedSessionId: original.sessionId },
+      hiddenColumn
+    ]) {
+      await command("openWrangler.clearViewFilterColumn")(target);
+    }
+    expect(nativeMocks.sendEditorAction).not.toHaveBeenCalled();
+
+    changed.viewState.filterModel.filters = [{ ...city, predicates: [] }];
+    registered.setActiveSession(changed);
+    await command("openWrangler.clearViewFilterColumn")(...args);
+    expect(nativeMocks.sendEditorAction).not.toHaveBeenCalled();
+  });
+
   it("makes each effective native filter node remove that column filter", async () => {
     const filtered = noDraftSnapshot();
     filtered.viewState.filterModel = {
@@ -699,16 +781,21 @@ describe("native state and presentation commands", () => {
       ["city", "Priority 1 · Ascending · nulls last"],
       ["sales", "Priority 2 · Descending · nulls first"]
     ]);
+    const clearTarget = {
+      column: "city",
+      expectedSessionId: filtered.sessionId,
+      expectedFilterSignature: JSON.stringify([filtered.viewState.filterModel.filters[0]])
+    };
     expect(nodes[0]?.command).toEqual({
       command: "openWrangler.clearViewFilterColumn",
       title: "Remove city filter",
-      arguments: ["city"]
+      arguments: [clearTarget]
     });
 
-    await command("openWrangler.clearViewFilterColumn")("city");
+    await command("openWrangler.clearViewFilterColumn")(clearTarget);
     expect(nativeMocks.sendEditorAction).toHaveBeenCalledWith({
       action: "clearFilterColumn",
-      column: "city"
+      ...clearTarget
     });
 
     expect(nodes[1]?.command).toEqual(
@@ -822,7 +909,7 @@ describe("native state and presentation commands", () => {
     expect(nativeMocks.sendEditorAction).not.toHaveBeenCalled();
 
     nativeMocks.sendEditorAction.mockClear();
-    await command("openWrangler.clearViewFilterColumn")("sales");
+    await command("openWrangler.clearViewFilterColumn")(clearTarget);
     expect(nativeMocks.sendEditorAction).not.toHaveBeenCalled();
 
     filtered.stepInspectionActive = undefined;
@@ -862,7 +949,11 @@ describe("native state and presentation commands", () => {
       ["Filters and sorts unavailable", "Not supported by this dataframe"]
     ]);
 
-    await command("openWrangler.clearViewFilterColumn")("value");
+    await command("openWrangler.clearViewFilterColumn")({
+      column: "value",
+      expectedSessionId: partial.sessionId,
+      expectedFilterSignature: JSON.stringify(partial.viewState.filterModel.filters)
+    });
     await command("openWrangler.openViewSort")("value");
     expect(nativeMocks.sendEditorAction).not.toHaveBeenCalled();
     expect(nativeMocks.showInformationMessage).toHaveBeenLastCalledWith("Sorting is unavailable for this dataframe.");

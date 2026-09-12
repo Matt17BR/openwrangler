@@ -1,7 +1,13 @@
 import * as path from "path";
 import { randomUUID } from "crypto";
 import * as vscode from "vscode";
-import { isActiveColumnFilter, viewSortModelSignature } from "../shared/filterModel";
+import {
+  isActiveColumnFilter,
+  isViewFilterRemovalTarget,
+  viewFilterRemovalSignature,
+  viewSortModelSignature,
+  type ViewFilterRemovalTarget
+} from "../shared/filterModel";
 import {
   canEditLatestStep,
   canStartOperation,
@@ -835,20 +841,27 @@ function registerNativeViewsTransactional(
   };
   context.subscriptions.push(
     contextSubscription,
-    registerCommand("openWrangler.clearViewFilterColumn", async (column?: unknown) => {
+    registerCommand("openWrangler.clearViewFilterColumn", async (target?: unknown) => {
+      if (!isViewFilterRemovalTarget(target)) return;
       const snapshot = coordinator.activeSession();
       if (
-        typeof column !== "string" ||
         !snapshot ||
+        snapshot.sessionId !== target.expectedSessionId ||
         !supportsViewingCapability(snapshot.metadata.capabilities, "filter") ||
         isStepInspectionActive(snapshot) ||
-        !snapshot?.viewState.filterModel.filters.some(
-          (filter) => filter.column === column && isActiveColumnFilter(filter)
-        )
+        viewFilterRemovalSignature(snapshot.viewState.filterModel.filters, target.column) !==
+          target.expectedFilterSignature
       ) {
         return;
       }
-      if (!OpenWranglerPanel.sendEditorAction({ action: "clearFilterColumn", column })) {
+      if (
+        !OpenWranglerPanel.sendEditorAction({
+          action: "clearFilterColumn",
+          column: target.column,
+          expectedSessionId: target.expectedSessionId,
+          expectedFilterSignature: target.expectedFilterSignature
+        })
+      ) {
         void vscode.window.showInformationMessage("Open the active dataframe editor before removing a viewing filter.");
       }
     }),
@@ -1507,6 +1520,26 @@ function filterNodes(
   if (!filterSupported && !sortSupported) {
     return [new ViewNode("Filters and sorts unavailable", "Not supported by this dataframe", "info")];
   }
+  const filterTargets = new Map<string, ViewFilterRemovalTarget>();
+  if (filterSupported && !inspectionMode) {
+    const groups = new Map<string, FilterModel["filters"]>();
+    for (const filter of model.filters) {
+      if (!isActiveColumnFilter(filter)) continue;
+      const group = groups.get(filter.column);
+      if (group) group.push(filter);
+      else groups.set(filter.column, [filter]);
+    }
+    for (const [column, group] of groups) {
+      filterTargets.set(
+        column,
+        Object.freeze({
+          column,
+          expectedSessionId: snapshot.sessionId,
+          expectedFilterSignature: viewFilterRemovalSignature(group, column)!
+        })
+      );
+    }
+  }
   const filters = (filterSupported ? model.filters.filter(isActiveColumnFilter) : []).map(
     (filter) =>
       new ViewNode(
@@ -1518,7 +1551,7 @@ function filterNodes(
           : {
               command: "openWrangler.clearViewFilterColumn",
               title: `Remove ${filter.column} filter`,
-              arguments: [filter.column]
+              arguments: [filterTargets.get(filter.column)]
             },
         inspectionMode ? undefined : "openWrangler.viewFilter",
         inspectionMode ? "Return to the current view to edit filters and sorts" : undefined
