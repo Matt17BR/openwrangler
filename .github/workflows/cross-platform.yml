@@ -41,7 +41,7 @@ jobs:
           source = Path("scripts/r-contract-macos-experiment.c").resolve()
           binary = root / "native-helper"
           source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
-          assert source_hash == "0167543e6b3a72aea394f46706d133c26fbc571141f4d03053a943878c3abd33"
+          assert source_hash == "7f91cb6f41a954d4c8d2cd3ff0113cb9a2a668d3abd04d30efdefe553748a6d3"
           started = time.perf_counter()
           report = {"sourceSha256": source_hash, "platform": platform.platform(),
                     "machine": platform.machine(), "compilerTreeCleanupQualified": False}

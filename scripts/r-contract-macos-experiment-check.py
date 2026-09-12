@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import selectors
 import shutil
 import signal
@@ -205,6 +206,31 @@ def run_case(node, helper, root, kind, record):
             }.items()
         }
         record["outputFlags"]["stderrPresent"] = bool(captured["stderr"])
+        allowed_reasons = {
+            "identity-before-unavailable",
+            "identity-after-unavailable",
+            "unique-identity-changed",
+            "exec-version-changed",
+            "elapsed-bound",
+            "metadata-bound",
+            "pid-enumeration",
+            "allocation",
+            "observation-bound",
+            "identity-observation",
+            "helper-timeout",
+            "helper-missing",
+            "helper-access",
+            "helper-output-bound",
+            "helper-unknown-exit",
+            "helper-unknown-launch",
+        }
+        refusal_reasons = set()
+        for stream in captured.values():
+            # Read one token; consume a longer suffix so unknown text cannot match an allowed prefix.
+            for match in re.finditer(rb"Native (?:scan|inspect|preflight|signal) refused: (\S{0,64})\S*", stream):
+                reason = match[1].decode("ascii", errors="replace")
+                refusal_reasons.add(reason if reason in allowed_reasons else "other")
+        record["nativeRefusalReasons"] = sorted(refusal_reasons)
         if child.stdout and not child.stdout.closed:
             child.stdout.close()
         if child.stderr:

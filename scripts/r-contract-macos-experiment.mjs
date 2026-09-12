@@ -18,10 +18,32 @@ export function nativeAdapter(binary, owner) {
         stdio: ["ignore", "pipe", "pipe"]
       });
     } catch (error) {
-      if (!allowRefusal || error.status !== 3)
-        throw new Error(`Native ${args[0]} refused: ${error.stderr?.toString().trim() ?? error.code}`, {
-          cause: error
-        });
+      if (!allowRefusal || error.status !== 3) {
+        // Top-level failure category only; empty stderr must not hide a launch code.
+        const reason =
+          new Map([
+            ["ETIMEDOUT", "helper-timeout"],
+            ["ENOENT", "helper-missing"],
+            ["EACCES", "helper-access"],
+            ["ENOBUFS", "helper-output-bound"]
+          ]).get(error.code) ??
+          new Map([
+            ["identity-before-unavailable", "identity-before-unavailable"],
+            ["identity-after-unavailable", "identity-after-unavailable"],
+            ["unique-identity-changed", "unique-identity-changed"],
+            ["exec-version-changed", "exec-version-changed"],
+            ["elapsed-bound", "elapsed-bound"],
+            ["metadata-bound", "metadata-bound"],
+            ["PID enumeration refused", "pid-enumeration"],
+            ["allocation refused", "allocation"],
+            ["observation bound exceeded", "observation-bound"],
+            ["identity observation refused", "identity-observation"]
+          ]).get(error.stderr?.toString().trim()) ??
+          (Number.isInteger(error.status) || typeof error.signal === "string"
+            ? "helper-unknown-exit"
+            : "helper-unknown-launch");
+        throw new Error(`Native ${args[0]} refused: ${reason}`, { cause: error });
+      }
       output = error.stdout.toString();
     }
     const value = JSON.parse(output);

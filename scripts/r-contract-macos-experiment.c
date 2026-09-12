@@ -96,14 +96,19 @@ static int marker(pid_t pid, const char *owner, char *buffer) {
   }
   return keys == 1 && exact == 1;
 }
-static int inspect(pid_t pid, const char *owner, char *buffer, struct record *record) {
+static int inspect(pid_t pid, const char *owner, char *buffer, struct record *record, const char **refusal) {
   struct combined_info before, after;
-  int found = identity(pid, &before); if (found <= 0) return found;
+  int found = identity(pid, &before);
+  if (found <= 0) { if (found < 0) *refusal = "identity-before-unavailable"; return found; }
   int marked = marker(pid, owner, buffer);
-  found = identity(pid, &after); if (found <= 0) return found;
-  if (before.unique.unique_id != after.unique.unique_id || before.unique.id_version != after.unique.id_version) return -1;
+  found = identity(pid, &after);
+  if (found <= 0) { if (found < 0) *refusal = "identity-after-unavailable"; return found; }
+  if (before.unique.unique_id != after.unique.unique_id) { *refusal = "unique-identity-changed"; return -1; }
+  if (before.unique.id_version != after.unique.id_version) { *refusal = "exec-version-changed"; return -1; }
   record->pid = pid; record->info = after; record->marked = marked;
-  return bounded() && metadata_bytes <= 32 * 1024 * 1024 ? 1 : -1;
+  if (!bounded()) { *refusal = "elapsed-bound"; return -1; }
+  if (metadata_bytes > 32 * 1024 * 1024) { *refusal = "metadata-bound"; return -1; }
+  return 1;
 }
 static void emit(const struct record *record) {
   const struct unique_info *u = &record->info.unique;
@@ -124,8 +129,9 @@ static int snapshot(const char *owner, pid_t selected) {
   for (size_t i = 0; i < (size_t)bytes / sizeof(pid_t); i++) {
     if (!pids[i]) continue;
     if (pids[i] < 0 || !bounded()) { free(records); free(buffer); return fail("observation bound exceeded"); }
-    int result = inspect(pids[i], owner, buffer, &records[count]);
-    if (result < 0) { free(records); free(buffer); return fail("identity observation refused"); }
+    const char *refusal = "identity observation refused";
+    int result = inspect(pids[i], owner, buffer, &records[count], &refusal);
+    if (result < 0) { free(records); free(buffer); return fail(refusal); }
     if (result) count++;
   }
   printf("{\"records\":[");
