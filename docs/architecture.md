@@ -1280,9 +1280,10 @@ old live messages or turn a capture into a runtime session.
 ## Notebook, kernel, terminal, and document provenance
 
 Notebook launch retains the exact open `NotebookDocument` captured at command or renderer-message receipt. Renderer
-actions also retain the exact visible sender `NotebookEditor`. Before and after every await, the host requires that
-document object to remain the sole open object for its URI and revalidates the selected kernel. It never reacquires an
-origin from `activeNotebookEditor`, a matching URI, or another split after work has started.
+actions also retain the exact visible sender `NotebookEditor`. At asynchronous launch and execution boundaries, the
+host checks that the captured document remains the sole open object for its URI. Python bridges observe the acquired
+kernel generation and reject pending results when that generation is invalidated. The host never reacquires an origin
+from `activeNotebookEditor`, a matching URI, or another split after work has started.
 
 Python variable discovery retains its exact kernel and observes that kernel's generation through the picker or
 cached variable list. Opening a selection rechecks that receipt and gives the new bridge its own observation until
