@@ -1564,7 +1564,9 @@ class PandasEngine(DataFrameEngine):
             output_names = list(params["newColumns"])
             ensure_output_columns_available(df.columns, output_names, "Splitting text into columns")
             parts = (
-                _pandas_scalar_values(df.iloc[:, position]).astype("string").str.split(params["delimiter"], regex=False)
+                _pandas_scalar_values(df.iloc[:, position])
+                .astype("string")
+                .str.split(params["delimiter"], n=len(output_names), regex=False)
             )
             generated = pd.concat(
                 [parts.str.get(index).rename(name) for index, name in enumerate(output_names)],
@@ -2812,7 +2814,7 @@ class PandasEngine(DataFrameEngine):
                 ),
                 (
                     f"{prefix}{parts} = _open_wrangler_scalar_values(df.iloc[:, {position}]).astype('string')"
-                    f".str.split({params['delimiter']!r}, regex=False)"
+                    f".str.split({params['delimiter']!r}, n={len(output_names)}, regex=False)"
                 ),
                 (
                     f"{prefix}df = pd.concat([df, pd.concat(["
