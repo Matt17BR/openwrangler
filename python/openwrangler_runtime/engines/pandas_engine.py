@@ -1196,8 +1196,14 @@ class PandasEngine(DataFrameEngine):
             raise EngineError(f"Unknown Pandas column: {column}")
         series = df.iloc[:, position]
         column_type = _pandas_semantic_type(series)
-        search_counted_labels = (_pandas_dictionary_value_type(series) is not None and column_type == "string") or (
-            isinstance(series.dtype, np.dtype) and series.dtype.kind == "m"
+        search_counted_labels = (
+            (_pandas_dictionary_value_type(series) is not None and column_type == "string")
+            or (isinstance(series.dtype, np.dtype) and series.dtype.kind == "m")
+            or (
+                isinstance(series.dtype, pd.CategoricalDtype)
+                and isinstance(series.cat.categories.dtype, np.dtype)
+                and series.cat.categories.dtype.kind == "m"
+            )
         )
         series = _pandas_scalar_values(series).dropna()
         temporal_values = _pandas_arrow_temporal_array(series)

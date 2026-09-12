@@ -1524,6 +1524,82 @@ def test_pandas_native_duration_search_matches_exact_counted_labels(unit: str, t
         engine.close()
 
 
+@pytest.mark.parametrize(
+    "unit,category_ticks",
+    [
+        ("s", [172800, 86400, 259200]),
+        ("s", [-172800, -86400, -259200]),
+        ("us", [172800000000, 1, 259200000000]),
+        ("ns", [172800000000000, 1, 259200000000000]),
+    ],
+)
+def test_pandas_native_duration_categories_search_counts_and_unused_labels(
+    unit: str, category_ticks: list[int]
+) -> None:
+    categories = pd.Index(np.array(category_ticks, dtype=np.int64).view(f"timedelta64[{unit}]"))
+    source = pd.DataFrame(
+        {"value": pd.Categorical.from_codes([0, 1, 0, 1, -1], categories=categories, ordered=True), "row": range(5)}
+    )
+    source.index = pd.Index(["same"] * 5, name="retained")
+    source.attrs = {"origin": "retained"}
+    before = source.copy(deep=True)
+    engine = PandasEngine()
+    try:
+        choices, more = engine.column_values(source, "value")
+        expected = sorted(zip(map(str, categories), [2, 2, 0], strict=True), key=lambda item: (-item[1], item[0]))
+        assert [(choice["value"], choice["count"]) for choice in choices] == expected and not more
+        assert engine.column_values(source, "value", search="days", limit=1) == (choices[:1], True)
+        for choice in choices:
+            category_position = next(
+                position for position, value in enumerate(categories) if str(value) == choice["value"]
+            )
+            assert ("selectionValue" in choice) == (unit != "ns" or category_ticks[category_position] % 1000 == 0)
+            matches = [item for item in choices if choice["value"] in item["value"]]
+            assert engine.column_values(source, "value", search=choice["value"]) == (matches, False)
+            if "selectionValue" in choice:
+                assert choice["selectionValue"]["cell"]["raw"] == normalize_cell(categories[category_position])["raw"]
+                selected = engine.apply_filter_model(
+                    source,
+                    {
+                        "filters": [
+                            {
+                                "column": "value",
+                                "type": "string",
+                                "predicates": [],
+                                "valueFilter": {
+                                    "kind": "values",
+                                    "selectedValues": [choice["selectionValue"]],
+                                    "includeNulls": False,
+                                    "includeNaN": False,
+                                },
+                            }
+                        ],
+                        "sort": [],
+                    },
+                )
+                positions = [
+                    position for position, value in enumerate(source["value"]) if str(value) == choice["value"]
+                ]
+                pd.testing.assert_frame_equal(selected, source.iloc[positions], check_exact=True)
+                assert len(selected) == choice["count"]
+        assert engine.column_values(source, "value", search="unmatched") == ([], False)
+        for raw in source["value"].dropna().astype(str):
+            native = source.loc[
+                source["value"].astype(str).str.contains(raw, na=False, regex=False), "value"
+            ].value_counts()
+            found, _ = engine.column_values(source, "value", search=raw)
+            assert {item["value"]: item["count"] for item in found if item["count"]} == {
+                str(value): count for value, count in native.items() if count
+            }
+        for empty in [source.iloc[:0], source.iloc[[4]]]:
+            unused = next(item for item in choices if item["count"] == 0)
+            assert engine.column_values(empty, "value", search=unused["value"]) == ([unused], False)
+        pd.testing.assert_frame_equal(source, before, check_exact=True)
+        assert source.attrs == before.attrs
+    finally:
+        engine.close()
+
+
 @pytest.mark.parametrize("include_fraction", [False, True])
 def test_pandas_datetime_search_retains_native_midnight_and_padded_fraction_text(include_fraction: bool) -> None:
     midnight = pd.Timestamp("2020-01-01")
