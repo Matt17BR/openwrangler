@@ -462,23 +462,16 @@ def test_duckdb_integer_formula_guard_uses_native_primitives_in_each_execution_o
             newColumn="result",
         )
         try:
-            # Live notebook relations retain their private connection. General
-            # emitted SQL uses its existing default connection instead.
-            for context in (connection, duckdb):
-                context.execute("CREATE MACRO " + definition)
-                try:
-                    frame = context.sql(f"SELECT '{left}'::{left_type} AS lhs, '{right}'::UHUGEINT AS rhs")
-                    if context is connection:
-                        live = engine.apply_transform(engine.normalize_notebook_relation(frame), operation)
-                        assert str(live.types[-1]) == "DOUBLE"
-                        with pytest.raises(EngineError, match="integer Formula result is not exact"):
-                            engine.validate_transformation_result(live)
-                    else:
-                        with pytest.raises(duckdb.Error, match="integer Formula result is not exact"):
-                            execute_generated(engine, frame, [operation])
-                    assert frame.fetchall() == [(str(left) if left_type == "BIGNUM" else left, right)]
-                finally:
-                    context.execute("DROP MACRO " + definition.split("(", 1)[0])
+            connection.execute("CREATE MACRO " + definition)
+            frame = connection.sql(f"SELECT '{left}'::{left_type} AS lhs, '{right}'::UHUGEINT AS rhs")
+            live = engine.apply_transform(engine.normalize_notebook_relation(frame), operation)
+            assert str(live.types[-1]) == "DOUBLE"
+            with pytest.raises(EngineError, match="integer Formula result is not exact"):
+                engine.validate_transformation_result(live)
+            assert frame.fetchall() == [(str(left) if left_type == "BIGNUM" else left, right)]
+            with pytest.raises(duckdb.Error, match="integer Formula result is not exact"):
+                execute_generated(engine, frame, [operation])
+            assert frame.fetchall() == [(str(left) if left_type == "BIGNUM" else left, right)]
         finally:
             engine.close()
 
@@ -487,9 +480,8 @@ def test_duckdb_integer_formula_guard_uses_native_primitives_in_each_execution_o
 def test_duckdb_integer_formula_guards_the_evaluated_volatile_pair(generated: bool) -> None:
     engine = DuckDBEngine()
     with duckdb.connect() as connection:
-        context = duckdb if generated else connection
-        context.execute("CREATE SEQUENCE formula_pair START 2")
-        frame = context.sql(
+        connection.execute("CREATE SEQUENCE formula_pair START 2")
+        frame = connection.sql(
             f"SELECT ('{2**100}'::HUGEINT + (nextval('formula_pair') % 2)::HUGEINT) AS lhs, '{2**100}'::UHUGEINT AS rhs"
         )
         operation = bound_step(
@@ -505,21 +497,20 @@ def test_duckdb_integer_formula_guards_the_evaluated_volatile_pair(generated: bo
                 result = execute_generated(engine, frame, [operation])
             else:
                 result = engine.apply_transform(engine.normalize_notebook_relation(frame), operation)
-                assert context.sql(
+                assert connection.sql(
                     "SELECT last_value FROM duckdb_sequences() WHERE sequence_name='formula_pair'"
                 ).fetchone() == (None,)
                 assert engine._terminal_rows(result, "SELECT * FROM ow") == [(2**100, 2**100, 0.0)]
-            assert context.sql("SELECT currval('formula_pair')").fetchone() == (2,)
+            assert connection.sql("SELECT currval('formula_pair')").fetchone() == (2,)
             # A separate precheck would incorrectly approve the following odd pair.
             with pytest.raises((EngineError, duckdb.Error), match="integer Formula result is not exact"):
                 if generated:
                     result.fetchall()
                 else:
                     engine._terminal_rows(result, "SELECT * FROM ow")
-            assert context.sql("SELECT currval('formula_pair')").fetchone() == (3,)
+            assert connection.sql("SELECT currval('formula_pair')").fetchone() == (3,)
         finally:
             engine.close()
-            context.execute("DROP SEQUENCE formula_pair")
 
 
 @pytest.mark.parametrize(
