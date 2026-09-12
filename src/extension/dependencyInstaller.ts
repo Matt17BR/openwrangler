@@ -194,13 +194,6 @@ export function startDependencyInstall(
   );
 }
 
-export function getDependencyGuardStatus(
-  environment: PythonEnvironment,
-  options: DependencyGuardClientOptions
-): Promise<DependencyGuardStatus> {
-  return startDependencyGuardStatus(environment, options).completion;
-}
-
 export function startDependencyGuardStatus(
   environment: PythonEnvironment,
   options: DependencyGuardClientOptions
@@ -218,14 +211,6 @@ export function startDependencyGuardStatus(
     requestFrame,
     decodeDependencyGuardStatus
   );
-}
-
-export function validateDependencyGuard(
-  environment: PythonEnvironment,
-  expectedToken: string,
-  options: DependencyGuardClientOptions
-): Promise<DependencyGuardValidation> {
-  return startDependencyGuardValidation(environment, expectedToken, options).completion;
 }
 
 export function startDependencyGuardValidation(
