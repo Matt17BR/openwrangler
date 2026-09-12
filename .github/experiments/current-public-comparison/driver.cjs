@@ -6,19 +6,79 @@ const { createRequire } = require("node:module");
 const { pathToFileURL } = require("node:url");
 const vscode = require("vscode");
 
+// Fixed public workbench metadata only; descriptions, cell values and output bytes are excluded.
+function readPublicEntryDomState() {
+  const all = (root, selector) => [...root.querySelectorAll(selector)];
+  const shown = (element) => element.checkVisibility({ checkVisibilityCSS: true });
+  const text = (element) => (element?.textContent || "").replace(/\s+/g, " ").trim();
+  const scopes = (selector) => all(document, selector).filter(shown);
+  const knownControls = (roots) =>
+    roots
+      .flatMap((root) => all(root, 'button,a,[role="button"],[role="menuitem"]'))
+      .filter(shown)
+      .flatMap((element) => {
+        const name = element.getAttribute("aria-label") || text(element) || element.getAttribute("title") || "";
+        return /^(?:View data|More Actions(?:\.\.\.)?)$/.test(name)
+          ? [{ role: element.getAttribute("role") || element.tagName.toLowerCase(), name }]
+          : [];
+      })
+      .slice(0, 8);
+  const toolbars = scopes(".notebook-editor .notebook-toolbar-container,.notebookOverlay .notebook-toolbar-container");
+  const menus = scopes(".context-view.monaco-menu-container");
+  const pickers = scopes(".quick-input-widget");
+  const options = pickers.flatMap((picker) => all(picker, '[role="option"]'));
+  const matching = options.slice(0, 64).flatMap((option) => {
+    const labels = all(option, ".label-name"),
+      name = text(labels[0]);
+    if (!["comparison_frame", "comparison_original"].includes(name)) return [];
+    const main = all(option, ".quick-input-list-row:first-child .label-name");
+    return [
+      {
+        name,
+        optionVisible: shown(option),
+        labelCount: labels.length,
+        visibleLabelCount: labels.filter(shown).length,
+        matchingLabelCount: labels.filter((label) => text(label) === name).length,
+        matchingVisibleLabelCount: labels.filter((label) => shown(label) && text(label) === name).length,
+        mainLabelCount: main.length,
+        mainVisibleLabelCount: main.filter(shown).length,
+        mainExactNameCount: main.filter((label) => shown(label) && text(label) === name).length
+      }
+    ];
+  });
+  return {
+    toolbar: { containers: toolbars.length, controls: knownControls(toolbars) },
+    menu: {
+      containers: menus.length,
+      visibleRoleMenus: scopes('[role="menu"]').length,
+      controls: knownControls(menus)
+    },
+    picker: {
+      containers: pickers.length,
+      domOptions: options.length,
+      scannedOptions: Math.min(options.length, 64),
+      matchingOptions: matching.length,
+      matchingOptionsTruncated: matching.length > 8,
+      options: matching.slice(0, 8)
+    }
+  };
+}
+
 exports.run = async function () {
   const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   assert(workspace, "Missing isolated workspace");
   const request = JSON.parse(fs.readFileSync(path.join(workspace, "request.json"), "utf8"));
   assert(["ow", "dw"].includes(request.product) && [100000, 1000000].includes(request.rows));
-  assert(["pilot", "study"].includes(request.mode));
+  assert.equal(request.mode, "pilot", "Temporary entry diagnostic rejects study");
+  assert.equal(request.product, "dw");
   assert.notEqual(process.env.OPEN_WRANGLER_EXTENSION_TESTS, "1");
   const { chromium } = createRequire(path.join(request.repo, "package.json"))("playwright-core");
   const owner = await import(pathToFileURL(path.join(request.repo, "scripts/editor-acceptance.mjs")).href);
-  const receipt = { id: request.id, setup: {}, samples: [], status: "pending" };
+  const receipt = { purpose: "public-entry-diagnostic", id: request.id, setup: {}, samples: [], status: "pending" };
   let browser,
     opened,
     sourceNotebook,
+    captureEntryState,
     publicFrames = () => [],
     stage = "connect";
   const checkpoint = (next) => {
@@ -66,6 +126,28 @@ exports.run = async function () {
         .flatMap((c) => c.pages())
         .flatMap((p) => p.frames())
         .slice(0, 64));
+    captureEntryState = async (point) => {
+      const state = await page.evaluate(readPublicEntryDomState);
+      const picker = page.locator(".quick-input-widget:visible");
+      state.picker.locatorCount = await picker.count();
+      state.picker.locatorVisible = state.picker.locatorCount === 1 ? await picker.isVisible() : null;
+      state.picker.accessibleOptions = await picker.getByRole("option").count();
+      state.menu.accessibleViewData = await page
+        .locator(".context-view.monaco-menu-container:visible")
+        .getByRole("menuitem", { name: "View data", exact: true })
+        .count();
+      state.toolbar.accessibleViewData = await page
+        .locator(
+          ".notebook-editor:visible .notebook-toolbar-container:visible, .notebookOverlay:visible .notebook-toolbar-container:visible"
+        )
+        .getByRole("button", { name: "View data", exact: true })
+        .count();
+      state.millisecondsFromFirstClick = opened === undefined ? null : performance.now() - opened;
+      const observations = { ...receipt.entryDiagnostics, [point]: state };
+      assert(Buffer.byteLength(JSON.stringify(observations), "utf8") <= 8192, "Entry diagnostic exceeds 8192 bytes");
+      receipt.entryDiagnostics = observations;
+      save();
+    };
     const find = async (role, name) => {
       const found = [];
       for (const frame of frames()) {
@@ -320,6 +402,7 @@ exports.run = async function () {
               opened = performance.now();
               await overflow.click();
               sample.toolbarOverflowUsed = true;
+              await captureEntryState("afterOverflow");
             }
           }
           if (!sample.toolbarOverflowUsed) return false;
@@ -337,6 +420,7 @@ exports.run = async function () {
         await action.click();
         const pickerStarted = performance.now();
         checkpoint(`${sampleName}:variable-picker`);
+        await captureEntryState("beforePicker");
         const option = await poll(async () => {
           await consent();
           const picker = page.locator(".quick-input-widget:visible");
@@ -355,6 +439,10 @@ exports.run = async function () {
         sample.metrics.pickerMs = performance.now() - pickerStarted;
       }
       sample.metrics.entryMs = performance.now() - opened;
+      if (receipt.purpose === "public-entry-diagnostic") {
+        sample.entryReached = true;
+        throw new Error("ENTRY_DIAGNOSTIC:picker-selected; comparison not run");
+      }
       checkpoint(`${sampleName}:grid`);
       const target = await poll(grid, "full-grid-shape");
       const productTab = vscode.window.tabGroups.activeTabGroup.activeTab;
@@ -713,6 +801,11 @@ exports.run = async function () {
   } catch (error) {
     const active = receipt.samples.at(-1);
     if (active?.status === "pending") active.status = "failed";
+    try {
+      await captureEntryState?.("failure");
+    } catch {
+      receipt.entryDiagnosticReadFailed = true;
+    }
     // Failure-only public control labels; never serialize package code, cells, profiles or clipboard text.
     const controls = [],
       gridShapes = [];
