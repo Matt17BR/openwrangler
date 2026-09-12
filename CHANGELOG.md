@@ -7,6 +7,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 ### Fixed
 
 - DuckDB Split Column and literal Find/Replace accept NUL characters in text values without SQL parsing errors.
+- Pandas Split text into columns avoids splitting discarded trailing fields, reducing work when only a few output columns are requested.
 - Python Fill interpolation preserves constant anchors and midpoints between subnormal values.
 - Python runtime shutdown no longer waits out its grace period for already-cancelled queued requests.
 - Python Custom Code failures return an error response even when their exception message cannot be formatted.
