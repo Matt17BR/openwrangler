@@ -449,6 +449,11 @@ precision, including subnormal values. Live execution and standalone generated c
 the owning engine. Pandas and Polars each share one helper between live execution and generated programs.
 These helpers and Polars Round avoid module-level type imports that would replace a notebook binding named `Any`.
 
+Python linear interpolation preserves equal finite nonzero anchors after validating the coordinate weight.
+At a binary64 weight of exactly one half, two zero or subnormal double anchors use their exact sum before the
+final division. Other unequal anchor pairs retain the convex weighted expression; arbitrary floating
+interpolation is not guaranteed to round exactly. Missing-value eligibility, coordinate checks and gap limits still apply.
+
 Round accepts finite integer decimal precision, including negative values for rounding to tens and larger units.
 Python engines round exact integers and Decimal values before floating conversion, using half-even ties. Ordinary
 floating and text coercion keep their existing behavior. Precision outside a storage type's useful range produces the

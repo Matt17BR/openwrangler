@@ -211,6 +211,10 @@ Eager and lazy frames support native temporal and text inputs, including nulls, 
 Polars grouped median Fill works on the declared minimum runtime, including native integer and Decimal targets.
 Its live and generated paths preserve exact values and retain fractional-median and Decimal-scale refusals.
 
+Python Fill interpolation preserves equal nonzero anchors and avoids premature rounding at midpoints between
+subnormal endpoints. Other floating-point interpolation retains its existing precision limits; live execution and
+generated code agree.
+
 Pandas mixed object columns keep distinct large numeric values in filters, counts, sorting, duplicate removal,
 Group By, Pivot and grouped Fill. Selected rows retain their original stored values, and grouped output preserves
 its representative labels. Filter text and selected integer tokens keep exact integer values through the UI.

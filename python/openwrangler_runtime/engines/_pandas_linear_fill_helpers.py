@@ -43,9 +43,19 @@ def _open_wrangler_fill_linear_gaps(
                 )
                 if not isfinite(weight) or not 0.0 <= weight <= 1.0:
                     raise ValueError("coordinate distance produced a non-finite interpolation weight")
-                # This convex form avoids overflowing ``right - left`` for
-                # finite endpoints with opposite signs.
-                result.iloc[position] = (1.0 - weight) * float(left_value) + weight * float(right_value)
+                left_float, right_float = float(left_value), float(right_value)
+                if left_value == right_value and left_value != 0:
+                    result.iloc[position] = left_value
+                elif (
+                    weight == 0.5
+                    and abs(left_float) < 2.2250738585072014e-308
+                    and abs(right_float) < 2.2250738585072014e-308
+                ):
+                    # Two subnormal doubles have an exact sum; round the midpoint only once.
+                    result.iloc[position] = (left_float + right_float) / 2.0
+                else:
+                    # This convex form avoids overflowing ``right - left`` for opposite signs.
+                    result.iloc[position] = (1.0 - weight) * left_float + weight * right_float
                 filled = True
         except (ArithmeticError, TypeError, ValueError, OverflowError) as error:
             raise error_type(f"Linear interpolation failed for the selected coordinates: {error}") from error

@@ -2116,7 +2116,12 @@ class DuckDBEngine(DataFrameEngine):
         )
         if max_gap is not None:
             eligible += f" AND {gap_size} <= {int(max_gap)}"
-        interpolated = f"((1.0 - {weight}) * {left_value} + {weight} * {right_value})"
+        interpolated = (
+            f"CASE WHEN {left_value} = {right_value} AND {left_value} <> 0.0 THEN {left_value} "
+            f"WHEN {weight} = 0.5 AND abs({left_value}) < 2.2250738585072014e-308 "
+            f"AND abs({right_value}) < 2.2250738585072014e-308 THEN ({left_value} + {right_value}) / 2.0 "
+            f"ELSE (1.0 - {weight}) * {left_value} + {weight} * {right_value} END"
+        )
         replacement = f"CASE WHEN {eligible} THEN CAST({interpolated} AS {target_type}) ELSE {target_identifier} END"
         query = (
             f"WITH numbered AS (SELECT *, row_number() OVER () AS {original} FROM ow), "
@@ -4405,7 +4410,13 @@ def _ow_fill_missing_linear_interpolation(df, target, coordinate, max_gap):
     )
     if max_gap is not None:
         eligible += " AND " + following + " - " + previous + " - 1 <= " + str(int(max_gap))
-    interpolated = "((1.0 - " + weight + ") * " + left_value + " + " + weight + " * " + right_value + ")"
+    interpolated = (
+        "CASE WHEN " + left_value + " = " + right_value + " AND " + left_value + " <> 0.0 THEN " + left_value
+        + " WHEN " + weight + " = 0.5 AND abs(" + left_value + ") < 2.2250738585072014e-308"
+        + " AND abs(" + right_value + ") < 2.2250738585072014e-308 THEN ("
+        + left_value + " + " + right_value + ") / 2.0"
+        + " ELSE (1.0 - " + weight + ") * " + left_value + " + " + weight + " * " + right_value + " END"
+    )
     replacement = (
         "CASE WHEN " + eligible + " THEN CAST(" + interpolated + " AS " + target_type
         + ") ELSE " + target_identifier + " END"
