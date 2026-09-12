@@ -134,6 +134,8 @@ Use the existing owners to choose a focused source check:
   [safe file export](../src/test/safeFileExport.unit.test.ts) use real files to check separate destinations, identity
   changes and cleanup. [R private artifacts](../src/test/rPrivateArtifactBoundary.unit.test.ts) check real reads,
   quarantine and zero-byte cleanup. Metadata identity checks do not detect every same-size content change.
+  The R substitution and [Windows export-pin](../python/tests/test_export_target.py) symlink cases attempt real
+  symlink creation; a recognized Windows setup refusal reports a skip rather than a passing protection check.
   Native R's `capture-and-export` case owns timestamp rounding carry, named-column preservation, native formatter
   cleanup, CSV delimiter restrictions, bounded checks and empty/missing columns. Its `group-pivot-and-export` kernel
   case checks timestamp bytes, decoded custom-delimiter fields, recoverable refusal and

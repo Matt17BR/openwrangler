@@ -287,15 +287,24 @@ describe("R private artifact boundary", () => {
     expect(await readFile(replacementPath!, "utf8")).toBe("other");
   });
 
-  it.skipIf(process.platform === "win32")("does not follow or remove a substituted symlink", async () => {
+  it("does not follow or remove a substituted symlink", async (context) => {
     const artifactPath = resolve(directory, "response.json");
     const displacedPath = resolve(directory, "owned-response.json");
     const attackerPath = resolve(directory, "attacker.json");
+    const replacementPath = resolve(directory, "replacement-link.json");
     await writeFile(artifactPath, "owned", { mode: 0o600 });
     await writeFile(attackerPath, "other", { mode: 0o600 });
+    try {
+      await symlink(attackerPath, replacementPath);
+    } catch (error) {
+      if (process.platform === "win32" && (error as NodeJS.ErrnoException).code === "EPERM") {
+        context.skip("Windows refused file-symlink creation on this host");
+      }
+      throw error;
+    }
     const operations = operationsWithClose(async () => {
       await rename(artifactPath, displacedPath);
-      await symlink(attackerPath, artifactPath);
+      await rename(replacementPath, artifactPath);
     });
 
     const error = await captureFailure(() =>
