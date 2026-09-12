@@ -1083,6 +1083,12 @@ class PandasEngine(DataFrameEngine):
                         index, temporal_counts[position] if temporal_counts is not None else None
                     ),
                     "count": int(value),
+                    "selectionValue": typed_cell_selection_value(
+                        _pandas_temporal_cell(
+                            index, temporal_counts[position] if temporal_counts is not None else None
+                        ),
+                        semantic_type,
+                    ),
                 }
                 for position, (index, value) in enumerate(
                     zip(
@@ -1351,8 +1357,7 @@ class PandasEngine(DataFrameEngine):
                 _pandas_temporal_cell(index, temporal_counts[position] if temporal_counts is not None else None),
                 column_type,
             )
-            if selection is not None:
-                item["selectionValue"] = selection
+            item["selectionValue"] = selection
             values.append(item)
         return values, len(counts) > limit
 

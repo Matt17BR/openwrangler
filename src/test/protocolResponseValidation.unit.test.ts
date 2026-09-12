@@ -988,6 +988,52 @@ describe("protocol-v4 response validation", () => {
     expect(isOpenWranglerResponse({ kind: "error", code: "bad", message: "bad", recoverable: "yes" })).toBe(false);
   });
 
+  it("distinguishes exact, unavailable and omitted value selections at every count response owner", () => {
+    const token = {
+      kind: "typedSelection",
+      version: 1,
+      columnType: "integer",
+      cell: { kind: "integer", raw: 1, display: "1", isNull: false, isNaN: false }
+    };
+    for (const [selection, accepted] of [
+      [undefined, true],
+      [null, true],
+      [token, true],
+      ["1", false],
+      [false, false],
+      [[], false],
+      [{ ...token, version: 2 }, false]
+    ] as const) {
+      const item = { value: "1", count: 1, ...(selection === undefined ? {} : { selectionValue: selection }) };
+      const countResponses = [
+        {
+          kind: "columnValues",
+          revision: 3,
+          viewRequestId: "value-action",
+          column: "value",
+          values: [item],
+          hasMore: false
+        },
+        {
+          kind: "summary",
+          revision: 3,
+          viewRequestId: "value-action",
+          summaries: [{ ...summaries[0], topValues: [item] }]
+        },
+        {
+          kind: "summary",
+          revision: 3,
+          viewRequestId: "value-action",
+          summaries: [{ ...summaries[0], visualization: { kind: "categorical", categories: [item], otherCount: 0 } }]
+        }
+      ];
+      for (const response of countResponses) {
+        expect(isOpenWranglerResponse(response)).toBe(accepted);
+        expect(validateTransportSchema({ protocolVersion: 4, requestId: "value-action", response })).toBe(accepted);
+      }
+    }
+  });
+
   it("accepts only versioned, bounded, type-compatible value-selection tokens", () => {
     const token = {
       kind: "typedSelection",

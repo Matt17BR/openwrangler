@@ -1830,7 +1830,7 @@ function isValueCount(value: unknown): boolean {
     candidate !== undefined &&
     isString(candidate.value) &&
     isNonNegativeInteger(candidate.count) &&
-    optional(candidate, "selectionValue", isTypedSelectionToken)
+    optional(candidate, "selectionValue", (selection) => selection === null || isTypedSelectionToken(selection))
   );
 }
 

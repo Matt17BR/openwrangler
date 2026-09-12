@@ -66,9 +66,11 @@ def _build_fixture(rows: int) -> tuple[Any, Any, str]:
 def _validate_summary(summary: dict[str, Any], rows: int) -> None:
     missing_count, short_count, long_count = _expected_counts(rows)
     present_count = short_count + long_count
+    from openwrangler_runtime.engines.base import typed_selection_value
+
     expected_top_values = [
-        {"value": "1", "count": short_count},
-        {"value": "200", "count": long_count},
+        {"value": str(value), "count": count, "selectionValue": typed_selection_value(value, "string")}
+        for value, count in ((1, short_count), (200, long_count))
     ]
     expected_text = {
         "emptyCount": 0,

@@ -108,6 +108,11 @@ capture deadline. A virtual-time advance alone does not establish that asynchron
 
 Use the existing owners to choose a focused source check:
 
+- **Value and profile actions:** [filter panel](../src/test/filterPanel.component.test.tsx) and
+  [filter summaries](../src/test/filterSummary.component.test.tsx) check exact, unavailable and raw-compatible choices,
+  keyboard behavior and removal of saved selections. The response validator checks the same three states in value
+  lists and profiles. Native producer cases belong in the existing typed-cell and engine owners below; preserve
+  profile and lazy-query bounds when adding selection metadata.
 - **Publication, recovery and persistence:** [response commitment](../src/test/sessionResponseCommitter.unit.test.ts),
   [coordinator persistence](../src/test/sessionCoordinator.persistence.unit.test.ts),
   [runtime restoration](../src/test/sessionRuntimeStateRestorer.unit.test.ts) and

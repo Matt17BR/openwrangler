@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ColumnSchema, ColumnSummary, FilterModel } from "../shared/protocol";
+import { decodeRKernelResponseJson, R_KERNEL_TRANSPORT_VERSION } from "../extension/r/rKernelProtocol";
 import {
   assertRColumnValuesContract,
   assertRDatasetStatsContract,
@@ -122,6 +123,35 @@ describe("R kernel view contract", () => {
     expect(() =>
       assertRColumnValuesContract(session, { id: "r:c:0", name: "value" }, values, 2, undefined)
     ).not.toThrow();
+    const requestId = "77777777-7777-4777-8777-777777777777";
+    const decodeValues = (selectionValue: (typeof values.values)[0]["selectionValue"] | null | undefined) =>
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
+          requestId,
+          kind: "columnValues",
+          sessionId: "11111111-1111-4111-8111-111111111111",
+          ...values,
+          values: [{ ...values.values[0], selectionValue }]
+        }),
+        requestId
+      );
+    expect(() => decodeValues(values.values[0].selectionValue)).not.toThrow();
+    for (const selectionValue of [null, undefined]) {
+      expect(() => decodeValues(selectionValue)).toThrow("typed selection");
+      expect(() =>
+        assertRColumnValuesContract(
+          session,
+          { id: "r:c:0", name: "value" },
+          {
+            ...values,
+            values: [{ ...values.values[0], selectionValue }]
+          },
+          2,
+          undefined
+        )
+      ).toThrow("typed selections");
+    }
     expect(() =>
       assertRColumnValuesContract(
         session,

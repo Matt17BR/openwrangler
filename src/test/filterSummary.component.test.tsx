@@ -6,7 +6,7 @@ import type { FilterModel } from "../shared/filterModel";
 import type { ColumnSummary, SessionMetadata } from "../shared/protocol";
 import type { ProfileValueMode } from "../webviews/profileValueMode";
 import { SummaryPanel } from "../webviews/summary/SummaryPanel";
-import { metadata } from "./filterSummary.testFixtures";
+import { metadata, valueActionChoices } from "./filterSummary.testFixtures";
 
 describe("SummaryPanel", () => {
   const numericSummary: ColumnSummary = {
@@ -456,6 +456,40 @@ describe("SummaryPanel", () => {
 
     expect(screen.queryByRole("button", { name: "More values…" })).not.toBeInTheDocument();
   });
+
+  it.each(["topValues", "categories"])(
+    "disables unavailable %s actions while retaining exact and legacy selections",
+    (owner) => {
+      const onApply = vi.fn();
+      renderSummary({
+        summaries: [
+          {
+            ...categoricalSummary,
+            topValues: valueActionChoices,
+            visualization: {
+              kind: "categorical",
+              categories: owner === "categories" ? valueActionChoices : [],
+              otherCount: 0
+            }
+          }
+        ],
+        onApplyFilterModel: onApply
+      });
+      const unavailable = screen.getByRole("button", { name: /^Filter to 1 nanoseconds;/u });
+      expect(unavailable).toBeDisabled();
+      expect(unavailable).toHaveAccessibleDescription("Exact selection is unavailable for this value.");
+      expect(screen.getByRole("meter", { name: "1 nanoseconds: 2 rows, 50%" })).toHaveValue(2);
+      fireEvent.click(unavailable);
+      fireEvent.keyDown(unavailable, { key: "Enter" });
+      expect(onApply).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: /^Filter to 0 days 00:00:00.000001;/u }));
+      expect(onApply.mock.lastCall?.[0].filters[0].valueFilter.selectedValues).toEqual([
+        valueActionChoices[1].selectionValue
+      ]);
+      fireEvent.click(screen.getByRole("button", { name: /^Filter to Berlin;/u }));
+      expect(onApply.mock.lastCall?.[0].filters[0].valueFilter.selectedValues).toEqual(["Berlin"]);
+    }
+  );
 
   it("switches counts to percentages and filters a categorical value through the shared view model", () => {
     const onApply = vi.fn();

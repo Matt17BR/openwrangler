@@ -8,6 +8,8 @@ import {
   removeViewColumnFilter,
   replaceViewColumnFilter,
   supportsTypedViewComparison,
+  valueCountSelectionValue,
+  valueSelectionUnavailableReason,
   viewColumnNameUnavailableReason,
   viewNumericBinFilter,
   viewValueSelectionFilter
@@ -319,7 +321,10 @@ function SelectedColumnSummary({
             onShowMoreValues={canFilter && onShowMoreValues ? () => onShowMoreValues(schema.name) : undefined}
             onSelectValue={
               canFilter
-                ? (item) => applyProfileFilter(viewValueSelectionFilter(schema, item.selectionValue ?? item.value))
+                ? (item) => {
+                    const value = valueCountSelectionValue(item);
+                    if (value !== null) applyProfileFilter(viewValueSelectionFilter(schema, value));
+                  }
                 : undefined
             }
           />
@@ -590,6 +595,7 @@ function TopValueRow({
   const count = `${item.count.toLocaleString()} ${item.count === 1 ? "row" : "rows"}`;
   const percent = formatProfilePercent(item.count, denominator);
   const displayedValue = mode === "count" ? item.count.toLocaleString() : percent;
+  const unavailable = item.selectionValue === null;
   const contents = (
     <>
       <span title={label}>{label}</span>
@@ -609,8 +615,12 @@ function TopValueRow({
       type="button"
       className="barRow profileDistributionRow"
       aria-label={`Filter to ${label}; ${count}, ${percent}`}
-      title={`Filter to ${label} · ${count} · ${percent}`}
-      onClick={onSelect}
+      aria-description={unavailable ? valueSelectionUnavailableReason : undefined}
+      title={unavailable ? valueSelectionUnavailableReason : `Filter to ${label} · ${count} · ${percent}`}
+      disabled={unavailable}
+      onClick={() => {
+        if (!unavailable) onSelect();
+      }}
     >
       {contents}
     </button>

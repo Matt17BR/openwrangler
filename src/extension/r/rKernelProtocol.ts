@@ -1034,7 +1034,7 @@ export function decodeRKernelResponseJson(
     if (candidate.values.length > 10_000) fail("R kernel column-values response exceeds the value limit.");
     for (const [index, entry] of candidate.values.entries()) {
       boundedText(entry.value, `response.values[${index}].value`, R_FRAME_CONTRACT_LIMITS.textBytes, true);
-      if (entry.count <= 0 || entry.selectionValue === undefined) {
+      if (entry.count <= 0 || entry.selectionValue === undefined || entry.selectionValue === null) {
         fail("R kernel column-values response requires a typed selection for every value.");
       }
     }

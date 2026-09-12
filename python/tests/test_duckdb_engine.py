@@ -2323,6 +2323,12 @@ def test_duckdb_view_queries_are_typed_exact_and_concurrency_safe(monkeypatch: p
     values, has_more = engine.column_values(frame, "value")
     assert values == [{"value": "1.0", "count": 2, "selectionValue": typed_selection_value(1.0, "float")}]
     assert has_more is False
+    nested_values, nested_more = engine.column_values(frame, "items")
+    assert nested_values == [
+        {"value": "[1,2]", "count": 2, "selectionValue": None},
+        {"value": "[3]", "count": 1, "selectionValue": None},
+    ]
+    assert nested_more is False
 
     def read_page() -> list[str]:
         return [row["id"] for row in engine.page(frame, 0, 4)["rows"]]

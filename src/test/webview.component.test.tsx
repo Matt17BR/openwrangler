@@ -6,6 +6,7 @@ import type { ColumnSummary, GridPage, LiveGridPage, SessionMetadata, TransformS
 import type { SessionRecoveryMessage } from "../shared/sessionRecovery";
 import { DataGrid } from "../webviews/grid/DataGrid";
 import { maximumGridScrollCanvasHeight } from "../webviews/grid/rowScrollModel";
+import { valueActionChoices } from "./filterSummary.testFixtures";
 
 const webviewPostMessage = vi.hoisted(() => vi.fn());
 vi.mock("../webviews/vscodeApi", () => ({
@@ -1193,6 +1194,54 @@ describe("DataGrid", () => {
         name: "datetime distribution: minimum 2024-01-01, maximum 2024-04-01."
       })
     ).toHaveTextContent("Min 2024-01-01Max 2024-04-01");
+  });
+
+  it("disables unavailable header values while retaining exact and legacy profile actions", () => {
+    const onApplyProfileFilter = vi.fn();
+    render(
+      <DataGrid
+        metadata={metadata}
+        page={page}
+        pageSize={2}
+        defaultColumnWidth={220}
+        insightsOnOpen={true}
+        profileValueMode="count"
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onApplyProfileFilter={onApplyProfileFilter}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+        onViewStateChange={() => undefined}
+        summaries={[
+          {
+            columnId: "c:0",
+            column: "city",
+            type: "string",
+            rawType: "category",
+            totalCount: 4,
+            nullCount: 0,
+            nanCount: 0,
+            distinctCount: 3,
+            topValues: valueActionChoices,
+            visualization: { kind: "categorical", categories: valueActionChoices, otherCount: 0 }
+          }
+        ]}
+      />
+    );
+    const unavailable = screen.getByRole("button", { name: /^Filter city to 1 nanoseconds;/u });
+    expect(unavailable).toBeDisabled();
+    expect(unavailable).toHaveAccessibleDescription("Exact selection is unavailable for this value.");
+    expect(unavailable).toHaveTextContent("1 nanoseconds");
+    expect(unavailable).toHaveTextContent("2");
+    fireEvent.click(unavailable);
+    fireEvent.keyDown(unavailable, { key: "Enter" });
+    expect(onApplyProfileFilter).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /^Filter city to 0 days 00:00:00.000001;/u }));
+    expect(onApplyProfileFilter.mock.lastCall?.[0].valueFilter.selectedValues).toEqual([
+      valueActionChoices[1].selectionValue
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: /^Filter city to Berlin;/u }));
+    expect(onApplyProfileFilter.mock.lastCall?.[0].valueFilter.selectedValues).toEqual(["Berlin"]);
   });
 
   it("applies compact categorical and numeric profile filters through the shared filter model", () => {

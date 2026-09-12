@@ -253,7 +253,7 @@
   width: 100%;
 }
 
-.profileDistributionRow:hover,
+.profileDistributionRow:not(:disabled):hover,
 .profileDistributionRow:focus-visible {
   background: var(--vscode-list-hoverBackground);
   border-color: var(--vscode-focusBorder, var(--vscode-panel-border));

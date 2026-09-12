@@ -67,6 +67,14 @@ def test_eager_boolean_profile_probe_validates_the_complete_summary_contract() -
         "visualization": {"kind": "boolean", "trueCount": true_count, "falseCount": false_count},
     }
 
+    for item, raw in zip(summary["topValues"], (True, False), strict=True):
+        item["selectionValue"] = {
+            "kind": "typedSelection",
+            "version": 1,
+            "columnType": "boolean",
+            "cell": {"kind": "boolean", "raw": raw, "display": str(raw), "isNull": False, "isNaN": False},
+        }
+
     eager_boolean_profile._validate_summary(summary, rows)
 
     with pytest.raises(RuntimeError, match="unexpected summary"):
@@ -74,6 +82,19 @@ def test_eager_boolean_profile_probe_validates_the_complete_summary_contract() -
             summary | {"visualization": summary["visualization"] | {"trueCount": true_count - 1}},
             rows,
         )
+
+    first = summary["topValues"][0]
+    wrong_token = first["selectionValue"] | {"cell": first["selectionValue"]["cell"] | {"raw": "wrong"}}
+    with pytest.raises(RuntimeError, match="unexpected summary"):
+        eager_boolean_profile._validate_summary(
+            summary | {"topValues": [first | {"selectionValue": wrong_token}, summary["topValues"][1]]}, rows
+        )
+    for backend in ("pandas", "polars"):
+        engine, frame, _version = eager_boolean_profile._build_fixture(backend, 16)
+        try:
+            eager_boolean_profile._validate_summary(engine.summaries(frame)[0], 16)
+        finally:
+            engine.close()
 
 
 def test_eager_boolean_profile_probe_rejects_a_different_baseline_runtime(tmp_path: Path) -> None:

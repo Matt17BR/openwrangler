@@ -58,6 +58,9 @@ Filter choices retain their counts while selecting values in the same column. Ch
 or AND/OR logic clear affected choices; Search loads the current choices without changing existing selections.
 Opening value filters from a header, the Filters tab or Show More selects the requested column with fresh search input.
 Editing a sort from the sidebar selects its column while preserving unfinished filter and sort input.
+Pandas and Polars keep values visible and searchable when they cannot be selected within the supported precision or
+range. Those actions are unavailable in the picker, summary and header profile; supported values use exact filter
+operands. Existing saved selections remain removable through the filter controls.
 
 A refused Python viewing page retains the previous query. Editing uses the
 [accepted viewing query](architecture.md#protocol-and-publication) even after a successful page is superseded.
@@ -283,7 +286,7 @@ accept their displayed labels while retaining native raw-text searches. Matching
 available with zero counts.
 Pandas temporal categories preserve exact displayed values, missing counts and directional Fill anchors. Supported
 duration choices select the exact stored rows, including positive NumPy unit multipliers and Arrow extrema, in live
-and generated filters. Values outside the existing filter range or precision remain visible without a selection token.
+and generated filters. Values outside the existing filter range or precision remain visible with selection unavailable.
 Zero-unit duration categories remain viewable but refuse nonempty duration membership.
 Pandas Sparse durations with positive second, millisecond, microsecond or nanosecond multipliers preserve physical
 values in cells, choices, profiles and value selections, including generated filters. Simple Sparse duration index

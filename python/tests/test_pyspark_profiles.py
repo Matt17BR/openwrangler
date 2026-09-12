@@ -567,8 +567,8 @@ def test_maps_and_nested_maps_use_canonical_native_profile_keys(spark_session: A
         values, has_more = engine.column_values(indexed, "payload", limit=10)
         assert not has_more
         assert values == [
-            {"value": '{"a":1,"b":2}', "count": 2},
-            {"value": '{"a":9}', "count": 1},
+            {"value": '{"a":1,"b":2}', "count": 2, "selectionValue": None},
+            {"value": '{"a":9}', "count": 1, "selectionValue": None},
         ]
 
         page = engine.page(

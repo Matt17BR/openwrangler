@@ -951,22 +951,31 @@ class PolarsEngine(DataFrameEngine):
             if isinstance(dtype, (pl.Duration, pl.Datetime)):
                 result = result.with_columns(
                     pl.col("top").list.eval(
-                        pl.element().struct.with_fields(_polars_query_text(pl.field(column), dtype).alias(column))
+                        pl.element().struct.with_fields(
+                            pl.struct(
+                                pl.field(column).cast(pl.Int64).alias("ticks"),
+                                _polars_query_text(pl.field(column), dtype).alias("text"),
+                            ).alias(column)
+                        )
                     )
                 )
             row = result.row(0, named=True)
-            top_values = [
-                {
-                    "value": (
-                        normalize_cell(item[column])["display"]
-                        if semantic_type in {"list", "struct"}
-                        else str(item[column])
-                    ),
-                    "count": int(item[count_name]),
-                }
-                for item in row["top"]
-                if item[column] is not None
-            ]
+            top_values = []
+            for item in row["top"]:
+                if item[column] is None:
+                    continue
+                cell = _polars_query_cell(item[column], dtype)
+                top_values.append(
+                    {
+                        "value": (
+                            cell["display"]
+                            if semantic_type in {"list", "struct"} or isinstance(dtype, (pl.Duration, pl.Datetime))
+                            else str(item[column])
+                        ),
+                        "count": int(item[count_name]),
+                        "selectionValue": typed_cell_selection_value(cell, semantic_type),
+                    }
+                )
             collected.append((top_values, int(row["distinct"])))
         return collected
 
@@ -986,21 +995,25 @@ class PolarsEngine(DataFrameEngine):
             count_name = "count_" if column == "count" else "count"
             counts = valid.value_counts(sort=True, name=count_name)
             top = counts.head(10)
-            if isinstance(series.dtype, (pl.Duration, pl.Datetime)):
-                top = top.with_columns(_polars_query_text(pl.col(column), series.dtype))
+            top = _polars_prepare_temporal_cells(top, {column: series.dtype})
             rows = list(top.iter_rows(named=True))
-            top_values = [
-                {
-                    "value": (
-                        normalize_cell(row[column])["display"]
-                        if semantic_type in {"list", "struct"}
-                        else str(row[column])
-                    ),
-                    "count": int(row[count_name]),
-                }
-                for row in rows
-                if row[column] is not None
-            ]
+            top_values = []
+            for row in rows:
+                if row[column] is None:
+                    continue
+                cell = _polars_query_cell(row[column], series.dtype)
+                top_values.append(
+                    {
+                        "value": (
+                            cell["display"]
+                            if semantic_type in {"list", "struct"}
+                            or isinstance(series.dtype, (pl.Duration, pl.Datetime))
+                            else str(row[column])
+                        ),
+                        "count": int(row[count_name]),
+                        "selectionValue": typed_cell_selection_value(cell, semantic_type),
+                    }
+                )
             boolean_counts = None
             if semantic_type == "boolean":
                 boolean_counts = {
@@ -1163,8 +1176,7 @@ class PolarsEngine(DataFrameEngine):
                 "count": int(row[count_name]),
             }
             selection = typed_cell_selection_value(cell, column_type)
-            if selection is not None:
-                item["selectionValue"] = selection
+            item["selectionValue"] = selection
             values.append(item)
         return values, counts.height > limit
 

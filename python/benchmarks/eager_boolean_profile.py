@@ -73,9 +73,11 @@ def _build_fixture(backend: str, rows: int) -> tuple[Any, Any, str]:
 
 def _validate_summary(summary: dict[str, Any], rows: int) -> None:
     true_count, false_count = _expected_counts(rows)
+    from openwrangler_runtime.engines.base import typed_selection_value
+
     expected_top_values = [
-        {"value": "True", "count": true_count},
-        {"value": "False", "count": false_count},
+        {"value": str(value), "count": count, "selectionValue": typed_selection_value(value, "boolean")}
+        for value, count in ((True, true_count), (False, false_count))
     ]
     expected_visualization = {
         "kind": "boolean",
