@@ -498,8 +498,12 @@ Native NumPy `timedelta64` columns, categories with that native dtype, and dicti
 Matching unused duration categories retain their zero counts; nonmatching categories do not fill search results.
 Duration search uses the same scalar labels published in choices, including whole-day clocks and values outside the
 nanosecond range. It retains the full native distinct-count state before searching, without a full-source label array.
-Sparse, Arrow-backed
-(including Arrow-backed categories) and object durations keep their original row-text search behavior.
+Arrow-backed duration categories also search their counted display labels and native text for observed categories.
+Raw aliases preserve original positive matches; unused categories match only displayed labels. A nonempty search uses
+a mask across native category counts, then takes and formats only observed category values. Strings and the positional
+lookup grow with observed categories, without expanding strings to every row or bounding them by the requested limit.
+Unsearched choices skip this allocation. Non-text missing entries are not aliases; corrected display labels remain searchable.
+Sparse, noncategorical Arrow-backed and object durations keep their original row-text search behavior.
 Categorical timestamp and duration output reads stored values through category codes, preserving Arrow validity and
 NumPy duration multipliers. Temporal-category null masks use missing codes, so valid Arrow extrema remain present.
 Directional Fill repeats the native categorical anchor rather than assigning a boxed scalar that can change its value.

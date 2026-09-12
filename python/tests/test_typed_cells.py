@@ -1600,6 +1600,108 @@ def test_pandas_native_duration_categories_search_counts_and_unused_labels(
         engine.close()
 
 
+@pytest.mark.parametrize("unit", ["s", "ms", "us", "ns"])
+def test_pandas_arrow_duration_category_search_preserves_labels_and_raw_aliases(monkeypatch, unit) -> None:
+    from collections import Counter
+
+    import __main__
+
+    pa = pytest.importorskip("pyarrow")
+    scale = {"s": 1, "ms": 1000, "us": 1000000, "ns": 1000000000}[unit]
+    ticks = [-(2**63), 2**63 - 1, 86400 * scale, 1, 0, -172800 * scale]
+    dtype = pd.ArrowDtype(pa.duration(unit))
+    categories = pd.Index(pd.array(pa.array(ticks, type=dtype.pyarrow_dtype), dtype=dtype))
+    source = pd.DataFrame(
+        {
+            "value": pd.Categorical.from_codes([2, 0, 1, 3, 2, -1, 4], categories=categories, ordered=True),
+            "row": range(7),
+        }
+    )
+    source.index = pd.Index(["same"] * 7, name="retained")
+    source.attrs = {"origin": "retained"}
+    before = source.copy(deep=True)
+    monkeypatch.setattr(__main__, "arrow_category_search_source", source, raising=False)
+    manager = SessionManager()
+    engine = PandasEngine()
+    query = {"filters": [], "sort": []}
+    try:
+        opened = manager.open_session(
+            {
+                "kind": "notebookVariable",
+                "label": "Arrow duration categories",
+                "variableName": "arrow_category_search_source",
+            },
+            backend="pandas",
+            page_size=7,
+        )
+        metadata = opened["metadata"]
+        session_id, revision = metadata["sessionId"], metadata["revision"]
+        result = manager.get_column_values(session_id, revision, "value", query)
+        choices = result["values"]
+        assert not result["hasMore"] and sorted(item["count"] for item in choices) == [0, 1, 1, 1, 1, 2]
+        day = choices[0]
+        assert day["value"] == ("1 days 00:00:00" if unit == "ns" else "1 day, 0:00:00")
+        assert day["selectionValue"]["cell"]["raw"] == 86400
+        native = source["value"].dropna().astype(str)
+        row_labels = [
+            str(row["values"][0]["display"]) for row in opened["page"]["rows"] if not row["values"][0]["isNull"]
+        ]
+        for choice in choices:
+            found, more = engine.column_values(source, "value", search=choice["value"])
+            assert choice in found and not more
+        # A raw alias must retain every positive native match, even when Arrow's
+        # valid minimum tick is spelled NaT by Pandas. Missing codes have no choice.
+        for raw in dict.fromkeys([*(value for value in native if isinstance(value, str)), "NaT", "nan"]):
+            expected = Counter(
+                label
+                for raw_text, label in zip(native, row_labels, strict=True)
+                if isinstance(raw_text, str) and raw in raw_text or raw in label
+            )
+            found, more = engine.column_values(source, "value", search=raw)
+            assert not more
+            assert {item["value"]: item["count"] for item in found if item["count"]} == dict(expected)
+        searched = manager.get_column_values(session_id, revision, "value", query, search=day["value"])
+        assert searched["values"] == [day] and not searched["hasMore"]
+        model = {
+            "filters": [
+                {
+                    "column": "value",
+                    "type": "string",
+                    "predicates": [],
+                    "valueFilter": {
+                        "kind": "values",
+                        "selectedValues": [searched["values"][0]["selectionValue"]],
+                        "includeNulls": False,
+                        "includeNaN": False,
+                    },
+                }
+            ],
+            "sort": [],
+        }
+        selected = manager.get_page(session_id, revision, 0, 7, model)
+        assert [row["values"][1]["raw"] for row in selected["page"]["rows"]] == [0, 4]
+        assert engine.column_values(source, "value", search="[not-a-duration]") == ([], False)
+        positive = [item for item in choices if "day" in item["value"]]
+        assert engine.column_values(source, "value", search="DaY", limit=1) == (positive[:1], len(positive) > 1)
+        unused = next(item for item in choices if item["count"] == 0)
+        unused_raw = pd.Series(pd.Categorical.from_codes([5], categories=categories)).astype(str).iloc[0]
+        displayed_matches = [item for item in choices if unused_raw in item["value"]]
+        assert engine.column_values(source, "value", search=unused_raw) == (displayed_matches, False)
+        for empty in (source.iloc[:0], source.iloc[[5]]):
+            assert engine.column_values(empty, "value", search=unused_raw) == (displayed_matches, False)
+            assert engine.column_values(empty, "value", search=unused["value"]) == ([unused], False)
+            assert engine.column_values(empty, "value", search="[not-a-duration]") == ([], False)
+        restored = manager.get_page(session_id, revision, 0, 7, query)
+        assert restored["page"] == opened["page"]
+        for key in ("sessionId", "revision", "source"):
+            assert restored["metadata"][key] == metadata[key]
+    finally:
+        manager.close_all()
+        engine.close()
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
+    assert source.attrs == before.attrs
+
+
 @pytest.mark.parametrize(
     "storage,unit,ticks",
     [
