@@ -623,7 +623,10 @@ try {
               remoteJupyterEnabled
             );
             const pythonJupyterPhaseSet = new Set(pythonJupyterPlan.phases);
-            const genericPackagedPhasesEnabled = !pythonJupyterPlan.integrationOnly;
+            const genericPackagedPhasesEnabled =
+              !pythonJupyterPlan.integrationOnly &&
+              acceptanceMode !== "r-jupyter" &&
+              acceptanceMode !== "data-wrangler-coexistence";
             writeCorrelatedProgress(
               orchestrationProgressPath,
               orchestrationRunId,

@@ -278,6 +278,10 @@ the original profile must retain its normal per-user protections. A private chil
 requirement. Existing process-settlement and root-identity checks govern cleanup, including files left by killed
 fixture kernels.
 
+The `r-jupyter` and `data-wrangler-coexistence` modes skip the generic smoke profile's fixture and extension
+installation. They retain editor-version discovery, the shared harness package and exact installed-version checks
+in the extension directory used by the selected journey.
+
 The first generic Pandas notebook launch observes the unique new panel for its exact notebook and variable,
 independently of focus. A terminal error from that panel's first open attempt fails the wait immediately with bounded
 kind, code and recoverability diagnostics; an older panel or retry cannot satisfy it, and the reader cannot switch away
