@@ -373,6 +373,11 @@ Confirmed viewing-filter history preserves admitted operand objects and their ow
 targets and outgoing filter requests hold independent copies; Undo retains the current viewing sorts. JSON operand
 objects keep their serialized shape rather than becoming lookup Maps.
 
+Viewing models may contain multiple filter entries for the same column. Individual value, flag and predicate edits
+replace only their originating entry; the panel builder edits the first active entry or appends one when absent.
+Other entries, global logic and sorts remain unchanged. Column Clear removes the whole same-name group. Filter lists
+render each entry separately and count distinct filtered column names.
+
 Native filter-removal actions carry their originating session and an immutable signature of the complete active
 same-name filter group. The host checks that target before dispatch, and the renderer checks it against its current
 desired filters before removal, including while a newer page request is pending. Unrelated filters and sorts do not

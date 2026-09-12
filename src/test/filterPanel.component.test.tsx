@@ -30,7 +30,147 @@ const values = new Map<string, ValuesResponse>([
 const cityRequest = { column: "city" };
 const salesRequest = { column: "sales" };
 
+const duplicateColumnModel: FilterModel = {
+  logic: "or",
+  filters: [
+    {
+      column: "city",
+      type: "string",
+      logic: "and",
+      valueFilter: { kind: "values", selectedValues: ["Milan"], includeNulls: true, includeNaN: false },
+      predicates: [{ kind: "predicate", operator: "notEquals", value: "Berlin" }]
+    },
+    { column: "city", type: "string", predicates: [{ kind: "predicate", operator: "notEquals", value: "Rome" }] },
+    { column: "sales", type: "float", predicates: [{ kind: "predicate", operator: "gt", value: 10 }] }
+  ],
+  sort: [{ column: "sales", direction: "desc", nulls: "last" }]
+};
+
 describe("FilterPanel", () => {
+  it("edits the first active entry without replacing a same-column sibling", () => {
+    const onApply = vi.fn();
+    const view = (current: FilterModel) => (
+      <FilterPanel
+        metadata={metadata}
+        model={current}
+        values={values}
+        columnRequest={cityRequest}
+        defaultAdvanced={true}
+        onApply={onApply}
+        onRequestValues={() => undefined}
+      />
+    );
+    const model: FilterModel = {
+      ...duplicateColumnModel,
+      filters: duplicateColumnModel.filters.map((filter, index) =>
+        index === 0 ? { ...filter, valueFilter: undefined } : filter
+      )
+    };
+    const original = JSON.stringify(model);
+    const rendered = render(view(model));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Milan/u }));
+    const selected = onApply.mock.lastCall![0] as FilterModel;
+    expect(selected).toEqual({
+      ...model,
+      filters: [
+        {
+          ...model.filters[0],
+          valueFilter: { kind: "values", selectedValues: ["Milan"], includeNulls: false, includeNaN: false, search: "" }
+        },
+        ...model.filters.slice(1)
+      ]
+    });
+    expect(selected.filters[1]).toBe(model.filters[1]);
+    rendered.rerender(view(selected));
+    fireEvent.change(screen.getByLabelText("Predicate operator"), { target: { value: "notEquals" } });
+    fireEvent.change(screen.getByLabelText("notEquals predicate value"), { target: { value: "Paris" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add predicate" }));
+    const added = onApply.mock.lastCall![0] as FilterModel;
+    expect(added).toEqual({
+      ...selected,
+      filters: [
+        {
+          ...selected.filters[0],
+          predicates: [...selected.filters[0].predicates, { kind: "predicate", operator: "notEquals", value: "Paris" }]
+        },
+        ...model.filters.slice(1)
+      ]
+    });
+    expect(added.filters[1]).toBe(model.filters[1]);
+    expect(added.sort).toBe(model.sort);
+    expect(JSON.stringify(model)).toBe(original);
+  });
+
+  it.each(["and", "or"] as const)("removes only the selected same-column entry with %s logic", (logic) => {
+    const [first, sibling, sales] = duplicateColumnModel.filters;
+    const model: FilterModel = {
+      ...duplicateColumnModel,
+      logic,
+      filters: logic === "and" ? [first, sibling, sales] : [sibling, first, sales]
+    };
+    const original = JSON.stringify(model);
+    const onApply = vi.fn();
+    const view = (current: FilterModel) => (
+      <FilterPanel
+        metadata={metadata}
+        model={current}
+        values={values}
+        columnRequest={cityRequest}
+        defaultAdvanced={true}
+        onApply={onApply}
+        onRequestValues={() => undefined}
+      />
+    );
+    const rendered = render(view(model));
+    const withoutValue = { ...first, valueFilter: { ...first.valueFilter!, selectedValues: [] } };
+    const withoutFlags = { column: first.column, type: first.type, logic: first.logic, predicates: first.predicates };
+    const removals = [
+      { label: 'Remove equals "Milan" filter from city', entry: withoutValue },
+      { label: "Remove is null filter from city", entry: withoutFlags },
+      { label: 'Remove does not equal "Berlin" filter from city', entry: undefined }
+    ];
+    for (const removal of removals) {
+      fireEvent.click(screen.getByRole("button", { name: removal.label }));
+      const next = onApply.mock.lastCall![0] as FilterModel;
+      const filters = removal.entry
+        ? logic === "and"
+          ? [removal.entry, sibling, sales]
+          : [sibling, removal.entry, sales]
+        : [sibling, sales];
+      expect(next).toEqual({ ...model, filters });
+      expect(next.filters).toContain(sibling);
+      expect(next.filters.at(-1)).toBe(sales);
+      expect(next.sort).toBe(model.sort);
+      expect(JSON.stringify(model)).toBe(original);
+      rendered.rerender(view(next));
+      expect(screen.queryByRole("button", { name: removal.label })).not.toBeInTheDocument();
+    }
+    expect(screen.getByRole("button", { name: 'Remove does not equal "Rome" filter from city' })).toBeVisible();
+    expect(screen.getByText("2 filtered columns")).toBeVisible();
+  });
+
+  it("removes every rendered same-column group after a whole-column clear", () => {
+    const onApply = vi.fn();
+    const view = (current: FilterModel) => (
+      <FilterPanel
+        metadata={metadata}
+        model={current}
+        values={values}
+        columnRequest={cityRequest}
+        defaultAdvanced={true}
+        onApply={onApply}
+        onRequestValues={() => undefined}
+      />
+    );
+    const rendered = render(view(duplicateColumnModel));
+    fireEvent.click(screen.getAllByRole("button", { name: "Clear filter for city" })[0]);
+    expect(onApply).toHaveBeenLastCalledWith({ ...duplicateColumnModel, filters: [duplicateColumnModel.filters[2]] });
+    rendered.rerender(view({ ...duplicateColumnModel, filters: [duplicateColumnModel.filters[2]] }));
+    expect(screen.queryAllByRole("region", { name: /city filters/u })).toHaveLength(0);
+    expect(screen.getByRole("region", { name: "sales filters" })).toBeVisible();
+    expect(screen.getByText("1 filtered column")).toBeVisible();
+  });
+
   it("keeps unavailable values visible and saved raw selections removable without dispatching a new value", () => {
     const onApply = vi.fn();
     const onRequestValues = vi.fn();

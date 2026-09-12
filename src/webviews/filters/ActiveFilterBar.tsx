@@ -2,7 +2,7 @@ import { useLayoutEffect, useMemo, useRef } from "react";
 import type { SessionMetadata } from "../../shared/protocol";
 import {
   isActiveColumnFilter,
-  replaceViewColumnFilter,
+  replaceViewFilterEntry,
   type ColumnFilter,
   type FilterModel
 } from "../../shared/filterModel";
@@ -52,6 +52,7 @@ export function ActiveFilterBar({
   const region = useRef<HTMLElement | null>(null);
   const focusIntent = useRef<FilterFocusIntent | undefined>(undefined);
   const activeFilters = useMemo(() => model.filters.filter(isActiveColumnFilter), [model.filters]);
+  const filteredColumnCount = new Set(activeFilters.map((filter) => filter.column)).size;
   const pendingRequestId = requestLifecycle?.pendingRequestId;
   const settledRequestId = requestLifecycle?.settledRequestId;
 
@@ -89,10 +90,10 @@ export function ActiveFilterBar({
 
   if (activeFilters.length === 0 && !canUndo && !retainVisible) return null;
 
-  const applyRuleRemoval = (nextFilter: ColumnFilter, trigger: HTMLButtonElement) => {
+  const applyRuleRemoval = (filter: ColumnFilter, nextFilter: ColumnFilter, trigger: HTMLButtonElement) => {
     if (disabled) return;
     const buttons = [...(region.current?.querySelectorAll<HTMLButtonElement>("[data-view-filter-rule]") ?? [])];
-    const requestId = onApply(replaceViewColumnFilter(model, nextFilter));
+    const requestId = onApply(replaceViewFilterEntry(model, filter, nextFilter));
     if (requestId) {
       focusIntent.current = {
         requestId,
@@ -117,7 +118,7 @@ export function ActiveFilterBar({
           <span className="mutedText" role="status" aria-live="polite" aria-atomic="true">
             {activeFilters.length === 0
               ? "No active filters"
-              : `${activeFilters.length} filtered ${activeFilters.length === 1 ? "column" : "columns"}; match ${
+              : `${filteredColumnCount} filtered ${filteredColumnCount === 1 ? "column" : "columns"}; match ${
                   model.logic === "or" ? "any" : "all"
                 }`}
           </span>
@@ -155,14 +156,14 @@ export function ActiveFilterBar({
       </header>
       {activeFilters.length > 0 && (
         <div className="viewFilterRows" aria-label="Active viewing filter rules">
-          {activeFilters.map((filter) => {
+          {activeFilters.map((filter, filterIndex) => {
             const columnLabel = activeFilterColumnLabel(filter.column, metadata);
             const conditionCount = activeFilterConditionCount(filter);
             const rowLogic = filter.logic === "or" ? "any" : "all";
             const valueChoiceCount = activeFilterValueChoiceCount(filter);
             return (
               <div
-                key={filter.column}
+                key={`${filterIndex}:${filter.column}`}
                 className="viewFilterRow"
                 role="group"
                 aria-label={`${columnLabel} filters${
@@ -198,6 +199,7 @@ export function ActiveFilterBar({
                             disabled={disabled}
                             onRemove={(trigger) =>
                               applyRuleRemoval(
+                                filter,
                                 {
                                   ...filter,
                                   valueFilter: filter.valueFilter
@@ -222,6 +224,7 @@ export function ActiveFilterBar({
                           disabled={disabled}
                           onRemove={(trigger) =>
                             applyRuleRemoval(
+                              filter,
                               { ...filter, valueFilter: { ...filter.valueFilter!, includeNulls: false } },
                               trigger
                             )
@@ -235,6 +238,7 @@ export function ActiveFilterBar({
                           disabled={disabled}
                           onRemove={(trigger) =>
                             applyRuleRemoval(
+                              filter,
                               { ...filter, valueFilter: { ...filter.valueFilter!, includeNaN: false } },
                               trigger
                             )
@@ -252,6 +256,7 @@ export function ActiveFilterBar({
                         disabled={disabled}
                         onRemove={(trigger) =>
                           applyRuleRemoval(
+                            filter,
                             {
                               ...filter,
                               predicates: filter.predicates.filter((_, candidateIndex) => candidateIndex !== index)
