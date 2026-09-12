@@ -1096,6 +1096,7 @@ def test_arrow_integer_modulo_publishes_exports_and_retains_state_after_zero_ref
     "family",
     [
         "uint64",
+        "signed-add",
         "uint64-negative-add",
         "uint64-negative-subtract",
         "uint64-negative-multiply",
@@ -1131,6 +1132,7 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
     odd_power = family in {"signed-odd-power", "signed-wide-odd-power"}
     signed_power = family in {"signed-even-power", "signed-odd-power", "signed-wide-odd-power"}
     signed_subtract = family == "uint64-signed-subtract"
+    signed_add = family == "signed-add"
     negative_literal = family in {"uint64-negative-add", "uint64-negative-subtract", "uint64-negative-multiply"}
     negative_column = family in {"uint64-negative-column-add", "uint64-negative-column-subtract"}
     signed_left = family.startswith("uint64-reversed-column-")
@@ -1166,6 +1168,8 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
             assert isinstance(series.array, pd.arrays.ArrowExtensionArray)
             array = series.array.__arrow_array__()
             series = pd.Series(pd.arrays.ArrowExtensionArray(pa.chunked_array([array.slice(0, 1), array.slice(1)])))
+    if signed_add:
+        series = pd.Series([2**63 - 1, -4, None], dtype="int64[pyarrow]")
     frame = pd.DataFrame({"value": series, "divisor": pd.Series([1, 0, None], dtype="int64[pyarrow]")})
     if odd_power:
         frame["divisor"] = pd.Series([1, -2, None] if wide_odd_power else [2, -1, None], dtype="int64[pyarrow]")
@@ -1198,6 +1202,8 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
                 "newColumn": "result",
             },
         }
+        if signed_add:
+            operation["params"].update(operator="add", value="5")
         if decimal_negation:
             operation["params"]["operator"] = family.removeprefix("decimal-negate-")
             operation["params"]["value"] = -1
@@ -1217,7 +1223,9 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
                     operation["params"]["leftColumn"],
                 )
         unsigned_expected = [1, 2**64 - 3, None]
-        if signed_power:
+        if signed_add:
+            unsigned_expected = [2**63 + 4, 1, None]
+        elif signed_power:
             unsigned_expected = [0, -1 if wide_odd_power else 2**63 if odd_power else 3**40, None]
         elif signed_subtract:
             unsigned_expected = [-1, 2**63 - 1, None]
@@ -1235,7 +1243,7 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
                 unsigned_expected = [1, 2**64 - 2, None]
         expected = pd.Series(
             unsigned_expected
-            if unsigned or signed_power
+            if unsigned or signed_power or signed_add
             else (
                 [Decimal("2.250"), Decimal("-5.000"), None]
                 if family == "decimal-multiply"
@@ -1248,7 +1256,7 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
                 if wide_odd_power or signed_subtract or family == "uint64-negative-multiply"
                 else "uint64[pyarrow]"
             )
-            if unsigned or signed_power
+            if unsigned or signed_power or signed_add
             else pd.ArrowDtype(pa.decimal256(50, 3 if family == "decimal-multiply" else 23)),
         )
         if decimal_negation:
@@ -1272,7 +1280,7 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
             "kind": "cloneColumn",
             "params": {"column": operation["params"]["leftColumn"], "newName": "future"},
         }
-        if mixed_column or signed_power:
+        if mixed_column or signed_power or signed_add:
             future = manager.preview_step(session_id, session.revision, history, 0, 1)
             manager.apply_draft(session_id, future["revision"], 0, 1)
             manager.undo_step(session_id, session.revision, 0, 1)
@@ -1288,6 +1296,9 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
                 **({"value": 2} if unsigned else {"rightColumn": {"id": columns[1]["id"], "name": columns[1]["name"]}}),
             },
         }
+        if signed_add:
+            invalid["params"].pop("rightColumn")
+            invalid["params"].update(operator="add", value="1")
         if decimal_negation:
             invalid["params"].pop("rightColumn")
             invalid["params"]["operator"] = operation["params"]["operator"]
@@ -1341,7 +1352,7 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
         repaired = manager.preview_step(session_id, session.revision, corrected, 0, 1)
         manager.discard_draft(session_id, repaired["revision"], 0, 1)
         assert session.plan == [operation]
-        if mixed_column or signed_power:
+        if mixed_column or signed_power or signed_add:
             assert session.undone_steps == [history]
 
         replay = manager.open_session(descriptor, backend="pandas", mode="editing", page_size=1)
@@ -1366,14 +1377,14 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
         assert physical.schema.field("result").type == expected.dtype.pyarrow_dtype
         assert physical["result"].equals(expected.array.__arrow_array__())
         reopened = session.engine.read_file(str(destination))
-        if unsigned or signed_power:
+        if unsigned or signed_power or signed_add:
             pd.testing.assert_series_equal(reopened["result"], expected)
         else:
             assert reopened["result"].tolist() == [None if pd.isna(value) else value for value in expected]
         pd.testing.assert_index_equal(reopened.index, frame.index)
         pd.testing.assert_frame_equal(frame, original)
         assert frame.attrs == original.attrs
-        if signed_subtract or family == "uint64-negative-multiply" or signed_power or decimal_negation:
+        if signed_subtract or family == "uint64-negative-multiply" or signed_power or signed_add or decimal_negation:
             undone = manager.undo_step(session_id, session.revision, 0, 1)
             assert undone["action"] == "undo"
             assert session.plan == []

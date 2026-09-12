@@ -2348,7 +2348,7 @@ def test_pandas_formula_integer_guard_retains_native_refusals(
             execute_generated(runtime, frame, operation) if generated else runtime.apply_transform(frame, operation)
 
 
-@pytest.mark.parametrize("operator,value", [("add", 1), ("multiply", 3), ("power", 2)])
+@pytest.mark.parametrize("operator,value", [("multiply", 3), ("power", 2)])
 def test_pandas_arrow_other_formula_overflow_stays_checked(operator: str, value: int) -> None:
     pa = pytest.importorskip("pyarrow")
     frame = pd.DataFrame({"value": pd.Series([2**63 - 1, None], dtype="int64[pyarrow]")})
@@ -2491,6 +2491,39 @@ def test_pandas_arrow_formula_capacity_repairs_unsigned_scalars(values, operator
             ("uint64[pyarrow]", [None, None], None, "-1", "int64[pyarrow]", [None, None]),
             ("uint64[pyarrow]", [1, 2**64 - 1], "int64[pyarrow]", [-1, 1], None, None),
             ("int64[pyarrow]", [0, -(2**63)], None, "2", None, None),
+        ]
+    ]
+    + [
+        ("add", *case)
+        for case in [
+            ("int64[pyarrow]", [2**63 - 1, 0, None], None, "1", "uint64[pyarrow]", [2**63, 1, None]),
+            (
+                "int64[pyarrow]",
+                [2**63 - 1, 4, None],
+                "int64[pyarrow]",
+                [1, -1, None],
+                "uint64[pyarrow]",
+                [2**63, 3, None],
+            ),
+            ("int8[pyarrow]", [-128, 0, None], "int8[pyarrow]", [-1, 1, None], "int64[pyarrow]", [-129, 1, None]),
+            ("int16[pyarrow]", [32767, 3, None], "Int16", [1, -1, None], "int64[pyarrow]", [32768, 2, None]),
+            ("int32", [2**31 - 1, 3, 0], "int32[pyarrow]", [1, -1, None], "int64[pyarrow]", [2**31, 2, None]),
+            ("Int64", [2**63 - 1, 4, None], "int64[pyarrow]", [1, -1, None], "uint64[pyarrow]", [2**63, 3, None]),
+            ("int64[pyarrow]", [2**63 - 1, 4, None], "int64", [1, -1, 2], "uint64[pyarrow]", [2**63, 3, None]),
+            ("int64[pyarrow]", [1, 0, None], None, str(2**63 - 1), "uint64[pyarrow]", [2**63, 2**63 - 1, None]),
+            ("int64[pyarrow]", [2**63 - 2, -4, None], None, "1", "int64[pyarrow]", [2**63 - 1, -3, None]),
+            (
+                "int64[pyarrow]",
+                [2**63 - 1, None, 4],
+                "int64[pyarrow]",
+                [None, 2**63 - 1, -1],
+                "int64[pyarrow]",
+                [None, None, 3],
+            ),
+            ("int64[pyarrow]", [], None, "1", "int64[pyarrow]", []),
+            ("int64[pyarrow]", [None, None], None, "1", "int64[pyarrow]", [None, None]),
+            ("int64[pyarrow]", [-(2**63), None], None, "-1", None, None),
+            ("int64[pyarrow]", [2**63 - 1, -4, None], None, "1", None, None),
         ]
     ]
     + [
@@ -3137,6 +3170,9 @@ def test_pandas_arrow_formula_capacity_preserves_successful_native_results(famil
         "negative-column-sparse",
         "below-negative-uint64",
         "above-uint64",
+        "signed-add-above-literal",
+        "signed-add-below-literal",
+        "signed-add-sparse",
         "power-above-uint64",
         "wide-odd-power-negative-overflow",
         "wide-odd-power-positive-overflow",
@@ -3168,6 +3204,10 @@ def test_pandas_arrow_formula_capacity_retains_native_refusals(family: str) -> N
         operand, error = -(2**64), OverflowError
     elif family == "above-uint64":
         operand, op, error = 2**64, "multiply", OverflowError
+    elif family.startswith("signed-add-"):
+        value = pd.Series([2**63 - 1, None], dtype="int64[pyarrow]")
+        operand = -(2**63) - 1 if family == "signed-add-below-literal" else 2**63
+        error = pa.ArrowTypeError if family == "signed-add-sparse" else OverflowError
     elif family == "power-above-uint64":
         value = pd.Series([-1, 0, 1, None], dtype="int64[pyarrow]")
         operand, op, error = 2**64, "power", OverflowError
@@ -3188,7 +3228,9 @@ def test_pandas_arrow_formula_capacity_retains_native_refusals(family: str) -> N
         value = pd.Series(values, dtype=pd.ArrowDtype(pa.decimal256(precision, -1)))
         error = TypeError if precision == 76 else (TypeError, pa.ArrowInvalid)
     frame = pd.DataFrame({"value": value})
-    column_operand = family.startswith("negative-column-") or family == "decimal-unit-column"
+    column_operand = (
+        family.startswith("negative-column-") or family == "decimal-unit-column" or family == "signed-add-sparse"
+    )
     if column_operand:
         right = [-1, None]
         if family in {"negative-column-underflow", "negative-column-overflow"}:
@@ -3210,6 +3252,8 @@ def test_pandas_arrow_formula_capacity_retains_native_refusals(family: str) -> N
         if family == "negative-column-sparse":
             frame["right"] = pd.Series([-1, -2], dtype=pd.SparseDtype("int64", 0))
             error = pa.ArrowTypeError
+    if family == "signed-add-sparse":
+        frame["right"] = pd.Series([1, 0], dtype=pd.SparseDtype("int64", 0))
     before = frame.copy(deep=True)
     runtime = PandasEngine()
     lineage = source_lineage(runtime.schema(frame))
@@ -3360,10 +3404,18 @@ def test_pandas_arrow_formula_refusal_releases_input_without_cyclic_collection(g
             gc.enable()
 
 
-@pytest.mark.parametrize("signed_value,operator", [(1, "add"), (-1, "add"), (-1, "multiply")])
+@pytest.mark.parametrize(
+    "signed_value,operator,arrow_dtype",
+    [
+        (1, "add", "uint64[pyarrow]"),
+        (-1, "add", "uint64[pyarrow]"),
+        (-1, "multiply", "uint64[pyarrow]"),
+        (2, "add", "int64[pyarrow]"),
+    ],
+)
 @pytest.mark.parametrize("signed_left", [False, True])
 def test_pandas_arrow_formula_capacity_does_not_convert_custom_integer_extensions(
-    signed_value: int, operator: str, signed_left: bool
+    signed_value: int, operator: str, arrow_dtype: str, signed_left: bool
 ) -> None:
     import numpy as np
 
@@ -3405,9 +3457,10 @@ def test_pandas_arrow_formula_capacity_does_not_convert_custom_integer_extension
 
     assert domain_array_type(DomainIntDtype) is DomainIntArray
     assert DomainIntDtype().construct_array_type() is DomainIntArray
+    maximum = 2**63 - 1 if arrow_dtype == "int64[pyarrow]" else 2**64 - 1
     frame = pd.DataFrame(
         {
-            "wide": pd.Series([2**64 - 1, 2**64 - 2, None], dtype="uint64[pyarrow]"),
+            "wide": pd.Series([maximum, maximum - 1, None], dtype=arrow_dtype),
             "domain": pd.Series(
                 DomainIntArray(np.array([0, signed_value, 0], dtype=np.int64), np.array([False, False, True]))
             ),

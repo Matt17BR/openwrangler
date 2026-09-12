@@ -224,7 +224,8 @@ including exact promotions. Generated code applies the same checks to all affect
 the displayed page.
 
 Pandas Formula supports exact Arrow integer modulo, selected signed/unsigned addition, subtraction and multiplication,
-and additional positive integer powers. Successful native results keep their types. Modulo preserves nulls and refuses
+and additional positive integer powers. Eligible signed additions widen to Int64, then UInt64 when needed; the
+complete result must fit one output type. Successful native results keep their types. Modulo preserves nulls and refuses
 a zero divisor when both operands are present. Live execution and generated code agree, and refusals preserve source
 data and the confirmed plan.
 
