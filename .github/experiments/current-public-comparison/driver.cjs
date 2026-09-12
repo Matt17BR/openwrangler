@@ -17,6 +17,8 @@ exports.run = async function () {
   const owner = await import(pathToFileURL(path.join(request.repo, "scripts/editor-acceptance.mjs")).href);
   const receipt = { id: request.id, setup: {}, samples: [], status: "pending" };
   let browser,
+    opened,
+    sourceNotebook,
     publicFrames = () => [],
     stage = "connect";
   const checkpoint = (next) => {
@@ -91,8 +93,10 @@ exports.run = async function () {
         await poll(async () => !(await visible(dialog)), "kernel-consent-dismissed");
         const duration = performance.now() - started,
           active = receipt.samples.at(-1);
-        if (active?.status === "pending") active.consentMs += duration;
-        else receipt.setup.consentMs = (receipt.setup.consentMs || 0) + duration;
+        if (active?.status === "pending") {
+          const field = opened === undefined ? "preEntryConsentMs" : "afterEntryConsentMs";
+          active[field] += duration;
+        } else receipt.setup.consentMs = (receipt.setup.consentMs || 0) + duration;
         receipt.setup.consentAccepted = true;
       }
     };
@@ -102,6 +106,7 @@ exports.run = async function () {
     const notebook = await vscode.workspace.openNotebookDocument(
       vscode.Uri.file(path.join(workspace, "comparison.ipynb"))
     );
+    sourceNotebook = notebook;
     const editor = await vscode.window.showNotebookDocument(notebook);
     const notebookTab = vscode.window.tabGroups.all
       .flatMap((g) => g.tabs)
@@ -252,18 +257,20 @@ exports.run = async function () {
       );
     };
     for (const sampleName of ["fresh-session-first-open", "same-session-reopen"]) {
+      opened = undefined;
       const sample = {
         name: sampleName,
         status: "pending",
         metrics: {},
-        consentMs: 0,
+        preEntryConsentMs: 0,
+        afterEntryConsentMs: 0,
         completedProfiles: 0,
         profileObservations: [],
         actions: []
       };
       receipt.samples.push(sample);
       save();
-      await vscode.window.showNotebookDocument(notebook);
+      const activeEditor = await vscode.window.showNotebookDocument(notebook);
       if (sampleName === "same-session-reopen") {
         await replaceCell(
           2,
@@ -277,15 +284,78 @@ exports.run = async function () {
         assert.deepEqual(reset.runtime, request.runtimeIdentity);
       }
       checkpoint(`${sampleName}:source-output`);
+      const measuredCell = new vscode.NotebookRange(1, 2);
+      activeEditor.selection = measuredCell;
+      activeEditor.selections = [measuredCell];
+      activeEditor.revealRange(measuredCell, vscode.NotebookEditorRevealType.InCenterIfOutsideViewport);
       await execute(1);
-      const actionName = request.product === "ow" ? /^Open.*Open Wrangler$/ : /^Open.*Data Wrangler$/;
-      const action = await poll(async () => {
-        await consent();
-        return find("button", actionName);
-      }, "public-open-button");
-      checkpoint(`${sampleName}:open`);
-      const opened = performance.now();
-      await action.click();
+      sample.entryRoute = request.product === "ow" ? "inline-open" : "notebook-view-data";
+      sample.toolbarOverflowUsed = false;
+      sample.metrics.pickerMs = 0;
+      if (request.product === "ow") {
+        const action = await poll(async () => {
+          await consent();
+          return find("button", /^Open.*Open Wrangler$/);
+        }, "public-open-button");
+        checkpoint(`${sampleName}:open`);
+        opened = performance.now();
+        await action.click();
+      } else {
+        // Documented notebook View data route; select the exact resident variable.
+        const toolbar = page.locator(
+          ".notebook-editor:visible .notebook-toolbar-container:visible, " +
+            ".notebookOverlay:visible .notebook-toolbar-container:visible"
+        );
+        const action = await poll(async () => {
+          await consent();
+          if (!sample.toolbarOverflowUsed) {
+            const direct = toolbar.getByRole("button", { name: "View data", exact: true });
+            assert((await direct.count()) <= 1, "PILOT_GATE:ambiguous-view-data");
+            if (await visible(direct)) return direct;
+            const overflow = toolbar.getByRole("button", { name: /^More Actions(?:\.\.\.)?$/ });
+            assert((await overflow.count()) <= 1, "PILOT_GATE:ambiguous-notebook-overflow");
+            if (await visible(overflow)) {
+              assert(await overflow.isEnabled(), "PILOT_GATE:disabled-notebook-overflow");
+              checkpoint(`${sampleName}:open`);
+              opened = performance.now();
+              await overflow.click();
+              sample.toolbarOverflowUsed = true;
+            }
+          }
+          if (!sample.toolbarOverflowUsed) return false;
+          const item = page
+            .locator(".context-view.monaco-menu-container:visible")
+            .getByRole("menuitem", { name: "View data", exact: true });
+          assert((await item.count()) <= 1, "PILOT_GATE:ambiguous-view-data-menu");
+          return (await visible(item)) ? item : false;
+        }, "public-view-data");
+        assert(await action.isEnabled(), "PILOT_GATE:disabled-view-data");
+        if (opened === undefined) {
+          checkpoint(`${sampleName}:open`);
+          opened = performance.now();
+        }
+        await action.click();
+        const pickerStarted = performance.now();
+        checkpoint(`${sampleName}:variable-picker`);
+        const option = await poll(async () => {
+          await consent();
+          const picker = page.locator(".quick-input-widget:visible");
+          if (!(await visible(picker))) return false;
+          const options = picker.getByRole("option"),
+            matches = [];
+          for (let i = 0; i < Math.min(await options.count(), 64); i++) {
+            const item = options.nth(i),
+              label = item.locator(".label-name");
+            if ((await visible(label)) && (await label.innerText()).trim() === "comparison_frame") matches.push(item);
+          }
+          assert(matches.length <= 1, "PILOT_GATE:ambiguous-comparison-variable");
+          return matches[0] || false;
+        }, "public-comparison-variable");
+        await option.click();
+        sample.metrics.pickerMs = performance.now() - pickerStarted;
+      }
+      sample.metrics.entryMs = performance.now() - opened;
+      checkpoint(`${sampleName}:grid`);
       const target = await poll(grid, "full-grid-shape");
       const productTab = vscode.window.tabGroups.activeTabGroup.activeTab;
       assert(
@@ -639,7 +709,7 @@ exports.run = async function () {
     receipt.status = receipt.samples.every((sample) => sample.status === "passed") ? "passed" : "failed";
     save();
     assert.equal(receipt.status, "passed", "Pilot contains retained profile contract failures");
-    return { samples: receipt.samples.length, sourceDigest: source.digest };
+    return;
   } catch (error) {
     const active = receipt.samples.at(-1);
     if (active?.status === "pending") active.status = "failed";
@@ -647,6 +717,13 @@ exports.run = async function () {
     const controls = [],
       gridShapes = [];
     try {
+      if (sourceNotebook && !sourceNotebook.isClosed && sourceNotebook.cellCount > 1) {
+        receipt.failureOutputMimes = [
+          ...new Set(sourceNotebook.cellAt(1).outputs.flatMap((output) => output.items.map((item) => item.mime)))
+        ]
+          .filter((mime) => mime.length <= 160 && /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i.test(mime))
+          .slice(0, 16);
+      }
       for (const frame of publicFrames()) {
         if (gridShapes.length < 8) {
           const observed = await frame.evaluate(() =>
@@ -661,50 +738,70 @@ exports.run = async function () {
           );
           gridShapes.push(...observed.slice(0, 8 - gridShapes.length));
         }
-        if (
-          !(await frame
-            .getByText("c00", { exact: true })
-            .first()
-            .isVisible()
-            .catch(() => false))
-        )
-          continue;
-        const observed = await frame.evaluate(() =>
-          [
-            ...document.querySelectorAll(
-              'button,input,select,[role="button"],[role="combobox"],[role="menuitem"],[role="tab"],[role="option"]'
-            )
-          ]
-            .slice(0, 200)
-            .flatMap((element) => {
-              if (
-                !element.checkVisibility() ||
-                element.closest('[role="grid"],table,[role="columnheader"],[role="complementary"]')
-              )
-                return [];
-              const label = (
-                element.getAttribute("aria-label") ||
-                (element instanceof HTMLInputElement || element instanceof HTMLSelectElement
-                  ? element.labels?.[0]?.textContent
-                  : element.textContent) ||
-                ""
-              )
-                .replace(/\s+/g, " ")
-                .trim()
-                .slice(0, 120);
-              if (
-                !/^(?:Edit|View|Export|Copy|Apply|Preview|Cancel|Close|Fill|Convert|Median|Lowercase|Column|Method|Search|Back|Open|Operation|Cleaning|Switch|Allow|Deny|Select|c\d\d$)/i.test(
-                  label
+        const hasProduct = await frame
+          .getByText("c00", { exact: true })
+          .first()
+          .isVisible()
+          .catch(() => false);
+        const observed = await frame.evaluate(
+          (includeProduct) =>
+            [
+              ...(includeProduct
+                ? [document]
+                : document.querySelectorAll(
+                    ".notebook-toolbar-container,.quick-input-widget,.context-view.monaco-menu-container"
+                  ))
+            ]
+              .flatMap((scope) => [
+                ...scope.querySelectorAll(
+                  'button,a,input,select,[role="button"],[role="link"],[role="combobox"],[role="menuitem"],[role="tab"],[role="option"]'
                 )
-              )
-                return [];
-              return [
-                {
-                  role: element.getAttribute("role") || element.tagName.toLowerCase(),
-                  label
-                }
-              ];
-            })
+              ])
+              .slice(0, 200)
+              .flatMap((element) => {
+                if (
+                  !element.checkVisibility() ||
+                  element.closest('[role="grid"],table,[role="columnheader"],[role="complementary"]')
+                )
+                  return [];
+                const pickerOption =
+                  element.closest(".quick-input-widget") && element.getAttribute("role") === "option";
+                const label = (
+                  (pickerOption
+                    ? element.querySelector(".label-name")?.textContent
+                    : element.getAttribute("aria-label")) ||
+                  (element instanceof HTMLInputElement || element instanceof HTMLSelectElement
+                    ? element.labels?.[0]?.textContent
+                    : pickerOption
+                      ? ""
+                      : element.textContent?.trim()) ||
+                  element.getAttribute("title") ||
+                  ""
+                )
+                  .replace(/\s+/g, " ")
+                  .trim()
+                  .slice(0, 120);
+                if (
+                  !/^(?:Edit|View|Export|Copy|Apply|Preview|Cancel|Close|Fill|Convert|Median|Lowercase|Column|Method|Search|Back|Open|Operation|Cleaning|Switch|Allow|Deny|Select|More Actions|comparison_(?:frame|original)$|c\d\d$)/i.test(
+                    label
+                  )
+                )
+                  return [];
+                return [
+                  {
+                    role: element.getAttribute("role") || element.tagName.toLowerCase(),
+                    surface: element.closest(".quick-input-widget")
+                      ? "picker"
+                      : element.closest(".notebook-toolbar-container")
+                        ? "notebook-toolbar"
+                        : element.closest(".context-view.monaco-menu-container")
+                          ? "menu"
+                          : "product",
+                    label
+                  }
+                ];
+              }),
+          hasProduct
         );
         for (const value of observed) {
           value.label = owner.sanitizeEditorAcceptanceDiagnostic(value.label, [

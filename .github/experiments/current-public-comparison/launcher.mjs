@@ -52,9 +52,14 @@ const validMeasurements = (m, id) => {
     assert.equal(s.completedProfiles, 20);
     assert.equal(s.profileObservations.length, 20);
     assert.equal(s.kernelContinuityVerified, true);
+    assert.equal(s.entryRoute, id.endsWith("-ow") ? "inline-open" : "notebook-view-data");
+    assert.equal(typeof s.toolbarOverflowUsed, "boolean");
+    assert(Number.isFinite(s.metrics.entryMs) && s.metrics.entryMs >= s.metrics.pickerMs);
+    assert(Number.isFinite(s.metrics.pickerMs) && s.metrics.pickerMs >= 0);
+    if (s.entryRoute === "inline-open") assert(s.metrics.pickerMs === 0 && !s.toolbarOverflowUsed);
     assert.equal(s.actions.length, 2);
     assert(s.fullShapeVerified && s.laterRowVerified && s.renderedResultVerified);
-    assert(Number.isFinite(s.consentMs) && s.consentMs >= 0);
+    for (const value of [s.preEntryConsentMs, s.afterEntryConsentMs]) assert(Number.isFinite(value) && value >= 0);
     assert(s.metrics.usableGridMs >= s.metrics.firstRowMs);
     for (const n of [
       s.metrics.firstRowMs,
