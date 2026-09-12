@@ -5,8 +5,8 @@
 Every pull request reports the same five required product checks:
 
 - **Source contracts (Node 24)** runs formatting, lint, TypeScript source and dependency declaration checks, generated
-  protocol/reference checks, documentation checks, dependency-lock checks, licenses, `npm run test:scripts`, and Vitest
-  subject to the documentation-only scope below.
+  protocol/reference checks, documentation checks, dependency-lock checks, licenses, `npm run test:scripts`, and Vitest.
+  Lint, Node 24 type checking and Vitest follow the documentation-only scope below.
   It then builds the same checkout with Node 22.17.0 against the already-installed locked dependencies.
 - **Python runtime contracts** runs Ruff, Pyright, and Pytest with the declared Python and PySpark dependencies.
 - **Native R frame, kernel, and transport contracts** installs the R 4.5 lock on two Linux workers: one runs frame,
@@ -41,12 +41,14 @@ version, and every run installs and verifies a fresh private library. GitHub sco
 so reuse is limited to its later jobs, updates and reruns; the weekly R 4.4 job uses a separate lock.
 
 Source contracts, package validation, and the separate required CodeQL gate run for every change. Source and the
-package job run the same scope proof against their own checkouts. Only `docs_only=true` omits Vitest and the
-minimum/stable VS Code launch step, with explicit summaries that claim no fresh test execution. All other steps remain
-required, including the supported-Node build, Python setup, package/source verification and harness compilation.
-The allowed Markdown files are not inputs to Vitest or the selected installed journey. README and CHANGELOG remain
-shipped content, so packaging still validates their exact source bytes. Formatting, documentation, reference and script
-checks retain their document validation; these checks do not establish the accuracy of every prose claim.
+package job run the same scope proof against their own checkouts. Only `docs_only=true` omits ESLint, Node 24 type
+checking, Vitest and the minimum/stable VS Code launch step, with explicit summaries of the omitted checks. All other
+steps remain required, including the supported-Node build, Python setup, package/source verification and harness compilation.
+The allowed Markdown files are not inputs to ESLint, TypeScript checking, Vitest or the selected installed journey.
+README and CHANGELOG remain shipped content, so packaging still validates their exact source bytes. Formatting,
+documentation, reference and script checks retain their document validation; these checks do not establish the
+accuracy of every prose claim.
+On code changes, lint and type checking run after the direct script contracts, so their failures are reported later.
 
 The scope-only job uses Node and Git without installing npm dependencies or restoring the npm cache.
 `scripts/ci-docs-only.mjs` permits the omissions below. All admitted files must be regular and non-executable.
@@ -70,8 +72,8 @@ The scope-only job uses Node and Git without installing npm dependencies or rest
   `scripts/capture-screenshots.mjs` and `scripts/capture-screenshots-readiness.mjs`, enumerated in
   [`ci-docs-only.mjs`](../scripts/ci-docs-only.mjs). These edits keep `docs_only=false`, so Source runs Vitest, the Node
   script owners and the Node 22 build, and packaged smoke retains both Linux VS Code launches.
-- Vitest and the minimum/stable VS Code launches may be omitted only for edits to existing `README.md`, `CHANGELOG.md`
-  or `docs/**/*.md` files. Windows also omits those documentation-only changes.
+- ESLint, Node 24 type checking, Vitest and the minimum/stable VS Code launches may be omitted only for edits to
+  existing `README.md`, `CHANGELOG.md` or `docs/**/*.md` files. Windows also omits those documentation-only changes.
 
 Mixed Python/R changes require both runtimes. The Python job does not consume the allowed R or installed-harness files.
 The R checks do not execute the allowed Python files; the selected installed R journeys use Python only for Jupyter client readiness
