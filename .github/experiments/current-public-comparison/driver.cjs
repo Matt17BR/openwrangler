@@ -1021,10 +1021,12 @@ exports.run = async function () {
         assert(facts.connected && !facts.truncated, "DIAGNOSTIC:incomplete-surface");
         return facts;
       };
-      const namedControl = (name) =>
-        target.frame
-          .locator('button,[role="button"],[role="menuitem"],[role="option"],[role="treeitem"]')
-          .filter({ hasText: new RegExp(`^${name}$`, "i") });
+      const namedControl = (name) => {
+        const pattern = new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i");
+        return ["button", "menuitem", "option", "treeitem"]
+          .map((role) => target.frame.getByRole(role, { name: pattern }))
+          .reduce((left, right) => left.or(right));
+      };
       try {
         const column = await capture(target.root.getByText("c00", { exact: true }), "c00");
         if (column) {
@@ -1069,7 +1071,12 @@ exports.run = async function () {
         if (viewing) observation.mode.viewingControl = await viewing.evaluate(controlFacts, "Viewing");
         if (viewing) {
           await act(viewing, "Viewing");
-          const editing = await capture(namedControl("Editing"), "editing-option");
+          let editing;
+          try {
+            editing = await poll(() => capture(namedControl("Editing"), "editing-option"), "editing-offer", 5000);
+          } catch (error) {
+            if (error?.message !== "PILOT_GATE:editing-offer") throw error;
+          }
           observation.mode.editingOffered = !!editing;
           if (editing) observation.mode.editingControl = await editing.evaluate(controlFacts, "Editing");
           if (editing) {
