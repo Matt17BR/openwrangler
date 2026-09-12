@@ -21,14 +21,12 @@ import {
   DependencyGuardCommandError,
   DependencyGuardCommandTimeoutError,
   DependencyInstallExitUnconfirmedError,
-  getDependencyGuardStatus,
   type DependencyGuardStatus,
   type DependencyGuardValidation,
   type OwnedDependencyGuardCommand,
   type OwnedDependencyInstall,
   startDependencyGuardStatus,
   startDependencyGuardValidation,
-  validateDependencyGuard,
   waitForDependencyInstallExit
 } from "../extension/dependencyInstaller";
 import * as pythonEnvironment from "../extension/pythonEnvironment";
@@ -52,10 +50,8 @@ vi.mock("../extension/dependencyInstaller", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../extension/dependencyInstaller")>();
   return {
     ...actual,
-    getDependencyGuardStatus: vi.fn(),
     startDependencyGuardStatus: vi.fn(),
-    startDependencyGuardValidation: vi.fn(),
-    validateDependencyGuard: vi.fn()
+    startDependencyGuardValidation: vi.fn()
   };
 });
 
@@ -71,31 +67,22 @@ const TEST_DEPENDENCIES: readonly PythonDependency[] = requiredDependencies("pan
 const TEST_DEPENDENCY_REQUIREMENTS = TEST_DEPENDENCIES.map((dependency) => dependency.installSpec);
 
 beforeEach(() => {
-  vi.mocked(getDependencyGuardStatus).mockReset().mockResolvedValue({
-    protocol: DEPENDENCY_GUARD_PROTOCOL,
-    kind: "status",
-    state: "clean",
-    token: null
-  });
-  vi.mocked(validateDependencyGuard)
-    .mockReset()
-    .mockImplementation(async (_environment, expectedToken) => ({
-      protocol: DEPENDENCY_GUARD_PROTOCOL,
-      kind: "validated",
-      token: expectedToken
-    }));
   vi.mocked(startDependencyGuardStatus)
     .mockReset()
-    .mockImplementation((environment, options) =>
-      ownedDependencyGuardCommand("status", environment.executable, getDependencyGuardStatus(environment, options))
+    .mockImplementation((environment) =>
+      ownedDependencyGuardCommand<DependencyGuardStatus>(
+        "status",
+        environment.executable,
+        Promise.resolve({ protocol: DEPENDENCY_GUARD_PROTOCOL, kind: "status", state: "clean", token: null })
+      )
     );
   vi.mocked(startDependencyGuardValidation)
     .mockReset()
-    .mockImplementation((environment, expectedToken, options) =>
-      ownedDependencyGuardCommand(
+    .mockImplementation((environment, expectedToken) =>
+      ownedDependencyGuardCommand<DependencyGuardValidation>(
         "validate",
         environment.executable,
-        validateDependencyGuard(environment, expectedToken, options)
+        Promise.resolve({ protocol: DEPENDENCY_GUARD_PROTOCOL, kind: "validated", token: expectedToken })
       )
     );
 });
@@ -1335,9 +1322,13 @@ describe("PythonBridge dependency installation", () => {
       missingDependencies().dependencies,
       { helperPath: join("/extension", "python", "openwrangler_runtime", "dependency_guard.py") }
     );
-    expect(validateDependencyGuard).toHaveBeenCalledWith(missingDependencies().environment, TEST_DEPENDENCY_TOKEN, {
-      helperPath: join("/extension", "python", "openwrangler_runtime", "dependency_guard.py")
-    });
+    expect(startDependencyGuardValidation).toHaveBeenCalledWith(
+      missingDependencies().environment,
+      TEST_DEPENDENCY_TOKEN,
+      {
+        helperPath: join("/extension", "python", "openwrangler_runtime", "dependency_guard.py")
+      }
+    );
     expect(internals.lastMissingDependencies).toBeUndefined();
     expect(internals.dependencyProbes.diagnostics().completedCount).toBe(0);
     expect(internals.runtimeEpoch).toBe(1);
@@ -2370,8 +2361,8 @@ describe("PythonBridge dependency guard recovery", () => {
     setWorkspaceTrust(true);
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockReset();
     vi.mocked(pythonEnvironment.probeDependencies).mockReset();
-    vi.mocked(getDependencyGuardStatus).mockClear();
-    vi.mocked(validateDependencyGuard).mockClear();
+    vi.mocked(startDependencyGuardStatus).mockClear();
+    vi.mocked(startDependencyGuardValidation).mockClear();
   });
 
   afterEach(() => {
@@ -2413,18 +2404,19 @@ describe("PythonBridge dependency guard recovery", () => {
   });
 
   it("shares only an in-flight exact status check and never caches a clean result", async () => {
-    const status = deferred<Awaited<ReturnType<typeof getDependencyGuardStatus>>>();
+    const status = deferred<DependencyGuardStatus>();
     const { bridge, internals } = createEnvironmentHarness();
     const raw = bridge as unknown as RawBridgeInternals;
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
     vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
-    vi.mocked(getDependencyGuardStatus).mockReturnValueOnce(status.promise);
+    vi.mocked(startDependencyGuardStatus).mockImplementationOnce((environment) =>
+      ownedDependencyGuardCommand<DependencyGuardStatus>("status", environment.executable, status.promise)
+    );
     const request = openSessionRequest(remoteFileSource());
 
     const first = internals.prepareRequest(request);
     const second = internals.prepareRequest(request);
-    await vi.waitFor(() => expect(getDependencyGuardStatus).toHaveBeenCalledOnce());
-    expect(startDependencyGuardStatus).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(startDependencyGuardStatus).toHaveBeenCalledOnce());
     expect(raw.activeDependencyGuardCommands?.size).toBe(1);
     status.resolve({
       protocol: DEPENDENCY_GUARD_PROTOCOL,
@@ -2442,7 +2434,6 @@ describe("PythonBridge dependency guard recovery", () => {
       kind: "openSession",
       backend: "polars"
     });
-    expect(getDependencyGuardStatus).toHaveBeenCalledTimes(2);
     expect(startDependencyGuardStatus).toHaveBeenCalledTimes(2);
     expect(raw.activeDependencyGuardCommands?.size).toBe(0);
   });
@@ -2576,7 +2567,7 @@ describe("PythonBridge dependency guard recovery", () => {
   });
 
   it("serializes status by package environment without transferring an exact token across identities", async () => {
-    const status = deferred<Awaited<ReturnType<typeof getDependencyGuardStatus>>>();
+    const status = deferred<DependencyGuardStatus>();
     const alias: TestPythonEnvironment = {
       ...environment,
       executable: testPythonExecutablePath("/env/bin/python3"),
@@ -2587,12 +2578,14 @@ describe("PythonBridge dependency guard recovery", () => {
       resource?.path.includes("/alias/") ? alias : environment
     );
     vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
-    vi.mocked(getDependencyGuardStatus).mockReturnValueOnce(status.promise);
+    vi.mocked(startDependencyGuardStatus).mockImplementationOnce((environment) =>
+      ownedDependencyGuardCommand<DependencyGuardStatus>("status", environment.executable, status.promise)
+    );
     const ownerRequest = openSessionRequest(remoteSourceAt("/owner/data.csv"));
     const aliasRequest = openSessionRequest(remoteSourceAt("/alias/data.csv"));
 
     const ownerPreparation = internals.prepareRequest(ownerRequest);
-    await vi.waitFor(() => expect(getDependencyGuardStatus).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(startDependencyGuardStatus).toHaveBeenCalledOnce());
     const aliasPreparation = internals.prepareRequest(aliasRequest);
     status.resolve({
       protocol: DEPENDENCY_GUARD_PROTOCOL,
@@ -2606,13 +2599,13 @@ describe("PythonBridge dependency guard recovery", () => {
       kind: "error",
       code: "dependency_environment_uncertain"
     });
-    expect(getDependencyGuardStatus).toHaveBeenCalledOnce();
+    expect(startDependencyGuardStatus).toHaveBeenCalledOnce();
 
     await expect(internals.prepareRequest(aliasRequest)).resolves.toMatchObject({
       kind: "openSession",
       backend: "polars"
     });
-    expect(getDependencyGuardStatus).toHaveBeenCalledTimes(2);
+    expect(startDependencyGuardStatus).toHaveBeenCalledTimes(2);
   });
 
   it("lets an exact clean status clear a matching retained token", async () => {
@@ -2633,12 +2626,18 @@ describe("PythonBridge dependency guard recovery", () => {
     const { bridge, internals } = createEnvironmentHarness();
     const raw = bridge as unknown as RawBridgeInternals;
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
-    vi.mocked(getDependencyGuardStatus).mockResolvedValue({
-      protocol: DEPENDENCY_GUARD_PROTOCOL,
-      kind: "status",
-      state: "dirty",
-      token: TEST_DEPENDENCY_TOKEN
-    });
+    vi.mocked(startDependencyGuardStatus).mockImplementation((environment) =>
+      ownedDependencyGuardCommand<DependencyGuardStatus>(
+        "status",
+        environment.executable,
+        Promise.resolve({
+          protocol: DEPENDENCY_GUARD_PROTOCOL,
+          kind: "status",
+          state: "dirty",
+          token: TEST_DEPENDENCY_TOKEN
+        })
+      )
+    );
 
     const response = await internals.prepareRequest(openSessionRequest(remoteFileSource()));
 
@@ -2658,8 +2657,12 @@ describe("PythonBridge dependency guard recovery", () => {
   ] as const)("fails closed for guard status %s", async (code, detailPattern) => {
     const { internals } = createEnvironmentHarness();
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
-    vi.mocked(getDependencyGuardStatus).mockRejectedValue(
-      new DependencyGuardCommandError("status", code, environment.executable)
+    vi.mocked(startDependencyGuardStatus).mockImplementation((environment) =>
+      ownedDependencyGuardCommand<DependencyGuardStatus>(
+        "status",
+        environment.executable,
+        Promise.reject(new DependencyGuardCommandError("status", code, environment.executable))
+      )
     );
 
     const response = await internals.prepareRequest(openSessionRequest(remoteFileSource()));
@@ -2691,8 +2694,12 @@ describe("PythonBridge dependency guard recovery", () => {
   it("retains exact uncertainty after validation failure and rediscovers its durable marker", async () => {
     const { bridge, raw } = createDependencyHarness();
     vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
-    vi.mocked(validateDependencyGuard).mockRejectedValue(
-      new DependencyGuardCommandError("validate", "validation_failed", environment.executable)
+    vi.mocked(startDependencyGuardValidation).mockImplementation((environment) =>
+      ownedDependencyGuardCommand<DependencyGuardValidation>(
+        "validate",
+        environment.executable,
+        Promise.reject(new DependencyGuardCommandError("validate", "validation_failed", environment.executable))
+      )
     );
 
     await expect(bridge.installMissingDependencies()).rejects.toMatchObject({
@@ -2702,12 +2709,18 @@ describe("PythonBridge dependency guard recovery", () => {
       expect.objectContaining({ token: TEST_DEPENDENCY_TOKEN })
     ]);
 
-    vi.mocked(getDependencyGuardStatus).mockResolvedValue({
-      protocol: DEPENDENCY_GUARD_PROTOCOL,
-      kind: "status",
-      state: "dirty",
-      token: TEST_DEPENDENCY_TOKEN
-    });
+    vi.mocked(startDependencyGuardStatus).mockImplementation((environment) =>
+      ownedDependencyGuardCommand<DependencyGuardStatus>(
+        "status",
+        environment.executable,
+        Promise.resolve({
+          protocol: DEPENDENCY_GUARD_PROTOCOL,
+          kind: "status",
+          state: "dirty",
+          token: TEST_DEPENDENCY_TOKEN
+        })
+      )
+    );
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
     await expect(raw.prepareRequest(openSessionRequest(remoteFileSource()))).resolves.toMatchObject({
       kind: "error",
@@ -2754,8 +2767,8 @@ describe("PythonBridge dependency recovery command", () => {
     setWorkspaceTrust(true);
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockReset();
     vi.mocked(pythonEnvironment.probeDependencies).mockReset();
-    vi.mocked(getDependencyGuardStatus).mockClear();
-    vi.mocked(validateDependencyGuard).mockClear();
+    vi.mocked(startDependencyGuardStatus).mockClear();
+    vi.mocked(startDependencyGuardValidation).mockClear();
   });
 
   afterEach(() => {
@@ -2775,8 +2788,8 @@ describe("PythonBridge dependency recovery command", () => {
     expect(information).toHaveBeenCalledWith(
       "Open Wrangler has no exact dependency recovery target. Reopen the affected source and try again."
     );
-    expect(getDependencyGuardStatus).not.toHaveBeenCalled();
-    expect(validateDependencyGuard).not.toHaveBeenCalled();
+    expect(startDependencyGuardStatus).not.toHaveBeenCalled();
+    expect(startDependencyGuardValidation).not.toHaveBeenCalled();
     expect(warning).not.toHaveBeenCalled();
   });
 
@@ -2803,12 +2816,18 @@ describe("PythonBridge dependency recovery command", () => {
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockImplementation(async (_context, resource) =>
       resource === secondSelection.resource ? secondEnvironment : target.environment
     );
-    vi.mocked(getDependencyGuardStatus).mockImplementation(async (environment) => ({
-      protocol: DEPENDENCY_GUARD_PROTOCOL,
-      kind: "status",
-      state: "dirty",
-      token: environment.executable === secondEnvironment.executable ? secondToken : TEST_DEPENDENCY_TOKEN
-    }));
+    vi.mocked(startDependencyGuardStatus).mockImplementation((environment) =>
+      ownedDependencyGuardCommand<DependencyGuardStatus>(
+        "status",
+        environment.executable,
+        Promise.resolve({
+          protocol: DEPENDENCY_GUARD_PROTOCOL,
+          kind: "status",
+          state: "dirty",
+          token: environment.executable === secondEnvironment.executable ? secondToken : TEST_DEPENDENCY_TOKEN
+        })
+      )
+    );
     const warning = vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Revalidate" as never);
 
     await expect(bridge.revalidateRuntimeDependencies()).resolves.toBe(true);
@@ -2818,7 +2837,7 @@ describe("PythonBridge dependency recovery command", () => {
       expect.anything(),
       "Revalidate"
     );
-    expect(validateDependencyGuard).toHaveBeenCalledWith(secondEnvironment, secondToken, expect.anything());
+    expect(startDependencyGuardValidation).toHaveBeenCalledWith(secondEnvironment, secondToken, expect.anything());
     expect([...raw.dependencyEnvironmentUncertainty.values()]).toEqual([
       expect.objectContaining({ environment: target.environment, token: TEST_DEPENDENCY_TOKEN })
     ]);
@@ -2834,8 +2853,8 @@ describe("PythonBridge dependency recovery command", () => {
 
     expect(error).toHaveBeenCalledWith("Trust this workspace before revalidating Python dependencies.");
     expect(pythonEnvironment.resolvePythonEnvironment).not.toHaveBeenCalled();
-    expect(getDependencyGuardStatus).not.toHaveBeenCalled();
-    expect(validateDependencyGuard).not.toHaveBeenCalled();
+    expect(startDependencyGuardStatus).not.toHaveBeenCalled();
+    expect(startDependencyGuardValidation).not.toHaveBeenCalled();
     expect(warning).not.toHaveBeenCalled();
   });
 
@@ -2850,8 +2869,8 @@ describe("PythonBridge dependency recovery command", () => {
     await expect(bridge.declineRuntimeDependencyRevalidationForTesting()).resolves.toBe(false);
 
     expect(raw.dependencyEnvironmentUncertainty.size).toBe(1);
-    expect(getDependencyGuardStatus).not.toHaveBeenCalled();
-    expect(validateDependencyGuard).not.toHaveBeenCalled();
+    expect(startDependencyGuardStatus).not.toHaveBeenCalled();
+    expect(startDependencyGuardValidation).not.toHaveBeenCalled();
     expect(warning).not.toHaveBeenCalled();
   });
 
@@ -2869,8 +2888,8 @@ describe("PythonBridge dependency recovery command", () => {
     modal.resolve(undefined);
 
     await expect(Promise.all([first, second])).resolves.toEqual([false, false]);
-    expect(getDependencyGuardStatus).toHaveBeenCalledOnce();
-    expect(validateDependencyGuard).not.toHaveBeenCalled();
+    expect(startDependencyGuardStatus).toHaveBeenCalledOnce();
+    expect(startDependencyGuardValidation).not.toHaveBeenCalled();
   });
 
   it("is mutually exclusive with dependency installation in either order", async () => {
@@ -2881,10 +2900,10 @@ describe("PythonBridge dependency recovery command", () => {
       promise: installBlock.promise
     };
     await expect(installFirst.bridge.revalidateRuntimeDependencies()).resolves.toBe(false);
-    expect(getDependencyGuardStatus).not.toHaveBeenCalled();
+    expect(startDependencyGuardStatus).not.toHaveBeenCalled();
     installBlock.resolve(false);
 
-    vi.mocked(getDependencyGuardStatus).mockClear();
+    vi.mocked(startDependencyGuardStatus).mockClear();
     const recoveryFirst = createRecoveryHarness();
     const modal = deferred<"Revalidate" | undefined>();
     vi.spyOn(vscode.window, "showWarningMessage").mockReturnValue(modal.promise as unknown as Thenable<never>);
@@ -2913,8 +2932,8 @@ describe("PythonBridge dependency recovery command", () => {
       },
       "Revalidate"
     );
-    expect(getDependencyGuardStatus).toHaveBeenCalledTimes(2);
-    expect(validateDependencyGuard).toHaveBeenCalledWith(target.environment, TEST_DEPENDENCY_TOKEN, {
+    expect(startDependencyGuardStatus).toHaveBeenCalledTimes(2);
+    expect(startDependencyGuardValidation).toHaveBeenCalledWith(target.environment, TEST_DEPENDENCY_TOKEN, {
       helperPath: join("/extension", "python", "openwrangler_runtime", "dependency_guard.py")
     });
     expect(raw.dependencyEnvironmentUncertainty.size).toBe(0);
@@ -2933,13 +2952,13 @@ describe("PythonBridge dependency recovery command", () => {
 
     const recovery = bridge.revalidateRuntimeDependencies();
     await vi.waitFor(() => expect(process.stdin.end).toHaveBeenCalledOnce());
-    expect(getDependencyGuardStatus).toHaveBeenCalledOnce();
-    expect(validateDependencyGuard).not.toHaveBeenCalled();
+    expect(startDependencyGuardStatus).toHaveBeenCalledOnce();
+    expect(startDependencyGuardValidation).not.toHaveBeenCalled();
     process.emit("exit", 0, null);
 
     await expect(recovery).resolves.toBe(true);
-    expect(getDependencyGuardStatus).toHaveBeenCalledTimes(2);
-    expect(validateDependencyGuard).toHaveBeenCalledOnce();
+    expect(startDependencyGuardStatus).toHaveBeenCalledTimes(2);
+    expect(startDependencyGuardValidation).toHaveBeenCalledOnce();
     expect(process.kill).not.toHaveBeenCalled();
   });
 
@@ -2958,8 +2977,8 @@ describe("PythonBridge dependency recovery command", () => {
     modal.resolve("Revalidate");
 
     await expect(recovery).resolves.toBe(false);
-    expect(getDependencyGuardStatus).toHaveBeenCalledOnce();
-    expect(validateDependencyGuard).not.toHaveBeenCalled();
+    expect(startDependencyGuardStatus).toHaveBeenCalledOnce();
+    expect(startDependencyGuardValidation).not.toHaveBeenCalled();
     expect(raw.dependencyEnvironmentUncertainty.size).toBe(1);
   });
 
@@ -2973,8 +2992,8 @@ describe("PythonBridge dependency recovery command", () => {
     modal.resolve("Revalidate");
 
     await expect(recovery).resolves.toBe(false);
-    expect(getDependencyGuardStatus).toHaveBeenCalledOnce();
-    expect(validateDependencyGuard).not.toHaveBeenCalled();
+    expect(startDependencyGuardStatus).toHaveBeenCalledOnce();
+    expect(startDependencyGuardValidation).not.toHaveBeenCalled();
     expect(raw.dependencyMutations.size).toBe(0);
     expect(raw.dependencyEnvironmentUncertainty.size).toBe(1);
   });
@@ -2995,69 +3014,99 @@ describe("PythonBridge dependency recovery command", () => {
 
     await expect(bridge.revalidateRuntimeDependencies()).resolves.toBe(false);
 
-    expect(getDependencyGuardStatus).toHaveBeenCalledOnce();
-    expect(validateDependencyGuard).not.toHaveBeenCalled();
+    expect(startDependencyGuardStatus).toHaveBeenCalledOnce();
+    expect(startDependencyGuardValidation).not.toHaveBeenCalled();
   });
 
   it("requires a new invocation and modal for a newly observed token", async () => {
     const nextToken = "22222222-2222-4222-8222-222222222222";
     const { bridge, raw } = createRecoveryHarness();
     const warning = vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Revalidate" as never);
-    vi.mocked(getDependencyGuardStatus).mockResolvedValueOnce({
-      protocol: DEPENDENCY_GUARD_PROTOCOL,
-      kind: "status",
-      state: "dirty",
-      token: nextToken
-    });
+    vi.mocked(startDependencyGuardStatus).mockImplementationOnce((environment) =>
+      ownedDependencyGuardCommand<DependencyGuardStatus>(
+        "status",
+        environment.executable,
+        Promise.resolve({
+          protocol: DEPENDENCY_GUARD_PROTOCOL,
+          kind: "status",
+          state: "dirty",
+          token: nextToken
+        })
+      )
+    );
 
     await expect(bridge.revalidateRuntimeDependencies()).resolves.toBe(false);
     expect(warning).not.toHaveBeenCalled();
     expect([...raw.dependencyEnvironmentUncertainty.values()]).toEqual([expect.objectContaining({ token: nextToken })]);
 
-    vi.mocked(getDependencyGuardStatus).mockResolvedValue({
-      protocol: DEPENDENCY_GUARD_PROTOCOL,
-      kind: "status",
-      state: "dirty",
-      token: nextToken
-    });
+    vi.mocked(startDependencyGuardStatus).mockImplementation((environment) =>
+      ownedDependencyGuardCommand<DependencyGuardStatus>(
+        "status",
+        environment.executable,
+        Promise.resolve({
+          protocol: DEPENDENCY_GUARD_PROTOCOL,
+          kind: "status",
+          state: "dirty",
+          token: nextToken
+        })
+      )
+    );
     await expect(bridge.revalidateRuntimeDependencies()).resolves.toBe(true);
     expect(warning).toHaveBeenCalledOnce();
-    expect(validateDependencyGuard).toHaveBeenCalledWith(expect.anything(), nextToken, expect.anything());
+    expect(startDependencyGuardValidation).toHaveBeenCalledWith(expect.anything(), nextToken, expect.anything());
   });
 
   it("retains a changed post-modal token and permits a direct confirmed retry", async () => {
     const nextToken = "33333333-3333-4333-8333-333333333333";
     const { bridge, raw } = createRecoveryHarness();
     vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Revalidate" as never);
-    vi.mocked(getDependencyGuardStatus)
-      .mockResolvedValueOnce({
-        protocol: DEPENDENCY_GUARD_PROTOCOL,
-        kind: "status",
-        state: "dirty",
-        token: TEST_DEPENDENCY_TOKEN
-      })
-      .mockResolvedValueOnce({
-        protocol: DEPENDENCY_GUARD_PROTOCOL,
-        kind: "status",
-        state: "dirty",
-        token: nextToken
-      });
+    vi.mocked(startDependencyGuardStatus)
+      .mockImplementationOnce((environment) =>
+        ownedDependencyGuardCommand<DependencyGuardStatus>(
+          "status",
+          environment.executable,
+          Promise.resolve({
+            protocol: DEPENDENCY_GUARD_PROTOCOL,
+            kind: "status",
+            state: "dirty",
+            token: TEST_DEPENDENCY_TOKEN
+          })
+        )
+      )
+      .mockImplementationOnce((environment) =>
+        ownedDependencyGuardCommand<DependencyGuardStatus>(
+          "status",
+          environment.executable,
+          Promise.resolve({
+            protocol: DEPENDENCY_GUARD_PROTOCOL,
+            kind: "status",
+            state: "dirty",
+            token: nextToken
+          })
+        )
+      );
 
     await expect(bridge.revalidateRuntimeDependencies()).resolves.toBe(false);
-    expect(validateDependencyGuard).not.toHaveBeenCalled();
+    expect(startDependencyGuardValidation).not.toHaveBeenCalled();
     expect(raw.dependencyMutations.size).toBe(0);
     expect([...raw.dependencyEnvironmentUncertainty.values()]).toEqual([
       expect.objectContaining({ token: nextToken, selectionDetached: true })
     ]);
 
-    vi.mocked(getDependencyGuardStatus).mockResolvedValue({
-      protocol: DEPENDENCY_GUARD_PROTOCOL,
-      kind: "status",
-      state: "dirty",
-      token: nextToken
-    });
+    vi.mocked(startDependencyGuardStatus).mockImplementation((environment) =>
+      ownedDependencyGuardCommand<DependencyGuardStatus>(
+        "status",
+        environment.executable,
+        Promise.resolve({
+          protocol: DEPENDENCY_GUARD_PROTOCOL,
+          kind: "status",
+          state: "dirty",
+          token: nextToken
+        })
+      )
+    );
     await expect(bridge.revalidateRuntimeDependencies()).resolves.toBe(true);
-    expect(validateDependencyGuard).toHaveBeenCalledWith(expect.anything(), nextToken, expect.anything());
+    expect(startDependencyGuardValidation).toHaveBeenCalledWith(expect.anything(), nextToken, expect.anything());
   });
 
   it.each(["before confirmation", "after confirmation"] as const)(
@@ -3071,15 +3120,25 @@ describe("PythonBridge dependency recovery command", () => {
         token: null
       } as const;
       if (phase === "before confirmation") {
-        vi.mocked(getDependencyGuardStatus).mockResolvedValueOnce(clean);
+        vi.mocked(startDependencyGuardStatus).mockImplementationOnce((environment) =>
+          ownedDependencyGuardCommand<DependencyGuardStatus>("status", environment.executable, Promise.resolve(clean))
+        );
       } else {
-        vi.mocked(getDependencyGuardStatus).mockResolvedValueOnce({
-          protocol: DEPENDENCY_GUARD_PROTOCOL,
-          kind: "status",
-          state: "dirty",
-          token: TEST_DEPENDENCY_TOKEN
-        });
-        vi.mocked(getDependencyGuardStatus).mockResolvedValueOnce(clean);
+        vi.mocked(startDependencyGuardStatus).mockImplementationOnce((environment) =>
+          ownedDependencyGuardCommand<DependencyGuardStatus>(
+            "status",
+            environment.executable,
+            Promise.resolve({
+              protocol: DEPENDENCY_GUARD_PROTOCOL,
+              kind: "status",
+              state: "dirty",
+              token: TEST_DEPENDENCY_TOKEN
+            })
+          )
+        );
+        vi.mocked(startDependencyGuardStatus).mockImplementationOnce((environment) =>
+          ownedDependencyGuardCommand<DependencyGuardStatus>("status", environment.executable, Promise.resolve(clean))
+        );
         vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Revalidate" as never);
       }
 
@@ -3087,7 +3146,7 @@ describe("PythonBridge dependency recovery command", () => {
 
       expect(raw.dependencyEnvironmentUncertainty.size).toBe(0);
       expect(raw.dependencyMutations.size).toBe(0);
-      expect(validateDependencyGuard).not.toHaveBeenCalled();
+      expect(startDependencyGuardValidation).not.toHaveBeenCalled();
     }
   );
 
@@ -3097,7 +3156,9 @@ describe("PythonBridge dependency recovery command", () => {
     new DependencyGuardCommandTimeoutError("status", testPythonExecutablePath("/env/bin/python"), 30_000)
   ])("retains the target when a status helper fails safely: $name", async (failure) => {
     const { bridge, raw } = createRecoveryHarness();
-    vi.mocked(getDependencyGuardStatus).mockRejectedValueOnce(failure);
+    vi.mocked(startDependencyGuardStatus).mockImplementationOnce((environment) =>
+      ownedDependencyGuardCommand<DependencyGuardStatus>("status", environment.executable, Promise.reject(failure))
+    );
     const warning = vi.spyOn(vscode.window, "showWarningMessage");
     const error = vi.spyOn(vscode.window, "showErrorMessage");
 
@@ -3117,20 +3178,28 @@ describe("PythonBridge dependency recovery command", () => {
   ])("releases the mutation barrier when the post-modal status fails: $name", async (failure) => {
     const { bridge, raw } = createRecoveryHarness();
     vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Revalidate" as never);
-    vi.mocked(getDependencyGuardStatus)
-      .mockResolvedValueOnce({
-        protocol: DEPENDENCY_GUARD_PROTOCOL,
-        kind: "status",
-        state: "dirty",
-        token: TEST_DEPENDENCY_TOKEN
-      })
-      .mockRejectedValueOnce(failure);
+    vi.mocked(startDependencyGuardStatus)
+      .mockImplementationOnce((environment) =>
+        ownedDependencyGuardCommand<DependencyGuardStatus>(
+          "status",
+          environment.executable,
+          Promise.resolve({
+            protocol: DEPENDENCY_GUARD_PROTOCOL,
+            kind: "status",
+            state: "dirty",
+            token: TEST_DEPENDENCY_TOKEN
+          })
+        )
+      )
+      .mockImplementationOnce((environment) =>
+        ownedDependencyGuardCommand<DependencyGuardStatus>("status", environment.executable, Promise.reject(failure))
+      );
 
     await expect(bridge.revalidateRuntimeDependencies()).resolves.toBe(false);
 
     expect(raw.dependencyMutations.size).toBe(0);
     expect(raw.dependencyEnvironmentUncertainty.size).toBe(1);
-    expect(validateDependencyGuard).not.toHaveBeenCalled();
+    expect(startDependencyGuardValidation).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -3140,7 +3209,13 @@ describe("PythonBridge dependency recovery command", () => {
   ])("retains the exact target when validator recovery fails: $name", async (failure) => {
     const { bridge, raw } = createRecoveryHarness();
     vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Revalidate" as never);
-    vi.mocked(validateDependencyGuard).mockRejectedValueOnce(failure);
+    vi.mocked(startDependencyGuardValidation).mockImplementationOnce((environment) =>
+      ownedDependencyGuardCommand<DependencyGuardValidation>(
+        "validate",
+        environment.executable,
+        Promise.reject(failure)
+      )
+    );
 
     await expect(bridge.revalidateRuntimeDependencies()).resolves.toBe(false);
 
@@ -3154,8 +3229,14 @@ describe("PythonBridge dependency recovery command", () => {
   it("retains failed validation, releases its barrier, and permits direct retry", async () => {
     const { bridge, raw } = createRecoveryHarness();
     vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Revalidate" as never);
-    vi.mocked(validateDependencyGuard).mockRejectedValueOnce(
-      new DependencyGuardCommandError("validate", "validation_failed", testPythonExecutablePath("/env/bin/python"))
+    vi.mocked(startDependencyGuardValidation).mockImplementationOnce((environment) =>
+      ownedDependencyGuardCommand<DependencyGuardValidation>(
+        "validate",
+        environment.executable,
+        Promise.reject(
+          new DependencyGuardCommandError("validate", "validation_failed", testPythonExecutablePath("/env/bin/python"))
+        )
+      )
     );
 
     await expect(bridge.revalidateRuntimeDependencies()).resolves.toBe(false);
@@ -3165,7 +3246,7 @@ describe("PythonBridge dependency recovery command", () => {
     ]);
 
     await expect(bridge.revalidateRuntimeDependencies()).resolves.toBe(true);
-    expect(validateDependencyGuard).toHaveBeenCalledTimes(2);
+    expect(startDependencyGuardValidation).toHaveBeenCalledTimes(2);
     expect(raw.dependencyEnvironmentUncertainty.size).toBe(0);
   });
 
@@ -3176,8 +3257,14 @@ describe("PythonBridge dependency recovery command", () => {
     const error = vi
       .spyOn(vscode.window, "showErrorMessage")
       .mockReturnValue(neverSettlingToast as unknown as Thenable<never>);
-    vi.mocked(validateDependencyGuard).mockRejectedValueOnce(
-      new DependencyGuardCommandError("validate", "validation_failed", testPythonExecutablePath("/env/bin/python"))
+    vi.mocked(startDependencyGuardValidation).mockImplementationOnce((environment) =>
+      ownedDependencyGuardCommand<DependencyGuardValidation>(
+        "validate",
+        environment.executable,
+        Promise.reject(
+          new DependencyGuardCommandError("validate", "validation_failed", testPythonExecutablePath("/env/bin/python"))
+        )
+      )
     );
 
     const first = bridge.revalidateRuntimeDependencies();
@@ -3191,7 +3278,7 @@ describe("PythonBridge dependency recovery command", () => {
 
     await expect(bridge.revalidateRuntimeDependencies()).resolves.toBe(true);
     expect(warning).toHaveBeenCalledTimes(2);
-    expect(validateDependencyGuard).toHaveBeenCalledTimes(2);
+    expect(startDependencyGuardValidation).toHaveBeenCalledTimes(2);
     expect(raw.dependencyEnvironmentUncertainty.size).toBe(0);
   });
 
@@ -3207,8 +3294,8 @@ describe("PythonBridge dependency recovery command", () => {
     modal.resolve("Revalidate");
 
     await expect(recovery).resolves.toBe(false);
-    expect(getDependencyGuardStatus).toHaveBeenCalledOnce();
-    expect(validateDependencyGuard).not.toHaveBeenCalled();
+    expect(startDependencyGuardStatus).toHaveBeenCalledOnce();
+    expect(startDependencyGuardValidation).not.toHaveBeenCalled();
     expect(raw.dependencyEnvironmentUncertainty.size).toBe(1);
     expect(information).not.toHaveBeenCalledWith("Open Wrangler runtime dependencies were revalidated.");
   });
@@ -3243,14 +3330,16 @@ describe("PythonBridge dependency recovery command", () => {
   });
 
   it("ignores exact validation that completes after the authorized selection changes", async () => {
-    const validation = deferred<Awaited<ReturnType<typeof validateDependencyGuard>>>();
+    const validation = deferred<DependencyGuardValidation>();
     const { bridge, raw } = createRecoveryHarness();
     vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Revalidate" as never);
-    vi.mocked(validateDependencyGuard).mockReturnValue(validation.promise);
+    vi.mocked(startDependencyGuardValidation).mockImplementation((environment) =>
+      ownedDependencyGuardCommand<DependencyGuardValidation>("validate", environment.executable, validation.promise)
+    );
     const information = vi.spyOn(vscode.window, "showInformationMessage");
 
     const recovery = bridge.revalidateRuntimeDependencies();
-    await vi.waitFor(() => expect(validateDependencyGuard).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(startDependencyGuardValidation).toHaveBeenCalledOnce());
     bridge.clearRuntimeSelection();
     validation.resolve({
       protocol: DEPENDENCY_GUARD_PROTOCOL,
@@ -4634,12 +4723,18 @@ function createRecoveryHarness(): ReturnType<typeof createDependencyHarness> & {
     new Error("interrupted dependency change"),
     target.selection
   );
-  vi.mocked(getDependencyGuardStatus).mockResolvedValue({
-    protocol: DEPENDENCY_GUARD_PROTOCOL,
-    kind: "status",
-    state: "dirty",
-    token: TEST_DEPENDENCY_TOKEN
-  });
+  vi.mocked(startDependencyGuardStatus).mockImplementation((environment) =>
+    ownedDependencyGuardCommand<DependencyGuardStatus>(
+      "status",
+      environment.executable,
+      Promise.resolve({
+        protocol: DEPENDENCY_GUARD_PROTOCOL,
+        kind: "status",
+        state: "dirty",
+        token: TEST_DEPENDENCY_TOKEN
+      })
+    )
+  );
   return { ...harness, target };
 }
 

@@ -13,11 +13,9 @@ import {
   DependencyInstallAbortedError,
   DependencyInstallExitUnconfirmedError,
   DependencyInstallReadyTimeoutError,
-  getDependencyGuardStatus,
   startDependencyGuardStatus,
   startDependencyGuardValidation,
   startDependencyInstall,
-  validateDependencyGuard,
   waitForDependencyInstallExit,
   type DependencyGuardClientOptions,
   type OwnedDependencyInstall
@@ -651,10 +649,10 @@ describe("dependency guard status and validation", () => {
       privateCwd = options.cwd as string;
       return child as unknown as ChildProcess;
     });
-    const status = getDependencyGuardStatus(TEST_ENVIRONMENT, {
+    const status = startDependencyGuardStatus(TEST_ENVIRONMENT, {
       helperPath: TEST_HELPER_PATH,
       spawnProcess
-    });
+    }).completion;
 
     expect(spawnProcess.mock.calls[0]?.slice(0, 2)).toEqual([
       TEST_PYTHON_EXECUTABLE,
@@ -697,7 +695,7 @@ describe("dependency guard status and validation", () => {
 
   it("round-trips a dirty status token", async () => {
     const child = new DependencyChildProcess();
-    const status = getDependencyGuardStatus(TEST_ENVIRONMENT, guardOptions(child));
+    const status = startDependencyGuardStatus(TEST_ENVIRONMENT, guardOptions(child)).completion;
     child.emit("spawn");
     emitFrame(child, {
       protocol: DEPENDENCY_GUARD_PROTOCOL,
@@ -712,7 +710,7 @@ describe("dependency guard status and validation", () => {
 
   it("binds validation to the mandatory expected token", async () => {
     const child = new DependencyChildProcess();
-    const validation = validateDependencyGuard(TEST_ENVIRONMENT, TEST_TOKEN, guardOptions(child));
+    const validation = startDependencyGuardValidation(TEST_ENVIRONMENT, TEST_TOKEN, guardOptions(child)).completion;
     child.emit("spawn");
     expect(child.inputFrames()).toEqual([
       {
@@ -738,22 +736,24 @@ describe("dependency guard status and validation", () => {
 
   it("rejects a missing, malformed, or differently correlated validation token before or after spawn", async () => {
     const spawnProcess = vi.fn();
-    expect(() =>
-      validateDependencyGuard(TEST_ENVIRONMENT, null as unknown as string, {
-        helperPath: TEST_HELPER_PATH,
-        spawnProcess
-      })
+    expect(
+      () =>
+        startDependencyGuardValidation(TEST_ENVIRONMENT, null as unknown as string, {
+          helperPath: TEST_HELPER_PATH,
+          spawnProcess
+        }).completion
     ).toThrow("canonical lowercase UUID");
-    expect(() =>
-      validateDependencyGuard(TEST_ENVIRONMENT, "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE", {
-        helperPath: TEST_HELPER_PATH,
-        spawnProcess
-      })
+    expect(
+      () =>
+        startDependencyGuardValidation(TEST_ENVIRONMENT, "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE", {
+          helperPath: TEST_HELPER_PATH,
+          spawnProcess
+        }).completion
     ).toThrow("canonical lowercase UUID");
     expect(spawnProcess).not.toHaveBeenCalled();
 
     const child = new DependencyChildProcess();
-    const validation = validateDependencyGuard(TEST_ENVIRONMENT, TEST_TOKEN, guardOptions(child));
+    const validation = startDependencyGuardValidation(TEST_ENVIRONMENT, TEST_TOKEN, guardOptions(child)).completion;
     child.emit("spawn");
     emitFrame(child, {
       protocol: DEPENDENCY_GUARD_PROTOCOL,
@@ -766,7 +766,7 @@ describe("dependency guard status and validation", () => {
 
   it("requires status state and token to agree", async () => {
     const child = new DependencyChildProcess();
-    const status = getDependencyGuardStatus(TEST_ENVIRONMENT, guardOptions(child));
+    const status = startDependencyGuardStatus(TEST_ENVIRONMENT, guardOptions(child)).completion;
     child.emit("spawn");
     emitFrame(child, {
       protocol: DEPENDENCY_GUARD_PROTOCOL,
@@ -781,7 +781,7 @@ describe("dependency guard status and validation", () => {
 
   it("maps a structured helper error only when its stable exit code matches", async () => {
     const child = new DependencyChildProcess();
-    const status = getDependencyGuardStatus(TEST_ENVIRONMENT, guardOptions(child));
+    const status = startDependencyGuardStatus(TEST_ENVIRONMENT, guardOptions(child)).completion;
     child.emit("spawn");
     emitFrame(child, errorFrame("malformed_state"));
     child.emit("close", 12, null);
@@ -796,14 +796,14 @@ describe("dependency guard status and validation", () => {
 
   it("rejects an error/result frame whose exact close status disagrees", async () => {
     const errorChild = new DependencyChildProcess();
-    const errored = getDependencyGuardStatus(TEST_ENVIRONMENT, guardOptions(errorChild));
+    const errored = startDependencyGuardStatus(TEST_ENVIRONMENT, guardOptions(errorChild)).completion;
     errorChild.emit("spawn");
     emitFrame(errorChild, errorFrame("busy"));
     errorChild.emit("close", 12, null);
     await expect(errored).rejects.toBeInstanceOf(DependencyGuardProtocolError);
 
     const resultChild = new DependencyChildProcess();
-    const result = getDependencyGuardStatus(TEST_ENVIRONMENT, guardOptions(resultChild));
+    const result = startDependencyGuardStatus(TEST_ENVIRONMENT, guardOptions(resultChild)).completion;
     resultChild.emit("spawn");
     emitFrame(resultChild, {
       protocol: DEPENDENCY_GUARD_PROTOCOL,
@@ -842,7 +842,7 @@ describe("dependency guard status and validation", () => {
     }
   ])("rejects $name output", async ({ output }) => {
     const child = new DependencyChildProcess();
-    const status = getDependencyGuardStatus(TEST_ENVIRONMENT, guardOptions(child));
+    const status = startDependencyGuardStatus(TEST_ENVIRONMENT, guardOptions(child)).completion;
     child.emit("spawn");
     child.stdout.write(output);
     child.emit("close", 17, null);
@@ -973,12 +973,13 @@ describe("dependency guard status and validation", () => {
 
   it("validates timeout and request bounds before spawning a one-shot helper", () => {
     const spawnProcess = vi.fn();
-    expect(() =>
-      getDependencyGuardStatus(TEST_ENVIRONMENT, {
-        helperPath: TEST_HELPER_PATH,
-        timeoutMs: Number.NaN,
-        spawnProcess
-      })
+    expect(
+      () =>
+        startDependencyGuardStatus(TEST_ENVIRONMENT, {
+          helperPath: TEST_HELPER_PATH,
+          timeoutMs: Number.NaN,
+          spawnProcess
+        }).completion
     ).toThrow("finite non-negative");
     expect(spawnProcess).not.toHaveBeenCalled();
   });
