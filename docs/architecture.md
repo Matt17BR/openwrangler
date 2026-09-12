@@ -383,6 +383,13 @@ their existing paths. Mixed ordinary NumPy/Pandas duration columns refuse calend
 whose comparison semantics cannot share those keys. Homogeneous NumPy and Pandas inputs retain native ticks in their
 stored unit before scaling; mixed inputs preserve each scalar's stored unit.
 
+Pandas duration membership on native NumPy or Arrow categorical columns constructs exact operands in the category's
+stored unit and positive multiplier before native `isin`, in live and generated code. Zero-unit categories refuse
+nonempty duration membership; empty selections and null switches remain available. Nonintegral and out-of-range
+operands cannot match. NumPy's reserved NaT tick is excluded; Arrow's minimum int64 tick remains a present value. Category
+values, ordering and codes remain unchanged. Other operand types and nonmembership predicates keep their native
+paths, and the duration decoder retains its Python timedelta range and microsecond precision limits.
+
 Float filter values accept explicit `Infinity` and `-Infinity`, plus the historical `inf` and `-inf` spellings used
 in saved Filter Rows steps. These aliases do not admit NaN or finite text that overflows. The shared literal fixture
 defines accepted and rejected forms for live and generated execution.
@@ -493,7 +500,9 @@ Duration search uses the same scalar labels published in choices, including whol
 nanosecond range. It retains the full native distinct-count state before searching, without a full-source label array.
 Sparse, Arrow-backed
 (including Arrow-backed categories) and object durations keep their original row-text search behavior.
-Categorical filtering still uses native comparison; some wide native-duration category selections can still fail.
+Categorical timestamp and duration output reads stored values through category codes, preserving Arrow validity and
+NumPy duration multipliers. Temporal-category null masks use missing codes, so valid Arrow extrema remain present.
+Directional Fill repeats the native categorical anchor rather than assigning a boxed scalar that can change its value.
 
 Datetime cells and nested values share one formatter. Pandas Timestamp nanoseconds are inserted into the time
 fraction while preserving the complete native offset, including offset seconds. Ordinary Timestamp profile and

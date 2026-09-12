@@ -1600,6 +1600,167 @@ def test_pandas_native_duration_categories_search_counts_and_unused_labels(
         engine.close()
 
 
+@pytest.mark.parametrize(
+    "storage,unit,ticks",
+    [
+        ("duration", "ns", 1000),
+        ("duration", "ns", 1),
+        ("duration", "ns", -(2**63)),
+        ("duration", "us", -(2**63)),
+        ("duration", "us", 2**63 - 1),
+        ("duration", "s", 86399999913601),
+        ("timestamp", "ns", 1704067200000001000),
+        ("timestamp", "ns", -(2**63)),
+        ("timestamp", "us", 1704067200000001),
+        ("timestamp-zone", "ns", 1704067200000001000),
+        ("numpy", "2s", 1),
+        ("numpy", "3ms", 1),
+        ("numpy", "2us", 1),
+        ("numpy", "3ns", 1),
+    ],
+)
+def test_pandas_temporal_categories_publish_exact_cells_and_selection_values(storage, unit, ticks) -> None:
+    from fractions import Fraction
+
+    pa = pytest.importorskip("pyarrow")
+    native_ticks = [ticks, 0, 2]
+    if storage == "numpy":
+        dtype = np.dtype(f"timedelta64[{unit}]")
+        categories = pd.Index(np.array(native_ticks, dtype=np.int64).view(dtype))
+        base_unit, multiplier = np.datetime_data(dtype)
+        seconds = Fraction(ticks * multiplier, {"s": 1, "ms": 1000, "us": 1000000, "ns": 1000000000}[base_unit])
+        expected_cell = {"kind": "duration", "raw": seconds}
+    else:
+        arrow_type = (
+            pa.duration(unit)
+            if storage == "duration"
+            else pa.timestamp(unit, tz="Europe/Berlin" if storage == "timestamp-zone" else None)
+        )
+        categories = pd.Index(pd.Series(pa.array(native_ticks, type=arrow_type), dtype=pd.ArrowDtype(arrow_type)))
+        seconds = Fraction(ticks, {"s": 1, "ms": 1000, "us": 1000000, "ns": 1000000000}[unit])
+        expected_cell = (
+            {"kind": "duration", "raw": seconds}
+            if storage == "duration"
+            else {
+                "kind": "datetime",
+                "raw": "1677-09-21T00:12:43.145224192"
+                if ticks == -(2**63)
+                else "2024-01-01T01:00:00.000001+01:00"
+                if storage == "timestamp-zone"
+                else "2024-01-01T00:00:00.000001",
+            }
+        )
+    source = pd.DataFrame(
+        {"value": pd.Categorical.from_codes([0, 1, 0, -1], categories=categories, ordered=True), "row": range(4)}
+    )
+    source.index = pd.Index(["same"] * 4, name="retained")
+    source.attrs = {"origin": "retained"}
+    before = source.copy(deep=True)
+    engine = PandasEngine()
+    try:
+        page = engine.page(source, 0, 4)
+        cell = page["rows"][0]["values"][0]
+        assert cell["kind"] == expected_cell["kind"] and not cell["isNull"] and not cell["isNaN"]
+        assert (Fraction(str(cell["raw"])) if storage in {"duration", "numpy"} else cell["raw"]) == expected_cell["raw"]
+        assert page["rows"][2]["values"][0] == cell
+        assert page["rows"][3]["values"][0]["isNull"]
+        choices, more = engine.column_values(source, "value")
+        assert not more and [choice["count"] for choice in choices] == [2, 1, 0]
+        first = choices[0]
+        microseconds = seconds * 1000000
+        portable = microseconds.denominator == 1 and -999999999 * 86400000000 <= microseconds < 1000000000 * 86400000000
+        assert ("selectionValue" in first) == portable
+        selection_cases = []
+        if portable:
+            assert first["selectionValue"]["cell"] == cell
+            model = {
+                "filters": [
+                    {
+                        "column": "value",
+                        "type": "string",
+                        "predicates": [],
+                        "valueFilter": {
+                            "kind": "values",
+                            "selectedValues": [first["selectionValue"]],
+                            "includeNulls": False,
+                            "includeNaN": False,
+                        },
+                    }
+                ],
+                "sort": [],
+            }
+            selection_cases.append((model, [0, 2]))
+        summary = engine.summaries(source)[0]
+        assert summary["nullCount"] == 1 and summary["nanCount"] == 0 and summary["distinctCount"] == 2
+        assert summary["topValues"][0] == {"value": first["value"], "count": 2}
+        lengths = [len(str(row["values"][0]["display"])) for row in page["rows"][:3]]
+        assert summary["text"] == {
+            "emptyCount": 0,
+            "minLength": min(lengths),
+            "maxLength": max(lengths),
+            "meanLength": sum(lengths) / 3,
+        }
+        null_model = {
+            "filters": [
+                {"column": "value", "type": "string", "predicates": [{"kind": "predicate", "operator": "isNull"}]}
+            ],
+            "sort": [],
+        }
+        pd.testing.assert_frame_equal(engine.apply_filter_model(source, null_model), source.iloc[[3]], check_exact=True)
+        missing_selection = {
+            "column": "value",
+            "type": "string",
+            "predicates": [],
+            "valueFilter": {"kind": "values", "selectedValues": [], "includeNulls": True, "includeNaN": False},
+        }
+        selection_cases.append(({"filters": [missing_selection], "sort": []}, [3]))
+        schema = engine.schema(source)
+        lineage = source_lineage(schema)
+        for model, positions in selection_cases:
+            step = bind_step(
+                validate_step(
+                    {
+                        "id": "category-selection",
+                        "kind": "filterRows",
+                        "params": {
+                            "filterModel": {
+                                "filters": [{**model["filters"][0], "column": lineage[0]}],
+                                "sort": [],
+                            }
+                        },
+                    }
+                ),
+                schema,
+                lineage,
+            )
+            namespace: dict[str, Any] = {}
+            exec(engine.compile_plan([step]), namespace)
+            for actual in (
+                engine.apply_filter_model(source, model),
+                engine.apply_transform(source, step),
+                namespace["clean_data"](source),
+            ):
+                expected = source.iloc[positions]
+                pd.testing.assert_series_equal(actual["row"], expected["row"])
+                pd.testing.assert_series_equal(actual["value"].cat.codes, expected["value"].cat.codes)
+                assert actual["value"].dtype == source["value"].dtype
+                assert actual["value"].cat.categories.equals(categories)
+                assert actual.columns.equals(source.columns) and actual.attrs == source.attrs
+        assert source["value"].cat.codes.tolist() == [0, 1, 0, -1]
+        assert source["value"].dtype == before["value"].dtype
+        actual_categories = source["value"].cat.categories
+        actual_ticks = (
+            actual_categories.to_numpy(copy=False).view(np.int64).tolist()
+            if storage == "numpy"
+            else actual_categories.array.__arrow_array__().cast(pa.int64()).to_pylist()
+        )
+        assert actual_ticks == native_ticks
+        pd.testing.assert_series_equal(source["row"], before["row"])
+        assert source.attrs == before.attrs
+    finally:
+        engine.close()
+
+
 @pytest.mark.parametrize("include_fraction", [False, True])
 def test_pandas_datetime_search_retains_native_midnight_and_padded_fraction_text(include_fraction: bool) -> None:
     midnight = pd.Timestamp("2020-01-01")
@@ -3241,8 +3402,8 @@ def test_pandas_arrow_duration_outputs_preserve_units_labels_and_projection(
     temporal_array = pandas_engine._pandas_arrow_temporal_array
     observed_lengths = []
 
-    def observe_temporal_values(values: Any) -> Any:
-        result = temporal_array(values)
+    def observe_temporal_values(values: Any, *, categorical: bool = False) -> Any:
+        result = temporal_array(values, categorical=categorical)
         if result is not None and pa.types.is_duration(result.type):
             observed_lengths.append(len(result))
         return result

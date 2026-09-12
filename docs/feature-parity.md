@@ -278,7 +278,10 @@ Pandas Arrow duration pages, profiles and choices preserve valid int64 extrema a
 microsecond value remains selectable; native and generated filters compare it exactly without an overflowing conversion.
 NumPy-backed Pandas duration columns and categories search the labels shown in value choices, including whole days
 and large durations. Matching unused duration categories remain available with zero counts.
-Some wide native-duration category selections can still fail.
+Pandas temporal categories preserve exact displayed values, missing counts and directional Fill anchors. Supported
+duration choices select the exact stored rows, including positive NumPy unit multipliers and Arrow extrema, in live
+and generated filters. Values outside the existing filter range or precision remain visible without a selection token.
+Zero-unit duration categories remain viewable but refuse nonempty duration membership.
 Sparse, Arrow-backed (including Arrow-backed categories) and object duration searches retain their existing representation limits.
 Polars Datetime and Duration columns retain nanoseconds in grid cells, value choices and profile labels, and datetime
 offsets retain seconds. Duration choices now work and use native signed-unit labels, such as `1m 40s 1µs`.

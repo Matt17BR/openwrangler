@@ -6,6 +6,8 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Pandas temporal categories preserve exact values, missing counts and directional Fill anchors. Duration choices
+  select the correct stored rows in live and generated filters without narrowing other categories.
 - Pandas native duration categories search displayed labels with correct counts and exclude nonmatching categories.
 - Pandas profiles and value choices preserve built-in Python timedelta labels so displayed values can be searched.
 
