@@ -52,6 +52,7 @@ from . import (
     _pandas_pivot_helpers,
 )
 from ._pandas_arrow_formula_helpers import _open_wrangler_arrow_formula_repair as _pandas_arrow_formula_repair
+from ._pandas_directional_fill_helpers import _open_wrangler_fill_directional_gaps
 from ._pandas_duration_helpers import _open_wrangler_duration_keys as _pandas_duration_keys
 from ._pandas_duration_helpers import _open_wrangler_duration_operand as _pandas_duration_operand
 from ._pandas_group_sum_helpers import _open_wrangler_native_int64_sum_is_safe as _pandas_native_int64_sum_is_safe
@@ -6336,7 +6337,6 @@ def _pandas_fill_missing_directional(
     """Fill complete missing runs in calculation order, then restore source order."""
 
     import numpy as np
-    import pandas as pd
 
     series = frame.iloc[:, target_position]
     missing = _null_mask(series) | _nan_mask(series)
@@ -6355,35 +6355,10 @@ def _pandas_fill_missing_directional(
     ordered = series.iloc[order].reset_index(drop=True)
     ordered_missing = (_null_mask(ordered) | _nan_mask(ordered)).to_numpy(dtype=bool)
     ordered_temporal = _pandas_arrow_temporal_array(ordered)
-    result = ordered.copy()
-    filled = False
-    cursor = 0
-    while cursor < len(result):
-        if not ordered_missing[cursor]:
-            cursor += 1
-            continue
-        start = cursor
-        while cursor < len(result) and ordered_missing[cursor]:
-            cursor += 1
-        end = cursor
-        gap_size = end - start
-        anchor = start - 1 if direction == "forward" else end
-        if (max_gap is None or gap_size <= max_gap) and 0 <= anchor < len(result):
-            try:
-                result.iloc[start:end] = (
-                    ordered.array[anchor : anchor + 1].repeat(gap_size)
-                    if isinstance(ordered.dtype, pd.CategoricalDtype)
-                    else ordered_temporal[anchor]
-                    if ordered_temporal is not None
-                    else ordered.iloc[anchor]
-                )
-                filled = True
-            except (TypeError, ValueError, OverflowError) as error:
-                raise EngineError(
-                    f"Directional fill is incompatible with the selected Pandas column: {error}"
-                ) from error
-
-    if not filled:
+    result = _open_wrangler_fill_directional_gaps(
+        ordered, ordered_missing, ordered_temporal, direction, max_gap, EngineError
+    )
+    if result is None:
         return original.copy()
     inverse = np.empty(len(order), dtype=np.int64)
     inverse[order] = np.arange(len(order), dtype=np.int64)
@@ -7281,6 +7256,7 @@ def _generated_pandas_fill_fallback_helpers() -> list[str]:
 
 def _generated_pandas_fill_directional_helpers() -> list[str]:
     return [
+        getsource(_open_wrangler_fill_directional_gaps),
         "def _open_wrangler_fill_missing_directional(df, target_position, order_rules, direction, max_gap):",
         "    series = df.iloc[:, target_position]",
         (
@@ -7303,33 +7279,10 @@ def _generated_pandas_fill_directional_helpers() -> list[str]:
             "_open_wrangler_mask(ordered, _open_wrangler_is_nan)).to_numpy(dtype=bool)"
         ),
         "    ordered_temporal = _open_wrangler_arrow_temporal_array(ordered)",
-        "    result = ordered.copy()",
-        "    filled = False",
-        "    cursor = 0",
-        "    while cursor < len(result):",
-        "        if not ordered_missing[cursor]:",
-        "            cursor += 1",
-        "            continue",
-        "        start = cursor",
-        "        while cursor < len(result) and ordered_missing[cursor]:",
-        "            cursor += 1",
-        "        end = cursor",
-        "        gap_size = end - start",
-        "        anchor = start - 1 if direction == 'forward' else end",
-        "        if (max_gap is None or gap_size <= max_gap) and 0 <= anchor < len(result):",
-        "            try:",
-        "                result.iloc[start:end] = (",
-        "                    ordered.array[anchor:anchor + 1].repeat(gap_size)",
-        "                    if isinstance(ordered.dtype, pd.CategoricalDtype)",
-        "                    else ordered_temporal[anchor] if ordered_temporal is not None else ordered.iloc[anchor]",
-        "                )",
-        "                filled = True",
-        "            except (TypeError, ValueError, OverflowError) as error:",
-        (
-            "                raise ValueError('Directional fill is incompatible with the selected Pandas column: ' "
-            "+ str(error)) from error"
-        ),
-        "    if not filled:",
+        "    result = _open_wrangler_fill_directional_gaps(",
+        "        ordered, ordered_missing, ordered_temporal, direction, max_gap, ValueError",
+        "    )",
+        "    if result is None:",
         "        return original.copy()",
         "    inverse = np.empty(len(order), dtype=np.int64)",
         "    inverse[order] = np.arange(len(order), dtype=np.int64)",

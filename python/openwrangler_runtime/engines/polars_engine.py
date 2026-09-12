@@ -36,6 +36,7 @@ from ..portable_regex import (
     portable_regex_contract,
 )
 from . import _polars_interpolation_helpers, _polars_min_max_helpers, _polars_round_helpers
+from ._polars_directional_fill_helpers import _ow_polars_fill_missing_directional
 from ._polars_interpolation_helpers import (
     _ow_polars_fill_missing_linear_interpolation as _polars_fill_missing_linear_interpolation,
 )
@@ -1282,7 +1283,7 @@ class PolarsEngine(DataFrameEngine):
                     }
                     for rule in replacement["orderBy"]
                 ]
-                return _polars_fill_missing_directional(
+                return _ow_polars_fill_missing_directional(
                     df,
                     column,
                     order_rules,
@@ -1779,7 +1780,13 @@ class PolarsEngine(DataFrameEngine):
         if needs_filter_helpers:
             lines.extend(generated_view_value_helper_lines())
         if needs_fill_helpers:
-            fill_helpers = "\n".join([*_generated_polars_fill_helpers(), getsource(_polars_interpolation_helpers)])
+            fill_helpers = "\n".join(
+                [
+                    *_generated_polars_fill_helpers(),
+                    getsource(_ow_polars_fill_missing_directional),
+                    getsource(_polars_interpolation_helpers),
+                ]
+            )
             lines.extend([select_generated_helpers(fill_helpers, clean_data), ""])
         if any(step["kind"] == "pivotWider" for step in plan):
             lines.extend(
@@ -2931,71 +2938,6 @@ def _polars_fill_missing_from_columns(frame: Any, target: str, fallbacks: list[s
     return frame.with_columns(result.alias(target))
 
 
-def _polars_fill_missing_directional(
-    frame: Any,
-    target: str,
-    order_rules: Sequence[Mapping[str, Any]],
-    direction: str,
-    max_gap: int | None,
-) -> Any:
-    """Fill complete missing runs in stable calculation order without collecting a lazy frame."""
-
-    import polars as pl
-
-    schema = frame.collect_schema() if isinstance(frame, pl.LazyFrame) else frame.schema
-    reserved = set(schema.names())
-
-    def unique(base: str) -> str:
-        candidate = base
-        while candidate in reserved:
-            candidate += "_"
-        reserved.add(candidate)
-        return candidate
-
-    position_name = unique("__ow_directional_position")
-    missing_name = unique("__ow_directional_missing")
-    run_name = unique("__ow_directional_run")
-    gap_name = unique("__ow_directional_gap")
-    candidate_name = unique("__ow_directional_candidate")
-
-    target_value = pl.col(target)
-    target_missing = target_value.is_null()
-    candidate = target_value
-    if schema[target].is_float():
-        target_missing = target_missing | target_value.is_nan()
-        candidate = candidate.fill_nan(None)
-
-    order_expressions = []
-    for rule in order_rules:
-        expression = pl.col(rule["column"])
-        if schema[rule["column"]].is_float():
-            expression = expression.fill_nan(None)
-        order_expressions.append(expression)
-    ordered = frame.with_row_index(position_name).sort(
-        order_expressions,
-        descending=[rule["direction"] == "desc" for rule in order_rules],
-        nulls_last=[rule["nulls"] == "last" for rule in order_rules],
-        maintain_order=True,
-    )
-    ordered = ordered.with_columns(target_missing.alias(missing_name))
-    ordered = ordered.with_columns(
-        (pl.col(missing_name) != pl.col(missing_name).shift(1).fill_null(False)).cum_sum().alias(run_name)
-    )
-    ordered = ordered.with_columns(
-        pl.when(pl.col(missing_name)).then(pl.len().over(run_name)).otherwise(0).alias(gap_name),
-        (candidate.forward_fill() if direction == "forward" else candidate.backward_fill()).alias(candidate_name),
-    )
-    eligible = pl.col(missing_name) & pl.col(candidate_name).is_not_null()
-    if max_gap is not None:
-        eligible = eligible & (pl.col(gap_name) <= max_gap)
-    result = pl.when(eligible).then(pl.col(candidate_name)).otherwise(target_value)
-    return (
-        ordered.with_columns(result.alias(target))
-        .sort(position_name)
-        .drop(position_name, missing_name, run_name, gap_name, candidate_name)
-    )
-
-
 def _polars_fill_missing_grouped_statistic(
     frame: Any,
     target: str,
@@ -3363,59 +3305,6 @@ def _generated_polars_fill_helpers() -> list[str]:
             ".otherwise(output_target)"
         ),
         "    return frame.with_columns(result.alias(target))",
-        "",
-        "",
-        "def _ow_polars_fill_missing_directional(frame, target, order_rules, direction, max_gap):",
-        "    schema = frame.collect_schema() if isinstance(frame, pl.LazyFrame) else frame.schema",
-        "    reserved = set(schema.names())",
-        "    def unique(base):",
-        "        candidate_name = base",
-        "        while candidate_name in reserved:",
-        "            candidate_name += '_'",
-        "        reserved.add(candidate_name)",
-        "        return candidate_name",
-        "    position_name = unique('__ow_directional_position')",
-        "    missing_name = unique('__ow_directional_missing')",
-        "    run_name = unique('__ow_directional_run')",
-        "    gap_name = unique('__ow_directional_gap')",
-        "    candidate_name = unique('__ow_directional_candidate')",
-        "    target_value = pl.col(target)",
-        "    target_missing = target_value.is_null()",
-        "    candidate = target_value",
-        "    if schema[target].is_float():",
-        "        target_missing = target_missing | target_value.is_nan()",
-        "        candidate = candidate.fill_nan(None)",
-        "    order_expressions = []",
-        "    for rule in order_rules:",
-        "        expression = pl.col(rule['column'])",
-        "        if schema[rule['column']].is_float():",
-        "            expression = expression.fill_nan(None)",
-        "        order_expressions.append(expression)",
-        "    ordered = frame.with_row_index(position_name).sort(",
-        "        order_expressions,",
-        "        descending=[rule['direction'] == 'desc' for rule in order_rules],",
-        "        nulls_last=[rule['nulls'] == 'last' for rule in order_rules],",
-        "        maintain_order=True,",
-        "    )",
-        "    ordered = ordered.with_columns(target_missing.alias(missing_name))",
-        "    ordered = ordered.with_columns(",
-        ("        (pl.col(missing_name) != pl.col(missing_name).shift(1).fill_null(False)).cum_sum().alias(run_name)"),
-        "    )",
-        "    ordered = ordered.with_columns(",
-        "        pl.when(pl.col(missing_name)).then(pl.len().over(run_name)).otherwise(0).alias(gap_name),",
-        "        (candidate.forward_fill() if direction == 'forward' else candidate.backward_fill()).alias(",
-        "            candidate_name",
-        "        ),",
-        "    )",
-        "    eligible = pl.col(missing_name) & pl.col(candidate_name).is_not_null()",
-        "    if max_gap is not None:",
-        "        eligible = eligible & (pl.col(gap_name) <= max_gap)",
-        "    result = pl.when(eligible).then(pl.col(candidate_name)).otherwise(target_value)",
-        "    return (",
-        "        ordered.with_columns(result.alias(target))",
-        "        .sort(position_name)",
-        "        .drop(position_name, missing_name, run_name, gap_name, candidate_name)",
-        "    )",
         "",
         "",
         "def _ow_polars_fill_missing_grouped_statistic(frame, target, keys, statistic):",
