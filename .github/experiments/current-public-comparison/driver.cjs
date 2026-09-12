@@ -323,6 +323,34 @@ exports.run = async function () {
         complete: false
       };
       assert(candidates.length <= 64, "DIAGNOSTIC_GATE:incomplete-frame-discovery");
+      if (receipt.purpose === "public-grid-diagnostic" && request.product === "dw") {
+        const handles = [];
+        let selected;
+        try {
+          for (const frame of candidates) {
+            const roots = await frame.locator('[role="grid"]').elementHandles();
+            handles.push(...roots);
+            receipt.gridDiscovery.maximumRootCount = Math.max(receipt.gridDiscovery.maximumRootCount, roots.length);
+            assert(roots.length <= 8, "DIAGNOSTIC_GATE:incomplete-grid-discovery");
+            for (const root of roots) {
+              const state = await root.evaluate((element) => ({
+                connected: element.isConnected,
+                visible: element.checkVisibility({ checkVisibilityCSS: true }),
+                busy: element.getAttribute("aria-busy") === "true",
+                columns: element.getAttribute("aria-colcount")
+              }));
+              if (state.connected && state.visible && !state.busy && ["20", "21"].includes(state.columns))
+                matches.push({ frame, root });
+            }
+          }
+          receipt.gridDiscovery.complete = true;
+          assert(matches.length <= 1, "DIAGNOSTIC_GATE:ambiguous-product-grid");
+          selected = matches[0]?.root;
+          return matches[0] || false;
+        } finally {
+          for (const handle of handles) if (handle !== selected) await handle.dispose();
+        }
+      }
       for (const frame of candidates) {
         const roots = frame.locator('[role="grid"]');
         const count = await roots.count();
@@ -342,6 +370,29 @@ exports.run = async function () {
     const columnCell = (row, index) =>
       row.locator(`td[aria-colindex="${index}"],[role="gridcell"][aria-colindex="${index}"]`);
     const rowCells = async (root, wantedId, sentinelOnly = false) => {
+      if (sentinelOnly) {
+        const handle = await root.evaluateHandle((grid, wanted) => {
+          if (!grid.isConnected) return null;
+          const offset = grid.getAttribute("aria-colcount") === "21" ? 2 : 1;
+          for (const row of [...grid.querySelectorAll('tr,[role="row"]')].slice(0, 100)) {
+            const cells = row.querySelectorAll(
+              `td[aria-colindex="${offset}"],[role="gridcell"][aria-colindex="${offset}"]`
+            );
+            if (cells.length !== 1) continue;
+            const cell = cells[0];
+            if (
+              cell.checkVisibility({ checkVisibilityCSS: true }) &&
+              cell.innerText.replaceAll(",", "").trim() === String(wanted)
+            )
+              return cell;
+          }
+          return null;
+        }, wantedId);
+        const first = handle.asElement();
+        if (first) return { first };
+        await handle.dispose();
+        return false;
+      }
       const offset = (await root.getAttribute("aria-colcount")) === "21" ? 2 : 1;
       const rows = root.locator('tr,[role="row"]');
       for (let i = 0; i < Math.min(await rows.count(), 100); i++) {
@@ -350,7 +401,6 @@ exports.run = async function () {
         if (!(await visible(first))) continue;
         const id = (await first.innerText()).replaceAll(",", "").trim();
         if (wantedId !== undefined && id !== String(wantedId)) continue;
-        if (sentinelOnly) return { first };
         const values = [];
         for (let j = 0; j < 4; j++) {
           const cell = columnCell(row, offset + j);
@@ -369,6 +419,7 @@ exports.run = async function () {
       const indices = visible.map((row) => integer(row.getAttribute("aria-rowindex")));
       const valid = indices.filter((value) => value !== null);
       return {
+        connected: root.isConnected,
         ariaRowcount: integer(root.getAttribute("aria-rowcount")),
         ariaColcount: integer(root.getAttribute("aria-colcount")),
         renderedRows: rows.length,
@@ -380,16 +431,53 @@ exports.run = async function () {
         maximumObservedRowIndex: valid.length ? Math.max(...valid) : null
       };
     };
-    const gridMetadata = async (target) => {
-      const state = { grid: await target.root.evaluate(gridRows), status: [], statusCounts: [], markers: {} };
-      const outsideContent = (element) => {
+    const gridMetadata = async (target, state) => {
+      state ??= { grid: await target.root.evaluate(gridRows), status: [], statusCounts: [], markers: {} };
+      // Each family's matched nodes are read together; changing labels never re-resolve an old index.
+      const readMetadataMatches = (elements, { source, flags, limit = null }) => {
         const excluded =
           '[role="grid"],pre,code,input,textarea,[contenteditable="true"],.monaco-editor,[role="complementary"],[role="region"][aria-label*="profile" i],[role="region"][aria-label*="summary" i]';
-        return (
-          element.checkVisibility({ checkVisibilityCSS: true }) &&
-          !element.closest(excluded) &&
-          !element.querySelector(excluded)
-        );
+        const pattern = new RegExp(source, flags);
+        const result = {
+          candidates: elements.length,
+          scanned: Math.min(elements.length, 32),
+          unavailable: 0,
+          observed: false,
+          matching: 0,
+          invalid: 0,
+          values: []
+        };
+        for (const element of elements.slice(0, 32)) {
+          if (!element.isConnected) {
+            result.unavailable++;
+            continue;
+          }
+          if (
+            !element.checkVisibility({ checkVisibilityCSS: true }) ||
+            element.closest(excluded) ||
+            element.querySelector(excluded)
+          )
+            continue;
+          if (typeof element.innerText !== "string") {
+            result.unavailable++;
+            continue;
+          }
+          const match = pattern.exec(element.innerText.trim());
+          if (!match) continue;
+          result.observed = true;
+          if (limit === null) continue;
+          const counts = match
+            .slice(1)
+            .filter((value) => value !== undefined)
+            .map((value) => Number(value.replaceAll(",", "")));
+          if (counts.some((value) => !Number.isSafeInteger(value))) {
+            result.invalid++;
+            continue;
+          }
+          result.matching++;
+          if (result.values.length < limit) result.values.push(counts);
+        }
+        return result;
       };
       const number = "(?:\\d{1,3}(?:,\\d{3})+|\\d+)";
       const patterns = [
@@ -399,38 +487,21 @@ exports.run = async function () {
         ["shape", new RegExp(`^(${number})\\s+rows?\\s*(?:[×x,·|]\\s*|\\s+)(${number})\\s+columns?$`, "i")]
       ];
       for (const [kind, pattern] of patterns) {
-        const candidates = target.frame.getByText(pattern);
-        const total = await candidates.count();
-        let matching = 0,
-          invalid = 0,
-          retained = 0;
-        for (let i = 0; i < Math.min(total, 32); i++) {
-          const item = candidates.nth(i);
-          if (!(await item.evaluate(outsideContent))) continue;
-          const match = pattern.exec((await item.innerText()).trim());
-          if (!match) continue;
-          const counts = match
-            .slice(1)
-            .filter((value) => value !== undefined)
-            .map((value) => Number(value.replaceAll(",", "")));
-          if (counts.some((value) => !Number.isSafeInteger(value))) {
-            invalid++;
-            continue;
-          }
-          matching++;
-          if (state.status.length < 8) {
-            state.status.push({ kind, counts });
-            retained++;
-          }
-        }
+        const snapshot = await target.frame.getByText(pattern).evaluateAll(readMetadataMatches, {
+          source: pattern.source,
+          flags: pattern.flags,
+          limit: 8 - state.status.length
+        });
+        for (const counts of snapshot.values) state.status.push({ kind, counts });
         state.statusCounts.push({
           kind,
-          candidates: total,
-          scanned: Math.min(total, 32),
-          matching,
-          invalid,
-          retained,
-          truncated: total > 32 || matching > retained
+          candidates: snapshot.candidates,
+          scanned: snapshot.scanned,
+          unavailable: snapshot.unavailable,
+          matching: snapshot.matching,
+          invalid: snapshot.invalid,
+          retained: snapshot.values.length,
+          truncated: snapshot.candidates > 32 || snapshot.matching > snapshot.values.length
         });
       }
       for (const [kind, pattern] of [
@@ -438,13 +509,17 @@ exports.run = async function () {
         ["truncate", /\btruncat(?:e|ed|ion)\b/i],
         ["loading", /\bloading\b/i]
       ]) {
-        const candidates = target.frame.getByText(pattern);
-        const total = await candidates.count();
-        let observed = false;
-        for (let i = 0; i < Math.min(total, 32); i++) {
-          if (await candidates.nth(i).evaluate(outsideContent)) observed = true;
-        }
-        state.markers[kind] = { observed, candidates: total, scanned: Math.min(total, 32), truncated: total > 32 };
+        const snapshot = await target.frame.getByText(pattern).evaluateAll(readMetadataMatches, {
+          source: pattern.source,
+          flags: pattern.flags
+        });
+        state.markers[kind] = {
+          observed: snapshot.observed,
+          candidates: snapshot.candidates,
+          scanned: snapshot.scanned,
+          unavailable: snapshot.unavailable,
+          truncated: snapshot.candidates > 32
+        };
       }
       return state;
     };
@@ -594,11 +669,20 @@ exports.run = async function () {
           navigationAttempted: false,
           rowRangeChanged: null
         };
-        const gridElement = await target.root.elementHandle();
+        const gridElement = target.root;
         assert(gridElement, "DIAGNOSTIC_GATE:missing-grid-element");
+        let first;
         try {
           const observedTarget = { frame: target.frame, root: gridElement };
-          const initialMetadata = await gridMetadata(observedTarget);
+          const initialMetadata = {
+            grid: await gridElement.evaluate(gridRows),
+            status: [],
+            statusCounts: [],
+            markers: {}
+          };
+          await captureEntryState("gridInitial", initialMetadata);
+          assert(initialMetadata.grid.connected, "DIAGNOSTIC_GATE:captured-grid-detached");
+          await gridMetadata(observedTarget, initialMetadata);
           await captureEntryState("gridInitial", initialMetadata);
           const sourceRetained = () =>
             !notebook.isClosed &&
@@ -668,9 +752,8 @@ exports.run = async function () {
             );
             assert(focus.connected && focus.documentFocused && focus.gridFocused, "DIAGNOSTIC_GATE:product-grid-focus");
           };
-          let first;
           try {
-            first = await poll(() => rowCells(target.root, 0, true), "diagnostic-first-c00");
+            first = await poll(() => rowCells(gridElement, 0, true), "diagnostic-first-c00");
             sample.gridObservation.firstSentinelObserved = true;
           } catch (error) {
             sample.gridObservation.firstSentinelObserved = false;
@@ -680,6 +763,17 @@ exports.run = async function () {
           checkpoint(`${sampleName}:diagnostic-navigation`);
           let checkingLast = false;
           try {
+            assert(
+              await first.first.evaluate(
+                (cell, grid) =>
+                  cell.isConnected &&
+                  grid.isConnected &&
+                  grid.contains(cell) &&
+                  cell.innerText.replaceAll(",", "").trim() === "0",
+                gridElement
+              ),
+              "DIAGNOSTIC_GATE:first-cell-changed"
+            );
             await first.first.click();
             await verifyNavigationOwner();
             sample.gridObservation.navigationAttempted = true;
@@ -688,6 +782,7 @@ exports.run = async function () {
             await poll(async () => {
               const after = await gridElement.evaluate(gridRows);
               return (
+                after.connected &&
                 before.minimumObservedRowIndex !== null &&
                 before.maximumObservedRowIndex !== null &&
                 after.minimumObservedRowIndex !== null &&
@@ -700,7 +795,12 @@ exports.run = async function () {
             await verifyNavigationOwner();
             await page.keyboard.press("Home");
             checkingLast = true;
-            await poll(() => rowCells(target.root, request.rows - 1, true), "diagnostic-last-c00");
+            await poll(async () => {
+              const last = await rowCells(gridElement, request.rows - 1, true);
+              if (!last) return false;
+              await last.first.dispose();
+              return true;
+            }, "diagnostic-last-c00");
             sample.gridObservation.lastSentinelObserved = true;
           } catch (error) {
             if (sample.gridObservation.navigationAttempted && sample.gridObservation.rowRangeChanged === null)
@@ -719,7 +819,11 @@ exports.run = async function () {
           sample.metrics.observationsFromFirstInteractionMs = performance.now() - opened;
           throw new Error("GRID_DIAGNOSTIC:observations-complete; comparison not run");
         } finally {
-          await gridElement.dispose();
+          try {
+            await first?.first.dispose();
+          } finally {
+            await gridElement.dispose();
+          }
         }
       }
       const productTab = vscode.window.tabGroups.activeTabGroup.activeTab;
