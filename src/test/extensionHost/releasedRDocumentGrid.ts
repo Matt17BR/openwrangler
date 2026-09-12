@@ -48,7 +48,7 @@ export function createReleasedRDocumentGrid({
     const app = await releasedRSessionApp(workbench, testing, sessionId, "the plain R grid session");
     assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "R");
     assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "EDITING");
-    const visibleRows = app.getByRole("status", { name: "Visible rows" });
+    const visibleRows = app.getByRole("status", { name: "Loaded rows" });
     await waitForLocatorText(visibleRows, (text) => text.trim() === "Rows 1–200 of 240", 10_000, "the first R block");
     await app.getByRole("button", { name: "Next block", exact: true }).click();
     await waitForLocatorText(

@@ -282,7 +282,7 @@ export function createReleasedRWorkbenchMediaCapture({
       assert.equal(await app.getByRole("button", { name: "Add step", exact: true }).count(), 0);
       assert.equal(await app.getByRole("button", { name: "Export", exact: true }).count(), 0);
       await app
-        .getByRole("status", { name: "Visible rows", exact: true })
+        .getByRole("status", { name: "Loaded rows", exact: true })
         .filter({ hasText: "Rows 1–113 of 113" })
         .waitFor({ state: "visible", timeout: 10_000 });
       await app

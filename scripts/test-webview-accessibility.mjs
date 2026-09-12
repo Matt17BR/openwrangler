@@ -2571,7 +2571,7 @@ async function waitForFocusedGridCell(page, row, column) {
         column: cell.getAttribute("data-grid-column"),
         row: cell.getAttribute("data-grid-row")
       })),
-      status: document.querySelector("[aria-label='Visible rows']")?.textContent?.trim() ?? null
+      status: document.querySelector("[aria-label='Loaded rows']")?.textContent?.trim() ?? null
     }));
     throw new Error(`Grid focus did not reach row ${row}, column ${column}: ${JSON.stringify(diagnostic)}.`, {
       cause: error

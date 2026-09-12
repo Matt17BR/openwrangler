@@ -1378,7 +1378,7 @@ export function DataGrid({
           role="status"
           aria-live="polite"
           aria-atomic="true"
-          aria-label="Visible rows"
+          aria-label="Loaded rows"
         >
           {page.totalRows === 0
             ? "No rows"
