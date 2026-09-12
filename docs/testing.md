@@ -231,6 +231,10 @@ group runs phases serially in fresh children. The full command first runs native
 Object behavior on the current platform; ordinary Source execution does not require this native owner. Nested Rscript
 contracts fail on unexpected warnings even if they handle a later error. Preserve caller temporary-directory settings.
 
+The Windows supervisor owner also checks preparation deadlines, shared callers and both compiler-settlement windows
+with controlled children and native timers on every platform. These controls preserve process ownership and unsafe-root
+retention; the Windows-only case separately qualifies actual Job Object containment and termination.
+
 The [complete R catalog](../r/tests/complete_catalog_contract.R) compares native live and complete generated frames,
 including source and metadata preservation. Numeric portability uses independent binary64 references and raw-bit
 comparisons through interpreted and compiled programs. Frame, kernel, decoder and process owners separately check
