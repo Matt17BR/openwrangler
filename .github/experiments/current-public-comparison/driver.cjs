@@ -644,9 +644,23 @@ exports.run = async function () {
     const active = receipt.samples.at(-1);
     if (active?.status === "pending") active.status = "failed";
     // Failure-only public control labels; never serialize package code, cells, profiles or clipboard text.
-    const controls = [];
+    const controls = [],
+      gridShapes = [];
     try {
       for (const frame of publicFrames()) {
+        if (gridShapes.length < 8) {
+          const observed = await frame.evaluate(() =>
+            [...document.querySelectorAll('[role="grid"],table')]
+              .filter((element) => element.checkVisibility())
+              .slice(0, 8)
+              .map((element) => ({
+                role: element.getAttribute("role")?.slice(0, 32) || "table",
+                ariaRowcount: element.getAttribute("aria-rowcount")?.slice(0, 32) ?? null,
+                ariaColcount: element.getAttribute("aria-colcount")?.slice(0, 32) ?? null
+              }))
+          );
+          gridShapes.push(...observed.slice(0, 8 - gridShapes.length));
+        }
         if (
           !(await frame
             .getByText("c00", { exact: true })
@@ -705,6 +719,7 @@ exports.run = async function () {
     } catch {
       /* Preserve the actual phase failure if its public frame is already gone. */
     }
+    if (gridShapes.length) receipt.visibleFailureGridShapes = gridShapes;
     if (controls.length) receipt.visibleFailureControls = controls;
     receipt.status = "failed";
     receipt.failure = {

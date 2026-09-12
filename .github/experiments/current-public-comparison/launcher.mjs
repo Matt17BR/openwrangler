@@ -179,7 +179,7 @@ try {
   const prepared = new Map();
   for (const product of ["ow", "dw"]) {
     const base = join(runRoot, `install-${product}`);
-    mkdirSync(base);
+    mkdirSync(base, { mode: 0o700 });
     const env = { ...process.env, OPEN_WRANGLER_EDITOR_DISPLAY: "headless" };
     owner.configureEditorAcceptanceTempRoot(base, env);
     const extensions = join(base, "extensions"),
@@ -266,7 +266,7 @@ try {
           continue;
         }
         const base = join(runRoot, id);
-        mkdirSync(base);
+        mkdirSync(base, { mode: 0o700 });
         const receipt = roots.createEditorAcceptancePrivateRootReceipt(base, {
           containedBy: runRoot
         });
@@ -412,14 +412,24 @@ try {
     "Python dependencies changed during collection"
   );
   report.dependenciesUnchanged = true;
+  let pairedSourceDigestsEqual = true;
   for (const rows of [100_000, 1_000_000]) {
-    const digests = report.sessions
-      .filter((s) => s.rows === rows && s.measurements?.setup?.sourceDigest)
+    const sessions = report.sessions.filter((s) => s.rows === rows);
+    const digests = sessions
+      .filter(
+        (s) =>
+          s.measurements?.id === s.id &&
+          s.measurements.setup?.kernelIdentityVerified === true &&
+          /^[a-f0-9]{64}$/u.test(s.measurements.setup.sourceDigest)
+      )
       .map((s) => s.measurements.setup.sourceDigest);
     assert(new Set(digests).size <= 1, "Paired source digest mismatch");
+    if (sessions.length !== pairs * 2 || digests.length !== sessions.length || new Set(digests).size !== 1)
+      pairedSourceDigestsEqual = false;
   }
-  report.pairedSourceDigestsEqual = true;
-  if (report.sessions.every((s) => s.status === "passed")) json(join(out, "pilot-freeze.json"), freeze);
+  report.pairedSourceDigestsEqual = pairedSourceDigestsEqual;
+  if (pairedSourceDigestsEqual && report.sessions.every((s) => s.status === "passed"))
+    json(join(out, "pilot-freeze.json"), freeze);
 } catch (error) {
   report.failure = failure(error, "launcher");
   mayBeLive ||= owner.editorProcessTreeMayBeLive(error);
