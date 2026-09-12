@@ -2841,7 +2841,10 @@ def _sql_literal(value: Any) -> str:
         return f"from_hex({_sql_literal(value.hex())})"
     if isinstance(value, (list, tuple)):
         return "[" + ", ".join(_sql_literal(item) for item in value) + "]"
-    text = str(value).replace("'", "''")
+    text = str(value)
+    if "\0" in text:
+        return f"system.main.decode(system.main.from_hex('{text.encode('utf-8').hex()}'))"
+    text = text.replace("'", "''")
     return f"'{text}'"
 
 
@@ -3742,7 +3745,10 @@ def _ow_literal(value):
         return "from_hex(" + _ow_literal(value.hex()) + ")"
     if isinstance(value, (list, tuple)):
         return "[" + ", ".join(_ow_literal(item) for item in value) + "]"
-    return "'" + str(value).replace("'", "''") + "'"
+    text = str(value)
+    if "\0" in text:
+        return "system.main.decode(system.main.from_hex('" + text.encode("utf-8").hex() + "'))"
+    return "'" + text.replace("'", "''") + "'"
 
 
 def _ow_decimal_literal(value):

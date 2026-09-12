@@ -1224,6 +1224,7 @@ def test_duckdb_value_adapters_reject_unbound_public_references(operation: dict[
         ("\\", ["\\a\\b\\", "\\", None, "\\é\\🙂\\"]),
         (r"\1", [r"\1a\1b\1", r"\1", None, r"\1é\1🙂\1"]),
         ("$1", ["$1a$1b$1", "$1", None, "$1é$1🙂$1"]),
+        ("\0'\\", ["\0'\\a\0'\\b\0'\\", "\0'\\", None, "\0'\\é\0'\\🙂\0'\\"]),
     ],
 )
 def test_duckdb_empty_literal_find_replaces_boundaries_and_matches_generated_code(
@@ -1231,6 +1232,7 @@ def test_duckdb_empty_literal_find_replaces_boundaries_and_matches_generated_cod
 ) -> None:
     engine = DuckDBEngine()
     frame = duckdb.sql("SELECT * FROM (VALUES ('ab'), (''), (NULL), ('é🙂')) AS source(text)")
+    before = rows(frame)
     operation = bound_step(
         "findReplace",
         column=bound_ref("c:source:0", "text", 0),
@@ -1247,6 +1249,7 @@ def test_duckdb_empty_literal_find_replaces_boundaries_and_matches_generated_cod
         assert [row["expanded"] for row in records(transformed)] == expected
         assert_same_relation(transformed, generated)
         assert "array_to_string" in engine.compile_plan([operation])
+        assert rows(frame) == before
     finally:
         engine.close()
 

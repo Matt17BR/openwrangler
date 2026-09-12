@@ -898,6 +898,11 @@ creates and closes its own hardened connection, and any `DuckDBPyRelation` is de
 closes. DuckDB never converts through Pandas, Polars, or Arrow, and extension auto-install, autoload, and external-file
 caching remain disabled.
 
+SQL text literals containing NUL use native UTF-8 decoding of a hexadecimal byte literal in live and generated code.
+Both functions resolve from DuckDB's built-in catalog so caller macros cannot change the value. Encoding precedes
+SQL quote escaping, preserving the original text. Other text retains its existing literal spelling.
+Identifier, file-path and portable-regex validation have separate owners.
+
 File readers adapt paths to DuckDB's glob rules so imports use the selected file. Source identity, empty-file checks
 and diagnostics retain the original path. On Unix, the adapter preserves the first absolute component, which DuckDB
 treats literally, and escapes the remaining components. Windows paths on local drives use standard glob escaping.
