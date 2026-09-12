@@ -69,12 +69,11 @@ exports.run = async function () {
   assert(workspace, "Missing isolated workspace");
   const request = JSON.parse(fs.readFileSync(path.join(workspace, "request.json"), "utf8"));
   assert(["ow", "dw"].includes(request.product) && [100000, 1000000].includes(request.rows));
-  assert.equal(request.mode, "pilot", "Temporary entry diagnostic rejects study");
-  assert.equal(request.product, "dw");
+  assert(["pilot", "study"].includes(request.mode));
   assert.notEqual(process.env.OPEN_WRANGLER_EXTENSION_TESTS, "1");
   const { chromium } = createRequire(path.join(request.repo, "package.json"))("playwright-core");
   const owner = await import(pathToFileURL(path.join(request.repo, "scripts/editor-acceptance.mjs")).href);
-  const receipt = { purpose: "public-entry-diagnostic", id: request.id, setup: {}, samples: [], status: "pending" };
+  const receipt = { id: request.id, setup: {}, samples: [], status: "pending" };
   let browser,
     opened,
     sourceNotebook,
@@ -415,7 +414,6 @@ exports.run = async function () {
               opened = performance.now();
               await overflow.click();
               sample.toolbarOverflowUsed = true;
-              await captureEntryState("afterOverflow");
             }
           }
           if (!sample.toolbarOverflowUsed) return false;
@@ -454,7 +452,6 @@ exports.run = async function () {
             "Entry diagnostic exceeds 8192 bytes"
           );
           receipt.entryDiagnostics = observations;
-          save();
           assert(focus.focused, "PILOT_GATE:view-data-menu-focus");
           await page.keyboard.press("Enter");
         } else {
@@ -463,7 +460,6 @@ exports.run = async function () {
         }
         const pickerStarted = performance.now();
         checkpoint(`${sampleName}:variable-picker`);
-        await captureEntryState("beforePicker");
         const option = await poll(async () => {
           await consent();
           const picker = page.locator(".quick-input-widget:visible");
@@ -482,10 +478,6 @@ exports.run = async function () {
         sample.metrics.pickerMs = performance.now() - pickerStarted;
       }
       sample.metrics.entryMs = performance.now() - opened;
-      if (receipt.purpose === "public-entry-diagnostic") {
-        sample.entryReached = true;
-        throw new Error("ENTRY_DIAGNOSTIC:picker-selected; comparison not run");
-      }
       checkpoint(`${sampleName}:grid`);
       const target = await poll(grid, "full-grid-shape");
       const productTab = vscode.window.tabGroups.activeTabGroup.activeTab;
