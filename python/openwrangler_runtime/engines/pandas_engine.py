@@ -1247,6 +1247,8 @@ class PandasEngine(DataFrameEngine):
             )
         )
         series = _pandas_scalar_values(series).dropna()
+        arrow_duration_values = isinstance(series.dtype, pd.ArrowDtype) and series.dtype.kind == "m"
+        search_counted_labels = search_counted_labels or arrow_duration_values
         temporal_values = _pandas_arrow_temporal_array(series)
         if search and not search_counted_labels:
             labels = series.astype(str)
@@ -1298,6 +1300,7 @@ class PandasEngine(DataFrameEngine):
         )
         if search and search_counted_labels:
             needle = str(search).translate(_ASCII_TO_LOWER)
+            arrow_raw_labels = value_counts.index.astype(str) if arrow_duration_values else None
             raw_labels = None
             if arrow_duration_categories:
                 observed = np.flatnonzero(value_counts.to_numpy() > 0)
@@ -1312,6 +1315,11 @@ class PandasEngine(DataFrameEngine):
                 for value, count, label, position in counts
                 if needle in label.translate(_ASCII_TO_LOWER)
                 or (raw_labels is not None and needle in raw_labels.get(position, "").translate(_ASCII_TO_LOWER))
+                or (
+                    arrow_raw_labels is not None
+                    and type(value).__name__ != "NaTType"
+                    and needle in arrow_raw_labels[position].translate(_ASCII_TO_LOWER)
+                )
             )
         counts = nsmallest(limit + 1, counts, key=lambda item: (-int(item[1]), item[2]))
         values = []
