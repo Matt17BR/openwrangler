@@ -800,7 +800,7 @@ test("empty diffs and Git failures select full checks", (context) => {
 
 test("Source reuses the exact proof locally without changing job scheduling", () => {
   const source = workflow.jobs.javascript;
-  const guard = source.steps.find((step) => step.name === "TypeScript tests");
+  const guard = source.steps.find((step) => step.name === "TypeScript checks");
   assert.equal(source.needs, undefined);
   assert.equal(source.if, undefined);
   const checkoutIndex = source.steps.findIndex((step) => step.uses?.startsWith("actions/checkout@"));
@@ -832,6 +832,13 @@ test("Source reuses the exact proof locally without changing job scheduling", ()
     assert.equal(step.if, undefined);
     assert.equal(step["continue-on-error"], undefined, "a failed local proof must stop later Source steps");
   }
+  for (const command of ["npm run lint", "npm run typecheck"]) {
+    assert.deepEqual(
+      source.steps.filter((step) => step.run?.includes(command)),
+      [guard]
+    );
+  }
+  assert.ok(source.steps.findIndex((step) => step.run === "npm run format:check") > proofIndex);
   const node22Index = source.steps.findIndex(
     (step) => step.uses?.startsWith("actions/setup-node@") && step.with?.["node-version"] === "22.17.0"
   );
@@ -839,31 +846,47 @@ test("Source reuses the exact proof locally without changing job scheduling", ()
   assert.ok(node22Index > guardIndex && buildIndex > node22Index);
 });
 
-test("Source omits Vitest only for a successful exact documentation proof", async (context) => {
-  const guard = workflow.jobs.javascript.steps.find((step) => step.name === "TypeScript tests");
-  for (const [docsOnly, npxStatus, expectedStatus, invoked] of [
-    ["true", 0, 0, false],
-    ["false", 0, 0, true],
-    ["false", 37, 37, true],
-    [undefined, 0, 1, false],
-    ["", 0, 1, false],
-    ["TRUE", 0, 1, false],
-    ["true\nfalse", 0, 1, false]
+test("Source omits lint, types and Vitest only for a successful exact documentation proof", async (context) => {
+  const guard = workflow.jobs.javascript.steps.find((step) => step.name === "TypeScript checks");
+  const lint = "npm run lint";
+  const types = "npm run typecheck";
+  const vitest = "npx --no-install vitest run";
+  for (const [docsOnly, lintStatus, typeStatus, npxStatus, expectedStatus, invoked] of [
+    ["true", 37, 38, 39, 0, []],
+    ["false", 0, 0, 0, 0, [lint, types, vitest]],
+    ["false", 37, 0, 0, 37, [lint]],
+    ["false", 0, 38, 0, 38, [lint, types]],
+    ["false", 0, 0, 39, 39, [lint, types, vitest]],
+    [undefined, 0, 0, 0, 1, []],
+    ["", 0, 0, 0, 1, []],
+    ["TRUE", 0, 0, 0, 1, []],
+    ["true\nfalse", 0, 0, 0, 1, []]
   ]) {
-    await context.test(`${JSON.stringify(docsOnly)}/Vitest=${npxStatus}`, (child) => {
-      const temp = mkdtempSync(join(tmpdir(), "openwrangler-ci-vitest-"));
+    await context.test(`${JSON.stringify(docsOnly)}/status=${lintStatus},${typeStatus},${npxStatus}`, (child) => {
+      const temp = mkdtempSync(join(tmpdir(), "openwrangler-ci-typescript-"));
       child.after(() => rmSync(temp, { recursive: true, force: true }));
       const marker = join(temp, "invocation");
       const summary = join(temp, "summary");
       writeFileSync(marker, "");
       writeFileSync(summary, "");
-      writeFileSync(join(temp, "npx"), '#!/bin/sh\nprintf \'%s\\n\' "$@" >> "$NPX_MARKER"\nexit "$NPX_STATUS"\n', {
-        mode: 0o755
-      });
+      writeFileSync(
+        join(temp, "npm"),
+        '#!/bin/sh\nprintf \'%s\\n\' "npm $*" >> "$COMMAND_MARKER"\ncase "$1:$2" in\n  run:lint) exit "$LINT_STATUS" ;;\n  run:typecheck) exit "$TYPE_STATUS" ;;\n  *) exit 97 ;;\nesac\n',
+        { mode: 0o755 }
+      );
+      writeFileSync(
+        join(temp, "npx"),
+        '#!/bin/sh\nprintf \'%s\\n\' "npx $*" >> "$COMMAND_MARKER"\nexit "$NPX_STATUS"\n',
+        {
+          mode: 0o755
+        }
+      );
       const env = {
         ...process.env,
         PATH: `${temp}:${process.env.PATH}`,
-        NPX_MARKER: marker,
+        COMMAND_MARKER: marker,
+        LINT_STATUS: String(lintStatus),
+        TYPE_STATUS: String(typeStatus),
         NPX_STATUS: String(npxStatus),
         R_OMITTABLE: "true",
         PYTHON_OMITTABLE: "true",
@@ -879,9 +902,12 @@ test("Source omits Vitest only for a successful exact documentation proof", asyn
       });
       assert.equal(result.error, undefined);
       assert.equal(result.status, expectedStatus);
-      assert.equal(readFileSync(marker, "utf8"), invoked ? "--no-install\nvitest\nrun\n" : "");
+      assert.deepEqual(readFileSync(marker, "utf8").split("\n").filter(Boolean), invoked);
       if (docsOnly === "true") {
-        assert.match(readFileSync(summary, "utf8"), /Vitest omitted:.*No fresh TypeScript test execution is claimed/u);
+        assert.match(
+          readFileSync(summary, "utf8"),
+          /ESLint, Node 24 type checking and Vitest omitted:.*No fresh execution of these checks is claimed/u
+        );
       } else {
         assert.equal(readFileSync(summary, "utf8"), "");
       }

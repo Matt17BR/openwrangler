@@ -62,12 +62,8 @@ jobs:
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_MERGE_SHA: ${{ github.sha }}
       - run: npm ci --ignore-scripts
-      - name: Formatting and lint
-        run: |
-          npm run format:check
-          npm run lint
-      - name: TypeScript types
-        run: npm run typecheck
+      - name: Formatting
+        run: npm run format:check
       - name: Generated protocols and documentation
         run: |
           npm run protocol:check
@@ -80,14 +76,18 @@ jobs:
           npm run license:check
       - name: Direct script contracts
         run: npm run test:scripts
-      - name: TypeScript tests
+      - name: TypeScript checks
         shell: bash
         run: |
           case "$DOCS_ONLY" in
             true)
-              echo "Vitest omitted: verified existing Markdown edits only. No fresh TypeScript test execution is claimed." >> "$GITHUB_STEP_SUMMARY"
+              echo "ESLint, Node 24 type checking and Vitest omitted: verified existing Markdown edits only. No fresh execution of these checks is claimed." >> "$GITHUB_STEP_SUMMARY"
               ;;
-            false) npx --no-install vitest run ;;
+            false)
+              npm run lint
+              npm run typecheck
+              npx --no-install vitest run
+              ;;
             *) exit 1 ;;
           esac
         env:
