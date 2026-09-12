@@ -1303,7 +1303,10 @@ for that range, cleaning controls remain unavailable between the two requests. L
 start another projection and temporarily disable those controls again.
 
 Profiles are progressive and bounded. The initial open does not profile all columns, background capacity is limited,
-and values or aggregates cross the runtime boundary only as bounded samples or fixed-size results. Applied-step
+and values or aggregates cross the runtime boundary only as bounded samples or fixed-size results. Summary and
+dataset-statistics requests retry once after cancellation, capacity refusal or a bridge failure while their view and
+demand remain current. Other errors are reported without an automatic retry. Fresh profiling demand can request them
+again. A recoverable session error does not itself imply that repeating the request can succeed. Applied-step
 inspection is also bounded, read-only, and ephemeral; it replays only the selected prefix and never changes the live
 plan or revision.
 
