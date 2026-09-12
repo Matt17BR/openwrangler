@@ -189,6 +189,17 @@ test("proves existing script edits while retaining Source and package execution"
       "CHANGELOG.md",
       "docs/ci.md"
     ],
+    ["scripts/release-documents.mjs"],
+    ["scripts/release-readiness.mjs"],
+    ["scripts/create-canonical-release-artifact.test.mjs"],
+    [
+      "scripts/release-documents.mjs",
+      "scripts/release-readiness.mjs",
+      "scripts/create-canonical-release-artifact.test.mjs",
+      "README.md",
+      "docs/feature-parity.md",
+      "docs/releasing.md"
+    ],
     ["scripts/capture-screenshots.mjs"],
     ["scripts/capture-screenshots-readiness.mjs"],
     [

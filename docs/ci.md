@@ -116,6 +116,9 @@ The allowed release scripts govern version and publication decisions. Their vers
 Windows packaging; it uses string, integer and UTC-date operations covered by the retained Node and Linux package
 checks. Omitting the native jobs gives up fresh macOS and Windows packaging, R and environment observations. The
 remaining Linux checks do not establish platform equivalence.
+Source's documentation and canonical-artifact tests cover the admitted release-document validators, including their
+Git, VSIX and release-channel checks. These validators and their test owner are excluded from the VSIX and are not
+consumed by Python, native R or installed-editor execution.
 
 The two capture scripts generate real Python-backed browser fixtures, but the omitted native suites do not consume
 these generators. Their required [local browser acceptance](testing.md) still owns fixture execution, images and
