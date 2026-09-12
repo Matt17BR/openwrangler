@@ -14,7 +14,7 @@ const { values: args } = parseArgs({
 });
 for (const key of ["repo", "artifact", "python", "out", "mode"]) assert(args[key], `Missing --${key}`);
 assert(process.env.GITHUB_ACTIONS === "true" && process.env.RUNNER_OS === "Linux", "Hosted Linux only");
-assert.equal(args.mode, "pilot", "Temporary grid diagnostic rejects study");
+assert(["pilot", "study"].includes(args.mode));
 assert(args.mode !== "study" || args.freeze, "Study requires a reviewed passing pilot freeze");
 // Keep the venv launcher path: resolving its Python symlink would select the base environment.
 const repo = realpathSync(args.repo),
@@ -42,6 +42,7 @@ const failure = (error, stage) => ({
 });
 const validMeasurements = (m, id) => {
   assert.equal(m.id, id);
+  assert.equal(m.purpose, "public-ui-comparison");
   assert.equal(m.status, "passed");
   assert.equal(m.samples.length, 2);
   assert.equal(m.setup.kernelIdentityVerified, true);
@@ -52,20 +53,28 @@ const validMeasurements = (m, id) => {
     assert.equal(s.completedProfiles, 20);
     assert.equal(s.profileObservations.length, 20);
     assert.equal(s.kernelContinuityVerified, true);
-    assert.equal(s.entryRoute, id.endsWith("-ow") ? "inline-open" : "notebook-view-data");
-    assert.equal(typeof s.toolbarOverflowUsed, "boolean");
-    assert(Number.isFinite(s.metrics.entryMs) && s.metrics.entryMs >= s.metrics.pickerMs);
-    assert(Number.isFinite(s.metrics.pickerMs) && s.metrics.pickerMs >= 0);
-    if (s.entryRoute === "inline-open") assert(s.metrics.pickerMs === 0 && !s.toolbarOverflowUsed);
+    assert.equal(s.entryRoute, id.endsWith("-ow") ? "inline-open" : "notebook-cell-status");
+    assert(Number.isFinite(s.metrics.entryInteractionMs) && s.metrics.entryInteractionMs >= 0);
     assert.equal(s.actions.length, 2);
-    assert(s.fullShapeVerified && s.laterRowVerified && s.renderedResultVerified);
+    assert.equal(s.renderedResultVerified, true);
+    const entry = s.entryObservation;
+    assert.equal(entry.reportedShape.rows, Number(id.split("-")[0]));
+    assert.equal(entry.reportedShape.columns, 20);
+    assert(["text", "aria-label"].includes(entry.reportedShape.source));
+    assert.equal(entry.firstC00, 0);
+    assert.equal(entry.renderedCellCount, 4);
+    assert.equal(entry.tab.newTabs, 1);
+    assert(["custom", "webview"].includes(entry.tab.kind));
+    assert(entry.tab.active && entry.tab.sourceRetained && !entry.tab.sourceResource);
+    assert(entry.focus.connected && entry.focus.documentFocused && entry.focus.gridFocused);
+    assert(entry.grid.connected && entry.grid.focused.c00 === 0);
     for (const value of [s.preEntryConsentMs, s.afterEntryConsentMs]) assert(Number.isFinite(value) && value >= 0);
-    assert(s.metrics.usableGridMs >= s.metrics.firstRowMs);
+    assert(s.metrics.firstPageMs >= s.metrics.entryInteractionMs);
+    assert(s.metrics.allProfilesMs >= s.metrics.firstPageMs);
     for (const n of [
-      s.metrics.firstRowMs,
-      s.metrics.usableGridMs,
+      s.metrics.firstPageMs,
       s.metrics.allProfilesMs,
-      s.metrics.laterRowMs,
+      s.metrics.profileTraversalMs,
       s.metrics.editingModeMs,
       ...s.actions.flatMap((a) => [a.previewMs, a.applyMs])
     ])
@@ -109,7 +118,7 @@ assert.equal(
   "9188fb7ccb836c8d4bc62372adb46d81c2e82aa998404b066fc31f1b51b5bc48"
 );
 const report = {
-  purpose: "public-grid-diagnostic",
+  purpose: "public-ui-comparison",
   mode: args.mode,
   artifact: {
     sourceCommit,
@@ -256,9 +265,9 @@ try {
   if (args.mode === "study")
     assert.deepEqual(JSON.parse(readFileSync(args.freeze, "utf8")), freeze, "Pilot freeze drift");
   const pairs = args.mode === "pilot" ? 1 : 4;
-  for (const rows of [100_000])
+  for (const rows of [100_000, 1_000_000])
     for (let pair = 0; pair < pairs; pair++) {
-      for (const product of ["dw"]) {
+      for (const product of pair % 2 === 0 ? ["ow", "dw"] : ["dw", "ow"]) {
         requireUninterrupted();
         const id = `${rows}-${pair}-${product}`,
           session = { id, rows, pair, product, status: "pending" };

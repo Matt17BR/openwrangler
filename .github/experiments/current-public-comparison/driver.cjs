@@ -69,13 +69,11 @@ exports.run = async function () {
   assert(workspace, "Missing isolated workspace");
   const request = JSON.parse(fs.readFileSync(path.join(workspace, "request.json"), "utf8"));
   assert(["ow", "dw"].includes(request.product) && [100000, 1000000].includes(request.rows));
-  assert.equal(request.mode, "pilot", "Temporary grid diagnostic rejects study");
-  assert.equal(request.product, "dw");
-  assert.equal(request.rows, 100000);
+  assert(["pilot", "study"].includes(request.mode));
   assert.notEqual(process.env.OPEN_WRANGLER_EXTENSION_TESTS, "1");
   const { chromium } = createRequire(path.join(request.repo, "package.json"))("playwright-core");
   const owner = await import(pathToFileURL(path.join(request.repo, "scripts/editor-acceptance.mjs")).href);
-  const receipt = { purpose: "public-grid-diagnostic", id: request.id, setup: {}, samples: [], status: "pending" };
+  const receipt = { purpose: "public-ui-comparison", id: request.id, setup: {}, samples: [], status: "pending" };
   let browser,
     opened,
     sourceNotebook,
@@ -308,9 +306,11 @@ exports.run = async function () {
       kernelIdentityVerified: true
     });
 
-    const grid = async () => {
+    const grid = async (capture = false) => {
       await consent();
-      const matches = [];
+      const matches = [],
+        handles = [];
+      let selected;
       const candidates = browser
         .contexts()
         .flatMap((context) => context.pages())
@@ -322,55 +322,39 @@ exports.run = async function () {
         maximumRootCount: 0,
         complete: false
       };
-      assert(candidates.length <= 64, "DIAGNOSTIC_GATE:incomplete-frame-discovery");
-      if (receipt.purpose === "public-grid-diagnostic" && request.product === "dw") {
-        const handles = [];
-        let selected;
-        try {
-          for (const frame of candidates) {
-            const roots = await frame.locator('[role="grid"]').elementHandles();
-            handles.push(...roots);
-            receipt.gridDiscovery.maximumRootCount = Math.max(receipt.gridDiscovery.maximumRootCount, roots.length);
-            assert(roots.length <= 8, "DIAGNOSTIC_GATE:incomplete-grid-discovery");
-            for (const root of roots) {
-              const state = await root.evaluate((element) => ({
-                connected: element.isConnected,
-                visible: element.checkVisibility({ checkVisibilityCSS: true }),
-                busy: element.getAttribute("aria-busy") === "true",
-                columns: element.getAttribute("aria-colcount")
-              }));
-              if (state.connected && state.visible && !state.busy && ["20", "21"].includes(state.columns))
-                matches.push({ frame, root });
-            }
+      assert(candidates.length <= 64, "PILOT_GATE:incomplete-frame-discovery");
+      try {
+        for (const frame of candidates) {
+          const roots = frame.locator('[role="grid"]');
+          const elements = await roots.elementHandles();
+          handles.push(...elements);
+          receipt.gridDiscovery.maximumRootCount = Math.max(receipt.gridDiscovery.maximumRootCount, elements.length);
+          assert(elements.length <= 8, "PILOT_GATE:incomplete-grid-discovery");
+          for (const [index, element] of elements.entries()) {
+            const state = await element.evaluate((root) => ({
+              connected: root.isConnected,
+              visible: root.checkVisibility({ checkVisibilityCSS: true }),
+              busy: root.getAttribute("aria-busy") === "true",
+              columns: root.getAttribute("aria-colcount")
+            }));
+            if (state.connected && state.visible && !state.busy && ["20", "21"].includes(state.columns))
+              matches.push({ frame, root: roots.nth(index), element });
           }
-          receipt.gridDiscovery.complete = true;
-          assert(matches.length <= 1, "DIAGNOSTIC_GATE:ambiguous-product-grid");
-          selected = matches[0]?.root;
-          return matches[0] || false;
-        } finally {
-          for (const handle of handles) if (handle !== selected) await handle.dispose();
         }
+        receipt.gridDiscovery.complete = true;
+        assert(matches.length <= 1, "PILOT_GATE:ambiguous-product-grid");
+        const target = matches[0];
+        if (!target) return false;
+        if (capture) selected = target.element;
+        return { frame: target.frame, root: target.root, ...(capture ? { element: selected } : {}) };
+      } finally {
+        for (const handle of handles) if (handle !== selected) await handle.dispose();
       }
-      for (const frame of candidates) {
-        const roots = frame.locator('[role="grid"]');
-        const count = await roots.count();
-        receipt.gridDiscovery.maximumRootCount = Math.max(receipt.gridDiscovery.maximumRootCount, count);
-        assert(count <= 8, "DIAGNOSTIC_GATE:incomplete-grid-discovery");
-        for (let i = 0; i < count; i++) {
-          const root = roots.nth(i);
-          if (!(await root.isVisible()) || (await root.getAttribute("aria-busy")) === "true") continue;
-          const columns = await root.getAttribute("aria-colcount");
-          if (["20", "21"].includes(columns)) matches.push({ frame, root });
-        }
-      }
-      receipt.gridDiscovery.complete = true;
-      assert(matches.length <= 1, "DIAGNOSTIC_GATE:ambiguous-product-grid");
-      return matches[0] || false;
     };
     const columnCell = (row, index) =>
       row.locator(`td[aria-colindex="${index}"],[role="gridcell"][aria-colindex="${index}"]`);
-    const rowCells = async (root, wantedId, sentinelOnly = false) => {
-      if (sentinelOnly) {
+    const rowCells = async (root, wantedId, capture = false) => {
+      if (capture) {
         const handle = await root.evaluateHandle((grid, wanted) => {
           if (!grid.isConnected) return null;
           const offset = grid.getAttribute("aria-colcount") === "21" ? 2 : 1;
@@ -389,8 +373,33 @@ exports.run = async function () {
           return null;
         }, wantedId);
         const first = handle.asElement();
-        if (first) return { first };
-        await handle.dispose();
+        if (!first) {
+          await handle.dispose();
+          return false;
+        }
+        try {
+          const values = await first.evaluate((cell, grid) => {
+            if (!cell.isConnected || !grid.isConnected || !grid.contains(cell)) return null;
+            const row = cell.closest('tr,[role="row"]');
+            if (!row || !grid.contains(row)) return null;
+            const offset = grid.getAttribute("aria-colcount") === "21" ? 2 : 1;
+            const values = [];
+            for (let index = offset; index < offset + 4; index++) {
+              const cells = row.querySelectorAll(
+                `td[aria-colindex="${index}"],[role="gridcell"][aria-colindex="${index}"]`
+              );
+              if (cells.length !== 1 || !cells[0].checkVisibility({ checkVisibilityCSS: true })) return null;
+              values.push(cells[0].innerText);
+            }
+            return values;
+          }, root);
+          if (values?.length === 4 && values[0].replaceAll(",", "").trim() === String(wantedId))
+            return { first, values };
+        } catch (error) {
+          await first.dispose();
+          throw error;
+        }
+        await first.dispose();
         return false;
       }
       const offset = (await root.getAttribute("aria-colcount")) === "21" ? 2 : 1;
@@ -499,7 +508,7 @@ exports.run = async function () {
     const gridMetadata = async (target, state) => {
       state ??= { grid: await target.root.evaluate(gridRows, request.rows), status: [], statusCounts: [], markers: {} };
       // Each family's matched nodes are read together; changing labels never re-resolve an old index.
-      const readMetadataMatches = (elements, { source, flags, limit = null }) => {
+      const readMetadataMatches = (elements, { source, flags, limit = null, attribute = null }) => {
         const excluded =
           '[role="grid"],pre,code,input,textarea,[contenteditable="true"],.monaco-editor,[role="complementary"],[role="region"][aria-label*="profile" i],[role="region"][aria-label*="summary" i]';
         const pattern = new RegExp(source, flags);
@@ -523,11 +532,12 @@ exports.run = async function () {
             element.querySelector(excluded)
           )
             continue;
-          if (typeof element.innerText !== "string") {
+          const text = attribute === "aria-label" ? element.getAttribute(attribute) : element.innerText;
+          if (typeof text !== "string") {
             result.unavailable++;
             continue;
           }
-          const match = pattern.exec(element.innerText.trim());
+          const match = pattern.exec(text.trim());
           if (!match) continue;
           result.observed = true;
           if (limit === null) continue;
@@ -549,12 +559,15 @@ exports.run = async function () {
         ["rows", new RegExp(`^(?:Rows?\\s*:?\\s*(${number})|(${number})\\s+rows?)$`, "i")],
         ["columns", new RegExp(`^(?:Columns?\\s*:?\\s*(${number})|(${number})\\s+columns?)$`, "i")],
         ["showing", new RegExp(`^Showing\\s+(${number})\\s*[-–]\\s*(${number})\\s+of\\s+(${number})\\s+rows?$`, "i")],
-        ["shape", new RegExp(`^(${number})\\s+rows?\\s*(?:[×x,·|]\\s*|\\s+)(${number})\\s+columns?$`, "i")]
+        ["shape", new RegExp(`^(${number})\\s+rows?\\s*(?:[×x,·|]\\s*|\\s+)(${number})\\s+columns?$`, "i")],
+        ["shapeLabel", new RegExp(`^(${number})\\s+rows?\\s+by\\s+(${number})\\s+columns?$`, "i"), "aria-label"]
       ];
-      for (const [kind, pattern] of patterns) {
-        const snapshot = await target.frame.getByText(pattern).evaluateAll(readMetadataMatches, {
+      for (const [kind, pattern, attribute] of patterns) {
+        const locator = attribute ? target.frame.getByLabel(pattern) : target.frame.getByText(pattern);
+        const snapshot = await locator.evaluateAll(readMetadataMatches, {
           source: pattern.source,
           flags: pattern.flags,
+          attribute,
           limit: 8 - state.status.length
         });
         for (const counts of snapshot.values) state.status.push({ kind, counts });
@@ -609,7 +622,7 @@ exports.run = async function () {
         Math.abs(nulls.value + (nan?.value || 0) - expected) <= nulls.tolerance + (nan?.tolerance || 0)
       );
     };
-    for (const sampleName of ["fresh-session-first-open"]) {
+    for (const sampleName of ["fresh-session-first-open", "same-session-reopen"]) {
       opened = undefined;
       const sample = {
         name: sampleName,
@@ -646,8 +659,6 @@ exports.run = async function () {
       const measuredExecutionOrder = measuredCellOwner.executionSummary?.executionOrder;
       const preEntryTabs = new Set(vscode.window.tabGroups.all.flatMap((group) => group.tabs));
       sample.entryRoute = request.product === "ow" ? "inline-open" : "notebook-cell-status";
-      sample.toolbarOverflowUsed = false;
-      sample.metrics.pickerInteractionMs = 0;
       if (request.product === "ow") {
         const action = await poll(async () => {
           await consent();
@@ -672,13 +683,13 @@ exports.run = async function () {
             cells: await cell.count(),
             exactActions: await item.count()
           };
-          assert(sample.statusAction.notebooks <= 1, "DIAGNOSTIC_GATE:ambiguous-notebook");
-          assert(sample.statusAction.cells <= 1, "DIAGNOSTIC_GATE:ambiguous-measured-cell");
-          assert(sample.statusAction.exactActions <= 1, "DIAGNOSTIC_GATE:ambiguous-cell-status-action");
+          assert(sample.statusAction.notebooks <= 1, "PILOT_GATE:ambiguous-notebook");
+          assert(sample.statusAction.cells <= 1, "PILOT_GATE:ambiguous-measured-cell");
+          assert(sample.statusAction.exactActions <= 1, "PILOT_GATE:ambiguous-cell-status-action");
           return (await visible(item)) ? item : false;
         }, "public-cell-status-action");
         const element = await action.elementHandle();
-        assert(element, "DIAGNOSTIC_GATE:missing-cell-status-element");
+        assert(element, "PILOT_GATE:missing-cell-status-element");
         try {
           Object.assign(
             sample.statusAction,
@@ -706,7 +717,7 @@ exports.run = async function () {
               state.hasCommand &&
               state.tabIndex === 0 &&
               !state.disabled,
-            "DIAGNOSTIC_GATE:cell-status-action-state"
+            "PILOT_GATE:cell-status-action-state"
           );
           assert(!notebook.isClosed);
           assert.equal(vscode.window.activeNotebookEditor?.notebook, notebook);
@@ -726,217 +737,170 @@ exports.run = async function () {
       sample.metrics.entryInteractionMs = performance.now() - opened;
       checkpoint(`${sampleName}:grid`);
       const gridDeadline = performance.now() + 30000;
-      const target = await poll(grid, "diagnostic-product-grid", gridDeadline - performance.now());
-      if (receipt.purpose === "public-grid-diagnostic") {
-        sample.gridObservation = {
-          firstSentinelObserved: null,
-          laterRow: null,
-          navigationAttempted: false,
-          rowProgressObserved: null
+      let target = await poll(() => grid(true), "product-grid", gridDeadline - performance.now());
+      const gridElement = target.element;
+      assert(gridElement, "PILOT_GATE:missing-grid-element");
+      sample.entryObservation = {};
+      let first, productTab;
+      const sourceRetained = () =>
+        !notebook.isClosed &&
+        vscode.window.tabGroups.all.some((group) => group.tabs.includes(notebookTab)) &&
+        notebookTab.input instanceof vscode.TabInputNotebook &&
+        notebookTab.input.uri.toString() === notebook.uri.toString() &&
+        notebook.cellAt(1) === measuredCellOwner &&
+        measuredCellOwner.document.getText() === "comparison_frame" &&
+        measuredCellOwner.executionSummary?.executionOrder === measuredExecutionOrder &&
+        measuredCellOwner.executionSummary?.success === true;
+      try {
+        const observedTarget = { frame: target.frame, root: gridElement };
+        let initialMetadata = {
+          grid: await gridElement.evaluate(gridRows, request.rows),
+          status: [],
+          statusCounts: [],
+          markers: {}
         };
-        const gridElement = target.root;
-        assert(gridElement, "DIAGNOSTIC_GATE:missing-grid-element");
-        let first;
-        try {
-          const observedTarget = { frame: target.frame, root: gridElement };
-          const initialMetadata = {
-            grid: await gridElement.evaluate(gridRows, request.rows),
-            status: [],
-            statusCounts: [],
-            markers: {}
+        await captureEntryState("gridInitial", initialMetadata);
+        assert(initialMetadata.grid.connected, "PILOT_GATE:captured-grid-detached");
+        const readTabOwner = () => {
+          const newTabs = vscode.window.tabGroups.all
+            .flatMap((group) => group.tabs)
+            .filter((tab) => !preEntryTabs.has(tab));
+          const candidate = newTabs.length === 1 ? newTabs[0] : undefined;
+          const kind =
+            candidate?.input instanceof vscode.TabInputWebview
+              ? "webview"
+              : candidate?.input instanceof vscode.TabInputCustom
+                ? "custom"
+                : candidate?.input instanceof vscode.TabInputNotebook
+                  ? "notebook"
+                  : candidate
+                    ? "other"
+                    : "none";
+          sample.entryObservation.tab = {
+            newTabs: newTabs.length,
+            kind,
+            active: candidate !== undefined && candidate === vscode.window.tabGroups.activeTabGroup.activeTab,
+            sourceRetained: sourceRetained(),
+            sourceResource: kind === "custom" && candidate.input.uri.toString() === notebook.uri.toString()
           };
-          await captureEntryState("gridInitial", initialMetadata);
-          assert(initialMetadata.grid.connected, "DIAGNOSTIC_GATE:captured-grid-detached");
-          await gridMetadata(observedTarget, initialMetadata);
-          await captureEntryState("gridInitial", initialMetadata);
-          assert(
-            initialMetadata.grid.minimumObservedRowIndex !== null &&
-              initialMetadata.grid.maximumObservedRowIndex !== null,
-            "DIAGNOSTIC_GATE:unusable-row-baseline"
-          );
-          const sourceRetained = () =>
-            !notebook.isClosed &&
-            vscode.window.tabGroups.all.some((group) => group.tabs.includes(notebookTab)) &&
-            notebookTab.input instanceof vscode.TabInputNotebook &&
-            notebookTab.input.uri.toString() === notebook.uri.toString() &&
-            notebook.cellAt(1) === measuredCellOwner &&
-            measuredCellOwner.document.getText() === "comparison_frame" &&
-            measuredCellOwner.executionSummary?.executionOrder === measuredExecutionOrder &&
-            measuredCellOwner.executionSummary?.success === true;
-          const readTabOwner = () => {
-            const newTabs = vscode.window.tabGroups.all
-              .flatMap((group) => group.tabs)
-              .filter((tab) => !preEntryTabs.has(tab));
-            const candidate = newTabs.length === 1 ? newTabs[0] : undefined;
-            const kind =
-              candidate?.input instanceof vscode.TabInputWebview
-                ? "webview"
-                : candidate?.input instanceof vscode.TabInputCustom
-                  ? "custom"
-                  : candidate?.input instanceof vscode.TabInputNotebook
-                    ? "notebook"
-                    : candidate
-                      ? "other"
-                      : "none";
-            sample.gridObservation.tab = {
-              newTabs: newTabs.length,
-              kind,
-              active: candidate !== undefined && candidate === vscode.window.tabGroups.activeTabGroup.activeTab,
-              sourceRetained: sourceRetained(),
-              sourceResource: kind === "custom" && candidate.input.uri.toString() === notebook.uri.toString()
-            };
-            return candidate;
-          };
-          const productTab = await poll(
-            () => {
-              const candidate = readTabOwner();
-              const state = sample.gridObservation.tab;
-              assert(state.sourceRetained, "DIAGNOSTIC_GATE:source-owner-changed");
-              assert(state.newTabs <= 1, "DIAGNOSTIC_GATE:ambiguous-new-product-tab");
-              assert(
-                !candidate || (["custom", "webview"].includes(state.kind) && !state.sourceResource),
-                "DIAGNOSTIC_GATE:unsupported-product-tab"
-              );
-              return state.active ? candidate : false;
-            },
-            "diagnostic-product-tab",
-            gridDeadline - performance.now()
-          );
-          const verifyNavigationOwner = async () => {
-            const focus = await gridElement.evaluate((root) => ({
-              connected: root.isConnected,
-              documentFocused: root.ownerDocument.hasFocus(),
-              gridFocused: root.contains(root.getRootNode().activeElement)
-            }));
-            const candidate = readTabOwner();
-            const tab = sample.gridObservation.tab;
-            sample.gridObservation.focus = focus;
-            save();
+          return candidate;
+        };
+        productTab = await poll(
+          () => {
+            const candidate = readTabOwner(),
+              state = sample.entryObservation.tab;
+            assert(state.sourceRetained, "PILOT_GATE:source-owner-changed");
+            assert(state.newTabs <= 1, "PILOT_GATE:ambiguous-new-product-tab");
             assert(
-              candidate === productTab &&
-                tab.active &&
-                tab.sourceRetained &&
-                !tab.sourceResource &&
-                ["custom", "webview"].includes(tab.kind),
-              "DIAGNOSTIC_GATE:product-owner-changed"
+              !candidate || (["custom", "webview"].includes(state.kind) && !state.sourceResource),
+              "PILOT_GATE:unsupported-product-tab"
             );
-            assert(focus.connected && focus.documentFocused && focus.gridFocused, "DIAGNOSTIC_GATE:product-grid-focus");
-            assert(performance.now() < gridDeadline, "DIAGNOSTIC_GATE:grid-deadline");
-          };
-          try {
-            first = await poll(
-              () => rowCells(gridElement, 0, true),
-              "diagnostic-first-c00",
-              gridDeadline - performance.now()
-            );
-            sample.gridObservation.firstSentinelObserved = true;
-          } catch (error) {
-            sample.gridObservation.firstSentinelObserved = false;
-            save();
-            throw error;
-          }
-          checkpoint(`${sampleName}:diagnostic-navigation`);
-          let afterEnd;
-          let afterHome;
-          try {
-            assert(
-              await first.first.evaluate(
-                (cell, grid) =>
-                  cell.isConnected &&
-                  grid.isConnected &&
-                  grid.contains(cell) &&
-                  cell.innerText.replaceAll(",", "").trim() === "0",
-                gridElement
-              ),
-              "DIAGNOSTIC_GATE:first-cell-changed"
-            );
-            assert(performance.now() < gridDeadline, "DIAGNOSTIC_GATE:grid-deadline");
-            await first.first.click();
-            initialMetadata.grid = await gridElement.evaluate(gridRows, request.rows);
+            return state.active ? candidate : false;
+          },
+          "product-tab",
+          gridDeadline - performance.now()
+        );
+        sample.entryObservation.reportedShape = await poll(
+          async () => {
+            initialMetadata = await gridMetadata(observedTarget);
             await captureEntryState("gridInitial", initialMetadata);
-            assert(initialMetadata.grid.focused?.c00 === 0, "DIAGNOSTIC_GATE:focused-initial-c00");
-            const before = initialMetadata.grid;
-            await verifyNavigationOwner();
-            sample.gridObservation.navigationAttempted = true;
-            await page.keyboard.press("Control+End");
-            try {
-              await poll(
-                async () => {
-                  afterEnd = await gridElement.evaluate(gridRows, request.rows);
-                  return (
-                    afterEnd.connected &&
-                    ((before.focused.rowIndex !== null && afterEnd.focused?.rowIndex > before.focused.rowIndex) ||
-                      (afterEnd.minimumObservedRowIndex !== null &&
-                        afterEnd.maximumObservedRowIndex !== null &&
-                        (afterEnd.minimumObservedRowIndex !== before.minimumObservedRowIndex ||
-                          afterEnd.maximumObservedRowIndex !== before.maximumObservedRowIndex)))
-                  );
-                },
-                "diagnostic-row-progress",
-                gridDeadline - performance.now()
+            assert(initialMetadata.grid.connected, "PILOT_GATE:captured-grid-detached");
+            assert(
+              initialMetadata.statusCounts.every(
+                (family) => !family.truncated && !family.unavailable && !family.invalid
+              ),
+              "PILOT_GATE:incomplete-public-shape"
+            );
+            const shapes = initialMetadata.status.filter(({ kind }) => kind === "shape" || kind === "shapeLabel");
+            assert(shapes.length <= 1, "PILOT_GATE:ambiguous-public-shape");
+            if (shapes.length === 0) return false;
+            const [rows, columns] = shapes[0].counts;
+            assert(rows === request.rows && columns === 20, "PILOT_GATE:wrong-public-shape");
+            assert(
+              initialMetadata.status.every(({ kind, counts }) =>
+                kind === "rows"
+                  ? counts.length === 1 && counts[0] === rows
+                  : kind === "columns"
+                    ? counts.length === 1 && counts[0] === columns
+                    : kind === "showing"
+                      ? counts[2] === rows
+                      : true
+              ),
+              "PILOT_GATE:conflicting-public-shape"
+            );
+            return { rows, columns, source: shapes[0].kind === "shapeLabel" ? "aria-label" : "text" };
+          },
+          "public-source-shape",
+          gridDeadline - performance.now()
+        );
+        first = await poll(() => rowCells(gridElement, 0, true), "first-four-cells", gridDeadline - performance.now());
+        assert(
+          await first.first.evaluate((cell, grid) => {
+            if (
+              !cell.isConnected ||
+              !grid.isConnected ||
+              !grid.contains(cell) ||
+              cell.innerText.replaceAll(",", "").trim() !== "0"
+            )
+              return false;
+            const row = cell.closest('tr,[role="row"]');
+            if (!row || !grid.contains(row)) return false;
+            const offset = grid.getAttribute("aria-colcount") === "21" ? 2 : 1;
+            for (let index = offset; index < offset + 4; index++) {
+              const cells = row.querySelectorAll(
+                `td[aria-colindex="${index}"],[role="gridcell"][aria-colindex="${index}"]`
               );
-              sample.gridObservation.rowProgressObserved = true;
-            } finally {
-              if (afterEnd) await captureEntryState("gridAfterEnd", { grid: afterEnd });
+              if (cells.length !== 1 || !cells[0].checkVisibility({ checkVisibilityCSS: true })) return false;
             }
-            await verifyNavigationOwner();
-            await page.keyboard.press("Home");
-            try {
-              await poll(
-                async () => {
-                  afterHome = await gridElement.evaluate(gridRows, request.rows);
-                  return afterHome.connected && afterHome.focused?.c00 > 0;
-                },
-                "diagnostic-later-c00",
-                gridDeadline - performance.now()
-              );
-              await verifyNavigationOwner();
-              sample.gridObservation.laterRow = afterHome.focused.c00;
-            } finally {
-              if (afterHome) await captureEntryState("gridAfterHome", { grid: afterHome });
-            }
-          } catch (error) {
-            if (sample.gridObservation.navigationAttempted && sample.gridObservation.rowProgressObserved === null)
-              sample.gridObservation.rowProgressObserved = false;
-            save();
-            throw error;
-          }
-          sample.metrics.observationsFromFirstInteractionMs = performance.now() - opened;
-          throw new Error("GRID_DIAGNOSTIC:observations-complete; comparison not run");
+            return true;
+          }, gridElement),
+          "PILOT_GATE:first-cell-changed"
+        );
+        assert(performance.now() < gridDeadline, "PILOT_GATE:grid-deadline");
+        await first.first.click({ timeout: Math.max(1, Math.min(5000, gridDeadline - performance.now())) });
+        const focus = await gridElement.evaluate((root) => ({
+          connected: root.isConnected,
+          documentFocused: root.ownerDocument.hasFocus(),
+          gridFocused: root.contains(root.getRootNode().activeElement)
+        }));
+        const candidate = readTabOwner(),
+          tab = sample.entryObservation.tab;
+        sample.entryObservation.focus = focus;
+        assert(
+          candidate === productTab && tab.active && tab.sourceRetained && !tab.sourceResource,
+          "PILOT_GATE:product-owner-changed"
+        );
+        assert(focus.connected && focus.documentFocused && focus.gridFocused, "PILOT_GATE:product-grid-focus");
+        const focusedGrid = await gridElement.evaluate(gridRows, request.rows);
+        assert(focusedGrid.focused?.c00 === 0, "PILOT_GATE:focused-initial-c00");
+        assert(performance.now() < gridDeadline, "PILOT_GATE:grid-deadline");
+        Object.assign(sample.entryObservation, {
+          grid: focusedGrid,
+          firstC00: 0,
+          renderedCellCount: first.values.length
+        });
+        sample.metrics.firstPageMs = performance.now() - opened;
+        save();
+      } finally {
+        try {
+          await first?.first.dispose();
         } finally {
-          try {
-            await first?.first.dispose();
-          } finally {
-            await gridElement.dispose();
-          }
+          await gridElement.dispose();
         }
       }
-      const productTab = vscode.window.tabGroups.activeTabGroup.activeTab;
-      assert(
-        productTab?.input instanceof vscode.TabInputWebview && productTab !== notebookTab,
-        "Pilot gate: exact product webview tab"
-      );
-      const initial = await poll(() => rowCells(target.root, 0), "first-data-row");
-      sample.metrics.firstRowMs = performance.now() - opened;
-      sample.fullShapeVerified = true;
-      const scrolled = performance.now();
-      await initial.first.click();
-      await page.keyboard.press("Control+End");
-      // Wait for the keyboard navigation's page before moving horizontally on that row.
-      const lastIndex = await target.root.getAttribute("aria-rowcount");
-      await poll(
-        () =>
-          visible(target.root.locator(`tr[aria-rowindex="${lastIndex}"],[role="row"][aria-rowindex="${lastIndex}"]`)),
-        "last-row-navigation"
-      );
-      // End reveals the last column too; Home keeps the row and reveals the first column.
-      await page.keyboard.press("Home");
-      await poll(() => rowCells(target.root, request.rows - 1), "last-row-sentinel");
-      sample.metrics.laterRowMs = performance.now() - scrolled;
-      sample.laterRowVerified = true;
-      sample.metrics.usableGridMs = performance.now() - opened;
-      await page.keyboard.press("Control+Home");
-      await poll(() => rowCells(target.root, 0), "return-first-row");
+      const productFrame = target.frame;
+      const currentGrid = async () => {
+        const current = await grid();
+        assert(
+          sourceRetained() &&
+            vscode.window.tabGroups.all.some((group) => group.tabs.includes(productTab)) &&
+            vscode.window.tabGroups.activeTabGroup.activeTab === productTab,
+          "PILOT_GATE:product-owner-changed"
+        );
+        assert(!current || current.frame === productFrame, "PILOT_GATE:product-frame-changed");
+        if (current) target = current;
+        return current;
+      };
       checkpoint(`${sampleName}:profiles`);
       const profiling = performance.now();
       try {
@@ -1106,7 +1070,7 @@ exports.run = async function () {
           !(await find("dialog", /.*/)) && !(await find("menu", /.*/)),
           "Pilot gate: cannot restore independent cleaning state"
         );
-        await poll(grid, "restored-grid-after-profile-failure");
+        await poll(currentGrid, "restored-grid-after-profile-failure");
       }
       const modeStart = performance.now();
       const editing =
@@ -1128,7 +1092,7 @@ exports.run = async function () {
             ),
           "editing-ready"
         );
-      await poll(grid, "editing-grid");
+      await poll(currentGrid, "editing-grid");
       sample.metrics.editingModeMs = performance.now() - modeStart;
       const focus = target.root.locator('td[tabindex="0"],[role="gridcell"][tabindex="0"]');
       await click(focus, "grid-focus");
@@ -1178,7 +1142,7 @@ exports.run = async function () {
             applied = performance.now();
           await apply.click();
           await poll(
-            async () => !(await visible(apply)) && (await grid()) && (await changedCell(column)),
+            async () => !(await visible(apply)) && (await currentGrid()) && (await changedCell(column)),
             "applied-grid"
           );
           sample.actions.push({
@@ -1208,7 +1172,7 @@ exports.run = async function () {
             applied = performance.now();
           await apply.click();
           await poll(
-            async () => (await grid()) && (await changedCell(column)) && !(await visible(apply)),
+            async () => (await currentGrid()) && (await changedCell(column)) && !(await visible(apply)),
             "dw-applied-grid"
           );
           sample.actions.push({
