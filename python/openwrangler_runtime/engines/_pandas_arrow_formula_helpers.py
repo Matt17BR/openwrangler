@@ -97,7 +97,8 @@ def _open_wrangler_arrow_formula_repair(
             isinstance(original_error, pa.ArrowInvalid)
             and operator == "power"
             and is_integer_column(left)
-            and is_integer_column(right)
+            and is_integer_column(right, signed_only=False)
+            and (cast(Any, right).dtype.kind == "i" or cast(Any, right).dtype.itemsize < 8)
         ):
             import pyarrow.compute as pc
 
