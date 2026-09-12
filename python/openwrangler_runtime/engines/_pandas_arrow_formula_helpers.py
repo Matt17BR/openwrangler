@@ -13,12 +13,21 @@ def _open_wrangler_arrow_formula_repair(
         right_type = right.dtype.pyarrow_dtype if isinstance(getattr(right, "dtype", None), pd.ArrowDtype) else None
 
         if (
-            isinstance(original_error, pa.ArrowInvalid)
-            and left_type is not None
+            left_type is not None
             and pa.types.is_decimal256(left_type)
+            and (
+                isinstance(original_error, pa.ArrowInvalid)
+                or isinstance(original_error, TypeError)
+                and left_type.scale < 0
+                and left_type.precision - left_type.scale > 76
+            )
             and type(right) is int
-            and right in {-1, 1}
-            and operator in {"multiply", "divide"}
+            and (
+                operator in {"multiply", "divide"}
+                and right in {-1, 1}
+                or operator in {"add", "subtract"}
+                and right == 0
+            )
         ):
             result = left.array.__arrow_array__()
             if right == -1:

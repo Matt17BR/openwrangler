@@ -691,11 +691,14 @@ negative results and values above Int64 maximum retain the original refusal. Onl
 storage. Boolean, Sparse, arbitrary extension, floating and Decimal operands remain on their existing paths.
 
 Selected Decimal128 operands may widen to Decimal256 for add, subtract, multiply and divide, retaining each operand's
-precision and scale. Native arithmetic determines the result type. After a Decimal256 capacity failure, multiplying
-or dividing the column by the exact integer literal 1 preserves its values, while -1 uses native checked negation.
-Both retain the declared precision, scale and nulls. The identity result wraps the unchanged immutable Arrow storage
-in an independent Pandas array, so assigning to the result cannot change the source. Successful native results retain
-their types. Live and generated Formula apply the same policy; By Example remains unchanged.
+precision and scale. Native arithmetic determines the result type. After a Decimal256 capacity failure, adding or
+subtracting the exact integer literal 0, or multiplying or dividing by 1, preserves the column's values. Multiplication
+and division by -1 use native checked negation. These repairs also accept native TypeError refusals for negative-scale
+Decimal256 operands whose full declared capacity cannot fit the 76-digit scale-zero intermediate described below.
+All retain the declared precision, scale and nulls. The identity result wraps the unchanged immutable Arrow storage
+in an independent Pandas array, so assigning to the result cannot change the source. Successful native and existing
+rescale results retain their types. Live and generated Formula apply the same policy; By Example
+remains unchanged.
 
 After native add, subtract, multiply or divide fails on a selected negative-scale Arrow Decimal operand `(p, s)`,
 Formula may rescale that operand exactly to Decimal256 `(p-s, 0)` when its full declared capacity fits 76 digits.
@@ -704,7 +707,8 @@ integer column of at most 64 bits. Object and custom extension companions do not
 Only selected negative-scale operands gain temporary storage; source arrays and nulls remain unchanged.
 Native arithmetic then determines the output precision, scale and division rounding, and still refuses results
 outside its inferred capacity, including empty or all-null inputs. The new result need not retain the source's
-negative scale. TypeError admission is limited to this repair; other operand errors retain their previous paths.
+negative scale. TypeError admission is limited to this rescaling and the exact Decimal256 scalar repairs above;
+other operand errors retain their previous paths.
 Negative power and remaining Decimal capacity gaps stay tracked in [#979](https://github.com/Matt17BR/openwrangler/issues/979).
 
 Convert Type's integer target is nullable signed 64-bit storage. Unsigned or floating values outside that range and
