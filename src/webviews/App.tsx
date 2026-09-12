@@ -20,8 +20,10 @@ import {
   hasActiveFilters,
   prioritizeSortRule,
   replaceViewColumnFilter,
+  viewFilterRemovalSignature,
   viewSortModelSignature,
-  type FilterModel
+  type FilterModel,
+  type ViewFilterRemovalTarget
 } from "../shared/filterModel";
 import { encodeGridViewState, type GridViewState, type SerializedGridViewState } from "../shared/viewState";
 import type { SessionOpenProgressStage } from "../shared/sessionOpenProgress";
@@ -228,7 +230,7 @@ export function App() {
   const stepInspectionTargetRef = useRef<PendingStepInspection | undefined>(undefined);
   const filterModelRef = useRef<FilterModel>(emptyFilterModel());
   const confirmedFilterHistoryRef = useRef<ConfirmedFilterHistory>(emptyConfirmedFilterHistory());
-  const clearFilterColumnActionRef = useRef<(column: string) => void>(() => undefined);
+  const clearFilterColumnActionRef = useRef<(target: ViewFilterRemovalTarget) => void>(() => undefined);
   const changeViewSortActionRef = useRef<(target: ViewSortActionTarget) => void>(() => undefined);
   const confirmedView = useRef<ConfirmedView | undefined>(undefined);
   const latestPageRequest = useRef<PendingPageRequest | undefined>(undefined);
@@ -1080,8 +1082,7 @@ export function App() {
           }
           deleteStep(stepId);
         } else if (response.action === "clearFilterColumn") {
-          if (typeof response.column !== "string") return;
-          clearFilterColumnActionRef.current(response.column);
+          clearFilterColumnActionRef.current(response);
         } else if (response.action === "openFilters") {
           if (stepInspectionTargetRef.current) return;
           const currentMetadata = metadataRef.current;
@@ -1834,17 +1835,19 @@ export function App() {
   };
 
   useEffect(() => {
-    clearFilterColumnActionRef.current = (column) => {
+    clearFilterColumnActionRef.current = (target) => {
       if (
         stepInspectionTargetRef.current ||
         !metadataRef.current ||
+        metadataRef.current.sessionId !== target.expectedSessionId ||
+        viewFilterRemovalSignature(filterModelRef.current.filters, target.column) !== target.expectedFilterSignature ||
         !supportsViewingCapability(metadataRef.current.capabilities, "filter")
       )
         return;
       const current = filterModelRef.current;
       applyFilters({
         ...current,
-        filters: current.filters.filter((filter) => filter.column !== column)
+        filters: current.filters.filter((filter) => filter.column !== target.column)
       });
     };
 

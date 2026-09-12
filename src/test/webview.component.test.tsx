@@ -3356,11 +3356,17 @@ describe("App file import options", () => {
   });
 
   it("does not issue unsupported viewing requests when capabilities are explicitly disabled", async () => {
+    const savedFilter = {
+      column: "city",
+      type: "string" as const,
+      predicates: [{ kind: "predicate" as const, operator: "equals" as const, value: "Milan" }]
+    };
     render(<App />);
     dispatchAppMessage({
       kind: "sessionOpened",
       metadata: {
         ...metadata,
+        filterModel: { ...metadata.filterModel, filters: [savedFilter] },
         capabilities: {
           ...metadata.capabilities,
           filter: false,
@@ -3385,7 +3391,13 @@ describe("App file import options", () => {
 
     webviewPostMessage.mockClear();
     dispatchAppMessage({ kind: "editorAction", action: "openFilters", column: "city" });
-    dispatchAppMessage({ kind: "editorAction", action: "clearFilterColumn", column: "city" });
+    dispatchAppMessage({
+      kind: "editorAction",
+      action: "clearFilterColumn",
+      column: "city",
+      expectedSessionId: metadata.sessionId,
+      expectedFilterSignature: JSON.stringify([savedFilter])
+    });
     expect(screen.queryByRole("complementary", { name: "Column profiles and filters" })).not.toBeInTheDocument();
     expect(
       webviewPostMessage.mock.calls.some(
@@ -3544,51 +3556,121 @@ describe("App file import options", () => {
     ]);
   });
 
-  it("removes one native-tree column filter while preserving sibling filters and all sorts", async () => {
-    const filteredMetadata: SessionMetadata = {
-      ...metadata,
-      filterModel: {
+  it("checks bound native filter removal against the renderer's current desired group", async () => {
+    const city = {
+      column: "city",
+      type: "string" as const,
+      predicates: [{ kind: "predicate" as const, operator: "notEquals" as const, value: "Berlin" }]
+    };
+    const action = {
+      kind: "editorAction",
+      action: "clearFilterColumn",
+      column: "city",
+      expectedSessionId: metadata.sessionId,
+      expectedFilterSignature: JSON.stringify([city])
+    };
+    render(<App />);
+    dispatchAppMessage({
+      kind: "sessionOpened",
+      metadata: { ...metadata, filterModel: { filters: [city], sort: [] } },
+      page,
+      summaries: []
+    });
+    await screen.findByRole("cell", { name: "Milan" });
+    webviewPostMessage.mockClear();
+    dispatchAppMessage({ ...action, expectedSessionId: "retired-session" });
+    expect(webviewPostMessage).not.toHaveBeenCalled();
+
+    // Both displayed rows pass the confirmed filter; the host can still know it while Keep only Paris is pending.
+    const paris = screen.getByRole("cell", { name: "Paris" });
+    fireEvent.click(within(paris).getByRole("button", { name: "Filter city by this cell" }));
+    fireEvent.click(
+      within(await screen.findByRole("menu", { name: "Filter city by this cell" })).getByRole("menuitem", {
+        name: "Keep only this value"
+      })
+    );
+    const pending = webviewPostMessage.mock.calls
+      .map(([message]) => message)
+      .find((message) => message?.request?.kind === "getPage");
+    expect(pending?.request.filterModel.filters[0].valueFilter.selectedValues[0].cell.raw).toBe("Paris");
+    webviewPostMessage.mockClear();
+    dispatchAppMessage(action);
+    expect(webviewPostMessage).not.toHaveBeenCalled();
+
+    const duplicateFilters = [
+      city,
+      { ...city, predicates: [{ kind: "predicate" as const, operator: "notEquals" as const, value: "Rome" }] }
+    ];
+    dispatchAppMessage({
+      kind: "sessionOpened",
+      metadata: { ...metadata, filterModel: { filters: duplicateFilters, sort: [] } },
+      page,
+      summaries: []
+    });
+    webviewPostMessage.mockClear();
+    dispatchAppMessage(action);
+    expect(webviewPostMessage).not.toHaveBeenCalled();
+    dispatchAppMessage({ ...action, expectedFilterSignature: JSON.stringify(duplicateFilters) });
+    const cleared = webviewPostMessage.mock.calls
+      .map(([message]) => message)
+      .find((message) => message?.request?.kind === "getPage");
+    expect(cleared?.request.filterModel.filters).toEqual([]);
+  });
+
+  it.each(["city", "saved-unavailable-city"])(
+    "removes the native-tree %s filter while preserving sibling filters and all sorts",
+    async (column) => {
+      const filteredMetadata: SessionMetadata = {
+        ...metadata,
+        filterModel: {
+          logic: "and",
+          filters: [
+            {
+              column,
+              type: "string",
+              predicates: [{ kind: "predicate", operator: "equals", value: "Milan" }]
+            },
+            {
+              column: "sales",
+              type: "float",
+              predicates: [{ kind: "predicate", operator: "gt", value: 10 }]
+            }
+          ],
+          sort: [
+            { column: "city", direction: "asc", nulls: "last" },
+            { column: "sales", direction: "desc", nulls: "first" }
+          ]
+        }
+      };
+      render(<App />);
+      dispatchAppMessage({ kind: "sessionOpened", metadata: filteredMetadata, page, summaries: [] });
+      await screen.findByRole("cell", { name: "Milan" });
+      webviewPostMessage.mockClear();
+
+      dispatchAppMessage({
+        kind: "editorAction",
+        action: "clearFilterColumn",
+        column,
+        expectedSessionId: metadata.sessionId,
+        expectedFilterSignature: JSON.stringify([filteredMetadata.filterModel.filters[0]])
+      });
+
+      const pageRequest = webviewPostMessage.mock.calls
+        .map(([message]) => message)
+        .find((message) => message?.kind === "runtimeRequest" && message.request?.kind === "getPage");
+      expect(pageRequest?.request.filterModel).toEqual({
         logic: "and",
         filters: [
-          {
-            column: "city",
-            type: "string",
-            predicates: [{ kind: "predicate", operator: "equals", value: "Milan" }]
-          },
           {
             column: "sales",
             type: "float",
             predicates: [{ kind: "predicate", operator: "gt", value: 10 }]
           }
         ],
-        sort: [
-          { column: "city", direction: "asc", nulls: "last" },
-          { column: "sales", direction: "desc", nulls: "first" }
-        ]
-      }
-    };
-    render(<App />);
-    dispatchAppMessage({ kind: "sessionOpened", metadata: filteredMetadata, page, summaries: [] });
-    await screen.findByRole("cell", { name: "Milan" });
-    webviewPostMessage.mockClear();
-
-    dispatchAppMessage({ kind: "editorAction", action: "clearFilterColumn", column: "city" });
-
-    const pageRequest = webviewPostMessage.mock.calls
-      .map(([message]) => message)
-      .find((message) => message?.kind === "runtimeRequest" && message.request?.kind === "getPage");
-    expect(pageRequest?.request.filterModel).toEqual({
-      logic: "and",
-      filters: [
-        {
-          column: "sales",
-          type: "float",
-          predicates: [{ kind: "predicate", operator: "gt", value: 10 }]
-        }
-      ],
-      sort: filteredMetadata.filterModel.sort
-    });
-  });
+        sort: filteredMetadata.filterModel.sort
+      });
+    }
+  );
 
   it("keeps reconciled filters, value selections, predicates, and sort priority after applying a step", async () => {
     const step: TransformStep = {

@@ -20,6 +20,7 @@ import {
   type SessionRecoveryMessage
 } from "../shared/sessionRecovery";
 import { canRequestLiveSessionMode, sessionModeAction } from "../shared/sessionMode";
+import type { ViewFilterRemovalTarget } from "../shared/filterModel";
 import { encodeGridViewState, type GridViewState } from "../shared/viewState";
 import type { SessionOpenProgressStage } from "../shared/sessionOpenProgress";
 import type { BridgeRequestOptions, OpenWranglerBridge, SessionRuntimeReplacement } from "./dataBridge";
@@ -2214,6 +2215,7 @@ type NonSortEditorAction =
   | "redoStep";
 
 export type EditorActionMessage =
+  | ({ action: "clearFilterColumn" } & ViewFilterRemovalTarget)
   | {
       action: "changeViewSort";
       column: string;
@@ -2223,7 +2225,7 @@ export type EditorActionMessage =
       expectedSortIndex: number;
     }
   | {
-      action: NonSortEditorAction;
+      action: Exclude<NonSortEditorAction, "clearFilterColumn">;
       expectedSessionId?: string;
       expectedRevision?: number;
       operationKind?: OperationKind;
