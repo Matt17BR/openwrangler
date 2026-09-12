@@ -504,6 +504,7 @@ exports.run = async function () {
       const measuredCellOwner = notebook.cellAt(1);
       await execute(1);
       const measuredExecutionOrder = measuredCellOwner.executionSummary?.executionOrder;
+      const preEntryTabs = new Set(vscode.window.tabGroups.all.flatMap((group) => group.tabs));
       sample.entryRoute = request.product === "ow" ? "inline-open" : "notebook-cell-status";
       sample.toolbarOverflowUsed = false;
       sample.metrics.pickerInteractionMs = 0;
@@ -584,12 +585,8 @@ exports.run = async function () {
       }
       sample.metrics.entryInteractionMs = performance.now() - opened;
       checkpoint(`${sampleName}:grid`);
-      const target = await poll(grid, "diagnostic-product-grid");
-      const productTab = vscode.window.tabGroups.activeTabGroup.activeTab;
-      assert(
-        productTab?.input instanceof vscode.TabInputWebview && productTab !== notebookTab,
-        "Pilot gate: exact product webview tab"
-      );
+      const gridDeadline = performance.now() + 30000;
+      const target = await poll(grid, "diagnostic-product-grid", gridDeadline - performance.now());
       if (receipt.purpose === "public-grid-diagnostic") {
         sample.gridObservation = {
           firstSentinelObserved: null,
@@ -597,56 +594,139 @@ exports.run = async function () {
           navigationAttempted: false,
           rowRangeChanged: null
         };
-        const initialMetadata = await gridMetadata(target);
-        await captureEntryState("gridInitial", initialMetadata);
-        let first;
+        const gridElement = await target.root.elementHandle();
+        assert(gridElement, "DIAGNOSTIC_GATE:missing-grid-element");
         try {
-          first = await poll(() => rowCells(target.root, 0, true), "diagnostic-first-c00");
-          sample.gridObservation.firstSentinelObserved = true;
-        } catch (error) {
-          sample.gridObservation.firstSentinelObserved = false;
-          save();
-          throw error;
-        }
-        checkpoint(`${sampleName}:diagnostic-navigation`);
-        sample.gridObservation.navigationAttempted = true;
-        let checkingLast = false;
-        try {
-          await first.first.click();
-          await page.keyboard.press("Control+End");
-          const before = initialMetadata.grid;
-          await poll(async () => {
-            const after = await target.root.evaluate(gridRows);
-            return (
-              before.minimumObservedRowIndex !== null &&
-              before.maximumObservedRowIndex !== null &&
-              after.minimumObservedRowIndex !== null &&
-              after.maximumObservedRowIndex !== null &&
-              (after.minimumObservedRowIndex !== before.minimumObservedRowIndex ||
-                after.maximumObservedRowIndex !== before.maximumObservedRowIndex)
-            );
-          }, "diagnostic-row-range-progress");
-          sample.gridObservation.rowRangeChanged = true;
-          await page.keyboard.press("Home");
-          checkingLast = true;
-          await poll(() => rowCells(target.root, request.rows - 1, true), "diagnostic-last-c00");
-          sample.gridObservation.lastSentinelObserved = true;
-        } catch (error) {
-          if (sample.gridObservation.rowRangeChanged === null) sample.gridObservation.rowRangeChanged = false;
-          if (checkingLast) sample.gridObservation.lastSentinelObserved = false;
-          save();
-          throw error;
-        } finally {
-          try {
-            await captureEntryState("gridAfterNavigation", await gridMetadata(target));
-          } catch {
-            receipt.gridDiagnosticReadFailed = true;
+          const observedTarget = { frame: target.frame, root: gridElement };
+          const initialMetadata = await gridMetadata(observedTarget);
+          await captureEntryState("gridInitial", initialMetadata);
+          const sourceRetained = () =>
+            !notebook.isClosed &&
+            vscode.window.tabGroups.all.some((group) => group.tabs.includes(notebookTab)) &&
+            notebookTab.input instanceof vscode.TabInputNotebook &&
+            notebookTab.input.uri.toString() === notebook.uri.toString() &&
+            notebook.cellAt(1) === measuredCellOwner &&
+            measuredCellOwner.document.getText() === "comparison_frame" &&
+            measuredCellOwner.executionSummary?.executionOrder === measuredExecutionOrder &&
+            measuredCellOwner.executionSummary?.success === true;
+          const readTabOwner = () => {
+            const newTabs = vscode.window.tabGroups.all
+              .flatMap((group) => group.tabs)
+              .filter((tab) => !preEntryTabs.has(tab));
+            const candidate = newTabs.length === 1 ? newTabs[0] : undefined;
+            const kind =
+              candidate?.input instanceof vscode.TabInputWebview
+                ? "webview"
+                : candidate?.input instanceof vscode.TabInputCustom
+                  ? "custom"
+                  : candidate?.input instanceof vscode.TabInputNotebook
+                    ? "notebook"
+                    : candidate
+                      ? "other"
+                      : "none";
+            sample.gridObservation.tab = {
+              newTabs: newTabs.length,
+              kind,
+              active: candidate !== undefined && candidate === vscode.window.tabGroups.activeTabGroup.activeTab,
+              sourceRetained: sourceRetained(),
+              sourceResource: kind === "custom" && candidate.input.uri.toString() === notebook.uri.toString()
+            };
+            return candidate;
+          };
+          const productTab = await poll(
+            () => {
+              const candidate = readTabOwner();
+              const state = sample.gridObservation.tab;
+              assert(state.sourceRetained, "DIAGNOSTIC_GATE:source-owner-changed");
+              assert(state.newTabs <= 1, "DIAGNOSTIC_GATE:ambiguous-new-product-tab");
+              assert(
+                !candidate || (["custom", "webview"].includes(state.kind) && !state.sourceResource),
+                "DIAGNOSTIC_GATE:unsupported-product-tab"
+              );
+              return state.active ? candidate : false;
+            },
+            "diagnostic-product-tab",
+            gridDeadline - performance.now()
+          );
+          const verifyNavigationOwner = async () => {
+            const focus = await gridElement.evaluate((root) => ({
+              connected: root.isConnected,
+              documentFocused: root.ownerDocument.hasFocus(),
+              gridFocused: root.contains(root.getRootNode().activeElement)
+            }));
+            const candidate = readTabOwner();
+            const tab = sample.gridObservation.tab;
+            sample.gridObservation.focus = focus;
             save();
+            assert(
+              candidate === productTab &&
+                tab.active &&
+                tab.sourceRetained &&
+                !tab.sourceResource &&
+                ["custom", "webview"].includes(tab.kind),
+              "DIAGNOSTIC_GATE:product-owner-changed"
+            );
+            assert(focus.connected && focus.documentFocused && focus.gridFocused, "DIAGNOSTIC_GATE:product-grid-focus");
+          };
+          let first;
+          try {
+            first = await poll(() => rowCells(target.root, 0, true), "diagnostic-first-c00");
+            sample.gridObservation.firstSentinelObserved = true;
+          } catch (error) {
+            sample.gridObservation.firstSentinelObserved = false;
+            save();
+            throw error;
           }
+          checkpoint(`${sampleName}:diagnostic-navigation`);
+          let checkingLast = false;
+          try {
+            await first.first.click();
+            await verifyNavigationOwner();
+            sample.gridObservation.navigationAttempted = true;
+            await page.keyboard.press("Control+End");
+            const before = initialMetadata.grid;
+            await poll(async () => {
+              const after = await gridElement.evaluate(gridRows);
+              return (
+                before.minimumObservedRowIndex !== null &&
+                before.maximumObservedRowIndex !== null &&
+                after.minimumObservedRowIndex !== null &&
+                after.maximumObservedRowIndex !== null &&
+                (after.minimumObservedRowIndex !== before.minimumObservedRowIndex ||
+                  after.maximumObservedRowIndex !== before.maximumObservedRowIndex)
+              );
+            }, "diagnostic-row-range-progress");
+            sample.gridObservation.rowRangeChanged = true;
+            await verifyNavigationOwner();
+            await page.keyboard.press("Home");
+            checkingLast = true;
+            await poll(() => rowCells(target.root, request.rows - 1, true), "diagnostic-last-c00");
+            sample.gridObservation.lastSentinelObserved = true;
+          } catch (error) {
+            if (sample.gridObservation.navigationAttempted && sample.gridObservation.rowRangeChanged === null)
+              sample.gridObservation.rowRangeChanged = false;
+            if (checkingLast) sample.gridObservation.lastSentinelObserved = false;
+            save();
+            throw error;
+          } finally {
+            try {
+              await captureEntryState("gridAfterNavigation", await gridMetadata(observedTarget));
+            } catch {
+              receipt.gridDiagnosticReadFailed = true;
+              save();
+            }
+          }
+          sample.metrics.observationsFromFirstInteractionMs = performance.now() - opened;
+          throw new Error("GRID_DIAGNOSTIC:observations-complete; comparison not run");
+        } finally {
+          await gridElement.dispose();
         }
-        sample.metrics.observationsFromFirstInteractionMs = performance.now() - opened;
-        throw new Error("GRID_DIAGNOSTIC:observations-complete; comparison not run");
       }
+      const productTab = vscode.window.tabGroups.activeTabGroup.activeTab;
+      assert(
+        productTab?.input instanceof vscode.TabInputWebview && productTab !== notebookTab,
+        "Pilot gate: exact product webview tab"
+      );
       const initial = await poll(() => rowCells(target.root, 0), "first-data-row");
       sample.metrics.firstRowMs = performance.now() - opened;
       sample.fullShapeVerified = true;
