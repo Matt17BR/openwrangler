@@ -14,8 +14,7 @@ const { values: args } = parseArgs({
 });
 for (const key of ["repo", "artifact", "python", "out", "mode"]) assert(args[key], `Missing --${key}`);
 assert(process.env.GITHUB_ACTIONS === "true" && process.env.RUNNER_OS === "Linux", "Hosted Linux only");
-assert(["pilot", "study"].includes(args.mode));
-assert(args.mode !== "study" || args.freeze, "Study requires a reviewed passing pilot freeze");
+assert(args.mode === "pilot" && !args.freeze, "This diagnostic rejects study and comparison freezes");
 // Keep the venv launcher path: resolving its Python symlink would select the base environment.
 const repo = realpathSync(args.repo),
   python = resolve(args.python),
@@ -90,6 +89,43 @@ const validMeasurements = (m, id) => {
     assert.match(s.oracle.resultDigest, /^[a-f0-9]{64}$/u);
   }
 };
+// Preserve the comparison validator for source-extracted rejection controls.
+// This diagnostic has a different purpose and cannot produce a comparison freeze.
+void validMeasurements;
+const validDiagnostic = (m, id) => {
+  assert.equal(id, "100000-0-dw");
+  assert.equal(m.id, id);
+  assert.equal(m.purpose, "public-profile-controls-diagnostic");
+  assert.equal(m.status, "completed");
+  assert.equal(m.samples.length, 1);
+  assert.equal(m.setup.kernelIdentityVerified, true);
+  assert.match(m.setup.sourceDigest, /^[a-f0-9]{64}$/u);
+  const s = m.samples[0];
+  assert.equal(s.name, "fresh-session-first-open");
+  assert.equal(s.status, "completed");
+  assert.equal(s.sourceUnchanged, true);
+  assert.equal(s.kernelContinuityVerified, true);
+  assert.equal(s.entryRoute, "notebook-cell-status");
+  const entry = s.entryObservation;
+  assert.deepEqual(entry.reportedShape, { rows: 100000, columns: 20, source: "text" });
+  assert.equal(entry.firstC00, 0);
+  assert.equal(entry.renderedCellCount, 4);
+  assert.equal(entry.tab.newTabs, 1);
+  assert(["custom", "webview"].includes(entry.tab.kind));
+  assert(entry.tab.active && entry.tab.sourceRetained && !entry.tab.sourceResource);
+  assert(entry.focus.connected && entry.focus.documentFocused && entry.focus.gridFocused);
+  assert(entry.grid.connected && entry.grid.focused.c00 === 0);
+  assert.equal(s.observation.computationScope, "unknown");
+  assert(Buffer.byteLength(JSON.stringify(s.observation), "utf8") <= 8192);
+  assert(s.observation.forms.length <= 2);
+  for (const [index, form] of s.observation.forms.entries()) {
+    assert.equal(form.operation, ["Fill missing values", "Convert text to lowercase"][index]);
+    if (form.offered) assert.equal(form.cancelled, true);
+  }
+  assert.equal(s.actions.length, 0);
+  assert.equal(s.completedProfiles, 0);
+  assert.equal(s.profileObservations.length, 0);
+};
 const sha = (file) => createHash("sha256").update(readFileSync(file)).digest("hex");
 const json = (file, value) =>
   writeFileSync(file, JSON.stringify(value, null, 2) + "\n", {
@@ -118,7 +154,8 @@ assert.equal(
   "9188fb7ccb836c8d4bc62372adb46d81c2e82aa998404b066fc31f1b51b5bc48"
 );
 const report = {
-  purpose: "public-ui-comparison",
+  purpose: "public-profile-controls-diagnostic",
+  comparisonQualified: false,
   mode: args.mode,
   artifact: {
     sourceCommit,
@@ -254,20 +291,10 @@ try {
       "Common extension drift"
     );
   }
-  const freeze = {
-    toolingCommit: report.toolingCommit,
-    sourceHashes: report.sourceHashes,
-    artifact: report.artifact,
-    editor: report.editor,
-    runtime: report.runtime,
-    extensions: report.extensions
-  };
-  if (args.mode === "study")
-    assert.deepEqual(JSON.parse(readFileSync(args.freeze, "utf8")), freeze, "Pilot freeze drift");
-  const pairs = args.mode === "pilot" ? 1 : 4;
-  for (const rows of [100_000, 1_000_000])
+  const pairs = 1;
+  for (const rows of [100_000])
     for (let pair = 0; pair < pairs; pair++) {
-      for (const product of pair % 2 === 0 ? ["ow", "dw"] : ["dw", "ow"]) {
+      for (const product of ["dw"]) {
         requireUninterrupted();
         const id = `${rows}-${pair}-${product}`,
           session = { id, rows, pair, product, status: "pending" };
@@ -364,7 +391,7 @@ try {
               }
             }
           );
-          session.status = "passed";
+          session.status = "completed";
         } catch (error) {
           if (error.kind === "interrupted") interruption = error;
           settled = !owner.editorProcessTreeMayBeLive(error);
@@ -383,7 +410,7 @@ try {
               }).toString("utf8"),
               { maxBytes: 128 * 1024 }
             );
-            if (session.status === "passed") validMeasurements(session.measurements, id);
+            if (session.status === "completed") validDiagnostic(session.measurements, id);
           } catch (error) {
             session.status = "failed";
             session.receiptFailure = failure(error, `${id}:receipt`);
@@ -403,8 +430,6 @@ try {
         }
         json(join(out, `${id}.json`), session);
         if (interruption) throw interruption;
-        if (args.mode === "study" && session.status !== "passed")
-          throw new Error("Study contract failed; no next session");
         requireUninterrupted();
         if (mayBeLive) throw new Error("Owned cleanup unverified; no next phase");
       }
@@ -428,24 +453,8 @@ try {
     "Python dependencies changed during collection"
   );
   report.dependenciesUnchanged = true;
-  let pairedSourceDigestsEqual = true;
-  for (const rows of [100_000, 1_000_000]) {
-    const sessions = report.sessions.filter((s) => s.rows === rows);
-    const digests = sessions
-      .filter(
-        (s) =>
-          s.measurements?.id === s.id &&
-          s.measurements.setup?.kernelIdentityVerified === true &&
-          /^[a-f0-9]{64}$/u.test(s.measurements.setup.sourceDigest)
-      )
-      .map((s) => s.measurements.setup.sourceDigest);
-    assert(new Set(digests).size <= 1, "Paired source digest mismatch");
-    if (sessions.length !== pairs * 2 || digests.length !== sessions.length || new Set(digests).size !== 1)
-      pairedSourceDigestsEqual = false;
-  }
-  report.pairedSourceDigestsEqual = pairedSourceDigestsEqual;
-  if (pairedSourceDigestsEqual && report.sessions.every((s) => s.status === "passed"))
-    json(join(out, "pilot-freeze.json"), freeze);
+  report.status = report.sessions.length === 1 && report.sessions[0].status === "completed" ? "completed" : "failed";
+  report.comparisonQualified = false;
 } catch (error) {
   report.failure = failure(error, "launcher");
   mayBeLive ||= owner.editorProcessTreeMayBeLive(error);
@@ -466,7 +475,8 @@ try {
 if (
   !report.cleanupVerified ||
   report.failure ||
-  report.sessions.length !== (args.mode === "pilot" ? 4 : 16) ||
-  report.sessions.some((s) => s.status !== "passed")
+  report.status !== "completed" ||
+  report.sessions.length !== 1 ||
+  report.sessions.some((s) => s.status !== "completed")
 )
   process.exitCode = 1;

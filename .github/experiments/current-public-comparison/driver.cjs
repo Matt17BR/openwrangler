@@ -19,7 +19,16 @@ function readPublicEntryDomState() {
       .flatMap((element) => {
         const name = element.getAttribute("aria-label") || text(element) || element.getAttribute("title") || "";
         return /^(?:View data|More Actions(?:\.\.\.)?)$/.test(name)
-          ? [{ role: element.getAttribute("role") || element.tagName.toLowerCase(), name }]
+          ? [
+              {
+                role: ["button", "link", "menuitem"].includes(element.getAttribute("role"))
+                  ? element.getAttribute("role")
+                  : element.hasAttribute("role")
+                    ? "other"
+                    : element.tagName.toLowerCase(),
+                name
+              }
+            ]
           : [];
       })
       .slice(0, 8);
@@ -68,12 +77,18 @@ exports.run = async function () {
   const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   assert(workspace, "Missing isolated workspace");
   const request = JSON.parse(fs.readFileSync(path.join(workspace, "request.json"), "utf8"));
-  assert(["ow", "dw"].includes(request.product) && [100000, 1000000].includes(request.rows));
-  assert(["pilot", "study"].includes(request.mode));
+  assert(request.product === "dw" && request.rows === 100000);
+  assert(request.mode === "pilot", "Diagnostic rejects study");
   assert.notEqual(process.env.OPEN_WRANGLER_EXTENSION_TESTS, "1");
   const { chromium } = createRequire(path.join(request.repo, "package.json"))("playwright-core");
   const owner = await import(pathToFileURL(path.join(request.repo, "scripts/editor-acceptance.mjs")).href);
-  const receipt = { purpose: "public-ui-comparison", id: request.id, setup: {}, samples: [], status: "pending" };
+  const receipt = {
+    purpose: "public-profile-controls-diagnostic",
+    id: request.id,
+    setup: {},
+    samples: [],
+    status: "pending"
+  };
   let browser,
     opened,
     sourceNotebook,
@@ -601,28 +616,7 @@ exports.run = async function () {
       }
       return state;
     };
-    const metric = (text, labels) => {
-      const match = new RegExp(`(?:${labels})\\s*[:=]?\\s*([\\d,.]+)\\s*([kmb]?)(?![%\\w])`, "i").exec(text);
-      if (!match) return null;
-      const number = match[1].replaceAll(",", ""),
-        scale = { k: 1000, m: 1e6, b: 1e9 }[match[2].toLowerCase()] || 1;
-      const tolerance = scale === 1 ? 0 : (scale * 10 ** -(number.split(".")[1]?.length || 0)) / 2;
-      return { value: Number(number) * scale, tolerance };
-    };
-    const sameMetric = (text, labels, expected) => {
-      const m = metric(text, labels);
-      return m !== null && Math.abs(m.value - expected) <= m.tolerance;
-    };
-    const missingReady = (text, expected) => {
-      if (request.product !== "ow") return sameMetric(text, "missing|null(?:s| values?)?", expected);
-      const nulls = metric(text, "null"),
-        nan = metric(text, "NaN");
-      return (
-        nulls !== null &&
-        Math.abs(nulls.value + (nan?.value || 0) - expected) <= nulls.tolerance + (nan?.tolerance || 0)
-      );
-    };
-    for (const sampleName of ["fresh-session-first-open", "same-session-reopen"]) {
+    for (const sampleName of ["fresh-session-first-open"]) {
       opened = undefined;
       const sample = {
         name: sampleName,
@@ -637,18 +631,6 @@ exports.run = async function () {
       receipt.samples.push(sample);
       save();
       const activeEditor = await vscode.window.showNotebookDocument(notebook);
-      if (sampleName === "same-session-reopen") {
-        await replaceCell(
-          2,
-          "import pandas as pd\npd.testing.assert_frame_equal(comparison_frame, comparison_original, check_exact=True)\n" +
-            "print('COMPARISON_RESET:' + json.dumps({'digest': comparison_helpers['digest'](comparison_frame), " +
-            "'kernelIdentity': {'nonce': comparison_kernel_identity['nonce'], 'pid': os.getpid()}, 'runtime': comparison_helpers['runtime_identity']()}))"
-        );
-        const reset = await execute(2, "COMPARISON_RESET:");
-        assert.equal(reset.digest, source.digest);
-        assert.deepEqual(reset.kernelIdentity, source.kernelIdentity);
-        assert.deepEqual(reset.runtime, request.runtimeIdentity);
-      }
       checkpoint(`${sampleName}:source-output`);
       const measuredCell = new vscode.NotebookRange(1, 2);
       activeEditor.selection = measuredCell;
@@ -889,7 +871,7 @@ exports.run = async function () {
         }
       }
       const productFrame = target.frame;
-      const currentGrid = async () => {
+      const currentGrid = async (pending = false) => {
         const current = await grid();
         assert(
           sourceRetained() &&
@@ -897,336 +879,379 @@ exports.run = async function () {
             vscode.window.tabGroups.activeTabGroup.activeTab === productTab,
           "PILOT_GATE:product-owner-changed"
         );
-        assert(!current || current.frame === productFrame, "PILOT_GATE:product-frame-changed");
-        if (current) target = current;
+        assert(
+          !productFrame.isDetached() && (!current || current.frame === productFrame),
+          "PILOT_GATE:product-frame-changed"
+        );
+        if (!current && pending) return false;
+        assert(current, "DIAGNOSTIC:missing-grid");
+        target = current;
         return current;
       };
       checkpoint(`${sampleName}:profiles`);
-      const profiling = performance.now();
-      try {
-        if (request.product === "ow")
-          await click(
-            target.frame.getByRole("button", {
-              name: "Column profiles and filters",
-              exact: true
-            }),
-            "profile-drawer"
-          );
-        for (const expected of source.profiles) {
-          let profile;
-          if (request.product === "ow") {
-            const search = target.frame.getByRole("combobox", {
-              name: "Column",
-              exact: true
-            });
-            await search.fill(expected.name);
-            await click(
-              target.frame.getByRole("option", {
-                name: new RegExp(`^${expected.name},`)
-              }),
-              "profile-column"
-            );
-            profile = target.frame.getByRole("complementary", {
-              name: "Column profiles and filters",
-              exact: true
-            });
-            assert(
-              await visible(
-                profile.getByRole("heading", {
-                  name: expected.name,
-                  exact: true
-                })
-              )
-            );
-          } else {
-            const header = target.frame.getByRole("columnheader", {
-              name: new RegExp(`^${expected.name}\\b`)
-            });
-            await header.scrollIntoViewIfNeeded();
-            await click(header, "profile-column");
-            profile = header;
-          }
-          await poll(async () => {
-            const text = (await profile.innerText()).replace(/\s+/g, " ");
-            let distributionReady;
-            if (expected.family === "boolean") {
-              distributionReady =
-                sameMetric(text, "true", expected.trueCount) && sameMetric(text, "false", expected.falseCount);
-            } else if (expected.family === "datetime") {
-              distributionReady =
-                new RegExp(`\\bmin(?:imum)?\\s*[:=]?\\s*${expected.minimumDate}`, "i").test(text) &&
-                new RegExp(`\\bmax(?:imum)?\\s*[:=]?\\s*${expected.maximumDate}`, "i").test(text);
-            } else {
-              const marks =
-                request.product === "ow"
-                  ? profile
-                      .getByRole("region", {
-                        name: /^(Distribution|Top values)$/
-                      })
-                      .locator("svg rect,meter")
-                  : profile
-                      .locator(
-                        '[role="img"][aria-label*="distribution" i], [role="img"][aria-label*="histogram" i], [role="group"][aria-label*="distribution" i]'
-                      )
-                      .locator("svg rect,svg path,canvas,meter");
-              distributionReady = false;
-              for (let i = 0; i < Math.min(await marks.count(), 30); i++)
-                distributionReady ||= await marks.nth(i).isVisible();
-            }
-            return (
-              distributionReady &&
-              text.includes(expected.name) &&
-              !/loading|profiling|calculating|pending/i.test(text) &&
-              missingReady(text, expected.missing) &&
-              sameMetric(text, "distinct|unique", expected.distinct) &&
-              (expected.minimum === undefined ||
-                (sameMetric(text, "min(?:imum)?", expected.minimum) &&
-                  sameMetric(text, "max(?:imum)?", expected.maximum)))
-            );
-          }, `complete-profile-${expected.name}`);
-          const publicText = (await profile.innerText()).replace(/\s+/g, " ");
-          const sampling = [];
-          const notices = profile.locator('[title*="sampl" i]');
-          for (let i = 0; i < Math.min(await notices.count(), 4); i++)
-            if (await notices.nth(i).isVisible()) sampling.push((await notices.nth(i).getAttribute("title")) || "");
-          const noticeText = [publicText, ...sampling].join(" ");
-          const qualifications = [
-            ...new Set(
-              noticeText.match(
-                /distribution based on a sample|sampled(?: numeric| boolean| categorical| datetime)? distribution|(?:based on|using|first|sample(?: of)?) [\d,]+ (?:rows|records)|approximate(?:d|ly)?(?: statistics| values)?/gi
-              ) || []
-            )
-          ].slice(0, 4);
-          sample.profileObservations.push({
-            column: expected.name,
-            family: expected.family,
-            validated: [
-              "missing",
-              "distinct",
-              ...(expected.family === "numeric"
-                ? ["minimum", "maximum", "plot marks"]
-                : expected.family === "boolean"
-                  ? ["true", "false"]
-                  : expected.family === "datetime"
-                    ? ["minimum date", "maximum date"]
-                    : ["plot marks"])
-            ],
-            visibleMetricLabels: [
-              "missing",
-              "null",
-              "NaN",
-              "distinct",
-              "unique",
-              "min",
-              "max",
-              "mean",
-              "median",
-              "sum",
-              "true",
-              "false"
-            ].filter((label) => new RegExp(`\\b${label}\\b`, "i").test(publicText)),
-            samplingQualifications: qualifications,
-            computationScope: "unqualified-public-ui"
-          });
-          sample.completedProfiles++;
-          checkpoint(`${sampleName}:profile-${expected.name}`);
-        }
-        sample.metrics.profileTraversalMs = performance.now() - profiling;
-        sample.metrics.allProfilesMs = performance.now() - opened;
-      } catch (error) {
-        if (request.mode !== "pilot") throw error;
-        sample.profileFailure = {
-          stage,
-          name: error.name,
-          message: owner
-            .sanitizeEditorAcceptanceDiagnostic(new Error(error.message), [workspace, request.repo])
-            .slice(0, 1000)
-        };
-        sample.profileComparability = "incomparable";
-        sample.metrics.profileAttemptMs = performance.now() - profiling;
-        delete sample.metrics.allProfilesMs;
-        delete sample.metrics.profileTraversalMs;
-        save();
-      }
-      checkpoint(`${sampleName}:cleaning`);
-      if (request.product === "ow") {
-        const close = target.frame
-          .getByRole("complementary", {
-            name: "Column profiles and filters",
-            exact: true
-          })
-          .getByRole("button", { name: "Close panel", exact: true });
-        if (await visible(close)) await close.click();
-        await poll(
-          async () =>
-            !(await visible(
-              target.frame.getByRole("complementary", { name: "Column profiles and filters", exact: true })
-            )),
-          "profile-panel-closed"
-        );
-      }
-      if (sample.profileFailure) {
-        assert(
-          !(await find("dialog", /.*/)) && !(await find("menu", /.*/)),
-          "Pilot gate: cannot restore independent cleaning state"
-        );
-        await poll(currentGrid, "restored-grid-after-profile-failure");
-      }
-      const modeStart = performance.now();
-      const editing =
-        request.product === "ow"
-          ? target.frame.getByRole("button", {
-              name: "Switch to Editing",
-              exact: true
-            })
-          : await find("button", "Editing");
-      if (editing && (await visible(editing))) await editing.click();
-      if (request.product === "ow")
-        await poll(
-          () =>
-            visible(
-              target.frame.getByRole("button", {
-                name: "Add step",
-                exact: true
-              })
-            ),
-          "editing-ready"
-        );
-      await poll(currentGrid, "editing-grid");
-      sample.metrics.editingModeMs = performance.now() - modeStart;
-      const focus = target.root.locator('td[tabindex="0"],[role="gridcell"][tabindex="0"]');
-      await click(focus, "grid-focus");
-      await page.keyboard.press("Control+Home");
-      await poll(() => rowCells(target.root, 0), "cleaning-first-row");
-      const changedCell = async (column) => {
-        const row = await rowCells(target.root, 0);
-        if (!row) return false;
-        const values = row.values;
-        return column === "c01"
-          ? Number(values[1].replaceAll(",", "").trim()) === source.median
-          : values[3].trim() === "north";
+      const observation = {
+        header: { observed: false },
+        quickInsights: { observed: false },
+        dataSummary: { observed: false },
+        mode: { viewingObserved: false, editingOffered: false, editingConfirmed: false },
+        forms: [],
+        computationScope: "unknown"
       };
-      for (const [title, column] of [
-        ["Fill missing values", "c01"],
-        ["Lowercase", "c03"]
-      ]) {
-        if (request.product === "ow") {
-          await click(target.frame.getByRole("button", { name: "Add step", exact: true }), "add-step");
-          const dialog = target.frame.getByRole("dialog", {
-            name: "Add cleaning step",
-            exact: true
-          });
-          await dialog.getByRole("textbox", { name: "Search operations", exact: true }).fill(title);
-          await click(dialog.getByRole("button", { name: new RegExp(`^${title}\\b`) }), "operation");
-          await dialog
-            .getByRole("combobox", {
-              name: column === "c01" ? "Column" : "Text column",
-              exact: true
-            })
-            .selectOption({ label: column });
-          if (column === "c01")
-            await dialog.getByRole("combobox", { name: "Method", exact: true }).selectOption("median");
-          const start = performance.now();
-          await click(
-            dialog.getByRole("button", {
-              name: "Preview changes",
-              exact: true
-            }),
-            "preview"
-          );
-          const apply = target.frame
-            .getByRole("region", { name: "Draft review", exact: true })
-            .getByRole("button", { name: "Apply step", exact: true });
-          await poll(async () => (await visible(apply)) && (await apply.isEnabled()), "ready-preview");
-          const previewMs = performance.now() - start,
-            applied = performance.now();
-          await apply.click();
-          await poll(
-            async () => !(await visible(apply)) && (await currentGrid()) && (await changedCell(column)),
-            "applied-grid"
-          );
-          sample.actions.push({
-            title,
-            previewMs,
-            applyMs: performance.now() - applied
-          });
-        } else {
-          // Public names below are pilot gates, not assertions that current selectors are established.
-          const name = column === "c01" ? "Fill missing values" : "Convert text to lowercase";
-          const operation = await poll(() => find("button", new RegExp(`^${name}$`, "i")), `dw-${name}`);
-          await operation.click();
-          const selectedColumn = await poll(() => find("combobox", /^Column$/i), "dw-column");
-          let start = performance.now();
-          await selectedColumn.selectOption({ label: column });
-          if (column === "c01") {
-            const method = await poll(() => find("combobox", /^(Method|Fill with)$/i), "dw-method");
-            start = performance.now();
-            await method.selectOption({ label: "Median" });
-          }
-          const apply = await poll(async () => {
-            const control = await find("button", /^Apply$/i);
-            return control && (await control.isEnabled()) && (await changedCell(column)) ? control : false;
-          }, "dw-preview-ready");
-          assert(await apply.isEnabled());
-          const previewMs = performance.now() - start,
-            applied = performance.now();
-          await apply.click();
-          await poll(
-            async () => (await currentGrid()) && (await changedCell(column)) && !(await visible(apply)),
-            "dw-applied-grid"
-          );
-          sample.actions.push({
-            title,
-            previewMs,
-            applyMs: performance.now() - applied
-          });
-        }
-        checkpoint(`${sampleName}:applied-${column}`);
+      sample.observation = observation;
+      const held = new Set();
+      const saveObservation = () => {
+        assert(Buffer.byteLength(JSON.stringify(observation), "utf8") <= 8192, "DIAGNOSTIC:observation-bound");
         save();
+      };
+      const capture = async (locator, label) => {
+        await currentGrid();
+        const handles = await locator.elementHandles();
+        let selected;
+        try {
+          assert(handles.length <= 32, `DIAGNOSTIC:truncated-${label}`);
+          const candidates = [];
+          for (const handle of handles) {
+            const state = await handle.evaluate((element) => ({
+              connected: element.isConnected && element.ownerDocument === document,
+              visible: element.checkVisibility({ checkVisibilityCSS: true })
+            }));
+            assert(state.connected, `DIAGNOSTIC:detached-${label}`);
+            if (state.visible) candidates.push(handle);
+          }
+          assert(candidates.length <= 1, `DIAGNOSTIC:ambiguous-${label}`);
+          selected = candidates[0];
+          if (selected) held.add(selected);
+          return selected;
+        } finally {
+          for (const handle of handles) if (handle !== selected) await handle.dispose();
+        }
+      };
+      const absent = async (locator) => {
+        await currentGrid();
+        const state = await locator.evaluateAll((elements) => ({
+          count: elements.length,
+          detached: elements.some((element) => !element.isConnected),
+          visible: elements.slice(0, 32).some((element) => element.checkVisibility({ checkVisibilityCSS: true }))
+        }));
+        assert(state.count <= 32 && !state.detached, "DIAGNOSTIC:incomplete-absence");
+        return !state.visible;
+      };
+      const controlFacts = (element, expected) => ({
+        role: ["button", "menuitem", "option", "treeitem", "combobox"].includes(element.getAttribute("role"))
+          ? element.getAttribute("role")
+          : element.getAttribute("role")
+            ? "other"
+            : "none",
+        tag: ["BUTTON", "SELECT", "INPUT", "A", "DIV", "SPAN"].includes(element.tagName)
+          ? element.tagName.toLowerCase()
+          : "other",
+        ariaNameMatches: (element.getAttribute("aria-label") || "").toLowerCase() === expected.toLowerCase(),
+        textMatches: (element.textContent || "").replace(/\s+/g, " ").trim().toLowerCase() === expected.toLowerCase()
+      });
+      const act = async (element, name) => {
+        await currentGrid();
+        assert(
+          await element.evaluate((node, expected) => {
+            const label = (node.getAttribute("aria-label") || node.textContent || "").replace(/\s+/g, " ").trim();
+            return (
+              node.isConnected &&
+              node.ownerDocument === document &&
+              node.checkVisibility({ checkVisibilityCSS: true }) &&
+              label.toLowerCase() === expected.toLowerCase()
+            );
+          }, name),
+          "DIAGNOSTIC:changed-action"
+        );
+        assert(await element.isEnabled(), "DIAGNOSTIC:disabled-action");
+        await element.click({ timeout: 5000 });
+        await poll(() => currentGrid(true), "action-grid");
+      };
+      // This fixed projection never returns header/profile text or arbitrary names.
+      const readSurface = (element, expected) => {
+        const role = element.getAttribute("role");
+        const text = (element.innerText || "").replace(/\s+/g, " ").trim();
+        const result = {
+          observed: true,
+          connected: element.isConnected && element.ownerDocument === document,
+          role: ["columnheader", "region", "complementary", "heading", "row", "gridcell"].includes(role)
+            ? role
+            : role
+              ? "other"
+              : "none",
+          tag: ["TH", "TD", "DIV", "SPAN", "SECTION", "ASIDE"].includes(element.tagName)
+            ? element.tagName.toLowerCase()
+            : "other",
+          ariaNameExactColumn: element.getAttribute("aria-label") === "c00",
+          ariaNameStartsColumn: /^c00\b/.test(element.getAttribute("aria-label") || ""),
+          textStartsColumn: /^c00\b/.test(text),
+          containsColumn: /\bc00\b/.test(text),
+          truncated: text.length > 8192,
+          includesExcludedContent: !!element.querySelector(
+            'pre,code,input,textarea,[contenteditable="true"],[role="grid"],table'
+          ),
+          metrics: {},
+          plotPresent: false,
+          samplingMentioned: false
+        };
+        if (result.truncated || result.includesExcludedContent) return result;
+        for (const [key, pattern, value] of [
+          ["missing", "missing|null(?:s| values?)?", expected.missing],
+          ["distinct", "distinct|unique", expected.distinct],
+          ["minimum", "min(?:imum)?", expected.minimum],
+          ["maximum", "max(?:imum)?", expected.maximum]
+        ]) {
+          const match = new RegExp(`(?:${pattern})\\s*[:=]?\\s*([\\d,.]+)\\s*([kmb]?)(?![%\\w])`, "i").exec(text);
+          const scale = match ? { k: 1000, m: 1e6, b: 1e9 }[match[2].toLowerCase()] || 1 : 1;
+          const number = match?.[1].replaceAll(",", "");
+          const tolerance = scale === 1 ? 0 : (scale * 10 ** -(number.split(".")[1]?.length || 0)) / 2;
+          result.metrics[key] = {
+            labelPresent: new RegExp(`\\b(?:${pattern})\\b`, "i").test(text),
+            expectedMatch: !!match && Math.abs(Number(number) * scale - value) <= tolerance
+          };
+        }
+        const plots = element.querySelectorAll("svg,canvas,meter,[role=img]");
+        result.truncated ||= plots.length > 32;
+        result.plotPresent = [...plots].slice(0, 32).some((node) => node.checkVisibility({ checkVisibilityCSS: true }));
+        result.samplingMentioned = /\bsampl(?:e|ed|ing)|\bapproximate/i.test(text);
+        return result;
+      };
+      const readOwnedSurface = async (element) => {
+        await currentGrid();
+        const facts = await element.evaluate(readSurface, source.profiles[0]);
+        assert(facts.connected && !facts.truncated, "DIAGNOSTIC:incomplete-surface");
+        return facts;
+      };
+      const namedControl = (name) =>
+        target.frame
+          .locator('button,[role="button"],[role="menuitem"],[role="option"],[role="treeitem"]')
+          .filter({ hasText: new RegExp(`^${name}$`, "i") });
+      try {
+        const column = await capture(target.root.getByText("c00", { exact: true }), "c00");
+        if (column) {
+          observation.header = await readOwnedSurface(column);
+          const headerHandle = await column.evaluateHandle((node) => {
+            const header = node.closest('th,[role="columnheader"]');
+            return header && header.closest('[role="grid"]') === node.closest('[role="grid"]') ? header : null;
+          });
+          const header = headerHandle.asElement();
+          try {
+            if (header) observation.quickInsights = await readOwnedSurface(header);
+          } finally {
+            await headerHandle.dispose();
+          }
+          observation.header.rolePrefixMatches = await target.root
+            .getByRole("columnheader", { name: /^c00\b/ })
+            .count();
+          assert(observation.header.rolePrefixMatches <= 32, "DIAGNOSTIC:header-name-bound");
+          await act(column, "c00");
+          observation.header.clicked = true;
+        }
+        // A named semantic surface is independent of the selected header. No parent guessing.
+        const summary = await capture(
+          target.frame
+            .getByRole("complementary", { name: /^Data Summary$/i })
+            .or(target.frame.getByRole("region", { name: /^Data Summary$/i })),
+          "data-summary"
+        );
+        observation.dataSummary.headingObserved = !!(await capture(
+          target.frame.getByText("Data Summary", { exact: true }),
+          "summary-heading"
+        ));
+        if (summary)
+          observation.dataSummary = {
+            ...(await readOwnedSurface(summary)),
+            headingObserved: observation.dataSummary.headingObserved
+          };
+        saveObservation();
+        checkpoint(`${sampleName}:mode-observation`);
+        const viewing = await capture(target.frame.getByRole("menuitem", { name: "Viewing", exact: true }), "viewing");
+        observation.mode.viewingObserved = !!viewing;
+        if (viewing) observation.mode.viewingControl = await viewing.evaluate(controlFacts, "Viewing");
+        if (viewing) {
+          await act(viewing, "Viewing");
+          const editing = await capture(namedControl("Editing"), "editing-option");
+          observation.mode.editingOffered = !!editing;
+          if (editing) observation.mode.editingControl = await editing.evaluate(controlFacts, "Editing");
+          if (editing) {
+            await act(editing, "Editing");
+            observation.mode.editingConfirmed = await poll(async () => {
+              if (!(await currentGrid(true))) return false;
+              let mode, operations;
+              try {
+                mode = await capture(
+                  target.frame.getByRole("menuitem", { name: "Editing", exact: true }),
+                  "editing-mode"
+                );
+                operations = await capture(target.frame.getByText("Operations", { exact: true }), "operations");
+                return !!mode && !!operations;
+              } finally {
+                for (const element of [mode, operations]) {
+                  if (element) {
+                    held.delete(element);
+                    await element.dispose();
+                  }
+                }
+              }
+            }, "editing-not-confirmed");
+          }
+        }
+        saveObservation();
+        if (observation.mode.editingConfirmed) {
+          for (const [title, columnName] of [
+            ["Fill missing values", "c01"],
+            ["Convert text to lowercase", "c03"]
+          ]) {
+            checkpoint(`${sampleName}:form-${columnName}`);
+            const form = {
+              operation: title,
+              offered: false,
+              columnOffered: false,
+              medianOffered: false,
+              cancelled: false
+            };
+            observation.forms.push(form);
+            // An existing Apply/Cancel would make the next operation's ownership ambiguous.
+            const priorCancel = await capture(namedControl("Cancel"), "prior-cancel");
+            const priorApply = await capture(namedControl("Apply"), "prior-apply");
+            assert(!priorCancel && !priorApply, "DIAGNOSTIC:prior-preview");
+            const operation = await capture(namedControl(title), "operation");
+            form.offered = !!operation;
+            if (operation) form.operationControl = await operation.evaluate(controlFacts, title);
+            if (!operation) {
+              saveObservation();
+              continue;
+            }
+            await act(operation, title);
+            await poll(async () => {
+              if (!(await currentGrid(true))) return false;
+              return capture(namedControl("Cancel"), "cancel");
+            }, "form-cancel");
+            const columnControl = await capture(
+              target.frame.getByRole("combobox", { name: /^Column$/i }),
+              "column-field"
+            );
+            form.columnControlObserved = !!columnControl;
+            if (columnControl) form.columnControl = await columnControl.evaluate(controlFacts, "Column");
+            if (columnControl) {
+              const native = await columnControl.evaluate(
+                (node, expected) => ({
+                  select: node instanceof HTMLSelectElement,
+                  matching:
+                    node instanceof HTMLSelectElement
+                      ? [...node.options].filter((option) => option.label === expected).length
+                      : 0,
+                  truncated: node instanceof HTMLSelectElement && node.options.length > 64
+                }),
+                columnName
+              );
+              assert(!native.truncated && native.matching <= 1, "DIAGNOSTIC:column-options");
+              form.columnOffered = native.select && native.matching === 1;
+              if (form.columnOffered) {
+                await currentGrid();
+                await columnControl.selectOption({ label: columnName }, { timeout: 5000 });
+                await poll(() => currentGrid(true), "action-grid");
+                form.columnSelected = await columnControl.evaluate(
+                  (node, expected) =>
+                    node.isConnected && node.selectedOptions.length === 1 && node.selectedOptions[0].label === expected,
+                  columnName
+                );
+                assert(form.columnSelected, "DIAGNOSTIC:column-selection");
+              }
+            }
+            if (columnName === "c01" && form.columnOffered) {
+              const method = await capture(
+                target.frame.getByRole("combobox", { name: /^(Method|Fill with)$/i }),
+                "method-field"
+              );
+              form.methodControlObserved = !!method;
+              if (method) form.methodControl = await method.evaluate(controlFacts, "Method");
+              if (method) {
+                const native = await method.evaluate((node) => ({
+                  select: node instanceof HTMLSelectElement,
+                  matching:
+                    node instanceof HTMLSelectElement
+                      ? [...node.options].filter((option) => option.label === "Median").length
+                      : 0,
+                  truncated: node instanceof HTMLSelectElement && node.options.length > 32
+                }));
+                assert(!native.truncated && native.matching <= 1, "DIAGNOSTIC:method-options");
+                form.medianOffered = native.select && native.matching === 1;
+                if (form.medianOffered) {
+                  await currentGrid();
+                  await method.selectOption({ label: "Median" }, { timeout: 5000 });
+                  await poll(() => currentGrid(true), "action-grid");
+                  form.medianSelected = await method.evaluate(
+                    (node) =>
+                      node.isConnected &&
+                      node.selectedOptions.length === 1 &&
+                      node.selectedOptions[0].label === "Median"
+                  );
+                  assert(form.medianSelected, "DIAGNOSTIC:method-selection");
+                }
+              }
+            }
+            form.applyObserved = !!(await capture(namedControl("Apply"), "apply"));
+            const cancel = await capture(namedControl("Cancel"), "cancel-current");
+            assert(cancel, "DIAGNOSTIC:cancel-unavailable");
+            form.cancelControl = await cancel.evaluate(controlFacts, "Cancel");
+            await act(cancel, "Cancel");
+            await poll(async () => {
+              await currentGrid();
+              return (
+                (await absent(namedControl("Cancel"))) &&
+                (await absent(namedControl("Apply"))) &&
+                (await absent(target.frame.getByRole("combobox", { name: /^(Column|Method|Fill with)$/i })))
+              );
+            }, "cancelled-form");
+            const original = await rowCells(target.root, 0);
+            assert(
+              original && original.values.every((value, index) => value === first.values[index]),
+              "DIAGNOSTIC:preview-not-restored"
+            );
+            form.cancelled = true;
+            saveObservation();
+          }
+        }
+        observation.unresolved = [];
+        if (!observation.header.clicked) observation.unresolved.push("c00-click");
+        if (!observation.quickInsights.observed) observation.unresolved.push("quick-insights-owner");
+        if (!observation.dataSummary.observed || observation.dataSummary.includesExcludedContent)
+          observation.unresolved.push("data-summary-owner");
+        if (!observation.mode.editingConfirmed) observation.unresolved.push("editing-route");
+        for (const form of observation.forms) {
+          if (
+            !form.offered ||
+            !form.columnSelected ||
+            (form.operation === "Fill missing values" && !form.medianSelected)
+          )
+            observation.unresolved.push(form.operation);
+        }
+        saveObservation();
+      } finally {
+        for (const element of held) await element.dispose();
       }
-      sample.renderedResultVerified = (await changedCell("c01")) && (await changedCell("c03"));
-      assert(sample.renderedResultVerified);
-      await vscode.env.clipboard.writeText("PUBLIC_COMPARISON_EMPTY");
-      if (request.product === "ow") await vscode.commands.executeCommand("openWrangler.copyCode");
-      else {
-        const exportButton = await poll(() => find("button", /^Export$/i), "dw-export");
-        await exportButton.click();
-        const copy = await poll(() => find("menuitem", /^Copy code to clipboard$/i), "dw-copy-code");
-        await copy.click();
-      }
-      const code = await poll(async () => {
-        const text = await vscode.env.clipboard.readText();
-        return text !== "PUBLIC_COMPARISON_EMPTY" && text.length > 0 && text.length < 262144 ? text : false;
-      }, "exported-code");
-      assert(await notebook.save());
-      assert(
-        vscode.window.tabGroups.all.some((g) => g.tabs.includes(notebookTab)),
-        "Source notebook tab changed"
-      );
-      assert(await vscode.window.tabGroups.close(productTab, true), "Product tab did not close");
-      assert(!notebook.isClosed);
+      assert(sourceRetained(), "DIAGNOSTIC:source-owner-changed");
+      assert(await vscode.window.tabGroups.close(productTab, true), "DIAGNOSTIC:product-close");
+      assert(!notebook.isClosed && notebook.cellAt(1) === measuredCellOwner);
       await vscode.window.showNotebookDocument(notebook);
       await replaceCell(
         2,
-        `comparison_code = ${JSON.stringify(code)}\n` +
-          "import pandas as pd\npd.testing.assert_frame_equal(comparison_frame, comparison_original, check_exact=True)\n" +
-          "comparison_oracle = comparison_helpers['verify_code'](comparison_code, comparison_frame)\n" +
-          "print('COMPARISON_VERIFIED:' + json.dumps({'oracle': comparison_oracle, 'kernelIdentity': " +
-          "{'nonce': comparison_kernel_identity['nonce'], 'pid': os.getpid()}, 'runtime': comparison_helpers['runtime_identity']()}))"
+        "import pandas as pd\npd.testing.assert_frame_equal(comparison_frame, comparison_original, check_exact=True)\n" +
+          "print('COMPARISON_VERIFIED:' + json.dumps({'digest': comparison_helpers['digest'](comparison_frame), " +
+          "'kernelIdentity': {'nonce': comparison_kernel_identity['nonce'], 'pid': os.getpid()}, 'runtime': comparison_helpers['runtime_identity']()}))"
       );
       const verified = await execute(2, "COMPARISON_VERIFIED:");
+      assert.equal(verified.digest, source.digest);
       assert.deepEqual(verified.kernelIdentity, source.kernelIdentity);
       assert.deepEqual(verified.runtime, request.runtimeIdentity);
       sample.kernelContinuityVerified = true;
-      sample.oracle = verified.oracle;
-      assert(sample.oracle.completeFrameEqual && sample.oracle.sourceUnchanged);
-      sample.status = sample.profileFailure ? "failed" : "passed";
-      checkpoint(`${sampleName}:verified`);
+      sample.sourceUnchanged = true;
+      sample.status = "completed";
+      checkpoint(`${sampleName}:observed`);
       save();
     }
-    receipt.status = receipt.samples.every((sample) => sample.status === "passed") ? "passed" : "failed";
+    receipt.status = "completed";
     save();
-    assert.equal(receipt.status, "passed", "Pilot contains retained profile contract failures");
     return;
   } catch (error) {
     const active = receipt.samples.at(-1);
@@ -1253,11 +1278,23 @@ exports.run = async function () {
             [...document.querySelectorAll('[role="grid"],table')]
               .filter((element) => element.checkVisibility())
               .slice(0, 8)
-              .map((element) => ({
-                role: element.getAttribute("role")?.slice(0, 32) || "table",
-                ariaRowcount: element.getAttribute("aria-rowcount")?.slice(0, 32) ?? null,
-                ariaColcount: element.getAttribute("aria-colcount")?.slice(0, 32) ?? null
-              }))
+              .map((element) => {
+                const count = (name) => {
+                  const value = element.getAttribute(name);
+                  return value !== null && /^(?:0|[1-9]\d{0,15})$/.test(value) && Number.isSafeInteger(Number(value))
+                    ? Number(value)
+                    : null;
+                };
+                return {
+                  role: ["grid", "table"].includes(element.getAttribute("role"))
+                    ? element.getAttribute("role")
+                    : element.hasAttribute("role")
+                      ? "other"
+                      : "table",
+                  ariaRowcount: count("aria-rowcount"),
+                  ariaColcount: count("aria-colcount")
+                };
+              })
           );
           gridShapes.push(...observed.slice(0, 8 - gridShapes.length));
         }
@@ -1305,14 +1342,20 @@ exports.run = async function () {
                   .trim()
                   .slice(0, 120);
                 if (
-                  !/^(?:Edit|View|Export|Copy|Apply|Preview|Cancel|Close|Fill|Convert|Median|Lowercase|Column|Method|Search|Back|Open|Operation|Cleaning|Switch|Allow|Deny|Select|More Actions|comparison_(?:frame|original)$|c\d\d$)/i.test(
+                  !/^(?:Editing|Viewing|Export as file|Apply|Cancel|Fill missing values|Convert text to lowercase|Median|Column|Method|Fill with|Operations|Data Summary|c(?:0[0-9]|1[0-9]))$/i.test(
                     label
                   )
                 )
                   return [];
                 return [
                   {
-                    role: element.getAttribute("role") || element.tagName.toLowerCase(),
+                    role: ["button", "link", "combobox", "menuitem", "tab", "option"].includes(
+                      element.getAttribute("role")
+                    )
+                      ? element.getAttribute("role")
+                      : ["BUTTON", "A", "INPUT", "SELECT"].includes(element.tagName)
+                        ? element.tagName.toLowerCase()
+                        : "other",
                     surface: element.closest(".quick-input-widget")
                       ? "picker"
                       : element.closest(".notebook-toolbar-container")
@@ -1342,16 +1385,56 @@ exports.run = async function () {
     if (gridShapes.length) receipt.visibleFailureGridShapes = gridShapes;
     if (controls.length) receipt.visibleFailureControls = controls;
     receipt.status = "failed";
+    // Only exact authored guards are classified; arbitrary locator/runtime text stays private.
+    const guard = typeof error.message === "string" ? error.message : "";
+    const captureGuard =
+      /^DIAGNOSTIC:(ambiguous|truncated|detached)-(c00|data-summary|summary-heading|viewing|editing-option|editing-mode|operations|prior-cancel|prior-apply|operation|cancel|column-field|method-field|apply|cancel-current)$/.exec(
+        guard
+      );
+    const refusalCategory =
+      captureGuard?.[1] === "detached" ||
+      [
+        "DIAGNOSTIC:missing-grid",
+        "DIAGNOSTIC:source-owner-changed",
+        "PILOT_GATE:product-owner-changed",
+        "PILOT_GATE:product-frame-changed"
+      ].includes(guard)
+        ? "owner-loss"
+        : captureGuard?.[1] === "ambiguous" || guard === "PILOT_GATE:ambiguous-product-grid"
+          ? "ambiguous-control"
+          : captureGuard?.[1] === "truncated" ||
+              [
+                "PILOT_GATE:incomplete-frame-discovery",
+                "PILOT_GATE:incomplete-grid-discovery",
+                "DIAGNOSTIC:observation-bound",
+                "DIAGNOSTIC:incomplete-absence",
+                "DIAGNOSTIC:incomplete-surface",
+                "DIAGNOSTIC:header-name-bound",
+                "DIAGNOSTIC:column-options",
+                "DIAGNOSTIC:method-options"
+              ].includes(guard)
+            ? "bounds"
+            : [
+                  "DIAGNOSTIC:changed-action",
+                  "DIAGNOSTIC:disabled-action",
+                  "PILOT_GATE:editing-not-confirmed",
+                  "PILOT_GATE:action-grid",
+                  "PILOT_GATE:form-cancel",
+                  "DIAGNOSTIC:prior-preview",
+                  "DIAGNOSTIC:cancel-unavailable",
+                  "DIAGNOSTIC:column-selection",
+                  "DIAGNOSTIC:method-selection",
+                  "DIAGNOSTIC:preview-not-restored",
+                  "DIAGNOSTIC:product-close",
+                  "PILOT_GATE:cancelled-form"
+                ].includes(guard)
+              ? "action-or-cancellation"
+              : "other";
     receipt.failure = {
       stage,
-      name: error.name,
-      message: owner
-        .sanitizeEditorAcceptanceDiagnostic(new Error(error.message), [
-          workspace,
-          request.repo,
-          request.runtimeIdentity.prefix
-        ])
-        .slice(0, 1000)
+      category: refusalCategory,
+      name: ["AssertionError", "TimeoutError", "Error"].includes(error.name) ? error.name : "Error",
+      message: "Public control observation failed; no raw control or profile text retained."
     };
     save();
     throw new Error(`Public comparison failed at ${stage}`);
