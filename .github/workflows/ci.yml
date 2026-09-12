@@ -133,7 +133,7 @@ jobs:
           esac
           python -m pip install "$@"
           if [ "$NATIVE_SPARK_OMITTABLE" = true ]; then
-            echo 'Native Spark Classic and Connect checks omitted for verified Pandas Arrow Formula edits. Full pytest and fake/shared controls remain; no fresh native Spark execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
+            echo 'Native Spark Classic and Connect checks omitted for verified local dataframe code or test edits. Full pytest and fake/shared controls remain; no fresh native Spark execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
           fi
         env:
           NATIVE_SPARK_OMITTABLE: ${{ needs.docs-proof.outputs.native_spark_omittable }}
