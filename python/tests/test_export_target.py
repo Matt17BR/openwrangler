@@ -657,7 +657,7 @@ def test_windows_pin_blocks_symlink_replace_with_access_denied(tmp_path: Path) -
             replacement.symlink_to(symlink_source)
         except OSError as symlink_error:
             assert getattr(symlink_error, "winerror", None) == 1314
-            return
+            pytest.skip("Windows refused file-symlink creation with privilege error 1314")
         else:
             with pytest.raises(OSError) as raised:
                 os.replace(replacement, target)
