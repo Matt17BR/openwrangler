@@ -2091,7 +2091,8 @@ def test_stdio_redo_refusal_and_recovery_keep_one_correlated_process(tmp_path: P
     assert path.read_text() == source
 
 
-def test_stdio_native_panic_settles_preview_and_preserves_followup(tmp_path: Path) -> None:
+@pytest.mark.parametrize("failure", ["native-panic", "unformattable"])
+def test_stdio_runtime_error_settles_preview_and_preserves_followup(tmp_path: Path, failure: str) -> None:
     path = tmp_path / "native-panic.csv"
     original = b"value\n2\n3\n"
     path.write_bytes(original)
@@ -2122,7 +2123,15 @@ def test_stdio_native_panic_settles_preview_and_preserves_followup(tmp_path: Pat
         )
         assert opened["kind"] == "sessionOpened"
         session_id = opened["metadata"]["sessionId"]
-        # Use the real native exception class without depending on an upstream arithmetic bug.
+        # Keep the real native exception independent of an upstream arithmetic bug.
+        code = (
+            "raise pl.exceptions.PanicException('password=panic-secret ' + 'é' * 5000)"
+            if failure == "native-panic"
+            else (
+                "class BadError(Exception):\n    def __str__(self):\n"
+                "        raise self\nraise BadError('private-error')"
+            )
+        )
         failed = send(
             "panic-preview",
             {
@@ -2133,16 +2142,20 @@ def test_stdio_native_panic_settles_preview_and_preserves_followup(tmp_path: Pat
                 "step": {
                     "id": "native-panic",
                     "kind": "customCode",
-                    "params": {"code": "raise pl.exceptions.PanicException('password=panic-secret ' + 'é' * 5000)"},
+                    "params": {"code": code},
                 },
             },
         )
         assert failed["kind"] == "error" and failed["code"] == "runtime_error"
         assert failed["recoverable"] is True
-        assert "panic-secret" not in failed["message"] and "panic-secret" not in failed["detail"]
-        assert "password=<redacted>" in failed["message"]
+        if failure == "native-panic":
+            assert "panic-secret" not in failed["message"] and "panic-secret" not in failed["detail"]
+            assert "password=<redacted>" in failed["message"]
+            assert len(failed["detail"].encode("utf-8")) <= runtime_protocol.MAX_DIAGNOSTIC_DETAIL_BYTES
+        else:
+            assert failed["message"] == "The runtime error message could not be formatted."
+            assert "detail" not in failed
         assert len(failed["message"].encode("utf-8")) <= runtime_protocol.MAX_DIAGNOSTIC_BYTES
-        assert len(failed["detail"].encode("utf-8")) <= runtime_protocol.MAX_DIAGNOSTIC_DETAIL_BYTES
         page = send(
             "panic-followup",
             {
@@ -2189,6 +2202,7 @@ def test_stdio_native_panic_settles_preview_and_preserves_followup(tmp_path: Pat
         _join_and_close_server_output(process, output)
         assert path.read_bytes() == original
     assert "Exception in worker" not in output.stderr_tail()
+    assert "exception calling callback" not in output.stderr_tail()
 
 
 def test_native_panic_error_boundary_does_not_import_optional_polars() -> None:

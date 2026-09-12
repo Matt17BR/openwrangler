@@ -130,6 +130,9 @@ Polars `PanicException` after the operation unwinds. Recognition requires identi
 exception exports; error handling does not import an optional engine. Missing or divergent exports retain ordinary
 `Exception` handling. Caller interrupts, exits and other `BaseException` subclasses keep their existing propagation.
 This does not retry the operation, restart the runtime or cover native process crashes.
+If an admitted exception's message formatting also raises an admitted exception, the same error mapper returns a
+fixed bounded message with its original classification and session fields. It omits traceback detail rather than
+calling the failed formatter again. This preserves request settlement without limiting arbitrary formatter execution.
 
 Runtime work has three relevant classes:
 

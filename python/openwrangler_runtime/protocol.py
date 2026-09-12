@@ -471,7 +471,12 @@ def response_for_error(
     )
     from .session_source import LiveSourceInvalidatedError
 
-    message = bounded_diagnostic(str(error), maximum_message_bytes)
+    message_formatted = True
+    try:
+        message = bounded_diagnostic(str(error), maximum_message_bytes)
+    except request_error_types():
+        message_formatted = False
+        message = bounded_diagnostic("The runtime error message could not be formatted.", maximum_message_bytes)
     if isinstance(error, ProtocolError):
         return error_response(message, code="invalid_request", recoverable=False)
     if isinstance(error, UnknownSessionError):
@@ -499,7 +504,7 @@ def response_for_error(
         return error_response(message, code="engine_error")
     return error_response(
         message,
-        detail=bounded_diagnostic(traceback.format_exc(), maximum_detail_bytes),
+        detail=bounded_diagnostic(traceback.format_exc(), maximum_detail_bytes) if message_formatted else None,
     )
 
 

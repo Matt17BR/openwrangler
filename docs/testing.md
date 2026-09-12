@@ -182,6 +182,9 @@ Use the existing owners to choose a focused source check:
 - **Notebook and process boundaries:** kernel, bridge and transport owners check correlated bounded framing,
   cancellation, execution settlement and cleanup of the original source owner. The
   [response-framing owner](../python/tests/test_response_framing.py) checks canonical bytes and size limits.
+  Existing stdio and notebook error journeys also exercise unformattable Custom Code exceptions, preserving a
+  correlated response, rollback, source ownership and subsequent page/close requests. Mapper controls retain
+  classification, diagnostic budgets and lifecycle interrupts without retrying the failed formatter.
   Live protocol admission and saved-output normalization are separate contracts; legacy display compatibility does
   not admit an obsolete live runtime. See [notebook provenance](architecture.md#notebook-kernel-terminal-and-document-provenance)
   and [bounded transport](architecture.md#schemas-and-bounded-transport).
