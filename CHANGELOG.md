@@ -274,16 +274,16 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Added
 
-- **Pivot wider** reshapes one exact text/factor key and one scalar value column into 2–64 fixed ordered outputs.
+- **Pivot wider** reshapes one exact text/factor key and one scalar value column into 2 to 64 fixed ordered outputs.
   Every non-null key must be declared, duplicate identifier/key rows fail without aggregation, missing combinations
   become typed nulls, and Pandas, Polars, DuckDB, and Native R preserve engine-native values and generated code.
-- **Pivot longer** reshapes 2–64 ordered, exactly compatible scalar columns into stable label/value outputs. It keeps
+- **Pivot longer** reshapes 2 to 64 ordered, exactly compatible scalar columns into stable label/value outputs. It keeps
   unselected columns, emits selected-column-major rows, preserves native scalar metadata without common-type
   coercion, and runs natively in Pandas, Polars, DuckDB, and Native R; PySpark remains viewing-only.
 - **Extract regex group** retains its source column and creates one stable output from the selected capture group in
   the first leftmost match. Pandas, Polars, DuckDB, and Native R share one bounded portable pattern contract and
   engine-native live and generated execution; PySpark remains viewing-only.
-- **Split text into columns** retains its source column and creates 2–64 ordered output columns from one non-empty
+- **Split text into columns** retains its source column and creates 2 to 64 ordered output columns from one non-empty
   literal delimiter. Null and missing parts stay null, participating empty parts stay empty, and extra parts are
   ignored across Pandas, Polars, DuckDB, and Native R; PySpark remains viewing-only.
 
@@ -358,7 +358,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Added
 
-- R dataframes can scale integer, double, and `integer64` columns to the 0–1 range, in place or into a new column.
+- R dataframes can scale integer, double, and `integer64` columns to the 0 to 1 range, in place or into a new column.
   Preview, apply, inspection, undo, and generated R produce the same result.
 - True and False counts can filter a Boolean column from either its grid-header profile or the Column profiles panel.
 - Active viewing filters stay visible above the grid as typed, individually removable chips. **Clear filters** keeps
@@ -1000,7 +1000,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 - Added protocol-v2 schemas, generated TypeScript contracts, Python validation, typed cells, correlated cancellation,
   timeouts, and structured diagnostics.
 - Added concurrent session IDs, per-session serialization, stale-revision rejection, cleanup, and runtime replay.
-- Added Python 3.10–3.14 environment resolution, engine/format probes, and confirmation before dependency install.
+- Added Python 3.10 to 3.14 environment resolution, engine/format probes, and confirmation before dependency install.
 - Added two-axis grid virtualization, resizable columns, keyboard navigation, column search, responsive Insights, and
   progressive profiles.
 - Added native Operations, Summary, Filters / Sorts, and Cleaning Steps views plus Code Preview.

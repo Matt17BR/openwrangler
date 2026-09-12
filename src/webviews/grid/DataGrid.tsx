@@ -1383,10 +1383,10 @@ export function DataGrid({
           {page.totalRows === 0
             ? "No rows"
             : page.totalRows === null
-              ? `Rows ${(page.offset + 1).toLocaleString()}\u2013${(
+              ? `Rows ${(page.offset + 1).toLocaleString()} to ${(
                   page.offset + page.rows.length
                 ).toLocaleString()} · total appears after the last page`
-              : `Rows ${(page.offset + 1).toLocaleString()}\u2013${Math.min(
+              : `Rows ${(page.offset + 1).toLocaleString()} to ${Math.min(
                   page.offset + page.rows.length,
                   page.totalRows
                 ).toLocaleString()} of ${page.totalRows.toLocaleString()}`}

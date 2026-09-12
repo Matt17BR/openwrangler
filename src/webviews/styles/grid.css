@@ -163,6 +163,7 @@
 
 .gridStatusBar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   flex: 0 0 auto;
   gap: 3px;

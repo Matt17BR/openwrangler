@@ -88,12 +88,12 @@ stable-release scope; the experimental and Preview capabilities below have addit
 | ----------------------------------------- | ------- | ----------------------------------- | -------------------------- |
 | Pandas files and live dataframes          | Yes     | Pandas Python                       | CSV / Parquet              |
 | Polars files and live dataframes          | Yes     | Polars Python                       | CSV / Parquet              |
-| DuckDB files — experimental               | Yes     | Supported operations, DuckDB Python | CSV / Parquet              |
+| DuckDB files (experimental)               | Yes     | Supported operations, DuckDB Python | CSV / Parquet              |
 | DuckDB notebook relations                 | Yes     | Unavailable                         | Unavailable                |
 | Local PySpark Classic / Connect notebooks | Bounded | Unavailable                         | Unavailable                |
-| R base `data.frame` — Preview             | Yes     | Supported operations, native R      | CSV / Parquet, with limits |
-| R ordinary tibble — Preview               | Yes     | Supported operations, native R      | CSV / Parquet, with limits |
-| R ordinary `data.table` — Preview         | Yes     | Supported operations, native R      | CSV / Parquet, with limits |
+| R base `data.frame` (Preview)             | Yes     | Supported operations, native R      | CSV / Parquet, with limits |
+| R ordinary tibble (Preview)               | Yes     | Supported operations, native R      | CSV / Parquet, with limits |
+| R ordinary `data.table` (Preview)         | Yes     | Supported operations, native R      | CSV / Parquet, with limits |
 
 **R support is Preview.** Supported R frames can be viewed, cleaned and exported, but stable extension publication
 does not yet qualify these R workflows against the exact release package. The

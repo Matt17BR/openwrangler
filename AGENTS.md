@@ -35,7 +35,7 @@ Read the owning document before changing its boundary. Link to it rather than co
 - Viewing filters and sorts do not modify the cleaning plan or source. Open Wrangler never overwrites source data. Export uses an explicit, separate destination and atomic replacement.
 - Python or R execution, dependency installation, custom code, and exports require Workspace Trust. Preserve existing confirmation, source, and destination checks; test hooks may not bypass the production safety path.
 - Validate data and messages at every process and webview boundary. Runtime requests are versioned and correlated; stale results are ignored. Mutations publish as one confirmed state or restore the previous state.
-- Bind asynchronous work to the exact source and execution or session owners that started it—backend, interpreter, kernel, R terminal, or document as applicable. Do not recover provenance from whichever editor, notebook, or runtime happens to be active after an await. Cleanup targets only owned resources; engine cleanup hooks run at most once.
+- Bind asynchronous work to the exact source and execution or session owners that started it: backend, interpreter, kernel, R terminal, or document as applicable. Do not recover provenance from whichever editor, notebook, or runtime happens to be active after an await. Cleanup targets only owned resources; engine cleanup hooks run at most once.
 - Keep pages, profiles, notebook captures, transport values, and diagnostics bounded and strict-JSON-safe. Schemas crossing runtime, host, or webview boundaries use stable, unique, non-empty column IDs and contiguous positions. User-derived keys belong in `Map` or `Set`, not object properties.
 - Webviews use a restrictive CSP, same-origin validated messages, VS Code theme tokens, accessible names, and keyboard navigation. They do not read files, execute dataframe code, or use Node APIs.
 - Generated cleaning code and live execution must agree. An operation change needs executable runtime and generated-code coverage for every editing-capable engine that supports it, including null, type, identity, and collision behavior relevant to that operation.
@@ -54,7 +54,7 @@ Read the owning document before changing its boundary. Link to it rather than co
 - Before extending an installed-editor journey, follow the total-cost and remaining-margin review in `docs/testing.md`; prefer a source or focused UI owner when it proves the same behavior.
 - Keep evidence proportionate: use one concise finding and decision record, linking to the relevant tests and logs. Preserve required artifact provenance and failure evidence. Add another review, receipt, hash inventory or wrapper only to resolve a named uncertainty that existing evidence cannot settle. Routine self-checks need no ceremonial output.
 - Keep generated files generated. Run the owning generator and commit its output; do not patch generated output to hide drift.
-- Write public text as a maintainer describing a concrete result. Follow `docs/writing-style.md` and give the finished text an editorial read.
+- Write public text as a maintainer describing a concrete result. Do not use em dashes or en dashes in project-authored prose, UI labels, or generated descriptions. Follow [Writing style](docs/writing-style.md) and give the finished text an editorial read.
 
 ## Documentation routing
 

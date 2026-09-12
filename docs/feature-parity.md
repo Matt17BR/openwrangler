@@ -170,7 +170,7 @@ and additional positive integer powers. Eligible signed additions widen to Int64
 complete result must fit one output type. Successful native results keep their types. Modulo preserves nulls and refuses
 a zero divisor when both operands are present. Live execution and generated code agree, and refusals preserve source
 data and the confirmed plan.
-Column-to-column powers can widen eligible signed bases with signed or 8–32-bit unsigned exponents to Int64 when
+Column-to-column powers can widen eligible signed bases with signed or 8-32-bit unsigned exponents to Int64 when
 narrow Arrow storage would overflow. If that fails, nonnegative operand columns can produce a checked UInt64 result.
 Negative values anywhere in either selected column, including those paired with null, do not enter this additional
 repair. UInt64 exponents, negative exponents and remaining overflows retain their existing limits and repairs.

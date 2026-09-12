@@ -740,7 +740,7 @@ function describeProfileFilter(filter: ColumnFilter): string {
     const lower = filter.predicates.find((predicate) => predicate.operator === "gte");
     const upper = filter.predicates.find((predicate) => predicate.operator === "lt" || predicate.operator === "lte");
     if (lower?.value !== undefined && upper?.value !== undefined) {
-      return `Filter: ${displayFilterValue(lower.value)}–${displayFilterValue(upper.value)}`;
+      return `Filter: ${displayFilterValue(lower.value)} to ${displayFilterValue(upper.value)}`;
     }
   }
   return "Filter active";

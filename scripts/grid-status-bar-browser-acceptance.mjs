@@ -21,7 +21,7 @@ export async function verifyGridStatusBarBrowserAcceptance(browser, harnessDirec
       harness: "grid-zoom-0-8.html",
       width: 1280,
       expectedDataGridWidth: 1600,
-      range: "Rows 1\u20134 of 4",
+      range: "Rows 1 to 4 of 4",
       previousDisabled: true,
       nextDisabled: true,
       expectSecondRow: false
@@ -30,7 +30,7 @@ export async function verifyGridStatusBarBrowserAcceptance(browser, harnessDirec
       harness: "grid-view.html",
       width: 1280,
       expectedDataGridWidth: 1280,
-      range: "Rows 1\u20134 of 4",
+      range: "Rows 1 to 4 of 4",
       previousDisabled: true,
       nextDisabled: true,
       expectSecondRow: false
@@ -39,7 +39,7 @@ export async function verifyGridStatusBarBrowserAcceptance(browser, harnessDirec
       harness: "grid-view.html",
       width: 800,
       expectedDataGridWidth: 800,
-      range: "Rows 1\u20134 of 4",
+      range: "Rows 1 to 4 of 4",
       previousDisabled: true,
       nextDisabled: true,
       expectSecondRow: false
@@ -48,29 +48,29 @@ export async function verifyGridStatusBarBrowserAcceptance(browser, harnessDirec
       harness: "grid-view.html",
       width,
       expectedDataGridWidth: width,
-      range: "Rows 99,999,997\u2013100,000,000 of 100,000,000",
+      range: "Rows 99,999,997 to 100,000,000 of 100,000,000",
       previousDisabled: true,
       nextDisabled: true,
       expectSecondRow: false,
-      visibleRowsOverride: "Rows 99,999,997\u2013100,000,000 of 100,000,000"
+      visibleRowsOverride: "Rows 99,999,997 to 100,000,000 of 100,000,000"
     })),
-    ...[900, 901, 1048, 1049].map((width) => ({
+    ...[900, 901, 1048, 1049, 1064, 1065].map((width) => ({
       harness: "grid-view.html",
       width,
       expectedDataGridWidth: width,
-      range: "Rows 99,999,997\u2013100,000,000 of 100,000,000",
+      range: "Rows 99,999,997 to 100,000,000 of 100,000,000",
       previousDisabled: true,
       nextDisabled: true,
       expectSecondRow: false,
-      visibleRowsOverride: "Rows 99,999,997\u2013100,000,000 of 100,000,000",
-      expectWrappedFooter: width === 900 ? undefined : width <= 1048,
+      visibleRowsOverride: "Rows 99,999,997 to 100,000,000 of 100,000,000",
+      expectWrappedFooter: true,
       expectSelectionStatusVisible: width > 900
     })),
     {
       harness: "grid-zoom-1-5.html",
       width: 1280,
       expectedDataGridWidth: 853,
-      range: "Rows 1\u20134 of 4",
+      range: "Rows 1 to 4 of 4",
       previousDisabled: true,
       nextDisabled: true,
       expectSecondRow: false
@@ -79,7 +79,7 @@ export async function verifyGridStatusBarBrowserAcceptance(browser, harnessDirec
       harness: "grid-zoom-2.html",
       width: 1280,
       expectedDataGridWidth: 640,
-      range: "Rows 1\u20134 of 4",
+      range: "Rows 1 to 4 of 4",
       previousDisabled: true,
       nextDisabled: true,
       expectSecondRow: false
@@ -88,7 +88,7 @@ export async function verifyGridStatusBarBrowserAcceptance(browser, harnessDirec
       harness: "by-example-preview-dark-zoom-200.html",
       width: 1280,
       expectedDataGridWidth: 640,
-      range: "Rows 1\u201310 of 10",
+      range: "Rows 1 to 10 of 10",
       previousDisabled: true,
       nextDisabled: true,
       expectSecondRow: false
@@ -97,7 +97,7 @@ export async function verifyGridStatusBarBrowserAcceptance(browser, harnessDirec
       harness: "summary-families-dark-zoom-200.html",
       width: 1280,
       expectedDataGridWidth: 640,
-      range: "Rows 1\u20134 of 6",
+      range: "Rows 1 to 4 of 6",
       previousDisabled: true,
       nextDisabled: false,
       expectSecondRow: false
@@ -106,7 +106,7 @@ export async function verifyGridStatusBarBrowserAcceptance(browser, harnessDirec
       harness: "summary-families-dark-zoom-200.html",
       width: 1280,
       expectedDataGridWidth: 200,
-      range: "Rows 1\u20134 of 6",
+      range: "Rows 1 to 4 of 6",
       previousDisabled: true,
       nextDisabled: false,
       expectSecondRow: true,
@@ -116,19 +116,19 @@ export async function verifyGridStatusBarBrowserAcceptance(browser, harnessDirec
       harness: "summary-families-dark-zoom-200.html",
       width: 1280,
       expectedDataGridWidth: 200,
-      range: "Rows 99,999,997\u2013100,000,000 of 100,000,000",
+      range: "Rows 99,999,997 to 100,000,000 of 100,000,000",
       previousDisabled: true,
       nextDisabled: false,
       expectSecondRow: true,
       openProfilesDrawer: true,
-      visibleRowsOverride: "Rows 99,999,997\u2013100,000,000 of 100,000,000",
+      visibleRowsOverride: "Rows 99,999,997 to 100,000,000 of 100,000,000",
       expectSingleLine: false
     },
     ...[241, 300, 312, 313, 314].map((width) => ({
       harness: "grid-view.html",
       width,
       expectedDataGridWidth: width,
-      range: "Rows 1\u20134 of 4",
+      range: "Rows 1 to 4 of 4",
       previousDisabled: true,
       nextDisabled: true,
       expectSecondRow: true
@@ -137,28 +137,29 @@ export async function verifyGridStatusBarBrowserAcceptance(browser, harnessDirec
       harness: "grid-view.html",
       width: 265,
       expectedDataGridWidth: 265,
-      range: "Rows 99,999,997\u2013100,000,000 of 100,000,000",
+      range: "Rows 99,999,997 to 100,000,000 of 100,000,000",
       previousDisabled: true,
       nextDisabled: true,
       expectSecondRow: true,
-      visibleRowsOverride: "Rows 99,999,997\u2013100,000,000 of 100,000,000",
+      visibleRowsOverride: "Rows 99,999,997 to 100,000,000 of 100,000,000",
       expectSingleLine: false
     },
-    {
+    ...[266, 273, 274].map((width) => ({
       harness: "grid-view.html",
-      width: 266,
-      expectedDataGridWidth: 266,
-      range: "Rows 99,999,997\u2013100,000,000 of 100,000,000",
+      width,
+      expectedDataGridWidth: width,
+      range: "Rows 99,999,997 to 100,000,000 of 100,000,000",
       previousDisabled: true,
       nextDisabled: true,
       expectSecondRow: true,
-      visibleRowsOverride: "Rows 99,999,997\u2013100,000,000 of 100,000,000"
-    },
+      visibleRowsOverride: "Rows 99,999,997 to 100,000,000 of 100,000,000",
+      expectSingleLine: false
+    })),
     {
       harness: "wide-view.html",
       width: 320,
       expectedDataGridWidth: 320,
-      range: "Rows 1\u2013200 of 1,000",
+      range: "Rows 1 to 200 of 1,000",
       previousDisabled: true,
       nextDisabled: false,
       expectSecondRow: true
@@ -167,7 +168,7 @@ export async function verifyGridStatusBarBrowserAcceptance(browser, harnessDirec
       harness: "grid-terminal-range-dark-320.html",
       width: 320,
       expectedDataGridWidth: 320,
-      range: "Rows 99,999,801\u2013100,000,000 of 100,000,000",
+      range: "Rows 99,999,801 to 100,000,000 of 100,000,000",
       previousDisabled: false,
       nextDisabled: true,
       expectSecondRow: true
@@ -176,7 +177,7 @@ export async function verifyGridStatusBarBrowserAcceptance(browser, harnessDirec
       harness: "grid-terminal-range-dark-320.html",
       width: 400,
       expectedDataGridWidth: 400,
-      range: "Rows 99,999,801\u2013100,000,000 of 100,000,000",
+      range: "Rows 99,999,801 to 100,000,000 of 100,000,000",
       previousDisabled: false,
       nextDisabled: true,
       expectSecondRow: true
@@ -185,7 +186,7 @@ export async function verifyGridStatusBarBrowserAcceptance(browser, harnessDirec
       harness: "grid-terminal-range-dark-zoom-200.html",
       width: 800,
       expectedDataGridWidth: 400,
-      range: "Rows 99,999,801\u2013100,000,000 of 100,000,000",
+      range: "Rows 99,999,801 to 100,000,000 of 100,000,000",
       previousDisabled: false,
       nextDisabled: true,
       expectSecondRow: true

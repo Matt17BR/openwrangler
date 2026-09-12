@@ -785,7 +785,7 @@ describe("DataGrid", () => {
     expect(statusBar).not.toHaveAttribute("aria-live");
 
     const visibleRows = within(statusBar).getByRole("status", { name: "Loaded rows" });
-    expect(visibleRows).toHaveTextContent("Rows 1\u2013200 of 100,000");
+    expect(visibleRows).toHaveTextContent("Rows 1 to 200 of 100,000");
     expect(visibleRows).toHaveAttribute("aria-live", "polite");
     expect(visibleRows).toHaveAttribute("aria-atomic", "true");
 
@@ -837,7 +837,7 @@ describe("DataGrid", () => {
 
     expect(screen.getByRole("grid")).toHaveAttribute("aria-rowcount", "-1");
     expect(screen.getByRole("status", { name: "Loaded rows" })).toHaveTextContent(
-      "Rows 1\u20132 · total appears after the last page"
+      "Rows 1 to 2 · total appears after the last page"
     );
     fireEvent.click(screen.getByRole("button", { name: "Next block" }));
     expect(onPage).toHaveBeenCalledWith(2);
@@ -874,7 +874,7 @@ describe("DataGrid", () => {
       `[data-grid-row="${currentOffset}"][data-grid-column="0"]`
     );
     expect(firstCell).not.toBeNull();
-    expect(screen.getByRole("status", { name: "Loaded rows" })).toHaveTextContent("Rows 401\u2013600 of 10,000");
+    expect(screen.getByRole("status", { name: "Loaded rows" })).toHaveTextContent("Rows 401 to 600 of 10,000");
     expect(screen.getByRole("status", { name: "Loaded rows" })).not.toHaveTextContent("Spark");
     fireEvent.keyDown(firstCell!, { key: "End", ctrlKey: true });
     expect(onPage).toHaveBeenCalledWith(currentOffset + largeGridPageSize);
@@ -907,7 +907,7 @@ describe("DataGrid", () => {
     const statusBar = document.querySelector<HTMLElement>(".gridStatusBar");
     if (!statusBar) throw new Error("Expected the grid status bar.");
     expect(within(statusBar).getByRole("status", { name: "Loaded rows" })).toHaveTextContent(
-      "Rows 99,999,801\u2013100,000,000 of 100,000,000"
+      "Rows 99,999,801 to 100,000,000 of 100,000,000"
     );
     const previous = within(statusBar).getByRole("button", { name: "Previous block" });
     const next = within(statusBar).getByRole("button", { name: "Next block" });

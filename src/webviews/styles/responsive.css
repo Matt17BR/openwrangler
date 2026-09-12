@@ -187,12 +187,6 @@
   }
 }
 
-@container (max-width: 1048px) {
-  .gridStatusBar {
-    flex-wrap: wrap;
-  }
-}
-
 @container (max-width: 700px) {
   .gridClipboardButton,
   .gridProfileControls,
@@ -217,6 +211,7 @@
     grid-column: 1 / -1;
     grid-row: 2;
     min-width: 0;
+    white-space: normal;
   }
 
   .gridClipboardControls {
@@ -244,12 +239,6 @@
     grid-column: 1 / -1;
     grid-row: 3;
     justify-self: end;
-  }
-}
-
-@container (max-width: 265px) {
-  .visibleRowsStatus {
-    white-space: normal;
   }
 }
 
