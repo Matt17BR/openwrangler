@@ -754,13 +754,13 @@ sum fits signed 64-bit storage. Empty int64 columns need no reductions. Other in
 that sufficient bound retain exact widening; output normalization is unchanged. Live and generated code share
 the same admission helper.
 
-Pandas Pivot Wider shares object identifier classification, names-domain validation and nullable output allocation
-between live execution and standalone generated code. Apply reuses the identifier frame and key states prepared by
-its own validation; separate preflight remains independent, and preparation does not persist between calls.
+Pandas Pivot Wider shares object identifier classification, names-domain validation, grouping, first-row restoration
+and output assembly between live execution and standalone generated code. Apply reuses the identifier frame and key
+states prepared by its own validation; separate preflight remains independent, and preparation does not persist between calls.
 Object classification uses native inference first and refines ambiguous values with
 the existing missing-value rules. Mixed scalar identifiers retain their native representatives; homogeneous lists and
 structs remain refused. Categories, nullable integer storage, Boolean storage and the existing object fallback follow
-the same allocation policy. Non-object metadata checks, grouping and row restoration retain their existing paths.
+the same allocation policy. Live and generated callers retain their own identifier admission and validation errors.
 Generated integer helpers use the same `numbers.Integral` admission as live execution, excluding Boolean values and
 actual NumPy duration instances, so integral object keys retain the same values and dtypes as live execution
 without interpreting their class names as temporal types.
