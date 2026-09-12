@@ -360,7 +360,7 @@ test("proves added regular Python source only for native R", async (context) => 
   }
 });
 
-test("proves regular R source changes and existing installed-harness edits only for Python", async (context) => {
+test("proves regular R source, installed-harness and webview edits only for Python", async (context) => {
   const cases = [
     { added: [], modified: ["r/openwrangler_runtime/frame_contract.R"] },
     { added: ["r/openwrangler_runtime/helper.R"], modified: [] },
@@ -373,6 +373,20 @@ test("proves regular R source changes and existing installed-harness edits only 
     { added: [], modified: ["src/test/extensionHost/releasedROperationPicker.ts"] },
     { added: [], modified: ["scripts/editor-acceptance.mjs"] },
     { added: [], modified: ["scripts/editor-acceptance-artifact.test.mjs"] },
+    { added: [], modified: ["src/webviews/App.tsx"] },
+    { added: [], modified: ["src/webviews/grid/rowScrollModel.ts"] },
+    { added: [], modified: ["src/webviews/grid/DataGrid.tsx"] },
+    { added: [], modified: ["src/webviews/styles/grid.css"] },
+    { added: [], modified: ["src/test/progressiveProfilingLifecycle.unit.test.tsx"] },
+    {
+      added: [],
+      modified: [
+        "src/webviews/progressiveProfilingLifecycle.ts",
+        "src/test/progressiveProfilingLifecycle.unit.test.tsx",
+        "src/test/appProgressiveProfiling.component.test.tsx",
+        "docs/architecture.md"
+      ]
+    },
     {
       added: ["r/tests/new_contract.R"],
       modified: [
@@ -424,9 +438,14 @@ test("keeps both runtimes required for R and CHANGELOG changes with Python sourc
       await context.test(`${other}, added=${added}`, (child) => {
         const rSource = "r/tests/contract.R";
         const journey = "src/test/extensionHost/releasedRCoreEditing.ts";
-        const cwd = repository(child, added ? ["CHANGELOG.md", journey] : [rSource, other, "CHANGELOG.md", journey]);
+        const webview = "src/webviews/progressiveProfilingLifecycle.ts";
+        const cwd = repository(
+          child,
+          added ? ["CHANGELOG.md", journey, webview] : [rSource, other, "CHANGELOG.md", journey, webview]
+        );
         write(cwd, rSource);
         write(cwd, journey);
+        write(cwd, webview);
         write(cwd, other);
         write(cwd, "CHANGELOG.md");
         assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), {
@@ -443,6 +462,8 @@ test("keeps both runtimes required for R and CHANGELOG changes with Python sourc
 
 test("requires full owners for deleted or renamed source, including alongside additions", async (context) => {
   for (const file of [
+    "src/webviews/progressiveProfilingLifecycle.ts",
+    "src/test/progressiveProfilingLifecycle.unit.test.tsx",
     arrowFormulaHelper,
     arrowFormulaTests[1],
     "python/openwrangler_runtime/session.py",
@@ -479,6 +500,8 @@ test("requires full owners for deleted or renamed source, including alongside ad
 
 test("requires full owners for source mode changes and existing executable or symlink entries", async (context) => {
   for (const file of [
+    "src/webviews/styles/grid.css",
+    "src/test/progressiveProfilingLifecycle.unit.test.tsx",
     arrowFormulaHelper,
     "python/tests/helper.py",
     "r/tests/kernel_agent.R",
@@ -542,6 +565,8 @@ test("requires full owners for added executable or symlink runtime source", asyn
 
 test("requires full owners for added Markdown or paths outside the runtime source scopes", async (context) => {
   for (const file of [
+    "src/webviews/progressiveProfilingLifecycle.ts",
+    "src/test/progressiveProfilingLifecycle.unit.test.tsx",
     "docs/new.md",
     "CHANGELOG.md",
     "src/new.py",
@@ -575,6 +600,7 @@ test("requires full owners for added Markdown or paths outside the runtime sourc
 
 test("requires full owners for control characters in source paths", async (context) => {
   for (const file of [
+    "src/webviews/unusual\nname.ts",
     "python/tests/unusual\nname.py",
     "r/tests/unusual\nname.R",
     "src/test/extensionHost/unusual\nname.ts",
@@ -650,7 +676,10 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
     "docs/image.svg",
     "CONTRIBUTING.md",
     "src/shared/protocol.ts",
-    "src/webviews/App.tsx",
+    "src/webviews-extra/App.tsx",
+    "src/webviews.ts",
+    "src/test/progressiveProfilingLifecycle.unit.test.ts",
+    "src/test/nested/progressiveProfilingLifecycle.unit.test.tsx",
     "src/test/popoverTestSetup.ts",
     "src/test/dependencyInstaller.unit.test.ts",
     "src/test/rPrivateArtifactBoundary.unit.test.ts",
@@ -694,9 +723,11 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
     await context.test(file, (child) => {
       const component = "src/test/webview.component.test.tsx";
       const releasePolicy = "scripts/release-metadata.mjs";
-      const cwd = repository(child, [file, "CHANGELOG.md", component, releasePolicy]);
+      const webview = "src/webviews/grid/DataGrid.tsx";
+      const cwd = repository(child, [file, "CHANGELOG.md", component, releasePolicy, webview]);
       write(cwd, component);
       write(cwd, releasePolicy);
+      write(cwd, webview);
       write(cwd, "README.md");
       write(cwd, "CHANGELOG.md");
       write(cwd, file);

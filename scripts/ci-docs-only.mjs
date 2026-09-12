@@ -116,7 +116,9 @@ export function proveRuntimeOmissions({ cwd = process.cwd(), env = process.env }
     if (
       rSource ||
       (modified &&
-        (/^src\/test\/extensionHost\/[^/\p{Cc}]+\.ts$/u.test(path) ||
+        (/^src\/webviews\/[^\p{Cc}]+$/u.test(path) ||
+          path === "src/test/progressiveProfilingLifecycle.unit.test.tsx" ||
+          /^src\/test\/extensionHost\/[^/\p{Cc}]+\.ts$/u.test(path) ||
           path === "scripts/editor-acceptance.mjs" ||
           path === "scripts/editor-acceptance-artifact.test.mjs"))
     ) {
@@ -151,7 +153,7 @@ if (process.argv[1] !== undefined && pathToFileURL(resolve(process.argv[1])).hre
           : rOmittable
             ? "Verified changes independent of native R."
             : pythonOmittable
-              ? "Verified changes independent of Python."
+              ? "Verified edits permit omission of the Python worker; R, editor and Windows checks remain required."
               : "Full runtime checks required."
   );
 }

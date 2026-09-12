@@ -61,6 +61,10 @@ The scope-only job uses Node and Git without installing npm dependencies or rest
   `scripts/editor-acceptance-artifact.test.mjs` files; and edits to existing `README.md`, `CHANGELOG.md` or
   `docs/**/*.md` files. The installed-harness edits retain all R and Windows execution. Added or nested harness files
   and other scripts are outside this permission.
+- The Python worker may also be omitted for modifications to existing files under `src/webviews/` and the existing
+  `src/test/progressiveProfilingLifecycle.unit.test.tsx` owner, optionally with the allowed component-test and Markdown
+  edits. All R source and installed-editor checks, Windows contracts, Source and packaged smoke remain required.
+  Additions, deletions, renames and mode changes remain outside this permission.
 - R source and installed-editor execution may be omitted for additions or edits to `.py` files under
   `python/openwrangler_runtime/` or `python/tests/`, and edits to existing `README.md`, `CHANGELOG.md` or `docs/**/*.md`.
 - Native Spark may be omitted for modifications to one or more of the existing
@@ -91,6 +95,11 @@ Source and packaged smoke retain its validation and package-content checks. Shar
 and dependency locks require full execution, as do scripts and other paths outside these scopes. If an affected test suite
 or selected runner begins consuming an omitted input, update the proof and its tests in the same change.
 
+The Python worker does not load webview source or the admitted lifecycle test. Its Node decoder checks use shared
+contracts, which remain outside this permission. This omission includes the worker's Python statics and all Pytest
+cases, including native Spark; it gives no fresh Python execution result. The installed R journeys do load the webview
+and exercise real profiles, so they remain required. Local browser acceptance still applies to rendered UI changes.
+
 The `native_spark_omittable` proof changes only the Python worker's Spark installation requirement. Pandas stays
 below version 3, Java remains installed, and the same Ruff, Pyright and full Pytest commands run. Without Spark,
 the existing optional-import gates skip native Classic/Connect frame, transport, profile, lifecycle and decoder-type
@@ -113,7 +122,7 @@ these generators. Their required [local browser acceptance](testing.md) still ow
 interactions; retained Source and Linux package checks do not replace it. Shared browser and preflight helpers remain
 outside this permission.
 
-These omissions reduce unrelated work for documentation edits, private component tests, isolated engine changes,
+These omissions reduce unrelated work for documentation edits, webview edits, private component tests, isolated engine changes,
 release-policy edits, local screenshot-tool edits and the allowed installed-harness edits.
 They provide no fresh or transferred test result and can delay discovery of unrelated dependency, editor installation
 or hosted-environment regressions.
