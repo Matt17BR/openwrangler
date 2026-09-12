@@ -1436,6 +1436,12 @@ Automatic snapshot pulls do not repeat that read; a new user outcome can make an
 Python and R execution, dependency installation, custom code, generated-code insertion, and data or script export
 require a trusted workspace. Restricted Mode does not expose a hidden affirmative installation or execution path.
 Dependency prompts identify the exact interpreter and requirements; only the literal modal confirmation may run pip.
+The failed-file panel action rechecks its retained source and backend, then binds the existing install lifecycle to
+that exact missing target. Another file cannot redirect the action or make its install count as this file's success.
+If dependencies are already available, the panel retries its normal open without installing. Closing the panel or
+changing its open attempt invalidates pre-write authorization and reopening; an already authorized install retains
+its existing process settlement and environment-validation ownership. The global install command still uses the most
+recent missing target.
 Custom code is trusted arbitrary code in the selected environment, not a sandbox.
 
 Dependency availability and post-install validation accept hard-linked regular module files when the supported

@@ -94,6 +94,12 @@ export interface SessionRuntimeReplacement {
 
 export interface OpenWranglerBridge {
   request(request: OpenWranglerRequest, options?: BridgeRequestOptions): Promise<OpenWranglerResponse>;
+  /** Rechecks a failed file open and confirms any installation for that source. True permits a fresh normal open. */
+  installFileDependencies?(
+    source: SessionSource,
+    backend: DataBackend | undefined,
+    options?: BridgeRequestOptions
+  ): Promise<boolean | ErrorResponse>;
   onDidReplaceRuntime?(listener: (replacement: SessionRuntimeReplacement) => void): { dispose(): void };
   /**
    * Lists the worksheets in the exact workbook owned by a live file session.

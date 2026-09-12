@@ -12,6 +12,7 @@ import { OpenWranglerPanel, restoreEditorGroupAfterQuickPick } from "../extensio
 import type {
   ColumnSummary,
   DataBackend,
+  ErrorResponse,
   GridPage,
   OpenWranglerRequest,
   OpenWranglerResponse,
@@ -4940,13 +4941,11 @@ describe("OpenWranglerPanel retained view state", () => {
       openCalls += 1;
       return openCalls === 1 ? missing : openedResponse;
     });
-    const executeCommand = vi.spyOn(commands, "executeCommand").mockImplementation(async (command) => {
-      if (command === "openWrangler.installRuntimeDependencies") return true;
-      return undefined;
-    });
+    const executeCommand = vi.spyOn(commands, "executeCommand");
+    const installFileDependencies = vi.fn(async () => true);
     const synchronizePanel = vi.spyOn(OpenWranglerPanel, "synchronizePanelForSession");
     const ensurePanelSynchronized = vi.spyOn(OpenWranglerPanel, "ensurePanelSynchronizedForSession");
-    const harness = createPanelHarness({ request }, { delegateOpen: true });
+    const harness = createPanelHarness({ request, installFileDependencies }, { delegateOpen: true });
     await harness.open();
     await harness.receive({ kind: "ready" });
     const missingSynchronization = await acknowledgeLatestRendererSynchronization(harness);
@@ -4970,7 +4969,10 @@ describe("OpenWranglerPanel retained view state", () => {
       revision: liveSynchronization.revision
     });
 
-    expect(executeCommand).toHaveBeenCalledWith("openWrangler.installRuntimeDependencies");
+    expect(executeCommand).not.toHaveBeenCalledWith("openWrangler.installRuntimeDependencies");
+    expect(installFileDependencies).toHaveBeenCalledWith(metadata.source, metadata.backend, {
+      cancellation: expect.any(Object)
+    });
     expect(request.mock.calls.map(([candidate]) => candidate.kind)).toEqual(["openSession", "openSession"]);
     expect(harness.posted).toContainEqual({ kind: "runtimeDependencyInstallState", busy: true });
     expect(harness.posted).toContainEqual(hostSnapshot(openedResponse));
@@ -4984,6 +4986,81 @@ describe("OpenWranglerPanel retained view state", () => {
     });
     expect(synchronizePanel).not.toHaveBeenCalled();
     expect(ensurePanelSynchronized).not.toHaveBeenCalled();
+  });
+
+  it.each(["close", "import options"] as const)(
+    "invalidates a pending file dependency action on %s",
+    async (change) => {
+      const missing: OpenWranglerResponse = {
+        kind: "error",
+        code: "missing_dependencies",
+        message: "Missing openpyxl.",
+        recoverable: true
+      };
+      const request = vi.fn(async (): Promise<OpenWranglerResponse> => missing);
+      const refused: ErrorResponse = {
+        kind: "error",
+        code: "dependency_environment_uncertain",
+        message: "Revalidate the environment.",
+        recoverable: true
+      };
+      const completion = deferred<boolean | ErrorResponse>();
+      let cancellation: BridgeRequestOptions["cancellation"];
+      const installFileDependencies = vi.fn(
+        (_source: SessionSource, _backend: DataBackend | undefined, options?: BridgeRequestOptions) => {
+          cancellation = options?.cancellation;
+          return completion.promise;
+        }
+      );
+      vi.spyOn(window, "showQuickPick").mockResolvedValue(undefined);
+      const harness = createPanelHarness({ request, installFileDependencies }, { delegateOpen: true });
+      await harness.open();
+      const action = harness.receive({ kind: "installRuntimeDependencies" });
+      try {
+        await vi.waitFor(() => expect(installFileDependencies).toHaveBeenCalledOnce());
+        expect(cancellation?.isCancellationRequested).toBe(false);
+        if (change === "close") harness.dispose();
+        else await harness.receive({ kind: "changeImportOptions" });
+        expect(cancellation?.isCancellationRequested).toBe(true);
+        completion.resolve(change === "close" ? true : refused);
+        await action;
+        expect(request).toHaveBeenCalledOnce();
+        expect(harness.posted).not.toContainEqual(hostSnapshot(openedResponse));
+        expect(harness.posted).not.toContainEqual(refused);
+      } finally {
+        harness.dispose();
+        completion.resolve(false);
+        await action;
+      }
+    }
+  );
+
+  it("retains a fresh file dependency refusal instead of the obsolete missing-dependency action", async () => {
+    const missing: ErrorResponse = {
+      kind: "error",
+      code: "missing_dependencies",
+      message: "Missing openpyxl.",
+      recoverable: true
+    };
+    const refused: ErrorResponse = {
+      kind: "error",
+      code: "dependency_environment_uncertain",
+      message: "Revalidate the environment.",
+      recoverable: true
+    };
+    const request = vi.fn(async (): Promise<OpenWranglerResponse> => missing);
+    const installFileDependencies = vi.fn(async () => refused);
+    const harness = createPanelHarness({ request, installFileDependencies }, { delegateOpen: true });
+    await harness.open();
+
+    await harness.receive({ kind: "installRuntimeDependencies" });
+
+    expect(harness.posted).toContainEqual(refused);
+    expect(OpenWranglerPanel.openResponseForTesting()).toEqual(refused);
+    await harness.receive({ kind: "installRuntimeDependencies" });
+    expect(installFileDependencies).toHaveBeenCalledOnce();
+    expect(request).toHaveBeenCalledOnce();
+    expect(harness.posted).toContainEqual({ kind: "runtimeDependencyInstallState", busy: false });
   });
 
   it("accepts only an exact cleaned-data export intent from the webview", async () => {
@@ -5013,11 +5090,9 @@ describe("OpenWranglerPanel retained view state", () => {
       recoverable: true
     };
     const request = vi.fn(async (): Promise<OpenWranglerResponse> => missing);
-    const executeCommand = vi.spyOn(commands, "executeCommand").mockImplementation(async (command) => {
-      if (command === "openWrangler.installRuntimeDependencies") return false;
-      return undefined;
-    });
-    const harness = createPanelHarness({ request }, { delegateOpen: true });
+    const executeCommand = vi.spyOn(commands, "executeCommand");
+    const installFileDependencies = vi.fn(async () => false);
+    const harness = createPanelHarness({ request, installFileDependencies }, { delegateOpen: true });
     await harness.open();
     harness.posted.length = 0;
     executeCommand.mockClear();
@@ -5026,10 +5101,14 @@ describe("OpenWranglerPanel retained view state", () => {
       await harness.receive(malformed);
     }
     expect(executeCommand).not.toHaveBeenCalled();
+    expect(installFileDependencies).not.toHaveBeenCalled();
 
     await harness.receive({ kind: "installRuntimeDependencies" });
 
-    expect(executeCommand).toHaveBeenCalledWith("openWrangler.installRuntimeDependencies");
+    expect(executeCommand).not.toHaveBeenCalledWith("openWrangler.installRuntimeDependencies");
+    expect(installFileDependencies).toHaveBeenCalledWith(metadata.source, metadata.backend, {
+      cancellation: expect.any(Object)
+    });
     expect(request).toHaveBeenCalledOnce();
     expect(harness.posted).toEqual([
       { kind: "runtimeDependencyInstallState", busy: true },
@@ -5046,13 +5125,11 @@ describe("OpenWranglerPanel retained view state", () => {
     };
     const request = vi.fn(async (): Promise<OpenWranglerResponse> => missing);
     const executable = "/private/selected/environment/bin/python";
-    const executeCommand = vi.spyOn(commands, "executeCommand").mockImplementation(async (command) => {
-      if (command === "openWrangler.installRuntimeDependencies") {
-        throw new DependencyGuardCommandError("install", "environment_inconsistent", executable);
-      }
-      return undefined;
+    const executeCommand = vi.spyOn(commands, "executeCommand");
+    const installFileDependencies = vi.fn(async () => {
+      throw new DependencyGuardCommandError("install", "environment_inconsistent", executable);
     });
-    const harness = createPanelHarness({ request }, { delegateOpen: true });
+    const harness = createPanelHarness({ request, installFileDependencies }, { delegateOpen: true });
     await harness.open();
     harness.posted.length = 0;
     executeCommand.mockClear();
