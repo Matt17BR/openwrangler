@@ -562,7 +562,7 @@ These dispositions do not block stable publication unless a release starts adver
 | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
 | Cleaning-step reorder                                                                     | Deferred; edit and delete earlier steps are supported, but no move primitive exists                   |
 | Transpose, explode, and unnest                                                            | Planned after the implemented deterministic split, regex, and pivot operations                        |
-| Rank/window operations, broader formulas, and assertions                                  | Planned operation work                                                                                |
+| Broader window operations, formulas, and assertions                                       | Planned operation work                                                                                |
 | Joins and merge                                                                           | Deferred until multi-source identity, lifecycle, persistence, and source-immutability have one design |
 | Portable cleaning recipes and batch apply                                                 | Planned after the deterministic operation primitives                                                  |
 | Natural-language and Copilot operations                                                   | Deferred until deterministic operations and portable recipe validation exist                          |
