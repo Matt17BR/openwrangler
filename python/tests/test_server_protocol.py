@@ -11,6 +11,7 @@ from importlib.util import find_spec
 from io import BytesIO, StringIO, TextIOWrapper
 from pathlib import Path
 from queue import Empty, Full, Queue
+from time import monotonic
 from typing import Any
 
 import pytest
@@ -1519,6 +1520,8 @@ def test_eof_starts_cleanup_before_active_profiles_finish_and_cancels_queued_pro
     runner.start()
     assert manager.two_started.wait(1)
     assert manager.close_started.wait(1)
+    runner.join(1)
+    returned_promptly = not runner.is_alive()
     runner.join(2)
 
     assert runner.is_alive() is False
@@ -1531,15 +1534,19 @@ def test_eof_starts_cleanup_before_active_profiles_finish_and_cancels_queued_pro
     for thread in runtime_threads:
         thread.join(1)
     assert all(not thread.is_alive() for thread in runtime_threads)
+    assert returned_promptly, "Completed cleanup must not wait out the grace for cancelled queued work."
 
 
-def test_eof_wait_for_blocked_cleanup_is_bounded(monkeypatch) -> None:
+@pytest.mark.parametrize("block_cleanup", [True, False], ids=["cleanup-and-work", "work-only"])
+def test_eof_wait_for_blocked_cleanup_is_bounded(monkeypatch, block_cleanup: bool) -> None:
     class StuckManager(_PassthroughRequestScope):
         def __init__(self) -> None:
             self.work_started = threading.Event()
             self.release_work = threading.Event()
             self.close_started = threading.Event()
             self.release_close = threading.Event()
+            if not block_cleanup:
+                self.release_close.set()
 
         def get_summary(self, *_args: Any) -> dict[str, Any]:
             self.work_started.set()
@@ -1565,9 +1572,13 @@ def test_eof_wait_for_blocked_cleanup_is_bounded(monkeypatch) -> None:
         },
     }
 
+    eof_at: float | None = None
+
     def input_after_work_starts():
+        nonlocal eof_at
         yield f"{json.dumps(request)}\n"
         manager.work_started.wait(2)
+        eof_at = monotonic()
 
     existing_threads = {thread.ident for thread in threading.enumerate()}
     monkeypatch.setattr(server, "SHUTDOWN_GRACE_SECONDS", 0.05)
@@ -1581,10 +1592,13 @@ def test_eof_wait_for_blocked_cleanup_is_bounded(monkeypatch) -> None:
     assert manager.close_started.wait(1)
     runner.join(0.5)
 
-    assert runner.is_alive() is False
+    returned_within_bound = not runner.is_alive()
+    assert eof_at is not None
+    shutdown_elapsed = monotonic() - eof_at
 
     manager.release_work.set()
     manager.release_close.set()
+    runner.join(2)
     runtime_threads = [
         thread
         for thread in threading.enumerate()
@@ -1593,6 +1607,8 @@ def test_eof_wait_for_blocked_cleanup_is_bounded(monkeypatch) -> None:
     for thread in runtime_threads:
         thread.join(1)
     assert all(not thread.is_alive() for thread in runtime_threads)
+    assert returned_within_bound
+    assert shutdown_elapsed >= server.SHUTDOWN_GRACE_SECONDS
 
 
 def test_stdio_server_parses_an_accepted_frame_exactly_once(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -264,6 +264,9 @@ Requests and cancellations route through the exact owner. Restart invalidates th
 last session stops its process after bounded stdin/EOF shutdown. A forced kill is reserved for recovery or an expired
 shutdown bound.
 
+At EOF, the Python server cancels queued work and uses one shared grace period to wait for session cleanup and
+unfinished work.
+
 Python and native R requests accept configured timeouts only within the settings' declared finite numeric range.
 Invalid values use the corresponding default. R rounds configured values upward to whole milliseconds; its native
 transports retain strict validation of explicit per-call deadlines. Explicit deadlines remain authoritative.

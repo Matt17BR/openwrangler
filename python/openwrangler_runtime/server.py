@@ -514,7 +514,8 @@ def _shutdown_runtime(
 
     deadline = monotonic() + SHUTDOWN_GRACE_SECONDS
     cleanup_complete.wait(max(0.0, deadline - monotonic()))
-    wait(futures, timeout=max(0.0, deadline - monotonic()))
+    # Drained cancellations are done without a worker notifying futures.wait().
+    wait([future for future in futures if not future.done()], timeout=max(0.0, deadline - monotonic()))
 
 
 def _cancel_pending_future(
