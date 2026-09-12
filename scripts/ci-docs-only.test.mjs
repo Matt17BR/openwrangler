@@ -222,10 +222,8 @@ test("proves existing script edits while retaining Source and package execution"
 
 test("proves existing Python source and Markdown edits only for native R", async (context) => {
   const cases = [
-    ["python/openwrangler_runtime/engines/duckdb_engine.py"],
     ["python/openwrangler_runtime/protocol.py"],
     ["python/openwrangler_runtime/session.py"],
-    ["python/tests/test_duckdb_engine.py"],
     ["python/tests/conftest.py"],
     [
       "python/openwrangler_runtime/engines/duckdb_engine.py",
@@ -268,7 +266,20 @@ test("omits native Spark for nonempty subsets of the existing local-engine owner
     [arrowFormulaHelper, arrowFormulaTests[0]],
     [arrowFormulaHelper, arrowFormulaTests[1]],
     [...arrowFormulaTests, "docs/testing.md"],
-    [arrowFormulaHelper, ...arrowFormulaTests, "README.md", "CHANGELOG.md", "docs/architecture.md"]
+    [arrowFormulaHelper, ...arrowFormulaTests, "README.md", "CHANGELOG.md", "docs/architecture.md"],
+    ["python/openwrangler_runtime/engines/pandas_engine.py"],
+    ["python/openwrangler_runtime/engines/duckdb_engine.py"],
+    ["python/tests/test_duckdb_engine.py"],
+    ["python/tests/test_split_text_columns.py"],
+    [
+      "python/openwrangler_runtime/engines/pandas_engine.py",
+      "python/openwrangler_runtime/engines/duckdb_engine.py",
+      "python/tests/test_duckdb_engine.py",
+      "python/tests/test_split_text_columns.py",
+      "CHANGELOG.md",
+      "docs/architecture.md",
+      "docs/feature-parity.md"
+    ]
   ]) {
     await context.test(files.join(", "), (child) => {
       const cwd = repository(child, files);
@@ -293,7 +304,7 @@ test("omits native Spark for nonempty subsets of the existing local-engine owner
 
 test("keeps native Spark for other inputs alongside the eligible local-engine owners", async (context) => {
   const cases = [
-    "python/openwrangler_runtime/engines/pandas_engine.py",
+    "python/openwrangler_runtime/engines/polars_engine.py",
     "python/openwrangler_runtime/engines/base.py",
     "python/openwrangler_runtime/session.py",
     "python/tests/test_pyspark_engine.py",
