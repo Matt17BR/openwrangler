@@ -159,7 +159,18 @@ def _ow_polars_fill_missing_linear_interpolation(
     weight = pl.when(coordinate_span.is_finite()).then(direct_weight).otherwise(scaled_weight)
     left_value = pl.col(left_value_name)
     right_value = pl.col(right_value_name)
-    interpolated = ((pl.lit(1.0) - weight) * left_value + weight * right_value).cast(target_dtype)
+    interpolated = (
+        pl.when((left_value == right_value) & (left_value != 0.0))
+        .then(left_value)
+        .when(
+            (weight == 0.5)
+            & (left_value.abs() < 2.2250738585072014e-308)
+            & (right_value.abs() < 2.2250738585072014e-308)
+        )
+        .then((left_value + right_value) / 2.0)
+        .otherwise((pl.lit(1.0) - weight) * left_value + weight * right_value)
+        .cast(target_dtype)
+    )
     eligible = (
         pl.col(missing_name)
         & left_value.is_finite()

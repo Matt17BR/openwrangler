@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from decimal import Decimal, Inexact, localcontext
-from math import isnan
+from math import isnan, nextafter
 from typing import Any
 
 import duckdb
@@ -131,16 +131,19 @@ def test_linear_interpolation_uses_real_distance_restores_order_and_matches_gene
     assert engine.schema(live)[1]["type"] == "float"
 
 
-def test_linear_interpolation_respects_complete_gap_limit_and_boundaries(engine: Any) -> None:
+@pytest.mark.parametrize("anchors", [(0.0, 8.0), (5e-324, 5e-324)])
+def test_linear_interpolation_respects_complete_gap_limit_and_boundaries(
+    engine: Any, anchors: tuple[float, float]
+) -> None:
     coordinates = [0, 1, 2, 3, 4, 5, 6]
-    values = [None, 0.0, None, None, 8.0, float("inf"), None]
+    values = [None, anchors[0], None, None, anchors[1], float("inf"), None]
     frame = frame_for(engine, coordinates, values)
     operation = interpolation_step(engine, frame, max_gap=1)
 
     live = engine.apply_transform(frame, operation)
     generated = execute_generated(engine, frame, operation)
 
-    expected = [None, 0.0, None, None, 8.0, float("inf"), None]
+    expected = [None, anchors[0], None, None, anchors[1], float("inf"), None]
     assert_values(result_values(engine, live), expected)
     assert_values(result_values(engine, generated), expected)
 
@@ -158,7 +161,7 @@ def test_linear_interpolation_rejects_invalid_coordinates(
     coordinates: list[float | None],
     error: str,
 ) -> None:
-    frame = frame_for(engine, coordinates, [0.0, None, 1.0])
+    frame = frame_for(engine, coordinates, [1.0, None, 1.0])
     operation = interpolation_step(engine, frame)
 
     with pytest.raises(EngineError, match=error):
@@ -167,32 +170,38 @@ def test_linear_interpolation_rejects_invalid_coordinates(
         execute_generated(engine, frame, operation)
 
 
-def test_linear_interpolation_preserves_native_float32_target_type(engine: Any) -> None:
+@pytest.mark.parametrize(("left", "right", "expected"), [(0.0, 2.0, 1.0), (2.0**-149, 2.0**-149, 2.0**-149)])
+def test_linear_interpolation_preserves_native_float32_target_type(
+    engine: Any, left: float, right: float, expected: float
+) -> None:
     if isinstance(engine, PandasEngine):
         frame = pd.DataFrame(
             {
                 "coordinate": [0, 1, 2],
-                "value": pd.Series([0.0, None, 2.0], dtype="Float32"),
+                "value": pd.Series([left, None, right], dtype="Float32"),
             }
         )
     elif isinstance(engine, PolarsEngine):
         frame = pl.DataFrame(
             {
                 "coordinate": [0, 1, 2],
-                "value": pl.Series([0.0, None, 2.0], dtype=pl.Float32),
+                "value": pl.Series([left, None, right], dtype=pl.Float32),
             }
         ).lazy()
     else:
         frame = duckdb.sql(
-            "SELECT * FROM (VALUES (0, 0.0::FLOAT), (1, NULL::FLOAT), (2, 2.0::FLOAT)) AS source(coordinate, value)"
+            f"SELECT * FROM (VALUES (0, {left!r}::FLOAT), (1, NULL::FLOAT), (2, {right!r}::FLOAT)) "
+            "AS source(coordinate, value)"
         )
     operation = interpolation_step(engine, frame)
 
     live = engine.apply_transform(frame, operation)
     generated = execute_generated(engine, frame, operation)
 
-    assert_values(result_values(engine, live), [0.0, 1.0, 2.0])
-    assert_values(result_values(engine, generated), [0.0, 1.0, 2.0])
+    for actual in [live, generated]:
+        assert [float(value).hex() for value in result_values(engine, actual)] == [
+            value.hex() for value in [left, expected, right]
+        ]
     if isinstance(engine, PandasEngine):
         assert str(live.dtypes.iloc[1]) == "Float32"
         assert str(generated.dtypes.iloc[1]) == "Float32"
@@ -213,6 +222,62 @@ def test_linear_interpolation_stays_finite_across_opposite_float_extremes(engine
 
     assert live[1] == pytest.approx(0.0, abs=1e292)
     assert generated[1] == pytest.approx(0.0, abs=1e292)
+
+
+@pytest.mark.parametrize(
+    ("left_units", "right_units", "weight", "expected_units"),
+    [
+        (1, 1, 0.5, 1),
+        (-1, -1, 0.5, -1),
+        (2**52 - 1, 2**52 - 1, 1.0 / 3.0, 2**52 - 1),
+        (1, 2, 0.5, 2),
+        (2, 1, 0.5, 2),
+        (-1, -2, 0.5, -2),
+        (0, 1, 0.5, 0),
+        (-0.0, 0.0, 0.5, 0.0),
+        (1, 2, nextafter(0.5, 0.0), 1),
+        (2**52, 1, 0.5, 2**51),
+    ],
+)
+def test_linear_interpolation_preserves_tiny_constants_and_exact_midpoints(
+    engine: Any, left_units: int | float, right_units: int | float, weight: float, expected_units: int | float
+) -> None:
+    quantum = float.fromhex("0x0.0000000000001p-1022")
+    left, right, expected = left_units * quantum, right_units * quantum, expected_units * quantum
+    # The row order and unbracketed nulls must survive the arithmetic correction.
+    for lazy in [False, True] if isinstance(engine, PolarsEngine) else [False]:
+        frame = frame_for(engine, [1.0, 0.0, 2.0, -1.0, weight], [right, left, None, None, None], lazy=lazy)
+        before = None
+        if isinstance(engine, PandasEngine):
+            frame["value"] = frame["value"].astype("Float64")
+            frame.index = pd.Index(["same"] * len(frame), name="source rows")
+            frame.attrs = {"source": "retained"}
+            before = frame.copy(deep=True)
+        operation = interpolation_step(engine, frame)
+        for actual in [engine.apply_transform(frame, operation), execute_generated(engine, frame, operation)]:
+            values = result_values(engine, actual)
+            assert [float(values[position]).hex() for position in [0, 1, 4]] == [
+                right.hex(),
+                left.hex(),
+                expected.hex(),
+            ]
+            assert all(value is None or pd.isna(value) for value in values[2:4])
+            if isinstance(engine, PandasEngine):
+                pd.testing.assert_index_equal(actual.index, frame.index)
+                assert actual["value"].dtype == frame["value"].dtype
+            elif isinstance(engine, PolarsEngine):
+                assert isinstance(actual, pl.LazyFrame) is lazy
+                actual_schema = actual.collect_schema() if lazy else actual.schema
+                assert actual_schema["value"] == pl.Float64
+            else:
+                assert str(actual.types[1]) == "DOUBLE"
+        source_values = result_values(engine, frame)
+        assert [float(value).hex() for value in source_values[:2]] == [right.hex(), left.hex()]
+        assert all(value is None or pd.isna(value) for value in source_values[2:])
+        if isinstance(engine, PandasEngine):
+            assert before is not None
+            pd.testing.assert_frame_equal(frame, before, check_exact=True)
+            assert frame.attrs == before.attrs
 
 
 def test_linear_interpolation_supports_dates_and_datetimes(engine: Any) -> None:
@@ -473,7 +538,7 @@ def test_pandas_linear_interpolation_keeps_missing_and_nonfinite_anchors(dtype: 
 
 
 def test_pandas_linear_interpolation_preserves_arithmetic_error_class_and_cause() -> None:
-    frame = pd.DataFrame({"coordinate": list(map(Decimal, [0, 1, 3])), "value": [0.0, None, 3.0]})
+    frame = pd.DataFrame({"coordinate": list(map(Decimal, [0, 1, 3])), "value": [1.0, None, 1.0]})
     before = frame.copy(deep=True)
     engine = PandasEngine()
     operation = interpolation_step(engine, frame)
