@@ -71,6 +71,7 @@ exports.run = async function () {
   assert(["ow", "dw"].includes(request.product) && [100000, 1000000].includes(request.rows));
   assert.equal(request.mode, "pilot", "Temporary grid diagnostic rejects study");
   assert.equal(request.product, "dw");
+  assert.equal(request.rows, 100000);
   assert.notEqual(process.env.OPEN_WRANGLER_EXTENSION_TESTS, "1");
   const { chromium } = createRequire(path.join(request.repo, "package.json"))("playwright-core");
   const owner = await import(pathToFileURL(path.join(request.repo, "scripts/editor-acceptance.mjs")).href);
@@ -500,8 +501,10 @@ exports.run = async function () {
       activeEditor.selection = measuredCell;
       activeEditor.selections = [measuredCell];
       activeEditor.revealRange(measuredCell, vscode.NotebookEditorRevealType.InCenterIfOutsideViewport);
+      const measuredCellOwner = notebook.cellAt(1);
       await execute(1);
-      sample.entryRoute = request.product === "ow" ? "inline-open" : "notebook-view-data";
+      const measuredExecutionOrder = measuredCellOwner.executionSummary?.executionOrder;
+      sample.entryRoute = request.product === "ow" ? "inline-open" : "notebook-cell-status";
       sample.toolbarOverflowUsed = false;
       sample.metrics.pickerInteractionMs = 0;
       if (request.product === "ow") {
@@ -513,40 +516,71 @@ exports.run = async function () {
         opened = performance.now();
         await action.click();
       } else {
-        // Documented notebook View data route; select the exact resident variable.
-        const toolbar = page.locator(
-          ".notebook-editor:visible .notebook-toolbar-container:visible, " +
-            ".notebookOverlay:visible .notebook-toolbar-container:visible"
+        // The documented cell-status action need not expose role="button".
+        const notebookView = page.locator(".notebookOverlay.notebook-editor:visible");
+        const cell = notebookView.locator(
+          '.cell-list-container > .monaco-list > .monaco-scrollable-element > .monaco-list-rows > .monaco-list-row[data-index="1"]'
         );
         const action = await poll(async () => {
           await consent();
-          const direct = toolbar.getByRole("button", { name: "View data", exact: true });
-          assert((await direct.count()) <= 1, "PILOT_GATE:ambiguous-view-data");
-          return (await visible(direct)) ? direct : false;
-        }, "public-view-data");
-        assert(await action.isEnabled(), "PILOT_GATE:disabled-view-data");
-        checkpoint(`${sampleName}:open`);
-        opened = performance.now();
-        sample.entryActivation = "button-click";
-        await action.click();
-        const pickerStarted = performance.now();
-        checkpoint(`${sampleName}:variable-picker`);
-        const option = await poll(async () => {
-          await consent();
-          const picker = page.locator(".quick-input-widget:visible");
-          if (!(await visible(picker))) return false;
-          const options = picker.getByRole("option"),
-            matches = [];
-          for (let i = 0; i < Math.min(await options.count(), 64); i++) {
-            const item = options.nth(i),
-              label = item.locator(".quick-input-list-row:first-child .label-name");
-            if ((await visible(label)) && (await label.innerText()).trim() === "comparison_frame") matches.push(item);
-          }
-          assert(matches.length <= 1, "PILOT_GATE:ambiguous-comparison-variable");
-          return matches[0] || false;
-        }, "public-comparison-variable");
-        await option.click();
-        sample.metrics.pickerInteractionMs = performance.now() - pickerStarted;
+          const item = cell.locator(
+            `.cell-statusbar-container .cell-status-item-has-command[aria-label="Open 'comparison_frame' in Data Wrangler"]`
+          );
+          sample.statusAction = {
+            notebooks: await notebookView.count(),
+            cells: await cell.count(),
+            exactActions: await item.count()
+          };
+          assert(sample.statusAction.notebooks <= 1, "DIAGNOSTIC_GATE:ambiguous-notebook");
+          assert(sample.statusAction.cells <= 1, "DIAGNOSTIC_GATE:ambiguous-measured-cell");
+          assert(sample.statusAction.exactActions <= 1, "DIAGNOSTIC_GATE:ambiguous-cell-status-action");
+          return (await visible(item)) ? item : false;
+        }, "public-cell-status-action");
+        const element = await action.elementHandle();
+        assert(element, "DIAGNOSTIC_GATE:missing-cell-status-element");
+        try {
+          Object.assign(
+            sample.statusAction,
+            await element.evaluate((item) => ({
+              connected: item.isConnected,
+              visible: item.checkVisibility({ checkVisibilityCSS: true }),
+              exactLabel: item.getAttribute("aria-label") === "Open 'comparison_frame' in Data Wrangler",
+              measuredCell: item.closest(".monaco-list-row")?.getAttribute("data-index") === "1",
+              hasCommand: item.classList.contains("cell-status-item-has-command"),
+              tabIndex: item.tabIndex,
+              disabled: item.getAttribute("aria-disabled") === "true",
+              role: ["button", "link"].includes(item.getAttribute("role"))
+                ? item.getAttribute("role")
+                : item.getAttribute("role")
+                  ? "other"
+                  : "none"
+            }))
+          );
+          const state = sample.statusAction;
+          assert(
+            state.connected &&
+              state.visible &&
+              state.exactLabel &&
+              state.measuredCell &&
+              state.hasCommand &&
+              state.tabIndex === 0 &&
+              !state.disabled,
+            "DIAGNOSTIC_GATE:cell-status-action-state"
+          );
+          assert(!notebook.isClosed);
+          assert.equal(vscode.window.activeNotebookEditor?.notebook, notebook);
+          assert.equal(notebook.uri.toString(), notebookTab.input.uri.toString());
+          assert.equal(notebook.cellAt(1), measuredCellOwner);
+          assert.equal(measuredCellOwner.document.getText(), "comparison_frame");
+          assert.equal(measuredCellOwner.executionSummary?.executionOrder, measuredExecutionOrder);
+          assert.equal(measuredCellOwner.executionSummary?.success, true);
+          checkpoint(`${sampleName}:open`);
+          opened = performance.now();
+          sample.entryActivation = "cell-status-click";
+          await element.click({ timeout: 5000 });
+        } finally {
+          await element.dispose();
+        }
       }
       sample.metrics.entryInteractionMs = performance.now() - opened;
       checkpoint(`${sampleName}:grid`);

@@ -256,7 +256,7 @@ try {
   if (args.mode === "study")
     assert.deepEqual(JSON.parse(readFileSync(args.freeze, "utf8")), freeze, "Pilot freeze drift");
   const pairs = args.mode === "pilot" ? 1 : 4;
-  for (const rows of [100_000, 1_000_000])
+  for (const rows of [100_000])
     for (let pair = 0; pair < pairs; pair++) {
       for (const product of ["dw"]) {
         requireUninterrupted();
