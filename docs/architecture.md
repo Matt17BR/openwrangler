@@ -652,8 +652,9 @@ built-in Pandas nullable or Arrow integer columns; Sparse and arbitrary extensio
 Live execution and generated code use one repair implementation, called only after native arithmetic fails.
 The generated repair stays local to the Formula result helper so it adds no notebook-global binding.
 
-After native column-to-column power reports a capacity error, eligible signed integer operands widen to Int64
-for checked native power. At least one operand must be Arrow-backed, and the complete result must fit Int64.
+After native column-to-column power reports a capacity error, eligible signed integer bases and signed or
+8–32-bit unsigned integer exponents widen to Int64 for checked native power. At least one operand must be
+Arrow-backed, and the complete result must fit Int64. UInt64 exponent columns retain their existing repair path.
 Negative exponents and remaining overflows retain the original refusal. This path allocates only selected operand
 and result buffers; it adds no extrema scan. Successful native results, including empty and all-null results, keep
 their existing types.
