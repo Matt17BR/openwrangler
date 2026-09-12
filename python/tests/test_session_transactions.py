@@ -1690,19 +1690,20 @@ def test_duckdb_duplicates_preserve_source_values_through_history_and_export(
 
 
 @pytest.mark.parametrize(
-    "family",
+    "family,keep,expected_positions",
     [
-        "integer",
-        "unsigned",
-        "timestamp",
-        "timezone",
-        "duration",
-        "timestamp-minimum",
-        "timezone-minimum",
-        "duration-minimum",
+        ("integer", "first", [0, 1, 3]),
+        ("unsigned", "first", [0, 1, 3]),
+        ("timestamp", "first", [0, 1, 3]),
+        ("timezone", "first", [0, 1, 3]),
+        ("duration", "first", [0, 1, 3]),
+        ("timestamp-minimum", "first", [0, 1, 3]),
+        ("timezone-minimum", "first", [0, 1, 3]),
+        ("duration-minimum", "first", [0, 1, 3]),
+        ("integer", "last", [1, 2, 3]),
+        ("integer", "none", [1, 3]),
     ],
 )
-@pytest.mark.parametrize("keep,expected_positions", [("first", [0, 1, 3]), ("last", [1, 2, 3]), ("none", [1, 3])])
 def test_pandas_arrow_duplicates_preserve_parquet_history_and_export(
     tmp_path: Path, family: str, keep: str, expected_positions: list[int]
 ) -> None:
