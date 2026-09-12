@@ -47,6 +47,8 @@ The Pandas and Polars rows below are required for stable releases.
 | Installed-editor first-usable-grid performance              |    Yes |    Yes | Done   | Pinned VS Code installed-performance consumes the canonical candidate; test:python/tests/test_performance_harness.py; workflow:.github/workflows/release-candidate.yml; record:docs/testing.md |
 | VS Code package acceptance and compatibility seam           |    N/A |    N/A | Done   | Canonical candidate in pinned VS Code installed-performance and bounded Linux Cursor platform smoke; workflow:.github/workflows/release-candidate.yml; record:docs/testing.md                  |
 
+## Supported environments
+
 Open Wrangler targets desktop VS Code and editors based on it. Release-candidate performance is qualified in pinned
 VS Code. Bounded Linux Cursor platform smoke is one concrete compatibility example. It covers representative grid,
 cleaning, export, and recovery flows, but not the full VS Code qualification matrix.
@@ -54,46 +56,7 @@ cleaning, export, and recovery flows, but not the full VS Code qualification mat
 Supported Python dependencies installed as hard links are recognized within the existing
 [version and module-origin checks](architecture.md#trust-source-integrity-and-export).
 
-Filter choices retain their counts while selecting values in the same column. Changes to the other filters, sort
-or AND/OR logic clear affected choices; Search loads the current choices without changing existing selections.
-Opening value filters from a header, the Filters tab or Show More selects the requested column with fresh search input.
-Editing a sort from the sidebar selects its column while preserving unfinished filter and sort input.
-Pandas and Polars keep values visible and searchable when they cannot be selected within the supported precision or
-range. Those actions are unavailable in the picker, summary and header profile; supported values use exact filter
-operands. Existing saved selections remain removable through the filter controls.
-
-A refused Python viewing page retains the previous query. Editing uses the
-[accepted viewing query](architecture.md#protocol-and-publication) even after a successful page is superseded.
-Spark preserves that view's paging state through failed or superseded replacements.
-Concurrent grid presentation saves preserve current sort publication and newer file-session recovery state.
-Failed recovery-storage writes retain the current selection and layout during the session. Reopening uses the last
-successfully saved state, as the storage warning explains.
-Runtime recovery refreshes the grid and profiles together, while retaining a failed operation's inputs and error.
-A newer page request takes precedence over a pending recovery refresh.
-When a Python dataset shrinks, paging can return the valid empty end and the grid moves back within the remaining rows.
-If the recovered grid cannot be read, Open Wrangler reports the failure and keeps any existing complete view.
-
-Find and Replace uses the selected engine's native regex syntax. In regex replacements, `$1` inserts the first
-capture group in Polars; Pandas, DuckDB and R use `\1`. With regular expressions off, replacement text is literal.
-Extract regex group uses its separate portable pattern subset.
-
-The operation catalog search exposes its accessible name before and after entering a query.
-Removing a focused form row or clearing unavailable selections keeps keyboard focus inside the operation dialog.
-Column search keeps arrow and page-key navigation aligned with the displayed results when cleaning changes the schema.
-Small editor panes preserve room for the grid header and a row while the workbench scrolls around wrapped controls.
-Column search reveals and focuses its target within both the table and editor viewport, including when the same column
-is selected again, without replacing a later focus choice.
-Read-only Code Preview supports Tab entry and keyboard navigation through long programs while refusing edits.
-Numeric histogram arrows use the highlighted bin as their starting point after pointer hover.
-Staged viewing sorts retire rules invalidated by Rename, Drop, identity replacement or a semantic type change.
-Unaffected staged rules remain, and Undo does not restore a rule already retired from the draft.
-
-Redo re-executes the latest undone command in editing-capable Python and native R sessions. Multiple Undos retain
-their command order; a new committed branch clears them. History lasts only for the current runtime session,
-including renderer remounts, and ends on close or recovery. Custom Code can produce a different result when re-executed.
-Undo closes the editor for a removed step. Failed Undo and editors whose target remains in the plan retain typed input.
-The button and registered command share the normal draft, pending-work and trusted-execution gates; no default
-keyboard shortcut overrides text-field editing.
+## Files and exports
 
 File inputs include CSV, TSV, Parquet, `.xls` and `.xlsx` workbooks, and `.jsonl` and `.ndjson` aliases.
 Polars JSONL/NDJSON reads the selected file on Unix even when its path contains glob syntax or percent-looking text.
@@ -135,21 +98,7 @@ Script and data exports protect the session's concrete source files even after a
 replacement during code synchronization or destination selection. If source identity is unavailable, viewing remains
 available and export requires reopening the dataframe.
 
-Pandas supports duplicate and non-string labels and exposes named index or MultiIndex row labels independently of
-ordinary columns. Column operations bind those inputs by stable identity and position, but name-addressed viewing
-filters and sorts fail closed when multiple columns share the same name string. Column choices add position labels when ordinary spaces,
-tabs or line breaks would make different names appear identical. Literal names resembling position labels remain
-distinguishable. Operations and viewing queries retain the original column names. Polars uses native string column names.
-Generated Python checks destination names before appending or renaming a column. Harmless extra columns and valid
-in-place replacements remain supported, including after earlier steps.
-Generated DuckDB refuses case-insensitive input and intermediate-column collisions, including categorical and Custom Code
-results, before later expressions can read the wrong column. Case-only Rename remains supported.
-Generated Pandas and Polars Custom Code refuses a zero-column result at the same step as live Preview.
-Typed zero-row results, Series and Custom Code that creates a source's first column remain supported.
-Custom Code checks lazy output expressions beyond the displayed columns before confirmation, with the same
-check in generated code. Other operations keep their native lazy evaluation and operation-specific guards. These checks
-do not snapshot inputs or guarantee all later queries will succeed. One-hot encoding, multi-label encoding and Custom
-Code may materialize their results.
+## Sessions and generated code
 
 Python live entry points include the notebook toolbar, Jupyter Variables, linked MIME output, and `.py` or `# %%`
 execution through Python Interactive. MIME v2 is a static capture, not session or export data: it is capped at 10,000
@@ -178,8 +127,14 @@ R terminal discovery can start before R's first prompt; short command lines avoi
 Canceling file-editor or Code Preview resolution stops deferred setup without replacing an existing view, including
 during loading or file preflight.
 
-Delayed grid navigation preserves newer header and control focus. Column drags stop after host view restoration,
-a logical-view change or disabled controls.
+## Cleaning operations
+
+The complete operation list and parameters are in the [generated catalog](reference.md#transformation-operations).
+Transpose, explode, and unnest are not hidden catalog entries.
+
+Find and Replace uses the selected engine's native regex syntax. In regex replacements, `$1` inserts the first
+capture group in Polars; Pandas, DuckDB and R use `\1`. With regular expressions off, replacement text is literal.
+Extract regex group uses its separate portable pattern subset.
 
 Dense Rank appends ranks from a numeric column without reordering rows. For `[20, 10, 20, missing]`, ascending ranks
 are `[2, 1, 2, missing]`; descending ranks are `[1, 2, 1, missing]`. It ranks the cleaning input independently of viewing
@@ -204,30 +159,6 @@ storage may widen or reduce scale; results beyond usable native capacity are rej
 existing CSV and Parquet export support.
 Polars Floor, Ceiling and Round support Decimal carries in streaming file previews and generated code, including
 values at the maximum precision.
-
-Polars Formula requires a numeric release version from 1.36 onward for two-column addition, subtraction or
-multiplication producing UInt128. Earlier versions and nonnumeric or prerelease version labels refuse this combination
-before previewing; scalar forms retain their existing behavior.
-
-Polars datetime formatting preserves native time zones and nanosecond fractions in live and generated code.
-Eager and lazy frames support native temporal and text inputs, including nulls, without modifying the source.
-
-Polars grouped median Fill works on the declared minimum runtime, including native integer and Decimal targets.
-Its live and generated paths preserve exact values and retain fractional-median and Decimal-scale refusals.
-
-Python Fill interpolation preserves equal nonzero anchors and avoids premature rounding at midpoints between
-subnormal endpoints. Other floating-point interpolation retains its existing precision limits; live execution and
-generated code agree.
-
-Pandas mixed object columns keep distinct large numeric values in filters, counts, sorting, duplicate removal,
-Group By, Pivot and grouped Fill. Selected rows retain their original stored values, and grouped output preserves
-its representative labels. Filter text and selected integer tokens keep exact integer values through the UI.
-Value choices retain a bounded set of ranked labels; full native counts and text search keep their existing memory costs.
-Pandas integer profiles and value choices retain exact counts and values beyond floating-point range. Profiles keep
-exact extrema and sums; unavailable approximate statistics show `n/a`, and unrepresentable histograms are omitted.
-Extended NumPy floating values that would lose precision or range at the display or selected query boundary are
-refused with an explicit conversion message. Representable values remain supported; exact native CSV export and
-explicit conversion operations keep their existing behavior.
 
 Pandas Formula rejects integer wraparound and lossy floating-point promotion in addition, subtraction, multiplication
 and nonnegative integer powers. NumPy, nullable and Sparse integer columns retain correct native results and types,
@@ -259,6 +190,10 @@ capacity restrictions also apply to empty and all-null inputs. Remaining negativ
 stay tracked in [#979](https://github.com/Matt17BR/openwrangler/issues/979). See
 [Pandas numeric and operand rules](architecture.md#pandas) for the exact supported domains and result types.
 
+Polars Formula requires a numeric release version from 1.36 onward for two-column addition, subtraction or
+multiplication producing UInt128. Earlier versions and nonnumeric or prerelease version labels refuse this combination
+before previewing; scalar forms retain their existing behavior.
+
 Formula preserves newly entered large integer literals through preview, apply, saved plans and generated code.
 Polars checks native capacity for these strings on integer columns and for integer arithmetic in saved plans
 whose source changes to Boolean. DuckDB retains exact native promotions and refuses the lossy integer results
@@ -266,6 +201,59 @@ described in its [experimental support section](#duckdb-experimental-file-suppor
 R accepts only literals exactly representable by its existing numeric scalar types. Decimal and exponent input
 retain floating-point interpretation. Previously rounded numeric plans require re-entering the original literal;
 this change cannot recover digits already lost.
+
+Polars datetime formatting preserves native time zones and nanosecond fractions in live and generated code.
+Eager and lazy frames support native temporal and text inputs, including nulls, without modifying the source.
+
+Polars grouped median Fill works on the declared minimum runtime, including native integer and Decimal targets.
+Its live and generated paths preserve exact values and retain fractional-median and Decimal-scale refusals.
+
+Python Fill interpolation preserves equal nonzero anchors and avoids premature rounding at midpoints between
+subnormal endpoints. Other floating-point interpolation retains its existing precision limits; live execution and
+generated code agree.
+
+Polars Pivot Longer accepts compatible lazy categorical columns before their values have been evaluated. Shared
+category mappings retain their dtype; separate mappings and differently ordered Enums remain incompatible.
+
+Pandas Pivot Wider preserves object identifiers containing `NaT` and mixed scalar values in generated code.
+Integer `1` and string `"1"` remain distinct keys. Generated Group By preserves the same integral object-key values
+and dtypes as live execution. Missing-value checks recognize the actual Pandas `NA` and `NaT` sentinels; similarly
+named custom values retain their values in pages, nested cells, Pivot and Fill. Integral objects with
+temporal-looking class names retain exact Group By keys. Cell rendering checks actual
+NumPy and Pandas scalar types and preserves nanoseconds in Pandas `Timedelta` subclasses. Existing native type and
+hashability limits remain.
+
+Polars Pivot Wider accepts public identifier and key columns named `len` and output names resembling temporary
+columns. Native eager/lazy and executable generated-code regressions cover collisions and duplicate null keys in
+`python/tests/test_pivot_wider.py`.
+
+## Native values and precision
+
+Pandas supports duplicate and non-string labels and exposes named index or MultiIndex row labels independently of
+ordinary columns. Column operations bind those inputs by stable identity and position, but name-addressed viewing
+filters and sorts fail closed when multiple columns share the same name string. Column choices add position labels when ordinary spaces,
+tabs or line breaks would make different names appear identical. Literal names resembling position labels remain
+distinguishable. Operations and viewing queries retain the original column names. Polars uses native string column names.
+Generated Python checks destination names before appending or renaming a column. Harmless extra columns and valid
+in-place replacements remain supported, including after earlier steps.
+Generated DuckDB refuses case-insensitive input and intermediate-column collisions, including categorical and Custom Code
+results, before later expressions can read the wrong column. Case-only Rename remains supported.
+Generated Pandas and Polars Custom Code refuses a zero-column result at the same step as live Preview.
+Typed zero-row results, Series and Custom Code that creates a source's first column remain supported.
+Custom Code checks lazy output expressions beyond the displayed columns before confirmation, with the same
+check in generated code. Other operations keep their native lazy evaluation and operation-specific guards. These checks
+do not snapshot inputs or guarantee all later queries will succeed. One-hot encoding, multi-label encoding and Custom
+Code may materialize their results.
+
+Pandas mixed object columns keep distinct large numeric values in filters, counts, sorting, duplicate removal,
+Group By, Pivot and grouped Fill. Selected rows retain their original stored values, and grouped output preserves
+its representative labels. Filter text and selected integer tokens keep exact integer values through the UI.
+Value choices retain a bounded set of ranked labels; full native counts and text search keep their existing memory costs.
+Pandas integer profiles and value choices retain exact counts and values beyond floating-point range. Profiles keep
+exact extrema and sums; unavailable approximate statistics show `n/a`, and unrepresentable histograms are omitted.
+Extended NumPy floating values that would lose precision or range at the display or selected query boundary are
+refused with an explicit conversion message. Representable values remain supported; exact native CSV export and
+explicit conversion operations keep their existing behavior.
 
 Pandas timestamps preserve nanosecond fractions and time-zone offsets that include seconds, such as historical
 Berlin offsets. Grid cells, nested values, profiles and value choices use valid datetime text. Searches recognize
@@ -343,17 +331,6 @@ Nonempty lazy Polars frames with Object columns also retain exact Dataset missin
 count as unavailable. Empty frames retain zero counts. Eager statistics keep their native behavior; Object-column
 profiling remains unsupported.
 
-Polars Pivot Longer accepts compatible lazy categorical columns before their values have been evaluated. Shared
-category mappings retain their dtype; separate mappings and differently ordered Enums remain incompatible.
-
-Pandas Pivot Wider preserves object identifiers containing `NaT` and mixed scalar values in generated code.
-Integer `1` and string `"1"` remain distinct keys. Generated Group By preserves the same integral object-key values
-and dtypes as live execution. Missing-value checks recognize the actual Pandas `NA` and `NaT` sentinels; similarly
-named custom values retain their values in pages, nested cells, Pivot and Fill. Integral objects with
-temporal-looking class names retain exact Group By keys. Cell rendering checks actual
-NumPy and Pandas scalar types and preserves nanoseconds in Pandas `Timedelta` subclasses. Existing native type and
-hashability limits remain.
-
 Native Pandas Arrow `bool8` and UUID columns support logical cell values, profiles, value selections, sorting and
 existing compatible cleaning operations. Nonzero `bool8` storage reads as true; UUIDs use canonical strings.
 Selected rows retain their original native arrays. CSV and Parquet exports preserve the logical values, including
@@ -394,6 +371,48 @@ empty-row inputs remain valid when a visible column is retained.
 Generated Pandas One-hot names preserve native floating-point labels, keeping later column bindings and collision
 checks aligned with live results.
 
+## Viewing and editing controls
+
+Filter choices retain their counts while selecting values in the same column. Changes to the other filters, sort
+or AND/OR logic clear affected choices; Search loads the current choices without changing existing selections.
+Opening value filters from a header, the Filters tab or Show More selects the requested column with fresh search input.
+Editing a sort from the sidebar selects its column while preserving unfinished filter and sort input.
+Pandas and Polars keep values visible and searchable when they cannot be selected within the supported precision or
+range. Those actions are unavailable in the picker, summary and header profile; supported values use exact filter
+operands. Existing saved selections remain removable through the filter controls.
+
+A refused Python viewing page retains the previous query. Editing uses the
+[accepted viewing query](architecture.md#protocol-and-publication) even after a successful page is superseded.
+Spark preserves that view's paging state through failed or superseded replacements.
+Concurrent grid presentation saves preserve current sort publication and newer file-session recovery state.
+Failed recovery-storage writes retain the current selection and layout during the session. Reopening uses the last
+successfully saved state, as the storage warning explains.
+Runtime recovery refreshes the grid and profiles together, while retaining a failed operation's inputs and error.
+A newer page request takes precedence over a pending recovery refresh.
+When a Python dataset shrinks, paging can return the valid empty end and the grid moves back within the remaining rows.
+If the recovered grid cannot be read, Open Wrangler reports the failure and keeps any existing complete view.
+
+The operation catalog search exposes its accessible name before and after entering a query.
+Removing a focused form row or clearing unavailable selections keeps keyboard focus inside the operation dialog.
+Column search keeps arrow and page-key navigation aligned with the displayed results when cleaning changes the schema.
+Small editor panes preserve room for the grid header and a row while the workbench scrolls around wrapped controls.
+Column search reveals and focuses its target within both the table and editor viewport, including when the same column
+is selected again, without replacing a later focus choice.
+Read-only Code Preview supports Tab entry and keyboard navigation through long programs while refusing edits.
+Numeric histogram arrows use the highlighted bin as their starting point after pointer hover.
+Staged viewing sorts retire rules invalidated by Rename, Drop, identity replacement or a semantic type change.
+Unaffected staged rules remain, and Undo does not restore a rule already retired from the draft.
+
+Redo re-executes the latest undone command in editing-capable Python and native R sessions. Multiple Undos retain
+their command order; a new committed branch clears them. History lasts only for the current runtime session,
+including renderer remounts, and ends on close or recovery. Custom Code can produce a different result when re-executed.
+Undo closes the editor for a removed step. Failed Undo and editors whose target remains in the plan retain typed input.
+The button and registered command share the normal draft, pending-work and trusted-execution gates; no default
+keyboard shortcut overrides text-field editing.
+
+Delayed grid navigation preserves newer header and control focus. Column drags stop after host view restoration,
+a logical-view change or disabled controls.
+
 Unnamed columns support viewing, profiling, keyboard selection, and copy. Their cell menus, header sorts, profile
 actions, and Filters / Sorts consistently disable name-addressed actions without leaving a page request pending.
 Toggling an ordinary value preserves null and NaN selections. Supported scalar selections remain
@@ -418,19 +437,12 @@ selection and requires a new choice before Preview; it does not silently switch 
 Visual baselines and axe scans are not exhaustive assistive-technology certification or proof that every virtualized
 cell is simultaneously present in the DOM.
 
-The complete operation list and parameters are in the [generated catalog](reference.md#transformation-operations).
-Transpose, explode, and unnest are not hidden catalog entries.
-
 ## Release rule
 
 A stable release requires every required Pandas and Polars row above to be **Done**, no known release-blocking defect,
 and one exact candidate to pass the [qualification flow](releasing.md#release-candidate). Outside the required
 Pandas/Polars table, Preview, experimental, Partial, Planned, and Out-of-scope capabilities do not block stable
 publication when their public labels and limits remain accurate.
-
-Polars Pivot Wider accepts public identifier and key columns named `len` and output names resembling temporary
-columns. Native eager/lazy and executable generated-code regressions cover collisions and duplicate null keys in
-`python/tests/test_pivot_wider.py`.
 
 ## Native R preview
 
