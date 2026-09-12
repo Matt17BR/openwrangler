@@ -1632,7 +1632,9 @@ class PandasEngine(DataFrameEngine):
             elif kind == "stripText":
                 result = series.str.strip(params.get("characters") or DEFAULT_STRIP_CHARACTERS)
             elif kind == "splitText":
-                result = series.str.split(params["delimiter"], regex=False).str.get(params["index"])
+                result = series.str.split(
+                    params["delimiter"], n=min(params["index"] + 1, np.iinfo(np.intp).max), regex=False
+                ).str.get(params["index"])
             elif kind == "capitalizeText":
                 result = series.map(str.capitalize, na_action="ignore")
             elif kind == "lowerText":
@@ -2879,7 +2881,11 @@ class PandasEngine(DataFrameEngine):
             elif kind == "stripText":
                 expression = f"{base}.strip({params.get('characters') or DEFAULT_STRIP_CHARACTERS!r})"
             elif kind == "splitText":
-                expression = f"{base}.split({params['delimiter']!r}, regex=False).str.get({params['index']!r})"
+                expression = (
+                    f"{base}.split({params['delimiter']!r}, "
+                    f"n=min({params['index']!r} + 1, np.iinfo(np.intp).max), regex=False)"
+                    f".str.get({params['index']!r})"
+                )
             else:
                 method = {"capitalizeText": "capitalize", "lowerText": "lower", "upperText": "upper"}[kind]
                 expression = (

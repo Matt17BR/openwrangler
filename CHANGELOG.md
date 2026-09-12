@@ -9,7 +9,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 - Generated DuckDB One-hot encoding preserves binary categories when the input connection defines a `from_hex` macro.
 - Find and Replace shows the selected engine's capture-group replacement notation and explains that regex syntax is engine-specific.
 - DuckDB Split Column and literal Find/Replace accept NUL characters in text values without SQL parsing errors.
-- Pandas Split text into columns avoids splitting discarded trailing fields, reducing work when only a few output columns are requested.
+- Pandas Split avoids tokenizing discarded trailing fields when selecting one field or requesting a few output columns.
 - Python Fill interpolation preserves constant anchors and midpoints between subnormal values.
 - Python runtime shutdown no longer waits out its grace period for already-cancelled queued requests.
 - Python Custom Code failures return an error response even when their exception message cannot be formatted.
