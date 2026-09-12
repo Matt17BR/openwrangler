@@ -938,12 +938,12 @@ class PandasEngine(DataFrameEngine):
             if mask is not None:
                 column_masks.append(mask)
 
-        filtered = df
+        positions = None
         if column_masks:
             mask = column_masks[0]
             for column_mask in column_masks[1:]:
                 mask = mask | column_mask if model.get("logic") == "or" else mask & column_mask
-            filtered = _pandas_take_rows(df, np.flatnonzero(mask.fillna(False).to_numpy(dtype=bool)))
+            positions = np.flatnonzero(mask.fillna(False).to_numpy(dtype=bool))
 
         sort_rules = model.get("sort", [])
         if sort_rules:
@@ -957,10 +957,14 @@ class PandasEngine(DataFrameEngine):
                     column_type = _pandas_semantic_type(df.iloc[:, position])
                     if column_type not in VIEW_COMPARABLE_TYPES:
                         raise EngineError(f"Pandas view sorting is unavailable for {column_type} columns.")
-                    order = _pandas_sort_order(
-                        filtered.iloc[:, position], rule.get("direction", "asc") == "asc", rule.get("nulls", "last")
+                    series = (
+                        df.iloc[:, position]
+                        if positions is None
+                        else _pandas_take_rows(df.iloc[:, [position]], positions).iloc[:, 0]
                     )
-                    filtered = _pandas_take_rows(filtered, order)
+                    order = _pandas_sort_order(series, rule.get("direction", "asc") == "asc", rule.get("nulls", "last"))
+                    positions = order if positions is None else positions[order]
+        filtered = df if positions is None else _pandas_take_rows(df, positions)
         if positional_row_axis and filtered is not df:
             filtered = filtered.reset_index(drop=True)
         return filtered

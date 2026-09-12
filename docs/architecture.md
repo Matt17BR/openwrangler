@@ -478,6 +478,7 @@ schema and gains an empty Boolean column. Live and generated code apply the same
 ### Pandas
 
 Pandas executes viewing, all catalog operations, profiling, generated code, and supported exports in Pandas.
+Viewing filters and sorts compose row positions, selecting the full result once after ordering the native sort columns.
 Duplicate and non-string labels are addressed positionally after binding. Object-dtype cells are recursively isolated
 before trusted custom code, preview, rollback, or generated-code execution so nested user objects cannot mutate the
 source. Typed null, NaN, decimal, datetime, and wide-integer behavior is normalized at the protocol boundary.
