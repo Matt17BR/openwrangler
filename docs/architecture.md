@@ -662,13 +662,13 @@ Missing-power identities, noninteger Sparse fills and Boolean-only operations re
 Explicit floating-point and Decimal arithmetic, division, negative or fractional powers, modulo and By Example
 keep their existing paths. Live Formula and generated code share the same validation.
 
-Arrow-backed Formula preserves successful native results and types. Integer repairs accept 8–64-bit native NumPy,
+Arrow-backed Formula preserves successful native results and types. Integer repairs accept 8-64-bit native NumPy,
 built-in Pandas nullable or Arrow integer columns; Sparse and arbitrary extension types are excluded.
 Live execution and generated code use one repair implementation, called only after native arithmetic fails.
 The generated repair stays local to the Formula result helper so it adds no notebook-global binding.
 
 After native column-to-column power reports a capacity error, eligible signed integer bases and signed or
-8–32-bit unsigned integer exponents widen to Int64 for checked native power. At least one operand must be
+8-32-bit unsigned integer exponents widen to Int64 for checked native power. At least one operand must be
 Arrow-backed. If checked Int64 power fails, safe UInt64 casts of those prepared operands may produce a checked
 UInt64 result. The additional path requires nonnegative values throughout both selected columns, including values
 paired with the other operand's null; it does not take magnitudes or infer per-row signs. Preparation failures,
@@ -702,7 +702,7 @@ supported. Mixed-sign columns require two checked operations; other repairs requ
 
 After existing native and eligible repairs fail, signed integer addition may use an exact native Decimal128
 intermediate; fixed-width integer multiplication uses Decimal256. Both require at least one Arrow column and return
-Int64 if the complete result fits, or UInt64 otherwise. The added addition path accepts signed 8–64-bit columns and
+Int64 if the complete result fits, or UInt64 otherwise. The added addition path accepts signed 8-64-bit columns and
 an eligible signed companion column or exact Int64-range literal. Multiplication retains its signed/unsigned operand
 rules. Successful native types and earlier UInt64 repairs stay unchanged. True overflow and columns needing both
 negative results and values above Int64 maximum retain the original refusal. Only selected operands gain temporary
@@ -1546,8 +1546,8 @@ and [CI](ci.md) records the bounded Cursor check and optional released-Jupyter w
 
 ## Related authorities
 
-- [Generated reference](reference.md) — commands, settings, operation parameters, and shortcuts.
-- [Feature parity](feature-parity.md) — current engine status, completed slices, and open release gates.
-- [Testing](testing.md) — required source, runtime, webview, editor, accessibility, package, and manual checks.
-- [Releasing](releasing.md) — canonical packaging, candidate qualification, publication, and recovery.
-- [Native R ADR](decisions/0001-native-r-runtime.md) — accepted native R ownership and release boundary.
+- [Generated reference](reference.md): commands, settings, operation parameters, and shortcuts.
+- [Feature parity](feature-parity.md): current engine status, completed slices, and open release gates.
+- [Testing](testing.md): required source, runtime, webview, editor, accessibility, package, and manual checks.
+- [Releasing](releasing.md): canonical packaging, candidate qualification, publication, and recovery.
+- [Native R ADR](decisions/0001-native-r-runtime.md): accepted native R ownership and release boundary.

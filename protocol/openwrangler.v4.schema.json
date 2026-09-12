@@ -140,7 +140,7 @@
     {
       "kind": "splitTextColumns",
       "title": "Split text into columns",
-      "description": "Split text at a literal delimiter into 2–64 new columns, keeping the original; null and missing parts stay null, empty parts stay empty, and extra parts are ignored.",
+      "description": "Split text at a literal delimiter into 2 to 64 new columns, keeping the original; null and missing parts stay null, empty parts stay empty, and extra parts are ignored.",
       "group": "Categorical / text",
       "icon": "split-horizontal"
     },
@@ -224,7 +224,7 @@
     {
       "kind": "pivotWider",
       "title": "Pivot wider",
-      "description": "Turn one typed key column and one scalar value column into 2–64 explicitly declared outputs without aggregation.",
+      "description": "Turn one typed key column and one scalar value column into 2 to 64 explicitly declared outputs without aggregation.",
       "group": "Reshape",
       "icon": "table"
     },

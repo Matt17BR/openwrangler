@@ -9757,7 +9757,7 @@ async function captureReleasedJupyterDuckDbRelation(
 
     const visibleRows = app.getByRole("status", { name: "Loaded rows" });
     await visibleRows.waitFor({ state: "visible", timeout: 10_000 });
-    assert.match((await visibleRows.innerText()).trim(), /^Rows 1\u2013\d+ of 25,000$/u);
+    assert.match((await visibleRows.innerText()).trim(), /^Rows 1 to \d+ of 25,000$/u);
     const gridBox = await gridScroller.boundingBox();
     const rowHeaderBox = await app.locator("th.rowHeader").first().boundingBox();
     const orderIdBox = await app.locator('th[data-column="order_id"]').boundingBox();
@@ -10096,7 +10096,7 @@ async function captureReleasedJupyterPySparkLive(
     assert.equal(await loadedRows.count(), 1, "The PySpark media scene must expose one visible-row status.");
     assert.match(
       (await loadedRows.innerText()).trim(),
-      /^Rows 1\u2013\d+ · total appears after the last page$/u,
+      /^Rows 1 to \d+ · total appears after the last page$/u,
       "The PySpark media scene must label its progressive live total honestly."
     );
     const gridBox = await gridScroller.boundingBox();
@@ -11465,7 +11465,7 @@ async function capturePackagedFilterResultScene(
     await visibleRows.waitFor({ state: "visible", timeout: 10_000 });
     assert.match(
       (await visibleRows.innerText()).trim(),
-      new RegExp(`^Rows 1\\u2013\\d+ of ${expectedRows.toLocaleString()}$`, "u")
+      new RegExp(`^Rows 1 to \\d+ of ${expectedRows.toLocaleString()}$`, "u")
     );
     await app
       .locator('td[data-grid-row="0"][data-grid-column="1"]')
@@ -16228,9 +16228,9 @@ async function visiblePersistedPanelSnapshot(
   await visibleRows.waitFor({ state: "visible", timeout: 10_000 });
   await waitForLocatorText(
     visibleRows,
-    (text) => text.trim() === "Rows 401\u2013600 of 10,000",
+    (text) => text.trim() === "Rows 401 to 600 of 10,000",
     SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-    "the persisted 401\u2013600 row block to reach the rendered grid"
+    "the persisted 401 to 600 row block to reach the rendered grid"
   );
   const status = (await visibleRows.innerText()).trim();
 
@@ -16268,7 +16268,7 @@ async function visiblePersistedPanelSnapshot(
   assert.ok(physicalViewport.scrollWidth > physicalViewport.clientWidth);
   assert.ok(physicalViewport.scrollHeight > physicalViewport.clientHeight);
 
-  assert.equal(status, "Rows 401\u2013600 of 10,000");
+  assert.equal(status, "Rows 401 to 600 of 10,000");
   const sortLabels = await assertPersistedSortPriorityInNativeView(workbench);
   await waitForSettledViewState(testing, "the visible persisted panel to settle after native-view inspection");
 

@@ -49,18 +49,23 @@ export function createReleasedRDocumentGrid({
     assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "R");
     assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "EDITING");
     const visibleRows = app.getByRole("status", { name: "Loaded rows" });
-    await waitForLocatorText(visibleRows, (text) => text.trim() === "Rows 1–200 of 240", 10_000, "the first R block");
+    await waitForLocatorText(
+      visibleRows,
+      (text) => text.trim() === "Rows 1 to 200 of 240",
+      10_000,
+      "the first R block"
+    );
     await app.getByRole("button", { name: "Next block", exact: true }).click();
     await waitForLocatorText(
       visibleRows,
-      (text) => text.trim() === "Rows 201–240 of 240",
+      (text) => text.trim() === "Rows 201 to 240 of 240",
       10_000,
       "the second R block"
     );
     await app.getByRole("button", { name: "Previous block", exact: true }).click();
     await waitForLocatorText(
       visibleRows,
-      (text) => text.trim() === "Rows 1–200 of 240",
+      (text) => text.trim() === "Rows 1 to 200 of 240",
       10_000,
       "the restored R block"
     );

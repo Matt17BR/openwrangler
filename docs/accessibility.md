@@ -11,7 +11,7 @@ workbench; it does not replace the keyboard commands provided by VS Code itself.
 The data table exposes a named ARIA grid. Its row and column counts describe the complete current view when the row
 count is known. Rendered rows and columns keep their absolute ARIA positions even though the grid renders only a
 window of a large dataset. A row-number or row-label header precedes the data columns. The row range below the grid
-is a polite, atomic status such as `Rows 1–200 of 1,000`.
+is a polite, atomic status such as `Rows 1 to 200 of 1,000`.
 
 Only one rendered body cell is in the Tab order at a time. Put focus on that cell, then use:
 

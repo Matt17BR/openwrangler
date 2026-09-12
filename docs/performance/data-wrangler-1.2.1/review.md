@@ -66,7 +66,7 @@ would hide the observed instability. Confirmation report SHA-256:
 ## Release decision
 
 No Open Wrangler median exceeded the preset relative and absolute regression allowances. Data Wrangler took
-4.4–7.3× as long to show the inline preview, 1.0–1.8× as long to open the full workbench, and about 3.4× as long to
+4.4 to 7.3× as long to show the inline preview, 1.0 to 1.8× as long to open the full workbench, and about 3.4× as long to
 profile every CSV column. Parquet profiling was close, with Open Wrangler slightly faster. Open Wrangler used a little
 more PSS on the two CSV cases and less on both million-row Parquet cases, all within the memory allowance.
 

@@ -643,7 +643,7 @@ describe("SummaryPanel", () => {
       ],
       sort: []
     });
-    expect(screen.getByText("Filter: 10–11")).toBeVisible();
+    expect(screen.getByText("Filter: 10 to 11")).toBeVisible();
 
     act(() => firstBin.focus());
     fireEvent.keyDown(firstBin, { key: "End" });

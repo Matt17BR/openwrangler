@@ -254,7 +254,7 @@ test("daily notes group frozen PRs and fold only changes after the first five", 
       "Changes since the previous preview, [v1.99.7](https://github.com/Matt17BR/openwrangler/releases/tag/v1.99.7).\n\n"
     )
   );
-  const [visible, folded] = notes.split("<details>\n<summary>Read more — 2 more changes</summary>\n\n");
+  const [visible, folded] = notes.split("<details>\n<summary>Read more: 2 more changes</summary>\n\n");
   assert.equal(visible.split("\n").filter((line) => line.startsWith("- ")).length, 5);
   assert.ok(folded, notes);
   assert.equal(folded.split("\n").filter((line) => line.startsWith("- ")).length, 2);
@@ -298,7 +298,7 @@ test("daily notes leave five changes unfolded and link the first-preview stable 
   writeFileSync(join(root, "grid.txt"), "sixth change\n");
   sourceSha = commitChanges(root, "Sixth change");
   const longer = dailyPreviewReleaseNotes({ root, baseSha, baseTag: "v2.1.0", sourceSha, version: "2.1.20260910" });
-  assert.ok(longer.includes("<summary>Read more — 1 more change</summary>"));
+  assert.ok(longer.includes("<summary>Read more: 1 more change</summary>"));
   assert.equal(
     longer
       .split("<details>")[0]

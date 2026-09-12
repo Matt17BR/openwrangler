@@ -23,6 +23,8 @@ a precise contract. Their introductions and summaries should still be direct.
 ## Public copy
 
 - Put the feature or result at the start of the sentence.
+- Do not use em dashes or en dashes in project-authored prose, UI labels, release text, or generated descriptions.
+  Use commas, colons, parentheses, separate sentences, or "to" for ranges. Preserve user data and parser support for external text.
 - Prefer a concrete subject and verb: “The grid fetches visible columns” is clearer than “Navigate wide data
   efficiently.”
 - Keep one claim in a sentence. Split long strings of adjectives, implementation terms, and caveats.

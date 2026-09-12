@@ -224,7 +224,7 @@ export function createReleasedRGridJourney({
       .waitFor({ state: "visible", timeout: 10_000 });
 
     let visibleRows = app.getByRole("status", { name: "Loaded rows" });
-    await waitForLocatorText(visibleRows, (text) => text.trim() === "Rows 1–1 of 1", 10_000, "the filtered R row");
+    await waitForLocatorText(visibleRows, (text) => text.trim() === "Rows 1 to 1 of 1", 10_000, "the filtered R row");
     await app
       .getByRole("rowheader", { name: "Row 1, label case-1200", exact: true })
       .waitFor({ state: "visible", timeout: 10_000 });
@@ -321,7 +321,7 @@ export function createReleasedRGridJourney({
     columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
     await waitForLocatorText(
       visibleRows,
-      (text) => text.trim() === "Rows 1–200 of 1,205",
+      (text) => text.trim() === "Rows 1 to 200 of 1,205",
       10_000,
       "the restored native R frame"
     );
@@ -333,12 +333,12 @@ export function createReleasedRGridJourney({
     const next = app.getByRole("button", { name: "Next block", exact: true });
     if (paging === "all-blocks") {
       for (const expected of [
-        "Rows 201–400 of 1,205",
-        "Rows 401–600 of 1,205",
-        "Rows 601–800 of 1,205",
-        "Rows 801–1,000 of 1,205",
-        "Rows 1,001–1,200 of 1,205",
-        "Rows 1,201–1,205 of 1,205"
+        "Rows 201 to 400 of 1,205",
+        "Rows 401 to 600 of 1,205",
+        "Rows 601 to 800 of 1,205",
+        "Rows 801 to 1,000 of 1,205",
+        "Rows 1,001 to 1,200 of 1,205",
+        "Rows 1,201 to 1,205 of 1,205"
       ]) {
         await next.click();
         await waitForLocatorText(visibleRows, (text) => text.trim() === expected, 10_000, expected);
@@ -365,14 +365,14 @@ export function createReleasedRGridJourney({
       await next.click();
       await waitForLocatorText(
         visibleRows,
-        (text) => text.trim() === "Rows 201–400 of 1,205",
+        (text) => text.trim() === "Rows 201 to 400 of 1,205",
         10_000,
         "the representative second R block"
       );
       await app.getByRole("button", { name: "Previous block", exact: true }).click();
       await waitForLocatorText(
         visibleRows,
-        (text) => text.trim() === "Rows 1–200 of 1,205",
+        (text) => text.trim() === "Rows 1 to 200 of 1,205",
         10_000,
         "the representative restored R block"
       );

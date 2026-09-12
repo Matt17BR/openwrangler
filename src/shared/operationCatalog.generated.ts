@@ -199,7 +199,7 @@ export const operationCatalog: readonly OperationCatalogItem[] = Object.freeze([
     kind: "splitTextColumns",
     title: "Split text into columns",
     description:
-      "Split text at a literal delimiter into 2–64 new columns, keeping the original; null and missing parts stay null, empty parts stay empty, and extra parts are ignored.",
+      "Split text at a literal delimiter into 2 to 64 new columns, keeping the original; null and missing parts stay null, empty parts stay empty, and extra parts are ignored.",
     group: "Categorical / text",
     icon: "split-horizontal",
     required: Object.freeze(["column", "delimiter", "newColumns"]),
@@ -309,7 +309,7 @@ export const operationCatalog: readonly OperationCatalogItem[] = Object.freeze([
     kind: "pivotWider",
     title: "Pivot wider",
     description:
-      "Turn one typed key column and one scalar value column into 2–64 explicitly declared outputs without aggregation.",
+      "Turn one typed key column and one scalar value column into 2 to 64 explicitly declared outputs without aggregation.",
     group: "Reshape",
     icon: "table",
     required: Object.freeze(["namesFrom", "valuesFrom", "outputs"]),

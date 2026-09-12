@@ -421,7 +421,7 @@ export function renderDailyPreviewReleaseNotes(source, pullRequests) {
       ...(folded
         ? [
             "<details>",
-            `<summary>Read more — ${entries.length - 5} more ${entries.length === 6 ? "change" : "changes"}</summary>`,
+            `<summary>Read more: ${entries.length - 5} more ${entries.length === 6 ? "change" : "changes"}</summary>`,
             "",
             ...entries.slice(5),
             ""
