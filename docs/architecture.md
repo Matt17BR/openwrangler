@@ -583,8 +583,9 @@ Integer filters compare within the native storage range and handle out-of-range 
 Sorting, duplicate detection and directional Fill share exact temporary row keys. Nullable Arrow integer, timestamp
 and duration comparisons retain exact values, including nanosecond differences; temporal keys use integer storage
 so present extrema remain distinct from nulls. Dataset duplicate counts use the same keys for these values and for
-single-column Sparse integers. The keys preserve value ordering. Row selection retains native indexes and Sparse
-integer values and fill conventions, including columns outside the query; other retained columns keep their native
+single-column Sparse integers. The keys preserve value ordering. Row selection takes Sparse integer and duration
+columns positionally without fill-aware reindexing, retaining nonempty storage units, values and fill conventions,
+including columns outside the query. Empty results keep native dtype conventions. Native indexes and other retained columns keep their native
 representation, subject to the dictionary chunk-unification behavior above.
 
 Arrow timestamp and duration null masks use native validity, including logical null entries in dictionaries.

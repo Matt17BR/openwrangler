@@ -379,7 +379,7 @@ def _pandas_take_rows(frame: Any, positions: Any) -> Any:
     sparse = {
         position: frame.iloc[:, position].array
         for position, dtype in enumerate(frame.dtypes)
-        if isinstance(dtype, pd.SparseDtype) and pd.api.types.is_integer_dtype(dtype)
+        if isinstance(dtype, pd.SparseDtype) and (pd.api.types.is_integer_dtype(dtype) or dtype.subtype.kind == "m")
     }
     if not sparse:
         return frame.iloc[positions]
@@ -5983,7 +5983,8 @@ def _generated_pandas_row_query_helpers(*, include_queries: bool = True) -> list
         "    sparse = {",
         "        position: frame.iloc[:, position].array",
         "        for position, dtype in enumerate(frame.dtypes)",
-        "        if isinstance(dtype, pd.SparseDtype) and pd.api.types.is_integer_dtype(dtype)",
+        "        if isinstance(dtype, pd.SparseDtype)",
+        '        and (pd.api.types.is_integer_dtype(dtype) or dtype.subtype.kind == "m")',
         "    }",
         "    if not sparse:",
         "        return frame.iloc[positions]",
