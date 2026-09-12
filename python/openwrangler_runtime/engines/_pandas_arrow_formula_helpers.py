@@ -173,20 +173,24 @@ def _open_wrangler_arrow_formula_repair(
                     if pd.isna(minimum) or minimum >= 0:
                         return formula(left.astype(pd.ArrowDtype(pa.uint64())), right, operator)
         if (
-            operator == "multiply"
-            and is_integer_column(left, signed_only=False)
-            and (is_integer_column(right, signed_only=False) or type(right) is int and -(2**63) <= right < 2**64)
+            operator in {"add", "multiply"}
+            and is_integer_column(left, signed_only=operator == "add")
+            and (
+                is_integer_column(right, signed_only=operator == "add")
+                or type(right) is int
+                and -(2**63) <= right < 2 ** (63 if operator == "add" else 64)
+            )
         ):
             import pyarrow.compute as pc
 
-            # Two 64-bit integer operands fit this fixed native intermediate.
+            # Native inference needs 21 decimal digits for addition, 41 for multiplication.
             # Keep an integer result: signed capacity first, then unsigned.
-            decimal = pa.decimal256(20, 0)
+            decimal = pa.decimal128(20, 0) if operator == "add" else pa.decimal256(20, 0)
             first = pc.cast(pa.array(left.array), decimal)
             second = (
                 pc.cast(pa.array(right.array), decimal) if isinstance(right, pd.Series) else pa.scalar(right, decimal)
             )
-            result = pc.call_function("multiply_checked", [first, second])
+            result = pc.call_function(f"{operator}_checked", [first, second])
             try:
                 result = pc.cast(result, pa.int64())
             except pa.ArrowInvalid:
