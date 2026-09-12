@@ -2838,7 +2838,7 @@ def _sql_literal(value: Any) -> str:
     if isinstance(value, timedelta):
         return f"INTERVAL {_sql_literal(_timedelta_seconds_text(value) + ' seconds')}"
     if isinstance(value, bytes):
-        return f"from_hex({_sql_literal(value.hex())})"
+        return f"system.main.from_hex({_sql_literal(value.hex())})"
     if isinstance(value, (list, tuple)):
         return "[" + ", ".join(_sql_literal(item) for item in value) + "]"
     text = str(value)
@@ -3742,7 +3742,7 @@ def _ow_literal(value):
             seconds += "." + str(microseconds).rjust(6, "0").rstrip("0")
         return "INTERVAL " + _ow_literal(seconds + " seconds")
     if isinstance(value, bytes):
-        return "from_hex(" + _ow_literal(value.hex()) + ")"
+        return "system.main.from_hex(" + _ow_literal(value.hex()) + ")"
     if isinstance(value, (list, tuple)):
         return "[" + ", ".join(_ow_literal(item) for item in value) + "]"
     text = str(value)
