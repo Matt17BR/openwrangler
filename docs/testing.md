@@ -527,8 +527,9 @@ cleanup have separate two-second limits.
 The Linux comprehensive journey retains the broader operation catalog, final-page/last-column assertion, separate
 native Viewing opens and both native-flavor operations. macOS omits the additional tibble Rename and keyed-data.table
 Drop editing round; those class-specific semantics remain in the native R contracts, Linux comprehensive and Windows
-representative journeys. Windows and Cursor retain their representative profiles. The editor phase has a 300-second
-absolute deadline; preparation and cleanup add to total wall time.
+representative journeys. The Windows desktop VS Code default also opens the three existing ordinary collapse
+fixtures and checks their pages and source binding. Cursor, remote and focused profiles keep their existing scope.
+The editor phase has a 300-second absolute deadline; preparation and cleanup add to total wall time.
 
 `scripts/packaged-r-jupyter.test.mjs` checks actual prepared install/probe/record agreement, private environment
 ownership and rejected inputs through the command seam without starting R. Package selection changes require fresh
@@ -539,7 +540,8 @@ prepared install/probe inputs remain unchanged. Changes to shared pins or common
 notebook core and full tooling/literate qualification. Measure setup cost; graph size alone does not establish savings.
 
 `src/test/releasedRTooling.unit.test.ts` checks the actual tooling assertions and focused journey routing, including
-missing or mismatched extensions, commands and CLI configuration. Tooling selection changes require the affected
+missing or mismatched extensions, commands and CLI configuration, and the Windows default's collapse coverage
+without broadening Cursor, remote or focused profiles. Tooling selection changes require the affected
 terminal or literate journeys against the same supplied VSIX, with both required for shared changes. Fewer selected
 artifacts alone do not establish setup-time savings.
 
@@ -553,14 +555,23 @@ provenance triple. It does not repeat protected-main source checks. The candidat
 3. Reverifies the triple and runs pinned Cursor `platform-smoke` against the same VSIX.
 4. Reverifies and uploads only the canonical triple for stable promotion.
 
-Stable publication uses this verified VSIX and does not rebuild it.
+A dependent three-platform R matrix downloads that same-run triple, verifies it against the exact checkout, builds
+only the test harness and runs default `r-jupyter` in desktop VS Code once per platform. It reverifies the triple after
+acceptance. The default profiles retain their existing editing, native-frame, export/insertion and restart checks;
+Windows also opens the three ordinary collapse fixtures. No focused selector replaces the default, and macOS retains
+its coupled direct-document check. Private R packages and editor setup stay with the existing runner. The matrix adds
+no source suite, Java, Spark or development dataframe environment.
+The runner logs the actual validated editor version and prepared R package versions. The matrix requests stable
+VS Code through the existing acquisition owner.
 
-This ordinary candidate flow does not qualify R support. The
-[first stable R notebook scope](feature-parity.md#first-stable-r-notebook-scope) requires its representative IRkernel
-journeys to consume that same supplied VSIX on Linux, macOS and Windows, alongside matching native source evidence.
-Use the existing core/native-frame/restart selectors and platform profiles for their distinct responsibilities;
-do not duplicate the complete native operation catalog in installed tests. Keep original failures, package identity,
-source-preservation assertions and the existing time and cleanup bounds.
+All three results are required. Failure diagnostics use only the runner's exact sealed artifact path; a successful
+workflow still uploads exactly one canonical triple. Stable publication checks the whole first-attempt candidate run
+and uses that VSIX without rebuilding. Existing workflow and artifact owners check this wiring.
+
+These candidate checks do not by themselves graduate R support. The
+[first stable R notebook scope](feature-parity.md#first-stable-r-notebook-scope) requires fresh candidate results and
+reliability review. Keep original failures, package identity, source-preservation assertions and existing time and
+cleanup bounds; do not add an installed copy of the complete native operation catalog.
 
 The optional [competitor comparison](performance-comparison.md) is archived; its `comparison:*` commands are no longer
 available. Direct installed-performance, weekly runtime performance and Data Wrangler coexistence checks remain.

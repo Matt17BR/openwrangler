@@ -130,14 +130,19 @@ runtime packages.
 
 Stable qualification requires every required Pandas/Polars surface in [feature parity](feature-parity.md) to be Done
 with its expected backend availability and tracked references. These checks validate declarations and reference paths;
-maintainers review whether the cited evidence supports them. R support is currently Preview: the ordinary candidate
-workflow does not qualify an R notebook scope. The [first stable R notebook criteria](feature-parity.md#first-stable-r-notebook-scope)
-require matching native source evidence and the existing representative Linux, macOS and Windows IRkernel journeys
-against the same immutable candidate VSIX. Their reviewed results must become a publication requirement before that
-scope is labelled stable. Reuse the existing artifact and journey owners; do not build one candidate per platform or
-add an installed copy of the complete native operation catalog. Terminal, managed-document and Cursor support can
-retain separate labels. Ordinary source checks permit documented limitations so maintenance can record them accurately; passing those
-checks does not establish release readiness.
+maintainers review whether the cited evidence supports them. The workflow also requires the default IRkernel notebook
+journey in desktop VS Code on Linux, macOS and Windows. Each platform downloads the same run's canonical triple,
+checks it against the exact source before and after acceptance, and builds only the test harness. The supplied VSIX
+is never rebuilt. Existing private R preparation, package checks, phase deadlines, failure diagnostics and cleanup
+remain in the packaged-editor runner; the matrix does not repeat source suites or add another installed operation catalog.
+All three jobs must pass on the original candidate attempt.
+
+R support is Preview. Published 2.4 qualification did not include this candidate-bound R matrix. A fresh successful run
+and the reliability review in the [first stable R notebook criteria](feature-parity.md#first-stable-r-notebook-scope)
+are still required before changing that label. Terminal, managed-document and Cursor support can retain separate
+labels. The macOS default's existing direct-document check is coupled coverage, not a stable document-support claim.
+Ordinary source checks permit documented limitations so maintenance can record them accurately; passing those checks
+does not establish release readiness.
 
 The workflow runs the installed-performance check in pinned VS Code and a bounded platform smoke in pinned Linux
 Cursor against the exact candidate. Cursor does not receive the full VS Code qualification matrix. Both checks use the

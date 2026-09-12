@@ -13,6 +13,63 @@ const marketplace = readFileSync(resolve(root, "azure-pipelines-marketplace.yml"
 const openVsx = readFileSync(resolve(root, ".github/workflows/open-vsx-promotion.yml"), "utf8");
 const marketplaceSteps = (workflow) => workflow.stages[1].jobs[0].strategy.runOnce.deploy.steps;
 
+test("R candidate qualification consumes the same immutable artifact on every desktop platform", () => {
+  const workflow = load(readFileSync(resolve(root, ".github/workflows/release-candidate.yml"), "utf8"));
+  const job = workflow.jobs["r-notebook"];
+  assert.ok(job, "the candidate run must require R notebook qualification");
+  assert.equal(job.needs, "candidate");
+  assert.equal(job.if, undefined);
+  assert.equal(job["continue-on-error"], undefined);
+  assert.equal(job.strategy["fail-fast"], false);
+  assert.deepEqual(
+    job.strategy.matrix.include.map(({ os }) => os),
+    ["ubuntu-24.04", "macos-latest", "windows-latest"]
+  );
+  assert.equal(job["runs-on"], "${{ matrix.os }}");
+  const steps = job.steps;
+  assert.ok(steps.every((step) => step["continue-on-error"] === undefined));
+  const checkout = steps.find((step) => step.uses?.startsWith("actions/checkout@"));
+  assert.equal(checkout.with.ref, "${{ github.sha }}");
+  assert.equal(checkout.with["persist-credentials"], false);
+  const downloadIndex = steps.findIndex((step) => step.uses?.startsWith("actions/download-artifact@"));
+  assert.deepEqual(steps[downloadIndex].with, {
+    name: "openwrangler-release-candidate",
+    path: "canonical-release"
+  });
+  const verification = steps.flatMap((step, index) =>
+    step.run === "node scripts/verify-canonical-release-artifact.mjs canonical-release" ? [index] : []
+  );
+  const harnessIndex = steps.findIndex((step) => step.run === "npm run build:test-extension");
+  const runIndex = steps.findIndex((step) => step.id === "r_notebook");
+  assert.equal(verification.length, 2);
+  assert.ok(downloadIndex < verification[0] && verification[0] < harnessIndex && harnessIndex < runIndex);
+  assert.ok(runIndex < verification[1]);
+  for (const index of verification) {
+    assert.equal(steps[index].if, undefined);
+    assert.deepEqual(steps[index].env, {
+      EXPECTED_SHA: "${{ github.sha }}",
+      RELEASE_TAG: "${{ inputs.release_tag }}"
+    });
+  }
+  const run = steps[runIndex];
+  assert.equal(run.if, undefined);
+  assert.equal(run.env.OPEN_WRANGLER_PACKAGED_MODE, "r-jupyter");
+  assert.equal(run.env.OPEN_WRANGLER_PACKAGED_EDITORS, "vscode");
+  assert.equal(run.env.OPEN_WRANGLER_REAL_JUPYTER_EXTENSION, "1");
+  assert.equal(run.env.OPEN_WRANGLER_REAL_REMOTE_JUPYTER, "0");
+  assert.equal(run.env.OPEN_WRANGLER_TEST_RSCRIPT, "${{ steps.rscript.outputs.executable }}");
+  assert.equal(run.env.OPEN_WRANGLER_PACKAGED_R_JOURNEY, undefined);
+  assert.equal(run.env.OPEN_WRANGLER_TEST_SELECTOR, undefined);
+  assert.match(run.run, /node scripts\/run-packaged-editor-tests\.mjs canonical-release\/openwrangler\.vsix/u);
+  assert.doesNotMatch(
+    steps.map((step) => step.run ?? "").join("\n"),
+    /npm run (?:clean|build(?:\s|$)|package)|python\[dev\]|run-r-contract-tests|vitest|pytest/u
+  );
+  const uploads = steps.filter((step) => step.uses?.startsWith("actions/upload-artifact@"));
+  assert.equal(uploads.length, 1);
+  assert.match(uploads[0].if, /steps\.r_notebook\.outcome == 'failure'/u);
+});
+
 for (const [name, source, inspect] of [
   ["Marketplace", marketplace, inspectMarketplacePromotionPipeline],
   ["Open VSX", openVsx, inspectOpenVsxPromotionWorkflow]

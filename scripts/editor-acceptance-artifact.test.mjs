@@ -474,6 +474,18 @@ test("packaged-editor workflows upload only exact revalidated emitted artifact p
   assert.match(cursorUpload, /if-no-files-found:\s*error\s*$/mu);
   assert.match(cursorUpload, /retention-days:\s*7\s*$/mu);
   assert.doesNotMatch(cursorUpload, /\n\s*path:\s*\|/u);
+
+  const rProducerIndex = releaseCandidateSteps.findIndex((step) => /\bid:\s*r_notebook\s*$/mu.test(step));
+  assert.notEqual(rProducerIndex, -1);
+  const rUpload = releaseCandidateSteps[rProducerIndex + 1];
+  assert.match(rUpload, /uses:\s*actions\/upload-artifact@[0-9a-f]{40}/u);
+  assert.match(rUpload, /!cancelled\(\)/u);
+  assert.match(rUpload, /steps\.r_notebook\.outcome\s*==\s*'failure'/u);
+  assert.match(rUpload, /steps\.r_notebook\.outputs\.evidence_ready\s*==\s*'true'/u);
+  assert.match(rUpload, /path:\s*\$\{\{\s*steps\.r_notebook\.outputs\.evidence_path\s*\}\}\s*$/mu);
+  assert.match(rUpload, /if-no-files-found:\s*error\s*$/mu);
+  assert.match(rUpload, /retention-days:\s*7\s*$/mu);
+  assert.doesNotMatch(rUpload, /\n\s*path:\s*\|/u);
 });
 
 function topLevelWorkflowSteps(source) {

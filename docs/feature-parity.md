@@ -441,15 +441,16 @@ cell is simultaneously present in the DOM.
 
 A stable release requires every required Pandas and Polars row above to be **Done**, no known release-blocking defect,
 and one exact candidate to pass the [qualification flow](releasing.md#release-candidate). Outside the required
-Pandas/Polars table, Preview, experimental, Partial, Planned, and Out-of-scope capabilities do not block stable
-publication when their public labels and limits remain accurate.
+Pandas/Polars table, accurate Preview, experimental, Partial, Planned and Out-of-scope labels do not themselves block
+stable publication. Explicit candidate checks, including the R notebook matrix, must still pass.
 
 ## Native R preview
 
 Preview describes the support and release-qualification commitment. Native R already supports paging, typed
-filters, sorts, profiles, cleaning, generated R and data export within the limits below. Stable extension publication
-does not yet require those workflows to pass against its exact candidate package. A source or platform test passing
-does not by itself change that commitment.
+filters, sorts, profiles, cleaning, generated R and data export within the limits below. Published 2.4 did not qualify
+these workflows against its exact candidate package. Future candidates require the three-platform R notebook matrix,
+but that wiring alone does not graduate support. Fresh results and the selected-scope reliability review below remain
+necessary.
 
 | Entry path                                          | Current support                                                                    | Generated code and data export                         |
 | --------------------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------ |
@@ -474,8 +475,9 @@ Graduation requires:
 1. The existing native frame, complete operation catalog, kernel and transport owners pass for the candidate source
    and the supported R qualification cohorts. Reuse matching protected-source evidence; do not repeat every operation
    in an installed editor.
-2. One immutable candidate VSIX passes the existing representative IRkernel journeys on Linux, macOS and Windows.
-   Together they must cover base/tibble/data.table values, viewing, editing/history, source preservation, generated
+2. One immutable candidate VSIX passes the existing default IRkernel journeys on Linux, macOS and Windows.
+   The required same-run matrix verifies the canonical triple before and after each platform's journey. Together they
+   cover base/tibble/data.table values, viewing, editing/history, source preservation, generated
    code, export/insertion and restart ownership. Record the exact package, source, editor and R versions with the
    original results. [Releasing](releasing.md#release-candidate) owns artifact handling.
 3. Resolve any material failure in that selected scope before promotion. Preserve original failures and explain the
@@ -483,10 +485,10 @@ Graduation requires:
    is unresolved; a later pass does not establish its cause, and a recurrence in candidate qualification blocks
    promotion. [R test-runner cleanup](https://github.com/Matt17BR/openwrangler/issues/955) concerns source-test CLI
    containment and is not evidence of an IRkernel product failure.
-4. Bind the existing release qualification to these R results before changing the notebook support label. Update this
-   guide, README and release notes together. Passing documentation checks does not establish stable R support.
+4. Review the required candidate results before changing the notebook support label. Update this guide, README and
+   release notes together. Passing workflow or documentation checks does not establish stable R support.
 
-The immediate missing work is a required, reviewed R notebook qualification on the same immutable release candidate,
+The immediate missing work is a fresh successful R notebook qualification on the same immutable release candidate,
 with the selected-scope reliability review above. Unsupported grouped/indexed objects, full Quarto rendering, Windows
 managed-document execution and alternate dplyr/collapse code dialects do not block this narrower scope. No new full
 installed-operation matrix is required.

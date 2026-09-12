@@ -4,6 +4,12 @@ import {
   type ReleasedRToolingDependencies
 } from "./extensionHost/releasedRTooling";
 import { createFocusedReleasedRAcceptanceHandlers } from "./extensionHost/focusedReleasedRAcceptance";
+import {
+  releasedRAcceptanceCoverageProfile,
+  RELEASED_R_COMPREHENSIVE_COVERAGE,
+  RELEASED_R_PLATFORM_LIFECYCLE_COVERAGE,
+  RELEASED_R_REPRESENTATIVE_COVERAGE
+} from "./extensionHost/releasedRAcceptanceCoverage";
 
 const rCommands = ["r.runSelection", "r.runSource", "r.knitRmdToHtml"];
 const quartoCommands = ["quarto.runCurrentCell", "quarto.renderDocument", "quarto.preview"];
@@ -48,6 +54,29 @@ function tooling(literateDocuments: boolean) {
 }
 
 describe("released native R editor tooling", () => {
+  it("opens collapse sessions in the Windows desktop default without broadening focused or remote coverage", () => {
+    const request = { editor: "vscode", phase: "jupyter-r", platform: "win32", selector: undefined } as const;
+    expect(releasedRAcceptanceCoverageProfile(request)).toEqual({
+      ...RELEASED_R_REPRESENTATIVE_COVERAGE,
+      openCollapseSessions: true
+    });
+    expect(releasedRAcceptanceCoverageProfile({ ...request, editor: "cursor" })).toEqual(
+      RELEASED_R_REPRESENTATIVE_COVERAGE
+    );
+    expect(releasedRAcceptanceCoverageProfile({ ...request, phase: "jupyter-r-remote" })).toEqual(
+      RELEASED_R_REPRESENTATIVE_COVERAGE
+    );
+    for (const selector of ["core-operations", "native-frames"] as const) {
+      expect(releasedRAcceptanceCoverageProfile({ ...request, selector }).openCollapseSessions).toBe(false);
+    }
+    expect(releasedRAcceptanceCoverageProfile({ ...request, platform: "linux" })).toEqual(
+      RELEASED_R_COMPREHENSIVE_COVERAGE
+    );
+    expect(releasedRAcceptanceCoverageProfile({ ...request, platform: "darwin" })).toEqual(
+      RELEASED_R_PLATFORM_LIFECYCLE_COVERAGE
+    );
+  });
+
   it("requires only pinned R tooling for the explicit terminal scope", async () => {
     const { dependencies, extensions, configurationReads, boundedCalls } = tooling(false);
     await expect(assertReleasedNativeREditorTooling(dependencies, false)).resolves.toBe(true);
