@@ -6,6 +6,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Find and Replace shows the selected engine's capture-group replacement notation and explains that regex syntax is engine-specific.
 - DuckDB Split Column and literal Find/Replace accept NUL characters in text values without SQL parsing errors.
 - Pandas Split text into columns avoids splitting discarded trailing fields, reducing work when only a few output columns are requested.
 - Python Fill interpolation preserves constant anchors and midpoints between subnormal values.
