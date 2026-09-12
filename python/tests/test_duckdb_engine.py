@@ -2530,6 +2530,42 @@ def first_page_ids(page: dict[str, Any]) -> list[str]:
     return [row["id"] for row in page["rows"]]
 
 
+@pytest.mark.parametrize("generated", [False, True], ids=["live", "generated"])
+def test_duckdb_one_hot_preserves_binary_values_with_caller_from_hex_macro(generated: bool) -> None:
+    values = [b"\x00\xff", b"a", b"a", b"", None]
+    original = list(enumerate(values))
+    expected = [
+        (0, b"\x00\xff", 1, 0),
+        (1, b"a", 0, 1),
+        (2, b"a", 0, 1),
+        (3, b"", 0, 0),
+        (4, None, 0, 0),
+    ]
+    engine = DuckDBEngine()
+    with duckdb.connect() as connection:
+        try:
+            connection.execute("CREATE TABLE binary_source(id INTEGER, payload BLOB)")
+            connection.executemany("INSERT INTO binary_source VALUES (?, ?)", original)
+            frame = connection.table("binary_source")
+            connection.execute("CREATE MACRO from_hex(value) AS 'z'::BLOB")
+            operation = bound_step("oneHotEncode", columns=[bound_ref("c:source:1", "payload", 1)], dropOriginal=False)
+            if generated:
+                result = execute_generated(engine, frame, [operation])
+                actual = result.fetchall()
+            else:
+                result = engine.apply_transform(engine.normalize_notebook_relation(frame), operation)
+                actual = engine._terminal_rows(result, "SELECT * FROM ow")
+            assert actual == expected
+            assert result.columns == ["id", "payload", "payload_b'\\x00\\xff'", "payload_b'a'"]
+            assert [str(dtype) for dtype in result.types] == ["INTEGER", "BLOB", "TINYINT", "TINYINT"]
+            assert frame.fetchall() == original
+            assert frame.columns == ["id", "payload"]
+            assert [str(dtype) for dtype in frame.types] == ["INTEGER", "BLOB"]
+            assert connection.sql("SELECT from_hex('00ff')").fetchone() == (b"z",)
+        finally:
+            engine.close()
+
+
 def test_duckdb_all_operations_and_generated_code_stay_native(monkeypatch: pytest.MonkeyPatch) -> None:
     install_conversion_guards(monkeypatch)
     engine = DuckDBEngine()

@@ -512,6 +512,7 @@ validation costs are described in the [DuckDB architecture](architecture.md#duck
 
 Split Column delimiters and literal Find/Replace values can contain NUL characters in live and generated DuckDB code.
 Leading, trailing and repeated delimiters preserve empty fields; missing fields and null source values stay null.
+Generated One-hot encoding preserves binary categories even when the input connection defines a `from_hex` macro.
 
 Formula rejects lossy DOUBLE promotion for addition, subtraction, multiplication and modulo on native integer types
 through 128 bits, retaining correct results and types. Live and generated checks use the same operand pair; explicit
