@@ -629,9 +629,9 @@ Profile extrema use native aggregation. Supported Fill methods retain native tem
 anchors in live and generated code without changing source arrays.
 Using the minimum nanosecond timestamp as a filter value remains unsupported under the existing microsecond input precision.
 
-Linear Fill shares its ordered-gap and coordinate-weight arithmetic between live execution and standalone generated
-code. Target, coordinate and missing-value validation remain with the engine, along with dtype and original row-order
-restoration.
+Directional Fill shares its complete-run, donor and assignment algorithm between live execution and standalone
+generated code. Linear Fill likewise shares its ordered-gap and coordinate-weight arithmetic. Target, coordinate
+and missing-value preparation remain with the engine, along with dtype and original row-order restoration.
 
 Mixed object columns compare native NumPy numeric scalars through exact temporary keys. Counts, sorting,
 duplicates, grouping and Pivot share those keys while retaining original source scalars and representative labels.
@@ -894,6 +894,8 @@ helper implementations. The emitted programs remain standalone.
 Polars linear interpolation uses one helper module for live execution and standalone generation. Its coordinate
 validation aggregate runs before the returned lazy plan; live and generated refusals retain their respective error
 types.
+Directional Fill uses the same native expression plan in live execution and standalone generation, including stable
+calculation order, whole-gap limits and source-order restoration. Constructing that plan does not collect a lazy frame.
 
 ### DuckDB
 

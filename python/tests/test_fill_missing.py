@@ -961,9 +961,15 @@ def test_polars_directional_fill_stays_lazy_until_the_result_is_collected(
         step_id="lazy-directional-fill",
     )
 
+    def reject_collect(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("directional fill collected eagerly")
+
     try:
-        live = engine.apply_transform(source, operation)
-        generated = execute_generated(engine, source, [operation])
+        with monkeypatch.context() as context:
+            context.setattr(pl.LazyFrame, "collect", reject_collect)
+            context.setattr(pl, "collect_all", reject_collect)
+            live = engine.apply_transform(source, operation)
+            generated = execute_generated(engine, source, [operation])
 
         assert isinstance(live, pl.LazyFrame)
         assert isinstance(generated, pl.LazyFrame)
