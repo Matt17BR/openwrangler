@@ -63,8 +63,15 @@ def token(value: str) -> dict[str, Any]:
     return result
 
 
-def test_pandas_mixed_numeric_pivot_retains_each_joint_groups_first_identifier_row():
+def test_pandas_mixed_numeric_pivot_retains_each_joint_groups_first_identifier_row(monkeypatch):
+    from unittest.mock import Mock
+
     import numpy as np
+
+    from openwrangler_runtime.engines import pandas_engine
+
+    preparation = Mock(wraps=pandas_engine._pandas_pivot_wider_identifier_frame)
+    monkeypatch.setattr(pandas_engine, "_pandas_pivot_wider_identifier_frame", preparation)
 
     identifiers = [np.float32(-0.0), np.float32(0.0), 1, np.float32(1.0)]
     source = pd.DataFrame(
@@ -80,7 +87,10 @@ def test_pandas_mixed_numeric_pivot_retains_each_joint_groups_first_identifier_r
     runtime = PandasEngine()
     operation = bind(runtime, source, public_step(names_id="c:source:2", values_id="c:source:3"))
     runtime.validate_transform_preflight(source, operation, runtime.shape(source))
-    for result in (runtime.apply_transform(source, operation), execute_generated(runtime, source, operation)):
+    assert preparation.call_count == 1
+    live = runtime.apply_transform(source, operation)
+    assert preparation.call_count == 2
+    for result in (live, execute_generated(runtime, source, operation)):
         assert result["partition"].tolist() == ["a", "b", "c", "d"]
         assert all(actual is expected for actual, expected in zip(result["id"].array, identifiers, strict=True))
         pd.testing.assert_series_equal(result["x_value"], pd.Series([10, 20, 30, 40], dtype="Int64", name="x_value"))
@@ -540,6 +550,7 @@ def test_pandas_pivot_wider_generated_allocation_keeps_caller_bindings() -> None
         "Mapping",
         "_open_wrangler_nullable_pivot_series",
         "_pandas_nullable_pivot_series",
+        "_open_wrangler_pivot_wider_names_valid",
         "_open_wrangler_object_semantic_type",
     ]
     namespace: dict[str, Any] = dict.fromkeys(names, frame)

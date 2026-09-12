@@ -59,6 +59,7 @@ from ._pandas_linear_fill_helpers import _open_wrangler_fill_linear_gaps as _pan
 from ._pandas_min_max_helpers import _open_wrangler_min_max_scale as _pandas_min_max_scale
 from ._pandas_object_type_helpers import _open_wrangler_object_semantic_type as _pandas_object_semantic_type
 from ._pandas_pivot_helpers import _open_wrangler_nullable_pivot_series as _pandas_nullable_pivot_series
+from ._pandas_pivot_helpers import _open_wrangler_pivot_wider_names_valid as _pandas_pivot_wider_names_valid
 from .base import (
     _NUMPY_DURATION_SECONDS,
     DEFAULT_STRIP_CHARACTERS,
@@ -3141,7 +3142,7 @@ def _pandas_validate_pivot_wider(
     names_position: int,
     values_position: int,
     outputs: Sequence[Mapping[str, Any]],
-) -> tuple[list[int], list[str], list[str]]:
+) -> tuple[list[int], list[str], list[str], Any, list[Any | None]]:
     import pandas as pd
 
     output_values = [pivot_wider_key_value(output["key"], "pivotWider.outputs.key") for output in outputs]
@@ -3163,17 +3164,13 @@ def _pandas_validate_pivot_wider(
         raise EngineError("Pivot wider would create Open Wrangler's reserved private row-identity column.")
 
     names = _pandas_scalar_values(df.iloc[:, names_position])
-    invalid_type = names.map(lambda value: value is not None and not isinstance(value, str), na_action=None).astype(
-        bool
-    )
-    invalid = names.isna() | invalid_type | ~names.isin(output_values)
-    if bool(invalid.any()):
+    if not _pandas_pivot_wider_names_valid(names, output_values):
         raise EngineError("Pivot wider namesFrom values must be present and match one declared typed key.")
-    identifier_frame, _key_states = _pandas_pivot_wider_identifier_frame(df, identifiers)
+    identifier_frame, key_states = _pandas_pivot_wider_identifier_frame(df, identifiers)
     duplicate_source = pd.concat([identifier_frame, names.reset_index(drop=True)], axis=1)
     if bool(duplicate_source.duplicated(keep=False).any()):
         raise EngineError("Pivot wider found duplicate identifier-and-key rows; aggregation is not supported.")
-    return identifiers, output_values, output_names
+    return identifiers, output_values, output_names, identifier_frame, key_states
 
 
 def _pandas_pivot_wider_identifier_frame(
@@ -3211,13 +3208,12 @@ def _pandas_pivot_wider(
 ) -> Any:
     import pandas as pd
 
-    identifiers, output_values, output_names = _pandas_validate_pivot_wider(
+    identifiers, output_values, output_names, identifier_frame, key_states = _pandas_validate_pivot_wider(
         df, names_position, values_position, outputs
     )
     names = _pandas_scalar_values(df.iloc[:, names_position]).reset_index(drop=True)
     values = _pandas_scalar_values(df.iloc[:, values_position]).reset_index(drop=True)
     if identifiers:
-        identifier_frame, key_states = _pandas_pivot_wider_identifier_frame(df, identifiers)
         group_codes = identifier_frame.groupby(
             list(identifier_frame.columns), sort=False, dropna=False, observed=True
         ).ngroup()
@@ -3279,12 +3275,7 @@ def _generated_pandas_pivot_wider_helpers() -> list[str]:
         '        raise ValueError("Pivot wider would create Open Wrangler\'s reserved private row-identity column.")',
         "    names = _open_wrangler_scalar_values(df.iloc[:, names_position]).reset_index(drop=True)",
         "    values = _open_wrangler_scalar_values(df.iloc[:, values_position]).reset_index(drop=True)",
-        (
-            "    invalid_type = names.map(lambda value: value is not None and not isinstance(value, str), "
-            "na_action=None).astype(bool)"
-        ),
-        "    invalid = names.isna() | invalid_type | ~names.isin(output_values)",
-        "    if bool(invalid.any()):",
+        "    if not _open_wrangler_pivot_wider_names_valid(names, output_values):",
         "        raise ValueError('Pivot wider namesFrom values must be present and match one declared typed key.')",
         "    identifier_columns = []",
         "    key_states = []",
