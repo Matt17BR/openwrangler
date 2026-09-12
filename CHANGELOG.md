@@ -6,6 +6,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Python Custom Code failures return an error response even when their exception message cannot be formatted.
 - Pandas Formula can add or subtract integer zero from widest Arrow Decimals, including negative-scale values. Multiplication and division by integer 1 or -1 also work at those negative scales.
 - Editing a viewing filter preserves other groups for the same column. Clearing a column no longer leaves stale filter rows on screen.
 - Stale native filter-removal actions no longer clear a newer session's or changed column's viewing filters.

@@ -585,6 +585,61 @@ def test_unexpected_error_mapper_redacts_traceback_detail() -> None:
     assert len(response["detail"].encode("utf-8")) <= runtime_protocol.MAX_DIAGNOSTIC_DETAIL_BYTES
 
 
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (RuntimeError(), {"code": "runtime_error", "recoverable": True}),
+        (EngineError(), {"code": "engine_error", "recoverable": True}),
+        (runtime_protocol.ProtocolError(), {"code": "invalid_request", "recoverable": False}),
+        (
+            SessionCleanupError("original-session", "unused"),
+            {"code": "session_cleanup_failed", "recoverable": False, "sessionId": "original-session"},
+        ),
+    ],
+    ids=["runtime", "engine", "invalid-request", "cleanup"],
+)
+def test_error_mapper_retains_classification_when_formatting_fails(
+    monkeypatch: pytest.MonkeyPatch, error: Exception, expected: dict[str, Any]
+) -> None:
+    class Unformattable:
+        calls = 0
+
+        def __str__(self) -> str:
+            self.calls += 1
+            raise ValueError("private-formatting-error")
+
+        def __repr__(self) -> str:
+            raise AssertionError("Error recovery must not inspect the original value again.")
+
+    def unexpected_traceback() -> str:
+        raise AssertionError("Error recovery must not format the traceback again.")
+
+    value = Unformattable()
+    error.args = (value,)
+    monkeypatch.setattr(runtime_protocol.traceback, "format_exc", unexpected_traceback)
+    response = runtime_protocol.response_for_error(error, maximum_message_bytes=32)
+    assert response == {
+        "kind": "error",
+        "message": "The runtime error ...[truncated]",
+        **expected,
+    }
+    assert len(response["message"].encode("utf-8")) == 32
+    assert value.calls == 1
+
+
+@pytest.mark.parametrize("exception_type", [KeyboardInterrupt, SystemExit, GeneratorExit])
+def test_error_mapper_preserves_formatter_interrupts(exception_type: type[BaseException]) -> None:
+    interruption = exception_type()
+
+    class InterruptedMessage:
+        def __str__(self) -> str:
+            raise interruption
+
+    with pytest.raises(exception_type) as caught:
+        runtime_protocol.response_for_error(RuntimeError(InterruptedMessage()))
+    assert caught.value is interruption
+
+
 def test_kernel_agent_opens_an_opaque_live_result_handle(monkeypatch) -> None:
     manager = SessionManager()
     monkeypatch.setattr(kernel_agent, "_manager", manager)
@@ -2201,7 +2256,10 @@ def test_kernel_redo_correlates_empty_stale_and_successful_attempts(tmp_path, mo
         manager.close_all()
 
 
-def test_kernel_native_panic_settles_preview_and_preserves_caller(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("failure", ["native-panic", "unformattable"])
+def test_kernel_runtime_error_settles_preview_and_preserves_caller(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
     import polars as pl
     from polars.testing import assert_frame_equal
 
@@ -2237,6 +2295,14 @@ def test_kernel_native_panic_settles_preview_and_preserves_caller(monkeypatch: p
         session_id = opened["metadata"]["sessionId"]
         session = manager.sessions[session_id]
         committed = session.committed
+        code = (
+            "raise pl.exceptions.PanicException('native operation failed')"
+            if failure == "native-panic"
+            else (
+                "class BadError(Exception):\n    def __str__(self):\n"
+                "        raise self\nraise BadError('private-error')"
+            )
+        )
         failed = send(
             "native-preview",
             {
@@ -2247,12 +2313,16 @@ def test_kernel_native_panic_settles_preview_and_preserves_caller(monkeypatch: p
                 "step": {
                     "id": "native-panic",
                     "kind": "customCode",
-                    "params": {"code": "raise pl.exceptions.PanicException('native operation failed')"},
+                    "params": {"code": code},
                 },
             },
         )
         assert failed["kind"] == "error" and failed["code"] == "runtime_error"
-        assert failed["message"] == "native operation failed"
+        if failure == "native-panic":
+            assert failed["message"] == "native operation failed"
+        else:
+            assert failed["message"] == "The runtime error message could not be formatted."
+            assert "detail" not in failed
         assert registry.state("native-preview") == "completed"
         assert session.revision == 0 and session.plan == []
         assert session.committed is committed and session.draft_frame is None and session.draft_step is None
