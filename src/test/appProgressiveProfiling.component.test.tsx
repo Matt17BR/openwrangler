@@ -1674,7 +1674,7 @@ describe("App progressive profiling and view correlation", () => {
     const firstStats = onlyRequest("getDatasetStats");
     dispatch({
       kind: "error",
-      code: "stats_failed",
+      code: "bridge_error",
       message: "Keep this exact-stats warning",
       recoverable: true,
       viewRequestId: viewId(firstStats)

@@ -500,7 +500,9 @@ export function useProgressiveProfilingLifecycle({
               next.set(backgroundDiagnosticKey(pending), { message: response.message, pending });
               return next;
             });
-            scheduleBackgroundRetry(pending);
+            if (response.code === "server_busy" || response.code === "bridge_error") {
+              scheduleBackgroundRetry(pending);
+            }
           }
         } else {
           scheduleBackgroundRetry(pending);

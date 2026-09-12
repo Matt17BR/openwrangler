@@ -142,39 +142,93 @@ describe("progressive profiling lifecycle", () => {
     expect(result.current.columnValues.get("city")?.values).toEqual([{ value: "Milan", count: 1 }]);
   });
 
-  it("releases failed work, retries once with a fresh correlation, and clears its diagnostic on success", () => {
+  it.each(["server_busy", "bridge_error"])(
+    "retries %s with a fresh correlation and clears its diagnostic on success",
+    (code) => {
+      vi.useFakeTimers();
+      const { result, unmount } = renderLifecycle(closedDrawer);
+      try {
+        act(() => result.current.updateVisibleSummaryColumns(["c:0"]));
+        const first = onlyRuntimeEnvelope("getSummary").request.viewRequestId;
+
+        act(() =>
+          result.current.settleProfileMessage({
+            kind: "error",
+            code,
+            message: "Profile failed once",
+            recoverable: true,
+            viewRequestId: first
+          })
+        );
+        expect([...result.current.backgroundDiagnostics.values()].map(({ message }) => message)).toEqual([
+          "Profile failed once"
+        ]);
+
+        act(() => vi.runOnlyPendingTimers());
+        const retry = runtimeEnvelopes("getSummary").at(-1)?.request.viewRequestId;
+        if (!retry) throw new Error("Expected a retried summary request.");
+        expect(retry).not.toBe(first);
+
+        act(() =>
+          result.current.settleProfileMessage({
+            kind: "summary",
+            revision: metadata.revision,
+            viewRequestId: retry,
+            summaries: [citySummary]
+          })
+        );
+        expect(result.current.summaries).toEqual([citySummary]);
+        expect(result.current.backgroundDiagnostics.size).toBe(0);
+      } finally {
+        unmount();
+        vi.useRealTimers();
+      }
+    }
+  );
+
+  it("keeps semantic summary and stats refusals until fresh profiling demand succeeds", () => {
     vi.useFakeTimers();
-    const { result, unmount } = renderLifecycle(closedDrawer);
+    const { result, unmount } = renderLifecycle({ ...closedDrawer, open: true, view: "dataset" });
     try {
       act(() => result.current.updateVisibleSummaryColumns(["c:0"]));
-      const first = onlyRuntimeEnvelope("getSummary").request.viewRequestId;
+      const firstSummary = onlyRuntimeEnvelope("getSummary").request.viewRequestId;
+      const firstStats = onlyRuntimeEnvelope("getDatasetStats").request.viewRequestId;
+      act(() => {
+        for (const viewRequestId of [firstSummary, firstStats]) {
+          result.current.settleProfileMessage({
+            kind: "error",
+            code: "engine_error",
+            message: "Value cannot be represented without losing precision",
+            recoverable: true,
+            viewRequestId
+          });
+        }
+        vi.runOnlyPendingTimers();
+      });
+      expect(runtimeEnvelopes("getSummary")).toHaveLength(1);
+      expect(runtimeEnvelopes("getDatasetStats")).toHaveLength(1);
+      expect(result.current.backgroundDiagnostics.size).toBe(2);
 
-      act(() =>
-        result.current.settleProfileMessage({
-          kind: "error",
-          code: "profile_failed",
-          message: "Profile failed once",
-          recoverable: true,
-          viewRequestId: first
-        })
-      );
-      expect([...result.current.backgroundDiagnostics.values()].map(({ message }) => message)).toEqual([
-        "Profile failed once"
-      ]);
-
-      act(() => vi.runOnlyPendingTimers());
-      const retry = runtimeEnvelopes("getSummary").at(-1)?.request.viewRequestId;
-      if (!retry) throw new Error("Expected a retried summary request.");
-      expect(retry).not.toBe(first);
-
-      act(() =>
+      postMessage.mockClear();
+      act(() => result.current.restartProfilingForConfirmedView());
+      const summary = onlyRuntimeEnvelope("getSummary").request.viewRequestId;
+      const stats = onlyRuntimeEnvelope("getDatasetStats").request.viewRequestId;
+      expect(summary).not.toBe(firstSummary);
+      expect(stats).not.toBe(firstStats);
+      act(() => {
         result.current.settleProfileMessage({
           kind: "summary",
           revision: metadata.revision,
-          viewRequestId: retry,
+          viewRequestId: summary,
           summaries: [citySummary]
-        })
-      );
+        });
+        result.current.settleProfileMessage({
+          kind: "datasetStats",
+          revision: metadata.revision,
+          viewRequestId: stats,
+          stats: emptyStats()
+        });
+      });
       expect(result.current.summaries).toEqual([citySummary]);
       expect(result.current.backgroundDiagnostics.size).toBe(0);
     } finally {
