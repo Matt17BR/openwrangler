@@ -254,8 +254,8 @@ Pandas timestamps preserve nanosecond fractions and time-zone offsets that inclu
 Berlin offsets. Grid cells, nested values, profiles and value choices use valid datetime text. Searches recognize
 corrected labels while retaining ordinary value counts. Filter inputs retain microsecond precision and minute-resolution offsets.
 Datetime value searches also accept displayed midnight labels and a space in place of NumPy's ISO `T` separator.
-Some duration and subnanosecond object labels still differ from searchable source text; [#1280](https://github.com/Matt17BR/openwrangler/issues/1280)
-tracks these remaining gaps.
+Object datetime choices retain native Pandas counting limits and refuse representations whose inferred count index
+can change temporal units or precision.
 
 Pandas object columns treat NumPy datetime and duration `NaT` as null in profiles, filters and cleaning operations,
 including generated code. Floating NaN remains separate.
@@ -285,7 +285,16 @@ Pandas temporal categories preserve exact displayed values, missing counts and d
 duration choices select the exact stored rows, including positive NumPy unit multipliers and Arrow extrema, in live
 and generated filters. Values outside the existing filter range or precision remain visible without a selection token.
 Zero-unit duration categories remain viewable but refuse nonempty duration membership.
-Sparse and object duration searches retain their existing representation limits.
+Pandas Sparse durations with positive second, millisecond, microsecond or nanosecond multipliers preserve physical
+values in cells, choices, profiles and value selections, including generated filters. Simple Sparse duration index
+labels retain the same values. Supported Sparse choices search displayed labels, including whole days, and retain raw
+clock matches. The existing selection range and microsecond precision limits still apply.
+Scalar preparation for these operations and export refuses zero-unit Sparse durations and used fills that cannot be
+represented exactly; unrelated operations retain their native limits. Profiles, choices and nonempty membership also
+refuse finer units, calendar or unitless storage and multiplied coarse units, including some representable values.
+Ordinary coarse units and existing empty/null page behavior remain available.
+CSV export refuses nonempty multiplied Sparse duration data or preserved indexes before changing the destination;
+empty exports and omitted indexes remain available. Object duration searches retain their existing representation limits.
 Polars Datetime and Duration columns retain nanoseconds in grid cells, value choices and profile labels, and datetime
 offsets retain seconds. Duration choices now work and use native signed-unit labels, such as `1m 40s 1µs`.
 Datetime labels retain the native unit's three, six or nine fractional digits. Search accepts the displayed labels,

@@ -1077,6 +1077,9 @@ def test_numpy_duration_units_keep_fixed_seconds_and_refuse_calendar_values() ->
         ("us", 10**18 + 1, 10**18 + 2, 0, True, "numpy"),
         ("us", -(10**18 + 1), -(10**18 + 2), 0, True, "numpy"),
         ("ms", 2**63 - 1, 2**63 - 2, 0, False, "numpy"),
+        ("2s", 1, 2, 0, True, "sparse"),
+        ("3ms", 1, 2, 0, True, "sparse"),
+        ("3ns", 1, 2, 0, False, "sparse"),
         ("us", -(2**63), -(2**63) + 1, 0, True, "arrow"),
         ("us", 1, 2, 0, True, "arrow"),
         ("us", -(2**63), -(2**63) + 1, 0, True, "dictionary"),
@@ -1091,9 +1094,12 @@ def test_duration_session_choices_and_grid_tokens_keep_source_rows(
     import __main__
 
     array: pa.Array | None = None
-    if storage == "numpy":
+    native: Any = None
+    if storage in {"numpy", "sparse"}:
         native = np.array([ticks, adjacent, ticks, neighbor, -(2**63)], dtype=np.int64).view(f"timedelta64[{unit}]")
-        source = pd.DataFrame({"value": native, "row": range(5)})
+        source = pd.DataFrame(
+            {"value": pd.arrays.SparseArray(native) if storage == "sparse" else native, "row": range(5)}
+        )
     else:
         native_array: pa.Array = pa.array([ticks, adjacent, ticks, neighbor, None], type=pa.duration(unit))
         if storage == "dictionary":
@@ -1125,7 +1131,9 @@ def test_duration_session_choices_and_grid_tokens_keep_source_rows(
             unfiltered = {"filters": [], "sort": []}
             choice = manager.get_column_values(sid, revision, "value", unfiltered)["values"][0]
             expected_label = (
-                str(source.iloc[0, 0])
+                str(native[0])
+                if storage == "sparse"
+                else str(source.iloc[0, 0])
                 if storage == "numpy"
                 else "0 days 00:00:00.000001"
                 if ticks == 1
@@ -1133,9 +1141,9 @@ def test_duration_session_choices_and_grid_tokens_keep_source_rows(
             )
             assert choice["count"] == 2 and choice["value"] == expected_label
             cell = opened["page"]["rows"][0]["values"][0]
-            if storage != "numpy":
-                assert cell["raw"] == ("0.000001" if ticks == 1 else "-9223372036854.775808") and not cell["isNull"]
             if storage in {"arrow", "dictionary"}:
+                assert cell["raw"] == ("0.000001" if ticks == 1 else "-9223372036854.775808") and not cell["isNull"]
+            if storage in {"arrow", "dictionary", "sparse"}:
                 searched = manager.get_column_values(sid, revision, "value", unfiltered, search=choice["value"])
                 assert searched["values"] == [choice] and not searched["hasMore"]
                 choice = searched["values"][0]
@@ -1185,7 +1193,7 @@ def test_duration_session_choices_and_grid_tokens_keep_source_rows(
                     page = manager.get_page(sid, revision, 0, 5, model)["page"]
                     assert [row["values"][1]["raw"] for row in page["rows"]] == [0, 2]
                     for actual in [engine.apply_transform(source, step), namespace["clean_data"](source)]:
-                        if storage == "numpy":
+                        if storage in {"numpy", "sparse"}:
                             pd.testing.assert_frame_equal(actual, source.iloc[[0, 2]], check_exact=True)
                         else:
                             assert array is not None
@@ -1207,7 +1215,7 @@ def test_duration_session_choices_and_grid_tokens_keep_source_rows(
     finally:
         manager.close_all()
         engine.close()
-    if storage == "numpy":
+    if storage in {"numpy", "sparse"}:
         pd.testing.assert_frame_equal(source, before, check_exact=True)
     else:
         assert array is not None
@@ -1733,6 +1741,467 @@ def test_pandas_arrow_duration_category_search_preserves_labels_and_raw_aliases(
         engine.close()
     pd.testing.assert_frame_equal(source, before, check_exact=True)
     assert source.attrs == before.attrs
+
+
+@pytest.mark.parametrize(
+    "unit,tick,fill",
+    [
+        ("ns", 86_400_000_000_000, None),
+        ("2s", 1, None),
+        ("2s", 1, np.timedelta64(2, "s")),
+        ("3ms", 1, np.timedelta64(0, "s")),
+        ("3ns", 1, None),
+        ("2us", 2**63 - 1, None),
+    ],
+)
+def test_pandas_sparse_duration_choices_preserve_physical_values_and_membership(unit, tick, fill) -> None:
+    from openwrangler_runtime.engines.base import typed_cell_selection_value
+
+    native = np.array([tick, 0, tick, -(2**63), 0], dtype=np.int64).view(f"timedelta64[{unit}]")
+    source = pd.DataFrame({"value": pd.arrays.SparseArray(native, fill_value=fill), "row": range(5)})
+    source.index = pd.Index(["same"] * 5, name="retained")
+    source.attrs = {"origin": "retained"}
+    before = source.copy(deep=True)
+    engine = PandasEngine()
+    try:
+        page = engine.page(source, 0, 5)
+        expected = normalize_cell(native[0])
+        assert page["rows"][0]["values"][0]["raw"] == expected["raw"]
+        assert page["rows"][2]["values"][0] == page["rows"][0]["values"][0]
+        assert page["rows"][3]["values"][0]["isNull"]
+        choices, more = engine.column_values(source, "value")
+        assert not more and sorted(item["count"] for item in choices) == [2, 2]
+        selected = next(item for item in choices if item["value"] == page["rows"][0]["values"][0]["display"])
+        assert selected["count"] == 2
+        summary = engine.summaries(source)[0]
+        assert summary["nullCount"] == 1 and summary["distinctCount"] == 2
+        assert {item["value"]: item["count"] for item in summary["topValues"]} == {
+            item["value"]: item["count"] for item in choices
+        }
+        for choice in choices:
+            assert engine.column_values(source, "value", search=choice["value"])[0] == [choice]
+        for raw in source.value.dropna().astype(str):
+            assert engine.column_values(source, "value", search=raw)[0]
+        assert engine.column_values(source, "value", search="[not-a-duration]") == ([], False)
+        assert engine.column_values(source.iloc[:0], "value") == ([], False)
+        assert engine.column_values(source.iloc[[3]], "value") == ([], False)
+        assert engine.page(source.iloc[:0], 0, 5)["rows"] == []
+
+        token = typed_cell_selection_value(expected, "duration")
+        assert ("selectionValue" in selected) == (token is not None)
+        selections = [([], True, [3])]
+        if token is not None:
+            assert selected["selectionValue"]["cell"]["raw"] == expected["raw"]
+            selections.extend([([token], False, [0, 2]), ([selected["selectionValue"]], False, [0, 2])])
+        if unit == "2s":
+            selections.append(
+                ([typed_cell_selection_value(normalize_cell(timedelta(seconds=1)), "duration")], False, [])
+            )
+        schema = engine.schema(source)
+        lineage = source_lineage(schema)
+        for tokens, include_nulls, positions in selections:
+            model = {
+                "filters": [
+                    {
+                        "column": "value",
+                        "type": "duration",
+                        "predicates": [],
+                        "valueFilter": {
+                            "kind": "values",
+                            "selectedValues": tokens,
+                            "includeNulls": include_nulls,
+                            "includeNaN": False,
+                        },
+                    }
+                ],
+                "sort": [],
+            }
+            step = bind_step(
+                validate_step(
+                    {
+                        "id": "sparse-selection",
+                        "kind": "filterRows",
+                        "params": {
+                            "filterModel": {"filters": [{**model["filters"][0], "column": lineage[0]}], "sort": []},
+                        },
+                    }
+                ),
+                schema,
+                lineage,
+            )
+            namespace: dict[str, Any] = {}
+            exec(engine.compile_plan([step]), namespace)
+            for actual in (
+                engine.apply_filter_model(source, model),
+                engine.apply_transform(source, step),
+                namespace["clean_data"](source),
+            ):
+                pd.testing.assert_frame_equal(actual, source.iloc[positions], check_exact=True)
+    finally:
+        engine.close()
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
+    assert source.attrs == before.attrs
+
+
+@pytest.mark.parametrize("unit", ["2s", "3ms"])
+def test_pandas_sparse_duration_index_keeps_physical_row_labels(unit: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    native = np.array([1, 0, 1, -(2**63)], dtype=np.int64).view(f"timedelta64[{unit}]")
+    source = pd.DataFrame(
+        {"row": range(4)}, index=pd.Index(pd.arrays.SparseArray(native, fill_value=native[1]), name="duration")
+    )
+    source.attrs = {"origin": "retained"}
+    before = source.copy(deep=True)
+    lengths = []
+    original = pd.arrays.SparseArray.to_numpy
+
+    def bounded(values, *args, **kwargs):
+        lengths.append(len(values))
+        return original(values, *args, **kwargs)
+
+    monkeypatch.setattr(pd.arrays.SparseArray, "to_numpy", bounded)
+    engine = PandasEngine()
+    page = engine.page(source, 1, 3)
+    assert [row["rowLabel"] for row in page["rows"]] == [str(native[1]), str(native[2]), "null"]
+    assert lengths and max(lengths) <= 3
+    assert [row["values"][0]["raw"] for row in page["rows"]] == [1, 2, 3]
+    assert engine.page(source.iloc[:0], 0, 3)["rows"] == []
+    engine.close()
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
+    assert source.attrs == before.attrs
+
+
+@pytest.mark.parametrize("unit", ["2D", "M", "ps", "1000ps"])
+def test_pandas_sparse_duration_lossy_count_units_refuse_without_changing_source(unit: str) -> None:
+    native = np.array([1, 0, 1, -(2**63)], dtype=np.int64).view(f"timedelta64[{unit}]")
+    source = pd.DataFrame(
+        {"value": pd.arrays.SparseArray(native), "row": range(4)}, index=pd.Index([4, 4, 9, 2], name="original")
+    )
+    before = source.copy(deep=True)
+    engine = PandasEngine()
+    with pytest.raises(EngineError):
+        engine.column_values(source, "value", search="0")
+    with pytest.raises((EngineError, ValueError)):
+        engine.summaries(source, [(0, "value")])
+    assert engine.page(source.iloc[:0], 0, 4)["rows"] == []
+    assert engine.page(source.iloc[[3]], 0, 1)["rows"][0]["values"][0]["isNull"]
+    if unit == "2D":
+        assert engine.page(source, 0, 1)["rows"][0]["values"][0]["raw"] == 172800
+    model = {
+        "filters": [
+            {
+                "column": "value",
+                "type": "duration",
+                "predicates": [],
+                "valueFilter": {
+                    "kind": "values",
+                    "selectedValues": [0],
+                    "includeNulls": False,
+                    "includeNaN": False,
+                },
+            }
+        ],
+        "sort": [],
+    }
+    schema = engine.schema(source)
+    lineage = source_lineage(schema)
+    step = bind_step(
+        validate_step(
+            {
+                "id": "sparse-refusal",
+                "kind": "filterRows",
+                "params": {
+                    "filterModel": {"filters": [{**model["filters"][0], "column": lineage[0]}], "sort": []},
+                },
+            }
+        ),
+        schema,
+        lineage,
+    )
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([step]), namespace)
+    for operation in (
+        lambda: engine.apply_filter_model(source, model),
+        lambda: engine.apply_transform(source, step),
+        lambda: namespace["clean_data"](source),
+    ):
+        with pytest.raises((EngineError, ValueError)):
+            operation()
+    for include_nulls in (True, False):
+        null_source = source if unit == "2D" or not include_nulls else source.iloc[[3]]
+        empty_filter = {
+            **model["filters"][0],
+            "valueFilter": {
+                "kind": "values",
+                "selectedValues": [],
+                "includeNulls": include_nulls,
+                "includeNaN": False,
+            },
+        }
+        null_model = {"filters": [empty_filter], "sort": []}
+        null_step = bind_step(
+            validate_step(
+                {
+                    "id": "sparse-null",
+                    "kind": "filterRows",
+                    "params": {
+                        "filterModel": {"filters": [{**empty_filter, "column": lineage[0]}], "sort": []},
+                    },
+                }
+            ),
+            schema,
+            lineage,
+        )
+        null_namespace: dict[str, Any] = {}
+        exec(engine.compile_plan([null_step]), null_namespace)
+        expected = source.iloc[[3]] if include_nulls else source
+        for actual in (
+            engine.apply_filter_model(null_source, null_model),
+            engine.apply_transform(null_source, null_step),
+            null_namespace["clean_data"](null_source),
+        ):
+            pd.testing.assert_series_equal(actual["row"], expected["row"], check_exact=True)
+            assert actual["value"].dtype == expected["value"].dtype
+            actual_array = cast(pd.arrays.SparseArray, actual["value"].array)
+            expected_array = cast(pd.arrays.SparseArray, expected["value"].array)
+            np.testing.assert_array_equal(
+                actual_array.sp_values.view(np.int64), expected_array.sp_values.view(np.int64)
+            )
+            np.testing.assert_array_equal(actual_array.sp_index.indices, expected_array.sp_index.indices)
+            assert actual.attrs == expected.attrs
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
+    np.testing.assert_array_equal(
+        cast(pd.arrays.SparseArray, source["value"].array).sp_values.view(np.int64),
+        cast(pd.arrays.SparseArray, before["value"].array).sp_values.view(np.int64),
+    )
+    engine.close()
+
+
+@pytest.mark.parametrize(
+    "kind", ["pandas-ns", "pandas-2ns", "python-subclass", "pandas-subclass", "integer-components"]
+)
+def test_pandas_sparse_duration_fill_keeps_exact_native_storage(kind: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    import pandas.core.arrays.sparse.array as sparse_module
+
+    from openwrangler_runtime.engines.pandas_engine import _pandas_scalar_values
+
+    class PythonDuration(timedelta):
+        pass
+
+    class PandasDuration(pd.Timedelta):
+        pass
+
+    component_reads = []
+
+    class IntegerComponents(timedelta):
+        @property
+        def microseconds(self) -> Any:
+            component_reads.append("microseconds")
+            return np.int64(1)
+
+    unit, fill, fill_ticks = {
+        "pandas-ns": ("ns", pd.Timedelta(1, "ns"), 1),
+        "pandas-2ns": ("2ns", pd.Timedelta(2, "ns"), 1),
+        "python-subclass": ("us", PythonDuration(seconds=2), 2_000_000),
+        "pandas-subclass": ("ns", PandasDuration(1, "ns"), 1),
+        "integer-components": ("us", IntegerComponents(seconds=10**9), 10**15 + 1),
+    }[kind]
+    native = np.array([0, 4, 0, -(2**63)], dtype=np.int64).view(f"timedelta64[{unit}]")
+    base = pd.arrays.SparseArray(native, fill_value=np.timedelta64(0, "ns"))
+    source = pd.DataFrame({"value": pd.arrays.SparseArray(base, fill_value=fill), "row": range(4)})
+    source.index = pd.Index([3, 3, 5, 2], name="original")
+    source.attrs = {"origin": "retained"}
+    series = source["value"]
+    array = cast(pd.arrays.SparseArray, series.array)
+    original_dtype, original_positions = array.dtype, array.sp_index
+    stored = array.sp_values.view(np.int64).copy()
+    canonical = np.asarray(fill_ticks, dtype=native.dtype)[()]
+    expected = normalize_cell(canonical)
+    engine = PandasEngine()
+    try:
+        page = engine.page(source, 0, 4)
+        assert [row["values"][0]["raw"] for row in page["rows"]] == [
+            expected["raw"],
+            normalize_cell(native[1])["raw"],
+            expected["raw"],
+            None,
+        ]
+        choices, more = engine.column_values(source, "value")
+        assert not more and sorted(choice["count"] for choice in choices) == [1, 2]
+        choice = next(choice for choice in choices if choice["count"] == 2)
+        assert choice["value"] in {str(canonical), str(pd.Timedelta(canonical))}
+        assert engine.column_values(source, "value", search=choice["value"])[0] == [choice]
+        summary = engine.summaries(source, [(0, "value")])[0]
+        assert summary["nullCount"] == 1 and summary["distinctCount"] == 2
+        assert {item["value"]: item["count"] for item in summary["topValues"]} == {
+            item["value"]: item["count"] for item in choices
+        }
+        token = typed_selection_value(canonical, "duration")
+        assert ("selectionValue" in choice) == (token is not None)
+        model = {
+            "filters": [
+                {
+                    "column": "value",
+                    "type": "duration",
+                    "predicates": [],
+                    "valueFilter": {
+                        "kind": "values",
+                        "selectedValues": [token] if token is not None else [],
+                        "includeNulls": token is None,
+                        "includeNaN": False,
+                    },
+                }
+            ],
+            "sort": [],
+        }
+        schema = engine.schema(source)
+        lineage = source_lineage(schema)
+        step = bind_step(
+            validate_step(
+                {
+                    "id": "sparse-fill",
+                    "kind": "filterRows",
+                    "params": {
+                        "filterModel": {
+                            "filters": [{**model["filters"][0], "column": lineage[0]}],
+                            "sort": [],
+                        }
+                    },
+                }
+            ),
+            schema,
+            lineage,
+        )
+        namespace: dict[str, Any] = {}
+        exec(engine.compile_plan([step]), namespace)
+        positions = [0, 2] if token is not None else [3]
+        selected = source.iloc[positions]
+        for result in (
+            engine.apply_filter_model(source, model),
+            engine.apply_transform(source, step),
+            namespace["clean_data"](source),
+        ):
+            pd.testing.assert_frame_equal(result, selected, check_exact=True)
+            np.testing.assert_array_equal(
+                np.asarray(result["value"].array, dtype=native.dtype).view(np.int64),
+                [fill_ticks, fill_ticks] if token is not None else [-(2**63)],
+            )
+            assert result.attrs == source.attrs
+
+        def forbidden(*_args, **_kwargs):
+            pytest.fail("Sparse fill preparation expanded or recounted native values")
+
+        with monkeypatch.context() as blocked:
+            for method in ("to_numpy", "to_dense", "__array__", "astype", "value_counts"):
+                blocked.setattr(pd.arrays.SparseArray, method, forbidden)
+            blocked.setattr(sparse_module, "_make_sparse", forbidden)
+            component_reads.clear()
+            prepared = _pandas_scalar_values(series)
+        assert component_reads == (["microseconds"] if kind == "integer-components" else [])
+        assert prepared is not series and prepared.array is not array
+        assert prepared.array.sp_values is array.sp_values and prepared.array.sp_index is array.sp_index
+        assert prepared.index is series.index and prepared.name == series.name
+        assert type(prepared.array.fill_value) is np.timedelta64 and prepared.array.fill_value.dtype == native.dtype
+        assert int(prepared.array.fill_value.view(np.int64)) == fill_ticks
+    finally:
+        engine.close()
+    assert source["value"].array is array and array.fill_value is fill
+    assert array.dtype is original_dtype and array.sp_index is original_positions
+    np.testing.assert_array_equal(array.sp_values.view(np.int64), stored)
+    assert source.index.tolist() == [3, 3, 5, 2] and source.index.name == "original"
+    assert source.attrs == {"origin": "retained"}
+
+
+def test_pandas_sparse_duration_used_fill_refuses_before_native_conversion(monkeypatch: pytest.MonkeyPatch) -> None:
+    fill = np.timedelta64(1, "s")
+    native = np.array([1, 0, 1], dtype=np.int64).view("timedelta64[2s]")
+    base = pd.arrays.SparseArray(native, fill_value=np.timedelta64(0, "s"))
+    source = pd.DataFrame({"value": pd.arrays.SparseArray(base, fill_value=fill), "row": range(3)})
+    before = source.copy(deep=True)
+    engine = PandasEngine()
+    with monkeypatch.context() as blocked:
+        blocked.setattr(
+            pd.arrays.SparseArray, "to_numpy", lambda *_args, **_kwargs: pytest.fail("lossy fill was densified")
+        )
+        blocked.setattr(
+            pd.arrays.SparseArray, "value_counts", lambda *_args, **_kwargs: pytest.fail("lossy fill was counted")
+        )
+        for operation in (
+            lambda: engine.page(source, 0, 3),
+            lambda: engine.column_values(source, "value"),
+            lambda: engine.summaries(source, [(0, "value")]),
+        ):
+            with pytest.raises(EngineError):
+                operation()
+        assert [
+            row["values"][0]["raw"] for row in engine.page(source, 0, 3, column_projection=[(1, "row")])["rows"]
+        ] == [0, 1, 2]
+    unused = source.iloc[[0, 2]]
+    assert unused.value.array.sp_index.ngaps == 0
+    assert engine.column_values(unused, "value")[0][0]["selectionValue"]["cell"]["raw"] == 2
+    model = {
+        "filters": [
+            {
+                "column": "value",
+                "type": "duration",
+                "predicates": [],
+                "valueFilter": {
+                    "kind": "values",
+                    "selectedValues": [2],
+                    "includeNulls": False,
+                    "includeNaN": False,
+                },
+            }
+        ],
+        "sort": [],
+    }
+    schema = engine.schema(source)
+    lineage = source_lineage(schema)
+    step = bind_step(
+        validate_step(
+            {
+                "id": "sparse-fill",
+                "kind": "filterRows",
+                "params": {
+                    "filterModel": {"filters": [{**model["filters"][0], "column": lineage[0]}], "sort": []},
+                },
+            }
+        ),
+        schema,
+        lineage,
+    )
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([step]), namespace)
+    for operation in (
+        lambda: engine.apply_filter_model(source, model),
+        lambda: engine.apply_transform(source, step),
+        lambda: namespace["clean_data"](source),
+    ):
+        with pytest.raises((EngineError, ValueError)):
+            operation()
+
+    from openwrangler_runtime.engines.pandas_engine import (
+        _generated_pandas_dictionary_helpers,
+        _generated_pandas_scalar_helpers,
+        _pandas_scalar_values,
+    )
+
+    class ZeroUnitMetadata:
+        dtype = pd.SparseDtype(np.dtype("timedelta64[0s]"), np.timedelta64("NaT", "s"))
+
+        @property
+        def array(self):
+            pytest.fail("zero-unit validation accessed native data")
+
+    metadata_helpers: dict[str, Any] = {"pd": pd, "np": np}
+    exec(
+        "\n".join([*_generated_pandas_dictionary_helpers(include_rows=False), *_generated_pandas_scalar_helpers()]),
+        metadata_helpers,
+    )
+    for prepare in (_pandas_scalar_values, metadata_helpers["_open_wrangler_scalar_values"]):
+        with pytest.raises((EngineError, ValueError)):
+            prepare(ZeroUnitMetadata())
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
+    engine.close()
 
 
 @pytest.mark.parametrize(

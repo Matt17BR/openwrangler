@@ -421,6 +421,102 @@ def test_pandas_csv_export_applies_the_exact_dialect_encoding_header_and_index_p
     assert source.index.tolist() == ["invoice-a", "invoice-b"]
 
 
+@pytest.mark.parametrize("unit", ["2s", "3ms", "us", "ns"])
+@pytest.mark.parametrize("index_only", [False, True])
+def test_pandas_sparse_duration_csv_preserves_reserved_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unit: str, index_only: bool
+) -> None:
+    import numpy as np
+
+    import __main__
+
+    native = np.array([1, 0, 1, -(2**63)], dtype=np.int64).view(f"timedelta64[{unit}]")
+    values = pd.arrays.SparseArray(native, fill_value=np.timedelta64(0, "s"))
+    if unit == "ns":
+        values = pd.arrays.SparseArray(values, fill_value=pd.Timedelta(1, "ns"))
+    source = pd.DataFrame({"value": values})
+    if index_only:
+        source = pd.DataFrame({"row": range(4)}, index=pd.Index(source["value"].array, name="duration"))
+    else:
+        source.index = pd.Index(["same"] * 4, name="rows")
+    source.attrs = {"origin": "retained"}
+    before = source.copy(deep=True)
+    monkeypatch.setattr(__main__, "sparse_export_source", source, raising=False)
+    manager = SessionManager()
+    destination = tmp_path / "sparse.csv"
+    destination.write_bytes(b"preserved destination\n")
+    identity = _regular_file_identity(destination)
+    options = {
+        "format": "csv",
+        "delimiter": ",",
+        "quoteChar": '"',
+        "encoding": "utf-8",
+        "header": True,
+        "rowAxisPolicy": "preserve" if index_only else "omit",
+    }
+    try:
+        opened = manager.open_session(
+            {"kind": "notebookVariable", "label": "Sparse export", "variableName": "sparse_export_source"},
+            backend="pandas",
+            page_size=4,
+            mode="editing",
+        )
+        metadata = opened["metadata"]
+        if unit in {"2s", "3ms"}:
+            with pytest.raises(EngineError):
+                manager.export_data(
+                    metadata["sessionId"],
+                    metadata["revision"],
+                    str(destination),
+                    options,
+                    {"device": str(identity[0]), "inode": str(identity[1])},
+                )
+            assert destination.read_bytes() == b"preserved destination\n"
+            assert _regular_file_identity(destination) == identity
+            assert (
+                manager.get_page(metadata["sessionId"], metadata["revision"], 0, 4, {"filters": [], "sort": []})["page"]
+                == opened["page"]
+            )
+        else:
+            exported = manager.export_data(
+                metadata["sessionId"],
+                metadata["revision"],
+                str(destination),
+                options,
+                {"device": str(identity[0]), "inode": str(identity[1])},
+            )
+            assert exported["kind"] == "dataExported"
+            expected = [["value"], ["0 days 00:00:00.000001"], ["0 days 00:00:00"], ["0 days 00:00:00.000001"], [""]]
+            if unit == "ns":
+                expected = [["value"], *[["0 days 00:00:00.000000001"]] * 3, [""]]
+            if index_only:
+                expected = [
+                    ["duration", "row"],
+                    *[[value[0], str(position)] for position, value in enumerate(expected[1:])],
+                ]
+            assert list(csv.reader(io.StringIO(destination.read_text()))) == expected
+    finally:
+        manager.close_all()
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
+    assert source.attrs == before.attrs
+
+    empty = tmp_path / "empty.csv"
+    empty.touch()
+    PandasEngine().export_data(source.iloc[:0], empty, options)
+    assert empty.read_text() == ("duration,row\n" if index_only else "value\n")
+    if index_only:
+        retained = source.iloc[:0].copy()
+        retained.index = pd.MultiIndex(levels=[source.index[:2]], codes=[[]], names=["duration"])
+        retained_level: Any = retained.index.levels[0]
+        assert isinstance(retained_level.dtype, pd.SparseDtype)
+        PandasEngine().export_data(retained, empty, options)
+        assert empty.read_text() == "duration,row\n"
+        omitted = tmp_path / "omitted.csv"
+        omitted.touch()
+        PandasEngine().export_data(source, omitted, {**options, "rowAxisPolicy": "omit"})
+        assert omitted.read_text() == "row\n0\n1\n2\n3\n"
+
+
 @pytest.fixture(params=["pandas", "polars-eager", "polars-lazy"])
 def native_export(request: pytest.FixtureRequest) -> tuple[Any, Any, str]:
     engine: Any

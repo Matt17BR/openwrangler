@@ -390,6 +390,19 @@ operands cannot match. NumPy's reserved NaT tick is excluded; Arrow's minimum in
 values, ordering and codes remain unchanged. Other operand types and nonmembership predicates keep their native
 paths, and the duration decoder retains its Python timedelta range and microsecond precision limits.
 
+Sparse duration membership reuses that exact operand preparation for positive `s`, `ms`, `us` and `ns` unit
+multipliers. Scalar preparation for pages, profiles, choices, membership and export rejects zero-unit Sparse storage
+and actually used, nonmissing fills that cannot be represented exactly in their stored unit. It uses the existing
+fixed-unit ratios, signed int64 range and NaT exclusion, without scanning rows or inspecting unused fills. Exact fills
+use a temporary native SparseArray and Series sharing the stored values and sparse index. Pandas fills retain their
+native ticks; Python timedelta components are read once through integer-index conversion before rational arithmetic.
+Canonical native fills can change gap spelling while preserving physical values and selection tokens.
+Live and generated code share this boundary; other operations retain their native limitations. Profiles, value choices
+and nonempty membership conservatively refuse finer, calendar or unitless Sparse durations and multiplied coarse units.
+Ordinary `W`, `D`, `h` and `m` storage retains its native paths.
+Empty selections and null-only filters retain native behavior where the selected representation permits it. Fine-unit
+page behavior remains native, including supported empty and all-missing pages.
+
 Float filter values accept explicit `Infinity` and `-Infinity`, plus the historical `inf` and `-inf` spellings used
 in saved Filter Rows steps. These aliases do not admit NaN or finite text that overflows. The shared literal fixture
 defines accepted and rejected forms for live and generated execution.
@@ -506,8 +519,12 @@ Unsearched choices skip this allocation. Non-text missing entries are not aliase
 Direct and dictionary-encoded Arrow duration columns search counted display labels and native raw text after the
 existing dictionary decode. This preserves the corrected label for a valid minimum tick without accepting its
 misleading native `NaT` spelling. Native counts and raw text grow with all distinct values before filtering, even for
-an absent query; unsearched choices skip raw-text allocation. Sparse and object durations keep their original
-row-text search behavior.
+an absent query; unsearched choices skip raw-text allocation. Supported Sparse durations also search counted labels.
+Multiplied Sparse search retains native clock aliases from the distinct-count index, allocating strings proportional
+to distinct values only for searched choices. Ordinary whole-day Sparse labels need no alias array. Count-first search
+retains full native counts even for selective or absent queries. Object durations keep their row-text search behavior.
+Multiplied fixed-unit Sparse pages and simple Sparse index labels iterate native NumPy values from the bounded slice;
+supported count indexes use the same output owner. Source storage, fills and indexes remain unchanged.
 Categorical timestamp and duration output reads stored values through category codes, preserving Arrow validity and
 NumPy duration multipliers. Temporal-category null masks use missing codes, so valid Arrow extrema remain present.
 Directional Fill repeats the native categorical anchor rather than assigning a boxed scalar that can change its value.
@@ -679,6 +696,10 @@ CSV and Parquet export prepare logical scalar dictionary, `bool8` and UUID colum
 index levels use the same logical values; changed MultiIndex levels are rebuilt from actual row labels so equivalent
 values coalesce. Parquet omits an unrequested index before native dtype inspection. Source arrays, index levels and
 codes remain unchanged. Exported `bool8` and UUID fields use Boolean and string storage respectively.
+CSV export refuses nonempty Pandas frames containing exported Sparse duration columns or preserved index levels with
+unit multipliers, because native writing can change their physical values. Refusal precedes writer opening and preserves
+the reserved destination. Empty positive-multiplier exports and omitted indexes retain their existing behavior; no
+full-column conversion or alternate serializer is used.
 Pandas Parquet export refuses retained negative-scale Arrow Decimal columns, including original operands preserved
 by Formula. A successful arithmetic result does not convert those source columns or remove this native writer limit.
 Group By treats input NaN as missing while retaining NaN computed from present aggregate operands. Group By, Pivot

@@ -136,6 +136,8 @@ Use the existing owners to choose a focused source check:
   Configurable-export checks also own Polars schema-based CSV syntax refusal before writer opening or lazy execution,
   safe correction, decoded fields and native null-versus-empty readback. The existing Polars lazy-writer test owns
   streaming to the exact reserved file object.
+  Pandas Sparse duration CSV cases check multiplier refusal through an editing Session, unchanged destination bytes
+  and identity, source/revision preservation, and ordinary-unit, empty and omitted-index exports.
 - **Python engines and generated programs:** [Pandas](../python/tests/test_pandas_engine.py),
   [Polars](../python/tests/test_polars_engine.py) and [DuckDB](../python/tests/test_duckdb_engine.py) own native profiles,
   queries, source preservation and engine-specific evaluation bounds. [Operation edges](../python/tests/test_operation_edges.py),
@@ -152,6 +154,9 @@ Use the existing owners to choose a focused source check:
   Arrow duration cases retain native extrema, dictionary spelling and validity, bounded output work, and exact
   minimum-microsecond Session selections without changing source storage. Object duration choices must select their
   counted rows across mixed NumPy, Pandas and Python values; the existing temporal Session owner retains recovery.
+  Sparse duration cases compare physical native ticks with cells, choices, profiles and live/generated membership,
+  including used fills, duplicate indexes, bounded simple-index output, null-only selections and precision refusal.
+  Zero-unit refusal uses metadata with native access forbidden; tests do not execute zero-unit arrays.
   [Filter logic](../python/tests/test_filter_logic.py) executes live and generated
   duration filters under a changed notebook Decimal context in each editing-capable Python engine.
   Its native and object duration cases compare stored ticks with an independent rational oracle across all supported units,
