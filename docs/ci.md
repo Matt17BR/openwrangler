@@ -201,41 +201,22 @@ is named in the probe output. The other cross-platform and native R jobs remain 
 The weekly Polars runtime benchmark installs the core Python runtime dependencies and runs the full CSV/Parquet
 measurement with strict thresholds.
 
-The preview workflow owns scheduled daily publication:
+Scheduled previews and stable releases use separate workflows:
 
-- A small check compares protected `main` with the last successful scheduled run before any checkout, dependency
-  installation, build, or editor test. An unchanged commit skips packaging and publication with a job-summary reason.
-  Failed runs remain eligible on the next schedule.
-- Each scheduled run derives its date from that workflow run's immutable UTC creation timestamp and its series from
-  the latest canonical stable release tag reachable from the exact protected-main source commit in the full checkout.
-  A pre-v2 stable tag retains the `1.99.YYYYMMDD` compatibility series. For v2 and later, the tag's `major.minor`
-  selects the series: a source whose metadata has advanced to 2.1 still produces `2.0.YYYYMMDD` while `v2.0.z` is the
-  latest stable tag, and switches to `2.1.YYYYMMDD` only after a stable `v2.1.z` tag exists. The run binds one
-  deterministic direct child to that stable tag and commit, changes only the three version files, and qualifies one
-  canonical VSIX/checksum/provenance bundle in exact stable VS Code with the existing `daily-core` selector. The
-  accepted bytes are then published automatically as a GitHub prerelease. GitHub dispatches Open VSX, while the tag
-  triggers Azure Marketplace.
-- Packaging admits only a workflow run's first attempt, before checkout or setup. If packaging fails, wait for the next
-  scheduled run; **Publish preview** remains retryable with the recorded package artifact ID and source/date/tag outputs. After its
-  existing dependency setup, the package job also freezes the latest published preview's verified tag and commit, plus
-  merged PR titles and membership, for [daily change notes](releasing.md#daily-preview). Only this job needs
-  `pull-requests: read`. Retries retain these outputs and exact notes rather than advancing to a newer publication or
-  rereading PR metadata. This adds no release asset and does not change artifact qualification or registry recovery.
-- Release candidate trusts the required checks already attached to protected `main` rather than repeating the source
-  suites. It validates stable metadata and the next minor version against the canonical stable tag, packages once,
-  audits published dependencies, runs pinned VS Code
-  installed-performance, and then runs pinned Cursor platform-smoke against the same reverified canonical VSIX.
-- Stable publication selects a successful candidate and promotes its already-recorded bytes. Candidate selection uses
-  Node built-ins without installing or caching npm dependencies. The separate promotion job installs its publication
-  tools and verifies the exact artifact; it does not rebuild the extension. After GitHub publication, a separate job
-  dispatches the shared Open VSX promotion workflow from protected `main`. Preview publication and manual recovery use
-  that same publishing owner. Stable workflow success confirms dispatch; release completion also requires the separate
-  registry results and exact-version, channel and package verification. Open VSX keeps its own runner, dependency
-  installation and public artifact download.
+- `preview-release.yml` checks protected `main` against the last successful scheduled run before checkout or dependency
+  setup. Unchanged source skips publication. A failed run does not advance that baseline. New source is packaged once
+  and checked in stable VS Code with `daily-core` before publication. Packaging is first-attempt-only, and only its job
+  reads PR metadata to freeze change notes. [Daily preview](releasing.md#daily-preview) owns version derivation,
+  publication and recovery.
+- `release-candidate.yml` uses protected-main source checks, audits dependencies, and checks one canonical artifact in
+  pinned VS Code installed-performance and pinned Cursor platform-smoke.
+  [Release candidate](releasing.md#release-candidate) owns dispatch prerequisites and failed-candidate handling.
+- `stable-release.yml` selects a successful candidate using Node built-ins, then installs publication tools in a separate
+  job and promotes the recorded bytes without rebuilding. It dispatches shared Open VSX promotion; workflow success does
+  not establish completion of both registries. [Stable publication](releasing.md#stable-publication) owns completion
+  checks and recovery.
 
-The workflows themselves are authoritative for their current inputs and schedules. See [Releasing](releasing.md) for
-the operator sequence and failed-publication recovery. These release paths are not additional pull-request
-source-test owners.
+Workflows are authoritative for current inputs and schedules. These release paths add no pull-request source suites.
 
 ## Reading a red check
 
