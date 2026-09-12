@@ -9755,7 +9755,7 @@ async function captureReleasedJupyterDuckDbRelation(
     assert.match(sortRules[0] ?? "", /^1 order_id .*descending.*nulls last/u);
     assert.match(sortRules[1] ?? "", /^2 revenue .*ascending.*nulls last/u);
 
-    const visibleRows = app.getByRole("status", { name: "Visible rows" });
+    const visibleRows = app.getByRole("status", { name: "Loaded rows" });
     await visibleRows.waitFor({ state: "visible", timeout: 10_000 });
     assert.match((await visibleRows.innerText()).trim(), /^Rows 1\u2013\d+ of 25,000$/u);
     const gridBox = await gridScroller.boundingBox();
@@ -10092,7 +10092,7 @@ async function captureReleasedJupyterPySparkLive(
       "Runs Spark profiling queries for the visible columns.",
       "The PySpark header-profile toggle must retain its explicit cost warning."
     );
-    const loadedRows = app.getByRole("status", { name: "Visible rows" });
+    const loadedRows = app.getByRole("status", { name: "Loaded rows" });
     assert.equal(await loadedRows.count(), 1, "The PySpark media scene must expose one visible-row status.");
     assert.match(
       (await loadedRows.innerText()).trim(),
@@ -11461,7 +11461,7 @@ async function capturePackagedFilterResultScene(
     const clearMarket = drawer.getByRole("button", { name: "Clear filter for market", exact: true });
     await clearMarket.waitFor({ state: "visible", timeout: 10_000 });
     await drawer.getByRole("button", { name: "Counts", exact: true }).waitFor({ state: "visible", timeout: 30_000 });
-    const visibleRows = app.getByRole("status", { name: "Visible rows" });
+    const visibleRows = app.getByRole("status", { name: "Loaded rows" });
     await visibleRows.waitFor({ state: "visible", timeout: 10_000 });
     assert.match(
       (await visibleRows.innerText()).trim(),
@@ -16224,7 +16224,7 @@ async function visiblePersistedPanelSnapshot(
     `The distinctive persisted selected-column width was not rendered: ${selectedColumnWidth}.`
   );
 
-  const visibleRows = app.getByRole("status", { name: "Visible rows" });
+  const visibleRows = app.getByRole("status", { name: "Loaded rows" });
   await visibleRows.waitFor({ state: "visible", timeout: 10_000 });
   await waitForLocatorText(
     visibleRows,

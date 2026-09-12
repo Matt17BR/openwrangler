@@ -199,7 +199,7 @@ export async function verifyGridStatusBarBrowserAcceptance(browser, harnessDirec
     }
     const statusBar = page.locator(".gridStatusBar");
     await statusBar.waitFor();
-    const visibleRows = statusBar.getByRole("status", { name: "Visible rows" });
+    const visibleRows = statusBar.getByRole("status", { name: "Loaded rows" });
     if (visibleRowsOverride !== undefined) {
       await visibleRows.evaluate((status, text) => {
         status.textContent = text;
@@ -249,7 +249,7 @@ export async function verifyGridStatusBarBrowserAcceptance(browser, harnessDirec
       const epsilon = 0.6;
       const bounds = bar.getBoundingClientRect();
       const scroller = bar.previousElementSibling;
-      const rangeStatus = bar.querySelector('[role="status"][aria-label="Visible rows"]');
+      const rangeStatus = bar.querySelector('[role="status"][aria-label="Loaded rows"]');
       const headerProfiles = bar.querySelector(".headerProfilesButton");
       const selectionStatus = bar.querySelector(".gridClipboardSelectionStatus");
       const app = bar.closest(".app");

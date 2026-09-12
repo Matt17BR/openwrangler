@@ -223,7 +223,7 @@ export function createReleasedRGridJourney({
       .getByRole("button", { name: 'Remove equals "B" filter from group', exact: true })
       .waitFor({ state: "visible", timeout: 10_000 });
 
-    let visibleRows = app.getByRole("status", { name: "Visible rows" });
+    let visibleRows = app.getByRole("status", { name: "Loaded rows" });
     await waitForLocatorText(visibleRows, (text) => text.trim() === "Rows 1–1 of 1", 10_000, "the filtered R row");
     await app
       .getByRole("rowheader", { name: "Row 1, label case-1200", exact: true })
@@ -317,7 +317,7 @@ export function createReleasedRGridJourney({
       "Clear all to restore the complete native R frame"
     );
     app = await releasedRSessionApp(workbench, testing, sessionId, "the cleared native R view before paging resumes");
-    visibleRows = app.getByRole("status", { name: "Visible rows" });
+    visibleRows = app.getByRole("status", { name: "Loaded rows" });
     columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
     await waitForLocatorText(
       visibleRows,
