@@ -156,6 +156,8 @@ Use the existing owners to choose a focused source check:
   counted rows across mixed NumPy, Pandas and Python values; the existing temporal Session owner retains recovery.
   Sparse duration cases compare physical native ticks with cells, choices, profiles and live/generated membership,
   including used fills, duplicate indexes, bounded simple-index output, null-only selections and precision refusal.
+  Nonempty selected rows retain Sparse units and physical nulls; expected missing inputs use contiguous slices because native
+  fill-aware row taking can corrupt multiplied NaT values on older supported NumPy versions.
   Zero-unit refusal uses metadata with native access forbidden; tests do not execute zero-unit arrays.
   [Filter logic](../python/tests/test_filter_logic.py) executes live and generated
   duration filters under a changed notebook Decimal context in each editing-capable Python engine.

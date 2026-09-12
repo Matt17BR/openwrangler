@@ -1784,7 +1784,7 @@ def test_pandas_sparse_duration_choices_preserve_physical_values_and_membership(
             assert engine.column_values(source, "value", search=raw)[0]
         assert engine.column_values(source, "value", search="[not-a-duration]") == ([], False)
         assert engine.column_values(source.iloc[:0], "value") == ([], False)
-        assert engine.column_values(source.iloc[[3]], "value") == ([], False)
+        assert engine.column_values(source.iloc[3:4], "value") == ([], False)
         assert engine.page(source.iloc[:0], 0, 5)["rows"] == []
 
         token = typed_cell_selection_value(expected, "duration")
@@ -1836,7 +1836,17 @@ def test_pandas_sparse_duration_choices_preserve_physical_values_and_membership(
                 engine.apply_transform(source, step),
                 namespace["clean_data"](source),
             ):
-                pd.testing.assert_frame_equal(actual, source.iloc[positions], check_exact=True)
+                assert actual["row"].tolist() == positions
+                pd.testing.assert_index_equal(actual.index, source.index.take(positions))
+                if positions:
+                    assert actual["value"].dtype == source["value"].dtype
+                else:
+                    pd.testing.assert_frame_equal(actual, source.iloc[positions], check_exact=True)
+                selected_cells = [row["values"][0] for row in engine.page(actual, 0, 5)["rows"]]
+                assert [cell["raw"] for cell in selected_cells] == [normalize_cell(native[p])["raw"] for p in positions]
+                if positions == [3]:
+                    assert selected_cells[0]["isNull"]
+                assert actual.attrs == source.attrs
     finally:
         engine.close()
     pd.testing.assert_frame_equal(source, before, check_exact=True)
@@ -1883,7 +1893,7 @@ def test_pandas_sparse_duration_lossy_count_units_refuse_without_changing_source
     with pytest.raises((EngineError, ValueError)):
         engine.summaries(source, [(0, "value")])
     assert engine.page(source.iloc[:0], 0, 4)["rows"] == []
-    assert engine.page(source.iloc[[3]], 0, 1)["rows"][0]["values"][0]["isNull"]
+    assert engine.page(source.iloc[3:4], 0, 1)["rows"][0]["values"][0]["isNull"]
     if unit == "2D":
         assert engine.page(source, 0, 1)["rows"][0]["values"][0]["raw"] == 172800
     model = {
@@ -1927,7 +1937,7 @@ def test_pandas_sparse_duration_lossy_count_units_refuse_without_changing_source
         with pytest.raises((EngineError, ValueError)):
             operation()
     for include_nulls in (True, False):
-        null_source = source if unit == "2D" or not include_nulls else source.iloc[[3]]
+        null_source = source if unit == "2D" or not include_nulls else source.iloc[3:4]
         empty_filter = {
             **model["filters"][0],
             "valueFilter": {
@@ -1953,7 +1963,7 @@ def test_pandas_sparse_duration_lossy_count_units_refuse_without_changing_source
         )
         null_namespace: dict[str, Any] = {}
         exec(engine.compile_plan([null_step]), null_namespace)
-        expected = source.iloc[[3]] if include_nulls else source
+        expected = source.iloc[3:4] if include_nulls else source
         for actual in (
             engine.apply_filter_model(null_source, null_model),
             engine.apply_transform(null_source, null_step),
@@ -1967,6 +1977,9 @@ def test_pandas_sparse_duration_lossy_count_units_refuse_without_changing_source
                 actual_array.sp_values.view(np.int64), expected_array.sp_values.view(np.int64)
             )
             np.testing.assert_array_equal(actual_array.sp_index.indices, expected_array.sp_index.indices)
+            if include_nulls:
+                assert actual_array.sp_index.ngaps == 1 and len(actual_array.sp_values) == 0
+                assert engine.page(actual, 0, 1)["rows"][0]["values"][0]["isNull"]
             assert actual.attrs == expected.attrs
     pd.testing.assert_frame_equal(source, before, check_exact=True)
     np.testing.assert_array_equal(
@@ -2074,13 +2087,15 @@ def test_pandas_sparse_duration_fill_keeps_exact_native_storage(kind: str, monke
         namespace: dict[str, Any] = {}
         exec(engine.compile_plan([step]), namespace)
         positions = [0, 2] if token is not None else [3]
-        selected = source.iloc[positions]
         for result in (
             engine.apply_filter_model(source, model),
             engine.apply_transform(source, step),
             namespace["clean_data"](source),
         ):
-            pd.testing.assert_frame_equal(result, selected, check_exact=True)
+            assert result["row"].tolist() == positions
+            pd.testing.assert_index_equal(result.index, source.index.take(positions))
+            assert result["value"].dtype == source["value"].dtype
+            assert result["value"].array.fill_value is fill
             np.testing.assert_array_equal(
                 np.asarray(result["value"].array, dtype=native.dtype).view(np.int64),
                 [fill_ticks, fill_ticks] if token is not None else [-(2**63)],
