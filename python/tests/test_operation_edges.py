@@ -2579,6 +2579,26 @@ def test_pandas_arrow_formula_capacity_repairs_unsigned_scalars(values, operator
         ("subtract", "uint64[pyarrow]", [2**64 - 1, 1], "int64[pyarrow]", [-1, 1], None, None),
         ("subtract", "uint64[pyarrow]", [2**64 - 1, 0], "uint64[pyarrow]", [0, 1], None, None),
         ("subtract", "int64[pyarrow]", [0, None], "uint64[pyarrow]", [2**64 - 1, None], None, None),
+        ("power", "int8[pyarrow]", [-6, 5, None], "int8[pyarrow]", [3, 3, 3], "int64[pyarrow]", [-216, 125, None]),
+        ("power", "int8[pyarrow]", [-128, 11, None], "int8[pyarrow]", [2, 2, 2], "int64[pyarrow]", [16384, 121, None]),
+        ("power", "int8[pyarrow]", [None, 2, -6, 0], "Int8", [3, None, 3, 0], "int64[pyarrow]", [None, None, -216, 1]),
+        ("power", "int8[pyarrow]", [-6, 5, None], "int8", [3, 3, 3], "int64[pyarrow]", [-216, 125, None]),
+        ("power", "int8", [-6, 5, 0], "int8[pyarrow]", [3, 3, None], "int64[pyarrow]", [-216, 125, None]),
+        ("power", "Int8", [-6, 5, None], "int8[pyarrow]", [3, 3, 3], "int64[pyarrow]", [-216, 125, None]),
+        ("power", "int8[pyarrow]", [], "int8[pyarrow]", [], "int8[pyarrow]", []),
+        ("power", "int8[pyarrow]", [None, None], "int8[pyarrow]", [None, None], "int8[pyarrow]", [None, None]),
+        (
+            "power",
+            "int64[pyarrow]",
+            [-2, -3, None],
+            "int64[pyarrow]",
+            [63, 2, 3],
+            "int64[pyarrow]",
+            [-(2**63), 9, None],
+        ),
+        ("power", "int64[pyarrow]", [2, 1, None], "int64[pyarrow]", [63, 63, 63], None, None),
+        ("power", "int8[pyarrow]", [2, -2, None], "int8[pyarrow]", [-3, -3, -3], None, None),
+        ("power", "int64[pyarrow]", [-3, 2, None], "int64[pyarrow]", [41, 64, 0], None, None),
         ("power", "int64[pyarrow]", [-3, 0, None], None, "40", "uint64[pyarrow]", [3**40, 0, None]),
         (
             "power",
@@ -2632,14 +2652,19 @@ def test_pandas_arrow_integer_results_keep_exact_native_capacity(
     frame = pd.DataFrame({"left": pd.Series(left_values, dtype=left_dtype)})
     if right_dtype is not None:
         frame["right"] = pd.Series(right_values, dtype=right_dtype)
-    if left_dtype.endswith("[pyarrow]") and len(frame) > 1:
-        array = cast(pd.arrays.ArrowExtensionArray, frame["left"].array).__arrow_array__()
-        frame["left"] = pd.Series(pd.arrays.ArrowExtensionArray(pa.chunked_array([array.slice(0, 1), array.slice(1)])))
+    for column in frame:
+        if isinstance(frame[column].dtype, pd.ArrowDtype) and len(frame) > 1:
+            array = cast(pd.arrays.ArrowExtensionArray, frame[column].array).__arrow_array__()
+            frame[column] = pd.Series(
+                pd.arrays.ArrowExtensionArray(pa.chunked_array([array.slice(0, 1), array.slice(1)]))
+            )
     frame.index = pd.MultiIndex.from_tuples([("same", 2)] * len(frame), names=["group", "row"])
     frame.attrs = {"source": "retained"}
     before = frame.copy(deep=True)
-    numpy_source = isinstance(frame["left"].dtype, np.dtype)
-    source_array = frame["left"].to_numpy(copy=False) if numpy_source else frame["left"].array
+    source_arrays = {
+        column: frame[column].to_numpy(copy=False) if isinstance(frame[column].dtype, np.dtype) else frame[column].array
+        for column in frame
+    }
     runtime = PandasEngine()
     schema = runtime.schema(frame)
     lineage = source_lineage(schema)
@@ -2673,10 +2698,11 @@ def test_pandas_arrow_integer_results_keep_exact_native_capacity(
             pd.testing.assert_frame_equal(actual.iloc[:, :-1], before, check_exact=True)
         pd.testing.assert_frame_equal(frame, before, check_exact=True)
         assert frame.attrs == before.attrs
-        if numpy_source:
-            assert np.shares_memory(frame["left"].to_numpy(copy=False), source_array)
-        else:
-            assert frame["left"].array is source_array
+        for column, source_array in source_arrays.items():
+            if isinstance(frame[column].dtype, np.dtype):
+                assert np.shares_memory(frame[column].to_numpy(copy=False), source_array)
+            else:
+                assert frame[column].array is source_array
 
 
 @pytest.mark.parametrize("bits", [8, 16, 32, 64])
@@ -3321,8 +3347,9 @@ def test_pandas_arrow_formula_capacity_retains_native_refusals(family: str) -> N
 
 
 @pytest.mark.parametrize("generated", [False, True])
+@pytest.mark.parametrize("column_operand", [False, True])
 def test_pandas_arrow_formula_capacity_preserves_unrelated_type_errors(
-    monkeypatch: pytest.MonkeyPatch, generated: bool
+    monkeypatch: pytest.MonkeyPatch, generated: bool, column_operand: bool
 ) -> None:
     from openwrangler_runtime.engines import pandas_engine
 
@@ -3343,7 +3370,11 @@ def test_pandas_arrow_formula_capacity_preserves_unrelated_type_errors(
     # The integer power repair could succeed, but this new exception class must
     # reach only the negative-scale Decimal owner, not an unrelated repair.
     with pytest.raises(TypeError) as refused:
-        formula(pd.Series([-1, 0, 1, None], dtype="int64[pyarrow]"), 2, "power")
+        formula(
+            pd.Series([-1, 0, 1, None], dtype="int64[pyarrow]"),
+            pd.Series([2, 2, 2, None], dtype="int64[pyarrow]") if column_operand else 2,
+            "power",
+        )
     assert refused.value is original
 
 
@@ -3450,6 +3481,7 @@ def test_pandas_arrow_formula_refusal_releases_input_without_cyclic_collection(g
         (-1, "add", "uint64[pyarrow]"),
         (-1, "multiply", "uint64[pyarrow]"),
         (2, "add", "int64[pyarrow]"),
+        (2, "power", "int64[pyarrow]"),
     ],
 )
 @pytest.mark.parametrize("signed_left", [False, True])
@@ -3525,7 +3557,7 @@ def test_pandas_arrow_formula_capacity_does_not_convert_custom_integer_extension
     runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
     with pytest.raises(pa.ArrowInvalid) as native:
         left, right = (frame["domain"], frame["wide"]) if signed_left else (frame["wide"], frame["domain"])
-        _ = left + right if operator == "add" else left * right
+        _ = left + right if operator == "add" else left**right if operator == "power" else left * right
     assert casts == []
     for run in (
         lambda: runtime.apply_transform(frame, operation),

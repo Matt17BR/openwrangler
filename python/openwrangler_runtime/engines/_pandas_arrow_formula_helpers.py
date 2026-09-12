@@ -93,6 +93,22 @@ def _open_wrangler_arrow_formula_repair(
         if isinstance(original_error, TypeError):
             raise original_error
 
+        if (
+            isinstance(original_error, pa.ArrowInvalid)
+            and operator == "power"
+            and is_integer_column(left)
+            and is_integer_column(right)
+        ):
+            import pyarrow.compute as pc
+
+            try:
+                first = pc.cast(pa.array(left.array), pa.int64())
+                second = pc.cast(pa.array(cast(pd.Series, right).array), pa.int64())
+                result = pc.call_function("power_checked", [first, second])
+            except pa.ArrowInvalid:
+                raise original_error from None
+            return pd.Series(pd.arrays.ArrowExtensionArray(result), index=left.index, name=left.name)
+
         if operator == "power" and is_integer_column(left) and type(right) is int and 0 < right < 2**64:
             import pyarrow.compute as pc
 
