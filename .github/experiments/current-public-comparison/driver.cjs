@@ -411,28 +411,93 @@ exports.run = async function () {
       }
       return false;
     };
-    const gridRows = (root) => {
+    const gridRows = (root, sourceRows) => {
       const integer = (value) =>
         /^\d+$/.test(value ?? "") && Number.isSafeInteger(Number(value)) ? Number(value) : null;
       const rows = [...root.querySelectorAll('tr,[role="row"]')];
-      const visible = rows.slice(0, 100).filter((row) => row.checkVisibility({ checkVisibilityCSS: true }));
-      const indices = visible.map((row) => integer(row.getAttribute("aria-rowindex")));
+      const scanned = rows.slice(0, 100);
+      const indices = scanned.map((row) => integer(row.getAttribute("aria-rowindex")));
       const valid = indices.filter((value) => value !== null);
+      const view = root.ownerDocument.defaultView;
+      const offset = root.getAttribute("aria-colcount") === "21" ? 2 : 1;
+      const c00Cells = (row) =>
+        row.querySelectorAll(`td[aria-colindex="${offset}"],[role="gridcell"][aria-colindex="${offset}"]`);
+      const intersectsViewport = (cell) => {
+        const box = cell.getBoundingClientRect();
+        const gridBox = root.getBoundingClientRect();
+        return (
+          box.width > 0 &&
+          box.height > 0 &&
+          box.right > Math.max(0, gridBox.left) &&
+          box.left < Math.min(view.innerWidth, gridBox.right) &&
+          box.bottom > Math.max(0, gridBox.top) &&
+          box.top < Math.min(view.innerHeight, gridBox.bottom)
+        );
+      };
+      const describe = (row, cell) => {
+        const display = view.getComputedStyle(row).display;
+        return {
+          rowIndex: integer(row.getAttribute("aria-rowindex")),
+          cellRowIndex: integer(cell.getAttribute("aria-rowindex")),
+          cellColumnIndex: integer(cell.getAttribute("aria-colindex")),
+          rowDisplay: ["contents", "none", "block", "table-row", "grid", "flex"].includes(display) ? display : "other",
+          rowBoxes: row.getClientRects().length,
+          rowVisible: row.checkVisibility({ checkVisibilityCSS: true }),
+          cellVisible: cell.checkVisibility({ checkVisibilityCSS: true }),
+          cellInViewport: intersectsViewport(cell)
+        };
+      };
+      const examples = [];
+      for (const row of scanned) {
+        if (examples.length === 3) break;
+        const cells = c00Cells(row);
+        if (cells.length === 1) examples.push(describe(row, cells[0]));
+      }
+      const tree = root.getRootNode();
+      const active = tree.activeElement;
+      let focusedTarget = root.contains(active) ? active : null;
+      const activeId = focusedTarget?.getAttribute("aria-activedescendant");
+      if (activeId !== undefined && activeId !== null) {
+        const declared = /^[^\s\p{Cc}]+$/u.test(activeId) ? tree.getElementById(activeId) : null;
+        focusedTarget = declared?.isConnected && root.contains(declared) ? declared : null;
+      }
+      const focusedRow = focusedTarget?.closest('tr,[role="row"]');
+      const focusedCell = focusedTarget?.closest("[aria-colindex]");
+      let focused = null;
+      if (focusedRow && scanned.includes(focusedRow)) {
+        const cells = c00Cells(focusedRow);
+        focused = {
+          rowIndex: integer(focusedRow.getAttribute("aria-rowindex")),
+          columnIndex: focusedRow.contains(focusedCell) ? integer(focusedCell.getAttribute("aria-colindex")) : null,
+          c00: null
+        };
+        if (
+          cells.length === 1 &&
+          cells[0].checkVisibility({ checkVisibilityCSS: true }) &&
+          intersectsViewport(cells[0])
+        ) {
+          const text = cells[0].innerText.trim();
+          const value = /^(?:0|[1-9]\d*|[1-9]\d{0,2}(?:,\d{3})+)$/.test(text) ? Number(text.replaceAll(",", "")) : null;
+          if (Number.isSafeInteger(value) && value >= 0 && value < sourceRows) focused.c00 = value;
+        }
+      }
       return {
         connected: root.isConnected,
         ariaRowcount: integer(root.getAttribute("aria-rowcount")),
         ariaColcount: integer(root.getAttribute("aria-colcount")),
         renderedRows: rows.length,
-        scannedRows: Math.min(rows.length, 100),
+        scannedRows: scanned.length,
         rowScanTruncated: rows.length > 100,
-        visibleRows: visible.length,
+        visibleRows: scanned.filter((row) => row.checkVisibility({ checkVisibilityCSS: true })).length,
         missingOrInvalidIndices: indices.length - valid.length,
         minimumObservedRowIndex: valid.length ? Math.min(...valid) : null,
-        maximumObservedRowIndex: valid.length ? Math.max(...valid) : null
+        maximumObservedRowIndex: valid.length ? Math.max(...valid) : null,
+        examples,
+        focused
       };
     };
     const gridMetadata = async (target, state) => {
-      state ??= { grid: await target.root.evaluate(gridRows), status: [], statusCounts: [], markers: {} };
+      state ??= { grid: await target.root.evaluate(gridRows, request.rows), status: [], statusCounts: [], markers: {} };
       // Each family's matched nodes are read together; changing labels never re-resolve an old index.
       const readMetadataMatches = (elements, { source, flags, limit = null }) => {
         const excluded =
@@ -665,9 +730,9 @@ exports.run = async function () {
       if (receipt.purpose === "public-grid-diagnostic") {
         sample.gridObservation = {
           firstSentinelObserved: null,
-          lastSentinelObserved: null,
+          laterRow: null,
           navigationAttempted: false,
-          rowRangeChanged: null
+          rowProgressObserved: null
         };
         const gridElement = target.root;
         assert(gridElement, "DIAGNOSTIC_GATE:missing-grid-element");
@@ -675,7 +740,7 @@ exports.run = async function () {
         try {
           const observedTarget = { frame: target.frame, root: gridElement };
           const initialMetadata = {
-            grid: await gridElement.evaluate(gridRows),
+            grid: await gridElement.evaluate(gridRows, request.rows),
             status: [],
             statusCounts: [],
             markers: {}
@@ -684,6 +749,11 @@ exports.run = async function () {
           assert(initialMetadata.grid.connected, "DIAGNOSTIC_GATE:captured-grid-detached");
           await gridMetadata(observedTarget, initialMetadata);
           await captureEntryState("gridInitial", initialMetadata);
+          assert(
+            initialMetadata.grid.minimumObservedRowIndex !== null &&
+              initialMetadata.grid.maximumObservedRowIndex !== null,
+            "DIAGNOSTIC_GATE:unusable-row-baseline"
+          );
           const sourceRetained = () =>
             !notebook.isClosed &&
             vscode.window.tabGroups.all.some((group) => group.tabs.includes(notebookTab)) &&
@@ -751,9 +821,14 @@ exports.run = async function () {
               "DIAGNOSTIC_GATE:product-owner-changed"
             );
             assert(focus.connected && focus.documentFocused && focus.gridFocused, "DIAGNOSTIC_GATE:product-grid-focus");
+            assert(performance.now() < gridDeadline, "DIAGNOSTIC_GATE:grid-deadline");
           };
           try {
-            first = await poll(() => rowCells(gridElement, 0, true), "diagnostic-first-c00");
+            first = await poll(
+              () => rowCells(gridElement, 0, true),
+              "diagnostic-first-c00",
+              gridDeadline - performance.now()
+            );
             sample.gridObservation.firstSentinelObserved = true;
           } catch (error) {
             sample.gridObservation.firstSentinelObserved = false;
@@ -761,7 +836,8 @@ exports.run = async function () {
             throw error;
           }
           checkpoint(`${sampleName}:diagnostic-navigation`);
-          let checkingLast = false;
+          let afterEnd;
+          let afterHome;
           try {
             assert(
               await first.first.evaluate(
@@ -774,47 +850,56 @@ exports.run = async function () {
               ),
               "DIAGNOSTIC_GATE:first-cell-changed"
             );
+            assert(performance.now() < gridDeadline, "DIAGNOSTIC_GATE:grid-deadline");
             await first.first.click();
+            initialMetadata.grid = await gridElement.evaluate(gridRows, request.rows);
+            await captureEntryState("gridInitial", initialMetadata);
+            assert(initialMetadata.grid.focused?.c00 === 0, "DIAGNOSTIC_GATE:focused-initial-c00");
+            const before = initialMetadata.grid;
             await verifyNavigationOwner();
             sample.gridObservation.navigationAttempted = true;
             await page.keyboard.press("Control+End");
-            const before = initialMetadata.grid;
-            await poll(async () => {
-              const after = await gridElement.evaluate(gridRows);
-              return (
-                after.connected &&
-                before.minimumObservedRowIndex !== null &&
-                before.maximumObservedRowIndex !== null &&
-                after.minimumObservedRowIndex !== null &&
-                after.maximumObservedRowIndex !== null &&
-                (after.minimumObservedRowIndex !== before.minimumObservedRowIndex ||
-                  after.maximumObservedRowIndex !== before.maximumObservedRowIndex)
+            try {
+              await poll(
+                async () => {
+                  afterEnd = await gridElement.evaluate(gridRows, request.rows);
+                  return (
+                    afterEnd.connected &&
+                    ((before.focused.rowIndex !== null && afterEnd.focused?.rowIndex > before.focused.rowIndex) ||
+                      (afterEnd.minimumObservedRowIndex !== null &&
+                        afterEnd.maximumObservedRowIndex !== null &&
+                        (afterEnd.minimumObservedRowIndex !== before.minimumObservedRowIndex ||
+                          afterEnd.maximumObservedRowIndex !== before.maximumObservedRowIndex)))
+                  );
+                },
+                "diagnostic-row-progress",
+                gridDeadline - performance.now()
               );
-            }, "diagnostic-row-range-progress");
-            sample.gridObservation.rowRangeChanged = true;
+              sample.gridObservation.rowProgressObserved = true;
+            } finally {
+              if (afterEnd) await captureEntryState("gridAfterEnd", { grid: afterEnd });
+            }
             await verifyNavigationOwner();
             await page.keyboard.press("Home");
-            checkingLast = true;
-            await poll(async () => {
-              const last = await rowCells(gridElement, request.rows - 1, true);
-              if (!last) return false;
-              await last.first.dispose();
-              return true;
-            }, "diagnostic-last-c00");
-            sample.gridObservation.lastSentinelObserved = true;
+            try {
+              await poll(
+                async () => {
+                  afterHome = await gridElement.evaluate(gridRows, request.rows);
+                  return afterHome.connected && afterHome.focused?.c00 > 0;
+                },
+                "diagnostic-later-c00",
+                gridDeadline - performance.now()
+              );
+              await verifyNavigationOwner();
+              sample.gridObservation.laterRow = afterHome.focused.c00;
+            } finally {
+              if (afterHome) await captureEntryState("gridAfterHome", { grid: afterHome });
+            }
           } catch (error) {
-            if (sample.gridObservation.navigationAttempted && sample.gridObservation.rowRangeChanged === null)
-              sample.gridObservation.rowRangeChanged = false;
-            if (checkingLast) sample.gridObservation.lastSentinelObserved = false;
+            if (sample.gridObservation.navigationAttempted && sample.gridObservation.rowProgressObserved === null)
+              sample.gridObservation.rowProgressObserved = false;
             save();
             throw error;
-          } finally {
-            try {
-              await captureEntryState("gridAfterNavigation", await gridMetadata(observedTarget));
-            } catch {
-              receipt.gridDiagnosticReadFailed = true;
-              save();
-            }
           }
           sample.metrics.observationsFromFirstInteractionMs = performance.now() - opened;
           throw new Error("GRID_DIAGNOSTIC:observations-complete; comparison not run");
