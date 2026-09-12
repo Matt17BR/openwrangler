@@ -162,6 +162,10 @@ exports.run = async function () {
           visibleMenus = page.locator(".context-view.monaco-menu-container:visible");
         state.menu.totalContainers = await menus.count();
         state.menu.visibleContainers = await visibleMenus.count();
+        assert(
+          state.picker.locatorCount <= 1 && state.menu.visibleContainers <= 1,
+          "DIAGNOSTIC:ambiguous-workbench-scope"
+        );
         state.menu.accessibleItems = await visibleMenus.getByRole("menuitem").count();
         state.menu.accessibleViewData = await visibleMenus
           .getByRole("menuitem", { name: "View data", exact: true })
@@ -182,6 +186,35 @@ exports.run = async function () {
             enabled: await overflow.isEnabled(),
             expanded: expanded === "true" ? true : expanded === "false" ? false : null
           });
+        }
+        // Only fixed accessible-name aggregates leave these retained workbench scopes.
+        for (const [kind, scope, roles, limit] of [
+          ["menu", visibleMenus, ["button", "link", "menuitem"], 32],
+          ["picker", picker, ["option"], 64]
+        ]) {
+          const candidates = roles.map((role) => scope.getByRole(role)).reduce((left, right) => left.or(right));
+          const count = await candidates.count();
+          assert(count <= limit, "DIAGNOSTIC:workbench-control-bound");
+          const names = { candidates: count, editingExact: 0, viewingExact: 0, editingMention: 0, viewingMention: 0 };
+          for (const [key, pattern] of [
+            ["editingExact", /^Editing$/i],
+            ["viewingExact", /^Viewing$/i],
+            ["editingMention", /\bEditing\b/i],
+            ["viewingMention", /\bViewing\b/i]
+          ]) {
+            names[key] = await roles
+              .map((role) => scope.getByRole(role, { name: pattern }))
+              .reduce((left, right) => left.or(right))
+              .count();
+            assert(names[key] <= count, "DIAGNOSTIC:incomplete-workbench-controls");
+          }
+          const complete = await candidates.evaluateAll((elements) => ({
+            count: elements.length,
+            connected: elements.every((element) => element.isConnected && element.ownerDocument === document)
+          }));
+          assert(complete.connected && complete.count === count, "DIAGNOSTIC:incomplete-workbench-controls");
+          assert((await scope.count()) <= 1, "DIAGNOSTIC:ambiguous-workbench-scope");
+          state[kind].modeNames = names;
         }
       }
       state.millisecondsFromFirstInteraction = opened === undefined ? null : performance.now() - opened;
@@ -1070,12 +1103,20 @@ exports.run = async function () {
         observation.mode.viewingObserved = !!viewing;
         if (viewing) observation.mode.viewingControl = await viewing.evaluate(controlFacts, "Viewing");
         if (viewing) {
+          await currentGrid();
+          await captureEntryState("beforeViewing");
+          await currentGrid();
           await act(viewing, "Viewing");
           let editing;
           try {
             editing = await poll(() => capture(namedControl("Editing"), "editing-option"), "editing-offer", 5000);
           } catch (error) {
             if (error?.message !== "PILOT_GATE:editing-offer") throw error;
+          }
+          if (!editing) {
+            await currentGrid();
+            await captureEntryState("unresolvedEditingOffer");
+            await currentGrid();
           }
           observation.mode.editingOffered = !!editing;
           if (editing) observation.mode.editingControl = await editing.evaluate(controlFacts, "Editing");
@@ -1407,12 +1448,15 @@ exports.run = async function () {
         "PILOT_GATE:product-frame-changed"
       ].includes(guard)
         ? "owner-loss"
-        : captureGuard?.[1] === "ambiguous" || guard === "PILOT_GATE:ambiguous-product-grid"
+        : captureGuard?.[1] === "ambiguous" ||
+            ["PILOT_GATE:ambiguous-product-grid", "DIAGNOSTIC:ambiguous-workbench-scope"].includes(guard)
           ? "ambiguous-control"
           : captureGuard?.[1] === "truncated" ||
               [
                 "PILOT_GATE:incomplete-frame-discovery",
                 "PILOT_GATE:incomplete-grid-discovery",
+                "DIAGNOSTIC:workbench-control-bound",
+                "DIAGNOSTIC:incomplete-workbench-controls",
                 "DIAGNOSTIC:observation-bound",
                 "DIAGNOSTIC:incomplete-absence",
                 "DIAGNOSTIC:incomplete-surface",
