@@ -1424,6 +1424,37 @@ export class OpenWranglerPanel {
         ? { ...requestOptions, viewContextId }
         : requestOptions;
       const response = correlateViewError(request, await this.bridge.request(request, bridgeOptions));
+      if (request.kind === "applyDraft" && response.kind === "error") {
+        try {
+          // Error codes are arbitrary protocol strings. Retain only known
+          // categories, before recovery or disposal can suppress publication.
+          const code = [
+            "engine_error",
+            "runtime_error",
+            "stale_request",
+            "stale_response",
+            "unknown_session",
+            "invalid_runtime_response",
+            "runtime_recovery_failed",
+            "persistence_unavailable",
+            "live_source_invalidated",
+            "r_kernel_changed"
+          ].includes(response.code)
+            ? response.code
+            : "other";
+          this.bridge.reportDiagnostic?.(
+            `Open Wrangler Apply returned an error: ${JSON.stringify({
+              code,
+              recoverable: response.recoverable,
+              requestedRevision:
+                Number.isSafeInteger(request.revision) && request.revision >= 0 ? request.revision : null,
+              responseSessionMatches: response.sessionId === undefined ? null : response.sessionId === request.sessionId
+            })}`
+          );
+        } catch {
+          // A diagnostic sink must not replace the returned refusal.
+        }
+      }
       if (
         request.kind === "openSession" &&
         openAttemptGeneration !== undefined &&

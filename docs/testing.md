@@ -425,7 +425,11 @@ For Python notebook changes, the `python-notebooks` profile runs the existing re
 against a supplied VSIX. It covers Pandas, Polars, DuckDB, kernel recovery, the Python editor action, and source-cell
 discovery. The profile has been verified in VS Code on Linux.
 The two Polars Formula Apply checks retain their original app identity and add bounded host and renderer state
-to timeout diagnostics, without recording cell values, code or alert text.
+to timeout diagnostics, without recording cell values, generated code or alert text.
+Returned Apply errors also write a bounded diagnostic to the Open Wrangler output channel: a known error code
+or `other`, recoverability, requested revision and response-session match. Existing allowlisted failure logs retain
+this diagnostic within their privacy and size limits. It records the returned response even when recovery or disposal
+suppresses publication; it does not establish the cause of the historical Polars Apply failure.
 
 ```bash
 OPEN_WRANGLER_PACKAGED_EDITORS=vscode \
