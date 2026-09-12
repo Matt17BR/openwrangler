@@ -8478,6 +8478,16 @@ too_many_levels <- factor(
   character(),
   levels = sprintf("level_%d", seq_len(openwrangler_r_frame_contract$limits$factorLevels + 1L))
 )
+maximum_levels <- levels(too_many_levels)[seq_len(100000L)]
+maximum_level_capture <- openwrangler_r_frame_contract$capture_frame(data.frame(
+  value = factor(character(), levels = maximum_levels)
+))
+assert_identical(
+  maximum_level_capture$descriptor$schema[[1L]]$semantics$levels,
+  I(maximum_levels),
+  "capture rejected or changed the maximum supported factor levels"
+)
+rm(maximum_level_capture, maximum_levels)
 assert_error(
   openwrangler_r_frame_contract$capture_frame(data.frame(value = too_many_levels)),
   "factor-levels-too-large"
