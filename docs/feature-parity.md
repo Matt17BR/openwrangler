@@ -232,8 +232,9 @@ complete result must fit one output type. Successful native results keep their t
 a zero divisor when both operands are present. Live execution and generated code agree, and refusals preserve source
 data and the confirmed plan.
 Column-to-column powers can widen eligible signed bases with signed or 8–32-bit unsigned exponents to Int64 when
-narrow Arrow storage would overflow. UInt64 exponents, negative exponents and results outside Int64 retain their
-existing limits and repairs.
+narrow Arrow storage would overflow. If that fails, nonnegative operand columns can produce a checked UInt64 result.
+Negative values anywhere in either selected column, including those paired with null, do not enter this additional
+repair. UInt64 exponents, negative exponents and remaining overflows retain their existing limits and repairs.
 
 Selected Arrow Decimal arithmetic can widen Decimal128 to Decimal256. Formula can add or subtract integer `0`, or
 multiply or divide by integer `1` or `-1`, on Decimal256 columns when native capacity inference refuses. This also

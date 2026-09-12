@@ -1105,6 +1105,7 @@ def test_arrow_integer_modulo_publishes_exports_and_retains_state_after_zero_ref
         "signed-odd-power",
         "signed-wide-odd-power",
         "signed-column-power",
+        "signed-column-power-uint64",
         "signed-unsigned-column-power",
         "uint64-negative-column-add",
         "uint64-negative-column-subtract",
@@ -1138,7 +1139,8 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
     wide_odd_power = family == "signed-wide-odd-power"
     odd_power = family in {"signed-odd-power", "signed-wide-odd-power"}
     unsigned_column_power = family == "signed-unsigned-column-power"
-    column_power = family == "signed-column-power" or unsigned_column_power
+    uint64_result_power = family == "signed-column-power-uint64"
+    column_power = family == "signed-column-power" or unsigned_column_power or uint64_result_power
     signed_power = family in {"signed-even-power", "signed-odd-power", "signed-wide-odd-power"} or column_power
     signed_subtract = family == "uint64-signed-subtract"
     signed_add = family == "signed-add"
@@ -1174,7 +1176,7 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
     if signed_power:
         series = pd.Series([0, -1 if wide_odd_power else 2 if odd_power else -3, None], dtype="int64[pyarrow]")
         if column_power:
-            series = pd.Series([-6, 5, None], dtype="int8[pyarrow]")
+            series = pd.Series([1, 2, None] if uint64_result_power else [-6, 5, None], dtype="int8[pyarrow]")
         if odd_power or column_power:
             assert isinstance(series.array, pd.arrays.ArrowExtensionArray)
             array = series.array.__arrow_array__()
@@ -1183,10 +1185,10 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
         series = pd.Series([2**63 - 1, -4, None], dtype="int64[pyarrow]")
     frame = pd.DataFrame({"value": series, "divisor": pd.Series([1, 0, None], dtype="int64[pyarrow]")})
     if column_power:
-        exponent = 7 if unsigned_column_power else 3
+        exponent = 63 if uint64_result_power else 7 if unsigned_column_power else 3
         exponent_dtype = "UInt8" if unsigned_column_power else "int8[pyarrow]"
         frame["divisor"] = pd.Series([exponent, exponent, None], dtype=exponent_dtype)
-        frame["unsafeAdjustment"] = pd.Series([exponent, 28, None], dtype=exponent_dtype)
+        frame["unsafeAdjustment"] = pd.Series([exponent, 64 if uint64_result_power else 28, None], dtype=exponent_dtype)
     if odd_power:
         frame["divisor"] = pd.Series([1, -2, None] if wide_odd_power else [2, -1, None], dtype="int64[pyarrow]")
     if negative_column:
@@ -1246,7 +1248,13 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
         if signed_add:
             unsigned_expected = [2**63 + 4, 1, None]
         elif column_power:
-            unsigned_expected = [-279936, 78125, None] if unsigned_column_power else [-216, 125, None]
+            unsigned_expected = (
+                [1, 2**63, None]
+                if uint64_result_power
+                else [-279936, 78125, None]
+                if unsigned_column_power
+                else [-216, 125, None]
+            )
         elif signed_power:
             unsigned_expected = [0, -1 if wide_odd_power else 2**63 if odd_power else 3**40, None]
         elif signed_subtract:
@@ -1275,7 +1283,11 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
             name="result",
             dtype=(
                 "int64[pyarrow]"
-                if column_power or wide_odd_power or signed_subtract or family == "uint64-negative-multiply"
+                if column_power
+                and not uint64_result_power
+                or wide_odd_power
+                or signed_subtract
+                or family == "uint64-negative-multiply"
                 else "uint64[pyarrow]"
             )
             if unsigned or signed_power or signed_add
