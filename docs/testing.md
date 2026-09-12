@@ -222,6 +222,8 @@ including source and metadata preservation. Numeric portability uses independent
 comparisons through interpreted and compiled programs. Frame, kernel, decoder and process owners separately check
 primitive values, public mutations and correlated transport. Frame capture checks the factor-level count limit;
 kernel mutation checks use fewer, longer levels to exercise the full response byte limit.
+Edits confined to `r/tests/kernel_agent.R` and `r/tests/frame_contract.R`, with permitted Markdown, may omit the hosted
+macOS and Windows editor steps. Source, package and harness checks remain required; see the exact [CI scope](ci.md#pull-requests).
 Linux interactive transport controls use a real PTY;
 portable parser controls retain one-expression and physical-line byte bounds. Operation semantics and arithmetic policy belong in
 [the native R architecture contract](architecture.md#native-r); do not repeat the catalog in installed UI journeys.

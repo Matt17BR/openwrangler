@@ -18,12 +18,16 @@ on:
         description: Acceptance lane to run
         required: true
         type: string
+      omit_editor:
+        description: Omit platform editor journeys for proven R source-test edits
+        type: boolean
+        default: false
     outputs:
       macos_result:
-        description: Result of the macOS installed R job
+        description: Result of macOS R source, package and selected editor checks
         value: ${{ jobs.macos-r.result }}
       windows_result:
-        description: Result of the Windows installed R job
+        description: Result of Windows R source, package and selected editor checks
         value: ${{ jobs.windows-r.result }}
 
 permissions:
@@ -241,7 +245,7 @@ jobs:
         run: exit 1
 
   macos-r:
-    name: Released R Jupyter in macOS VS Code
+    name: R checks on macOS
     if: ${{ inputs.target == 'macos-r' }}
     runs-on: macos-latest
     timeout-minutes: 45
@@ -352,6 +356,7 @@ jobs:
       - run: npm run build:test-extension
       - id: packaged_editor_r
         name: Test local R Jupyter in packaged VS Code
+        if: ${{ !inputs.omit_editor }}
         run: node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
         env:
           OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
@@ -360,6 +365,10 @@ jobs:
           OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"
           OPEN_WRANGLER_TEST_RSCRIPT: ${{ steps.rscript.outputs.executable }}
           VSCODE_TEST_VERSION: stable
+      - name: Record omitted R editor journey
+        if: ${{ inputs.omit_editor }}
+        shell: bash
+        run: echo 'Installed R editor journey omitted for proven source-test edits. Source and package checks ran; no fresh editor execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
       - name: Upload macOS R-Jupyter failure diagnostics
         if: ${{ always() && steps.packaged_editor_r.outcome == 'failure' && steps.packaged_editor_r.outputs.evidence_ready == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -372,7 +381,7 @@ jobs:
           include-hidden-files: false
 
   windows-r:
-    name: Released R Jupyter in Windows VS Code
+    name: R checks on Windows
     if: ${{ inputs.target == 'windows-r' }}
     runs-on: windows-latest
     timeout-minutes: 45
@@ -413,6 +422,7 @@ jobs:
       - run: npm run build:test-extension
       - id: packaged_editor_r
         name: Test local R Jupyter in packaged VS Code
+        if: ${{ !inputs.omit_editor }}
         run: node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
         env:
           OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
@@ -421,6 +431,10 @@ jobs:
           OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"
           OPEN_WRANGLER_TEST_RSCRIPT: ${{ steps.rscript.outputs.executable }}
           VSCODE_TEST_VERSION: stable
+      - name: Record omitted R editor journey
+        if: ${{ inputs.omit_editor }}
+        shell: bash
+        run: echo 'Installed R editor journey omitted for proven source-test edits. Source and package checks ran; no fresh editor execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
       - name: Upload Windows R-Jupyter failure diagnostics
         if: ${{ always() && steps.packaged_editor_r.outcome == 'failure' && steps.packaged_editor_r.outputs.evidence_ready == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

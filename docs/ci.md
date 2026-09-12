@@ -11,7 +11,8 @@ Every pull request reports the same five required product checks:
 - **Python runtime contracts** runs Ruff, Pyright, and Pytest with the declared Python and PySpark dependencies.
 - **Native R frame, kernel, and transport contracts** installs the R 4.5 lock on two Linux workers: one runs frame,
   catalog and transport checks, and the other runs the kernel-agent checks. It also requires the existing macOS and Windows
-  installed R notebook journeys unless the change is proved independent of R.
+  source and package jobs unless the change is proved independent of R. Their installed notebook journeys follow the
+  narrower source-test omission below.
 - **Packaged VS Code smoke** builds and verifies one VSIX, then opens those exact bytes with the `platform-smoke` /
   `daily-core` selector in the declared minimum VS Code 1.106.0 and current stable VS Code, subject to the
   documentation-only launch omission below.
@@ -57,6 +58,10 @@ The scope-only job uses Node and Git without installing npm dependencies or rest
   and other scripts are outside this permission.
 - R source and installed-editor execution may be omitted for additions or edits to `.py` files under
   `python/openwrangler_runtime/` or `python/tests/`, and edits to existing `README.md`, `CHANGELOG.md` or `docs/**/*.md`.
+- Only the macOS and Windows editor steps may be omitted when at least one of the existing
+  `r/tests/kernel_agent.R` or `r/tests/frame_contract.R` files is modified, optionally with the allowed Markdown edits.
+  Both Linux shards and platform source, artifact-cleanup, package and harness checks remain required. Additions,
+  deletions, renames, mode changes and any other edited file require editor execution.
 - Python, R and Windows execution may be omitted for edits to existing top-level `src/test/*.component.test.tsx`
   files, optionally with the allowed Markdown edits. Source still runs these component tests; the native and installed
   harnesses do not consume them. Component additions, nested tests, unit/cross tests and shared fixtures are outside
@@ -97,6 +102,12 @@ and a skipped worker; otherwise both flags must be valid and its execution must 
 and their selected platform job results. A proved R omission requires the source matrix and both installed workflow
 calls to be skipped, with empty reusable outputs. Otherwise every result must succeed; missing, canceled or skipped selected jobs
 cannot satisfy the check, even if a misconfigured workflow call otherwise reports success.
+
+The separate `r_editor_omittable` result leaves both platform jobs running. Its Boolean workflow input defaults to false;
+manual dispatch retains editor execution. An omitted editor step reports no fresh editor result. These two R test files
+are excluded from the VSIX and installed harness, but the platform numeric-portability case loads `kernel_agent.R`,
+so its source execution remains required. This omission can delay discovery of unrelated Jupyter or hosted-environment
+failures; source and package checks do not replace the editor journey.
 
 The installed jobs reuse `released-jupyter.yml` at the same commit as the caller. Manual dispatch remains available for
 diagnosis; there is no second pull-request trigger. Their preparation, dependencies and artifact safeguards have one
