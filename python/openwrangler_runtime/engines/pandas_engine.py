@@ -1231,8 +1231,14 @@ class PandasEngine(DataFrameEngine):
             raise EngineError(f"Unknown Pandas column: {column}")
         series = df.iloc[:, position]
         column_type = _pandas_semantic_type(series)
+        arrow_duration_categories = (
+            isinstance(series.dtype, pd.CategoricalDtype)
+            and isinstance(series.cat.categories.dtype, pd.ArrowDtype)
+            and series.cat.categories.dtype.kind == "m"
+        )
         search_counted_labels = (
-            (_pandas_dictionary_value_type(series) is not None and column_type == "string")
+            arrow_duration_categories
+            or (_pandas_dictionary_value_type(series) is not None and column_type == "string")
             or (isinstance(series.dtype, np.dtype) and series.dtype.kind == "m")
             or (
                 isinstance(series.dtype, pd.CategoricalDtype)
@@ -1292,10 +1298,20 @@ class PandasEngine(DataFrameEngine):
         )
         if search and search_counted_labels:
             needle = str(search).translate(_ASCII_TO_LOWER)
+            raw_labels = None
+            if arrow_duration_categories:
+                observed = np.flatnonzero(value_counts.to_numpy() > 0)
+                native = value_counts.index.categories.take(value_counts.index.codes[observed])
+                raw_labels = {
+                    int(position): raw
+                    for position, raw in zip(observed, native.astype(str), strict=True)
+                    if isinstance(raw, str)
+                }
             counts = (
                 (value, count, label, position)
                 for value, count, label, position in counts
                 if needle in label.translate(_ASCII_TO_LOWER)
+                or (raw_labels is not None and needle in raw_labels.get(position, "").translate(_ASCII_TO_LOWER))
             )
         counts = nsmallest(limit + 1, counts, key=lambda item: (-int(item[1]), item[2]))
         values = []

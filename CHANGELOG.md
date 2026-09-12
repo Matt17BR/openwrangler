@@ -9,7 +9,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 - Pandas Formula widens eligible signed integer additions instead of rejecting sums that fit Int64 or UInt64.
 - Pandas temporal categories preserve exact values, missing counts and directional Fill anchors. Duration choices
   select the correct stored rows in live and generated filters without narrowing other categories.
-- Pandas native duration categories search displayed labels with correct counts and exclude nonmatching categories.
+- Pandas native and Arrow-backed duration categories search displayed labels with correct counts and exclude nonmatching categories.
 - Pandas profiles and value choices preserve built-in Python timedelta labels so displayed values can be searched.
 
 ## [2.4.0] - 2026-09-12
