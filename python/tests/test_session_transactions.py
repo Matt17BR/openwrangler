@@ -1118,6 +1118,8 @@ def test_arrow_integer_modulo_publishes_exports_and_retains_state_after_zero_ref
         "decimal-negate-divide",
         "decimal-identity-multiply",
         "decimal-identity-divide",
+        "decimal-zero-add",
+        "decimal-zero-subtract",
     ],
 )
 def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_state(
@@ -1131,8 +1133,8 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
     pa = pytest.importorskip("pyarrow")
     pq = pytest.importorskip("pyarrow.parquet")
     unsigned = family.startswith("uint64")
-    decimal_unit = family.startswith(("decimal-negate-", "decimal-identity-"))
-    unit_literal = 1 if family.startswith("decimal-identity-") else -1
+    decimal_unit = family.startswith(("decimal-negate-", "decimal-identity-", "decimal-zero-"))
+    unit_literal = 0 if family.startswith("decimal-zero-") else 1 if family.startswith("decimal-identity-") else -1
     wide_odd_power = family == "signed-wide-odd-power"
     odd_power = family in {"signed-odd-power", "signed-wide-odd-power"}
     unsigned_column_power = family == "signed-unsigned-column-power"
@@ -1282,7 +1284,7 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
         if decimal_unit:
             negative = Decimal("-0." + "9" * 76) if family.endswith("multiply") else Decimal("-" + "9" * 76)
             expected = pd.Series(
-                [Decimal("0"), negative.copy_abs() if unit_literal == 1 else negative, None],
+                [Decimal("0"), negative.copy_abs() if unit_literal != -1 else negative, None],
                 index=frame.index,
                 name="result",
                 dtype=series.dtype,
@@ -1428,8 +1430,11 @@ def test_arrow_formula_capacity_publishes_replays_exports_and_preserves_failed_s
         manager.close_all()
 
 
+@pytest.mark.parametrize("operator,literal", [("divide", 3), ("add", 0), ("multiply", -1)])
 def test_arrow_formula_negative_scale_preserves_session_and_generated_result(
     monkeypatch: pytest.MonkeyPatch,
+    operator: str,
+    literal: int,
 ) -> None:
     import json
     from decimal import Decimal
@@ -1437,9 +1442,11 @@ def test_arrow_formula_negative_scale_preserves_session_and_generated_result(
     import pandas as pd
 
     pa = pytest.importorskip("pyarrow")
+    exact_scalar = literal in {0, -1}
+    source_type = pa.decimal256(76, -1) if exact_scalar else pa.decimal128(8, -2)
     frame = pd.DataFrame(
         {
-            "value": pd.Series([Decimal("1200"), Decimal("-2500"), None], dtype=pd.ArrowDtype(pa.decimal128(8, -2))),
+            "value": pd.Series([Decimal("1200"), Decimal("-2500"), None], dtype=pd.ArrowDtype(source_type)),
             "divisor": pd.Series([1, 0, None], dtype="int64[pyarrow]"),
         }
     )
@@ -1448,10 +1455,14 @@ def test_arrow_formula_negative_scale_preserves_session_and_generated_result(
     original = frame.copy(deep=True)
     source_array = frame["value"].array
     expected = pd.Series(
-        [Decimal("400.00000000000000000000"), Decimal("-833.33333333333333333333"), None],
+        [Decimal("-1200"), Decimal("2500"), None]
+        if literal == -1
+        else [Decimal("1200"), Decimal("-2500"), None]
+        if exact_scalar
+        else [Decimal("400.00000000000000000000"), Decimal("-833.33333333333333333333"), None],
         index=frame.index,
         name="result",
-        dtype=pd.ArrowDtype(pa.decimal256(30, 20)),
+        dtype=pd.ArrowDtype(source_type if exact_scalar else pa.decimal256(30, 20)),
     )
     monkeypatch.setattr(session_runtime, "resolve_notebook_variable", lambda _: frame)
     manager = SessionManager()
@@ -1466,8 +1477,8 @@ def test_arrow_formula_negative_scale_preserves_session_and_generated_result(
             "kind": "formula",
             "params": {
                 "leftColumn": {"id": columns[0]["id"], "name": columns[0]["name"]},
-                "operator": "divide",
-                "value": 3,
+                "operator": operator,
+                "value": literal,
                 "newColumn": "result",
             },
         }
@@ -1493,7 +1504,10 @@ def test_arrow_formula_negative_scale_preserves_session_and_generated_result(
                 "newColumn": "invalid",
             },
         }
-        with pytest.raises(pa.ArrowInvalid, match="(?i)divide by zero"):
+        # The widest negative scale still refuses a nonidentity that requires an oversized scale-zero intermediate.
+        with pytest.raises(
+            TypeError if exact_scalar else pa.ArrowInvalid, match="truediv" if exact_scalar else "(?i)divide by zero"
+        ):
             manager.preview_step(session_id, session.revision, invalid, 0, 1)
         assert session_state(session) == before
         correction = {**operation, "id": "correction", "params": {**operation["params"], "newColumn": "corrected"}}

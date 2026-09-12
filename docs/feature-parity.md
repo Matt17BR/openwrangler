@@ -235,9 +235,11 @@ Column-to-column powers can widen eligible signed bases with signed or 8–32-bi
 narrow Arrow storage would overflow. UInt64 exponents, negative exponents and results outside Int64 retain their
 existing limits and repairs.
 
-Selected Arrow Decimal arithmetic can widen Decimal128 to Decimal256. If native capacity inference rejects Decimal256
-multiplication or division by the integer literals `1` or `-1`, Formula preserves or negates the values without changing the declared precision
-and scale. Negative-scale Decimal addition, subtraction, multiplication and division also work with another Arrow
+Selected Arrow Decimal arithmetic can widen Decimal128 to Decimal256. Formula can add or subtract integer `0`, or
+multiply or divide by integer `1` or `-1`, on Decimal256 columns when native capacity inference refuses. This also
+handles native type refusals when a negative-scale column's declared capacity exceeds the existing rescaling limit.
+These exact scalar repairs preserve or negate the values without changing the declared precision and scale.
+Other negative-scale Decimal addition, subtraction, multiplication and division work with another Arrow
 Decimal column, a NumPy, built-in Pandas nullable or Arrow integer column of at most 64 bits, or an exact integer literal,
 when the declared capacity fits Decimal256. Sparse, object and custom extension companions are excluded from this
 additional support. These Decimal repairs preserve nulls; native arithmetic determines the result scale and division
