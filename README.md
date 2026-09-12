@@ -81,13 +81,30 @@ records. For published availability, see the
 
 ## View, edit, and export
 
-| User action                      | File sessions                                                               | Notebook and interactive sessions                                                                                                    |
-| -------------------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| Open and view                    | CSV, TSV, Parquet, JSONL/NDJSON, and Excel, subject to native reader limits | Pandas, Polars, DuckDB relations, local PySpark batch dataframes, and R frames                                                       |
-| Filter, sort, profile, and copy  | Available                                                                   | Available                                                                                                                            |
-| Preview and apply cleaning steps | Pandas and Polars; experimental DuckDB file editing                         | Pandas and Polars; selected R workflows. DuckDB relations and PySpark remain view-only                                               |
-| Copy, save, or insert code       | Copy or save generated Python code                                          | Sessions supporting cleaning: copy or save generated Python or R code; insert only into the originating notebook or managed document |
-| Export cleaned data              | Write CSV or Parquet to a separate destination                              | Available from supported editing sessions; view-only sessions cannot export                                                          |
+Viewing includes filters, sorts, profiles and copy within each engine's limits. Pandas and Polars are the primary
+stable-release scope; the experimental and Preview capabilities below have additional feature and testing limits.
+
+| Dataframe or source                       | View    | Cleaning and generated code         | Data export                |
+| ----------------------------------------- | ------- | ----------------------------------- | -------------------------- |
+| Pandas files and live dataframes          | Yes     | Pandas Python                       | CSV / Parquet              |
+| Polars files and live dataframes          | Yes     | Polars Python                       | CSV / Parquet              |
+| DuckDB files — experimental               | Yes     | Supported operations, DuckDB Python | CSV / Parquet              |
+| DuckDB notebook relations                 | Yes     | Unavailable                         | Unavailable                |
+| Local PySpark Classic / Connect notebooks | Bounded | Unavailable                         | Unavailable                |
+| R base `data.frame` — Preview             | Yes     | Supported operations, native R      | CSV / Parquet, with limits |
+| R ordinary tibble — Preview               | Yes     | Supported operations, native R      | CSV / Parquet, with limits |
+| R ordinary `data.table` — Preview         | Yes     | Supported operations, native R      | CSV / Parquet, with limits |
+
+**Native R remains Preview even in stable extension releases.** Default `collapse::qDF()`, `qTBL()` and `qDT()` outputs
+use the three R frame paths above. Grouped or rowwise tibbles, collapse `GRP_df` / `indexed_frame` objects, and unsupported
+classes or attributes are refused. Input support does not imply support for every operation in those packages:
+generated R uses one native dialect with class-specific operations, rather than selectable dplyr or collapse dialects.
+See the [native R support and limits](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#native-r-preview).
+
+Cleaning sessions can copy or save generated code. Insertion targets only the originating notebook or managed document;
+active R terminals have no document for insertion. Data export writes to a separate destination. The
+[support details](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md) describe available
+operations, remaining implementation limits and the evidence for each workflow.
 
 The [generated reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md) lists every command,
 setting, operation, and supported parameter in the current source.
@@ -118,11 +135,10 @@ static output. The
 [architecture notes](https://github.com/Matt17BR/openwrangler/blob/main/docs/architecture.md#notebook-kernel-terminal-and-document-provenance)
 describe runtime reuse and temporary-directory requirements.
 
-R workflows open `data.frame`, tibble, and `data.table` values. IRkernel works in VS Code on Linux, macOS,
-and Windows, and in Cursor on Linux. Selected R terminal workflows are available on Linux. Direct `.R`, `.Rmd`, and
+For R, IRkernel works in VS Code on Linux, macOS and Windows, and in Cursor on Linux. Selected R terminal workflows are available on Linux. Direct `.R`, `.Rmd`, and
 `.qmd` execution is available on macOS and Linux, not Windows; R Markdown and Quarto run selected code chunks rather
 than rendering the document. Install `jsonlite` and `rlang` in the owning R environment. Parquet export also requires
-`nanoparquet` 0.5.1 or newer. These workflows remain partial.
+`nanoparquet` 0.5.1 or newer.
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/main/docs/images/readme/gallery/notebook-r-editing.png"><img alt="An R notebook dataframe with a Group and aggregate draft, changed values, Apply and Discard actions, and generated R" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/gallery/notebook-r-editing.png" width="960"></a>
 
