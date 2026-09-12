@@ -26,10 +26,6 @@ const MAX_SEALED_ENTRIES = 2_048;
 const MAX_SEALED_SOURCE_BYTES = 32 * 1024 * 1024;
 const MAX_SEALED_ARTIFACT_BYTES = 40 * 1024 * 1024;
 const OMITTED_SENSITIVE_SOURCE = "<sealed-source-omitted-sensitive-content>";
-const defaultArtifactOperations = Object.freeze({
-  afterWrite() {},
-  closeDescriptor: closeSync
-});
 
 export function createEditorAcceptanceArtifactParent(base) {
   const resolvedBase = resolve(base);
@@ -148,15 +144,7 @@ export function captureEditorAcceptanceEvidenceReceipt({ evidenceRoot, target })
   });
 }
 
-export function sealEditorAcceptanceEvidence(options) {
-  return sealEditorAcceptanceEvidenceWithOperations(options, defaultArtifactOperations);
-}
-
-export function sealEditorAcceptanceEvidenceForTest(options, operations) {
-  return sealEditorAcceptanceEvidenceWithOperations(options, validateArtifactOperations(operations));
-}
-
-function sealEditorAcceptanceEvidenceWithOperations({ evidenceRoot, artifactParent, receipts }, operations) {
+export function sealEditorAcceptanceEvidence({ evidenceRoot, artifactParent, receipts }) {
   const root = resolve(evidenceRoot);
   validateArtifactParentReceipt(artifactParent);
   assertArtifactParentReceipt(artifactParent);
@@ -213,7 +201,7 @@ function sealEditorAcceptanceEvidenceWithOperations({ evidenceRoot, artifactPare
   }
   const artifactPath = resolve(parent, `a-${randomUUID()}.json`);
   requireContainedPath(parent, artifactPath, "sealed evidence artifact");
-  const receipt = writeExclusiveArtifact(artifactPath, serialized, parentReceipt, operations);
+  const receipt = writeExclusiveArtifact(artifactPath, serialized, parentReceipt);
   assertSealedEditorAcceptanceArtifact(receipt);
   return receipt;
 }
@@ -365,7 +353,7 @@ function readReceiptFile(path, expected) {
   }
 }
 
-function writeExclusiveArtifact(path, contents, parentReceipt, operations) {
+function writeExclusiveArtifact(path, contents, parentReceipt) {
   let descriptor;
   let opened;
   let failure;
@@ -391,7 +379,6 @@ function writeExclusiveArtifact(path, contents, parentReceipt, operations) {
     if (!sameFileIdentity(opened, completed) || completed.nlink !== 1n) {
       throw new Error("The sealed evidence artifact changed while it was written.");
     }
-    operations.afterWrite();
     assertArtifactParentReceipt(parentReceipt);
     const finalMetadata = lstatSync(path, { bigint: true });
     if (!sameEvidenceSnapshot(evidenceSnapshot(completed), evidenceSnapshot(finalMetadata))) {
@@ -410,7 +397,7 @@ function writeExclusiveArtifact(path, contents, parentReceipt, operations) {
   }
   if (descriptor !== undefined) {
     try {
-      operations.closeDescriptor(descriptor);
+      closeSync(descriptor);
     } catch (error) {
       if (!failure) failure = error;
       else cleanupFailures.push(error);
@@ -419,7 +406,7 @@ function writeExclusiveArtifact(path, contents, parentReceipt, operations) {
         contentsScrubbed ||= scrubbedAfterCloseError;
         if (scrubbedAfterCloseError) {
           try {
-            operations.closeDescriptor(descriptor);
+            closeSync(descriptor);
           } catch (retryError) {
             cleanupFailures.push(retryError);
             try {
@@ -555,20 +542,6 @@ function removeOwnedArtifactPath(path, opened, parentReceipt, { requireSinglyLin
   }
   assertArtifactParentReceipt(parentReceipt);
   rmSync(path, { force: true });
-}
-
-function validateArtifactOperations(operations) {
-  if (!operations || typeof operations !== "object") {
-    throw new Error("Artifact test operations are required.");
-  }
-  const resolved = {
-    afterWrite: operations.afterWrite ?? defaultArtifactOperations.afterWrite,
-    closeDescriptor: operations.closeDescriptor ?? defaultArtifactOperations.closeDescriptor
-  };
-  if (typeof resolved.afterWrite !== "function" || typeof resolved.closeDescriptor !== "function") {
-    throw new Error("Artifact test operations must be functions.");
-  }
-  return Object.freeze(resolved);
 }
 
 function validateSealedArtifactReceipt(receipt) {
