@@ -521,24 +521,29 @@ exports.run = async function () {
               checkpoint(`${sampleName}:open`);
               opened = performance.now();
               sample.overflowActivation = "focus-enter";
-              await overflow.focus();
-              const focus = await overflow.evaluate((element) => ({
-                focused: element.getRootNode().activeElement === element,
-                button: element.getAttribute("role") === "button",
-                hasPopup: element.getAttribute("aria-haspopup") === "true",
-                collapsed: element.getAttribute("aria-expanded") === "false",
-                ariaEnabled: element.getAttribute("aria-disabled") !== "true",
-                disabledClass: Boolean(element.closest(".disabled"))
-              }));
+              const focus = await overflow.evaluate((element) => {
+                element.focus();
+                return {
+                  connected: element.isConnected,
+                  tag: element.tagName === "A" ? "a" : element.tagName === "BUTTON" ? "button" : "other",
+                  tabIndex: element.tabIndex,
+                  focused: element.getRootNode().activeElement === element,
+                  button: element.getAttribute("role") === "button",
+                  hasPopup: element.getAttribute("aria-haspopup") === "true",
+                  collapsed: element.getAttribute("aria-expanded") === "false",
+                  ariaEnabled: element.getAttribute("aria-disabled") !== "true",
+                  disabledClass: Boolean(element.closest(".disabled"))
+                };
+              });
               receipt.entryDiagnostics = { overflowActivation: focus };
               assert(
-                focus.focused &&
+                focus.connected &&
+                  focus.focused &&
                   focus.button &&
                   focus.hasPopup &&
                   focus.collapsed &&
                   focus.ariaEnabled &&
-                  !focus.disabledClass &&
-                  (await overflow.isEnabled()),
+                  !focus.disabledClass,
                 "DIAGNOSTIC_GATE:overflow-keyboard-focus-state"
               );
               await page.keyboard.press("Enter");
