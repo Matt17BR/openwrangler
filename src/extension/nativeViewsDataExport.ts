@@ -37,10 +37,6 @@ async function exportSessionData(
   const initial = pinnedExportSnapshot(coordinator, pin);
   if (!initial) return false;
   const backend = initial.metadata.backend;
-  if (initial.metadata.draftStep) {
-    void vscode.window.showWarningMessage("Apply or discard the draft step before exporting cleaned data.");
-    return false;
-  }
   const choices = [
     initial.metadata.capabilities.exportCsv
       ? {
@@ -67,40 +63,23 @@ async function exportSessionData(
     void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
     return false;
   }
-  if (!(await requireTrustedWorkspace("export cleaned data")) || !pinnedExportSnapshot(coordinator, pin)) return false;
+  if (!(await requireTrustedWorkspace("export cleaned data")) || !pinnedExportSnapshot(coordinator, pin, backend))
+    return false;
   const selected = await vscode.window.showQuickPick(choices, {
     title: "Export Cleaned Data",
     placeHolder: "Choose a file format"
   });
   if (!selected) return false;
-  const confirmedBeforePolicy = pinnedExportSnapshot(coordinator, pin);
-  if (!confirmedBeforePolicy || confirmedBeforePolicy.metadata.draftStep) {
-    if (confirmedBeforePolicy?.metadata.draftStep) {
-      void vscode.window.showWarningMessage("Apply or discard the draft step before exporting cleaned data.");
-    }
-    return false;
-  }
-  if (!hasSameExportBackend(confirmedBeforePolicy, backend)) return false;
+  const confirmedBeforePolicy = pinnedExportSnapshot(coordinator, pin, backend);
+  if (!confirmedBeforePolicy) return false;
   const rowAxisPolicy = await selectPandasRowAxisExportPolicy(confirmedBeforePolicy);
   if (confirmedBeforePolicy.metadata.backend === "pandas" && rowAxisPolicy === undefined) return false;
-  const confirmedBeforeOptions = pinnedExportSnapshot(coordinator, pin);
-  if (!confirmedBeforeOptions || confirmedBeforeOptions.metadata.draftStep) {
-    if (confirmedBeforeOptions?.metadata.draftStep) {
-      void vscode.window.showWarningMessage("Apply or discard the draft step before exporting cleaned data.");
-    }
-    return false;
-  }
-  if (!hasSameExportBackend(confirmedBeforeOptions, backend)) return false;
+  const confirmedBeforeOptions = pinnedExportSnapshot(coordinator, pin, backend);
+  if (!confirmedBeforeOptions) return false;
   const exportOptions = await selectNativeExportOptions(confirmedBeforeOptions, selected.format, rowAxisPolicy);
   if (!exportOptions) return false;
-  const confirmedBeforeSave = pinnedExportSnapshot(coordinator, pin);
-  if (!confirmedBeforeSave || confirmedBeforeSave.metadata.draftStep) {
-    if (confirmedBeforeSave?.metadata.draftStep) {
-      void vscode.window.showWarningMessage("Apply or discard the draft step before exporting cleaned data.");
-    }
-    return false;
-  }
-  if (!hasSameExportBackend(confirmedBeforeSave, backend)) return false;
+  const confirmedBeforeSave = pinnedExportSnapshot(coordinator, pin, backend);
+  if (!confirmedBeforeSave) return false;
   const stillSupported =
     selected.format === "csv"
       ? confirmedBeforeSave.metadata.capabilities.exportCsv
@@ -122,13 +101,8 @@ async function exportSessionData(
     return false;
   }
   if (!(await requireTrustedWorkspace("export cleaned data"))) return false;
-  const confirmedBeforeDispatch = pinnedExportSnapshot(coordinator, pin);
-  if (!confirmedBeforeDispatch || confirmedBeforeDispatch.metadata.draftStep) {
-    if (confirmedBeforeDispatch?.metadata.draftStep) {
-      void vscode.window.showWarningMessage("Apply or discard the draft step before exporting cleaned data.");
-    }
-    return false;
-  }
+  const confirmedBeforeDispatch = pinnedExportSnapshot(coordinator, pin, backend);
+  if (!confirmedBeforeDispatch) return false;
   const dispatchSupported =
     selected.format === "csv"
       ? confirmedBeforeDispatch.metadata.capabilities.exportCsv
@@ -137,11 +111,7 @@ async function exportSessionData(
     void vscode.window.showWarningMessage("The selected export format is no longer available for this dataframe.");
     return false;
   }
-  if (
-    !hasSameExportBackend(confirmedBeforeDispatch, backend) ||
-    confirmedBeforeDispatch.sourceProtection !== initial.sourceProtection
-  )
-    return false;
+  if (confirmedBeforeDispatch.sourceProtection !== initial.sourceProtection) return false;
   try {
     const exported = await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: "Exporting cleaned data…", cancellable: false },
@@ -155,17 +125,6 @@ async function exportSessionData(
     void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
     return false;
   }
-}
-
-function hasSameExportBackend(
-  snapshot: ActiveSessionSnapshot,
-  backend: ActiveSessionSnapshot["metadata"]["backend"]
-): boolean {
-  if (snapshot.metadata.backend === backend) return true;
-  void vscode.window.showWarningMessage(
-    "The dataframe backend changed while export was open. Review the current data and try again."
-  );
-  return false;
 }
 
 async function selectPandasRowAxisExportPolicy(
@@ -205,7 +164,8 @@ async function selectPandasRowAxisExportPolicy(
 
 function pinnedExportSnapshot(
   coordinator: SessionCoordinator,
-  pin: SessionExportPin
+  pin: SessionExportPin,
+  expectedBackend?: ActiveSessionSnapshot["metadata"]["backend"]
 ): ActiveSessionSnapshot | undefined {
   const snapshot = coordinator.sessionSnapshot(pin.sessionId);
   if (!snapshot) {
@@ -215,6 +175,16 @@ function pinnedExportSnapshot(
   if (snapshot.metadata.revision !== pin.revision) {
     void vscode.window.showWarningMessage(
       "The dataframe changed while export was open. Review the current data and try again."
+    );
+    return undefined;
+  }
+  if (snapshot.metadata.draftStep) {
+    void vscode.window.showWarningMessage("Apply or discard the draft step before exporting cleaned data.");
+    return undefined;
+  }
+  if (expectedBackend !== undefined && snapshot.metadata.backend !== expectedBackend) {
+    void vscode.window.showWarningMessage(
+      "The dataframe backend changed while export was open. Review the current data and try again."
     );
     return undefined;
   }
