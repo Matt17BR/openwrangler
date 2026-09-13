@@ -257,9 +257,10 @@ Extended NumPy floating values that would lose precision or range at the display
 refused with an explicit conversion message. Representable values remain supported; exact native CSV export and
 explicit conversion operations keep their existing behavior.
 
-Polars Decimal and temporal filters preserve comparison boundaries between stored values, including full-width
-Decimal extrema. Pandas native timestamp and duration value selections do not match rounded neighbors at coarser
-storage precision. Live viewing and generated Filter Rows agree.
+Polars equality and selected-value filters accept labels absent from an Enum's categories while preserving its type
+and declared ordering. Polars Decimal and temporal filters preserve comparison boundaries between stored values,
+including full-width Decimal extrema. Pandas native timestamp and duration value selections do not match rounded
+neighbors at coarser storage precision. Live viewing and generated Filter Rows agree.
 
 Pandas timestamps preserve nanosecond fractions and time-zone offsets that include seconds, such as historical
 Berlin offsets. Grid cells, nested values, profiles and value choices use valid datetime text. Searches recognize

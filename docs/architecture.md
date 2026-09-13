@@ -403,6 +403,10 @@ precision before integer construction. Membership omits operands that cannot equ
 datetime and duration arrays apply that same membership rule before their existing timezone-aware comparison.
 Each engine shares its scalar preparation between live filters and generated code; existing null flags remain separate.
 
+Polars Enum equality compares text labels without casting an unknown label into the closed category domain.
+An absent label matches no rows; inequality retains present rows. Selected-value filters omit labels outside that
+domain and retain their explicit null flags. Source columns and ordered comparisons keep the declared Enum ordering.
+
 Pandas object duration counts and present-value filters share exact integer comparison keys, measured in attoseconds.
 The existing unit registry supplies fixed NumPy scales and multipliers; source scalars and dtype remain unchanged.
 The shared object classifier retains the duration type when missing scalars make native inference ambiguous.

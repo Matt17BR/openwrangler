@@ -1368,6 +1368,110 @@ def test_polars_decimal_filters_keep_exact_thresholds_and_source_capacity(lazy, 
 
 
 @pytest.mark.parametrize("lazy", [False, True])
+def test_polars_enum_filters_match_absent_labels_without_changing_domain_order(lazy):
+    source = pl.DataFrame(
+        {
+            "label": ["a-row", "b-row", "null"],
+            "value": pl.Series(["a", "b", None], dtype=pl.Enum(["b", "a"])),
+        }
+    )
+    before = source.clone()
+    frame = source.lazy() if lazy else source
+    engine = PolarsEngine()
+    schema = engine.schema(frame)
+    lineage = source_lineage(schema)
+    cases = []
+    for predicate_operator, value, labels in [
+        ("equals", "absent", []),
+        ("notEquals", "absent", ["a-row", "b-row"]),
+        ("equals", "a", ["a-row"]),
+        ("notEquals", "a", ["b-row"]),
+        ("equals", typed_selection_value(1, "string"), ["a-row"]),
+        ("notEquals", typed_selection_value(1, "string"), ["b-row"]),
+        ("gt", "b", ["a-row"]),  # Enum order is intentionally not lexical.
+    ]:
+        cases.append(
+            (
+                {
+                    "filters": [
+                        {
+                            "column": "value",
+                            "type": "string",
+                            "predicates": [{"kind": "predicate", "operator": predicate_operator, "value": value}],
+                        }
+                    ],
+                    "sort": [],
+                },
+                labels,
+            )
+        )
+    for selected, include_nulls, labels in [
+        (["absent"], False, []),
+        (["absent"], True, ["null"]),
+        (["a", "absent"], True, ["a-row", "null"]),
+        ([], False, ["a-row", "b-row", "null"]),
+    ]:
+        model = _value_selection_model("string", None)
+        model["filters"][0]["valueFilter"].update(
+            selectedValues=[typed_selection_value(value, "string") for value in selected],
+            includeNulls=include_nulls,
+        )
+        cases.append((model, labels))
+    for model, labels in cases:
+        public = deepcopy(model)
+        public["filters"][0]["column"] = lineage[1]
+        bound = bind_step(
+            validate_step({"id": "filter", "kind": "filterRows", "params": {"filterModel": public}}), schema, lineage
+        )
+        expected = source.filter(pl.col("label").is_in(labels))
+        for result in [
+            engine.apply_filter_model(frame, model),
+            engine.apply_transform(frame, bound),
+            _execute_generated_filter(engine, frame, model),
+        ]:
+            assert isinstance(result, pl.LazyFrame) == lazy
+            if lazy:
+                result = result.collect()
+            assert result.schema == source.schema
+            assert result.equals(expected)
+        assert source.equals(before)
+        assert source.schema == before.schema
+
+    # Heterogeneous typed tokens retain their existing native operands.
+    ordinal = _value_selection_model("string", typed_selection_value(1, "string"))
+    for apply in (engine.apply_filter_model, lambda source, model: _execute_generated_filter(engine, source, model)):
+        result = apply(frame, ordinal)
+        if lazy:
+            result = result.collect()
+        assert result.equals(source.head(1))
+    assert source.equals(before)
+    assert source.schema == before.schema
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+def test_polars_enum_membership_keeps_empty_domain_and_null_selection_separate(lazy):
+    engine = PolarsEngine()
+    for labels, values in [([], []), (["null"], [None])]:
+        source = pl.DataFrame(
+            {"label": pl.Series(labels, dtype=pl.String), "value": pl.Series(values, dtype=pl.Enum([]))}
+        )
+        before = source.clone()
+        frame = source.lazy() if lazy else source
+        for include_nulls in (False, True):
+            model = _value_selection_model("string", typed_selection_value("absent", "string"))
+            model["filters"][0]["valueFilter"]["includeNulls"] = include_nulls
+            expected = source if include_nulls else source.head(0)
+            for result in [engine.apply_filter_model(frame, model), _execute_generated_filter(engine, frame, model)]:
+                assert isinstance(result, pl.LazyFrame) == lazy
+                if lazy:
+                    result = result.collect()
+                assert result.schema == source.schema
+                assert result.equals(expected)
+            assert source.equals(before)
+            assert source.schema == before.schema
+
+
+@pytest.mark.parametrize("lazy", [False, True])
 @pytest.mark.parametrize("storage", ["datetime_ms", "datetime_ns", "duration_ms"])
 def test_polars_temporal_filters_keep_exact_native_unit_bounds(lazy, storage):
     duration = storage == "duration_ms"
