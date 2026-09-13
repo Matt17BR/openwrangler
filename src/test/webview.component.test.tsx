@@ -1572,7 +1572,7 @@ describe("DataGrid", () => {
     expect(scroller.scrollLeft).toBe(95);
     expect(document.querySelectorAll("col")[2]).toHaveStyle({ width: "280px" });
     expect(screen.getByRole("columnheader", { name: /sales/u })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("cell", { name: "" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("cell", { name: "Null value" })).toHaveAttribute("aria-selected", "true");
     expect(document.querySelector('[data-grid-row="1"][data-grid-column="1"]')).toHaveAttribute("tabindex", "0");
     expect(onViewStateChange).not.toHaveBeenCalled();
   });

@@ -13,6 +13,10 @@ count is known. Rendered rows and columns keep their absolute ARIA positions eve
 window of a large dataset. A row-number or row-label header precedes the data columns. The row range below the grid
 is a polite, atomic status such as `Rows 1 to 200 of 1,000`.
 
+Ordinary cells expose **Null value**, **Empty string**, or **Whitespace string** as their accessible names when
+appropriate. Literal text such as `null` keeps its own name. These descriptions do not change the displayed text,
+copied values, or filter selections.
+
 Only one rendered body cell is in the Tab order at a time. Put focus on that cell, then use:
 
 | Key                         | Result                                                               |

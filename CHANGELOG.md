@@ -6,6 +6,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Grid accessible names distinguish null, empty strings and whitespace-only strings during keyboard navigation.
 - Pandas CSV export preserves extreme Arrow timestamps and durations, nanoseconds and historical timezone offsets. Temporal categories can include missing values; timestamps outside the supported calendar range are refused before writing.
 - Pandas row labels retain valid extreme Arrow timestamps and durations instead of displaying and copying them as null.
 - Polars filters preserve exact Decimal and temporal comparison boundaries instead of rounding operands to source precision.

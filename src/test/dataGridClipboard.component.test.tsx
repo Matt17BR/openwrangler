@@ -2,7 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { cloneElement, StrictMode, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { GridPage, SessionMetadata } from "../shared/protocol";
+import type { CellValue, GridPage, SessionMetadata } from "../shared/protocol";
 import { viewCellSelectionFilter } from "../shared/filterModel";
 import { DataGrid } from "../webviews/grid/DataGrid";
 
@@ -107,6 +107,67 @@ describe("DataGrid clipboard interactions", () => {
     expect(await screen.findByText("Copied row.")).toBeTruthy();
   });
 
+  it("names missing and blank values during keyboard navigation without changing copy or filter values", async () => {
+    const cases: Array<{ value: CellValue; name: string; copied: string }> = [
+      { value: { kind: "null", raw: null, display: "", isNull: true, isNaN: false }, name: "Null value", copied: "" },
+      { value: cell(""), name: "Empty string", copied: "" },
+      { value: cell(" "), name: "Whitespace string", copied: " " },
+      { value: cell("\t\n"), name: "Whitespace string", copied: '"\t\n"' },
+      { value: cell("null"), name: "null", copied: "null" },
+      { value: cell("Milan"), name: "Milan", copied: "Milan" }
+    ];
+    const valuesPage: GridPage = {
+      offset: 0,
+      limit: cases.length,
+      totalRows: cases.length,
+      columnIds: ["c:0"],
+      rows: cases.map(({ value }, index) => ({ id: `r:${index}`, rowNumber: index, values: [value] }))
+    };
+    const valuesMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: cases.length, columns: 1 },
+      filteredShape: { rows: cases.length, columns: 1 },
+      schema: [{ ...metadata.schema[0], nullable: true }]
+    };
+    const onApplyCellFilter = vi.fn();
+    render(cloneElement(grid("view-a", valuesPage, valuesMetadata), { pageSize: cases.length, onApplyCellFilter }));
+    const cells = screen.getAllByRole("cell").filter((element) => element.hasAttribute("data-grid-row"));
+    expect(cells).toHaveLength(cases.length);
+    focusCell(cells[0]);
+
+    for (const [index, { value, name, copied }] of cases.entries()) {
+      if (index > 0) fireEvent.keyDown(cells[index - 1], { key: "ArrowDown" });
+      await waitFor(() => expect(cells[index]).toHaveFocus());
+      expect(cells[index]).toHaveAccessibleName(name);
+      expect(cells[index].querySelector(".gridCellText")?.textContent).toBe(value.display);
+      expect(cells[index]).toHaveAttribute("title", value.display);
+
+      fireEvent.click(screen.getByRole("button", { name: "Copy cell" }));
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(index + 1));
+      expect(writeText).toHaveBeenLastCalledWith(copied);
+      fireEvent.keyDown(cells[index], { key: "F10", shiftKey: true });
+      const menu = await screen.findByRole("menu", { name: "Filter city by this cell" });
+      fireEvent.click(
+        within(menu).getByRole("menuitem", { name: value.isNull ? "Keep only null values" : "Keep only this value" })
+      );
+      expect(onApplyCellFilter).toHaveBeenLastCalledWith({
+        column: "city",
+        type: "string",
+        logic: "and",
+        valueFilter: {
+          kind: "values",
+          selectedValues: value.isNull
+            ? []
+            : [{ kind: "typedSelection", version: 1, columnType: "string", cell: value }],
+          includeNulls: value.isNull,
+          includeNaN: false
+        },
+        predicates: []
+      });
+      await waitFor(() => expect(cells[index]).toHaveFocus());
+    }
+  });
+
   it.each(["owned", "outside", "header-then-body"] as const)(
     "respects %s focus across a clipboard-result page refresh",
     async (owner) => {
@@ -203,7 +264,7 @@ describe("DataGrid clipboard interactions", () => {
   ])("copies a real pointer-selected rectangle once from its focus owner with %s", async (_label, modifier) => {
     renderGrid();
     const city = screen.getByRole("cell", { name: "Milan" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
     pointerDrag(city, emptySales, 17);
 
     expect(screen.getByText("2 rows by 2 columns selected")).toBeTruthy();
@@ -229,7 +290,7 @@ describe("DataGrid clipboard interactions", () => {
       });
       renderGrid();
       const milan = screen.getByRole("cell", { name: "Milan" });
-      const emptySales = screen.getByRole("cell", { name: "" });
+      const emptySales = screen.getByRole("cell", { name: "Null value" });
       pointerDrag(milan, emptySales, 67);
 
       fireEvent.keyDown(emptySales, { key: "c", ctrlKey: true });
@@ -262,7 +323,7 @@ describe("DataGrid clipboard interactions", () => {
     Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
     renderGrid();
     const milan = screen.getByRole("cell", { name: "Milan" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
     pointerDrag(milan, emptySales, 18);
 
     fireEvent.keyDown(emptySales, { key: "c", ctrlKey: true });
@@ -276,7 +337,7 @@ describe("DataGrid clipboard interactions", () => {
     writeText.mockRejectedValueOnce(new Error("primary adapter denied"));
     renderGrid();
     const milan = screen.getByRole("cell", { name: "Milan" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
     pointerDrag(milan, emptySales, 21);
     Object.defineProperty(document, "execCommand", {
       configurable: true,
@@ -297,7 +358,7 @@ describe("DataGrid clipboard interactions", () => {
     writeText.mockRejectedValueOnce(new Error("primary adapter denied"));
     const rendered = renderGrid("view-a", page, metadata, 0);
     const milan = screen.getByRole("cell", { name: "Milan" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
     pointerDrag(milan, emptySales, 55);
     let fallbackInput: HTMLElement | undefined;
     let fallbackRetainedFocusThroughRestore = false;
@@ -336,7 +397,7 @@ describe("DataGrid clipboard interactions", () => {
     };
     renderGrid("view-a", contextPage);
     const city = screen.getByRole("cell", { name: "=2+2" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
     pointerDrag(city, emptySales, 19);
 
     expect(fireEvent.pointerDown(city, { button: 2, buttons: 2, pointerId: 20, pointerType: "mouse" })).toBe(false);
@@ -371,7 +432,7 @@ describe("DataGrid clipboard interactions", () => {
       });
       renderGrid();
       const milan = screen.getByRole("cell", { name: "Milan" });
-      const emptySales = screen.getByRole("cell", { name: "" });
+      const emptySales = screen.getByRole("cell", { name: "Null value" });
       pointerDrag(milan, emptySales, 68);
       openClipboardMenu(milan, 69);
 
@@ -409,7 +470,7 @@ describe("DataGrid clipboard interactions", () => {
     Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
     renderGrid();
     const milan = screen.getByRole("cell", { name: "Milan" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
     pointerDrag(milan, emptySales, 61);
     openClipboardMenu(milan, 62);
 
@@ -428,7 +489,7 @@ describe("DataGrid clipboard interactions", () => {
   it("invalidates an owning range menu before left pointerdown collapses its exact selection", async () => {
     renderGrid();
     const milan = screen.getByRole("cell", { name: "Milan" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
     pointerDrag(milan, emptySales, 56);
     openClipboardMenu(milan, 57);
 
@@ -450,7 +511,7 @@ describe("DataGrid clipboard interactions", () => {
     renderGrid();
     const milan = screen.getByRole("cell", { name: "Milan" });
     const paris = screen.getByRole("cell", { name: "Paris" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
     pointerDrag(milan, emptySales, 59);
     openClipboardMenu(milan, 60);
     const staleCopy = within(screen.getByRole("menu", { name: "Cell and range actions for city" })).getByRole(
@@ -539,7 +600,7 @@ describe("DataGrid clipboard interactions", () => {
       Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
       renderGrid();
       const milan = screen.getByRole("cell", { name: "Milan" });
-      const emptySales = screen.getByRole("cell", { name: "" });
+      const emptySales = screen.getByRole("cell", { name: "Null value" });
       pointerDrag(milan, emptySales, outcome === "success" ? 63 : 65);
       openClipboardMenu(milan, outcome === "success" ? 64 : 66);
       fireEvent.click(
@@ -566,7 +627,7 @@ describe("DataGrid clipboard interactions", () => {
     writeText.mockImplementationOnce(() => delayedWrite.promise);
     renderGrid();
     const milan = screen.getByRole("cell", { name: "Milan" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
     pointerDrag(milan, emptySales, 31);
     openClipboardMenu(milan, 32);
 
@@ -596,7 +657,7 @@ describe("DataGrid clipboard interactions", () => {
     Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
     renderGrid();
     const milan = screen.getByRole("cell", { name: "Milan" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
     pointerDrag(milan, emptySales, 42);
     openClipboardMenu(milan, 43);
 
@@ -621,7 +682,7 @@ describe("DataGrid clipboard interactions", () => {
     writeText.mockImplementationOnce(() => firstWrite.promise).mockImplementationOnce(() => secondWrite.promise);
     renderGrid();
     const milan = screen.getByRole("cell", { name: "Milan" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
     pointerDrag(milan, emptySales, 34);
     openClipboardMenu(milan, 35);
     const copySelection = within(screen.getByRole("menu", { name: "Cell and range actions for city" })).getByRole(
@@ -663,7 +724,7 @@ describe("DataGrid clipboard interactions", () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
 
     const milan = screen.getByRole("cell", { name: "Milan" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
     pointerDrag(milan, emptySales, 72);
     fireEvent.keyDown(emptySales, { key: "c", ctrlKey: true });
     await act(async () => Promise.resolve());
@@ -685,7 +746,7 @@ describe("DataGrid clipboard interactions", () => {
     writeText.mockImplementationOnce(() => rangeWrite.promise).mockResolvedValue(undefined);
     renderGrid();
     const milan = screen.getByRole("cell", { name: "Milan" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
     pointerDrag(milan, emptySales, 73);
     fireEvent.keyDown(emptySales, { key: "c", ctrlKey: true });
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
@@ -748,7 +809,7 @@ describe("DataGrid clipboard interactions", () => {
 
     fireEvent.click(screen.getByRole("columnheader", { name: "sales" }));
     dispatchPage(latestColumnRequest(), metadata, 0, 2, 2, [numberCell(10.5), numberCell(-20)]);
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
     openClipboardMenu(emptySales, 76);
     const menu = screen.getByRole("menu", { name: "Cell and column actions for sales" });
     fireEvent.click(within(menu).getByRole("menuitem", { name: "Copy column" }));
@@ -770,7 +831,7 @@ describe("DataGrid clipboard interactions", () => {
     writeText.mockImplementationOnce(() => oldWrite.promise).mockResolvedValue(undefined);
     const original = renderGrid();
     const milan = screen.getByRole("cell", { name: "Milan" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
     pointerDrag(milan, emptySales, 74);
     fireEvent.keyDown(emptySales, { key: "c", ctrlKey: true });
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
@@ -778,7 +839,7 @@ describe("DataGrid clipboard interactions", () => {
 
     renderGrid("view-b");
     const replacementMilan = screen.getByRole("cell", { name: "Milan" });
-    const replacementSales = screen.getByRole("cell", { name: "" });
+    const replacementSales = screen.getByRole("cell", { name: "Null value" });
     pointerDrag(replacementMilan, replacementSales, 75);
     fireEvent.keyDown(replacementSales, { key: "c", ctrlKey: true });
     await act(async () => Promise.resolve());
@@ -805,7 +866,7 @@ describe("DataGrid clipboard interactions", () => {
       </>
     );
     const milan = screen.getByRole("cell", { name: "Milan" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
     pointerDrag(milan, emptySales, 36);
     openClipboardMenu(milan, 37);
     fireEvent.click(
@@ -829,7 +890,7 @@ describe("DataGrid clipboard interactions", () => {
     writeText.mockImplementationOnce(() => staleViewWrite.promise);
     const rendered = renderGrid();
     const milan = screen.getByRole("cell", { name: "Milan" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
     pointerDrag(milan, emptySales, 38);
     openClipboardMenu(milan, 39);
     fireEvent.click(
@@ -851,7 +912,7 @@ describe("DataGrid clipboard interactions", () => {
     const disposedWrite = deferred<void>();
     writeText.mockImplementationOnce(() => disposedWrite.promise);
     const replacementMilan = screen.getByRole("cell", { name: "Milan" });
-    const replacementSales = screen.getByRole("cell", { name: "" });
+    const replacementSales = screen.getByRole("cell", { name: "Null value" });
     pointerDrag(replacementMilan, replacementSales, 40);
     openClipboardMenu(replacementMilan, 41);
     fireEvent.click(
@@ -873,7 +934,7 @@ describe("DataGrid clipboard interactions", () => {
       writeText.mockImplementationOnce(() => unsettledWrite.promise);
       renderGrid();
       const milan = screen.getByRole("cell", { name: "Milan" });
-      const emptySales = screen.getByRole("cell", { name: "" });
+      const emptySales = screen.getByRole("cell", { name: "Null value" });
       pointerDrag(milan, emptySales, 70);
 
       fireEvent.keyDown(emptySales, { key: "c", ctrlKey: true });
@@ -900,7 +961,7 @@ describe("DataGrid clipboard interactions", () => {
   it("dismisses a pre-restore range menu before its action can copy the replacement selection", async () => {
     const rendered = renderGrid("view-a", page, metadata, 0);
     const milan = screen.getByRole("cell", { name: "Milan" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
     pointerDrag(milan, emptySales, 51);
     openClipboardMenu(milan, 52);
 
@@ -926,7 +987,7 @@ describe("DataGrid clipboard interactions", () => {
       Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
       const rendered = renderGrid("view-a", page, metadata, 0);
       const milan = screen.getByRole("cell", { name: "Milan" });
-      const emptySales = screen.getByRole("cell", { name: "" });
+      const emptySales = screen.getByRole("cell", { name: "Null value" });
       pointerDrag(milan, emptySales, 53);
       openClipboardMenu(milan, 54);
       fireEvent.click(
@@ -955,7 +1016,7 @@ describe("DataGrid clipboard interactions", () => {
     Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
     const rendered = renderGrid();
     const milan = screen.getByRole("cell", { name: "Milan" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
     pointerDrag(milan, emptySales, 45);
 
     fireEvent.click(screen.getByRole("button", { name: "Copy range" }));
@@ -974,7 +1035,7 @@ describe("DataGrid clipboard interactions", () => {
     Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
     renderGrid();
     const milan = screen.getByRole("cell", { name: "Milan" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
     pointerDrag(milan, emptySales, 46);
 
     fireEvent.keyDown(emptySales, { key: "c", ctrlKey: true });
@@ -1018,7 +1079,7 @@ describe("DataGrid clipboard interactions", () => {
     writeText.mockImplementationOnce(() => firstWrite.promise).mockImplementationOnce(() => secondWrite.promise);
     renderGrid();
     const milan = screen.getByRole("cell", { name: "Milan" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
     pointerDrag(milan, emptySales, 47);
     openClipboardMenu(milan, 48);
     const copySelection = within(screen.getByRole("menu", { name: "Cell and range actions for city" })).getByRole(
@@ -1053,7 +1114,7 @@ describe("DataGrid clipboard interactions", () => {
   it("keeps menu and whole-column ownership live through StrictMode effect replay", async () => {
     render(<StrictMode>{grid("view-a")}</StrictMode>);
     const milan = screen.getByRole("cell", { name: "Milan" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
     pointerDrag(milan, emptySales, 49);
     openClipboardMenu(milan, 50);
     fireEvent.click(
@@ -1081,7 +1142,7 @@ describe("DataGrid clipboard interactions", () => {
     renderGrid();
     const milan = screen.getByRole("cell", { name: "Milan" });
     const paris = screen.getByRole("cell", { name: "Paris" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
     pointerDrag(milan, emptySales, 21);
 
     fireEvent.click(screen.getByRole("columnheader", { name: "city" }));
@@ -1121,7 +1182,7 @@ describe("DataGrid clipboard interactions", () => {
     fireEvent.click(screen.getByRole("columnheader", { name: "city" }));
     const request = latestColumnRequest();
     const milan = screen.getByRole("cell", { name: "Milan" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
 
     pointerDrag(milan, emptySales, 23);
 
@@ -1227,7 +1288,7 @@ describe("DataGrid clipboard interactions", () => {
   it("resets the ephemeral selection when the logical view changes", () => {
     const rendered = renderGrid("view-a");
     const city = screen.getByRole("cell", { name: "Milan" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
     focusCell(city);
     fireEvent.pointerDown(emptySales, { button: 0, shiftKey: true });
     act(() => emptySales.focus());
@@ -1427,7 +1488,7 @@ describe("DataGrid clipboard interactions", () => {
     Object.defineProperty(document, "execCommand", { configurable: true, value: vi.fn(() => false) });
     renderGrid();
     const milan = screen.getByRole("cell", { name: "Milan" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
     pointerDrag(milan, emptySales, 71);
 
     fireEvent.keyDown(emptySales, { key: "c", ctrlKey: true });
