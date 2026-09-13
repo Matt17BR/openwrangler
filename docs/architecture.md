@@ -397,6 +397,12 @@ desired filters before removal, including while a newer page request is pending.
 invalidate the target. Saved filters remain removable without a current schema column; identical restored groups
 remain valid. The internal command rejects unbound column strings.
 
+Polars Decimal and temporal filters adjust scalar comparison thresholds to the source scale without rounding the
+requested boundary or converting source columns. Decimal coefficient and exponent handling is bounded by native
+precision before integer construction. Membership omits operands that cannot equal a stored value. Pandas native
+datetime and duration arrays apply that same membership rule before their existing timezone-aware comparison.
+Each engine shares its scalar preparation between live filters and generated code; existing null flags remain separate.
+
 Pandas object duration counts and present-value filters share exact integer comparison keys, measured in attoseconds.
 The existing unit registry supplies fixed NumPy scales and multipliers; source scalars and dtype remain unchanged.
 The shared object classifier retains the duration type when missing scalars make native inference ambiguous.

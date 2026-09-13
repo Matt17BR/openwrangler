@@ -6,6 +6,8 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Polars filters preserve exact Decimal and temporal comparison boundaries instead of rounding operands to source precision.
+- Pandas timestamp and duration value filters no longer match neighboring stored values when the requested value has finer precision.
 - Pandas Pivot Wider keeps valid extreme Arrow timestamps and durations separate from null identifier groups.
 - Polars Pivot Wider preserves zero rows for empty input without identifier columns.
 - Successful cleaning-history changes close saved-step editors so reopening them uses the current input columns. Failed changes retain the form and its inputs.
