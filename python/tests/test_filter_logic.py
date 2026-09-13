@@ -651,6 +651,47 @@ def test_live_and_generated_missing_predicates_distinguish_null_from_nan(backend
     assert _filtered_labels(generated, backend) == expected
 
 
+@pytest.mark.parametrize(
+    "dtype,values,semantic,operation,operand,positions",
+    [
+        ("int64", [0, 1, 2], "integer", "gte", "1", [1, 2]),
+        ("uint64", [0, 1, 2], "integer", "gte", "1", [1, 2]),
+        ("bool", [False, True, False], "boolean", "equals", True, [1]),
+        ("float64", [0, np.nan, np.inf, -np.inf], "float", "isNaN", None, [1]),
+        ("float64", [0, np.nan, np.inf, -np.inf], "float", "gte", "0", [0, 2]),
+        ("datetime64[us]", [0, None, 1], "datetime", "isNull", None, [1]),
+        ("timedelta64[ns]", [0, None, 1], "duration", "isNull", None, [1]),
+    ],
+)
+def test_pandas_native_masks_preserve_view_bound_and_generated_rows(
+    dtype, values, semantic, operation, operand, positions
+):
+    engine = PandasEngine()
+    source = pd.DataFrame({"value": np.array(values, dtype=dtype)})
+    source.index = pd.Index([4, 4, 2, 1][: len(source)], name="source")
+    source.attrs["origin"] = "retained"
+    index = source.index
+    before = source.copy(deep=True)
+    predicate = {"kind": "predicate", "operator": operation}
+    if operand is not None:
+        predicate["value"] = operand
+    model = {"filters": [{"column": "value", "type": semantic, "predicates": [predicate]}], "sort": []}
+    bound_model = deepcopy(model)
+    bound_model["filters"][0]["column"] = {"id": "c:source:0", "name": "value", "position": 0}
+    bound = {"id": "filter", "kind": "filterRows", "params": {"filterModel": bound_model}}
+    for frame in [source, source.iloc[:0]]:
+        expected = frame.iloc[positions] if len(frame) else frame
+        for result in (
+            engine.apply_filter_model(frame, model),
+            engine.apply_transform(frame, bound),
+            _execute_generated_filter(engine, frame, model),
+        ):
+            pd.testing.assert_frame_equal(result, expected)
+            assert result.attrs == expected.attrs
+    pd.testing.assert_frame_equal(source, before)
+    assert source.index is index
+
+
 @pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
 @pytest.mark.parametrize(
     ("include_nulls", "include_nan", "expected"),

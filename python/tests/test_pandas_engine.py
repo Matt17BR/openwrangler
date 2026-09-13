@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import CancelledError
+from contextlib import nullcontext
 from datetime import date, timedelta
 from decimal import MAX_EMAX, Decimal, localcontext
 from numbers import Integral
@@ -1194,11 +1195,87 @@ def test_pandas_summaries_separate_nan_from_other_missing_values():
     assert (summaries["datetime"]["nullCount"], summaries["datetime"]["nanCount"]) == (1, 0)
 
 
+@pytest.mark.parametrize("use_inf_as_na", [False, True])
+@pytest.mark.filterwarnings("ignore:use_inf_as_na option is deprecated:FutureWarning")
+def test_pandas_native_missing_counts_agree_with_filter_and_fill(use_inf_as_na: bool) -> None:
+    try:
+        pd.get_option("mode.use_inf_as_na")
+    except pd.errors.OptionError:
+        if use_inf_as_na:
+            pytest.skip("This Pandas version has removed the infinity-as-missing option")
+        options = nullcontext()
+    else:
+        options = pd.option_context("mode.use_inf_as_na", use_inf_as_na)
+    source = pd.DataFrame(
+        {
+            "value": [0.0, np.nan, np.inf, -np.inf],
+            "overlap": [np.nan, np.nan, 1.0, 2.0],
+            "datetime": pd.Series(
+                [pd.NaT, pd.Timestamp("2026-01-01"), pd.Timestamp("2026-01-02"), pd.Timestamp("2026-01-03")]
+            ),
+            "nullable": pd.Series([1, None, 2, 3], dtype="Int64"),
+        }
+    )
+    source.index = pd.Index([4, 4, 2, 1], name="source")
+    index = source.index
+    source.attrs["origin"] = "retained"
+    before = source.copy(deep=True)
+    engine = PandasEngine()
+    with options:
+        summaries = engine.summaries(source)
+        assert [(item["nullCount"], item["nanCount"]) for item in summaries] == [(0, 1), (0, 2), (1, 0), (1, 0)]
+        assert [engine.missing_count(source, position) for position in range(4)] == [1, 2, 1, 1]
+        expected_stats: dict[str, Any] = {
+            "missingCells": 5,
+            "missingRows": 2,
+            "duplicateRows": 0,
+            "missingValuesByColumn": [
+                {"column": name, "count": count} for name, count in zip(source.columns, [1, 2, 1, 1], strict=True)
+            ],
+        }
+        assert engine.header_stats(source) == expected_stats
+        duplicate_names = source.copy()
+        duplicate_names.columns = ["value", "value", "datetime", "nullable"]
+        expected_stats["missingValuesByColumn"][1]["column"] = "value"
+        assert engine.header_stats(duplicate_names) == expected_stats
+        for empty in (source.iloc[:0], source.iloc[:, :0]):
+            assert engine.header_stats(empty) == {
+                "missingCells": 0,
+                "missingRows": 0,
+                "duplicateRows": 0,
+                "missingValuesByColumn": [{"column": name, "count": 0} for name in empty.columns],
+            }
+        model = {
+            "filters": [
+                {"column": "value", "type": "float", "predicates": [{"kind": "predicate", "operator": "isNaN"}]}
+            ],
+            "sort": [],
+        }
+        pd.testing.assert_frame_equal(engine.apply_filter_model(source, model), source.iloc[[1]])
+        fill = {
+            "id": "fill",
+            "kind": "fillMissingValues",
+            "params": {
+                "column": {"id": "c:source:0", "name": "value", "position": 0},
+                "replacement": {"kind": "float", "value": "7"},
+            },
+        }
+        namespace: dict[str, Any] = {}
+        exec(engine.compile_plan([fill]), namespace)
+        expected = source.copy()
+        expected.iloc[1, 0] = 7.0
+        for result in (engine.apply_transform(source, fill), namespace["clean_data"](source)):
+            pd.testing.assert_frame_equal(result, expected)
+            assert engine.missing_count(result, 0) == 0
+    pd.testing.assert_frame_equal(source, before)
+    assert source.index is index
+    assert source.attrs == before.attrs
+
+
 def test_pandas_primitive_missing_counts_do_not_box_values(monkeypatch: pytest.MonkeyPatch):
     def fail_scalar_fallback(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("primitive dtypes must not use the scalar missing-value fallback")
 
-    monkeypatch.setattr(pandas_engine_module, "_scalar_mask", fail_scalar_fallback)
     frame = pd.DataFrame(
         {
             "integer": pd.Series([1, 2], dtype="int64"),
@@ -1218,6 +1295,69 @@ def test_pandas_primitive_missing_counts_do_not_box_values(monkeypatch: pytest.M
     assert (summaries["float"]["nullCount"], summaries["float"]["nanCount"]) == (0, 1)
     assert (summaries["datetime"]["nullCount"], summaries["datetime"]["nanCount"]) == (1, 0)
     assert (summaries["duration"]["nullCount"], summaries["duration"]["nanCount"]) == (1, 0)
+
+    monkeypatch.setattr(pandas_engine_module, "_is_null_value", lambda _value: fail_scalar_fallback())
+    monkeypatch.setattr(pandas_engine_module, "_is_nan_value", lambda _value: fail_scalar_fallback())
+    for position, column in enumerate(frame.columns):
+        series = frame.iloc[:, position]
+        expected_null = [False, column in {"datetime", "duration"}]
+        expected_nan = [False, column == "float"]
+        assert pandas_engine_module._missing_value_counts(series) == (sum(expected_null), sum(expected_nan))
+        assert pandas_engine_module._null_mask(series).tolist() == expected_null
+        assert pandas_engine_module._nan_mask(series).tolist() == expected_nan
+    for dtype in ["i1", "i2", "i4", "u1", "u2", "u4", ">i4", "f2", "f4", ">f8", "longdouble", "m8[2ns]"]:
+        kind = np.dtype(dtype).kind
+        values = np.array([0, 1, np.nan, np.inf, -np.inf] if kind == "f" else [0, 1, 2, 3, 4], dtype=dtype)
+        if kind == "m":
+            values[2] = np.timedelta64("NaT", "ns")
+        series = pd.Series(values, index=pd.Index([4, 4, 2, 1, 1], name="source"), name="value")
+        before = series.copy(deep=True)
+        for candidate in [series, series.iloc[:0]]:
+            nulls = pandas_engine_module._null_mask(candidate)
+            nans = pandas_engine_module._nan_mask(candidate)
+            assert nulls.tolist() == ([False, False, kind == "m", False, False] if len(candidate) else [])
+            assert nans.tolist() == ([False, False, kind == "f", False, False] if len(candidate) else [])
+            assert nulls.index is candidate.index
+            assert nans.index is candidate.index
+            assert pandas_engine_module._missing_value_counts(candidate) == (int(nulls.sum()), int(nans.sum()))
+        pd.testing.assert_series_equal(series, before)
+
+
+def test_pandas_missing_classification_preserves_subclass_overrides() -> None:
+    class CustomSeries(pd.Series):
+        @property
+        def _constructor(self) -> Any:
+            return CustomSeries
+
+        def isna(self) -> Any:
+            return pd.Series(True, index=self.index)
+
+    series = CustomSeries([0.0, np.nan, np.inf], index=pd.Index([4, 4, 2], name="source"))
+    assert pandas_engine_module._missing_value_counts(series) == (0, 3)
+    assert pandas_engine_module._null_mask(series).tolist() == [False, False, False]
+    assert pandas_engine_module._nan_mask(series).tolist() == [False, True, False]
+
+    class CustomFrame(pd.DataFrame):
+        _constructor_sliced: Any = CustomSeries
+
+        @property
+        def _constructor(self) -> Any:
+            return CustomFrame
+
+        def isna(self) -> Any:
+            return pd.DataFrame(False, index=self.index, columns=self.columns)
+
+    source = CustomFrame({"value": [1.0, 2.0]})
+    before = source.copy(deep=True)
+    engine = PandasEngine()
+    for frame in (source, engine.ensure_row_ids(source, "subclass")):
+        assert engine.header_stats(frame) == {
+            "missingCells": 2,
+            "missingRows": 0,
+            "duplicateRows": 0,
+            "missingValuesByColumn": [{"column": "value", "count": 2}],
+        }
+    pd.testing.assert_frame_equal(source, before)
 
 
 def test_pandas_text_summaries_are_exact_for_unicode_empty_all_null_and_mixed_display_values():

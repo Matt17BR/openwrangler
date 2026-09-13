@@ -235,6 +235,9 @@ An empty input produces zero rows even when no identifier columns remain, preser
 
 ## Native values and precision
 
+Missing counts in Pandas profiles and Dataset statistics distinguish ordinary NumPy floating NaN from infinities when the
+legacy `mode.use_inf_as_na` option is enabled.
+
 Pandas supports duplicate and non-string labels and exposes named index or MultiIndex row labels independently of
 ordinary columns. Column operations bind those inputs by stable identity and position, but name-addressed viewing
 filters and sorts fail closed when multiple columns share the same name string. Column choices add position labels when ordinary spaces,
