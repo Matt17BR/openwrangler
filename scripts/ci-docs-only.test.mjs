@@ -181,6 +181,8 @@ test("mixed R test edits keep editor execution when another input changes", asyn
 
 test("proves existing script edits while retaining Source and package execution", async (context) => {
   for (const files of [
+    ["scripts/ci-docs-only.test.mjs"],
+    ["scripts/ci-docs-only.test.mjs", "README.md", "docs/ci.md"],
     [
       "scripts/release-metadata.mjs",
       "scripts/daily-preview-artifact.mjs",
@@ -239,6 +241,7 @@ test("proves existing Python source and Markdown edits only for native R", async
     ["python/openwrangler_runtime/protocol.py"],
     ["python/openwrangler_runtime/session.py"],
     ["python/tests/conftest.py"],
+    ["python/tests/test_runtime.py", "scripts/ci-docs-only.test.mjs"],
     [
       "python/openwrangler_runtime/engines/duckdb_engine.py",
       "python/tests/test_duckdb_engine.py",
@@ -524,6 +527,7 @@ test("requires full owners for deleted or renamed source, including alongside ad
     "src/test/extensionHost/releasedRCoreEditing.ts",
     "scripts/editor-acceptance.mjs",
     "scripts/release-metadata.mjs",
+    "scripts/ci-docs-only.test.mjs",
     "src/test/webview.component.test.tsx"
   ]) {
     for (const change of ["add and delete", "delete", "rename", "rename into runtime"]) {
@@ -561,6 +565,7 @@ test("requires full owners for source mode changes and existing executable or sy
     "src/test/extensionHost/releasedRCoreEditing.ts",
     "scripts/editor-acceptance-artifact.test.mjs",
     "scripts/release-metadata.mjs",
+    "scripts/ci-docs-only.test.mjs",
     "src/test/webview.component.test.tsx"
   ]) {
     for (const mode of ["100755", "120000"]) {
@@ -636,6 +641,7 @@ test("requires full owners for added Markdown or paths outside the runtime sourc
     "src/test/extensionHost/releasedRCoreEditing.ts",
     "scripts/editor-acceptance-artifact.test.mjs",
     "scripts/release-metadata.mjs",
+    "scripts/ci-docs-only.test.mjs",
     "scripts/capture-screenshots.mjs",
     "src/test/webview.component.test.tsx"
   ]) {
@@ -755,7 +761,7 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
     "src/test/extensionHost-extra/releasedRRowReduction.ts",
     "fixtures/view-literal-contract.json",
     "scripts/r-contract-signal.py",
-    "scripts/ci-docs-only.test.mjs",
+    "scripts/ci-docs-only.test.mjs.bak",
     "scripts/editor-acceptance.mjs.bak",
     "scripts/editor-acceptance-extra.mjs",
     "scripts/release-metadata.test.mjs",
@@ -782,10 +788,20 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
     await context.test(file, (child) => {
       const component = "src/test/webview.component.test.tsx";
       const releasePolicy = "scripts/release-metadata.mjs";
+      const proofTest = "scripts/ci-docs-only.test.mjs";
       const webview = "src/webviews/grid/DataGrid.tsx";
-      const cwd = repository(child, [file, "CHANGELOG.md", "CONTRIBUTING.md", component, releasePolicy, webview]);
+      const cwd = repository(child, [
+        file,
+        "CHANGELOG.md",
+        "CONTRIBUTING.md",
+        component,
+        releasePolicy,
+        proofTest,
+        webview
+      ]);
       write(cwd, component);
       write(cwd, releasePolicy);
+      write(cwd, proofTest);
       write(cwd, webview);
       write(cwd, "README.md");
       write(cwd, "CHANGELOG.md");

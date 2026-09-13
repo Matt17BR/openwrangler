@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const runtimeOmissionScriptFiles = new Set([
+  "scripts/ci-docs-only.test.mjs",
   "scripts/capture-screenshots.mjs",
   "scripts/capture-screenshots-readiness.mjs",
   "scripts/release-metadata.mjs",
