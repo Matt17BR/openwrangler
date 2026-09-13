@@ -76,7 +76,8 @@ after these checks pass and does not repeat the source suites.
 [archive owner](../scripts/vsix-archive.test.mjs) check source bindings, corruption refusal and owned cleanup.
 The [R dependency-lock owner](../scripts/r-dependency-lock.test.mjs) checks the actual prepare CLI, cache identity,
 archive validation and refusal before output publication with a controlled R receipt; it does not install packages.
-The [CI proof owner](../scripts/ci-docs-only.test.mjs) uses real Git histories and executes the workflow guards.
+The [CI proof owner](../scripts/ci-docs-only.test.mjs) checks path admission with real Git histories and executes
+the workflow guards. Representative CLI cases verify the exported decisions without repeating every path check.
 Its exact scope and omission rules belong in [CI](ci.md#pull-requests), not individual test descriptions here.
 
 The [daily-preview owner](../scripts/daily-preview-artifact.test.mjs) checks source decisions and actual change-note
