@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import * as vscode from "vscode";
 import type {
   DataBackend,
@@ -12,7 +13,8 @@ import { DetachedBridgeRequestError, type BridgeRequestOptions, type OpenWrangle
 import type { CoordinatedSessionOrigin } from "./sessionOrigin";
 import { captureSessionSourceFiles, sessionOriginMismatch } from "./sessionOrigin";
 import { confirmSessionSourceProtection, type SessionSourceProtection } from "./files/safeFileExport";
-import { SessionPersistenceStore } from "./sessionPersistenceStore";
+import { SessionPersistenceStore, type SessionPersistenceCommitResult } from "./sessionPersistenceStore";
+import { persistedSessionState } from "./sessionPersistence";
 import { sessionOpenedResponseMismatch } from "./sessionResponseValidation";
 import { protocolError, type SessionResponseState } from "./sessionResponseCommitter";
 import { SessionRequestScheduler } from "./sessionRequestScheduler";
@@ -205,10 +207,25 @@ export class SessionRuntimeEstablisher {
       await this.runtimeCleanup.close(session, "saved-plan fallback runtime");
       const afterClose = currentFailure();
       if (afterClose) return { established: false, response: afterClose };
-      if (session.openRequest.source.kind === "file")
-        session.sourceProtection = await captureSessionSourceFiles(session.openRequest.source);
-      const beforeFallback = currentFailure();
-      if (beforeFallback) return { established: false, response: beforeFallback };
+      const savedCleaning = structuredClone(persisted.cleaning);
+      const restoreFailure = protocolError(
+        "saved_plan_restore_failed",
+        `Open Wrangler could not restore the saved cleaning plan for ${request.source.label}. Saved history was kept. Retry opening the dataframe when the source and runtime are available.`,
+        true
+      );
+      const resetIsCurrent = (): boolean =>
+        !currentFailure() &&
+        session.openRequest.source === request.source &&
+        session.metadata.backend === response.metadata.backend &&
+        isDeepStrictEqual(this.persistence.load(request.source, response.metadata.backend)?.cleaning, savedCleaning);
+      const resetAction = "Open Original and Reset Plan";
+      const choice = await vscode.window.showWarningMessage(
+        `Open Wrangler could not restore the saved cleaning plan for ${request.source.label}. Opening original data will replace its saved cleaning plan and draft.`,
+        { modal: true },
+        resetAction
+      );
+      if (choice !== resetAction || !resetIsCurrent())
+        return { established: false, response: currentFailure() ?? restoreFailure };
       const clean = await session.delegate.request(session.openRequest, options);
       if (clean.kind === "error" || clean.kind === "cancelled") return { established: false, response: clean };
       if (clean.kind !== "sessionOpened") {
@@ -249,9 +266,40 @@ export class SessionRuntimeEstablisher {
         await this.runtimeCleanup.close(session, "late-open runtime");
         return { established: false, response: afterFallback };
       }
-      void vscode.window.showWarningMessage(
-        `Open Wrangler could not replay the saved cleaning plan for ${request.source.label}. Original data was opened instead.`
-      );
+      if (session.sourceProtection)
+        session.sourceProtection = await confirmSessionSourceProtection(session.sourceProtection);
+      if (!session.sourceProtection?.available) {
+        await this.runtimeCleanup.close(session, "failed saved-state runtime");
+        return { established: false, response: currentFailure() ?? restoreFailure };
+      }
+      let reset: SessionPersistenceCommitResult;
+      try {
+        reset = await this.persistence.commitCurrent(
+          request.source,
+          () => persistedSessionState(session.metadata, session.viewState),
+          resetIsCurrent,
+          // The candidate is unpublished, so a failed storage write has no live state to roll back.
+          () => () => undefined
+        );
+      } catch (error) {
+        await this.runtimeCleanup.close(session, "failed saved-state runtime");
+        throw error;
+      }
+      if (reset.kind !== "committed") {
+        await this.runtimeCleanup.close(session, "failed saved-state runtime");
+        return {
+          established: false,
+          response:
+            currentFailure() ??
+            (reset.kind === "unavailable"
+              ? protocolError(
+                  "persistence_unavailable",
+                  "Open Wrangler could not save the cleaning-plan reset. Retry after workspace storage is available.",
+                  true
+                )
+              : restoreFailure)
+        };
+      }
     }
 
     if (cleaningRestored) {

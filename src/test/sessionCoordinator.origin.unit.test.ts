@@ -175,12 +175,19 @@ describe("SessionCoordinator", () => {
       label: "frame",
       variableName: "frame"
     };
-    const stored = { [persistenceKey(source, "polars")]: { backend: "polars", cleaning: { steps: [inspectionStep] } } };
+    let stored: Record<string, unknown> = {
+      [persistenceKey(source, "polars")]: { backend: "polars", cleaning: { steps: [inspectionStep] } }
+    };
     const workspaceState = {
       get: vi.fn((key: string, fallback?: unknown) => (key === SESSION_STORAGE_KEY ? stored : fallback)),
-      update: vi.fn(async () => undefined),
+      update: vi.fn(async (_key: string, value: Record<string, unknown>) => {
+        stored = value;
+      }),
       keys: () => [SESSION_STORAGE_KEY]
     } as unknown as Memento;
+    const warning = vi
+      .spyOn(vscode.window, "showWarningMessage")
+      .mockImplementation(async (_message, _options, ...items) => items[0]);
     const coordinator = new SessionCoordinator(workspaceState);
     setOpenNotebookDocuments(notebook);
     try {
@@ -220,6 +227,7 @@ describe("SessionCoordinator", () => {
         beginAtomicFileTransaction({ destination: vscode.Uri.file(original), sourceProtection: action })
       ).rejects.toThrow(/never overwrites/u);
     } finally {
+      warning.mockRestore();
       await coordinator.shutdown();
       setOpenNotebookDocuments();
       await rm(directory, { recursive: true, force: true });
