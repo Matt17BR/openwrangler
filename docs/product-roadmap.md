@@ -33,6 +33,7 @@ welcome in their issues. Start with useful single-source operations before takin
 - [Clean a DuckDB notebook relation](https://github.com/Matt17BR/openwrangler/issues/1386): extend today's viewer with native cleaning, code and export.
 - [Browse a DuckDB database](https://github.com/Matt17BR/openwrangler/issues/1387): choose a read-only table or view without writing SQL.
 - [Join or append a second input](https://github.com/Matt17BR/openwrangler/issues/1388): a later proposal that first needs explicit source and row-growth rules.
+- [Workbench interaction design](https://github.com/Matt17BR/openwrangler/issues/1397): compare simpler, distinct layouts for task clarity, visible data and keyboard access before choosing a redesign.
 
 Spark remains a bounded local-notebook viewer. Broader Spark support, additional backends and remote or browser hosts
 need a concrete user job before selection. Historical ideas and their closure reasons remain in the
