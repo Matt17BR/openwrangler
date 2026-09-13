@@ -930,7 +930,7 @@ exports.run = async function () {
         header: { observed: false },
         quickInsights: { observed: false },
         mode: { viewingObserved: false, editingOffered: false, editingConfirmed: false },
-        surfaceInspection: null,
+        operationsOwner: null,
         computationScope: "unknown"
       };
       sample.observation = observation;
@@ -1205,143 +1205,230 @@ exports.run = async function () {
           }
         }
         saveObservation();
-        if (observation.mode.editingConfirmed) {
-          checkpoint(`${sampleName}:surface-observation`);
-          await currentGrid();
-          const surfaceFrames = page.frames();
-          assert(surfaceFrames.length > 0 && surfaceFrames.length <= 64, "PILOT_GATE:incomplete-frame-discovery");
-          assert(surfaceFrames.includes(productFrame), "PILOT_GATE:product-frame-changed");
-          const labels = [
-            "Data Wrangler",
-            "Operations",
-            "Data Summary",
-            "Fill missing values",
-            "Convert text to lowercase",
-            "Target columns",
-            "Fill method",
-            "Apply",
-            "Discard",
-            "Cancel",
-            "Copy all code",
-            "Copy code to clipboard"
-          ];
-          const surfaces = { framesExamined: surfaceFrames.length, candidates: 0, matches: [], complete: false };
-          for (const [index, frame] of surfaceFrames.entries()) {
-            assert(!frame.isDetached(), "PILOT_GATE:product-frame-changed");
-            const groups = [];
-            try {
-              for (const name of labels) {
-                const pattern = new RegExp(`\\b${name}\\b`, "i");
-                const locator = frame.getByText(pattern).or(frame.getByLabel(pattern));
-                const count = await locator.count();
-                assert(surfaces.candidates + count <= 32, "DIAGNOSTIC:observation-bound");
-                if (!count) continue;
-                const nodes = await locator.elementHandles();
-                groups.push({ name, nodes });
-                assert(nodes.length === count, "DIAGNOSTIC:incomplete-surface");
-                surfaces.candidates += count;
-              }
-              if (groups.length) {
-                const facts = await frame.evaluate((groups) => {
-                  const semantic = (node) => ({
-                    role: !node?.getAttribute("role")
-                      ? "none"
-                      : [
-                            "button",
-                            "menuitem",
-                            "menuitemradio",
-                            "tree",
-                            "treeitem",
-                            "combobox",
-                            "textbox",
-                            "heading",
-                            "region",
-                            "complementary",
-                            "dialog",
-                            "tab"
-                          ].includes(node.getAttribute("role"))
-                        ? node.getAttribute("role")
-                        : "other",
-                    tag: !node
-                      ? "none"
-                      : [
-                            "BUTTON",
-                            "A",
-                            "INPUT",
-                            "SELECT",
-                            "LABEL",
-                            "H1",
-                            "H2",
-                            "H3",
-                            "H4",
-                            "H5",
-                            "H6",
-                            "SECTION",
-                            "ASIDE",
-                            "FORM",
-                            "DIV",
-                            "SPAN"
-                          ].includes(node.tagName)
-                        ? node.tagName.toLowerCase()
-                        : "other"
-                  });
-                  return groups.map(({ name, nodes }) => ({
-                    name,
-                    nodes: nodes.map((node) => ({
-                      connected: node.isConnected && node.ownerDocument === document,
-                      boxVisible: node.checkVisibility({ checkVisibilityCSS: true }),
-                      excluded: !!node.closest(
-                        'pre,code,textarea,[contenteditable="true"],.monaco-editor,[role="grid"],table'
-                      ),
-                      ...semantic(node),
-                      ancestor: semantic(
-                        node.parentElement?.closest(
-                          "[role],button,a,input,select,label,h1,h2,h3,h4,h5,h6,section,aside,form"
-                        )
-                      ),
-                      workbenchPart: node.closest(".part.sidebar")
-                        ? "sidebar"
-                        : node.closest(".part.auxiliarybar")
-                          ? "auxiliarybar"
-                          : node.closest(".part.editor")
-                            ? "editor"
-                            : "other"
-                    }))
-                  }));
-                }, groups);
-                assert(
-                  facts.every((group) => group.nodes.every((node) => node.connected)),
-                  "DIAGNOSTIC:incomplete-surface"
-                );
-                surfaces.matches.push({
-                  frame: index,
-                  location:
-                    frame === productFrame
-                      ? "product-frame"
-                      : frame === page.mainFrame()
-                        ? "main-workbench"
-                        : "other-frame",
-                  facts
-                });
-              }
-            } finally {
-              for (const group of groups) for (const node of group.nodes) await node.dispose();
+        if (observation.mode.editingConfirmed)
+          operationsOwner: {
+            checkpoint(`${sampleName}:operations-owner`);
+            const owner = (observation.operationsOwner = {
+              sidebar: false,
+              button: false,
+              pane: false,
+              expandedBefore: null,
+              expandedAfter: null,
+              clicked: false,
+              frames: 0,
+              candidates: 0,
+              content: [],
+              complete: false
+            });
+            await currentGrid();
+            const main = page.mainFrame();
+            const sidebars = main.locator(".part.sidebar:visible").filter({
+              has: main.getByRole("heading", { level: 2, name: /\bData Wrangler\b/i })
+            });
+            const unique = async (locator) => {
+              const count = await locator.count();
+              assert(count <= 32, "DIAGNOSTIC:observation-bound");
+              return count === 1 ? capture(locator, "operations-owner") : null;
+            };
+            const sidebar = await unique(sidebars);
+            if (!sidebar) break operationsOwner;
+            const titles = sidebars.getByRole("heading", { level: 2, name: /\bData Wrangler\b/i });
+            const title = await unique(titles);
+            if (!title) break operationsOwner;
+            owner.sidebar = true;
+            const buttons = sidebars.getByRole("button", { name: /\bOperations\b/i });
+            const button = await unique(buttons);
+            if (!button) break operationsOwner;
+            const headings = buttons.getByRole("heading", { level: 3, name: /\bOperations\b/i });
+            const heading = await unique(headings);
+            if (!heading) break operationsOwner;
+            owner.button = true;
+            const selector = await button.evaluate((node) => {
+              const id = node.getAttribute("aria-controls")?.trim();
+              return id && id.length <= 256 && !/\s/.test(id) ? `#${CSS.escape(id)}` : null;
+            });
+            if (!selector) break operationsOwner;
+            const panes = main.locator(selector);
+            if ((await panes.count()) !== 1) break operationsOwner;
+            const paneHandles = await panes.elementHandles();
+            for (const handle of paneHandles) held.add(handle);
+            assert(paneHandles.length === 1, "DIAGNOSTIC:changed-action");
+            const pane = paneHandles[0];
+            const same = async (locator, elements) => {
+              assert((await locator.count()) === elements.length, "DIAGNOSTIC:changed-action");
+              assert(
+                await locator.evaluateAll(
+                  (nodes, retained) =>
+                    nodes.length === retained.length &&
+                    nodes.every(
+                      (node, index) => node === retained[index] && node.isConnected && node.ownerDocument === document
+                    ),
+                  elements
+                ),
+                "DIAGNOSTIC:changed-action"
+              );
+            };
+            const ownerState = async (pending = false) => {
+              if (!(await currentGrid(pending))) return null;
+              assert(page.mainFrame() === main && !main.isDetached(), "PILOT_GATE:product-frame-changed");
+              for (const [locator, element] of [
+                [sidebars, sidebar],
+                [titles, title],
+                [buttons, button],
+                [headings, heading],
+                [panes, pane]
+              ])
+                await same(locator, [element]);
+              return button.evaluate(
+                (node, { sidebar, title, heading, pane, selector }) => ({
+                  linked:
+                    [sidebar, title, node, heading, pane].every(
+                      (element) => element.isConnected && element.ownerDocument === document
+                    ) &&
+                    [sidebar, title, node, heading].every((element) =>
+                      element.checkVisibility({ checkVisibilityCSS: true })
+                    ) &&
+                    sidebar.contains(title) &&
+                    sidebar.contains(node) &&
+                    node.contains(heading) &&
+                    sidebar.contains(pane) &&
+                    pane !== sidebar &&
+                    !pane.contains(node) &&
+                    !node.contains(pane) &&
+                    `#${CSS.escape((node.getAttribute("aria-controls") || "").trim())}` === selector,
+                  expanded: ["false", "true"].includes(node.getAttribute("aria-expanded"))
+                    ? node.getAttribute("aria-expanded")
+                    : null
+                }),
+                { sidebar, title, heading, pane, selector }
+              );
+            };
+            let state = await ownerState();
+            if (!state.linked) break operationsOwner;
+            owner.pane = true;
+            owner.expandedBefore = state.expanded;
+            if (state.expanded === null) break operationsOwner;
+            if (state.expanded === "false") {
+              state = await ownerState();
+              assert(state.linked && state.expanded === "false", "DIAGNOSTIC:changed-action");
+              await currentGrid();
+              assert(await button.isEnabled(), "DIAGNOSTIC:disabled-action");
+              await button.click({ timeout: 5000 });
+              owner.clicked = true;
+              checkpoint(`${sampleName}:operations-action-returned`);
+              await poll(
+                async () => {
+                  const next = await ownerState(true);
+                  if (!next) return false;
+                  assert(next.linked, "DIAGNOSTIC:changed-action");
+                  return next.expanded === "true";
+                },
+                "operations-expanded",
+                5000
+              );
             }
+            owner.expandedAfter = "true";
+            const scopes = [{ frame: main, root: panes, depth: 0 }];
+            for (const scope of scopes) {
+              assert(scopes.length <= 64 && !scope.frame.isDetached(), "PILOT_GATE:incomplete-frame-discovery");
+              scope.iframes = scope.root.locator("iframe");
+              const count = await scope.iframes.count();
+              assert(scopes.length + count <= 64, "PILOT_GATE:incomplete-frame-discovery");
+              scope.elements = await scope.iframes.elementHandles();
+              for (const element of scope.elements) held.add(element);
+              assert(scope.elements.length === count, "DIAGNOSTIC:incomplete-surface");
+              scope.children = [];
+              for (const element of scope.elements) {
+                const state = await element.evaluate((node) => ({
+                  connected: node.isConnected && node.ownerDocument === document,
+                  visible: node.checkVisibility({ checkVisibilityCSS: true })
+                }));
+                assert(state.connected, "DIAGNOSTIC:incomplete-surface");
+                if (!state.visible) break operationsOwner;
+                const child = await element.contentFrame();
+                if (!child) break operationsOwner;
+                assert(
+                  child.page() === page &&
+                    child.parentFrame() === scope.frame &&
+                    !scopes.some((s) => s.frame === child),
+                  "PILOT_GATE:product-frame-changed"
+                );
+                scope.children.push(child);
+                scopes.push({ frame: child, root: child, depth: scope.depth + 1 });
+              }
+            }
+            owner.frames = scopes.length;
+            for (const scope of scopes) {
+              const queries = [];
+              for (const [key, name] of [
+                ["fill", "Fill missing values"],
+                ["lowercase", "Convert text to lowercase"]
+              ]) {
+                const pattern = new RegExp(`\\b${name}\\b`, "i");
+                queries.push([`${key}Label`, scope.root.getByText(pattern).or(scope.root.getByLabel(pattern))]);
+                for (const role of ["button", "treeitem"])
+                  queries.push([`${key}-${role}`, scope.root.getByRole(role, { name: pattern })]);
+              }
+              for (const role of ["searchbox", "textbox", "tree", "treeitem"])
+                queries.push([role, scope.root.getByRole(role)]);
+              const facts = { depth: scope.depth, counts: {}, collapsedTreeItems: 0, expandedTreeItems: 0 };
+              for (const [key, locator] of queries) {
+                const count = await locator.count();
+                assert(owner.candidates + count <= 32, "DIAGNOSTIC:observation-bound");
+                if (!count) {
+                  facts.counts[key] = 0;
+                  continue;
+                }
+                const state = await locator.evaluateAll((nodes) => ({
+                  count: nodes.length,
+                  connected:
+                    nodes.length <= 32 && nodes.every((node) => node.isConnected && node.ownerDocument === document),
+                  collapsed:
+                    nodes.length <= 32
+                      ? nodes.filter((node) => node.getAttribute("aria-expanded") === "false").length
+                      : 0,
+                  expanded:
+                    nodes.length <= 32
+                      ? nodes.filter((node) => node.getAttribute("aria-expanded") === "true").length
+                      : 0
+                }));
+                assert(state.connected && state.count === count, "DIAGNOSTIC:incomplete-surface");
+                owner.candidates += count;
+                facts.counts[key] = count;
+                if (key === "treeitem") {
+                  facts.collapsedTreeItems = state.collapsed;
+                  facts.expandedTreeItems = state.expanded;
+                }
+              }
+              owner.content.push(facts);
+            }
+            state = await ownerState();
+            assert(state.linked && state.expanded === "true", "DIAGNOSTIC:changed-action");
+            for (const scope of scopes) {
+              assert(!scope.frame.isDetached(), "PILOT_GATE:product-frame-changed");
+              await same(scope.iframes, scope.elements);
+              for (const [index, element] of scope.elements.entries()) {
+                const child = scope.children[index];
+                assert(
+                  (await element.contentFrame()) === child &&
+                    child.parentFrame() === scope.frame &&
+                    child.page() === page,
+                  "PILOT_GATE:product-frame-changed"
+                );
+                assert(
+                  await element.evaluate((node) => node.checkVisibility({ checkVisibilityCSS: true })),
+                  "DIAGNOSTIC:changed-action"
+                );
+              }
+            }
+            owner.complete = true;
           }
-          await currentGrid();
-          const finalFrames = page.frames();
-          assert(
-            finalFrames.length === surfaceFrames.length &&
-              surfaceFrames.every((frame) => finalFrames.includes(frame) && !frame.isDetached()),
-            "PILOT_GATE:incomplete-frame-discovery"
-          );
-          surfaces.complete = true;
-          observation.surfaceInspection = surfaces;
-        }
+        await currentGrid();
         observation.unresolved = [];
         if (!observation.header.clicked) observation.unresolved.push("c00-click");
         if (!observation.quickInsights.observed) observation.unresolved.push("quick-insights-owner");
         if (!observation.mode.editingConfirmed) observation.unresolved.push("editing-route");
+        else if (!observation.operationsOwner.complete) observation.unresolved.push("operations-owner");
         saveObservation();
       } finally {
         for (const element of held) await element.dispose();

@@ -118,27 +118,39 @@ const validDiagnostic = (m, id) => {
   assert.equal(s.observation.computationScope, "unknown");
   assert(Buffer.byteLength(JSON.stringify(s.observation), "utf8") <= 8192);
   assert.equal(Object.hasOwn(s.observation, "forms"), false);
+  assert.equal(Object.hasOwn(s.observation, "surfaceInspection"), false);
   if (s.observation.mode.editingConfirmed) {
-    const surfaces = s.observation.surfaceInspection;
-    assert.equal(surfaces.complete, true);
-    assert(Number.isInteger(surfaces.framesExamined) && surfaces.framesExamined > 0 && surfaces.framesExamined <= 64);
-    assert(Number.isInteger(surfaces.candidates) && surfaces.candidates >= 0 && surfaces.candidates <= 32);
-    assert(Array.isArray(surfaces.matches) && surfaces.matches.length <= surfaces.framesExamined);
-    const frames = new Set();
+    const owner = s.observation.operationsOwner;
+    for (const key of ["sidebar", "button", "pane", "clicked", "complete"]) assert.equal(typeof owner[key], "boolean");
+    assert([null, "false", "true"].includes(owner.expandedBefore));
+    assert([null, "true"].includes(owner.expandedAfter));
+    if (owner.clicked) assert(owner.pane && owner.expandedBefore === "false" && owner.expandedAfter === "true");
+    assert(Number.isInteger(owner.frames) && owner.frames >= 0 && owner.frames <= 64);
+    assert(Number.isInteger(owner.candidates) && owner.candidates >= 0 && owner.candidates <= 32);
+    assert(Array.isArray(owner.content) && owner.content.length <= owner.frames);
     let candidates = 0;
-    for (const match of surfaces.matches) {
-      assert(Number.isInteger(match.frame) && match.frame >= 0 && match.frame < surfaces.framesExamined);
-      assert(!frames.has(match.frame));
-      frames.add(match.frame);
-      assert(["product-frame", "main-workbench", "other-frame"].includes(match.location));
-      assert(Array.isArray(match.facts) && match.facts.length > 0);
-      for (const group of match.facts) {
-        assert(Array.isArray(group.nodes) && group.nodes.length > 0);
-        candidates += group.nodes.length;
+    for (const facts of owner.content) {
+      assert(Number.isInteger(facts.depth) && facts.depth >= 0 && facts.depth < 64);
+      for (const count of Object.values(facts.counts)) {
+        assert(Number.isInteger(count) && count >= 0 && count <= 32);
+        candidates += count;
       }
+      for (const key of ["collapsedTreeItems", "expandedTreeItems"])
+        assert(Number.isInteger(facts[key]) && facts[key] >= 0 && facts[key] <= facts.counts.treeitem);
+      assert(facts.collapsedTreeItems + facts.expandedTreeItems <= facts.counts.treeitem);
     }
-    assert.equal(candidates, surfaces.candidates);
-  } else assert.equal(s.observation.surfaceInspection, null);
+    assert.equal(candidates, owner.candidates);
+    if (owner.complete)
+      assert(
+        owner.sidebar &&
+          owner.button &&
+          owner.pane &&
+          owner.expandedAfter === "true" &&
+          owner.frames > 0 &&
+          owner.content.length === owner.frames
+      );
+    else assert(s.observation.unresolved.includes("operations-owner"));
+  } else assert.equal(s.observation.operationsOwner, null);
   assert.equal(s.actions.length, 0);
   assert.equal(s.completedProfiles, 0);
   assert.equal(s.profileObservations.length, 0);
