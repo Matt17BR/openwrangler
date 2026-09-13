@@ -10,6 +10,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Failed saves of file import settings now warn that reopening may use a different configuration, while keeping the current session available.
 - Failed cleaning-plan replay no longer lets a column resize or viewing sort silently erase saved steps and drafts. Reopening original data requires an explicit choice to replace the saved plan.
 - Pandas Round checks stored Arrow Decimal values before deciding that a column rounds to zero, even when its declared precision is inconsistent.
 - DuckDB CSV and TSV imports retain literal `#` values instead of inferring comments and dropping records.
