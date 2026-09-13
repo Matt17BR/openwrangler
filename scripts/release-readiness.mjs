@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { SaxesParser } from "saxes";
-import { inspectChangelog, inspectNativeRPreview, inspectPrimaryParityMatrix } from "./release-documents.mjs";
+import { inspectChangelog, inspectNativeRSupportDisclosure, inspectPrimaryParityMatrix } from "./release-documents.mjs";
 import { classifyNumericReleaseVersion, NUMERIC_RELEASE_VERSION } from "./release-metadata.mjs";
 import { DuplicateJsonKeyError, parseStrictJson } from "./strict-json.mjs";
 import { inspectVsixArchive, readBoundedVsixFileSnapshot } from "./vsix-archive.mjs";
@@ -65,7 +65,7 @@ function numericReleaseMajor(version) {
 
 function stableRParityProblems(featureParity, version) {
   const major = numericReleaseMajor(version);
-  return major !== undefined && major >= 2n ? inspectNativeRPreview(featureParity) : [];
+  return major !== undefined && major >= 2n ? inspectNativeRSupportDisclosure(featureParity) : [];
 }
 
 function parseJsonObject(contents, label, problems) {
@@ -369,7 +369,7 @@ export function inspectReleaseDocumentationSource({
     return problems;
   }
   return classification.channel === "preview"
-    ? inspectNativeRPreview(featureParity)
+    ? inspectNativeRSupportDisclosure(featureParity)
     : [
         ...inspectPrimaryParityMatrix(featureParity, PRIMARY_PARITY_SCOPE, trackedEvidencePaths, {
           requireComplete: false

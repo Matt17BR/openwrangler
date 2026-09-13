@@ -295,11 +295,11 @@ function artifactOptions(fixture, overrides = {}) {
   };
 }
 
-async function createStableV2Fixture(context) {
+async function createStableV2Fixture(context, heading) {
   const version = "2.0.0";
   const manifest = { ...stablePackage, version };
   return await createFixture(context, {
-    featureParity: `${parityMatrix()}\n${nativeRPreviewDisclosure()}`,
+    featureParity: `${parityMatrix()}\n${nativeRPreviewDisclosure().replace("Native R preview", heading)}`,
     manifest
   });
 }
@@ -404,21 +404,27 @@ test("atomically publishes exactly one source-bound stable artifact triple", asy
   );
 });
 
-test("publishes exact stable 2.x bytes with Native R retained as preview", async (context) => {
-  const fixture = await createStableV2Fixture(context);
-  const receipt = await createCanonicalReleaseArtifact(artifactOptions(fixture).options);
-  const digest = createHash("sha256").update(fixture.candidateBytes).digest("hex");
+for (const heading of ["Native R preview", "Native R support"]) {
+  test(`publishes exact stable 2.x bytes with Native R retained as preview under ${heading}`, async (context) => {
+    const fixture = await createStableV2Fixture(context, heading);
+    const receipt = await createCanonicalReleaseArtifact(artifactOptions(fixture).options);
+    const digest = createHash("sha256").update(fixture.candidateBytes).digest("hex");
 
-  assert.equal(receipt.releaseTag, "v2.0.0");
-  assert.equal(receipt.sourceCommit, fixture.expectedCommit);
-  assert.ok(readFileSync(join(fixture.root, "docs/feature-parity.md"), "utf8").endsWith(nativeRPreviewDisclosure()));
-  assert.equal(runGit(fixture.root, ["ls-files", "docs/performance"]), "");
-  assert.deepEqual(readFileSync(join(fixture.outputDirectory, "openwrangler.vsix")), fixture.candidateBytes);
-  assert.equal(
-    readFileSync(join(fixture.outputDirectory, "openwrangler.vsix.sha256"), "utf8"),
-    `${digest}  openwrangler.vsix\n`
-  );
-});
+    assert.equal(receipt.releaseTag, "v2.0.0");
+    assert.equal(receipt.sourceCommit, fixture.expectedCommit);
+    assert.ok(
+      readFileSync(join(fixture.root, "docs/feature-parity.md"), "utf8").endsWith(
+        nativeRPreviewDisclosure().replace("Native R preview", heading)
+      )
+    );
+    assert.equal(runGit(fixture.root, ["ls-files", "docs/performance"]), "");
+    assert.deepEqual(readFileSync(join(fixture.outputDirectory, "openwrangler.vsix")), fixture.candidateBytes);
+    assert.equal(
+      readFileSync(join(fixture.outputDirectory, "openwrangler.vsix.sha256"), "utf8"),
+      `${digest}  openwrangler.vsix\n`
+    );
+  });
+}
 
 test("incomplete source documentation remains valid while canonical stable authoring refuses it", async (context) => {
   const featureParity = parityMatrix(
@@ -514,6 +520,7 @@ test("source documentation validates incomplete rows, applicability and tracked 
 
 test("source documentation retains channel rules and visible Native R support disclosure", () => {
   const disclosure = nativeRPreviewDisclosure();
+  const support = disclosure.replace("Native R preview", "Native R support");
   const stable = {
     featureParity: `${parityMatrix()}\n${disclosure}`,
     preview: false,
@@ -521,6 +528,10 @@ test("source documentation retains channel rules and visible Native R support di
     version: "2.1.0"
   };
   assert.deepEqual(inspectReleaseDocumentationSource(stable), []);
+  assert.deepEqual(
+    inspectReleaseDocumentationSource({ ...stable, featureParity: `${parityMatrix()}\n${support}` }),
+    []
+  );
   for (const body of [
     "R support is **Preview**. See [qualification](releasing.md).",
     `| Entry path | Current support |
@@ -531,7 +542,7 @@ test("source documentation retains channel rules and visible Native R support di
     assert.deepEqual(
       inspectReleaseDocumentationSource({
         ...stable,
-        featureParity: `${parityMatrix()}\n## Native R preview\n\n${body}`
+        featureParity: `${parityMatrix()}\n## Native R support\n\n${body}`
       }),
       []
     );
@@ -548,13 +559,18 @@ test("source documentation retains channel rules and visible Native R support di
       .map((line) => `> ${line}`)
       .join("\n"),
     `${disclosure}\n${disclosure}`,
+    `${support}\n${support}`,
+    `${support}\n${disclosure}`,
     disclosure.replace("## Native R preview", "## Native R stable"),
     disclosure.replace("## Native R preview", "## **Native R preview**"),
+    support.replace("## Native R support", "## **Native R support**"),
     `${disclosure}\n## Native R stable\n\nSupported.`,
     "## Native R preview\n\n",
+    "## Native R support\n\n",
     "## Native R preview\n\n## Other capabilities\n\nSupported.",
     `<div hidden>\n\n${disclosure}\n</div>`,
-    "## Native R preview\n\n<span hidden>Preview support</span>"
+    "## Native R preview\n\n<span hidden>Preview support</span>",
+    `<div hidden>\n\n${support}\n</div>`
   ]) {
     assert.notDeepEqual(
       inspectReleaseDocumentationSource({ ...stable, featureParity: `${parityMatrix()}\n${hiddenOrMissing}` }),
@@ -573,6 +589,7 @@ test("source documentation retains channel rules and visible Native R support di
     version: previewPackage.version
   };
   assert.deepEqual(inspectReleaseDocumentationSource(preview), []);
+  assert.deepEqual(inspectReleaseDocumentationSource({ ...preview, featureParity: support }), []);
   assert.notDeepEqual(inspectReleaseDocumentationSource({ ...preview, preview: false }), []);
   assert.notDeepEqual(inspectReleaseDocumentationSource({ ...preview, featureParity: "" }), []);
 });

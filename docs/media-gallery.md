@@ -164,8 +164,8 @@ final sort key.
 
 ## R notebooks and documents (Preview)
 
-Native R keeps its Preview label in every release channel. The label describes support maturity and does not block a
-stable Open Wrangler release.
+Native R support is currently Preview, including in stable Open Wrangler releases.
+[Support by entry path and graduation criteria](feature-parity.md#native-r-preview) describe the remaining qualification work.
 
 <a href="images/editor-acceptance/vscode-notebook-r-operations-dark.png"><img alt="Open Wrangler Operations listing base data.frame, tibble, data.table, and collapse dataframes from IRkernel" src="images/editor-acceptance/vscode-notebook-r-operations-detail-dark.png" width="960"></a>
 
