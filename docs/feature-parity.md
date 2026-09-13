@@ -224,6 +224,8 @@ Polars Pivot Longer accepts compatible lazy categorical columns before their val
 category mappings retain their dtype; separate mappings and differently ordered Enums remain incompatible.
 
 Pandas Pivot Wider preserves object identifiers containing `NaT` and mixed scalar values in generated code.
+Native Arrow timestamp and duration identifiers retain their exact ticks and remain distinct from null groups,
+including the minimum int64 value and dictionary-encoded identifiers.
 Integer `1` and string `"1"` remain distinct keys. Generated Group By preserves the same integral object-key values
 and dtypes as live execution. Missing-value checks recognize the actual Pandas `NA` and `NaT` sentinels; similarly
 named custom values retain their values in pages, nested cells, Pivot and Fill. Integral objects with
@@ -234,6 +236,7 @@ hashability limits remain.
 Polars Pivot Wider accepts public identifier and key columns named `len` and output names resembling temporary
 columns. Native eager/lazy and executable generated-code regressions cover collisions and duplicate null keys in
 `python/tests/test_pivot_wider.py`.
+An empty input produces zero rows even when no identifier columns remain, preserving the declared output types.
 
 ## Native values and precision
 

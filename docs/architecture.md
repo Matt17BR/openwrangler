@@ -783,6 +783,8 @@ the same admission helper.
 Pandas Pivot Wider shares object identifier classification, names-domain validation, grouping, first-row restoration
 and output assembly between live execution and standalone generated code. Apply reuses the identifier frame and key
 states prepared by its own validation; separate preflight remains independent, and preparation does not persist between calls.
+Prepared Arrow identifiers retain native validity, including present timestamp and duration values at the minimum
+int64 tick. Floating identifiers retain the existing NaN, null and signed-zero normalization.
 Object classification uses native inference first and refines ambiguous values with
 the existing missing-value rules. Mixed scalar identifiers retain their native representatives; homogeneous lists and
 structs remain refused. Categories, nullable integer storage, Boolean storage and the existing object fallback follow
@@ -844,6 +846,8 @@ names remain valid in eager and lazy frames, independently of which columns a pr
 Pivot Longer compares exact selected-column dtypes from the schema during preflight, live execution and generated
 execution. Category mapping identity and Enum order must match. Compatibility checks use schema metadata;
 row-count bounds and result validation retain their existing execution paths.
+Pivot Wider without identifiers groups by the validated names column's presence. This preserves source
+cardinality for empty input without a count scan or temporary source-column write.
 
 Dataset statistics for nonempty LazyFrames with visible Object columns retain exact missing-value counts and report
 the duplicate count as unavailable. This path streams only the existing missing-metrics query; it does not build a

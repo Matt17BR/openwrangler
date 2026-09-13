@@ -6,6 +6,8 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Pandas Pivot Wider keeps valid extreme Arrow timestamps and durations separate from null identifier groups.
+- Polars Pivot Wider preserves zero rows for empty input without identifier columns.
 - Successful cleaning-history changes close saved-step editors so reopening them uses the current input columns. Failed changes retain the form and its inputs.
 - Native Edit Step requests resume after a pending page finishes, instead of waiting indefinitely for an inspection that never started.
 - Switching a live dataframe's mode preserves a viewing filter or sort confirmed while the switch waits. Earlier-step rewrites also retain the view accepted by preceding requests.
