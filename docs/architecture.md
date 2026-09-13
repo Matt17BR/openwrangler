@@ -773,6 +773,14 @@ CSV and Parquet export prepare logical scalar dictionary, `bool8` and UUID colum
 index levels use the same logical values; changed MultiIndex levels are rebuilt from actual row labels so equivalent
 values coalesce. Parquet omits an unrequested index before native dtype inspection. Source arrays, index levels and
 codes remain unchanged. Exported `bool8` and UUID fields use Boolean and string storage respectively.
+CSV export prepares affected Arrow timestamps and durations as native string chunks, boxing at most 64,000 values
+at a time. This preserves nanosecond timestamp endpoints, duration ticks and historical timezone offsets through
+the native writer. Temporal categories with missing codes use the same text preparation; preserved index levels inspect only
+used labels. Retained text storage grows with the affected values or categories. Arrow timestamps stored in seconds,
+milliseconds or microseconds require UTC and local calendar years 1 through 9999; unsupported values are refused
+before opening the writer. Empty exports and omitted indexes do not inspect unused temporal values. Parquet keeps
+its native temporal storage and capacity limits. Timezone names outside Arrow's namespace use the timezone accepted
+by Pandas, with exact UTC conversion for affected calendar boundaries.
 CSV export refuses nonempty Pandas frames containing exported Sparse duration columns or preserved index levels with
 unit multipliers, because native writing can change their physical values. Refusal precedes writer opening and preserves
 the reserved destination. Empty positive-multiplier exports and omitted indexes retain their existing behavior; no

@@ -93,6 +93,8 @@ Cleaned-data export requires no draft and writes the committed plan, never the v
 file destination through the shared [publication boundary](architecture.md#trust-source-integrity-and-export).
 Pandas CSV and Parquet exports require an explicit preserve-or-omit index choice. Pandas and Polars CSV/Parquet writers
 use identity-checked handles before truncation.
+Pandas CSV preserves exact Arrow temporal values and missing categories. Arrow timestamps stored in seconds,
+milliseconds or microseconds require UTC and local years 1 through 9999; an unsupported export leaves the destination unchanged.
 Pandas dataframes retaining negative-scale Arrow Decimal columns cannot be exported to Parquet.
 Script and data exports protect the session's concrete source files even after a rename. They also reject source-path
 replacement during code synchronization or destination selection. If source identity is unavailable, viewing remains

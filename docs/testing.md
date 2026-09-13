@@ -143,6 +143,9 @@ Use the existing owners to choose a focused source check:
   Configurable-export checks also own Polars schema-based CSV syntax refusal before writer opening or lazy execution,
   safe correction, decoded fields and native null-versus-empty readback. The existing Polars lazy-writer test owns
   streaming to the exact reserved file object.
+  Pandas Arrow temporal CSV cases check exact decoded fields, category nulls, preserved indexes, historical offsets,
+  bounded boxing and native Parquet controls. Calendar-range refusals are checked before writer opening, including
+  a hidden row in an editing Session with unchanged destination, source and revision.
   Pandas Sparse duration CSV cases check multiplier refusal through an editing Session, unchanged destination bytes
   and identity, source/revision preservation, and ordinary-unit, empty and omitted-index exports.
 - **Python engines and generated programs:** [Pandas](../python/tests/test_pandas_engine.py),
