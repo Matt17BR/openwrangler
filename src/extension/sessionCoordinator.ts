@@ -843,15 +843,6 @@ export class SessionCoordinator implements vscode.Disposable {
       steps = session.metadata.steps.filter((_step, index) => index !== stepIndex);
     }
 
-    const view = {
-      ...session.viewState,
-      filterModel:
-        action === "applyDraft" &&
-        session.draftBaseFilterModel &&
-        session.draftBaseViewChangeEpoch === session.viewChangeEpoch
-          ? session.draftBaseFilterModel
-          : session.metadata.filterModel
-    };
     let resolveRewriteSettlement: (() => void) | undefined;
     session.reconfiguring = true;
     session.scheduler.cancelBackground();
@@ -876,6 +867,15 @@ export class SessionCoordinator implements vscode.Disposable {
           session.publicId
         );
       }
+      const view = {
+        ...session.viewState,
+        filterModel:
+          action === "applyDraft" &&
+          session.draftBaseFilterModel &&
+          session.draftBaseViewChangeEpoch === session.viewChangeEpoch
+            ? session.draftBaseFilterModel
+            : session.metadata.filterModel
+      };
       const rewriteSettlement = new Promise<void>((resolve) => {
         resolveRewriteSettlement = resolve;
       });
@@ -964,10 +964,6 @@ export class SessionCoordinator implements vscode.Disposable {
     const staleOrigin = sessionOriginMismatch(session.openRequest, session.origin);
     if (staleOrigin) return protocolError("invalid_source_origin", staleOrigin, true, session.publicId);
 
-    const nextViewState = reconcileViewingState(
-      { ...viewState, filterModel: session.metadata.filterModel },
-      session.metadata
-    );
     session.reconfiguring = true;
     session.scheduler.cancelBackground();
     const runtimeDelegate = session.delegate;
@@ -995,6 +991,10 @@ export class SessionCoordinator implements vscode.Disposable {
       }
       const originMismatch = sessionOriginMismatch(session.openRequest, session.origin);
       if (originMismatch) return protocolError("invalid_source_origin", originMismatch, true, session.publicId);
+      const nextViewState = reconcileViewingState(
+        { ...viewState, filterModel: session.metadata.filterModel },
+        session.metadata
+      );
       const response = await this.serializeSessionEstablishment(runtimeDelegate, () =>
         this.runtimeReconfigurer.reopenLiveSessionInMode(
           session,

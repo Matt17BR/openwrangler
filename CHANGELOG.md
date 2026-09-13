@@ -6,6 +6,9 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Successful cleaning-history changes close saved-step editors so reopening them uses the current input columns. Failed changes retain the form and its inputs.
+- Native Edit Step requests resume after a pending page finishes, instead of waiting indefinitely for an inspection that never started.
+- Switching a live dataframe's mode preserves a viewing filter or sort confirmed while the switch waits. Earlier-step rewrites also retain the view accepted by preceding requests.
 - Pandas Convert Type and Format Datetime retain native Arrow dates such as year 2500 on the minimum runtime. Date conversion no longer wraps at timezone boundaries, and formatting honors Python `%f` and `%S` syntax.
 - Pandas Formula multiplies Arrow Decimal128 `(38, 38)` columns exactly, returning Decimal256 `(76, 76)` results without losing fractional digits.
 - Generated DuckDB One-hot encoding preserves binary categories when the input connection defines a `from_hex` macro.

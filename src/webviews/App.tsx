@@ -192,7 +192,7 @@ export function App() {
     dialog: operationDialog,
     openDialog: openOperationDialog,
     closeDialog: closeOperationDialogState,
-    reconcileEditingStep
+    closeEditingDialog
   } = useOperationDialogLifecycle({
     scheduleFocusRestoration: scheduleWebviewFocusRestoration,
     canRestoreFocus: canRestoreFocusTo
@@ -474,6 +474,7 @@ export function App() {
 
   const clearStepInspection = useCallback(
     (notifyHost = true, resumeProfiling = true) => {
+      setQueuedOperationIntent((current) => (current?.action === "editStep" ? undefined : current));
       storePendingStepInspection(undefined);
       storeStepInspection(undefined);
       storeStepInspectionTarget(undefined);
@@ -1047,15 +1048,18 @@ export function App() {
         } else if (response.action === "editStep") {
           const currentMetadata = metadataRef.current;
           const stepId = response.stepId;
+          const selectedStep = currentMetadata?.steps.find((step) => step.id === stepId);
           if (
             !currentMetadata ||
             response.expectedSessionId !== currentMetadata.sessionId ||
             response.expectedRevision !== currentMetadata.revision ||
-            !currentMetadata.steps.some((step) => step.id === stepId)
+            !selectedStep ||
+            !canStartOperation(currentMetadata, selectedStep.kind)
           ) {
             return;
           }
-          if (stepInspectionRef.current?.stepId === stepId) {
+          setQueuedStepSelection(undefined);
+          if (stepInspectionRef.current?.stepId === stepId || foregroundRequest.current === "mutation") {
             requestOperationIntent(
               { action: "editStep", stepId },
               response.expectedSessionId,
@@ -1476,7 +1480,7 @@ export function App() {
         }
         if (response.kind === "stepPreview") closeOperationDialog();
         else {
-          reconcileEditingStep(nextMetadata.steps);
+          closeEditingDialog();
           clearStepInspection(false, false);
         }
         restartProfilingAfterMutation(nextMetadata);
@@ -1519,7 +1523,7 @@ export function App() {
     isModeChangePending,
     nextViewRequestId,
     openSidePanel,
-    reconcileEditingStep,
+    closeEditingDialog,
     reconcileSidePanelAvailability,
     requestOperationIntent,
     requestImportOptionsChange,
@@ -1560,22 +1564,44 @@ export function App() {
     ) {
       return;
     }
-    if (queuedOperationIntent.action === "editStep" && stepInspection?.stepId !== queuedOperationIntent.stepId) {
-      return;
-    }
     const timer = window.setTimeout(() => {
+      if (foregroundRequest.current || isImportOptionsPending()) return;
+      if (queuedOperationIntent.action === "editStep") {
+        const currentMetadata = metadataRef.current;
+        const selectedStep = currentMetadata?.steps.find((step) => step.id === queuedOperationIntent.stepId);
+        if (
+          !currentMetadata ||
+          currentMetadata.sessionId !== queuedOperationIntent.sessionId ||
+          currentMetadata.revision !== queuedOperationIntent.revision ||
+          !selectedStep ||
+          !canStartOperation(currentMetadata, selectedStep.kind) ||
+          (stepInspectionTargetRef.current?.stepId === queuedOperationIntent.stepId && stepInspectionError)
+        ) {
+          setQueuedOperationIntent(undefined);
+          return;
+        }
+        if (pendingStepInspectionRef.current) return;
+        if (stepInspectionRef.current?.stepId !== queuedOperationIntent.stepId) {
+          requestStepInspection(queuedOperationIntent.stepId);
+          return;
+        }
+      }
       setQueuedOperationIntent(undefined);
       requestOperationIntent(queuedOperationIntent, queuedOperationIntent.sessionId, queuedOperationIntent.revision);
     }, 0);
     return () => window.clearTimeout(timer);
   }, [
     importOptionsPending,
+    isImportOptionsPending,
     loading,
     mutationPending,
+    pendingStepInspection,
     projectionLoading,
     queuedOperationIntent,
     requestOperationIntent,
-    stepInspection
+    requestStepInspection,
+    stepInspection,
+    stepInspectionError
   ]);
 
   useEffect(() => {

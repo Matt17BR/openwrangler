@@ -181,8 +181,9 @@ describe("SessionCoordinator earlier-step plan rewrites", () => {
     expect(harness.closedRuntimeIds()).toHaveLength(1);
   });
 
-  it("keeps a confirmed view change that arrives after the replacement draft", async () => {
-    const harness = rewriteHarness({ draft: replacement });
+  it("keeps a view change confirmed while a replacement draft waits for an in-flight page", async () => {
+    const foregroundPage = deferred<OpenWranglerResponse>();
+    const harness = rewriteHarness({ draft: replacement, oldPage: foregroundPage.promise });
     const coordinator = new SessionCoordinator();
     const bridge = coordinator.createBridge({ request: harness.request });
     const opened = await open(bridge, initialSource);
@@ -192,8 +193,8 @@ describe("SessionCoordinator earlier-step plan rewrites", () => {
       sort: [{ column: "value", direction: "asc" as const, nulls: "last" as const }]
     };
 
-    const page = await bridge.request({
-      kind: "getPage",
+    const pageRequest = {
+      kind: "getPage" as const,
       sessionId: opened.metadata.sessionId,
       revision: opened.metadata.revision,
       offset: 0,
@@ -202,10 +203,16 @@ describe("SessionCoordinator earlier-step plan rewrites", () => {
       columnLimit: 16,
       filterModel: currentFilter,
       viewRequestId: "view-after-preview"
-    });
-    expect(page).toMatchObject({ kind: "page", metadata: { filterModel: currentFilter } });
+    };
+    const page = bridge.request(pageRequest);
+    await vi.waitFor(() =>
+      expect(harness.request).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "getPage", sessionId: "runtime-old" }),
+        undefined
+      )
+    );
 
-    const response = await bridge.rewriteCleaningPlan?.(
+    const rewrite = bridge.rewriteCleaningPlan?.(
       opened.metadata.sessionId,
       opened.metadata.revision,
       first.id,
@@ -213,8 +220,35 @@ describe("SessionCoordinator earlier-step plan rewrites", () => {
       { offset: 0, limit: 100, columnOffset: 0, columnLimit: 16 }
     );
 
-    expect(response).toMatchObject({ kind: "planUpdated", metadata: { filterModel: currentFilter } });
-    expect(harness.candidatePageRequests()).toEqual([expect.objectContaining({ filterModel: currentFilter })]);
+    expect(harness.candidateOpenRequests()).toEqual([]);
+    foregroundPage.resolve(
+      pageFor(
+        { ...pageRequest, sessionId: "runtime-old" },
+        {
+          ...metadataFor({
+            runtimeId: "runtime-old",
+            source: initialSource,
+            revision: opened.metadata.revision,
+            steps: [first, second, third],
+            draftStep: replacement,
+            filterModel: currentFilter
+          }),
+          draftReplacesStepId: first.id
+        }
+      )
+    );
+    try {
+      await expect(page).resolves.toMatchObject({
+        kind: "page",
+        revision: opened.metadata.revision,
+        metadata: { filterModel: currentFilter }
+      });
+      await expect(rewrite).resolves.toMatchObject({ kind: "planUpdated", metadata: { filterModel: currentFilter } });
+      expect(harness.candidatePageRequests()).toEqual([expect.objectContaining({ filterModel: currentFilter })]);
+      expect(coordinator.activeSession()?.metadata.filterModel).toEqual(currentFilter);
+    } finally {
+      await coordinator.shutdown();
+    }
   });
 
   it("persists the complete candidate before publishing it once", async () => {

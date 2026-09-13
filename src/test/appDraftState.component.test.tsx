@@ -550,7 +550,7 @@ describe("App draft state boundaries", () => {
     }
   );
 
-  it.each(["earlier edit", "new operation"])("retains a %s and its typed input after Undo", async (kind) => {
+  it.each(["earlier edit", "new operation"])("reconciles a %s after accepted Undo", async (kind) => {
     const fixture = formulaPreviewFixture("polars", true);
     const original = formulaPreviewFixture("polars", false);
     const saved = fixture.metadata.steps[0];
@@ -617,6 +617,11 @@ describe("App draft state boundaries", () => {
       page: fixture.page,
       code: "# saved Formula"
     });
+    if (kind === "earlier edit") {
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(postMessage.mock.calls.map(([message]) => message.kind)).not.toContain("ready");
+      return;
+    }
     expect(screen.getByRole("dialog")).toBe(dialog);
     expect(within(dialog).getByLabelText("Numeric value", { exact: true })).toHaveDisplayValue("7");
     expect(within(dialog).getByLabelText("New column", { exact: true })).toHaveValue("new_result");
@@ -624,7 +629,7 @@ describe("App draft state boundaries", () => {
     expect(preview).toBeEnabled();
     fireEvent.click(preview);
     const request = onlyPreviewRequest();
-    expect(request.replaceStepId).toBe(kind === "earlier edit" ? saved.id : undefined);
+    expect(request.replaceStepId).toBeUndefined();
     expect(request.step).toMatchObject({ kind: "formula", params: { value: 7, newColumn: "new_result" } });
     expect(postMessage.mock.calls.map(([message]) => message.kind)).not.toContain("ready");
   });
