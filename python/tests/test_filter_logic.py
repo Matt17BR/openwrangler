@@ -184,7 +184,8 @@ def _engine(backend: str) -> Any:
 def _execute_generated_filter(engine: Any, frame: Any, model: dict[str, Any]) -> Any:
     namespace: dict[str, Any] = {}
     bound_model = deepcopy(model)
-    positions = {str(name): position for position, name in enumerate(frame.columns)}
+    columns = frame.collect_schema().names() if isinstance(frame, pl.LazyFrame) else frame.columns
+    positions = {str(name): position for position, name in enumerate(columns)}
     for column_filter in bound_model["filters"]:
         name = str(column_filter["column"])
         column_filter["column"] = {
@@ -1290,6 +1291,206 @@ def test_live_and_generated_value_selection_uses_exact_decimal_identity(backend)
 
     assert _filtered_labels(engine.apply_filter_model(frame, model), backend) == ["first", "equivalent"]
     assert _filtered_labels(_execute_generated_filter(engine, frame, model), backend) == ["first", "equivalent"]
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize("scale", [0, 2])
+def test_polars_decimal_filters_keep_exact_thresholds_and_source_capacity(lazy, scale):
+    maximum = Decimal("9" * (38 - scale) + ("." + "9" * scale if scale else ""))
+    source = pl.DataFrame(
+        {
+            "label": ["minimum", "negative", "zero", "one", "maximum", "null"],
+            "value": pl.Series(
+                [maximum.copy_negate(), Decimal(-1), Decimal(0), Decimal(1), maximum, None],
+                dtype=pl.Decimal(38, scale),
+            ),
+        }
+    )
+    before = source.clone()
+    frame = source.lazy() if lazy else source
+    engine = PolarsEngine()
+    predicates = [
+        ("equals", {"value": "1.001"}, []),
+        ("notEquals", {"value": "1.001"}, ["minimum", "negative", "zero", "one", "maximum"]),
+        ("gt", {"value": "1.001"}, ["maximum"]),
+        ("gte", {"value": "1.001"}, ["maximum"]),
+        ("lt", {"value": "1.001"}, ["minimum", "negative", "zero", "one"]),
+        ("lte", {"value": "1.001"}, ["minimum", "negative", "zero", "one"]),
+        ("between", {"value": "-1.001", "secondValue": "1.001"}, ["negative", "zero", "one"]),
+        ("lt", {"value": "1e1000000000"}, ["minimum", "negative", "zero", "one", "maximum"]),
+        ("gt", {"value": "-1e1000000000"}, ["minimum", "negative", "zero", "one", "maximum"]),
+        ("equals", {"value": "1e-1000000000"}, []),
+        ("lt", {"value": "1e-1000000000"}, ["minimum", "negative", "zero"]),
+    ]
+    cases = []
+    for operation, values, expected in predicates:
+        model = {
+            "filters": [
+                {
+                    "column": "value",
+                    "type": "decimal",
+                    "predicates": [{"kind": "predicate", "operator": operation, **values}],
+                }
+            ],
+            "sort": [],
+        }
+        cases.append((model, expected))
+    for selected, expected in [(["1.001"], []), (["1.001", "1." + "0" * 100, "1e1000000000"], ["one"])]:
+        model = _value_selection_model("decimal", selected[0])
+        model["filters"][0]["valueFilter"]["selectedValues"] = selected
+        cases.append((model, expected))
+    null_alternative = deepcopy(cases[0][0])
+    null_alternative["filters"][0]["logic"] = "or"
+    null_alternative["filters"][0]["predicates"].append({"kind": "predicate", "operator": "isNull"})
+    cases.append((null_alternative, ["null"]))
+    with localcontext() as context:
+        context.prec = 2
+        for model, labels in cases:
+            expected = source.filter(pl.col("label").is_in(labels))
+            for result in [engine.apply_filter_model(frame, model), _execute_generated_filter(engine, frame, model)]:
+                if isinstance(result, pl.LazyFrame):
+                    result = result.collect()
+                assert result.schema == source.schema
+                assert result.equals(expected)
+        assert not any(context.flags.values())
+    for subset in [source.head(0), source.tail(1)]:
+        frame = subset.lazy() if lazy else subset
+        for result in [
+            engine.apply_filter_model(frame, cases[0][0]),
+            _execute_generated_filter(engine, frame, cases[0][0]),
+        ]:
+            if isinstance(result, pl.LazyFrame):
+                result = result.collect()
+            assert result.height == 0
+            assert result.schema == source.schema
+    assert source.equals(before)
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize("storage", ["datetime_ms", "datetime_ns", "duration_ms"])
+def test_polars_temporal_filters_keep_exact_native_unit_bounds(lazy, storage):
+    duration = storage == "duration_ms"
+    unit = "ns" if storage == "datetime_ns" else "ms"
+    dtype = pl.Duration(unit) if duration else pl.Datetime(unit, "America/New_York")
+    source = pl.DataFrame(
+        {
+            "label": ["minimum", "negative", "zero", "one", "maximum", "null"],
+            "value": pl.Series([-(2**63), -1, 0, 1, 2**63 - 1, None], dtype=pl.Int64).cast(dtype),
+        }
+    )
+    before = source.clone()
+    frame = source.lazy() if lazy else source
+    engine = PolarsEngine()
+    kind = "duration" if duration else "datetime"
+    lower = "-0.000001" if duration else "1969-12-31T23:59:59.999999Z"
+    upper = "0.000001" if duration else "1970-01-01T00:00:00.000001Z"
+    zero = "0" if duration else "1970-01-01T00:00:00Z"
+    predicates = [
+        ("equals", {"value": upper}, []),
+        ("lt", {"value": upper}, ["minimum", "negative", "zero"] + (["one"] if unit == "ns" else [])),
+        ("between", {"value": lower, "secondValue": upper}, ["negative", "zero", "one"] if unit == "ns" else ["zero"]),
+    ]
+    cases = []
+    for operation, values, labels in predicates:
+        cases.append(
+            (
+                {
+                    "filters": [
+                        {
+                            "column": "value",
+                            "type": kind,
+                            "predicates": [{"kind": "predicate", "operator": operation, **values}],
+                        }
+                    ],
+                    "sort": [],
+                },
+                labels,
+            )
+        )
+    model = _value_selection_model(kind, upper)
+    model["filters"][0]["valueFilter"]["selectedValues"].append(zero)
+    if storage == "datetime_ns":
+        model["filters"][0]["valueFilter"]["selectedValues"].append("2500-01-01T00:00:00Z")
+    model["filters"][0]["valueFilter"]["includeNulls"] = True
+    cases.append((model, ["zero", "null"]))
+    for model, labels in cases:
+        expected = source.filter(pl.col("label").is_in(labels))
+        for result in [engine.apply_filter_model(frame, model), _execute_generated_filter(engine, frame, model)]:
+            if isinstance(result, pl.LazyFrame):
+                result = result.collect()
+            assert result.schema == source.schema
+            assert result.equals(expected)
+    assert source.equals(before)
+
+
+@pytest.mark.parametrize("storage", ["datetime64[s]", "datetime64[ms, UTC]", "timedelta64[ms]"])
+def test_pandas_native_temporal_membership_keeps_exact_selected_values(storage):
+    duration = storage.startswith("timedelta")
+    value = timedelta(0) if duration else datetime(1970, 1, 1, tzinfo=timezone.utc if "UTC" in storage else None)
+    source = pd.DataFrame({"label": ["value", "null"], "value": pd.Series([value, None], dtype=storage)})
+    source.index = pd.Index(["same", "same"], name="source-row")
+    before = source.copy(deep=True)
+    engine = PandasEngine()
+    kind = "duration" if duration else "datetime"
+    suffix = "Z" if "UTC" in storage else ""
+    exact = "0" if duration else "1970-01-01T00:00:00" + suffix
+    inexact = "0.000001" if duration else "1970-01-01T00:00:00.000001" + suffix
+    for selected, include_nulls, positions in [
+        ([inexact], False, []),
+        ([inexact, exact], False, [0]),
+        ([inexact, exact], True, [0, 1]),
+    ]:
+        model = _value_selection_model(kind, selected[0])
+        model["filters"][0]["valueFilter"].update(selectedValues=selected, includeNulls=include_nulls)
+        for result in [engine.apply_filter_model(source, model), _execute_generated_filter(engine, source, model)]:
+            pd.testing.assert_frame_equal(result, source.iloc[positions])
+    if not duration:
+        model = _value_selection_model(kind, "1970-01-01T00:00:00Z")
+        model["filters"][0]["valueFilter"]["selectedValues"].append("1970-01-01T00:00:00")
+        for result in [engine.apply_filter_model(source, model), _execute_generated_filter(engine, source, model)]:
+            pd.testing.assert_frame_equal(result, source.iloc[:1])
+    pd.testing.assert_frame_equal(source, before)
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars"])
+def test_exact_temporal_view_membership_keeps_session_state_after_rejected_input(tmp_path, backend):
+    path = tmp_path / "temporal-membership.parquet"
+    pl.DataFrame(
+        {
+            "label": ["value", "null"],
+            "value": pl.Series([datetime(1970, 1, 1, tzinfo=timezone.utc), None], dtype=pl.Datetime("ms", "UTC")),
+        }
+    ).write_parquet(path)
+    original_bytes = path.read_bytes()
+    manager = SessionManager()
+    try:
+        opened = manager.open_session({"kind": "file", "label": path.name, "path": str(path)}, backend=backend)
+        sid = opened["metadata"]["sessionId"]
+        session = manager.sessions[sid]
+        original = session.original
+        model = _value_selection_model("datetime", "1970-01-01T00:00:00.000001Z")
+        page = manager.get_page(sid, 0, 0, 5, model)
+        assert page["page"]["totalRows"] == 0
+        assert page["metadata"]["filterModel"] == model
+        filtered, generation, epoch = session.filtered, session.view_generation, session.view_change_epoch
+        cache = list(session.page_cache.items())
+        invalid = _value_selection_model("datetime", "not-a-datetime")
+        with pytest.raises(EngineError, match="datetime"):
+            manager.get_page(sid, 0, 0, 5, invalid)
+        assert session.filter_model == model
+        assert session.filtered is filtered
+        assert session.view_generation == generation
+        assert session.view_change_epoch == epoch
+        assert list(session.page_cache.items()) == cache
+        assert manager.get_page(sid, 0, 0, 5, model)["page"] is page["page"]
+        corrected = _value_selection_model("datetime", "1970-01-01T00:00:00Z")
+        assert manager.get_page(sid, 0, 0, 5, corrected)["page"]["totalRows"] == 1
+        assert session.original is original
+        assert session.plan == []
+        assert session.draft_step is None
+    finally:
+        manager.close_all()
+    assert path.read_bytes() == original_bytes
 
 
 @pytest.mark.parametrize("backend", ["pandas", "polars"])

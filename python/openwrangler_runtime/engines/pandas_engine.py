@@ -309,11 +309,36 @@ def _pandas_integer_filter(series: Any, method: str, values: Sequence[Any]) -> A
     return getattr(series, method)(np.dtype(dtype).type(value))
 
 
+def _pandas_exact_temporal_members(series: Any, values: Any) -> Any:
+    from datetime import datetime, timezone
+
+    import pandas as pd
+
+    if not isinstance(series.array, (pd.arrays.DatetimeArray, pd.arrays.TimedeltaArray)):
+        return values
+    scale = {"s": 1, "ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}[series.dt.unit]
+    selected = []
+    for value in values:
+        delta = (
+            value - datetime(1970, 1, 1, tzinfo=timezone.utc if value.tzinfo else None)
+            if isinstance(value, datetime)
+            else value
+        )
+        micros = (delta.days * 86_400 + delta.seconds) * 1_000_000 + delta.microseconds
+        ticks, remainder = divmod(micros * scale, 1_000_000)
+        if not remainder and -(2**63) < ticks < 2**63:
+            selected.append(value)
+    return selected
+
+
 def _pandas_numeric_filter(series: Any, method: str, values: Sequence[Any], duration_keys: Any = None) -> Any:
     import operator
 
     import numpy as np
     import pandas as pd
+
+    if method == "isin":
+        values = _pandas_exact_temporal_members(series, values)
 
     if duration_keys is not None and duration_keys is not series:
         operands = [_pandas_duration_operand(value) for value in values]
@@ -5830,8 +5855,15 @@ def _generated_pandas_numeric_key_helpers() -> list[str]:
 
 def _generated_pandas_numeric_filter_helpers() -> list[str]:
     return [
+        "from typing import Any",
+        "",
+        getsource(_pandas_exact_temporal_members),
+        "",
         "def _open_wrangler_numeric_filter(series, method, values, duration_keys=None):",
         "    import operator",
+        "",
+        '    if method == "isin":',
+        "        values = _pandas_exact_temporal_members(series, values)",
         "",
         "    if duration_keys is not None and duration_keys is not series:",
         "        operands = [_open_wrangler_duration_operand(value) for value in values]",
