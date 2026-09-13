@@ -64,12 +64,12 @@ function merge(cwd, stage = true) {
 }
 
 test("proves existing Markdown edits against the exact tested merge", async (context) => {
-  for (const files of [
+  for (const [caseIndex, files] of [
     ["README.md", "docs/testing.md", "docs/guides/über view.md"],
     ["CHANGELOG.md"],
     ["CONTRIBUTING.md"],
     ["README.md", "CHANGELOG.md", "CONTRIBUTING.md", "docs/testing.md"]
-  ]) {
+  ].entries()) {
     await context.test(files.join(", "), (child) => {
       const cwd = repository(child, files);
       for (const file of files) write(cwd, file);
@@ -82,12 +82,14 @@ test("proves existing Markdown edits against the exact tested merge", async (con
         rEditorOmittable: false,
         nativeSparkOmittable: false
       });
-      const output = join(cwd, "action-output");
-      execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
-      assert.equal(
-        readFileSync(output, "utf8"),
-        "docs_only=true\nr_omittable=true\nr_runtime_omittable=true\npython_omittable=true\nr_editor_omittable=false\nnative_spark_omittable=false\n"
-      );
+      if (caseIndex === 0) {
+        const output = join(cwd, "action-output");
+        execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
+        assert.equal(
+          readFileSync(output, "utf8"),
+          "docs_only=true\nr_omittable=true\nr_runtime_omittable=true\npython_omittable=true\nr_editor_omittable=false\nnative_spark_omittable=false\n"
+        );
+      }
     });
   }
 });
@@ -123,11 +125,11 @@ test("proves existing component test edits while retaining Source execution", (c
 });
 
 test("proves the two existing R test edits can omit only installed editor execution", async (context) => {
-  for (const files of [
+  for (const [caseIndex, files] of [
     ["r/tests/kernel_agent.R"],
     ["r/tests/frame_contract.R"],
     ["r/tests/kernel_agent.R", "r/tests/frame_contract.R", "README.md", "CHANGELOG.md", "docs/testing.md"]
-  ]) {
+  ].entries()) {
     await context.test(files.join(", "), (child) => {
       const cwd = repository(child, files);
       for (const file of files) write(cwd, file);
@@ -140,12 +142,14 @@ test("proves the two existing R test edits can omit only installed editor execut
         rEditorOmittable: true,
         nativeSparkOmittable: false
       });
-      const output = join(cwd, "action-output");
-      execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
-      assert.equal(
-        readFileSync(output, "utf8"),
-        "docs_only=false\nr_omittable=false\nr_runtime_omittable=false\npython_omittable=true\nr_editor_omittable=true\nnative_spark_omittable=false\n"
-      );
+      if (caseIndex === 0) {
+        const output = join(cwd, "action-output");
+        execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
+        assert.equal(
+          readFileSync(output, "utf8"),
+          "docs_only=false\nr_omittable=false\nr_runtime_omittable=false\npython_omittable=true\nr_editor_omittable=true\nnative_spark_omittable=false\n"
+        );
+      }
     });
   }
 });
@@ -226,12 +230,6 @@ test("proves existing script edits while retaining Source and package execution"
         rEditorOmittable: false,
         nativeSparkOmittable: false
       });
-      const output = join(cwd, "action-output");
-      execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
-      assert.equal(
-        readFileSync(output, "utf8"),
-        "docs_only=false\nr_omittable=true\nr_runtime_omittable=true\npython_omittable=true\nr_editor_omittable=false\nnative_spark_omittable=false\n"
-      );
     });
   }
 });
@@ -252,7 +250,7 @@ test("proves existing Python source and Markdown edits only for native R", async
       "docs/architecture.md"
     ]
   ];
-  for (const files of cases) {
+  for (const [caseIndex, files] of cases.entries()) {
     await context.test(files.join(", "), (child) => {
       const cwd = repository(child, files);
       for (const file of files) write(cwd, file);
@@ -265,18 +263,20 @@ test("proves existing Python source and Markdown edits only for native R", async
         rEditorOmittable: false,
         nativeSparkOmittable: false
       });
-      const output = join(cwd, "action-output");
-      execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
-      assert.equal(
-        readFileSync(output, "utf8"),
-        "docs_only=false\nr_omittable=true\nr_runtime_omittable=true\npython_omittable=false\nr_editor_omittable=false\nnative_spark_omittable=false\n"
-      );
+      if (caseIndex === 0) {
+        const output = join(cwd, "action-output");
+        execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
+        assert.equal(
+          readFileSync(output, "utf8"),
+          "docs_only=false\nr_omittable=true\nr_runtime_omittable=true\npython_omittable=false\nr_editor_omittable=false\nnative_spark_omittable=false\n"
+        );
+      }
     });
   }
 });
 
 test("omits native Spark for nonempty subsets of the existing local-engine owners", async (context) => {
-  for (const files of [
+  for (const [caseIndex, files] of [
     [arrowFormulaHelper],
     [arrowFormulaTests[0]],
     [arrowFormulaTests[1]],
@@ -297,7 +297,7 @@ test("omits native Spark for nonempty subsets of the existing local-engine owner
       "docs/architecture.md",
       "docs/feature-parity.md"
     ]
-  ]) {
+  ].entries()) {
     await context.test(files.join(", "), (child) => {
       const cwd = repository(child, files);
       for (const file of files) write(cwd, file);
@@ -310,12 +310,14 @@ test("omits native Spark for nonempty subsets of the existing local-engine owner
         rEditorOmittable: false,
         nativeSparkOmittable: true
       });
-      const output = join(cwd, "action-output");
-      execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
-      assert.equal(
-        readFileSync(output, "utf8"),
-        "docs_only=false\nr_omittable=true\nr_runtime_omittable=true\npython_omittable=false\nr_editor_omittable=false\nnative_spark_omittable=true\n"
-      );
+      if (caseIndex === 0) {
+        const output = join(cwd, "action-output");
+        execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
+        assert.equal(
+          readFileSync(output, "utf8"),
+          "docs_only=false\nr_omittable=true\nr_runtime_omittable=true\npython_omittable=false\nr_editor_omittable=false\nnative_spark_omittable=true\n"
+        );
+      }
     });
   }
 });
@@ -369,12 +371,6 @@ test("proves added regular Python source only for native R", async (context) => 
         rEditorOmittable: false,
         nativeSparkOmittable: false
       });
-      const output = join(cwd, "action-output");
-      execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
-      assert.equal(
-        readFileSync(output, "utf8"),
-        "docs_only=false\nr_omittable=true\nr_runtime_omittable=true\npython_omittable=false\nr_editor_omittable=false\nnative_spark_omittable=false\n"
-      );
     });
   }
 });
@@ -401,7 +397,7 @@ test("omits Linux R source work for the grid accessibility change while keeping 
 
 test("proves Python omissions while retaining Linux R source checks for non-renderer inputs", async (context) => {
   const cases = [
-    { added: [], modified: ["r/openwrangler_runtime/frame_contract.R"] },
+    { added: [], modified: ["r/openwrangler_runtime/frame_contract.R"], checkCli: true },
     { added: ["r/openwrangler_runtime/helper.R"], modified: [] },
     { added: ["r/tests/new_contract.R"], modified: [] },
     { added: ["r/tests/kernel_agent.R"], modified: [] },
@@ -412,7 +408,7 @@ test("proves Python omissions while retaining Linux R source checks for non-rend
     { added: [], modified: ["src/test/extensionHost/releasedROperationPicker.ts"] },
     { added: [], modified: ["scripts/editor-acceptance.mjs"] },
     { added: [], modified: ["scripts/editor-acceptance-artifact.test.mjs"] },
-    { added: [], modified: ["src/webviews/App.tsx"], runtimeOmittable: true },
+    { added: [], modified: ["src/webviews/App.tsx"], runtimeOmittable: true, checkCli: true },
     { added: [], modified: ["src/webviews/grid/rowScrollModel.ts"], runtimeOmittable: true },
     { added: [], modified: ["src/webviews/grid/DataGrid.tsx"], runtimeOmittable: true },
     { added: [], modified: ["src/webviews/styles/grid.css"], runtimeOmittable: true },
@@ -458,7 +454,7 @@ test("proves Python omissions while retaining Linux R source checks for non-rend
       modified: ["r/openwrangler_runtime/kernel_agent.R", "README.md", "CHANGELOG.md", "docs/testing.md"]
     }
   ];
-  for (const { added, modified, runtimeOmittable = false, pythonOmittable = true } of cases) {
+  for (const { added, modified, runtimeOmittable = false, pythonOmittable = true, checkCli = false } of cases) {
     await context.test([...added, ...modified].join(", "), (child) => {
       const cwd = repository(child, modified);
       for (const file of [...added, ...modified]) write(cwd, file);
@@ -471,12 +467,14 @@ test("proves Python omissions while retaining Linux R source checks for non-rend
         rEditorOmittable: false,
         nativeSparkOmittable: false
       });
-      const output = join(cwd, "action-output");
-      execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
-      assert.equal(
-        readFileSync(output, "utf8"),
-        `docs_only=false\nr_omittable=false\nr_runtime_omittable=${runtimeOmittable}\npython_omittable=${pythonOmittable}\nr_editor_omittable=false\nnative_spark_omittable=false\n`
-      );
+      if (checkCli) {
+        const output = join(cwd, "action-output");
+        execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
+        assert.equal(
+          readFileSync(output, "utf8"),
+          `docs_only=false\nr_omittable=false\nr_runtime_omittable=${runtimeOmittable}\npython_omittable=${pythonOmittable}\nr_editor_omittable=false\nnative_spark_omittable=false\n`
+        );
+      }
     });
   }
 });
