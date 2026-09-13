@@ -282,6 +282,8 @@ jobs:
           if (!nzchar(output)) stop("GITHUB_OUTPUT is not available.")
           cat(sprintf("executable=%s\nversion=%s\n", executable, version), file = output, append = TRUE)
       - run: npm ci --ignore-scripts
+      - name: Native macOS process cancellation contracts
+        run: npm run test:scripts:native
       - &r_private_artifact_contracts
         name: Check native R artifact cleanup
         run: npx --no-install vitest run --environment node src/test/rPrivateArtifactBoundary.unit.test.ts

@@ -1,14 +1,514 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { once } from "node:events";
-import { readFileSync } from "node:fs";
+import { EventEmitter, once } from "node:events";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmdirSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { createLinuxProcessSignaler, runRContractPhase } from "./run-r-contract-tests.mjs";
+import {
+  createLinuxProcessSignaler,
+  createPosixProcessTracker,
+  runRContractPhase,
+  runRContractPhasesWithSignalForwarding
+} from "./run-r-contract-tests.mjs";
+import { prepareMacProcessOwner } from "./r-contract-macos.mjs";
 import { resolveAcceptancePython } from "./packaged-python-preflight.mjs";
 
 const runner = new URL("./run-r-contract-tests.mjs", import.meta.url).href;
+
+function macIdentity(pid, fields = {}) {
+  return {
+    pid,
+    parentPid: 1,
+    startIdentity: String(pid + 100000),
+    parentUniqueId: "1",
+    beforeParentUniqueId: "1",
+    idVersion: 10,
+    beforeIdVersion: 10,
+    originalParentVersion: 0,
+    marker: 0,
+    ownerMarked: false,
+    state: "?",
+    identityResolution: "macos-unique-id",
+    ...fields
+  };
+}
+
+test("macOS tracker retains both exec samples through reread and retirement", () => {
+  let root = macIdentity(40001, { ownerMarked: true });
+  let scan = [];
+  let reads = [];
+  let targets;
+  const tracker = createPosixProcessTracker(root.pid, "owned-test", {
+    readProcessIdentity: (pid) =>
+      pid === 40001 ? (reads.length ? reads.shift() : root) : scan.find((x) => x.pid === pid),
+    listProcessIdentities: () => scan,
+    signalVerifiedProcesses: (values) => {
+      targets = values;
+    }
+  });
+  try {
+    // The after version is already known; the before sample must still be retained.
+    root = macIdentity(40001, { beforeIdVersion: 11 });
+    tracker.signal("SIGTERM");
+    assert.deepEqual(targets[0].observedIdVersions, [10, 11]);
+    scan = [macIdentity(40001, { beforeIdVersion: 12, idVersion: 13 })];
+    reads = [root, macIdentity(40001, { beforeIdVersion: 14, idVersion: 14 })];
+    tracker.observe();
+    root = macIdentity(40001, { beforeIdVersion: 14, idVersion: 14 });
+    scan = [];
+    tracker.signal("SIGTERM");
+    assert.deepEqual(targets[0].observedIdVersions, [10, 11, 12, 13, 14]);
+    root = undefined;
+    scan = [macIdentity(40002, { originalParentVersion: 12 })];
+    assert.throws(() => tracker.isSettled({ isSettled: () => true }), /ambiguous native parent evidence/);
+  } finally {
+    tracker.stop();
+  }
+});
+
+test("macOS tracker distinguishes positive ownership from historical parent ambiguity", async (context) => {
+  for (const marker of [0, -1, 1]) {
+    await context.test(`marker ${marker}`, () => {
+      const root = macIdentity(40001, { ownerMarked: true });
+      let scan = [macIdentity(40002, { marker, ownerMarked: marker === 1, beforeIdVersion: 20, idVersion: 21 })];
+      let targets;
+      const tracker = createPosixProcessTracker(root.pid, "owned-test", {
+        readProcessIdentity: (pid) => (pid === root.pid ? root : scan.find((x) => x.pid === pid)),
+        listProcessIdentities: () => scan,
+        signalVerifiedProcesses: (values) => {
+          targets = values;
+        }
+      });
+      try {
+        tracker.signal("SIGTERM");
+        assert.deepEqual(
+          targets.map((value) => value.pid),
+          marker === 1 ? [40001, 40002] : [40001]
+        );
+        if (marker === 1) {
+          scan = [macIdentity(40002, { beforeIdVersion: 21, idVersion: 22 })];
+          tracker.signal("SIGTERM");
+          assert.deepEqual(targets[1].observedIdVersions, [20, 21, 22]);
+        } else {
+          scan = [macIdentity(40002, { marker, beforeParentUniqueId: root.startIdentity })];
+          assert.throws(() => tracker.signal("SIGTERM"), /ambiguous native parent evidence/);
+          assert.deepEqual(
+            targets.map((value) => value.pid),
+            [40001]
+          );
+        }
+      } finally {
+        tracker.stop();
+      }
+    });
+  }
+});
+
+test("macOS tracker bounds observed execution history without dropping ambiguity evidence", () => {
+  let root = macIdentity(40001);
+  const tracker = createPosixProcessTracker(root.pid, "owned-test", {
+    readProcessIdentity: () => root,
+    listProcessIdentities: () => [],
+    signalVerifiedProcesses: () => {}
+  });
+  try {
+    for (let version = 11; version < 266; version++) {
+      root = macIdentity(40001, { beforeIdVersion: version, idVersion: version });
+      tracker.observe();
+    }
+    root = macIdentity(40001, { beforeIdVersion: 266, idVersion: 266 });
+    assert.throws(() => tracker.observe(), /256-version bound/);
+  } finally {
+    tracker.stop();
+  }
+});
+
+test("macOS tracker requires the current parent's PID and lifetime together", () => {
+  const root = macIdentity(40001);
+  const children = [
+    macIdentity(40002, { parentPid: root.pid, parentUniqueId: root.startIdentity }),
+    macIdentity(40003, { parentPid: root.pid, parentUniqueId: "999999" })
+  ];
+  let targets;
+  const tracker = createPosixProcessTracker(root.pid, "owned-test", {
+    readProcessIdentity: (pid) => [root, ...children].find((value) => value.pid === pid),
+    listProcessIdentities: () => children,
+    signalVerifiedProcesses: (values) => {
+      targets = values;
+    }
+  });
+  try {
+    tracker.signal("SIGTERM");
+    assert.deepEqual(
+      targets.map((value) => value.pid),
+      [40001, 40002]
+    );
+  } finally {
+    tracker.stop();
+  }
+});
+
+function macPreparationFixture(context) {
+  const parent = mkdtempSync(join(tmpdir(), "ow-mac-owner-test-"));
+  context.after(() => rmSync(parent, { recursive: true, force: true }));
+  const calls = [];
+  const preflight = { capability: "native-identity-signal", staleSelfRefusedLive: true };
+  return {
+    parent,
+    calls,
+    preflight,
+    environment: { ...process.env, TMPDIR: parent },
+    compile: async (input, options) => {
+      assert.equal(input.executable, "/usr/bin/xcrun");
+      assert.equal(options.timeoutMs, 20000);
+      assert.equal(options.maxOutputBytes, 16 * 1024);
+      input.beforeSpawnCheck();
+      writeFileSync(input.args.at(-1), "controlled native helper", { flag: "wx", mode: 0o770 });
+    },
+    execute: (_file, args) => {
+      calls.push(args);
+      return JSON.stringify(preflight);
+    }
+  };
+}
+
+test(
+  "macOS preparation rejects cancellation and failed admission before exposing a helper",
+  { skip: process.platform === "win32" },
+  async (context) => {
+    for (const kind of [
+      "already aborted",
+      "before spawn",
+      "after close",
+      "compiler failure",
+      "unsettled compiler",
+      "preflight failure"
+    ]) {
+      await context.test(kind, async (t) => {
+        const fixture = macPreparationFixture(t);
+        const controller = new AbortController();
+        let compileCalls = 0;
+        if (kind === "already aborted") controller.abort("SIGTERM");
+        const compilerFailure = Object.assign(
+          new Error(kind),
+          kind === "unsettled compiler" ? { code: "EDITOR_PROCESS_TREE_UNVERIFIED" } : {}
+        );
+        await assert.rejects(
+          prepareMacProcessOwner(fixture.environment, {
+            platform: "darwin",
+            terminationSignal: controller.signal,
+            runCommand: async (input, options) => {
+              compileCalls++;
+              if (kind === "before spawn") controller.abort("SIGINT");
+              input.beforeSpawnCheck();
+              if (kind.endsWith("compiler") || kind === "compiler failure") throw compilerFailure;
+              await fixture.compile(input, options);
+              if (kind === "after close") controller.abort("SIGTERM");
+            },
+            execute: kind === "preflight failure" ? () => "{}" : fixture.execute
+          }),
+          (error) => {
+            if (kind.includes("compiler")) assert.equal(error, compilerFailure);
+            else if (kind !== "preflight failure") assert.match(error.message, /interrupted by SIG/);
+            if (kind === "unsettled compiler") assert.equal(existsSync(error.macHelperRetainedRoot), true);
+            return true;
+          }
+        );
+        assert.equal(compileCalls, kind === "already aborted" ? 0 : 1);
+        assert.equal(fixture.calls.length, 0);
+        assert.equal(readdirSync(fixture.parent).length, kind === "unsettled compiler" ? 1 : 0);
+      });
+    }
+  }
+);
+
+test(
+  "macOS prepared adapter validates samples and signals only the current exact lifetime",
+  { skip: process.platform === "win32" },
+  async (context) => {
+    const fixture = macPreparationFixture(context);
+    const wire = ({ ownerMarked: _ownerMarked, state: _state, identityResolution: _identityResolution, ...record }) =>
+      record;
+    let record = wire(macIdentity(40001, { beforeIdVersion: 20, idVersion: 21 }));
+    let refused = false;
+    const calls = [];
+    const envelope = (records) => ({ records, cpuMs: 0, wallMs: 0, metadataBytes: 0 });
+    const prepared = await prepareMacProcessOwner(fixture.environment, {
+      platform: "darwin",
+      runCommand: fixture.compile,
+      execute: (_file, args) => {
+        calls.push(args);
+        if (args[0] === "preflight") return JSON.stringify(fixture.preflight);
+        if (args[0] === "signal") {
+          const result = JSON.stringify({ results: [{ pid: record.pid, result: refused ? 2 : 0 }] });
+          if (refused) throw Object.assign(new Error("native refusal"), { status: 3, stdout: result });
+          return result;
+        }
+        return JSON.stringify(envelope([record]));
+      }
+    });
+    const owner = prepared.createProcessOwner("owned-test");
+    assert.equal(owner.readProcessIdentity(40001).beforeIdVersion, 20);
+    assert.deepEqual(owner.signalVerifiedProcesses([macIdentity(40001)], "owned-test", "SIGTERM"), [
+      macIdentity(40001, { beforeIdVersion: 20, idVersion: 21 })
+    ]);
+    assert.deepEqual(calls.at(-1), ["signal", "SIGTERM", "40001", "140001", "21"]);
+    record = { ...record, startIdentity: "999999" };
+    assert.deepEqual(owner.signalVerifiedProcesses([macIdentity(40001)], "owned-test", "SIGTERM"), []);
+    assert.equal(calls.at(-1)[0], "inspect");
+    record = { ...record, startIdentity: "140001" };
+    refused = true;
+    assert.throws(
+      () => owner.signalVerifiedProcesses([macIdentity(40001)], "owned-test", "SIGKILL"),
+      /may remain live/
+    );
+    const valid = record;
+    for (const invalid of [
+      { ...valid, beforeIdVersion: undefined },
+      { ...valid, beforeIdVersion: 2 ** 32 },
+      { ...valid, beforeParentUniqueId: "01" },
+      { ...valid, beforeParentUniqueId: String(2n ** 64n) },
+      { ...valid, pid: 40002 }
+    ]) {
+      record = invalid;
+      assert.throws(() => owner.readProcessIdentity(40001));
+    }
+    renameSync(prepared.binary, `${prepared.binary}.original`);
+    writeFileSync(prepared.binary, "controlled native helper", { mode: 0o500 });
+    const callsBeforeReplacement = calls.length;
+    assert.throws(() => owner.listProcessIdentities(), /helper identity changed/);
+    assert.equal(calls.length, callsBeforeReplacement);
+    prepared.dispose();
+    prepared.dispose();
+    assert.deepEqual(readdirSync(fixture.parent), []);
+    assert.throws(() => owner.listProcessIdentities(), /already retired/);
+  }
+);
+
+test(
+  "macOS tracker retains signal-time execution history before retiring a parent",
+  { skip: process.platform === "win32" },
+  async (context) => {
+    const fixture = macPreparationFixture(context);
+    const wire = ({ ownerMarked: _ownerMarked, state: _state, identityResolution: _identityResolution, ...record }) =>
+      record;
+    let root = wire(macIdentity(40001, { marker: 1 }));
+    let children = [];
+    let armed = false;
+    let reads = 0;
+    let signalVersion;
+    const prepared = await prepareMacProcessOwner(fixture.environment, {
+      platform: "darwin",
+      runCommand: fixture.compile,
+      execute: (_file, args) => {
+        if (args[0] === "preflight") return JSON.stringify(fixture.preflight);
+        if (args[0] === "signal") {
+          signalVersion = Number(args[4]);
+          root = undefined;
+          children = [wire(macIdentity(40002, { originalParentVersion: 11 }))];
+          return JSON.stringify({ results: [{ pid: 40001, result: 0 }] });
+        }
+        if (args[0] === "inspect" && armed && Number(args[2]) === 40001 && ++reads === 3)
+          root = { ...root, beforeIdVersion: 11, idVersion: 11 };
+        const records =
+          args[0] === "scan"
+            ? children
+            : Number(args[2]) === 40001
+              ? root
+                ? [root]
+                : []
+              : children.filter((child) => child.pid === Number(args[2]));
+        return JSON.stringify({ records, cpuMs: 0, wallMs: 0, metadataBytes: 0 });
+      }
+    });
+    const tracker = createPosixProcessTracker(40001, "owned-test", prepared.createProcessOwner("owned-test"));
+    try {
+      armed = true;
+      tracker.signal("SIGTERM");
+      assert.equal(signalVersion, 11, "the adapter must signal the execution it just observed");
+      assert.throws(
+        () => tracker.isSettled({ isSettled: () => true }),
+        /ambiguous native parent evidence/,
+        "the fresh signal-time parent execution must prevent false settlement"
+      );
+      assert.equal(children.length, 1, "ambiguity must not grant signaling authority over the orphan");
+    } finally {
+      tracker.stop();
+      prepared.dispose();
+    }
+  }
+);
+
+test(
+  "macOS helper retirement preserves a replacement private root",
+  { skip: process.platform === "win32" },
+  async (context) => {
+    const fixture = macPreparationFixture(context);
+    const prepared = await prepareMacProcessOwner(fixture.environment, {
+      platform: "darwin",
+      runCommand: fixture.compile,
+      execute: fixture.execute
+    });
+    const moved = `${prepared.directory}.original`;
+    renameSync(prepared.directory, moved);
+    mkdirSync(prepared.directory, { mode: 0o700 });
+    const unrelated = join(prepared.directory, "unrelated.txt");
+    writeFileSync(unrelated, "preserve replacement");
+    assert.throws(() => prepared.createProcessOwner("owned-test"), /identity/);
+    assert.throws(
+      () => prepared.dispose(),
+      (error) => {
+        assert.equal(error.macHelperRetainedRoot, prepared.directory);
+        return true;
+      }
+    );
+    assert.equal(readFileSync(unrelated, "utf8"), "preserve replacement");
+    assert.equal(existsSync(join(moved, "process-owner")), true);
+  }
+);
+
+test(
+  "macOS compiler output failure settles its inherited process group or retains the private root",
+  { skip: process.platform === "win32" },
+  async (context) => {
+    const { runBoundedEditorCommand } = await import("./editor-acceptance.mjs");
+    for (const settles of [true, false]) {
+      await context.test(`settles ${settles}`, async (t) => {
+        const fixture = macPreparationFixture(t);
+        let groupAlive = true;
+        const signals = [];
+        const child = Object.assign(new EventEmitter(), {
+          pid: 40001,
+          exitCode: null,
+          signalCode: null,
+          stdout: new PassThrough(),
+          stderr: new PassThrough(),
+          kill: () => {
+            assert.fail("the compiler leader has already exited");
+          }
+        });
+        t.after(() => {
+          child.emit("close", 0, null);
+          child.stdout.destroy();
+          child.stderr.destroy();
+        });
+        t.mock.method(process, "kill", (pid, signal) => {
+          assert.equal(pid, -child.pid);
+          if (!groupAlive) throw Object.assign(new Error("gone"), { code: "ESRCH" });
+          if (signal !== 0) signals.push(signal);
+          if (signal === "SIGKILL" && settles) {
+            groupAlive = false;
+            child.emit("close", 0, null);
+          }
+        });
+        await assert.rejects(
+          prepareMacProcessOwner(fixture.environment, {
+            platform: "darwin",
+            execute: fixture.execute,
+            runCommand: (input, options) =>
+              runBoundedEditorCommand(input, {
+                ...options,
+                terminationGraceMs: 1,
+                killGraceMs: 1,
+                signalSource: new EventEmitter(),
+                spawnProcess: () => {
+                  queueMicrotask(() => {
+                    child.exitCode = 0;
+                    child.emit("exit", 0, null);
+                    child.stdout.write(Buffer.alloc(options.maxOutputBytes + 1));
+                  });
+                  return child;
+                }
+              })
+          }),
+          (error) => {
+            if (!settles) assert.equal(existsSync(error.macHelperRetainedRoot), true);
+            return true;
+          }
+        );
+        assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+        assert.equal(fixture.calls.length, 0);
+        assert.equal(readdirSync(fixture.parent).length, settles ? 0 : 1);
+      });
+    }
+  }
+);
+
+test("macOS runner owns one preparation through cancellation, phases and retirement", async (context) => {
+  for (const kind of ["success", "cancel during preparation", "phase failure", "cleanup failure"]) {
+    await context.test(kind, async () => {
+      const signalSource = new EventEmitter();
+      const events = [];
+      const phases = ["first", "second"].map((id) => ({ id, environment: process.env }));
+      const factory = () => {};
+      const run = runRContractPhasesWithSignalForwarding(phases, {
+        platform: "darwin",
+        signalSource,
+        writeLine: () => {},
+        prepareMacOwner: async (_environment, { terminationSignal }) => {
+          events.push("prepare");
+          assert.equal(terminationSignal.aborted, false);
+          if (kind === "cancel during preparation") signalSource.emit("SIGTERM");
+          return {
+            createProcessOwner: factory,
+            dispose: () => {
+              events.push("dispose");
+              if (kind === "cleanup failure") throw new Error("controlled helper retirement failure");
+            }
+          };
+        },
+        runPhase: async (phase, options) => {
+          assert.equal(options.macProcessOwner, factory);
+          events.push(phase.id);
+          if (kind === "phase failure")
+            throw Object.assign(new Error("controlled unsettled phase"), { processTreeUnsettled: true });
+        }
+      });
+      if (kind === "success") await run;
+      else await assert.rejects(run);
+      assert.deepEqual(
+        events,
+        kind === "cancel during preparation"
+          ? ["prepare", "dispose"]
+          : kind === "phase failure"
+            ? ["prepare", "first", "dispose"]
+            : ["prepare", "first", "second", "dispose"]
+      );
+      assert.equal(signalSource.listenerCount("SIGINT"), 0);
+      assert.equal(signalSource.listenerCount("SIGTERM"), 0);
+    });
+  }
+});
+
+test("macOS direct phase refuses launch without its prepared native owner", async () => {
+  await assert.rejects(
+    runRContractPhase(
+      { id: "unstarted", label: "unstarted", environment: process.env, timeoutMs: 1000 },
+      {
+        platform: "darwin",
+        writeLine: () => {},
+        spawnProcess: () => {
+          assert.fail("phase launched before native ownership was prepared");
+        }
+      }
+    ),
+    /prepared native process owner/
+  );
+});
 
 function identityOf(child) {
   const stat = readFileSync(`/proc/${child.pid}/stat`, "utf8");
@@ -18,9 +518,14 @@ function identityOf(child) {
 function cancellationProbe(kind) {
   const program = `
     import assert from 'node:assert/strict';
-    import { spawn } from 'node:child_process';
+    import { execFileSync, spawn } from 'node:child_process';
     import { readFileSync } from 'node:fs';
-    const processGroupOf = pid => Number(readFileSync('/proc/' + pid + '/stat', 'utf8').split(') ')[1].split(' ')[2]);
+    const processGroupOf = pid => {
+      if (process.platform === 'linux') return Number(readFileSync('/proc/' + pid + '/stat', 'utf8').split(') ')[1].split(' ')[2]);
+      const group = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'pgid='], {encoding:'utf8', timeout:250, killSignal:'SIGKILL', maxBuffer:1024});
+      assert.match(group, /^\\s*[1-9][0-9]*\\s*$/u);
+      return Number(group);
+    };
     import { runRContractPhasesWithSignalForwarding } from ${JSON.stringify(runner)};
     const kind = ${JSON.stringify(kind)};
     const output = [];
@@ -89,10 +594,11 @@ function cancellationProbe(kind) {
         }
       });
     } catch (error) { failure = error; }
-    const state = await exit;
     const messages = error => [error?.message, ...(error?.errors ?? []).flatMap(messages)].filter(Boolean);
     const details = messages(failure).join('\\n');
     assert.ok(failure, 'the interrupted/timed-out phase must fail');
+    assert.ok(exit, details || 'the fixture did not start');
+    const state = await exit;
     assert.doesNotMatch(details, /no OS-held signal identity/);
     if (kind === 'unverifiable') assert.match(details, /cleanup also failed:.*stat became unreadable/);
     else assert.doesNotMatch(details, /cleanup also failed/);
@@ -106,24 +612,37 @@ function cancellationProbe(kind) {
     else assert.equal(startedNext, true, 'a settled timeout can proceed to the next selected phase');
     console.log('verified ' + kind);
   `;
-  const result = spawnSync(process.execPath, ["--input-type=module", "-e", program], {
-    env: process.env,
-    encoding: "utf8",
-    timeout: 10_000,
-    maxBuffer: 128 * 1024
-  });
-  assert.equal(result.error, undefined);
-  assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.match(result.stdout, new RegExp(`verified ${kind}`));
+  const privateDirectory =
+    process.platform === "darwin" ? mkdtempSync(join(tmpdir(), "openwrangler-r-native-")) : undefined;
+  try {
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", program], {
+      env: privateDirectory ? { ...process.env, TMPDIR: privateDirectory } : process.env,
+      encoding: "utf8",
+      timeout: process.platform === "darwin" ? 35_000 : 10_000,
+      maxBuffer: 128 * 1024
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, new RegExp(`verified ${kind}`));
+    if (privateDirectory) {
+      assert.deepEqual(readdirSync(privateDirectory), [], "the settled helper must retire its private root");
+      rmdirSync(privateDirectory);
+    }
+  } catch (error) {
+    if (privateDirectory) error.message += `\nRetained private TMPDIR: ${privateDirectory}`;
+    throw error;
+  }
 }
 
 test(
-  "Linux runner defaults terminate owned work on signals, deadlines and excessive output",
+  "POSIX runner defaults terminate owned work on signals, deadlines and excessive output",
   {
-    skip: process.platform !== "linux"
+    skip: process.platform !== "linux" && process.platform !== "darwin"
   },
   async (context) => {
-    for (const kind of ["SIGINT", "SIGTERM", "timeout", "ignoring", "output", "detached", "unverifiable"]) {
+    const kinds = ["SIGINT", "SIGTERM", "timeout", "ignoring", "output", "detached"];
+    if (process.platform === "linux") kinds.push("unverifiable");
+    for (const kind of kinds) {
       await context.test(kind, () => cancellationProbe(kind));
     }
   }

@@ -235,7 +235,7 @@ npm run test:scripts:native
 
 The [R runner](../scripts/run-r-contract-tests.mjs) separates frame/catalog/transport and kernel-agent checks. Each
 group runs phases serially in fresh children. The full command first runs native process contracts.
-[`test:scripts:native`](../scripts/run-r-contract-tests.native.test.mjs) selects Linux cancellation or Windows Job
+[`test:scripts:native`](../scripts/run-r-contract-tests.native.test.mjs) selects native Linux/macOS cancellation or Windows Job
 Object behavior on the current platform; ordinary Source execution does not require this native owner. Nested Rscript
 contracts fail on unexpected warnings even if they handle a later error. Preserve caller temporary-directory settings.
 
@@ -257,9 +257,17 @@ portable parser controls retain one-expression and physical-line byte bounds. Op
 Linux R phase supervision needs the selected repository Python 3.10 to 3.14 standard library and kernel pidfd support,
 but no Python dataframe packages. Capability checks precede phase launch; signaling verifies the exact phase marker
 and process identity. Native controls exercise SIGINT, SIGTERM, deadlines, output limits, closed readers, escalation
-and detached descendants. An unverifiable live target leaves settlement unverified. macOS cancellation remains
-unresolved in [#955](https://github.com/Matt17BR/openwrangler/issues/955); parent SIGKILL and runner crashes are outside
-the shutdown guarantee.
+and detached descendants. An unverifiable live target leaves settlement unverified.
+
+On macOS, the runner compiles one private native helper per invocation using `/usr/bin/xcrun clang`, so the Xcode
+Command Line Tools must be installed. Preparation, native capability checks and stale-token refusal precede R launch.
+Compiler output and execution time are bounded; failed or interrupted preparation settles its inherited process group
+or retains the private root as unsafe. The R tracker uses native lifetime identities and fresh execution tokens for
+signaling. It retains observed lifetimes across exec, including signal-time reads, and refuses ambiguous historical-parent
+evidence. The former second-resolution `ps` fallback is removed.
+Discovery relies on inherited markers and observed ancestry; it cannot contain an entirely unobserved, marker-stripped
+chain. Parent SIGKILL and runner crashes remain outside the shutdown guarantee, as recorded in
+[#955](https://github.com/Matt17BR/openwrangler/issues/955).
 
 Destination errors or cancellation stop later phases through verified cleanup. Successful phases drain output after
 child settlement and before continuing, with normal backpressure. This does not bound exit when a reader remains

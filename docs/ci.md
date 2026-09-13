@@ -190,9 +190,10 @@ The macOS job supplies system ZeroMQ through Homebrew as described in that depen
 The focused terminal lane uses the pinned R extensions; Quarto extension and CLI qualification remains with the
 literate-documents lane.
 
-The `macos-r` and `windows-r` jobs first run the existing private R artifact filesystem tests in Node, before private
+The `macos-r` and `windows-r` jobs run the existing private R artifact filesystem tests in Node, before private
 R dependencies or editor preparation. These exercise real file cleanup and refusal of replaced files and directories
-on each platform without launching R or an editor.
+on each platform without launching R or an editor. The macOS job also runs the existing native process cancellation
+owner through default helper preparation, before private R dependency installation or editor preparation.
 The released-Jupyter jobs then run the canonical `kernel:numeric-portability` source case with private jsonlite and
 bit64 dependencies before opening the editor. Parquet dependencies remain with the separate export and editor owners.
 It checks the platform-sensitive arithmetic, selections and generated programs without
