@@ -629,6 +629,16 @@ Profile extrema use native aggregation. Supported Fill methods retain native tem
 anchors in live and generated code without changing source arrays.
 Using the minimum nanosecond timestamp as a filter value remains unsupported under the existing microsecond input precision.
 
+Pandas Convert Type and Format Datetime keep already typed Arrow dates and timestamps out of text parsing.
+Converting a timestamp to datetime retains its exact unit, timezone and validity; dates convert natively to seconds
+or milliseconds. Converting to date preserves the local calendar day. It floors integer ticks to seconds before
+timezone conversion and checks date32 capacity, so timezone shifts and narrowing cannot wrap extreme dates.
+Format Datetime uses Pandas/Python strftime syntax, including six-digit `%f` and seconds-only `%S`. Formatting floors
+nanoseconds to microseconds, retaining dates before the epoch and the present minimum nanosecond timestamp.
+Named Arrow timezones use standard-library ZoneInfo; fixed offsets use Pandas' existing timezone handling.
+Unrepresentable typed values refuse the transformation. Text inputs retain the existing coercion of invalid dates
+to missing. Live execution and standalone generated code share this preparation and preserve source values.
+
 Directional Fill shares its complete-run, donor and assignment algorithm between live execution and standalone
 generated code. Linear Fill likewise shares its ordered-gap and coordinate-weight arithmetic. Target, coordinate
 and missing-value preparation remain with the engine, along with dtype and original row-order restoration.

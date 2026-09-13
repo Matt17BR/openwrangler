@@ -2255,6 +2255,89 @@ def test_mark_duplicates_keeps_hidden_members_identity_history_and_export(tmp_pa
         manager.close_all()
 
 
+@pytest.mark.parametrize("target", ["format", "datetime", "date"])
+def test_pandas_arrow_temporal_transforms_keep_hidden_values_and_refuse_loss(monkeypatch, target: str) -> None:
+    from datetime import datetime, timezone
+
+    import pandas as pd
+    import pyarrow as pa
+
+    source = pd.DataFrame(
+        {
+            "value": pd.Series(
+                [datetime(2000, 1, 1, tzinfo=timezone.utc), datetime(2500, 1, 1, tzinfo=timezone.utc), None],
+                dtype=pd.ArrowDtype(pa.timestamp("us", "UTC")),
+            ),
+            "unsafe": pd.arrays.ArrowExtensionArray(
+                pa.array([946684800, -(2**63), None], type=pa.timestamp("s", "UTC"))
+            ),
+        }
+    )
+    source.index = [7, 7, 8]
+    original = source.copy(deep=True)
+    monkeypatch.setattr(session_runtime, "resolve_notebook_variable", lambda *_args: source)
+    manager = SessionManager()
+    try:
+        opened = manager.open_session(
+            {"kind": "notebookVariable", "variableName": "frame", "label": "frame"},
+            backend="pandas",
+            mode="editing",
+            page_size=1,
+        )
+        sid = opened["metadata"]["sessionId"]
+        session = manager.sessions[sid]
+        column = session.committed_lineage[0]
+        operation = {
+            "id": "temporal",
+            "kind": "formatDatetime" if target == "format" else "castColumn",
+            "params": {
+                "column": column,
+                **({"format": "%Y-%m-%d", "newColumn": "formatted"} if target == "format" else {"dtype": target}),
+            },
+        }
+        preview = manager.preview_step(sid, 0, operation, 0, 1, column_limit=1)
+        assert len(preview["page"]["rows"]) == 1
+        applied = manager.apply_draft(sid, preview["revision"], 0, 1, column_limit=1)
+        expected = original.copy(deep=True)
+        if target == "format":
+            expected["formatted"] = pd.Series(["2000-01-01", "2500-01-01", float("nan")], index=source.index)
+        elif target == "date":
+            expected["value"] = pd.Series(
+                pd.arrays.ArrowExtensionArray(pa.array([10957, 193579, None], type=pa.date32())), index=source.index
+            )
+        assert session.committed["formatted" if target == "format" else "value"].notna().tolist() == [True, True, False]
+        pd.testing.assert_frame_equal(session.committed[expected.columns], expected)
+        namespace: dict[str, Any] = {}
+        exec(applied["code"], namespace)
+        pd.testing.assert_frame_equal(namespace["clean_data"](source), expected)
+        if target == "datetime":
+            before = session_state(session)
+            for kind, params, message in [
+                ("castColumn", {"dtype": "date"}, "supported date range"),
+                ("formatDatetime", {"format": "%Y", "newColumn": "invalid"}, "represented for formatting"),
+            ]:
+                invalid = {"id": "invalid", "kind": kind, "params": {"column": session.committed_lineage[1], **params}}
+                with pytest.raises(ValueError, match=message):
+                    manager.preview_step(sid, session.revision, invalid, 0, 1, column_limit=1)
+                assert session_state(session) == before
+                pd.testing.assert_frame_equal(session.committed[expected.columns], expected)
+                bound_invalid = {
+                    **invalid,
+                    "params": {**invalid["params"], "column": {**invalid["params"]["column"], "position": 1}},
+                }
+                code = session.engine.compile_plan([*session.bound_plan, bound_invalid])
+                exec(code, namespace)
+                with pytest.raises(ValueError, match=message):
+                    namespace["clean_data"](source)
+        manager.undo_step(sid, session.revision, 0, 1, column_limit=1)
+        assert session.plan == []
+        pd.testing.assert_frame_equal(session.committed[original.columns], original)
+        pd.testing.assert_frame_equal(session.original[original.columns], original)
+        pd.testing.assert_frame_equal(source, original)
+    finally:
+        manager.close_all()
+
+
 def test_polars_hidden_result_error_preserves_public_state_and_allows_correction(tmp_path: Path) -> None:
     import polars as pl
 

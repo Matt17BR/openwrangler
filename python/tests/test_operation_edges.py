@@ -1541,6 +1541,184 @@ def test_value_transforms_preserve_documented_coercive_inputs(engine) -> None:
     assert_records_equal(transformed, namespace["clean_data"](frame))
 
 
+@pytest.mark.parametrize(
+    ("unit", "zone", "values", "expected", "replace"),
+    [
+        (
+            "ns",
+            "UTC",
+            [-(2**63), -1, 1, None],
+            [
+                "1677-09-21 00:12:43.145224 +0000 UTC",
+                "1969-12-31 23:59:59.999999 +0000 UTC",
+                "1970-01-01 00:00:00.000000 +0000 UTC",
+                None,
+            ],
+            False,
+        ),
+        (
+            "ns",
+            "America/New_York",
+            [-(2**63), 2**63 - 1, None],
+            [
+                "1677-09-20 19:16:41.145224 -045602 LMT",
+                "2262-04-11 19:47:16.854775 -0400 EDT",
+                None,
+            ],
+            True,
+        ),
+        ("ns", "+05:30", [-1, None], ["1970-01-01 05:29:59.999999 +0530 UTC+05:30", None], False),
+        (
+            "us",
+            "America/New_York",
+            [
+                datetime(2024, 1, 2, 8, 4, 5, 123456, tzinfo=timezone.utc),
+                datetime(2024, 7, 2, 7, 4, 5, tzinfo=timezone.utc),
+                datetime(2500, 1, 1, tzinfo=timezone.utc),
+                None,
+            ],
+            [
+                "2024-01-02 03:04:05.123456 -0500 EST",
+                "2024-07-02 03:04:05.000000 -0400 EDT",
+                "2499-12-31 19:00:00.000000 -0500 EST",
+                None,
+            ],
+            False,
+        ),
+        ("date32", None, [date(2500, 1, 1), None], ["2500-01-01 00:00:00.000000  ", None], True),
+        ("date64", None, [date(2500, 1, 1), None], ["2500-01-01 00:00:00.000000  ", None], False),
+        ("ns", "UTC", [], [], False),
+        ("us", None, [None, None], [None, None], True),
+    ],
+)
+def test_pandas_arrow_datetime_format_preserves_native_values(
+    unit: str, zone: str | None, values: list[Any], expected: list[str | None], replace: bool
+) -> None:
+    pa = pytest.importorskip("pyarrow")
+    dtype = pa.date32() if unit == "date32" else pa.date64() if unit == "date64" else pa.timestamp(unit, zone)
+    array = pa.array([None, *values], type=dtype).slice(1)
+    chunks = [array.slice(0, 1), pa.array([], type=dtype), array.slice(1)] if values else []
+    source = pd.DataFrame({"when's value": pd.arrays.ArrowExtensionArray(pa.chunked_array(chunks, type=dtype))})
+    source["kept"] = range(len(source))
+    source.index = pd.Index([7] * len(source), name="row")
+    before = source.copy(deep=True)
+    target = "when's value" if replace else "formatted"
+    operation = bound_step(
+        "formatDatetime",
+        column=bound_ref("c:source:0", "when's value", 0),
+        format="%Y-%m-%d %H:%M:%S.%f %z %Z",
+        **({} if replace else {"newColumn": target}),
+    )
+    engine = PandasEngine()
+    wanted = before.copy(deep=True)
+    wanted[target] = pd.Series(
+        [float("nan") if value is None else value for value in expected],
+        index=source.index,
+        name=target,
+        dtype=pd.Series([""]).dtype,
+    )
+    for result in (engine.apply_transform(source, operation), execute_generated(engine, source, operation)):
+        pd.testing.assert_frame_equal(result, wanted)
+    pd.testing.assert_frame_equal(source, before)
+
+
+@pytest.mark.parametrize("unit", ["s", "ms", "us", "ns"])
+def test_pandas_arrow_datetime_cast_keeps_exact_source_storage(unit: str) -> None:
+    pa = pytest.importorskip("pyarrow")
+    dtype = pa.timestamp(unit, "UTC")
+    source = pd.DataFrame({"value": pd.arrays.ArrowExtensionArray(pa.array([-(2**63), 2**63 - 1, None], type=dtype))})
+    source.index = [4, 4, 8]
+    before = source.copy(deep=True)
+    operation = bound_step("castColumn", column=bound_ref("c:source:0", "value", 0), dtype="datetime")
+    engine = PandasEngine()
+    for result in (engine.apply_transform(source, operation), execute_generated(engine, source, operation)):
+        pd.testing.assert_frame_equal(result, before)
+    pd.testing.assert_frame_equal(source, before)
+
+
+@pytest.mark.parametrize("unit", ["us", "ns"])
+@pytest.mark.parametrize(("zone", "offset"), [("+01:00", 3600), ("-01:00", -3600)])
+def test_pandas_arrow_date_cast_keeps_local_days_at_timestamp_extrema(unit: str, zone: str, offset: int) -> None:
+    pa = pytest.importorskip("pyarrow")
+    scale = 10**6 if unit == "us" else 10**9
+    ticks = [-(2**63), -1, 0, 2**63 - 1, None]
+    source = pd.DataFrame({"value": pd.arrays.ArrowExtensionArray(pa.array(ticks, type=pa.timestamp(unit, zone)))})
+    source.index = [7] * len(source)
+    before = source.copy(deep=True)
+    expected_days = [None if tick is None else (tick + offset * scale) // (86400 * scale) for tick in ticks]
+    expected = pd.DataFrame(
+        {"value": pd.arrays.ArrowExtensionArray(pa.array(expected_days, type=pa.date32()))}, index=source.index
+    )
+    operation = bound_step("castColumn", column=bound_ref("c:source:0", "value", 0), dtype="date")
+    engine = PandasEngine()
+    for result in (engine.apply_transform(source, operation), execute_generated(engine, source, operation)):
+        assert result.columns.equals(expected.columns)
+        assert result.index.equals(expected.index)
+        assert result["value"].dtype == pd.ArrowDtype(pa.date32())
+        assert (
+            result["value"]
+            .array.__arrow_array__()
+            .equals(cast("pd.arrays.ArrowExtensionArray", expected["value"].array).__arrow_array__())
+        )
+    pd.testing.assert_frame_equal(source, before)
+
+
+@pytest.mark.parametrize(
+    ("storage", "values"),
+    [("date32", [193579, None]), ("date64", [193579, None]), ("date32", []), ("date64", [None, None])],
+)
+def test_pandas_arrow_date_inputs_preserve_native_cast_values(storage: str, values: list[int | None]) -> None:
+    pa = pytest.importorskip("pyarrow")
+    scale = 1 if storage == "date32" else 86400000
+    dtype = pa.date32() if storage == "date32" else pa.date64()
+    physical = [None if value is None else value * scale for value in values]
+    source = pd.DataFrame({"value": pd.arrays.ArrowExtensionArray(pa.array(physical, type=dtype))})
+    before = source.copy(deep=True)
+    engine = PandasEngine()
+    for target in ["datetime", "date"]:
+        operation = bound_step("castColumn", column=bound_ref("c:source:0", "value", 0), dtype=target)
+        expected_type = dtype if target == "date" else pa.timestamp("s" if storage == "date32" else "ms")
+        expected_ticks = (
+            physical
+            if target == "date" or storage == "date64"
+            else [None if value is None else value * 86400 for value in values]
+        )
+        expected = pd.DataFrame({"value": pd.arrays.ArrowExtensionArray(pa.array(expected_ticks, type=expected_type))})
+        for result in (engine.apply_transform(source, operation), execute_generated(engine, source, operation)):
+            pd.testing.assert_frame_equal(result, expected)
+    pd.testing.assert_frame_equal(source, before)
+
+
+@pytest.mark.parametrize("unit", ["s", "ms"])
+def test_pandas_arrow_date_cast_checks_local_date32_capacity(unit: str) -> None:
+    pa = pytest.importorskip("pyarrow")
+    scale = 1 if unit == "s" else 1000
+    low = (-(2**31) * 86400 - 3600) * scale
+    high = ((2**31) * 86400 - 3600) * scale
+    operation = bound_step("castColumn", column=bound_ref("c:source:0", "value", 0), dtype="date")
+    engine = PandasEngine()
+    for outside in [False, True]:
+        source = pd.DataFrame(
+            {
+                "value": pd.arrays.ArrowExtensionArray(
+                    pa.array([low - int(outside), high - 1 + int(outside), None], type=pa.timestamp(unit, "+01:00"))
+                )
+            }
+        )
+        before = source.copy(deep=True)
+        for execute in [engine.apply_transform, lambda frame, operation: execute_generated(engine, frame, operation)]:
+            if outside:
+                with pytest.raises(ValueError, match="supported date range"):
+                    execute(source, operation)
+            else:
+                assert execute(source, operation)["value"].array.__arrow_array__().cast(pa.int32()).to_pylist() == [
+                    -(2**31),
+                    2**31 - 1,
+                    None,
+                ]
+        pd.testing.assert_frame_equal(source, before)
+
+
 @pytest.mark.parametrize("lazy", [False, True], ids=["eager", "lazy"])
 @pytest.mark.parametrize("replace", [False, True], ids=["append", "replace"])
 @pytest.mark.parametrize(
