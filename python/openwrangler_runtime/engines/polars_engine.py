@@ -90,6 +90,17 @@ _POLARS_INTEGER_LIMB_BASE = 10**9
 _POLARS_INTEGER_LIMB_COUNT = 5
 
 
+def _polars_filter_literal(value: Any, dtype: Any, operator: str) -> Any:
+    import polars as pl
+
+    literal = pl.lit(value)
+    if dtype is not None and not (
+        isinstance(dtype, pl.Enum) and isinstance(value, str) and operator in {"equals", "notEquals"}
+    ):
+        literal = literal.cast(dtype)
+    return literal
+
+
 def _polars_exact_filter(column: Any, dtype: Any, method: str, values: list[Any]) -> Any:
     from datetime import datetime, timezone
     from decimal import Decimal
@@ -595,10 +606,17 @@ class PolarsEngine(DataFrameEngine):
                 if column_type in {"decimal", "datetime", "duration"}:
                     current = _polars_exact_filter(pl.col(column), schema[column], "isin", selected)
                 else:
-                    selected_series = (
-                        pl.Series(selected).cast(schema[column], strict=True).implode() if selected else None
+                    selected_series = pl.Series(selected) if selected else None
+                    if selected_series is not None:
+                        if isinstance(schema[column], pl.Enum) and selected_series.dtype == pl.String:
+                            selected_series = selected_series.cast(schema[column], strict=False).drop_nulls()
+                        else:
+                            selected_series = selected_series.cast(schema[column], strict=True)
+                    current = (
+                        pl.col(column).is_in(selected_series.implode())
+                        if selected_series is not None
+                        else pl.lit(False)
                     )
-                    current = pl.col(column).is_in(selected_series) if selected_series is not None else pl.lit(False)
                 if value_filter.get("includeNulls"):
                     current = current | pl.col(column).is_null()
                 if value_filter.get("includeNaN") and column_type == "float":
@@ -1288,7 +1306,7 @@ class PolarsEngine(DataFrameEngine):
                 values.append(coerce_typed_view_value(predicate.get("secondValue"), column_type))
             result = _polars_exact_filter(expr, raw_type, operator, values)
         else:
-            typed_value = pl.lit(value).cast(raw_type) if raw_type is not None else pl.lit(value)
+            typed_value = _polars_filter_literal(value, raw_type, operator)
             if operator == "equals":
                 result = expr == typed_value
             elif operator == "notEquals":
@@ -1865,7 +1883,16 @@ class PolarsEngine(DataFrameEngine):
             )
         if needs_filter_helpers:
             lines.extend(generated_view_value_helper_lines())
-            lines.extend(["from typing import Any", "", getsource(_polars_exact_filter), ""])
+            lines.extend(
+                [
+                    "from typing import Any",
+                    "",
+                    getsource(_polars_exact_filter),
+                    "",
+                    getsource(_polars_filter_literal),
+                    "",
+                ]
+            )
         if needs_fill_helpers:
             fill_helpers = "\n".join(
                 [
@@ -4305,11 +4332,17 @@ def _compile_polars_filter(model: Mapping[str, Any], index: int) -> list[str]:
                     parts.append(f"_polars_exact_filter({expression}, {dtype_variable}, 'isin', [{selected}])")
                 else:
                     selected_variable = f"_filter_values_{index}_{filter_index}"
-                    prelude.append(
-                        f"    {selected_variable} = pl.Series([{selected}])"
-                        f".cast({dtype_variable}, strict=True).implode()"
+                    prelude.extend(
+                        [
+                            f"    {selected_variable} = pl.Series([{selected}])",
+                            f"    if isinstance({dtype_variable}, pl.Enum) and {selected_variable}.dtype == pl.String:",
+                            f"        {selected_variable} = {selected_variable}"
+                            f".cast({dtype_variable}, strict=False).drop_nulls()",
+                            "    else:",
+                            f"        {selected_variable} = {selected_variable}.cast({dtype_variable}, strict=True)",
+                        ]
                     )
-                    parts.append(f"{expression}.is_in({selected_variable})")
+                    parts.append(f"{expression}.is_in({selected_variable}.implode())")
             if value_filter.get("includeNulls"):
                 parts.append(f"{expression}.is_null()")
             if value_filter.get("includeNaN") and column_filter.get("type") == "float":
@@ -4358,7 +4391,7 @@ def _polars_predicate_expression(
         return f"{expression}.is_nan().fill_null(False)" if column_type == "float" else "pl.lit(False)"
     if operator == "isNotNaN":
         return f"{expression}.is_not_nan().fill_null(True)" if column_type == "float" else "pl.lit(True)"
-    typed_literal = f"pl.lit({typed_value}).cast({dtype_expression}, strict=True)"
+    typed_literal = f"_polars_filter_literal({typed_value}, {dtype_expression}, {operator!r})"
     if column_type in {"decimal", "datetime", "duration"}:
         values = [typed_value]
         if operator == "between":
