@@ -28,6 +28,8 @@ describe("operation dialog lifecycle", () => {
     expect(result.current.dialog).toBeUndefined();
     act(() => result.current.openDialog({}));
     expect(result.current.dialog).toEqual({});
+    act(() => result.current.closeEditingDialog());
+    expect(result.current.dialog).toEqual({});
 
     act(() =>
       result.current.openDialog({
@@ -38,7 +40,7 @@ describe("operation dialog lifecycle", () => {
     );
     expect(result.current.dialog).toEqual({ kind: "selectColumns", editingStep, editingStepInputSchema });
 
-    act(() => result.current.closeDialog());
+    act(() => result.current.closeEditingDialog());
     expect(result.current.dialog).toBeUndefined();
   });
 

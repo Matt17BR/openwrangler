@@ -329,7 +329,7 @@ describe("SessionCoordinator", () => {
     setOpenNotebookDocuments();
   });
 
-  it("atomically round-trips the exact live notebook variable between Viewing and Editing", async () => {
+  it("round-trips the exact live notebook variable with a view confirmed while the mode change waits", async () => {
     const notebook = {
       uri: vscode.Uri.parse("file:///workspace/r-editing.ipynb"),
       isClosed: false
@@ -385,6 +385,7 @@ describe("SessionCoordinator", () => {
         }
       };
     };
+    const foregroundPage = deferred<void>();
     const metadataByRuntime = new Map<string, SessionMetadata>();
     let openCount = 0;
     const delegateRequest = vi.fn(
@@ -401,6 +402,7 @@ describe("SessionCoordinator", () => {
         if (request.kind === "getPage") {
           const metadata = metadataByRuntime.get(request.sessionId);
           if (!metadata) throw new Error(`Unknown test runtime ${request.sessionId}`);
+          if (request.viewRequestId === "r-viewing-sort") await foregroundPage.promise;
           return pageResponseForMetadata(request, metadata);
         }
         if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
@@ -420,7 +422,7 @@ describe("SessionCoordinator", () => {
         columnWidths: new Map(),
         viewport: { firstVisibleRow: 0, scrollLeft: 37 }
       });
-      const sorted = await bridge.request({
+      const sortedPromise = bridge.request({
         kind: "getPage",
         sessionId: publicId,
         revision: opened.metadata.revision,
@@ -430,14 +432,30 @@ describe("SessionCoordinator", () => {
         ...columnWindow,
         filterModel: { filters: [], sort: [{ column: "value", direction: "desc", nulls: "last" }] }
       });
-      if (sorted.kind !== "page") throw new Error("Expected the R viewing sort to resolve.");
+      await vi.waitFor(() =>
+        expect(runtimeRequests).toContainEqual(
+          expect.objectContaining({ kind: "getPage", viewRequestId: "r-viewing-sort" })
+        )
+      );
 
       const currentViewState: GridViewState = {
         selectedColumnId: "c:value",
         columnWidths: new Map([["c:value", 240]]),
         viewport: { firstVisibleRow: 0, scrollLeft: 81 }
       };
-      const editing = await bridge.reconfigureLiveSessionMode?.(publicId, sorted.revision, "editing", currentViewState);
+      const switching = bridge.reconfigureLiveSessionMode?.(
+        publicId,
+        opened.metadata.revision,
+        "editing",
+        currentViewState
+      );
+      expect(openCount).toBe(1);
+      foregroundPage.resolve(undefined);
+      const sorted = await sortedPromise;
+      if (sorted.kind !== "page") throw new Error("Expected the R viewing sort to resolve.");
+      expect(sorted.revision).toBe(opened.metadata.revision);
+      expect(coordinator.activeSession()?.metadata.filterModel).toEqual(sorted.metadata.filterModel);
+      const editing = await switching;
 
       expect(editing).toMatchObject({
         kind: "sessionOpened",
@@ -531,6 +549,7 @@ describe("SessionCoordinator", () => {
         )
       );
     } finally {
+      foregroundPage.resolve(undefined);
       setOpenNotebookDocuments();
       await coordinator.shutdown();
     }

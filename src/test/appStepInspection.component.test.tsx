@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   CellValue,
@@ -122,6 +122,251 @@ function inspection(offset = 0): StepInspectionResponse {
 
 describe("App applied-step inspection", () => {
   beforeEach(() => postMessage.mockClear());
+
+  it("closes a surviving editor after predecessor deletion and reinspects before reopening", async () => {
+    const first: TransformStep = {
+      id: "rename-sales",
+      kind: "renameColumn",
+      params: { column: { id: "c:sales", name: "sales" }, newName: "revenue" }
+    };
+    const edited: TransformStep = {
+      id: "rename-city",
+      kind: "renameColumn",
+      params: { column: { id: "c:city", name: "city" }, newName: "location" }
+    };
+    const suffix: TransformStep = {
+      id: "lower-location",
+      kind: "lowerText",
+      params: { column: { id: "c:city", name: "location" } }
+    };
+    const input = schema.map((column) => (column.id === "c:sales" ? { ...column, name: "revenue" } : column));
+    const output = input.map((column) => (column.id === "c:city" ? { ...column, name: "location" } : column));
+    const opened = {
+      ...metadata,
+      schema: output,
+      latestStepInputSchema: output,
+      filterModel: { filters: [], sort: [] },
+      steps: [first, edited, suffix]
+    };
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata: opened, page: confirmedPage, summaries: [] });
+    dispatch({ kind: "editorAction", action: "selectStep", stepId: edited.id });
+    dispatch(
+      inspectionResult(edited.id, 0, {
+        ...inspection(),
+        stepId: edited.id,
+        stepIndex: 1,
+        inputSchema: input,
+        outputSchema: output,
+        diff: {
+          addedRows: 0,
+          removedRows: 0,
+          addedColumns: [],
+          removedColumns: [],
+          changedCells: 0,
+          cells: [],
+          truncated: false
+        }
+      })
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Edit step" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit cleaning step" });
+    postMessage.mockClear();
+    dispatch({
+      kind: "editorAction",
+      action: "deleteStep",
+      expectedSessionId: metadata.sessionId,
+      expectedRevision: 0,
+      stepId: first.id
+    });
+    expect(postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "rewriteCleaningPlan",
+        action: "deleteStep",
+        stepId: first.id
+      })
+    );
+    expect(dialog).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("button", { name: "Preview changes" })).toBeDisabled();
+    const nextSchema = output.map((column) => (column.id === "c:sales" ? { ...column, name: "sales" } : column));
+    dispatch({
+      kind: "planUpdated",
+      action: "apply",
+      revision: 1,
+      metadata: {
+        ...opened,
+        revision: 1,
+        steps: [edited, suffix],
+        schema: nextSchema,
+        latestStepInputSchema: nextSchema
+      },
+      page: confirmedPage,
+      code: "# remaining plan"
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    postMessage.mockClear();
+    dispatch({
+      kind: "editorAction",
+      action: "editStep",
+      expectedSessionId: metadata.sessionId,
+      expectedRevision: 1,
+      stepId: edited.id
+    });
+    expect(onlyRuntimeRequest("inspectStep")).toMatchObject({ stepId: edited.id });
+    dispatch(
+      inspectionResult(edited.id, 0, {
+        ...inspection(),
+        revision: 1,
+        stepId: edited.id,
+        stepIndex: 0,
+        inputSchema: schema,
+        outputSchema: nextSchema
+      })
+    );
+    await screen.findByRole("dialog", { name: "Edit cleaning step" });
+    const picker = screen.getByRole("combobox", { name: "Column" });
+    expect(screen.queryByRole("option", { name: "revenue" })).toBeNull();
+    fireEvent.change(picker, { target: { value: "c:sales" } });
+    postMessage.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onlyRuntimeRequest("previewStep")).toMatchObject({
+      replaceStepId: edited.id,
+      step: { kind: "renameColumn", params: { column: { id: "c:sales", name: "sales" } } }
+    });
+  });
+
+  it("resumes a native earlier edit after paging and supersedes an older queued selection", async () => {
+    const later: TransformStep = {
+      id: "lower-city",
+      kind: "lowerText",
+      params: { column: { id: "c:city", name: "city" } }
+    };
+    const opened = { ...metadata, steps: [step, later] };
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata: opened, page: confirmedPage, summaries: [] });
+    postMessage.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Next block" }));
+    const request = onlyRuntimeRequest("getPage");
+    dispatch({ kind: "editorAction", action: "selectStep" });
+    dispatch(nativeEdit());
+    expect(runtimeRequests("inspectStep")).toHaveLength(0);
+    acceptPage(request, opened);
+    await waitFor(() => expect(onlyRuntimeRequest("inspectStep")).toMatchObject({ stepId: step.id }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    dispatch(
+      inspectionResult("superseded-step", 0, {
+        kind: "error",
+        code: "engine_error",
+        message: "Old inspection failed",
+        recoverable: true
+      })
+    );
+    dispatch(inspectionResult(step.id, 0, inspection()));
+    await screen.findByRole("dialog", { name: "Edit cleaning step" });
+    expect(runtimeRequests("inspectStep")).toHaveLength(1);
+    expect(screen.getByRole("combobox", { name: "Numeric column" })).toHaveValue("c:sales");
+  });
+
+  it.each(["error", "cancelled", "clear", "escape"] as const)(
+    "does not restart a deferred edit inspection after %s",
+    async (outcome) => {
+      render(<App />);
+      dispatch({ kind: "sessionOpened", metadata, page: confirmedPage, summaries: [] });
+      postMessage.mockClear();
+      fireEvent.click(screen.getByRole("button", { name: "Next block" }));
+      const request = onlyRuntimeRequest("getPage");
+      dispatch(nativeEdit());
+      acceptPage(request);
+      await waitFor(() => expect(runtimeRequests("inspectStep")).toHaveLength(1));
+      if (outcome === "clear" || outcome === "escape") {
+        if (outcome === "clear") fireEvent.click(screen.getByRole("button", { name: "Show confirmed data" }));
+        else fireEvent.keyDown(screen.getByRole("main"), { key: "Escape" });
+        dispatch(inspectionResult(step.id, 0, inspection()));
+      } else {
+        dispatch(
+          inspectionResult(
+            step.id,
+            0,
+            outcome === "error"
+              ? { kind: "error", code: "engine_error", message: "Inspection failed", recoverable: true }
+              : { kind: "cancelled", targetRequestId: "inspect" }
+          )
+        );
+      }
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+      expect(runtimeRequests("inspectStep")).toHaveLength(1);
+      expect(screen.queryByRole("dialog")).toBeNull();
+      if (outcome === "error" || outcome === "cancelled") {
+        dispatch(nativeEdit());
+        expect(runtimeRequests("inspectStep")).toHaveLength(2);
+        dispatch(inspectionResult(step.id, 0, inspection()));
+        await screen.findByRole("dialog", { name: "Edit cleaning step" });
+      }
+    }
+  );
+
+  it.each(["session", "new selection", "new edit"] as const)(
+    "rechecks a queued edit after %s replaces its context",
+    async (change) => {
+      const other: TransformStep = {
+        id: "lower-city",
+        kind: "lowerText",
+        params: { column: { id: "c:city", name: "city" } }
+      };
+      const opened = { ...metadata, steps: [step, other] };
+      render(<App />);
+      dispatch({ kind: "sessionOpened", metadata: opened, page: confirmedPage, summaries: [] });
+      postMessage.mockClear();
+      fireEvent.click(screen.getByRole("button", { name: "Next block" }));
+      const request = onlyRuntimeRequest("getPage");
+      dispatch(nativeEdit());
+      if (change === "session") {
+        dispatch({
+          kind: "sessionOpened",
+          metadata: { ...opened, sessionId: "replacement" },
+          page: confirmedPage,
+          summaries: []
+        });
+      } else if (change === "new selection") {
+        dispatch({ kind: "editorAction", action: "selectStep" });
+      } else if (change === "new edit") {
+        dispatch({ ...nativeEdit(), stepId: other.id });
+      }
+      acceptPage(request, opened);
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+      if (change === "new edit") {
+        expect(onlyRuntimeRequest("inspectStep")).toMatchObject({ stepId: other.id });
+        dispatch(inspectionResult(other.id, 0, { ...inspection(), stepId: other.id, stepIndex: 1 }));
+        await screen.findByRole("dialog", { name: "Edit cleaning step" });
+        expect(screen.getByRole("combobox", { name: "Text column" })).toHaveValue("c:city");
+      } else {
+        expect(runtimeRequests("inspectStep")).toHaveLength(0);
+        expect(screen.queryByRole("dialog")).toBeNull();
+      }
+    }
+  );
+
+  it("refuses native edit during mutation without opening it after failure", async () => {
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page: confirmedPage, summaries: [] });
+    postMessage.mockClear();
+    dispatch({ kind: "editorAction", action: "undoStep" });
+    expect(onlyRuntimeRequest("undoStep")).toMatchObject({ kind: "undoStep" });
+    dispatch(nativeEdit());
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Wait for the current cleaning operation to finish before editing a step."
+    );
+    dispatch({ kind: "error", code: "engine_error", message: "Undo failed", recoverable: true });
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+    expect(runtimeRequests("inspectStep")).toHaveLength(0);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
 
   it("ignores an applied-step selection addressed to a different session", async () => {
     render(<App />);
@@ -486,7 +731,7 @@ type HostMessage =
   | OpenWranglerResponse
   | {
       kind: "editorAction";
-      action: "selectStep" | "editStep" | "deleteStep";
+      action: "selectStep" | "editStep" | "deleteStep" | "undoStep";
       expectedSessionId?: string;
       expectedRevision?: number;
       stepId?: string;
@@ -509,6 +754,26 @@ type HostMessage =
       columnLimit: number;
       response: OpenWranglerResponse;
     };
+
+function nativeEdit() {
+  return {
+    kind: "editorAction" as const,
+    action: "editStep" as const,
+    expectedSessionId: metadata.sessionId,
+    expectedRevision: metadata.revision,
+    stepId: step.id
+  };
+}
+
+function acceptPage(request: Record<string, unknown>, currentMetadata = metadata): void {
+  dispatch({
+    kind: "page",
+    revision: currentMetadata.revision,
+    viewRequestId: String(request.viewRequestId),
+    metadata: currentMetadata,
+    page: { ...confirmedPage, offset: 200, rows: [{ ...confirmedPage.rows[0], id: "r:200", rowNumber: 200 }] }
+  });
+}
 
 function inspectionResult(stepId: string, offset: number, response: OpenWranglerResponse): HostMessage {
   return {

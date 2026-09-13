@@ -167,6 +167,9 @@ background profiles retain their existing behavior.
 Recovery and replacement replay create history receipts in the same epoch namespace as the published session. Each
 replayed edit uses the candidate's current schema and filter. Returning to the same filter after a confirmed view
 change does not erase that change or revive an obsolete draft restoration receipt during the live session.
+Earlier-step rewrites and live mode changes capture the accepted filter after admitted requests have settled, so a
+page confirmed while replacement waits is included in the new session's view. Mode changes retain the caller's
+requested grid layout.
 Durable state retains the draft's base filter, but not intervening view epochs. A persisted open uses the existing
 saved-filter restoration rules in a fresh epoch namespace.
 
@@ -218,8 +221,12 @@ A failed or cancelled operation preview reports its error inside the dialog that
 inputs. The mutation snapshot owns that dialog context and operation kind; unrelated actions keep their workspace
 errors. Error text and code settle together, and changing the operation, closing the dialog or replacing the session
 clears its preview error.
-A successful accepted plan update also closes an editing dialog whose applied step no longer exists, using the
-existing focus restoration. Failed updates, surviving step targets and ordinary new-operation forms retain their input.
+A successful accepted plan update closes an open saved-step editor, using the existing focus restoration. Reopening
+the step obtains its current input schema; retaining the same step ID does not prove that schema survived a replay.
+Failed updates and ordinary new-operation forms retain their input.
+Native saved-step edits received during a page request wait for that page, then inspect the step only if the session
+and revision still match. A newer action or explicit inspection cancellation retires the queued edit. Inspection
+refusals are not retried automatically; edits received during a cleaning mutation use the existing wait message.
 
 Retained multi-column forms submit unavailable selected IDs to the existing parameter validator instead of silently
 dropping dependencies. An explicit repair action removes those selections; optional forms explain when clearing them
