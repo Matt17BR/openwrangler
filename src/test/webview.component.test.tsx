@@ -3166,6 +3166,11 @@ describe("App file import options", () => {
       fireEvent.keyDown(screen.getByRole("button", { name: "Resize city column" }), { key: "ArrowRight" });
       action.focus();
       fireEvent.click(action);
+      expect(action).toBeDisabled();
+      expect(action).toHaveAttribute("aria-busy", "true");
+      expect(screen.getByTestId("app-workspace")).toHaveAttribute("inert");
+      expect(screen.getByText("Opening Editing mode…")).toHaveAttribute("role", "status");
+      fireEvent.click(action);
       const stateMessages = webviewPostMessage.mock.calls
         .map(([message]) => message)
         .filter((message) => message?.kind === "updateViewState" || message?.kind === "switchSessionMode");
@@ -3188,9 +3193,6 @@ describe("App file import options", () => {
       expect(search).toHaveValue("sales");
 
       dispatchAppMessage({ kind: "sessionModeChangeState", busy: true, mode: "editing" });
-      expect(action).toBeDisabled();
-      expect(screen.getByTestId("app-workspace")).toHaveAttribute("inert");
-      expect(screen.getByText("Opening Editing mode…")).toHaveAttribute("role", "status");
       dispatchAppMessage(recovery);
       expect(screen.queryByText("Recovered Milan")).toBeNull();
 
@@ -3206,6 +3208,8 @@ describe("App file import options", () => {
       expect(search).toHaveValue("sales");
       expect(screen.queryByText("Recovered Milan")).toBeNull();
       dispatchAppMessage({ kind: "sessionModeChangeState", busy: false, mode: "editing" });
+      expect(action).toBeEnabled();
+      expect(screen.getByTestId("app-workspace")).not.toHaveAttribute("inert");
       expect(frames).toHaveLength(1);
       act(() => frames.shift()!(performance.now()));
       expect(action).toHaveFocus();

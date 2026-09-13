@@ -47,7 +47,7 @@ describe("session mode change lifecycle", () => {
     expect(result.current.isModeChangePending()).toBe(false);
     act(() => result.current.requestModeChange("editing", trigger));
     expect(postMessage).toHaveBeenCalledWith({ kind: "switchSessionMode", mode: "editing", state: gridViewState });
-    expect(result.current).toMatchObject({ pending: false, target: "editing" });
+    expect(result.current).toMatchObject({ pending: true, target: "editing" });
     expect(result.current.isModeChangePending()).toBe(true);
 
     act(() => result.current.settleModeChange(true, "editing"));
@@ -89,8 +89,10 @@ describe("session mode change lifecycle", () => {
     );
 
     act(() => result.current.requestModeChange(mode, trigger));
+    expect(result.current).toMatchObject({ pending: true, target: mode });
     expect(result.current.isModeChangePending()).toBe(true);
     act(() => result.current.settleModeChange(false, mode));
+    expect(result.current).toMatchObject({ pending: false, target: undefined });
     expect(result.current.isModeChangePending()).toBe(false);
     currentMode = mode;
     act(() => scheduledFocus!());
