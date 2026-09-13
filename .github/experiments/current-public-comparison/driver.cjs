@@ -972,7 +972,9 @@ exports.run = async function () {
       const controlFacts = (element, expected) => ({
         connected: element.isConnected && element.ownerDocument === document,
         visible: element.checkVisibility({ checkVisibilityCSS: true }),
-        role: ["button", "menuitem", "option", "treeitem", "combobox"].includes(element.getAttribute("role"))
+        role: ["button", "menuitem", "menuitemradio", "option", "treeitem", "combobox"].includes(
+          element.getAttribute("role")
+        )
           ? element.getAttribute("role")
           : element.getAttribute("role")
             ? "other"
@@ -1117,62 +1119,53 @@ exports.run = async function () {
           await captureEntryState("beforeViewing");
           await currentGrid();
           await act(viewing, "Viewing");
-          // One passive sample after the existing action's grid-readiness check.
-          const afterViewingReady = {
-            millisecondsFromFirstInteraction: performance.now() - opened,
-            viewingControl: null,
-            editing: {},
-            popups: {}
-          };
-          const currentViewing = await capture(
-            productFrame.getByRole("menuitem", { name: "Viewing", exact: true }),
-            "viewing"
-          );
+          const expandedViewing = productFrame.getByRole("menuitem", {
+            name: "Viewing",
+            exact: true,
+            expanded: true
+          });
+          const modeMenus = productFrame.getByRole("menu");
+          const editingChoices = modeMenus.getByRole("menuitemradio", { name: /\bEditing\b/i });
+          let editingMenu, editing;
           try {
-            if (currentViewing) {
-              const facts = await currentViewing.evaluate(controlFacts, "Viewing");
-              assert(facts.connected, "DIAGNOSTIC:detached-viewing");
-              assert(facts.visible, "DIAGNOSTIC:incomplete-mode-controls");
-              afterViewingReady.viewingControl = facts;
-            }
-          } finally {
-            if (currentViewing) {
-              held.delete(currentViewing);
-              await currentViewing.dispose();
-            }
-          }
-          for (const [kind, role] of [
-            ["editing", "button"],
-            ["editing", "menuitem"],
-            ["editing", "option"],
-            ["editing", "treeitem"],
-            ["editing", "menuitemradio"],
-            ["editing", "menuitemcheckbox"],
-            ["popups", "menu"],
-            ["popups", "listbox"],
-            ["popups", "dialog"]
-          ]) {
-            const candidates = productFrame.getByRole(role, kind === "editing" ? { name: /\bEditing\b/i } : {});
-            const count = await candidates.count();
-            assert(count <= 32, "DIAGNOSTIC:mode-control-bound");
-            const complete = await candidates.evaluateAll((elements) => ({
-              count: elements.length,
-              valid:
-                elements.length <= 32 &&
-                elements.every((element) => element.isConnected && element.ownerDocument === document)
-            }));
-            assert(complete.valid && complete.count === count, "DIAGNOSTIC:incomplete-mode-controls");
-            if (kind === "editing") {
-              const exact = await productFrame.getByRole(role, { name: /^Editing$/i }).count();
-              assert(exact <= count, "DIAGNOSTIC:incomplete-mode-controls");
-              afterViewingReady.editing[role] = { exact, mention: count };
-            } else afterViewingReady.popups[role] = count;
-          }
-          await currentGrid();
-          observation.mode.afterViewingReady = afterViewingReady;
-          let editing;
-          try {
-            editing = await poll(() => capture(namedControl("Editing"), "editing-option"), "editing-offer", 5000);
+            editing = await poll(
+              async () => {
+                const trigger = await capture(expandedViewing, "viewing");
+                if (!trigger) {
+                  assert(!editingMenu, "DIAGNOSTIC:changed-action");
+                  return false;
+                }
+                held.delete(trigger);
+                await trigger.dispose();
+                const count = await modeMenus.count();
+                assert(count <= 1, "DIAGNOSTIC:ambiguous-editing-option");
+                if (!count) {
+                  assert(!editingMenu, "DIAGNOSTIC:changed-action");
+                  return false;
+                }
+                const menus = await modeMenus.elementHandles();
+                try {
+                  assert(menus.length === 1, "DIAGNOSTIC:changed-action");
+                  assert(
+                    await menus[0].evaluate(
+                      (node, retained) =>
+                        node.isConnected && node.ownerDocument === document && (!retained || node === retained),
+                      editingMenu || null
+                    ),
+                    "DIAGNOSTIC:changed-action"
+                  );
+                  if (!editingMenu) {
+                    editingMenu = menus[0];
+                    held.add(editingMenu);
+                  }
+                } finally {
+                  for (const menu of menus) if (menu !== editingMenu) await menu.dispose();
+                }
+                return capture(editingChoices, "editing-option");
+              },
+              "editing-offer",
+              5000
+            );
           } catch (error) {
             if (error?.message !== "PILOT_GATE:editing-offer") throw error;
           }
@@ -1184,7 +1177,42 @@ exports.run = async function () {
           observation.mode.editingOffered = !!editing;
           if (editing) observation.mode.editingControl = await editing.evaluate(controlFacts, "Editing");
           if (editing) {
-            await act(editing, "Editing");
+            const trigger = await capture(expandedViewing, "viewing");
+            assert(trigger, "DIAGNOSTIC:changed-action");
+            held.delete(trigger);
+            await trigger.dispose();
+            assert((await modeMenus.count()) === 1, "DIAGNOSTIC:changed-action");
+            assert(
+              await modeMenus.evaluateAll(
+                (menus, retained) =>
+                  menus.length === 1 &&
+                  menus[0] === retained &&
+                  retained.isConnected &&
+                  retained.ownerDocument === document,
+                editingMenu
+              ),
+              "DIAGNOSTIC:changed-action"
+            );
+            assert((await editingChoices.count()) === 1, "DIAGNOSTIC:changed-action");
+            assert(
+              await editingChoices.evaluateAll(
+                (choices, { menu, choice }) =>
+                  choices.length === 1 &&
+                  choices[0] === choice &&
+                  menu.isConnected &&
+                  menu.ownerDocument === document &&
+                  choice.isConnected &&
+                  choice.ownerDocument === document &&
+                  menu.contains(choice) &&
+                  choice.checkVisibility({ checkVisibilityCSS: true }),
+                { menu: editingMenu, choice: editing }
+              ),
+              "DIAGNOSTIC:changed-action"
+            );
+            await currentGrid();
+            assert(await editing.isEnabled(), "DIAGNOSTIC:disabled-action");
+            await editing.click({ timeout: 5000 });
+            await poll(() => currentGrid(true), "action-grid");
             observation.mode.editingConfirmed = await poll(async () => {
               if (!(await currentGrid(true))) return false;
               let mode, operations;
@@ -1520,8 +1548,6 @@ exports.run = async function () {
                 "PILOT_GATE:incomplete-grid-discovery",
                 "DIAGNOSTIC:workbench-control-bound",
                 "DIAGNOSTIC:incomplete-workbench-controls",
-                "DIAGNOSTIC:mode-control-bound",
-                "DIAGNOSTIC:incomplete-mode-controls",
                 "DIAGNOSTIC:observation-bound",
                 "DIAGNOSTIC:incomplete-absence",
                 "DIAGNOSTIC:incomplete-surface",
