@@ -501,9 +501,10 @@ Graduation requires:
    code, export/insertion and restart ownership. Record the exact package, source, editor and R versions with the
    original results. [Releasing](releasing.md#release-candidate) owns artifact handling.
 3. Resolve any material failure in that selected scope before promotion. Preserve original failures and explain the
-   disposition of known risks. The historical [collapse-frame timeout](https://github.com/Matt17BR/openwrangler/issues/1088)
-   is unresolved; a later pass does not establish its cause, and a recurrence in candidate qualification blocks
-   promotion. [R test-runner cleanup](https://github.com/Matt17BR/openwrangler/issues/955) concerns source-test CLI
+   disposition of known risks. The historical [R acceptance timeout](https://github.com/Matt17BR/openwrangler/issues/1088)
+   has no established cause. Its final checkpoint did not identify the failing operation. Later passes do not resolve
+   that uncertainty; a recurrence in candidate qualification blocks promotion.
+   [R test-runner cleanup](https://github.com/Matt17BR/openwrangler/issues/955) concerns source-test CLI
    containment and is not evidence of an IRkernel product failure.
 4. Review the required candidate results before changing the notebook support label. Update this guide, README and
    release notes together. Passing workflow or documentation checks does not establish stable R support.
