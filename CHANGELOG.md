@@ -6,6 +6,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Pandas row labels retain valid extreme Arrow timestamps and durations instead of displaying and copying them as null.
 - Polars filters preserve exact Decimal and temporal comparison boundaries instead of rounding operands to source precision.
 - Pandas timestamp and duration value filters no longer match neighboring stored values when the requested value has finer precision.
 - Pandas Pivot Wider keeps valid extreme Arrow timestamps and durations separate from null identifier groups.

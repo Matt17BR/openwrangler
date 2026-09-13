@@ -335,6 +335,8 @@ are rejected.
 Pandas Arrow date columns, including Parquet imports, retain date-range profiles, typed filters and stable sorting.
 Parquet imports preserve exact nullable integer row-index values, including adjacent integers above 2^53. Row labels
 follow filtered and sorted rows; the index-fidelity owner checks these through actual file sessions.
+Present extreme Arrow timestamps and durations also keep exact row labels, including copied row-index text,
+instead of appearing as null. This preserves existing index and MultiIndex label conventions.
 Nullable integer data and integer children in lists, structs and maps also retain exact values and missingness through
 editing and export. Repaired columns use native Arrow storage; unrelated columns keep ordinary Pandas decoding.
 Profiles, value choices and single-column duplicate comparisons preserve exact nested integer values and missingness.

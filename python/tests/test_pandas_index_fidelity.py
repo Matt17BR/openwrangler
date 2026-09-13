@@ -720,6 +720,76 @@ def test_named_index_metadata_and_labels_follow_the_exact_filtered_sorted_slice(
     manager.close_session(session_id, 0)
 
 
+@pytest.mark.parametrize("family", ["timestamp", "duration"])
+@pytest.mark.parametrize(
+    "storage, levels",
+    [
+        ("arrow", 0),
+        ("arrow", 1),
+        ("arrow", 2),
+        ("categorical", 0),
+        ("categorical", 1),
+        ("categorical", 2),
+        ("dictionary", 0),
+    ],
+)
+def test_page_row_labels_preserve_present_arrow_temporal_extrema(
+    monkeypatch: pytest.MonkeyPatch, family: str, storage: str, levels: int
+) -> None:
+    import pyarrow as pa
+
+    import openwrangler_runtime.engines.pandas_engine as pandas_runtime
+
+    dtype = pa.timestamp("ns", tz="UTC") if family == "timestamp" else pa.duration("ns")
+    ticks = [0, -(2**63), -(2**63) + 1, None, -(2**63), 0]
+    if storage == "arrow":
+        array = pa.chunked_array([pa.array(ticks[:3], type=dtype), pa.array(ticks[3:], type=dtype)])
+        index = pd.Index(pd.array(array, dtype=pd.ArrowDtype(dtype)), name="time")
+    else:
+        categories = pa.array([0, -(2**63), -(2**63) + 1, 1], type=dtype)
+        codes = [0, 1, 2, -1, 1, 0]
+        if storage == "categorical":
+            index = pd.CategoricalIndex(
+                pd.Categorical.from_codes(codes, categories=pd.Index(pd.array(categories, dtype=pd.ArrowDtype(dtype)))),
+                name="time",
+            )
+        else:
+            dictionary = pa.DictionaryArray.from_arrays(
+                pa.array([None if code == -1 else code for code in codes], type=pa.int8()), categories
+            )
+            index = pd.Index(pd.array(dictionary, dtype=pd.ArrowDtype(dictionary.type)), name="time")
+    if levels:
+        index = pd.MultiIndex.from_arrays([index] if levels == 1 else [["group"] * len(index), index])
+    source = pd.DataFrame({"value": range(len(ticks))}, index=index)
+    engine = PandasEngine()
+    identified = engine.ensure_row_ids(source, "temporal-index")
+    retained_index = identified.index
+    before = identified.copy(deep=True)
+    row_axis = engine.row_axis(identified)
+    expected = [
+        pandas_runtime._pandas_row_axis_label(value, row_axis, one_level_multi_index=levels == 1)
+        for value in identified.index[1:4]
+    ]
+    exact = "1677-09-21T00:12:43.145224192+00:00" if family == "timestamp" else "-9223372036854775808 ns"
+    expected[0] = "group · " + exact if levels == 2 else exact
+    temporal_array = pandas_runtime._pandas_arrow_temporal_array
+
+    def bounded_temporal_array(values: Any, **kwargs: Any) -> Any:
+        assert len(values) <= 3
+        return temporal_array(values, **kwargs)
+
+    monkeypatch.setattr(pandas_runtime, "_pandas_arrow_temporal_array", bounded_temporal_array)
+    page = engine.page(identified, 1, 3)
+    assert [row["rowLabel"] for row in page["rows"]] == expected
+    assert [row["rowNumber"] for row in page["rows"]] == [1, 2, 3]
+    assert [row["id"] for row in page["rows"]] == [f"r:temporal-index:{position}" for position in [1, 2, 3]]
+    assert [row["values"][0]["raw"] for row in page["rows"]] == [1, 2, 3]
+    assert engine.page(identified, len(ticks), 3)["rows"] == []
+    assert identified.index is retained_index
+    pd.testing.assert_frame_equal(identified, before)
+    pd.testing.assert_index_equal(source.index, index)
+
+
 def test_positional_index_stays_positional_after_a_filtered_sort(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -633,6 +633,9 @@ Their NaN masks are false without boxing temporal scalars. Arrow duration filter
 exactly scaled portable operands, using divisibility and directed bounds instead of converting source units.
 Live and generated filters share this behavior; source values and validity remain unchanged.
 Pages, value choices and profile labels retain native context for present temporal extrema that Pandas boxes as `NaT`.
+Page row labels use native companions from the requested index slice to recover those same present values.
+Only valid values boxed as `NaT`, `NA` or `None` are replaced before the existing bounded label formatter; ordinary scalar and tuple
+labels, categorical null spelling, row IDs and source index storage remain unchanged.
 Duration output reads native ticks before Pandas can overflow during boxing. Page conversion is limited to the
 projection and row slice; profile conversion follows the top-ten count limit. Choice ranking formats native count
 labels while retaining only the bounded candidates and their original positions for token validation.
