@@ -4592,6 +4592,14 @@ def _pandas_scalar_export_frame(df: Any, preserve_index: bool, *, for_csv: bool 
     if for_csv and len(df) == 0:
         return df
 
+    def negative_decimal_type(values: Any) -> Any:
+        if not isinstance(values.dtype, pd.ArrowDtype):
+            return None
+        import pyarrow as pa
+
+        native = _pandas_dictionary_value_type(values) or values.dtype.pyarrow_dtype
+        return native if pa.types.is_decimal(native) and native.scale < 0 else None
+
     def export_values(series: Any) -> Any:
         if (
             for_csv
@@ -4602,6 +4610,33 @@ def _pandas_scalar_export_frame(df: Any, preserve_index: bool, *, for_csv: bool 
         ):
             raise EngineError("CSV export does not support Sparse duration unit multipliers.")
         logical = _pandas_scalar_values(series)
+        dtype = None if for_csv else negative_decimal_type(logical)
+        if dtype is not None:
+            import pyarrow as pa
+            import pyarrow.compute as pc
+
+            if dtype.scale < -76:
+                raise EngineError("Parquet export supports Arrow Decimal scales down to -76.")
+            precision = dtype.precision - dtype.scale
+            values = logical.array.__arrow_array__()
+            values.validate(full=True)
+            if precision > 76 and dtype.bit_width < 128:
+                raise EngineError(
+                    "Negative-scale Decimal32/64 Parquet export requires a declared range of at most 76 digits."
+                )
+            if dtype.bit_width >= 128:
+                # Native validation and safe rescaling both miss some signed overflow cases.
+                # Widen only the extrema at the same scale to avoid narrow scalar formatting limits.
+                extrema = pc.call_function("min_max", [values])
+                scalar_type = pa.decimal256(dtype.precision, dtype.scale)
+                bounds = [pc.cast(extrema[name], scalar_type, safe=True).as_py() for name in ("min", "max")]
+                capacity = Decimal(10 ** min(precision, 76) - 1)
+                if any(value is not None and value.copy_abs() > capacity for value in bounds):
+                    raise EngineError("Parquet export supports Arrow Decimal values up to 76 digits.")
+            precision = min(precision, 76)
+            target = pa.decimal128(precision, 0) if precision <= 38 else pa.decimal256(precision, 0)
+            converted = pc.cast(values, target, safe=True)
+            logical = pd.Series(pd.arrays.ArrowExtensionArray(converted), index=logical.index, name=logical.name)
         return _pandas_csv_temporal_values(logical) if for_csv else logical
 
     result = df
@@ -4614,7 +4649,11 @@ def _pandas_scalar_export_frame(df: Any, preserve_index: bool, *, for_csv: bool 
             result = df.copy(deep=False)
         result.isetitem(position, logical)
     if preserve_index:
-        index = df.index.remove_unused_levels() if for_csv and isinstance(df.index, pd.MultiIndex) else df.index
+        index = df.index
+        if isinstance(index, pd.MultiIndex) and (
+            for_csv or any(negative_decimal_type(level) is not None for level in index.levels)
+        ):
+            index = index.remove_unused_levels()
         levels = list(index.levels) if isinstance(index, pd.MultiIndex) else [index]
         changed: dict[int, Any] = {}
         for position, level in enumerate(levels):
