@@ -167,32 +167,21 @@ and nonnegative integer powers. NumPy, nullable and Sparse integer columns retai
 including exact promotions. Generated code applies the same checks to all affected rows, including those outside
 the displayed page.
 
-Pandas Formula supports exact Arrow integer modulo, selected signed/unsigned addition, subtraction and multiplication,
-and additional positive integer powers. Eligible signed additions widen to Int64, then UInt64 when needed; the
-complete result must fit one output type. Successful native results keep their types. Modulo preserves nulls and refuses
-a zero divisor when both operands are present. Live execution and generated code agree, and refusals preserve source
-data and the confirmed plan.
-Column-to-column powers can widen eligible signed bases with signed or 8-32-bit unsigned exponents to Int64 when
-narrow Arrow storage would overflow. If that fails, nonnegative operand columns can produce a checked UInt64 result.
-Negative values anywhere in either selected column, including those paired with null, do not enter this additional
-repair. UInt64 exponents, negative exponents and remaining overflows retain their existing limits and repairs.
+Pandas Formula supports exact Arrow integer modulo and selected signed/unsigned addition, subtraction,
+multiplication and positive integer powers. Successful native results keep their types; supported repairs can widen
+to Int64 or UInt64, but the complete result must fit one output type. Modulo preserves nulls and refuses a zero divisor
+when both operands are present. Power support depends on the exponent type, column signs and result capacity.
 
-Selected Arrow Decimal arithmetic can widen Decimal128 to Decimal256. Formula can add or subtract integer `0`, or
-multiply or divide by integer `1` or `-1`, on Decimal256 columns when native capacity inference refuses. This also
-handles native type refusals when a negative-scale column's declared capacity exceeds the existing rescaling limit.
-These exact scalar repairs preserve or negate the values without changing the declared precision and scale.
-Other negative-scale Decimal addition, subtraction, multiplication and division work with another Arrow
-Decimal column, a NumPy, built-in Pandas nullable or Arrow integer column of at most 64 bits, or an exact integer literal,
-when the declared capacity fits Decimal256. Sparse, object and custom extension companions are excluded from this
-additional support. These Decimal repairs preserve nulls; native arithmetic determines the result scale and division
-rounding, so the result need not retain a negative source scale.
+Pandas Formula supports selected Arrow Decimal addition, subtraction, multiplication and division, including
+widening to Decimal256 and operations on negative-scale columns. Additional negative-scale support accepts another
+Arrow Decimal column, a NumPy, built-in Pandas nullable or Arrow integer column of at most 64 bits, or an exact integer
+literal. Sparse, object and custom extension companions are excluded. Native capacity limits can still refuse
+mathematically representable results, including empty and all-null inputs outside the supported repairs. Nulls remain
+null; native arithmetic determines the result scale and division rounding, so a negative source scale may change.
 
-Multiplying two Arrow Decimal128 `(38, 38)` columns produces exact Decimal256 `(76, 76)` results, including squares
-with all 38 fractional digits. Either missing operand gives a missing result; empty inputs retain the result type.
-
-Some mathematically representable results still exceed Arrow's inferred capacity and are refused. These Decimal
-capacity restrictions also apply to empty and all-null inputs outside the supported repairs. See
-[Pandas numeric and operand rules](architecture.md#pandas) for the exact supported domains and result types.
+Live execution and generated code apply the same rules; refusals preserve source data and the confirmed plan.
+The [Pandas arithmetic contract](architecture.md#pandas) defines the exact operand domains, widening paths, scalar
+identity repairs and Decimal multiplication cases. The existing [export limits](#files-and-exports) still apply.
 
 Polars Formula requires a numeric release version from 1.36 onward for two-column addition, subtraction or
 multiplication producing UInt128. Earlier versions and nonnumeric or prerelease version labels refuse this combination
