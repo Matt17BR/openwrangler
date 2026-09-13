@@ -1309,7 +1309,7 @@ def test_pandas_primitive_missing_counts_do_not_box_values(monkeypatch: pytest.M
         kind = np.dtype(dtype).kind
         values = np.array([0, 1, np.nan, np.inf, -np.inf] if kind == "f" else [0, 1, 2, 3, 4], dtype=dtype)
         if kind == "m":
-            values[2] = np.timedelta64("NaT", "ns")
+            values = np.array([0, 1, "NaT", 3, 4], dtype=dtype)
         series = pd.Series(values, index=pd.Index([4, 4, 2, 1, 1], name="source"), name="value")
         before = series.copy(deep=True)
         for candidate in [series, series.iloc[:0]]:
