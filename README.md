@@ -103,6 +103,7 @@ The [reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/referenc
 Browse the [product gallery](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md),
 [accessibility and keyboard guide](https://github.com/Matt17BR/openwrangler/blob/main/docs/accessibility.md), and
 [Data Wrangler comparison](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance-comparison.md).
+See the [product roadmap](https://github.com/Matt17BR/openwrangler/blob/main/docs/product-roadmap.md) for selected release work and feature proposals.
 For contributions, see [CONTRIBUTING.md](https://github.com/Matt17BR/openwrangler/blob/main/CONTRIBUTING.md).
 Report bugs in [GitHub Issues](https://github.com/Matt17BR/openwrangler/issues), or follow
 [SECURITY.md](https://github.com/Matt17BR/openwrangler/blob/main/SECURITY.md) for vulnerability reports.
