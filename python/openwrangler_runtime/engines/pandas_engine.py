@@ -1100,10 +1100,7 @@ class PandasEngine(DataFrameEngine):
         )
         row_axis = self.row_axis(df)
         one_level_multi_index = isinstance(df.index, pd.MultiIndex) and df.index.nlevels == 1
-        row_labels = sliced.index
-        if isinstance(sliced.index.dtype, pd.SparseDtype) and sliced.index.dtype.subtype.kind == "m":
-            index_values = _pandas_scalar_values(pd.Series(sliced.index.array, copy=False))
-            row_labels = _pandas_temporal_output_values(index_values, None)
+        row_labels = _pandas_row_axis_values(sliced.index)
         for row_number, (row_label, row) in enumerate(
             zip(row_labels, records, strict=True),
             start=offset,
@@ -4925,6 +4922,36 @@ class _PandasRowAxisFormatter:
             if zone in pytz.all_timezones_set and type(pytz.timezone(zone)) is timezone_type:
                 return
         raise EngineError(f"{self._purpose} has an unsupported display value.")
+
+
+def _pandas_row_axis_values(index: Any) -> Iterable[Any]:
+    import pandas as pd
+
+    if isinstance(index.dtype, pd.SparseDtype) and index.dtype.subtype.kind == "m":
+        values = _pandas_scalar_values(pd.Series(index.array, copy=False))
+        yield from _pandas_temporal_output_values(values, None)
+        return
+    multi = isinstance(index, pd.MultiIndex)
+    levels = (index.get_level_values(position) for position in range(index.nlevels)) if multi else (index,)
+    arrays = [_pandas_arrow_temporal_array(level, categorical=True) for level in levels]
+    if all(array is None for array in arrays):
+        yield from index
+        return
+
+    def present_value(value: Any, array: Any, position: int) -> Any:
+        if (value is pd.NaT or value is pd.NA or value is None) and array is not None:
+            scalar = array[position]
+            if scalar.is_valid:
+                return _pandas_temporal_text(pd.NaT, scalar)
+        return value
+
+    for position, value in enumerate(index):
+        if multi:
+            yield tuple(
+                present_value(component, array, position) for component, array in zip(value, arrays, strict=True)
+            )
+        else:
+            yield present_value(value, arrays[0], position)
 
 
 def _pandas_row_axis_label(value: Any, row_axis: RowAxis, *, one_level_multi_index: bool = False) -> str:
