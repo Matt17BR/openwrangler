@@ -77,6 +77,7 @@ test("proves existing Markdown edits against the exact tested merge", async (con
       assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
         docsOnly: true,
         rOmittable: true,
+        rRuntimeOmittable: true,
         pythonOmittable: true,
         rEditorOmittable: false,
         nativeSparkOmittable: false
@@ -85,7 +86,7 @@ test("proves existing Markdown edits against the exact tested merge", async (con
       execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
       assert.equal(
         readFileSync(output, "utf8"),
-        "docs_only=true\nr_omittable=true\npython_omittable=true\nr_editor_omittable=false\nnative_spark_omittable=false\n"
+        "docs_only=true\nr_omittable=true\nr_runtime_omittable=true\npython_omittable=true\nr_editor_omittable=false\nnative_spark_omittable=false\n"
       );
     });
   }
@@ -104,6 +105,7 @@ test("proves existing component test edits while retaining Source execution", (c
   assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
     docsOnly: false,
     rOmittable: true,
+    rRuntimeOmittable: true,
     pythonOmittable: true,
     rEditorOmittable: false,
     nativeSparkOmittable: false
@@ -116,7 +118,7 @@ test("proves existing component test edits while retaining Source execution", (c
   });
   assert.equal(
     readFileSync(output, "utf8"),
-    "docs_only=false\nr_omittable=true\npython_omittable=true\nr_editor_omittable=false\nnative_spark_omittable=false\n"
+    "docs_only=false\nr_omittable=true\nr_runtime_omittable=true\npython_omittable=true\nr_editor_omittable=false\nnative_spark_omittable=false\n"
   );
 });
 
@@ -133,6 +135,7 @@ test("proves the two existing R test edits can omit only installed editor execut
       assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
         docsOnly: false,
         rOmittable: false,
+        rRuntimeOmittable: false,
         pythonOmittable: true,
         rEditorOmittable: true,
         nativeSparkOmittable: false
@@ -141,7 +144,7 @@ test("proves the two existing R test edits can omit only installed editor execut
       execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
       assert.equal(
         readFileSync(output, "utf8"),
-        "docs_only=false\nr_omittable=false\npython_omittable=true\nr_editor_omittable=true\nnative_spark_omittable=false\n"
+        "docs_only=false\nr_omittable=false\nr_runtime_omittable=false\npython_omittable=true\nr_editor_omittable=true\nnative_spark_omittable=false\n"
       );
     });
   }
@@ -218,6 +221,7 @@ test("proves existing script edits while retaining Source and package execution"
       assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
         docsOnly: false,
         rOmittable: true,
+        rRuntimeOmittable: true,
         pythonOmittable: true,
         rEditorOmittable: false,
         nativeSparkOmittable: false
@@ -226,7 +230,7 @@ test("proves existing script edits while retaining Source and package execution"
       execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
       assert.equal(
         readFileSync(output, "utf8"),
-        "docs_only=false\nr_omittable=true\npython_omittable=true\nr_editor_omittable=false\nnative_spark_omittable=false\n"
+        "docs_only=false\nr_omittable=true\nr_runtime_omittable=true\npython_omittable=true\nr_editor_omittable=false\nnative_spark_omittable=false\n"
       );
     });
   }
@@ -256,6 +260,7 @@ test("proves existing Python source and Markdown edits only for native R", async
       assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
         docsOnly: false,
         rOmittable: true,
+        rRuntimeOmittable: true,
         pythonOmittable: false,
         rEditorOmittable: false,
         nativeSparkOmittable: false
@@ -264,7 +269,7 @@ test("proves existing Python source and Markdown edits only for native R", async
       execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
       assert.equal(
         readFileSync(output, "utf8"),
-        "docs_only=false\nr_omittable=true\npython_omittable=false\nr_editor_omittable=false\nnative_spark_omittable=false\n"
+        "docs_only=false\nr_omittable=true\nr_runtime_omittable=true\npython_omittable=false\nr_editor_omittable=false\nnative_spark_omittable=false\n"
       );
     });
   }
@@ -300,6 +305,7 @@ test("omits native Spark for nonempty subsets of the existing local-engine owner
       assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
         docsOnly: false,
         rOmittable: true,
+        rRuntimeOmittable: true,
         pythonOmittable: false,
         rEditorOmittable: false,
         nativeSparkOmittable: true
@@ -308,7 +314,7 @@ test("omits native Spark for nonempty subsets of the existing local-engine owner
       execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
       assert.equal(
         readFileSync(output, "utf8"),
-        "docs_only=false\nr_omittable=true\npython_omittable=false\nr_editor_omittable=false\nnative_spark_omittable=true\n"
+        "docs_only=false\nr_omittable=true\nr_runtime_omittable=true\npython_omittable=false\nr_editor_omittable=false\nnative_spark_omittable=true\n"
       );
     });
   }
@@ -358,6 +364,7 @@ test("proves added regular Python source only for native R", async (context) => 
       assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
         docsOnly: false,
         rOmittable: true,
+        rRuntimeOmittable: true,
         pythonOmittable: false,
         rEditorOmittable: false,
         nativeSparkOmittable: false
@@ -366,13 +373,33 @@ test("proves added regular Python source only for native R", async (context) => 
       execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
       assert.equal(
         readFileSync(output, "utf8"),
-        "docs_only=false\nr_omittable=true\npython_omittable=false\nr_editor_omittable=false\nnative_spark_omittable=false\n"
+        "docs_only=false\nr_omittable=true\nr_runtime_omittable=true\npython_omittable=false\nr_editor_omittable=false\nnative_spark_omittable=false\n"
       );
     });
   }
 });
 
-test("proves regular R source, installed-harness and webview edits only for Python", async (context) => {
+test("omits Linux R source work for the grid accessibility change while keeping installed R journeys", (context) => {
+  const files = [
+    "src/webviews/grid/DataGrid.tsx",
+    "src/test/dataGridClipboard.component.test.tsx",
+    "src/test/dataGridSelection.component.test.tsx",
+    "src/test/webview.component.test.tsx",
+    "docs/accessibility.md",
+    "CHANGELOG.md"
+  ];
+  const cwd = repository(context, files);
+  for (const file of files) write(cwd, file);
+  const env = merge(cwd);
+  const proof = proveRuntimeOmissions({ cwd, env });
+  assert.equal(proof.rRuntimeOmittable, true);
+  assert.equal(proof.rOmittable, false);
+  assert.equal(proof.rEditorOmittable, false);
+  assert.equal(proof.pythonOmittable, true);
+  assert.equal(proof.docsOnly, false);
+});
+
+test("proves Python omissions while retaining Linux R source checks for non-renderer inputs", async (context) => {
   const cases = [
     { added: [], modified: ["r/openwrangler_runtime/frame_contract.R"] },
     { added: ["r/openwrangler_runtime/helper.R"], modified: [] },
@@ -385,10 +412,23 @@ test("proves regular R source, installed-harness and webview edits only for Pyth
     { added: [], modified: ["src/test/extensionHost/releasedROperationPicker.ts"] },
     { added: [], modified: ["scripts/editor-acceptance.mjs"] },
     { added: [], modified: ["scripts/editor-acceptance-artifact.test.mjs"] },
-    { added: [], modified: ["src/webviews/App.tsx"] },
-    { added: [], modified: ["src/webviews/grid/rowScrollModel.ts"] },
-    { added: [], modified: ["src/webviews/grid/DataGrid.tsx"] },
-    { added: [], modified: ["src/webviews/styles/grid.css"] },
+    { added: [], modified: ["src/webviews/App.tsx"], runtimeOmittable: true },
+    { added: [], modified: ["src/webviews/grid/rowScrollModel.ts"], runtimeOmittable: true },
+    { added: [], modified: ["src/webviews/grid/DataGrid.tsx"], runtimeOmittable: true },
+    { added: [], modified: ["src/webviews/styles/grid.css"], runtimeOmittable: true },
+    ...[
+      "r/openwrangler_runtime/frame_contract.R",
+      "r/tests/kernel_agent.R",
+      "src/test/progressiveProfilingLifecycle.unit.test.tsx",
+      "src/test/extensionHost/releasedRCoreEditing.ts",
+      "scripts/editor-acceptance.mjs",
+      "scripts/capture-screenshots.mjs"
+    ].map((other) => ({ added: [], modified: ["src/webviews/grid/DataGrid.tsx", other] })),
+    {
+      added: [],
+      modified: ["src/webviews/grid/DataGrid.tsx", "python/openwrangler_runtime/session.py"],
+      pythonOmittable: false
+    },
     { added: [], modified: ["src/test/progressiveProfilingLifecycle.unit.test.tsx"] },
     {
       added: [],
@@ -418,7 +458,7 @@ test("proves regular R source, installed-harness and webview edits only for Pyth
       modified: ["r/openwrangler_runtime/kernel_agent.R", "README.md", "CHANGELOG.md", "docs/testing.md"]
     }
   ];
-  for (const { added, modified } of cases) {
+  for (const { added, modified, runtimeOmittable = false, pythonOmittable = true } of cases) {
     await context.test([...added, ...modified].join(", "), (child) => {
       const cwd = repository(child, modified);
       for (const file of [...added, ...modified]) write(cwd, file);
@@ -426,7 +466,8 @@ test("proves regular R source, installed-harness and webview edits only for Pyth
       assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
         docsOnly: false,
         rOmittable: false,
-        pythonOmittable: true,
+        rRuntimeOmittable: runtimeOmittable,
+        pythonOmittable,
         rEditorOmittable: false,
         nativeSparkOmittable: false
       });
@@ -434,7 +475,7 @@ test("proves regular R source, installed-harness and webview edits only for Pyth
       execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
       assert.equal(
         readFileSync(output, "utf8"),
-        "docs_only=false\nr_omittable=false\npython_omittable=true\nr_editor_omittable=false\nnative_spark_omittable=false\n"
+        `docs_only=false\nr_omittable=false\nr_runtime_omittable=${runtimeOmittable}\npython_omittable=${pythonOmittable}\nr_editor_omittable=false\nnative_spark_omittable=false\n`
       );
     });
   }
@@ -463,6 +504,7 @@ test("keeps both runtimes required for R and CHANGELOG changes with Python sourc
         assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), {
           docsOnly: false,
           rOmittable: false,
+          rRuntimeOmittable: false,
           pythonOmittable: false,
           rEditorOmittable: false,
           nativeSparkOmittable: false
@@ -501,6 +543,7 @@ test("requires full owners for deleted or renamed source, including alongside ad
         assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
           docsOnly: false,
           rOmittable: false,
+          rRuntimeOmittable: false,
           pythonOmittable: false,
           rEditorOmittable: false,
           nativeSparkOmittable: false
@@ -541,6 +584,7 @@ test("requires full owners for source mode changes and existing executable or sy
           assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
             docsOnly: false,
             rOmittable: false,
+            rRuntimeOmittable: false,
             pythonOmittable: false,
             rEditorOmittable: false,
             nativeSparkOmittable: false
@@ -566,6 +610,7 @@ test("requires full owners for added executable or symlink runtime source", asyn
         assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd, false) }), {
           docsOnly: false,
           rOmittable: false,
+          rRuntimeOmittable: false,
           pythonOmittable: false,
           rEditorOmittable: false,
           nativeSparkOmittable: false
@@ -602,6 +647,7 @@ test("requires full owners for added Markdown or paths outside the runtime sourc
       assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), {
         docsOnly: false,
         rOmittable: false,
+        rRuntimeOmittable: false,
         pythonOmittable: false,
         rEditorOmittable: false,
         nativeSparkOmittable: false
@@ -625,6 +671,7 @@ test("requires full owners for control characters in source paths", async (conte
         assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), {
           docsOnly: false,
           rOmittable: false,
+          rRuntimeOmittable: false,
           pythonOmittable: false,
           rEditorOmittable: false,
           nativeSparkOmittable: false
@@ -668,6 +715,7 @@ test("requires full owners for an added runtime source path with invalid UTF-8",
         {
           docsOnly: false,
           rOmittable: false,
+          rRuntimeOmittable: false,
           pythonOmittable: false,
           rEditorOmittable: false,
           nativeSparkOmittable: false
@@ -749,6 +797,7 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
       assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
         docsOnly: false,
         rOmittable: false,
+        rRuntimeOmittable: false,
         pythonOmittable: false,
         rEditorOmittable: false,
         nativeSparkOmittable: false
@@ -785,6 +834,7 @@ test("does not hide deletions or renames behind a Markdown destination", async (
       assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
         docsOnly: false,
         rOmittable: false,
+        rRuntimeOmittable: false,
         pythonOmittable: false,
         rEditorOmittable: false,
         nativeSparkOmittable: false
@@ -804,6 +854,7 @@ test("requires full owners for executable or symlink Markdown entries", async (c
         assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
           docsOnly: false,
           rOmittable: false,
+          rRuntimeOmittable: false,
           pythonOmittable: false,
           rEditorOmittable: false,
           nativeSparkOmittable: false
@@ -821,6 +872,7 @@ test("handles NUL-delimited paths without treating newline paths as documentatio
   assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
     docsOnly: false,
     rOmittable: false,
+    rRuntimeOmittable: false,
     pythonOmittable: false,
     rEditorOmittable: false,
     nativeSparkOmittable: false
@@ -836,6 +888,7 @@ test("examines changes beyond a 300-file API or workflow filter limit", (context
   assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
     docsOnly: false,
     rOmittable: false,
+    rRuntimeOmittable: false,
     pythonOmittable: false,
     rEditorOmittable: false,
     nativeSparkOmittable: false
@@ -851,6 +904,7 @@ test("falls back to full owners when the bounded Git output is exceeded", (conte
   assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
     docsOnly: false,
     rOmittable: false,
+    rRuntimeOmittable: false,
     pythonOmittable: false,
     rEditorOmittable: false,
     nativeSparkOmittable: false
@@ -875,6 +929,7 @@ test("requires exact event identities, protected base and two merge parents", (c
     assert.deepEqual(proveRuntimeOmissions({ cwd, env: { ...env, ...change } }), {
       docsOnly: false,
       rOmittable: false,
+      rRuntimeOmittable: false,
       pythonOmittable: false,
       rEditorOmittable: false,
       nativeSparkOmittable: false
@@ -884,6 +939,7 @@ test("requires exact event identities, protected base and two merge parents", (c
   assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
     docsOnly: false,
     rOmittable: false,
+    rRuntimeOmittable: false,
     pythonOmittable: false,
     rEditorOmittable: false,
     nativeSparkOmittable: false
@@ -891,6 +947,7 @@ test("requires exact event identities, protected base and two merge parents", (c
   assert.deepEqual(proveRuntimeOmissions({ cwd, env: { ...env, CI_MERGE_SHA: env.CI_HEAD_SHA } }), {
     docsOnly: false,
     rOmittable: false,
+    rRuntimeOmittable: false,
     pythonOmittable: false,
     rEditorOmittable: false,
     nativeSparkOmittable: false
@@ -909,6 +966,7 @@ test("uses the protected base of the tested merge and rejects stale base identit
   assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
     docsOnly: true,
     rOmittable: true,
+    rRuntimeOmittable: true,
     pythonOmittable: true,
     rEditorOmittable: false,
     nativeSparkOmittable: false
@@ -916,6 +974,7 @@ test("uses the protected base of the tested merge and rejects stale base identit
   assert.deepEqual(proveRuntimeOmissions({ cwd, env: { ...env, CI_BASE_SHA: earlierBase } }), {
     docsOnly: false,
     rOmittable: false,
+    rRuntimeOmittable: false,
     pythonOmittable: false,
     rEditorOmittable: false,
     nativeSparkOmittable: false
@@ -934,6 +993,7 @@ test("sufficient merge history permits omissions while missing parents require f
     assert.deepEqual(proveRuntimeOmissions({ cwd: clone, env }), {
       docsOnly: false,
       rOmittable: depth >= 2,
+      rRuntimeOmittable: depth >= 2,
       pythonOmittable: false,
       rEditorOmittable: false,
       nativeSparkOmittable: depth >= 2
@@ -947,6 +1007,7 @@ test("empty diffs and Git failures select full checks", (context) => {
   assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
     docsOnly: false,
     rOmittable: false,
+    rRuntimeOmittable: false,
     pythonOmittable: false,
     rEditorOmittable: false,
     nativeSparkOmittable: false
@@ -955,6 +1016,7 @@ test("empty diffs and Git failures select full checks", (context) => {
   assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
     docsOnly: false,
     rOmittable: false,
+    rRuntimeOmittable: false,
     pythonOmittable: false,
     rEditorOmittable: false,
     nativeSparkOmittable: false
@@ -963,7 +1025,7 @@ test("empty diffs and Git failures select full checks", (context) => {
   execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
   assert.equal(
     readFileSync(output, "utf8"),
-    "docs_only=false\nr_omittable=false\npython_omittable=false\nr_editor_omittable=false\nnative_spark_omittable=false\n"
+    "docs_only=false\nr_omittable=false\nr_runtime_omittable=false\npython_omittable=false\nr_editor_omittable=false\nnative_spark_omittable=false\n"
   );
 });
 
@@ -1273,6 +1335,7 @@ test("required runtime results reject missing proof and incomplete or canceled e
   assert.deepEqual(workflow.jobs["docs-proof"].outputs, {
     docs_only: "${{ steps.proof.outputs.docs_only }}",
     r_omittable: "${{ steps.proof.outputs.r_omittable }}",
+    r_runtime_omittable: "${{ steps.proof.outputs.r_runtime_omittable }}",
     python_omittable: "${{ steps.proof.outputs.python_omittable }}",
     r_editor_omittable: "${{ steps.proof.outputs.r_editor_omittable }}",
     native_spark_omittable: "${{ steps.proof.outputs.native_spark_omittable }}"
@@ -1297,11 +1360,16 @@ test("required runtime results reject missing proof and incomplete or canceled e
     assert.equal(guard.if, undefined);
     assert.equal(guard.shell, "bash");
     assert.equal(guard.env.PROOF_RESULT, "${{ needs.docs-proof.result }}");
-    const omissionOutputs = id === "windows" ? ["r_omittable", "python_omittable"] : [`${id}_omittable`];
+    const omissionOutputs =
+      id === "windows"
+        ? ["r_omittable", "python_omittable"]
+        : id === "r"
+          ? ["r_omittable", "r_runtime_omittable"]
+          : ["python_omittable"];
     for (const output of omissionOutputs) {
       assert.equal(guard.env[output.toUpperCase()], `\${{ needs.docs-proof.outputs.${output} }}`);
     }
-    for (const other of ["DOCS_ONLY", "R_OMITTABLE", "PYTHON_OMITTABLE"]) {
+    for (const other of ["DOCS_ONLY", "R_OMITTABLE", "R_RUNTIME_OMITTABLE", "PYTHON_OMITTABLE"]) {
       if (!omissionOutputs.includes(other.toLowerCase())) assert.equal(guard.env[other], undefined);
     }
     assert.equal(guard.env.RUNTIME_RESULT, `\${{ needs.${runtimeId}.result }}`);
@@ -1310,7 +1378,7 @@ test("required runtime results reject missing proof and incomplete or canceled e
       runtime.if,
       id === "windows"
         ? "${{ !cancelled() && needs.docs-proof.result == 'success' && (needs.docs-proof.outputs.r_omittable == 'false' || needs.docs-proof.outputs.python_omittable == 'false') }}"
-        : `\${{ !cancelled() && needs.docs-proof.result == 'success' && needs.docs-proof.outputs.${id}_omittable == 'false' }}`,
+        : `\${{ !cancelled() && needs.docs-proof.result == 'success' && needs.docs-proof.outputs.${id === "r" ? "r_runtime" : id}_omittable == 'false' }}`,
       "execution jobs must be cancellable, including while queued after a successful proof"
     );
     assert.equal(runtime["runs-on"], id === "windows" ? "windows-latest" : "ubuntu-24.04");
@@ -1357,6 +1425,7 @@ test("required runtime results reject missing proof and incomplete or canceled e
           R_OMITTABLE: id === "r" || id === "windows" ? omittable : omittable === "true" ? "false" : "true",
           PYTHON_OMITTABLE:
             id === "windows" ? otherOmittable : id === "python" ? omittable : omittable === "true" ? "false" : "true",
+          R_RUNTIME_OMITTABLE: omittable,
           RUNTIME_RESULT: runtimeResult,
           MACOS_CALL_RESULT: id === "r" && omittable === "true" ? "skipped" : "success",
           MACOS_RESULT: id === "r" && omittable === "true" ? "" : "success",
@@ -1390,6 +1459,7 @@ test("required R result checks installed caller and selected platform outcomes i
     PROOF_RESULT: "success",
     DOCS_ONLY: "false",
     R_OMITTABLE: "false",
+    R_RUNTIME_OMITTABLE: "false",
     RUNTIME_RESULT: "success",
     MACOS_CALL_RESULT: "success",
     MACOS_RESULT: "success",
@@ -1399,15 +1469,18 @@ test("required R result checks installed caller and selected platform outcomes i
   const omitted = {
     ...successful,
     R_OMITTABLE: "true",
+    R_RUNTIME_OMITTABLE: "true",
     RUNTIME_RESULT: "skipped",
     MACOS_CALL_RESULT: "skipped",
     MACOS_RESULT: "",
     WINDOWS_CALL_RESULT: "skipped",
     WINDOWS_RESULT: ""
   };
+  const runtimeOmitted = { ...successful, R_RUNTIME_OMITTABLE: "true", RUNTIME_RESULT: "skipped" };
   const cases = [
     [successful, 0],
     [omitted, 0],
+    [runtimeOmitted, 0],
     [{ ...omitted, DOCS_ONLY: "true" }, 0],
     [{ ...successful, R_OMITTABLE: "true", RUNTIME_RESULT: "skipped" }, 1]
   ];
@@ -1416,6 +1489,7 @@ test("required R result checks installed caller and selected platform outcomes i
       const field = `${platform}_${suffix}`;
       for (const result of ["failure", "cancelled", "skipped", "", "unexpected", "success"]) {
         if (result !== "success") cases.push([{ ...successful, [field]: result }, 1]);
+        if (result !== "success") cases.push([{ ...runtimeOmitted, [field]: result }, 1]);
         if (result !== omitted[field]) cases.push([{ ...omitted, [field]: result }, 1]);
       }
     }
@@ -1426,13 +1500,30 @@ test("required R result checks installed caller and selected platform outcomes i
     [{ ...omitted, R_OMITTABLE: "" }, 1],
     [{ ...omitted, R_OMITTABLE: "TRUE" }, 1]
   );
+  for (const baseline of [successful, omitted, runtimeOmitted]) {
+    for (const value of [undefined, "", "TRUE", "true\nfalse"]) {
+      cases.push([{ ...baseline, R_RUNTIME_OMITTABLE: value }, 1]);
+    }
+    cases.push([{ ...baseline, R_RUNTIME_OMITTABLE: baseline.R_RUNTIME_OMITTABLE === "true" ? "false" : "true" }, 1]);
+  }
+  for (const result of ["failure", "cancelled", "skipped", ""]) {
+    cases.push([{ ...runtimeOmitted, PROOF_RESULT: result }, 1]);
+  }
+  for (const result of ["success", "failure", "cancelled", "", "unexpected"]) {
+    cases.push([{ ...runtimeOmitted, RUNTIME_RESULT: result }, 1]);
+  }
   for (const [environment, status] of cases) {
+    const summary = join(temp, "summary");
+    rmSync(summary, { force: true });
     const result = spawnSync("bash", ["--noprofile", "--norc", "-e", "-o", "pipefail", "-c", guard.run], {
-      env: { ...process.env, ...environment, GITHUB_STEP_SUMMARY: join(temp, "summary") },
+      env: { ...process.env, ...environment, GITHUB_STEP_SUMMARY: summary },
       encoding: "utf8"
     });
     assert.equal(result.error, undefined);
     assert.equal(result.status, status, JSON.stringify(environment));
+    if (environment === runtimeOmitted) {
+      assert.match(readFileSync(summary, "utf8"), /Linux R source checks omitted.*Both platform R jobs passed/u);
+    }
   }
 });
 

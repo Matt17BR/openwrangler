@@ -11,8 +11,9 @@ Every pull request reports the same five required product checks:
 - **Python runtime contracts** runs Ruff, Pyright, and Pytest with the declared Python dependencies. Native PySpark
   checks follow the narrow local-engine omission below.
 - **Native R frame, kernel, and transport contracts** installs the R 4.5 lock on two Linux workers: one runs frame,
-  catalog and transport checks, and the other runs the kernel-agent checks. It also requires the existing macOS and Windows
-  source and package jobs unless the change is proved independent of R. Their installed notebook journeys follow the
+  catalog and transport checks, and the other runs the kernel-agent checks, subject to the renderer omission below.
+  It also requires the existing macOS and Windows source and package jobs unless the change is proved independent of R.
+  Their installed notebook journeys follow the
   narrower source-test omission below.
 - **Packaged VS Code smoke** builds and verifies one VSIX, then opens those exact bytes with the `platform-smoke` /
   `daily-core` selector in the declared minimum VS Code 1.106.0 and current stable VS Code, subject to the
@@ -65,8 +66,12 @@ The scope-only job uses Node and Git without installing npm dependencies or rest
   and other scripts are outside this permission.
 - The Python worker may also be omitted for modifications to existing files under `src/webviews/` and the existing
   `src/test/progressiveProfilingLifecycle.unit.test.tsx` owner, optionally with the allowed component-test and Markdown
-  edits. All R source and installed-editor checks, Windows contracts, Source and packaged smoke remain required.
+  edits. Platform R source and installed-editor checks, Windows contracts, Source and packaged smoke remain required.
   Additions, deletions, renames and mode changes remain outside this permission.
+- The Linux R workers may also be omitted for modifications to existing `src/webviews/` files, optionally with the
+  allowed component-test and Markdown edits. This additional omission does not extend to the lifecycle unit test,
+  installed harness, scripts or runtime source. Additions, deletions, renames and mode changes retain execution.
+  Both platform R jobs still run their source, cleanup, package and installed-editor checks.
 - R source and installed-editor execution may be omitted for additions or edits to `.py` files under
   `python/openwrangler_runtime/` or `python/tests/`, and edits to existing `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md` or
   `docs/**/*.md`.
@@ -103,6 +108,10 @@ contracts, which remain outside this permission. This omission includes the work
 cases, including native Spark; it gives no fresh Python execution result. The installed R journeys do load the webview
 and exercise real profiles, so they remain required. Local browser acceptance still applies to rendered UI changes.
 
+The Linux R phases load native R assets and the selected Node transport owners, without loading renderer source.
+Their separate `r_runtime_omittable` result permits the Linux matrix to be skipped without changing platform R or
+Windows selection. Its summary reports no fresh Linux R source execution.
+
 The `native_spark_omittable` proof changes only the Python worker's Spark installation requirement. Pandas stays
 below version 3, Java remains installed, and the same Ruff, Pyright and full Pytest commands run. Without Spark,
 the existing optional-import gates skip native Classic/Connect frame, transport, profile, lifecycle and decoder-type
@@ -137,9 +146,11 @@ Scheduled R 4.4 qualification does not replace R 4.5 coverage. Release qualifica
 Each runtime has cancellable execution and a short required-result job. The latter reports success only for completed
 execution or a proved omission with actually skipped execution. Windows omission requires both runtime omission flags
 and a skipped worker; otherwise both flags must be valid and its execution must succeed. The R result also checks both installed workflow calls
-and their selected platform job results. A proved R omission requires the source matrix and both installed workflow
-calls to be skipped, with empty reusable outputs. Otherwise every result must succeed; missing, canceled or skipped selected jobs
-cannot satisfy the check, even if a misconfigured workflow call otherwise reports success.
+and their selected platform job results. A proved whole-R omission requires the source matrix and both installed workflow
+calls to be skipped, with empty reusable outputs. A proved Linux-only omission requires a skipped source matrix and
+successful calls and selected results for both platform jobs. Without either omission, all results must succeed.
+Missing, contradictory, failed or cancelled results cannot satisfy the check, even if a misconfigured workflow call
+otherwise reports success.
 
 The separate `r_editor_omittable` result leaves both platform jobs running. Its Boolean workflow input defaults to false;
 manual dispatch retains editor execution. An omitted editor step reports no fresh editor result. These two R test files
