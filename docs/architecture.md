@@ -1459,6 +1459,8 @@ commits, later cancellation does not undo that explicit choice. Normal viewing a
 Confirmed file configuration stores both the concrete backend that produced the session and the user's logical
 choice of `auto` or an explicit engine. Recovery pins the concrete backend so an automatic fallback cannot reinterpret
 saved operations. A later import-options change may select again only when the retained logical choice was `auto`.
+If this configuration cannot be saved, the accepted session stays open and a warning explains that reopening may
+use different import options or a different backend.
 Persistence contains no dataframe bytes, runtime session IDs, profiles, or statistics, and debounced presentation
 state flushes before a webview disappears.
 

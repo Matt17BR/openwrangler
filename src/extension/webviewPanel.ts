@@ -2108,11 +2108,25 @@ export class OpenWranglerPanel {
         this.backendPreference
       );
     } catch (error) {
-      this.bridge.reportDiagnostic?.(
-        `Open Wrangler could not remember confirmed import options for ${source.label}: ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
+      try {
+        this.bridge.reportDiagnostic?.(
+          `Open Wrangler could not remember confirmed import options for ${source.label}: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+      } catch {
+        // A diagnostic failure must not undo an accepted session.
+      }
+      if (this.disposed) return;
+      try {
+        void Promise.resolve(
+          vscode.window.showWarningMessage(
+            "Open Wrangler could not save this file's import settings and dataframe engine. The current session remains available, but reopening may use different settings or a different engine."
+          )
+        ).catch(() => undefined);
+      } catch {
+        // A failed warning surface must not destabilize the active session.
+      }
     }
   }
 

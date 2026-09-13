@@ -4,10 +4,13 @@ import { commands, Uri, window, workspace } from "vscode";
 import type { BridgeRequestOptions, OpenWranglerBridge, SessionRuntimeReplacement } from "../extension/dataBridge";
 import type { SessionRecoveryMessage } from "../shared/sessionRecovery";
 import type { GridViewState } from "../shared/viewState";
-import { CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY } from "../extension/files/confirmedFileConfigurations";
+import {
+  confirmedFileConfiguration,
+  CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY
+} from "../extension/files/confirmedFileConfigurations";
 import { DependencyGuardCommandError } from "../extension/dependencyGuardProtocol";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
-import { SESSION_STORAGE_KEY } from "../extension/sessionPersistence";
+import { persistenceKey, SESSION_STORAGE_KEY } from "../extension/sessionPersistence";
 import { OpenWranglerPanel, restoreEditorGroupAfterQuickPick } from "../extension/webviewPanel";
 import type {
   ColumnSummary,
@@ -5616,7 +5619,7 @@ describe("OpenWranglerPanel retained view state", () => {
     });
   });
 
-  it("remembers an already-confirmed replacement even when the panel closes in the response gap", async () => {
+  it("warns without blocking the accepted session when file settings cannot be saved for reopening", async () => {
     const source: SessionSource = {
       kind: "file",
       label: "sample.csv",
@@ -5624,43 +5627,131 @@ describe("OpenWranglerPanel retained view state", () => {
       uri: "file:///workspace/sample.csv",
       importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
     };
-    const nextOptions = {
-      delimiter: ";",
-      encoding: "windows-1252",
-      quoteChar: "'",
-      hasHeader: false
-    } as const;
-    const replacement = deferred<OpenWranglerResponse>();
-    const reconfigureFileSession = vi.fn(async () => replacement.promise);
+    const nextOptions = { delimiter: ";", encoding: "utf-8", quoteChar: '"', hasHeader: true };
+    const initial = responseForSource(source, 2);
+    const replacement = responseForSource({ ...source, importOptions: nextOptions }, 7);
     const workspaceState = createWorkspaceMemento();
+    const reportDiagnostic = vi.fn();
+    const reconfigureFileSession = vi.fn(async (): Promise<OpenWranglerResponse> => replacement);
     const harness = createPanelHarness(
-      {
-        request: vi.fn(async () => responseForSource(source)),
-        reconfigureFileSession
-      },
-      { source, openResponse: responseForSource(source), workspaceState }
+      { request: vi.fn(async () => initial), reconfigureFileSession, reportDiagnostic },
+      { source, openResponse: initial, workspaceState }
     );
     await harness.open();
+    await confirmLatestSnapshot(harness);
+    const originalStored = confirmedFileConfiguration(workspaceState, Uri.file("/workspace/sample.csv"));
+    expect(originalStored?.importOptions).toEqual(source.importOptions);
+    workspaceState.update.mockRejectedValueOnce(new Error("Configuration storage unavailable"));
+    const warning = deferred<string | undefined>();
+    panelPromptMocks.showWarningMessage.mockReturnValue(warning.promise);
+    harness.posted.length = 0;
     configureDelimitedPrompts(nextOptions);
 
     const changing = harness.receive({ kind: "changeImportOptions" });
-    await vi.waitFor(() => expect(reconfigureFileSession).toHaveBeenCalledOnce());
-    harness.dispose();
-    replacement.resolve(responseForSource({ ...source, importOptions: nextOptions }, 1));
-    await changing;
+    try {
+      await vi.waitFor(() => expect(harness.posted).toContainEqual(hostSnapshot(replacement)));
+      expect(panelPromptMocks.showWarningMessage).toHaveBeenCalledExactlyOnceWith(
+        "Open Wrangler could not save this file's import settings and dataframe engine. The current session remains available, but reopening may use different settings or a different engine."
+      );
+    } finally {
+      warning.resolve(undefined);
+      await changing;
+    }
 
-    expect(workspaceState.update).toHaveBeenLastCalledWith(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY, {
-      version: 2,
-      entries: [
-        {
-          uri: source.uri,
-          backend: "polars",
-          backendPreference: "polars",
-          importOptions: nextOptions
-        }
-      ]
-    });
+    expect(reconfigureFileSession).toHaveBeenCalledOnce();
+    expect(harness.posted.some((message) => (message as { kind?: string }).kind === "error")).toBe(false);
+    expect(reportDiagnostic).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining("could not remember confirmed import options")
+    );
+    const reopenedConfig = confirmedFileConfiguration(workspaceState, Uri.file("/workspace/sample.csv"));
+    expect(reopenedConfig).toEqual(originalStored);
+    if (!reopenedConfig) throw new Error("Expected the earlier remembered configuration.");
+    expect(persistenceKey({ ...source, importOptions: reopenedConfig.importOptions }, reopenedConfig.backend)).not.toBe(
+      persistenceKey(replacement.metadata.source, replacement.metadata.backend)
+    );
+    harness.posted.length = 0;
+    await harness.receive({ kind: "ready" });
+    expect(harness.posted).toContainEqual(hostSnapshot(replacement));
   });
+
+  it.each(["throws", "rejects"] as const)("keeps an accepted file open when its save warning %s", async (failure) => {
+    const source: SessionSource = { kind: "file", label: "sample.parquet", path: "/workspace/sample.parquet" };
+    const opened = responseForSource(source);
+    const workspaceState = createWorkspaceMemento();
+    workspaceState.update.mockRejectedValueOnce(new Error("Configuration storage unavailable"));
+    const reportDiagnostic = vi.fn(() => {
+      if (failure === "throws") throw new Error("Diagnostic surface unavailable");
+    });
+    panelPromptMocks.showWarningMessage.mockImplementation(() => {
+      if (failure === "throws") throw new Error("Notification surface unavailable");
+      return Promise.reject(new Error("Notification surface unavailable"));
+    });
+    const harness = createPanelHarness(
+      { request: vi.fn(async () => opened), reportDiagnostic },
+      { source, openResponse: opened, workspaceState }
+    );
+
+    await harness.open();
+
+    expect(workspaceState.update).toHaveBeenCalledOnce();
+    expect(panelPromptMocks.showWarningMessage).toHaveBeenCalledOnce();
+    expect(reportDiagnostic).toHaveBeenCalledOnce();
+    expect(harness.posted).toContainEqual(hostSnapshot(opened));
+    expect(harness.posted.some((message) => (message as { kind?: string }).kind === "error")).toBe(false);
+  });
+
+  it.each(["saved", "failed"] as const)(
+    "finishes a confirmed settings save after the panel closes in the response gap (%s)",
+    async (save) => {
+      const source: SessionSource = {
+        kind: "file",
+        label: "sample.csv",
+        path: "/workspace/sample.csv",
+        uri: "file:///workspace/sample.csv",
+        importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+      };
+      const nextOptions = {
+        delimiter: ";",
+        encoding: "windows-1252",
+        quoteChar: "'",
+        hasHeader: false
+      } as const;
+      const replacement = deferred<OpenWranglerResponse>();
+      const reconfigureFileSession = vi.fn(async () => replacement.promise);
+      const workspaceState = createWorkspaceMemento();
+      const harness = createPanelHarness(
+        {
+          request: vi.fn(async () => responseForSource(source)),
+          reconfigureFileSession
+        },
+        { source, openResponse: responseForSource(source), workspaceState }
+      );
+      await harness.open();
+      if (save === "failed")
+        workspaceState.update.mockRejectedValueOnce(new Error("Configuration storage unavailable"));
+      configureDelimitedPrompts(nextOptions);
+
+      const changing = harness.receive({ kind: "changeImportOptions" });
+      await vi.waitFor(() => expect(reconfigureFileSession).toHaveBeenCalledOnce());
+      harness.dispose();
+      replacement.resolve(responseForSource({ ...source, importOptions: nextOptions }, 1));
+      await changing;
+
+      expect(panelPromptMocks.showWarningMessage).not.toHaveBeenCalled();
+
+      expect(workspaceState.update).toHaveBeenLastCalledWith(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY, {
+        version: 2,
+        entries: [
+          {
+            uri: source.uri,
+            backend: "polars",
+            backendPreference: "polars",
+            importOptions: nextOptions
+          }
+        ]
+      });
+    }
+  );
 
   it("drains an already-confirmed panel response before publishing a replacement snapshot", async () => {
     const source: SessionSource = {
