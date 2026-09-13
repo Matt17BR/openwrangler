@@ -19,7 +19,6 @@ const POSIX_OWNER_ENVIRONMENT_KEY = "OPEN_WRANGLER_R_CONTRACT_OWNER";
 const PROCESS_TERMINATION_GRACE_MS = 2_000;
 const PROCESS_KILL_GRACE_MS = 5_000;
 const POSIX_PROCESS_OBSERVATION_INTERVAL_MS = 10;
-const POSIX_PROCESS_OBSERVATION_DEADLINE_MS = 250;
 const R_CONTRACT_PHASE_OUTPUT_MAX_BYTES = 4 * 1024 * 1024;
 const WINDOWS_JOB_SETTLEMENT_MS = 15_000;
 const WINDOWS_JOB_LAUNCH_FRAME_MAX_BYTES = 256 * 1024;
@@ -447,6 +446,7 @@ function parseLinuxProcessIdentity(pid, contents) {
 }
 
 function readLinuxProcessIdentity(pid) {
+  if (process.platform !== "linux") throw new Error("Non-Linux process tracking requires native identity readers.");
   try {
     return parseLinuxProcessIdentity(pid, readFileSync(`/proc/${pid}/stat`, "utf8"));
   } catch (error) {
@@ -465,63 +465,8 @@ function linuxProcessHasOwner(pid, ownerToken) {
   }
 }
 
-function parsePsProcessIdentity(line, ownerToken) {
-  const match =
-    /^\s*([1-9][0-9]*)\s+([0-9]+)\s+([0-9]+)\s+(\S+\s+\S+\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+([\s\S]*)$/u.exec(
-      line
-    );
-  if (!match) return undefined;
-  return Object.freeze({
-    pid: Number(match[1]),
-    parentPid: Number(match[2]),
-    groupId: Number(match[3]),
-    state: "?",
-    startIdentity: match[4],
-    command: match[5],
-    ownerMarked: typeof ownerToken === "string" && match[5].includes(`${POSIX_OWNER_ENVIRONMENT_KEY}=${ownerToken}`),
-    identityResolution: "second"
-  });
-}
-
-export function readPsProcessIdentity(pid, { execute = execFileSync, ownerToken } = {}) {
-  let output;
-  try {
-    output = execute("ps", ["eww", "-p", String(pid), "-o", "pid=,ppid=,pgid=,lstart=,command="], {
-      encoding: "utf8",
-      maxBuffer: 64 * 1024,
-      timeout: POSIX_PROCESS_OBSERVATION_DEADLINE_MS,
-      killSignal: "SIGKILL",
-      stdio: ["ignore", "pipe", "ignore"]
-    });
-  } catch (error) {
-    if (error?.status === 1) return undefined;
-    throw new Error(`The observed POSIX process ${pid} could not be verified: ${error.message}`, { cause: error });
-  }
-  const identity = parsePsProcessIdentity(output.trimEnd(), ownerToken);
-  if (!identity) throw new Error(`The observed POSIX process identity for PID ${pid} was malformed.`);
-  return identity;
-}
-
-function readPosixProcessIdentity(pid, ownerToken) {
-  return process.platform === "linux" ? readLinuxProcessIdentity(pid) : readPsProcessIdentity(pid, { ownerToken });
-}
-
-function listPosixProcessIdentities(ownerToken) {
-  if (process.platform !== "linux") {
-    const output = execFileSync("ps", ["eww", "-axo", "pid=,ppid=,pgid=,lstart=,command="], {
-      encoding: "utf8",
-      maxBuffer: 8 * 1024 * 1024,
-      timeout: POSIX_PROCESS_OBSERVATION_DEADLINE_MS,
-      killSignal: "SIGKILL",
-      stdio: ["ignore", "pipe", "ignore"]
-    });
-    const marker = `${POSIX_OWNER_ENVIRONMENT_KEY}=${ownerToken}`;
-    return output
-      .split("\n")
-      .map((line) => parsePsProcessIdentity(line, ownerToken))
-      .filter(Boolean)
-      .map((identity) => Object.freeze({ ...identity, ownerMarked: identity.command.includes(marker) }));
-  }
+function listLinuxProcessIdentities(ownerToken) {
+  if (process.platform !== "linux") throw new Error("Non-Linux process tracking requires native identity readers.");
   const identities = [];
   for (const name of readdirSync("/proc")) {
     if (!/^[1-9][0-9]*$/u.test(name)) continue;
@@ -548,8 +493,8 @@ export function createPosixProcessTracker(
   rootPid,
   ownerToken,
   {
-    readProcessIdentity = readPosixProcessIdentity,
-    listProcessIdentities = listPosixProcessIdentities,
+    readProcessIdentity = readLinuxProcessIdentity,
+    listProcessIdentities = listLinuxProcessIdentities,
     signalVerifiedProcesses,
     observationIntervalMs = POSIX_PROCESS_OBSERVATION_INTERVAL_MS
   } = {}
@@ -574,21 +519,27 @@ export function createPosixProcessTracker(
     observed.delete(expected.pid);
     retiredIdentities.set(processIdentityKey(expected), expected);
   };
-  const coarseIdentityStillOwned = (expected, current) => {
-    if (expected.identityResolution !== "second" && current.identityResolution !== "second") return true;
-    const markerOwned = expected.ownerMarked === true && current.ownerMarked === true;
-    const lineageOwned =
-      expected.parentPid === current.parentPid &&
-      observed.has(expected.parentPid) &&
-      current.parentPid !== expected.pid;
-    return (
-      expected.identityResolution === "second" &&
-      current.identityResolution === "second" &&
-      expected.parentPid === current.parentPid &&
-      expected.groupId === current.groupId &&
-      expected.command === current.command &&
-      (markerOwned || lineageOwned)
+  const nativeRecord = (current, previous) => {
+    if (current.identityResolution !== "macos-unique-id") return current;
+    const versions = previous?.observedIdVersions ?? [];
+    const additions = [...new Set([current.beforeIdVersion, current.idVersion])].filter(
+      (version) => !versions.includes(version)
     );
+    if (versions.length + additions.length > 256) {
+      latch(new Error("native execution history exceeded its 256-version bound"));
+      throw failure;
+    }
+    return Object.freeze({
+      ...current,
+      observedIdVersions: additions.length ? Object.freeze([...versions, ...additions]) : versions
+    });
+  };
+  const rememberObservedNative = (current) => {
+    if (current?.identityResolution !== "macos-unique-id") return;
+    const expected = observed.get(current.pid);
+    if (expected && sameProcessIdentity(expected, current)) {
+      observed.set(current.pid, nativeRecord(current, expected));
+    }
   };
   const verifiedIdentity = (expected) => {
     let current;
@@ -600,20 +551,15 @@ export function createPosixProcessTracker(
     }
     if (!current || current.state === "Z") return undefined;
     if (!sameProcessIdentity(expected, current)) return undefined;
-    if (!coarseIdentityStillOwned(expected, current)) {
-      latch(
-        new Error(`process ${expected.pid} did not satisfy the ownership checks for its second-resolution identity`)
-      );
-      throw failure;
-    }
     return current;
   };
   const observe = () => {
     if (failure) throw failure;
     for (const expected of observed.values()) {
-      if (!verifiedIdentity(expected)) {
+      const current = verifiedIdentity(expected);
+      if (!current) {
         retire(expected);
-      }
+      } else rememberObservedNative(current);
     }
     let snapshot;
     try {
@@ -622,7 +568,12 @@ export function createPosixProcessTracker(
       latch(error);
       throw failure;
     }
-    const pending = new Map(snapshot.map((identity) => [identity.pid, identity]));
+    const pending = new Map(
+      snapshot.map((identity) => {
+        rememberObservedNative(identity);
+        return [identity.pid, identity];
+      })
+    );
     let root;
     try {
       root = readProcessIdentity(rootPid, ownerToken);
@@ -630,28 +581,36 @@ export function createPosixProcessTracker(
       latch(error);
       throw failure;
     }
-    if (root && root.state !== "Z") pending.set(rootPid, root);
+    if (root && root.state !== "Z") {
+      rememberObservedNative(root);
+      pending.set(rootPid, root);
+    }
     let changed = true;
     while (changed) {
       changed = false;
       for (const identity of pending.values()) {
         if (observed.has(identity.pid)) continue;
-        const retired = retiredIdentities.get(processIdentityKey(identity));
-        if (retired) {
-          if (retired.identityResolution === "second" || identity.identityResolution === "second") {
-            latch(
-              new Error(
-                `retired coarse process ${identity.pid} reappeared with the same ${identity.startIdentity} identity key`
-              )
-            );
-            throw failure;
+        if (retiredIdentities.has(processIdentityKey(identity))) continue;
+        const parent = observed.get(identity.parentPid);
+        const exactParent =
+          parent !== undefined &&
+          (identity.identityResolution !== "macos-unique-id" || identity.parentUniqueId === parent.startIdentity);
+        if (identity.identityResolution === "macos-unique-id" && !identity.ownerMarked && !exactParent) {
+          for (const records of [observed, retiredIdentities]) {
+            for (const known of records.values()) {
+              if (
+                identity.parentUniqueId === known.startIdentity ||
+                identity.beforeParentUniqueId === known.startIdentity ||
+                (identity.originalParentVersion !== 0 &&
+                  known.observedIdVersions?.includes(identity.originalParentVersion))
+              ) {
+                latch(new Error("an unobserved markerless process retained ambiguous native parent evidence"));
+                throw failure;
+              }
+            }
           }
-          continue;
         }
-        const belongs =
-          sameProcessIdentity(identity, rootIdentity) ||
-          identity.ownerMarked === true ||
-          observed.has(identity.parentPid);
+        const belongs = sameProcessIdentity(identity, rootIdentity) || identity.ownerMarked === true || exactParent;
         if (!belongs) continue;
         let verified;
         try {
@@ -661,7 +620,7 @@ export function createPosixProcessTracker(
           throw failure;
         }
         if (!verified || verified.state === "Z" || !sameProcessIdentity(identity, verified)) continue;
-        observed.set(identity.pid, verified);
+        observed.set(identity.pid, nativeRecord(verified, nativeRecord(identity)));
         changed = true;
       }
     }
@@ -673,7 +632,7 @@ export function createPosixProcessTracker(
     if (!rootIdentity || rootIdentity.state === "Z") {
       throw new Error(`The R contract root process ${rootPid} had no stable identity after spawn.`);
     }
-    observed.set(rootPid, rootIdentity);
+    observed.set(rootPid, nativeRecord(rootIdentity));
     observe();
   } catch (error) {
     latch(error);
@@ -707,7 +666,8 @@ export function createPosixProcessTracker(
           if (!signalVerifiedProcesses) {
             throw new Error("this POSIX platform has no verified signaling mechanism; refusing numeric PID signaling");
           }
-          signalVerifiedProcesses(targets, ownerToken, signal);
+          const current = signalVerifiedProcesses(targets, ownerToken, signal);
+          for (const identity of current ?? []) rememberObservedNative(identity);
         } catch (error) {
           latch(error);
         }
@@ -1148,6 +1108,10 @@ async function runRContractPhaseAsync(
   await outputScope.checkpoint();
   if (terminationSignal?.aborted) throw rContractInterruption(terminationSignal);
   const ownerToken = randomToken();
+  const macProcessOwner = platform === "darwin" ? settlementOptions.macProcessOwner?.(ownerToken) : undefined;
+  if (platform === "darwin" && !macProcessOwner) {
+    throw new Error("macOS R contract phases require the runner's prepared native process owner.");
+  }
   const outputBudget = createPhaseOutputBudget(maximumOutputBytes);
   const launch =
     platform === "win32"
@@ -1177,9 +1141,9 @@ async function runRContractPhaseAsync(
     platform === "win32"
       ? undefined
       : createProcessTracker(launch.child.pid, ownerToken, {
-          readProcessIdentity: settlementOptions.readProcessIdentity,
-          listProcessIdentities: settlementOptions.listProcessIdentities,
-          signalVerifiedProcesses,
+          readProcessIdentity: macProcessOwner?.readProcessIdentity ?? settlementOptions.readProcessIdentity,
+          listProcessIdentities: macProcessOwner?.listProcessIdentities ?? settlementOptions.listProcessIdentities,
+          signalVerifiedProcesses: macProcessOwner?.signalVerifiedProcesses ?? signalVerifiedProcesses,
           observationIntervalMs: settlementOptions.observationIntervalMs
         });
   const failurePromise = Promise.race([
@@ -1338,6 +1302,7 @@ async function runRContractPhasesAsync(
 }
 
 export async function runRContractPhasesWithSignalForwarding(phases, options = {}) {
+  const { platform = process.platform, signalSource = process, prepareMacOwner, ...phaseOptions } = options;
   const termination = new AbortController();
   const handlers = new Map(
     ["SIGINT", "SIGTERM"].map((signal) => [
@@ -1347,12 +1312,42 @@ export async function runRContractPhasesWithSignalForwarding(phases, options = {
       }
     ])
   );
-  for (const [signal, handler] of handlers) process.on(signal, handler);
+  for (const [signal, handler] of handlers) signalSource.on(signal, handler);
+  let prepared;
+  let failure;
+  let failed = false;
   try {
-    await runRContractPhases(phases, { ...options, terminationSignal: termination.signal });
+    if (platform === "darwin" && !phaseOptions.macProcessOwner && phases.length > 0) {
+      const prepare = prepareMacOwner ?? (await import("./r-contract-macos.mjs")).prepareMacProcessOwner;
+      if (termination.signal.aborted) throw rContractInterruption(termination.signal);
+      prepared = await prepare(phases[0].environment ?? process.env, {
+        platform,
+        terminationSignal: termination.signal,
+        signalSource
+      });
+      if (termination.signal.aborted) throw rContractInterruption(termination.signal);
+    }
+    await runRContractPhases(phases, {
+      ...phaseOptions,
+      platform,
+      terminationSignal: termination.signal,
+      ...(prepared ? { macProcessOwner: prepared.createProcessOwner } : {})
+    });
+  } catch (error) {
+    failure = error;
+    failed = true;
   } finally {
-    for (const [signal, handler] of handlers) process.removeListener(signal, handler);
+    try {
+      prepared?.dispose();
+    } catch (cleanup) {
+      failure = failed
+        ? new AggregateError([failure, cleanup], "R contracts failed and their native helper could not retire.")
+        : cleanup;
+      failed = true;
+    }
+    for (const [signal, handler] of handlers) signalSource.removeListener(signal, handler);
   }
+  if (failed) throw failure;
 }
 
 async function main(outputOptions) {
