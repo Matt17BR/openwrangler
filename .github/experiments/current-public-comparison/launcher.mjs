@@ -117,11 +117,28 @@ const validDiagnostic = (m, id) => {
   assert(entry.grid.connected && entry.grid.focused.c00 === 0);
   assert.equal(s.observation.computationScope, "unknown");
   assert(Buffer.byteLength(JSON.stringify(s.observation), "utf8") <= 8192);
-  assert(s.observation.forms.length <= 2);
-  for (const [index, form] of s.observation.forms.entries()) {
-    assert.equal(form.operation, ["Fill missing values", "Convert text to lowercase"][index]);
-    if (form.offered) assert.equal(form.cancelled, true);
-  }
+  assert.equal(Object.hasOwn(s.observation, "forms"), false);
+  if (s.observation.mode.editingConfirmed) {
+    const surfaces = s.observation.surfaceInspection;
+    assert.equal(surfaces.complete, true);
+    assert(Number.isInteger(surfaces.framesExamined) && surfaces.framesExamined > 0 && surfaces.framesExamined <= 64);
+    assert(Number.isInteger(surfaces.candidates) && surfaces.candidates >= 0 && surfaces.candidates <= 32);
+    assert(Array.isArray(surfaces.matches) && surfaces.matches.length <= surfaces.framesExamined);
+    const frames = new Set();
+    let candidates = 0;
+    for (const match of surfaces.matches) {
+      assert(Number.isInteger(match.frame) && match.frame >= 0 && match.frame < surfaces.framesExamined);
+      assert(!frames.has(match.frame));
+      frames.add(match.frame);
+      assert(["product-frame", "main-workbench", "other-frame"].includes(match.location));
+      assert(Array.isArray(match.facts) && match.facts.length > 0);
+      for (const group of match.facts) {
+        assert(Array.isArray(group.nodes) && group.nodes.length > 0);
+        candidates += group.nodes.length;
+      }
+    }
+    assert.equal(candidates, surfaces.candidates);
+  } else assert.equal(s.observation.surfaceInspection, null);
   assert.equal(s.actions.length, 0);
   assert.equal(s.completedProfiles, 0);
   assert.equal(s.profileObservations.length, 0);

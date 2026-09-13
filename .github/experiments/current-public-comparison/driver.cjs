@@ -368,6 +368,8 @@ exports.run = async function () {
         frameLimit: 64,
         rootLimit: 8,
         maximumRootCount: 0,
+        readyRoots: 0,
+        busyRoots: 0,
         complete: false
       };
       assert(candidates.length <= 64, "PILOT_GATE:incomplete-frame-discovery");
@@ -385,8 +387,10 @@ exports.run = async function () {
               busy: root.getAttribute("aria-busy") === "true",
               columns: root.getAttribute("aria-colcount")
             }));
-            if (state.connected && state.visible && !state.busy && ["20", "21"].includes(state.columns))
-              matches.push({ frame, root: roots.nth(index), element });
+            if (state.connected && state.visible && ["20", "21"].includes(state.columns)) {
+              receipt.gridDiscovery[state.busy ? "busyRoots" : "readyRoots"]++;
+              if (!state.busy) matches.push({ frame, root: roots.nth(index), element });
+            }
           }
         }
         receipt.gridDiscovery.complete = true;
@@ -925,9 +929,8 @@ exports.run = async function () {
       const observation = {
         header: { observed: false },
         quickInsights: { observed: false },
-        dataSummary: { observed: false },
         mode: { viewingObserved: false, editingOffered: false, editingConfirmed: false },
-        forms: [],
+        surfaceInspection: null,
         computationScope: "unknown"
       };
       sample.observation = observation;
@@ -958,16 +961,6 @@ exports.run = async function () {
         } finally {
           for (const handle of handles) if (handle !== selected) await handle.dispose();
         }
-      };
-      const absent = async (locator) => {
-        await currentGrid();
-        const state = await locator.evaluateAll((elements) => ({
-          count: elements.length,
-          detached: elements.some((element) => !element.isConnected),
-          visible: elements.slice(0, 32).some((element) => element.checkVisibility({ checkVisibilityCSS: true }))
-        }));
-        assert(state.count <= 32 && !state.detached, "DIAGNOSTIC:incomplete-absence");
-        return !state.visible;
       };
       const controlFacts = (element, expected) => ({
         connected: element.isConnected && element.ownerDocument === document,
@@ -1066,12 +1059,6 @@ exports.run = async function () {
         assert(facts.connected && !facts.truncated, "DIAGNOSTIC:incomplete-surface");
         return facts;
       };
-      const namedControl = (name) => {
-        const pattern = new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i");
-        return ["button", "menuitem", "option", "treeitem"]
-          .map((role) => target.frame.getByRole(role, { name: pattern }))
-          .reduce((left, right) => left.or(right));
-      };
       try {
         const column = await capture(target.root.getByText("c00", { exact: true }), "c00");
         if (column) {
@@ -1093,22 +1080,6 @@ exports.run = async function () {
           await act(column, "c00");
           observation.header.clicked = true;
         }
-        // A named semantic surface is independent of the selected header. No parent guessing.
-        const summary = await capture(
-          target.frame
-            .getByRole("complementary", { name: /^Data Summary$/i })
-            .or(target.frame.getByRole("region", { name: /^Data Summary$/i })),
-          "data-summary"
-        );
-        observation.dataSummary.headingObserved = !!(await capture(
-          target.frame.getByText("Data Summary", { exact: true }),
-          "summary-heading"
-        ));
-        if (summary)
-          observation.dataSummary = {
-            ...(await readOwnedSurface(summary)),
-            headingObserved: observation.dataSummary.headingObserved
-          };
         saveObservation();
         checkpoint(`${sampleName}:mode-observation`);
         const viewing = await capture(target.frame.getByRole("menuitem", { name: "Viewing", exact: true }), "viewing");
@@ -1212,23 +1183,22 @@ exports.run = async function () {
             await currentGrid();
             assert(await editing.isEnabled(), "DIAGNOSTIC:disabled-action");
             await editing.click({ timeout: 5000 });
+            checkpoint(`${sampleName}:mode-action-returned`);
             await poll(() => currentGrid(true), "action-grid");
+            checkpoint(`${sampleName}:mode-grid-ready`);
             observation.mode.editingConfirmed = await poll(async () => {
               if (!(await currentGrid(true))) return false;
-              let mode, operations;
+              let mode;
               try {
                 mode = await capture(
                   target.frame.getByRole("menuitem", { name: "Editing", exact: true }),
                   "editing-mode"
                 );
-                operations = await capture(target.frame.getByText("Operations", { exact: true }), "operations");
-                return !!mode && !!operations;
+                return !!mode;
               } finally {
-                for (const element of [mode, operations]) {
-                  if (element) {
-                    held.delete(element);
-                    await element.dispose();
-                  }
+                if (mode) {
+                  held.delete(mode);
+                  await mode.dispose();
                 }
               }
             }, "editing-not-confirmed");
@@ -1236,135 +1206,142 @@ exports.run = async function () {
         }
         saveObservation();
         if (observation.mode.editingConfirmed) {
-          for (const [title, columnName] of [
-            ["Fill missing values", "c01"],
-            ["Convert text to lowercase", "c03"]
-          ]) {
-            checkpoint(`${sampleName}:form-${columnName}`);
-            const form = {
-              operation: title,
-              offered: false,
-              columnOffered: false,
-              medianOffered: false,
-              cancelled: false
-            };
-            observation.forms.push(form);
-            // An existing Apply/Cancel would make the next operation's ownership ambiguous.
-            const priorCancel = await capture(namedControl("Cancel"), "prior-cancel");
-            const priorApply = await capture(namedControl("Apply"), "prior-apply");
-            assert(!priorCancel && !priorApply, "DIAGNOSTIC:prior-preview");
-            const operation = await capture(namedControl(title), "operation");
-            form.offered = !!operation;
-            if (operation) form.operationControl = await operation.evaluate(controlFacts, title);
-            if (!operation) {
-              saveObservation();
-              continue;
-            }
-            await act(operation, title);
-            await poll(async () => {
-              if (!(await currentGrid(true))) return false;
-              return capture(namedControl("Cancel"), "cancel");
-            }, "form-cancel");
-            const columnControl = await capture(
-              target.frame.getByRole("combobox", { name: /^Column$/i }),
-              "column-field"
-            );
-            form.columnControlObserved = !!columnControl;
-            if (columnControl) form.columnControl = await columnControl.evaluate(controlFacts, "Column");
-            if (columnControl) {
-              const native = await columnControl.evaluate(
-                (node, expected) => ({
-                  select: node instanceof HTMLSelectElement,
-                  matching:
-                    node instanceof HTMLSelectElement
-                      ? [...node.options].filter((option) => option.label === expected).length
-                      : 0,
-                  truncated: node instanceof HTMLSelectElement && node.options.length > 64
-                }),
-                columnName
-              );
-              assert(!native.truncated && native.matching <= 1, "DIAGNOSTIC:column-options");
-              form.columnOffered = native.select && native.matching === 1;
-              if (form.columnOffered) {
-                await currentGrid();
-                await columnControl.selectOption({ label: columnName }, { timeout: 5000 });
-                await poll(() => currentGrid(true), "action-grid");
-                form.columnSelected = await columnControl.evaluate(
-                  (node, expected) =>
-                    node.isConnected && node.selectedOptions.length === 1 && node.selectedOptions[0].label === expected,
-                  columnName
+          checkpoint(`${sampleName}:surface-observation`);
+          await currentGrid();
+          const surfaceFrames = page.frames();
+          assert(surfaceFrames.length > 0 && surfaceFrames.length <= 64, "PILOT_GATE:incomplete-frame-discovery");
+          assert(surfaceFrames.includes(productFrame), "PILOT_GATE:product-frame-changed");
+          const labels = [
+            "Data Wrangler",
+            "Operations",
+            "Data Summary",
+            "Fill missing values",
+            "Convert text to lowercase",
+            "Target columns",
+            "Fill method",
+            "Apply",
+            "Discard",
+            "Cancel",
+            "Copy all code",
+            "Copy code to clipboard"
+          ];
+          const surfaces = { framesExamined: surfaceFrames.length, candidates: 0, matches: [], complete: false };
+          for (const [index, frame] of surfaceFrames.entries()) {
+            assert(!frame.isDetached(), "PILOT_GATE:product-frame-changed");
+            const groups = [];
+            try {
+              for (const name of labels) {
+                const pattern = new RegExp(`\\b${name}\\b`, "i");
+                const locator = frame.getByText(pattern).or(frame.getByLabel(pattern));
+                const count = await locator.count();
+                assert(surfaces.candidates + count <= 32, "DIAGNOSTIC:observation-bound");
+                if (!count) continue;
+                const nodes = await locator.elementHandles();
+                groups.push({ name, nodes });
+                assert(nodes.length === count, "DIAGNOSTIC:incomplete-surface");
+                surfaces.candidates += count;
+              }
+              if (groups.length) {
+                const facts = await frame.evaluate((groups) => {
+                  const semantic = (node) => ({
+                    role: !node?.getAttribute("role")
+                      ? "none"
+                      : [
+                            "button",
+                            "menuitem",
+                            "menuitemradio",
+                            "tree",
+                            "treeitem",
+                            "combobox",
+                            "textbox",
+                            "heading",
+                            "region",
+                            "complementary",
+                            "dialog",
+                            "tab"
+                          ].includes(node.getAttribute("role"))
+                        ? node.getAttribute("role")
+                        : "other",
+                    tag: !node
+                      ? "none"
+                      : [
+                            "BUTTON",
+                            "A",
+                            "INPUT",
+                            "SELECT",
+                            "LABEL",
+                            "H1",
+                            "H2",
+                            "H3",
+                            "H4",
+                            "H5",
+                            "H6",
+                            "SECTION",
+                            "ASIDE",
+                            "FORM",
+                            "DIV",
+                            "SPAN"
+                          ].includes(node.tagName)
+                        ? node.tagName.toLowerCase()
+                        : "other"
+                  });
+                  return groups.map(({ name, nodes }) => ({
+                    name,
+                    nodes: nodes.map((node) => ({
+                      connected: node.isConnected && node.ownerDocument === document,
+                      boxVisible: node.checkVisibility({ checkVisibilityCSS: true }),
+                      excluded: !!node.closest(
+                        'pre,code,textarea,[contenteditable="true"],.monaco-editor,[role="grid"],table'
+                      ),
+                      ...semantic(node),
+                      ancestor: semantic(
+                        node.parentElement?.closest(
+                          "[role],button,a,input,select,label,h1,h2,h3,h4,h5,h6,section,aside,form"
+                        )
+                      ),
+                      workbenchPart: node.closest(".part.sidebar")
+                        ? "sidebar"
+                        : node.closest(".part.auxiliarybar")
+                          ? "auxiliarybar"
+                          : node.closest(".part.editor")
+                            ? "editor"
+                            : "other"
+                    }))
+                  }));
+                }, groups);
+                assert(
+                  facts.every((group) => group.nodes.every((node) => node.connected)),
+                  "DIAGNOSTIC:incomplete-surface"
                 );
-                assert(form.columnSelected, "DIAGNOSTIC:column-selection");
+                surfaces.matches.push({
+                  frame: index,
+                  location:
+                    frame === productFrame
+                      ? "product-frame"
+                      : frame === page.mainFrame()
+                        ? "main-workbench"
+                        : "other-frame",
+                  facts
+                });
               }
+            } finally {
+              for (const group of groups) for (const node of group.nodes) await node.dispose();
             }
-            if (columnName === "c01" && form.columnOffered) {
-              const method = await capture(
-                target.frame.getByRole("combobox", { name: /^(Method|Fill with)$/i }),
-                "method-field"
-              );
-              form.methodControlObserved = !!method;
-              if (method) form.methodControl = await method.evaluate(controlFacts, "Method");
-              if (method) {
-                const native = await method.evaluate((node) => ({
-                  select: node instanceof HTMLSelectElement,
-                  matching:
-                    node instanceof HTMLSelectElement
-                      ? [...node.options].filter((option) => option.label === "Median").length
-                      : 0,
-                  truncated: node instanceof HTMLSelectElement && node.options.length > 32
-                }));
-                assert(!native.truncated && native.matching <= 1, "DIAGNOSTIC:method-options");
-                form.medianOffered = native.select && native.matching === 1;
-                if (form.medianOffered) {
-                  await currentGrid();
-                  await method.selectOption({ label: "Median" }, { timeout: 5000 });
-                  await poll(() => currentGrid(true), "action-grid");
-                  form.medianSelected = await method.evaluate(
-                    (node) =>
-                      node.isConnected &&
-                      node.selectedOptions.length === 1 &&
-                      node.selectedOptions[0].label === "Median"
-                  );
-                  assert(form.medianSelected, "DIAGNOSTIC:method-selection");
-                }
-              }
-            }
-            form.applyObserved = !!(await capture(namedControl("Apply"), "apply"));
-            const cancel = await capture(namedControl("Cancel"), "cancel-current");
-            assert(cancel, "DIAGNOSTIC:cancel-unavailable");
-            form.cancelControl = await cancel.evaluate(controlFacts, "Cancel");
-            await act(cancel, "Cancel");
-            await poll(async () => {
-              await currentGrid();
-              return (
-                (await absent(namedControl("Cancel"))) &&
-                (await absent(namedControl("Apply"))) &&
-                (await absent(target.frame.getByRole("combobox", { name: /^(Column|Method|Fill with)$/i })))
-              );
-            }, "cancelled-form");
-            const original = await rowCells(target.root, 0);
-            assert(
-              original && original.values.every((value, index) => value === first.values[index]),
-              "DIAGNOSTIC:preview-not-restored"
-            );
-            form.cancelled = true;
-            saveObservation();
           }
+          await currentGrid();
+          const finalFrames = page.frames();
+          assert(
+            finalFrames.length === surfaceFrames.length &&
+              surfaceFrames.every((frame) => finalFrames.includes(frame) && !frame.isDetached()),
+            "PILOT_GATE:incomplete-frame-discovery"
+          );
+          surfaces.complete = true;
+          observation.surfaceInspection = surfaces;
         }
         observation.unresolved = [];
         if (!observation.header.clicked) observation.unresolved.push("c00-click");
         if (!observation.quickInsights.observed) observation.unresolved.push("quick-insights-owner");
-        if (!observation.dataSummary.observed || observation.dataSummary.includesExcludedContent)
-          observation.unresolved.push("data-summary-owner");
         if (!observation.mode.editingConfirmed) observation.unresolved.push("editing-route");
-        for (const form of observation.forms) {
-          if (
-            !form.offered ||
-            !form.columnSelected ||
-            (form.operation === "Fill missing values" && !form.medianSelected)
-          )
-            observation.unresolved.push(form.operation);
-        }
         saveObservation();
       } finally {
         for (const element of held) await element.dispose();
