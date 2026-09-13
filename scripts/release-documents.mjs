@@ -169,27 +169,30 @@ function containsActiveRawHtml(tokens, start, end) {
   return false;
 }
 
-export function inspectNativeRPreview(contents) {
+export function inspectNativeRSupportDisclosure(contents) {
   const parsed = parseMarkdown(contents, "docs/feature-parity.md");
   if (parsed.problem !== undefined || parsed.tokens === undefined) {
     return [parsed.problem];
   }
   const tokens = parsed.tokens;
-  const section = topLevelH2Section(tokens, "Native R preview", "docs/feature-parity.md");
+  const headings = nativeRHeadings(tokens);
+  const heading = headings[0]?.text;
+  if (headings.length !== 1 || (heading !== "Native R support" && heading !== "Native R preview")) {
+    return [
+      'docs/feature-parity.md must contain exactly one active top-level Native R section, headed "Native R support" or "Native R preview".'
+    ];
+  }
+  const section = topLevelH2Section(tokens, heading, "docs/feature-parity.md");
   if (section.problem !== undefined || section.start === undefined || section.end === undefined) {
     return [section.problem];
   }
-
-  if (nativeRHeadings(tokens).length !== 1) {
-    return ["Preview documentation must contain Native R preview as its only active top-level Native R section."];
-  }
   if (containsActiveRawHtml(tokens, -1, tokens.length)) {
     return [
-      "docs/feature-parity.md must not use raw HTML that could hide or contradict its Native R preview disclosure."
+      "docs/feature-parity.md must not use raw HTML that could hide or contradict its Native R support disclosure."
     ];
   }
   if (!tokens.slice(section.start + 3, section.end).some((token) => visibleInlineText(token).trim().length > 0)) {
-    return ["The Native R preview section must contain a visible description of its current support."];
+    return ["The Native R section must contain a visible description of its current support."];
   }
   return [];
 }
