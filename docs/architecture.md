@@ -1448,8 +1448,13 @@ executor across every activation, discovery, picker, execution, and focus-restor
 Persisted state is keyed by both source identity and confirmed backend. The cleaning section contains validated
 committed steps, at most one draft, and its confirmed base-view receipt. The viewing section independently contains
 the confirmed filter/sort model and bounded presentation state such as stable-ID widths, selection, and viewport.
-Malformed or stale viewing state falls back to an empty view without dropping valid cleaning. Only cleaning replay
-failure reopens the immutable original.
+Malformed or stale viewing state falls back to an empty view without dropping valid cleaning. If cleaning replay
+fails, the failed runtime closes and Open Wrangler asks before discarding saved steps and the draft to reopen original data.
+Dismissal preserves the saved plan for a later retry. An accepted reset requires a valid original session, its exact
+source and backend, and an available source-identity receipt. The existing persistence transaction checks that the
+saved cleaning still matches the user's choice; newer saved work or retirement before commit prevents the reset.
+Failed reset storage preserves the previous recovery record and closes the unpublished candidate. Once a reset
+commits, later cancellation does not undo that explicit choice. Normal viewing and cleaning saves then resume.
 
 Confirmed file configuration stores both the concrete backend that produced the session and the user's logical
 choice of `auto` or an explicit engine. Recovery pins the concrete backend so an automatic fallback cannot reinterpret

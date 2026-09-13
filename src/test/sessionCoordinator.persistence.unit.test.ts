@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import * as vscode from "vscode";
 import type { Memento, NotebookDocument } from "vscode";
@@ -8,7 +11,12 @@ import type {
   SessionMetadata,
   SessionSource
 } from "../shared/protocol";
-import { persistenceKey, SESSION_STORAGE_KEY } from "../extension/sessionPersistence";
+import {
+  persistedSessionState,
+  serializePersistedSession,
+  persistenceKey,
+  SESSION_STORAGE_KEY
+} from "../extension/sessionPersistence";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
 import { SessionPersistenceStore } from "../extension/sessionPersistenceStore";
 import { isOpenWranglerRequest, isOpenWranglerResponse } from "../shared/protocolValidation";
@@ -20,10 +28,146 @@ import {
   pageResponseForMetadata,
   planUpdatedResponse,
   setOpenNotebookDocuments,
-  stepInspectionResponse
+  stepInspectionResponse,
+  stepPreviewResponse
 } from "./sessionCoordinatorTestFixtures";
 
 describe("SessionCoordinator persistence diagnostics", () => {
+  it.each(["committed", "draft", "reset"] as const)(
+    "requires a choice before replacing saved cleaning after %s replay failure",
+    async (failure) => {
+      const directory = await mkdtemp(join(tmpdir(), "openwrangler-saved-retry-"));
+      const sourcePath = join(directory, "source.csv");
+      await writeFile(sourcePath, "sales,units\n2,20\n1,10\n");
+      const opening = { ...openRequest, source: { ...openRequest.source, path: sourcePath } };
+      const initial = presentationOpenedResponse();
+      initial.metadata.source = opening.source;
+      const draft = {
+        id: "saved-draft",
+        kind: "roundNumber" as const,
+        params: { column: { id: "c:sales", name: "sales" }, decimals: 1 }
+      };
+      const saved = serializePersistedSession(
+        persistedSessionState(
+          { ...initial.metadata, steps: [inspectionStep], draftStep: draft },
+          { columnWidths: new Map(), viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
+        )
+      );
+      if (!saved) throw new Error("Expected valid saved cleaning.");
+      const key = persistenceKey(opening.source, "polars");
+      let stored: Record<string, unknown> = { [key]: saved };
+      const workspaceState = {
+        get: vi.fn(() => stored),
+        update: vi.fn(async (_key: string, value: Record<string, unknown>) => {
+          stored = value;
+        }),
+        keys: () => [SESSION_STORAGE_KEY]
+      } as unknown as Memento;
+      let fail = true;
+      let opens = 0;
+      let metadata = initial.metadata;
+      const wireValid: boolean[] = [];
+      const request = vi.fn(async (next: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+        wireValid.push(isOpenWranglerRequest(JSON.parse(JSON.stringify(next))));
+        let response: OpenWranglerResponse;
+        if (next.kind === "openSession") {
+          metadata = { ...initial.metadata, sessionId: `retry-${++opens}` };
+          response = { ...initial, metadata };
+        } else if (next.kind === "previewStep") {
+          if (fail && (failure !== "draft" || next.step.id === draft.id)) {
+            response = {
+              kind: "error",
+              code: "engine_error",
+              message: "Temporary replay failure.",
+              recoverable: true,
+              sessionId: next.sessionId
+            };
+          } else {
+            metadata = { ...metadata, revision: metadata.revision + 1, draftStep: next.step };
+            response = {
+              ...stepPreviewResponse(metadata.revision, next.step, next.sessionId, `# ${next.step.id}`),
+              metadata,
+              page: { ...initial.page, limit: next.limit, rows: initial.page.rows.slice(0, next.limit) }
+            };
+          }
+        } else if (next.kind === "applyDraft") {
+          const { draftStep, ...confirmed } = metadata;
+          if (!draftStep) throw new Error("Expected the restored draft.");
+          metadata = {
+            ...confirmed,
+            revision: metadata.revision + 1,
+            steps: [...metadata.steps, draftStep],
+            latestStepInputSchema: metadata.schema
+          };
+          response = {
+            ...planUpdatedResponse(metadata.revision, metadata.steps, next.sessionId),
+            metadata,
+            page: { ...initial.page, limit: next.limit, rows: initial.page.rows.slice(0, next.limit) }
+          };
+        } else if (next.kind === "getPage") {
+          metadata = { ...metadata, filterModel: next.filterModel };
+          response = pageResponseForMetadata(next, metadata);
+        } else if (next.kind === "closeSession") response = { kind: "sessionClosed", sessionId: next.sessionId };
+        else throw new Error(`Unexpected retry request: ${next.kind}`);
+        wireValid.push(isOpenWranglerResponse(response));
+        return response;
+      });
+      const warning = vi
+        .spyOn(vscode.window, "showWarningMessage")
+        .mockImplementation(async (_message, _options, ...items) => (failure === "reset" ? items[0] : undefined));
+      const coordinator = new SessionCoordinator(workspaceState);
+      const bridge = coordinator.createBridge({ request });
+      try {
+        let reopened = await bridge.request(opening);
+        if (failure !== "reset") {
+          expect(reopened).toMatchObject({ kind: "error", code: "saved_plan_restore_failed", recoverable: true });
+          expect(coordinator.activeSession()).toBeUndefined();
+          expect(request.mock.calls.map(([next]) => next.kind)).toEqual([
+            "openSession",
+            "previewStep",
+            ...(failure === "draft" ? ["applyDraft", "previewStep"] : []),
+            "closeSession"
+          ]);
+          expect(stored[key]).toEqual(saved);
+          expect(workspaceState.update).not.toHaveBeenCalled();
+          fail = false;
+          reopened = await bridge.request(opening);
+        }
+        if (reopened.kind !== "sessionOpened") throw new Error("Expected recovery or retry to open.");
+        const expectedCleaning = failure === "reset" ? { steps: [] } : { steps: [inspectionStep], draftStep: draft };
+        expect(reopened.metadata).toMatchObject(expectedCleaning);
+        expect(reopened.metadata.draftStep).toEqual(failure === "reset" ? undefined : draft);
+        await bridge.updateViewState?.(reopened.metadata.sessionId, {
+          columnWidths: new Map([["c:sales", 180]]),
+          viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+        });
+        await expect(
+          bridge.request({
+            kind: "getPage",
+            sessionId: reopened.metadata.sessionId,
+            revision: reopened.metadata.revision,
+            viewRequestId: "retry-sort",
+            offset: 0,
+            limit: 2,
+            columnOffset: 0,
+            columnLimit: 2,
+            filterModel: { filters: [], sort: [{ column: "sales", direction: "desc", nulls: "last" }] }
+          })
+        ).resolves.toMatchObject({ kind: "page" });
+        expect(new SessionPersistenceStore(workspaceState).load(opening.source, "polars")?.cleaning).toMatchObject(
+          expectedCleaning
+        );
+        expect(wireValid.every(Boolean)).toBe(true);
+        expect(opens).toBe(2);
+        expect(warning).toHaveBeenCalledOnce();
+      } finally {
+        warning.mockRestore();
+        await coordinator.shutdown();
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
   it.each([false, true])("keeps the latest live presentation after failed saves (overlapping: %s)", async (overlap) => {
     const runtimeOpened = presentationOpenedResponse();
     const filterModel: FilterModel = {

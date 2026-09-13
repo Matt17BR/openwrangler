@@ -1,3 +1,6 @@
+import { mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import * as vscode from "vscode";
 import type { Memento, NotebookDocument } from "vscode";
@@ -79,57 +82,132 @@ describe("SessionRuntimeEstablisher", () => {
     expect(workspaceState.update).not.toHaveBeenCalled();
   });
 
-  it("reopens immutable original data only when saved cleaning replay fails", async () => {
+  it.each([
+    "newer plan",
+    "source replacement",
+    "stage failure",
+    "final save failure",
+    "cancel during choice",
+    "cancel before commit",
+    "cancel after commit"
+  ] as const)("protects saved cleaning during an explicit recovery: %s", async (outcome) => {
+    const directory = await mkdtemp(join(tmpdir(), "openwrangler-saved-recovery-"));
+    const sourcePath = join(directory, "source.csv");
+    await writeFile(sourcePath, "value\n1\n");
+    const request = { ...openRequest, source: { ...openRequest.source, path: sourcePath } };
     const savedStep: TransformStep = {
-      id: "invalid-for-source",
+      id: "saved-step",
       kind: "dropColumns",
       params: { columns: [{ id: "c:source:0", name: "missing" }] }
     };
-    const key = persistenceKey(openRequest.source, "polars");
-    const persisted = persistedSessionState(
-      { ...openedResponse().metadata, steps: [savedStep] },
-      { columnWidths: new Map(), viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
+    const saved = serializePersistedSession(
+      persistedSessionState(
+        { ...openedResponse().metadata, steps: [savedStep] },
+        { columnWidths: new Map(), viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
+      )
     );
-    const serialized = serializePersistedSession(persisted);
-    if (!serialized) throw new Error("Expected saved state to serialize.");
-    const stored = { [key]: serialized };
+    if (!saved) throw new Error("Expected valid saved cleaning.");
+    const key = persistenceKey(request.source, "polars");
+    let stored: Record<string, unknown> = { [key]: saved };
+    const cancellation = new vscode.CancellationTokenSource();
+    let writes = 0;
     const workspaceState = {
       get: vi.fn((storageKey: string) => (storageKey === SESSION_STORAGE_KEY ? stored : undefined)),
-      update: vi.fn(async () => undefined),
+      update: vi.fn(async (_key: string, value: Record<string, unknown>) => {
+        writes += 1;
+        if (writes === (outcome === "stage failure" ? 1 : outcome === "final save failure" ? 2 : -1)) {
+          throw new Error("Recovery storage unavailable.");
+        }
+        stored = value;
+        if (writes === 1 && outcome === "cancel before commit") cancellation.cancel();
+        if (writes === 2 && outcome === "cancel after commit") cancellation.cancel();
+      }),
       keys: vi.fn(() => [SESSION_STORAGE_KEY])
     } as unknown as Memento;
-    let openCount = 0;
-    const executionOrder: string[] = [];
-    const delegate = bridge(async (request): Promise<OpenWranglerResponse> => {
-      if (request.kind === "openSession") {
-        openCount += 1;
-        executionOrder.push(`open-${openCount}`);
-        return openedResponse(`cleaning-runtime-${openCount}`);
+    let opens = 0;
+    const order: string[] = [];
+    let orderAtChoice: string[] = [];
+    const warning = vi
+      .spyOn(vscode.window, "showWarningMessage")
+      .mockImplementation(async (_message, _options, ...items) => {
+        orderAtChoice = [...order];
+        if (outcome === "cancel during choice") cancellation.cancel();
+        if (outcome === "source replacement") {
+          await rename(sourcePath, join(directory, "retained.csv"));
+          await writeFile(sourcePath, "replacement\n2\n");
+        }
+        return items[0];
+      });
+    const delegate = bridge(async (next): Promise<OpenWranglerResponse> => {
+      if (next.kind === "openSession") {
+        order.push(`open-${++opens}`);
+        if (opens === 2 && outcome === "newer plan")
+          stored = { [key]: { ...saved, cleaning: { steps: [{ ...savedStep, id: "newer" }] } } };
+        const opened = openedResponse(`runtime-${opens}`);
+        return { ...opened, metadata: { ...opened.metadata, source: request.source } };
       }
-      if (request.kind === "previewStep") {
-        executionOrder.push("preview-failed");
+      if (next.kind === "previewStep") {
+        order.push("preview-failed");
         return {
           kind: "error",
           code: "engine_error",
-          message: "The saved step no longer applies to this source.",
+          message: "Saved step cannot currently run.",
           recoverable: true,
-          sessionId: request.sessionId
+          sessionId: next.sessionId
         };
       }
-      if (request.kind === "closeSession") {
-        executionOrder.push(`close-${request.sessionId}`);
-        return { kind: "sessionClosed", sessionId: request.sessionId };
+      if (next.kind === "closeSession") {
+        order.push(`close-${next.sessionId}`);
+        return { kind: "sessionClosed", sessionId: next.sessionId };
       }
-      throw new Error(`Unexpected establishment request: ${request.kind}`);
+      throw new Error(`Unexpected recovery request: ${next.kind}`);
     });
-
-    const result = await establisher(workspaceState).establish(delegate, openRequest, undefined, undefined, hooks());
-
-    expect(result).toMatchObject({
-      established: true,
-      response: { kind: "sessionOpened", metadata: { revision: 0, steps: [] } }
-    });
-    expect(executionOrder).toEqual(["open-1", "preview-failed", "close-cleaning-runtime-1", "open-2"]);
+    try {
+      const result = await establisher(workspaceState).establish(
+        delegate,
+        request,
+        { cancellation: cancellation.token },
+        undefined,
+        hooks()
+      );
+      expect(orderAtChoice).toEqual(["open-1", "preview-failed", "close-runtime-1"]);
+      expect(warning).toHaveBeenCalledWith(
+        expect.stringContaining("replace its saved cleaning plan and draft"),
+        { modal: true },
+        "Open Original and Reset Plan"
+      );
+      expect(result).toMatchObject({
+        established: false,
+        response: outcome.startsWith("cancel")
+          ? { kind: "cancelled" }
+          : {
+              kind: "error",
+              code: outcome.endsWith("failure") ? "persistence_unavailable" : "saved_plan_restore_failed",
+              recoverable: true
+            }
+      });
+      expect(order).toEqual([
+        "open-1",
+        "preview-failed",
+        "close-runtime-1",
+        ...(outcome === "cancel during choice" ? [] : ["open-2", "close-runtime-2"])
+      ]);
+      const expectedSteps =
+        outcome === "cancel after commit"
+          ? []
+          : outcome === "newer plan"
+            ? [{ ...savedStep, id: "newer" }]
+            : [savedStep];
+      expect(new SessionPersistenceStore(workspaceState).load(request.source, "polars")?.cleaning.steps).toEqual(
+        expectedSteps
+      );
+      if (["newer plan", "source replacement", "cancel during choice"].includes(outcome))
+        expect(workspaceState.update).not.toHaveBeenCalled();
+    } finally {
+      warning.mockRestore();
+      cancellation.dispose();
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it.each(["cleaning", "view"] as const)(
