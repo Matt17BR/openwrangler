@@ -90,7 +90,7 @@ The scope-only job uses Node and Git without installing npm dependencies or rest
   harnesses do not consume them. Component additions, nested tests, unit/cross tests and shared fixtures are outside
   this permission.
 - Python, R and Windows execution may also be omitted for edits to the existing release-policy scripts and tests,
-  `scripts/capture-screenshots.mjs` and `scripts/capture-screenshots-readiness.mjs`, enumerated in
+  `scripts/capture-screenshots.mjs`, `scripts/capture-screenshots-readiness.mjs` and `scripts/ci-docs-only.test.mjs`, enumerated in
   [`ci-docs-only.mjs`](../scripts/ci-docs-only.mjs). These edits keep `docs_only=false`, so Source runs Vitest, the Node
   script owners and the Node 22 build, and packaged smoke retains both Linux VS Code launches.
 - ESLint, Node 24 type checking, Vitest and the minimum/stable VS Code launches may be omitted only for edits to
@@ -132,13 +132,16 @@ Source's documentation and canonical-artifact tests cover the admitted release-d
 Git, VSIX and release-channel checks. These validators and their test owner are excluded from the VSIX and are not
 consumed by Python, native R or installed-editor execution.
 
+The CI proof test uses Node, temporary Git histories and controlled workflow guards. Source executes it for every
+change; the native and installed suites do not load it. The production proof script remains outside this permission.
+
 The two capture scripts generate real Python-backed browser fixtures, but the omitted native suites do not consume
 these generators. Their required [local browser acceptance](testing.md) still owns fixture execution, images and
 interactions; retained Source and Linux package checks do not replace it. Shared browser and preflight helpers remain
 outside this permission.
 
 These omissions reduce unrelated work for documentation edits, webview edits, private component tests, isolated engine changes,
-release-policy edits, local screenshot-tool edits and the allowed installed-harness edits.
+release-policy edits, CI proof test edits, local screenshot-tool edits and the allowed installed-harness edits.
 They provide no fresh or transferred test result and can delay discovery of unrelated dependency, editor installation
 or hosted-environment regressions.
 Scheduled R 4.4 qualification does not replace R 4.5 coverage. Release qualification remains separate.
@@ -166,7 +169,7 @@ platform workers. Assess total wall time and runner cost together when changing 
 The proof binds the checkout's merge commit and both parents to the pull-request event. It reads a bounded,
 NUL-delimited Git diff. Additions outside the permitted runtime source scopes, deletions, renames, mode changes,
 other changes outside the allowed paths, empty diffs and unavailable or unrecognized evidence select full checks.
-Changes to the proof or workflow also require full execution.
+Changes to the production proof or workflow also require full execution.
 A failed proof job or malformed output fails the required result.
 Source and package jobs also fail if their local proof fails or returns a malformed omission value.
 Execution jobs remain cancellable. Their result jobs run even after a failed or canceled dependency, so skipped or
