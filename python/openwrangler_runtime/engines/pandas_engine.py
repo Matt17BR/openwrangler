@@ -3764,7 +3764,24 @@ def _pandas_round_decimal(series: Any, decimals: int) -> Any:
     if decimals >= arrow_type.scale:
         return series.copy()
     if decimals < -(arrow_type.precision - arrow_type.scale):
-        return series.where(series.isna(), Decimal(0))
+        # Narrow validation rejects understated storage. Wider Arrow validation
+        # can miss physical signed minima, so inspect their actual extrema.
+        values = series.array.__arrow_array__()
+        if arrow_type.bit_width < 128:
+            values.validate(full=True)
+            return series.where(series.isna(), Decimal(0))
+        import pyarrow as pa
+        import pyarrow.compute as pc
+
+        extrema = pc.call_function("min_max", [values])
+        # View only the extrema as coefficients to avoid formatting unsupported
+        # source scales through Arrow's Decimal-to-Python binding.
+        coefficient_type = getattr(pa, f"decimal{arrow_type.bit_width}")(arrow_type.precision, 0)
+        coefficients = pa.array([extrema["min"], extrema["max"]], type=arrow_type).view(coefficient_type)
+        scalar_type = pa.decimal256(arrow_type.precision, 0)
+        bounds = [pc.cast(value, scalar_type, safe=True).as_py() for value in coefficients]
+        if all(value is None or value == 0 or decimals < arrow_type.scale - value.adjusted() - 1 for value in bounds):
+            return series.where(series.isna(), Decimal(0))
     import pyarrow as pa
 
     values = [rounded(value) if isinstance(value, Decimal) else None for value in series]
@@ -3923,7 +3940,27 @@ def _generated_pandas_round_helpers() -> list[str]:
         "    if decimals >= arrow_type.scale:",
         "        return series.copy()",
         "    if decimals < -(arrow_type.precision - arrow_type.scale):",
-        "        return series.where(series.isna(), Decimal(0))",
+        "        # Narrow validation rejects understated storage. Wider Arrow validation",
+        "        # can miss physical signed minima, so inspect their actual extrema.",
+        "        values = series.array.__arrow_array__()",
+        "        if arrow_type.bit_width < 128:",
+        "            values.validate(full=True)",
+        "            return series.where(series.isna(), Decimal(0))",
+        "        import pyarrow as pa",
+        "        import pyarrow.compute as pc",
+        "",
+        '        extrema = pc.call_function("min_max", [values])',
+        "        # View only the extrema as coefficients to avoid formatting unsupported",
+        "        # source scales through Arrow's Decimal-to-Python binding.",
+        '        coefficient_type = getattr(pa, f"decimal{arrow_type.bit_width}")(arrow_type.precision, 0)',
+        '        coefficients = pa.array([extrema["min"], extrema["max"]], type=arrow_type).view(coefficient_type)',
+        "        scalar_type = pa.decimal256(arrow_type.precision, 0)",
+        "        bounds = [pc.cast(value, scalar_type, safe=True).as_py() for value in coefficients]",
+        "        if all(",
+        "            value is None or value == 0 or decimals < arrow_type.scale - value.adjusted() - 1",
+        "            for value in bounds",
+        "        ):",
+        "            return series.where(series.isna(), Decimal(0))",
         "    import pyarrow as pa",
         "",
         "    values = [rounded(value) if isinstance(value, Decimal) else None for value in series]",

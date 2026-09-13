@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from decimal import ROUND_HALF_EVEN, Decimal, localcontext
+from decimal import ROUND_HALF_EVEN, Decimal, Inexact, Rounded, localcontext
 from math import copysign, inf, isfinite, isnan, nextafter
 from typing import Any
 
@@ -547,6 +547,126 @@ def test_pandas_round_arrow_decimal_keeps_readable_native_output(bits: int, prec
                         for actual, wanted in zip(restored, expected, strict=True)
                     )
     pd.testing.assert_frame_equal(source, before)
+
+
+@pytest.mark.parametrize(
+    "precision, scale, coefficients, decimals, expected",
+    [
+        pytest.param(
+            74,
+            -2,
+            [(2**256 // 100) + 10**74, -((2**256 // 100) + 10**74), None],
+            -77,
+            [Decimal("1e77"), Decimal("-1e77"), None],
+            id="understated-magnitude",
+        ),
+        pytest.param(
+            1,
+            0,
+            [50, 150, -50, -150, None],
+            -2,
+            [Decimal(0), Decimal(200), Decimal(0), Decimal(-200), None],
+            id="understated-half-even-ties",
+        ),
+        pytest.param(1, 0, [-(2**255), None], -(10**12), [Decimal(0), None], id="physical-minimum-zero"),
+    ],
+)
+def test_pandas_round_arrow_decimal_shortcut_checks_stored_magnitude(
+    precision: int, scale: int, coefficients: list[int | None], decimals: int, expected: list[Decimal | None]
+) -> None:
+    import pyarrow as pa
+
+    validity = bytes([sum((value is not None) << index for index, value in enumerate(coefficients))])
+    data = b"".join((value or 0).to_bytes(32, "little", signed=True) for value in coefficients)
+    array = pa.Array.from_buffers(
+        pa.decimal256(precision, scale), len(coefficients), [pa.py_buffer(validity), pa.py_buffer(data)]
+    )
+    native = pa.chunked_array([array.slice(0, 1), array.slice(1)])
+    source = pd.DataFrame({"value": pd.arrays.ArrowExtensionArray(native), "kept": range(len(native))})
+    source.index = pd.Index(["same"] * len(source), name="source index")
+    source.attrs = {"owner": "retained"}
+    source_index = source.index
+    with localcontext() as context:
+        context.prec, context.Emax, context.Emin = 2, 3, -3
+        context.traps[Inexact] = context.traps[Rounded] = True
+        context.clear_flags()
+        for result in rounded_frames(PandasEngine(), source, decimals):
+            output_array: Any = result["rounded"].array
+            output = output_array.__arrow_array__()
+            assert output.to_pylist() == expected
+            output.validate(full=True)
+            original_array: Any = result["value"].array
+            assert original_array.__arrow_array__().equals(native)
+            assert result["kept"].tolist() == list(range(len(native)))
+        assert not any(context.flags.values())
+    source_array: Any = source["value"].array
+    assert source_array.__arrow_array__().equals(native)
+    assert source.index is source_index and source.attrs == {"owner": "retained"}
+
+
+@pytest.mark.parametrize("bits, coefficient", [(32, 123), (64, -123), (128, -(2**127)), (256, -(2**255))])
+def test_pandas_round_arrow_decimal_shortcut_refuses_unsafe_stored_magnitude(bits: int, coefficient: int) -> None:
+    import pyarrow as pa
+
+    from openwrangler_runtime.engines import EngineError
+
+    dtype = getattr(pa, f"decimal{bits}")(1, 0)
+    data = coefficient.to_bytes(bits // 8, "little", signed=True) + bytes(bits // 8)
+    native = pa.Array.from_buffers(dtype, 2, [pa.py_buffer(bytes([1])), pa.py_buffer(data)])
+    source = pd.DataFrame({"value": pd.arrays.ArrowExtensionArray(native), "kept": [0, 1]})
+    source.index = pd.Index(["same", "same"], name="source index")
+    source_index = source.index
+    adapter = PandasEngine()
+    schema = adapter.schema(source)
+    lineage = source_lineage(schema)
+    operation = bind_step(
+        validate_step(
+            {
+                "id": "round",
+                "kind": "roundNumber",
+                "params": {"column": lineage[0], "decimals": -2, "newColumn": "rounded"},
+            }
+        ),
+        schema,
+        lineage,
+    )
+    namespace: dict[str, Any] = {"Any": source}
+    exec(adapter.compile_plan([operation]), namespace)
+    with localcontext() as context:
+        context.prec = 2
+        context.traps[Inexact] = context.traps[Rounded] = True
+        context.clear_flags()
+        for execute in (lambda: adapter.apply_transform(source, operation), lambda: namespace["clean_data"](source)):
+            with pytest.raises((EngineError, ValueError, pa.ArrowInvalid), match="precision|output capacity"):
+                execute()
+            source_array: Any = source["value"].array
+            assert source_array.__arrow_array__().equals(pa.chunked_array([native]))
+            assert source["kept"].tolist() == [0, 1]
+            assert source.index is source_index and namespace["Any"] is source
+        assert not any(context.flags.values())
+
+
+@pytest.mark.parametrize("bits", [128, 256])
+def test_pandas_round_arrow_decimal_shortcut_preserves_extreme_negative_scale(bits: int) -> None:
+    import pyarrow as pa
+
+    dtype = getattr(pa, f"decimal{bits}")
+    native = pa.array([Decimal(123), Decimal(-123), None], type=dtype(3, 0)).view(dtype(3, -77))
+    expected = pa.array([Decimal(0), Decimal(0), None], type=dtype(3, 0)).view(native.type)
+    source = pd.DataFrame({"value": pd.arrays.ArrowExtensionArray(native), "kept": [0, 1, 2]})
+    source.index = pd.Index(["same"] * len(source), name="source index")
+    with localcontext() as context:
+        context.prec = 2
+        context.clear_flags()
+        for result in rounded_frames(PandasEngine(), source, -81):
+            output_array: Any = result["rounded"].array
+            assert output_array.__arrow_array__().equals(pa.chunked_array([expected]))
+            original_array: Any = result["value"].array
+            assert original_array.__arrow_array__().equals(pa.chunked_array([native]))
+            assert result["kept"].tolist() == [0, 1, 2]
+        assert not any(context.flags.values())
+    source_array: Any = source["value"].array
+    assert source_array.__arrow_array__().equals(pa.chunked_array([native]))
 
 
 def test_pandas_round_arrow_decimal_preserves_existing_export_scale() -> None:
