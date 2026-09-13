@@ -22,6 +22,8 @@ from openwrangler_runtime.engines.polars_engine import PolarsEngine
 from openwrangler_runtime.export_target import ExportTarget, ExportTargetError, ExportWriterPath, _regular_file_identity
 from openwrangler_runtime.session import SessionManager
 
+PANDAS_CSV_OPTIONS = {"format": "csv", "delimiter": ",", "quoteChar": '"', "encoding": "utf-8", "header": True}
+
 
 @pytest.mark.parametrize("format_name", ["csv", "parquet"])
 def test_pandas_scalar_export_does_not_materialize_range_axis(
@@ -515,6 +517,394 @@ def test_pandas_sparse_duration_csv_preserves_reserved_destination(
         omitted.touch()
         PandasEngine().export_data(source, omitted, {**options, "rowAxisPolicy": "omit"})
         assert omitted.read_text() == "row\n0\n1\n2\n3\n"
+
+
+@pytest.mark.parametrize("family", ["timestamp", "duration"])
+@pytest.mark.parametrize("storage", ["direct", "dictionary", "categorical", "index", "multiindex"])
+def test_pandas_temporal_csv_preserves_exact_fields_and_source(tmp_path: Path, family: str, storage: str) -> None:
+    import pyarrow as pa
+
+    ticks = [0, -(2**63), -(2**63) + 1, None, -1, 2**63 - 1, 123456000]
+    timestamp = family == "timestamp"
+    dtype = pa.timestamp("ns", "America/New_York") if timestamp else pa.duration("ns")
+    expected = (
+        [
+            "1969-12-31 19:00:00-05:00",
+            "1677-09-20 19:16:41.145224192-04:56:02",
+            "1677-09-20 19:16:41.145224193-04:56:02",
+            "",
+            "1969-12-31 18:59:59.999999999-05:00",
+            "2262-04-11 19:47:16.854775807-04:00",
+            "1969-12-31 19:00:00.123456-05:00",
+        ]
+        if timestamp
+        else [
+            "0 days 00:00:00",
+            "-9223372036854775808 ns",
+            "-106752 days +00:12:43.145224193",
+            "",
+            "-1 days +23:59:59.999999999",
+            "106751 days 23:47:16.854775807",
+            "0 days 00:00:00.123456",
+        ]
+    )
+    native = pa.array(ticks, type=dtype)
+    chunks = [native.slice(0, 3), native.slice(3)]
+    if storage == "dictionary":
+        chunks = [chunk.dictionary_encode() for chunk in chunks]
+    values = pd.Series(pd.arrays.ArrowExtensionArray(pa.chunked_array(chunks)))
+    if storage == "categorical":
+        categories = pd.Index(
+            pd.arrays.ArrowExtensionArray(pa.array([value for value in ticks if value is not None], type=dtype))
+        )
+        values = pd.Series(pd.Categorical.from_codes([0, 1, 2, -1, 3, 4, 5], categories=categories, ordered=True))
+    source = pd.DataFrame({"value": values, "text": ["é;quoted'\n"] * len(values)})
+    logical = pd.DataFrame({"value": expected, "text": source["text"]})
+    preserve_index = storage in {"index", "multiindex"}
+    if preserve_index:
+        index = pd.Index(values.array, name="value")
+        source = source.drop(columns="value")
+        logical = logical.drop(columns="value")
+        source.index = index
+        logical.index = pd.Index(expected, name="value")
+        if storage == "multiindex":
+            source.index = pd.MultiIndex.from_arrays([index, ["same"] * len(source)], names=["value", "group"])
+            logical.index = pd.MultiIndex.from_arrays([expected, ["same"] * len(source)], names=source.index.names)
+    source.attrs = {"owner": "unchanged"}
+    before = source.copy(deep=True)
+    original_index = source.index
+    destination = tmp_path / "temporal.csv"
+    destination.write_bytes(b"reserved destination")
+    identity = _regular_file_identity(destination)
+    options: Any = {
+        "format": "csv",
+        "delimiter": ";",
+        "quoteChar": "'",
+        "encoding": "utf-16",
+        "header": True,
+        "rowAxisPolicy": "preserve" if preserve_index else "omit",
+    }
+    PandasEngine().export_data(source, ExportWriterPath(destination, *identity), options)
+    assert destination.read_bytes() == logical.to_csv(index=preserve_index, sep=";", quotechar="'").encode("utf-16")
+    assert _regular_file_identity(destination) == identity
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
+    assert source.index is original_index and source.attrs == {"owner": "unchanged"}
+
+
+@pytest.mark.parametrize(
+    "zone,seconds",
+    [
+        ("Europe/Amsterdam", -2208988800),
+        ("America/New_York", -5364662400),
+        ("UTC+01:00", 1672531200),
+        ("dateutil/Europe/London", 1672531200),
+    ],
+)
+def test_pandas_temporal_csv_preserves_native_timezone_names_and_fractional_fields(
+    tmp_path: Path, zone: str, seconds: int
+) -> None:
+    import pyarrow as pa
+
+    values = pa.array(
+        [seconds * 10**9, seconds * 10**9 + 145224000, seconds * 10**9 + 145224193, None], type=pa.timestamp("ns", zone)
+    )
+    source = pd.DataFrame({"value": pd.arrays.ArrowExtensionArray(values)})
+    ordinary = source.iloc[:2].to_csv(index=False).splitlines()[1:]
+    assert ".145224" in ordinary[1]
+    expected = ordinary[1].replace(".145224", ".145224193", 1)
+    destination = tmp_path / "offset.csv"
+    destination.touch()
+    PandasEngine().export_data(source, destination, {**PANDAS_CSV_OPTIONS, "rowAxisPolicy": "omit"})
+    fields = list(csv.reader(io.StringIO(destination.read_text())))[1:]
+    assert fields == [[value] for value in [*ordinary, expected, ""]]
+    current: Any = source["value"].array
+    assert current.__arrow_array__().equals(pa.chunked_array([values]))
+
+
+@pytest.mark.parametrize(
+    "unit,zone,tick,expected",
+    [
+        ("ns", "UTC+01:00", -(2**63), "1677-09-21 01:12:43.145224192+01:00"),
+        ("s", "dateutil/Europe/London", -62135596800 + 75, "0001-01-01 00:00:00-00:01:15"),
+        ("ms", "UTC+01:00", 253402300800000 - 3600000 - 1, "9999-12-31 23:59:59.999000+01:00"),
+        ("us", "dateutil/Europe/London", (-62135596800 + 75) * 1000000 + 1, "0001-01-01 00:00:00.000001-00:01:15"),
+    ],
+)
+def test_pandas_temporal_csv_preserves_timezone_boundary_values(
+    tmp_path: Path, unit: str, zone: str, tick: int, expected: str
+) -> None:
+    import pyarrow as pa
+
+    values = pa.array([tick, None], type=pa.timestamp(unit, zone))
+    source = pd.DataFrame({"value": pd.arrays.ArrowExtensionArray(values), "row": [0, 1]})
+    original_index = source.index
+    destination = tmp_path / "boundary.csv"
+    destination.write_bytes(b"reserved destination")
+    identity = _regular_file_identity(destination)
+    PandasEngine().export_data(
+        source, ExportWriterPath(destination, *identity), {**PANDAS_CSV_OPTIONS, "rowAxisPolicy": "omit"}
+    )
+    assert list(csv.reader(io.StringIO(destination.read_text()))) == [["value", "row"], [expected, "0"], ["", "1"]]
+    assert _regular_file_identity(destination) == identity
+    current: Any = source["value"].array
+    assert current.__arrow_array__().equals(pa.chunked_array([values]))
+    assert source.index is original_index and source["row"].tolist() == [0, 1]
+
+
+@pytest.mark.parametrize("unit", ["s", "ms", "us"])
+def test_pandas_temporal_csv_preserves_coarse_duration_sentinels(tmp_path: Path, unit: str) -> None:
+    import pyarrow as pa
+
+    values = pa.array([0, -(2**63), None], type=pa.duration(unit))
+    source = pd.DataFrame({"value": pd.arrays.ArrowExtensionArray(values), "row": [0, 1, 2]})
+    destination = tmp_path / "duration.csv"
+    destination.touch()
+    PandasEngine().export_data(source, destination, {**PANDAS_CSV_OPTIONS, "rowAxisPolicy": "omit"})
+    assert list(csv.reader(io.StringIO(destination.read_text()))) == [
+        ["value", "row"],
+        ["0 days 00:00:00", "0"],
+        [f"{-(2**63)} {unit}", "1"],
+        ["", "2"],
+    ]
+    current: Any = source["value"].array
+    assert current.__arrow_array__().equals(pa.chunked_array([values]))
+
+
+@pytest.mark.parametrize("family", ["timestamp", "duration"])
+def test_pandas_temporal_csv_categorical_nulls_keep_coarse_native_spelling(tmp_path: Path, family: str) -> None:
+    import pyarrow as pa
+
+    timestamp = family == "timestamp"
+    dtype = pa.timestamp("us", "UTC") if timestamp else pa.duration("us")
+    values = pa.array([0, 1, 16725225600000000 if timestamp else 10000000000000000], type=dtype)
+    categories = pd.Index(pd.arrays.ArrowExtensionArray(values))
+    source = pd.DataFrame({"value": pd.Categorical.from_codes([0, -1, 1, 2], categories=categories)})
+    destination = tmp_path / "category.csv"
+    destination.touch()
+    PandasEngine().export_data(source, destination, {**PANDAS_CSV_OPTIONS, "rowAxisPolicy": "omit"})
+    expected = (
+        ["1970-01-01 00:00:00+00:00", "", "1970-01-01 00:00:00.000001+00:00", "2500-01-01 00:00:00+00:00"]
+        if timestamp
+        else ["0 days 00:00:00", "", "0 days 00:00:00.000001", "115740 days 17:46:40"]
+    )
+    assert list(csv.reader(io.StringIO(destination.read_text())))[1:] == [[value] for value in expected]
+    assert source["value"].cat.codes.tolist() == [0, -1, 1, 2]
+    assert source["value"].cat.categories.array.__arrow_array__().equals(pa.chunked_array([values]))
+
+
+@pytest.mark.parametrize(
+    "unit,zone,bound",
+    [
+        ("s", None, "minimum"),
+        ("ms", "UTC", "maximum"),
+        ("us", None, "minimum"),
+        ("s", "-01:00", "local-minimum"),
+        ("ms", "+01:00", "local-maximum"),
+        ("us", "America/New_York", "local-minimum"),
+        ("s", "dateutil/Europe/London", "london-local-minimum"),
+        ("ms", "UTC+01:00", "utc-plus-one-local-maximum"),
+    ],
+)
+def test_pandas_temporal_csv_calendar_refusal_precedes_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unit: str, zone: str | None, bound: str
+) -> None:
+    import pyarrow as pa
+
+    scale = {"s": 1, "ms": 1000, "us": 1000000}[unit]
+    tick = {
+        "minimum": -(2**63),
+        "maximum": 2**63 - 1,
+        "local-minimum": -62135596800 * scale,
+        "local-maximum": 253402300800 * scale - 1,
+        "london-local-minimum": (-62135596800 + 75) * scale - 1,
+        "utc-plus-one-local-maximum": (253402300800 - 3600) * scale,
+    }[bound]
+    values = pa.array([0, tick, None], type=pa.timestamp(unit, zone))
+    source = pd.DataFrame({"value": pd.arrays.ArrowExtensionArray(values)})
+    destination = tmp_path / "calendar.csv"
+    destination.write_bytes(b"preserved destination\n")
+    identity = _regular_file_identity(destination)
+    # This guard also makes the original-regression run safe: native formatting
+    # of coarse out-of-calendar timestamps has crashed supported Pandas versions.
+    monkeypatch.setattr(
+        ExportWriterPath, "open_binary_writer", lambda *_: pytest.fail("calendar refusal opened the writer")
+    )
+    with pytest.raises(EngineError, match="CSV.*timestamp.*years 1.*9999"):
+        PandasEngine().export_data(
+            source, ExportWriterPath(destination, *identity), {**PANDAS_CSV_OPTIONS, "rowAxisPolicy": "omit"}
+        )
+    assert destination.read_bytes() == b"preserved destination\n"
+    assert _regular_file_identity(destination) == identity
+    current: Any = source["value"].array
+    assert current.__arrow_array__().equals(pa.chunked_array([values]))
+
+
+@pytest.mark.parametrize("storage", ["categorical", "multiindex"])
+def test_pandas_temporal_csv_ignores_unused_empty_and_omitted_labels(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, storage: str
+) -> None:
+    import pyarrow as pa
+
+    values = pa.array([0, 1, -(2**63)], type=pa.timestamp("us"))
+    labels = pd.Index(pd.arrays.ArrowExtensionArray(values), name="value")
+    native_astype = pd.arrays.ArrowExtensionArray.astype
+
+    def safe_astype(array: Any, dtype: Any, *args: Any, **kwargs: Any) -> Any:
+        if isinstance(array.dtype, pd.ArrowDtype) and pa.types.is_timestamp(array.dtype.pyarrow_dtype):
+            assert -(2**63) not in array.__arrow_array__().cast(pa.int64()).to_pylist(), (
+                "unused unsafe label reached boxing"
+            )
+        return native_astype(array, dtype, *args, **kwargs)
+
+    monkeypatch.setattr(pd.arrays.ArrowExtensionArray, "astype", safe_astype)
+    codes = [0, -1, 1, 0]
+    source = pd.DataFrame({"row": range(len(codes))})
+    if storage == "categorical":
+        source.insert(0, "value", pd.Categorical.from_codes(codes, categories=labels))
+    else:
+        source.index = pd.MultiIndex(levels=[labels], codes=[codes], names=["value"])
+    original_index = source.index
+    destination = tmp_path / "unused.csv"
+    destination.touch()
+    options = {**PANDAS_CSV_OPTIONS, "rowAxisPolicy": "preserve" if storage == "multiindex" else "omit"}
+    PandasEngine().export_data(source, destination, options)
+    assert list(csv.reader(io.StringIO(destination.read_text()))) == [
+        ["value", "row"],
+        ["1970-01-01 00:00:00", "0"],
+        ["", "1"],
+        ["1970-01-01 00:00:00.000001", "2"],
+        ["1970-01-01 00:00:00", "3"],
+    ]
+    PandasEngine().export_data(source.iloc[:0], destination, options)
+    assert destination.read_text() == "value,row\n"
+    if storage == "multiindex":
+        omitted = pd.DataFrame({"row": [0]}, index=pd.Index(labels.array.take([2]), name="value"))
+        omitted_index = omitted.index
+        PandasEngine().export_data(omitted, destination, {**PANDAS_CSV_OPTIONS, "rowAxisPolicy": "omit"})
+        assert destination.read_text() == "row\n0\n"
+        assert omitted.index is omitted_index
+        assert omitted["row"].tolist() == [0]
+        assert isinstance(source.index, pd.MultiIndex)
+        current_codes: Any = source.index.codes[0]
+        assert current_codes.tolist() == codes
+        current_labels: Any = source.index.levels[0]
+    else:
+        assert source["value"].cat.codes.tolist() == codes
+        current_labels = source["value"].cat.categories
+    assert current_labels.array.__arrow_array__().equals(pa.chunked_array([values]))
+    assert source.index is original_index
+
+
+@pytest.mark.parametrize("unsafe", [False, True])
+def test_pandas_temporal_csv_session_preserves_revision_and_reserved_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unsafe: bool
+) -> None:
+    import pyarrow as pa
+
+    import __main__
+
+    values = pa.array(
+        [0, 253402300800000000 if unsafe else -(2**63), None], type=pa.timestamp("us" if unsafe else "ns", "UTC")
+    )
+    source = pd.DataFrame({"value": pd.arrays.ArrowExtensionArray(values)})
+    monkeypatch.setattr(__main__, "temporal_export_source", source, raising=False)
+    manager = SessionManager()
+    destination = tmp_path / "session.csv"
+    destination.write_bytes(b"preserved destination\n")
+    identity = _regular_file_identity(destination)
+    try:
+        opened = manager.open_session(
+            {"kind": "notebookVariable", "label": "Temporal export", "variableName": "temporal_export_source"},
+            backend="pandas",
+            page_size=1,
+            mode="editing",
+        )
+        session_id, revision = opened["metadata"]["sessionId"], opened["metadata"]["revision"]
+        if unsafe:
+            monkeypatch.setattr(
+                ExportWriterPath, "open_binary_writer", lambda *_: pytest.fail("calendar refusal opened the writer")
+            )
+        with pytest.raises(EngineError, match="CSV.*timestamp.*years 1.*9999") if unsafe else nullcontext():
+            result = manager.export_data(
+                session_id,
+                revision,
+                str(destination),
+                {**PANDAS_CSV_OPTIONS, "rowAxisPolicy": "omit"},
+                {"device": str(identity[0]), "inode": str(identity[1])},
+            )
+            assert result["kind"] == "dataExported"
+        if unsafe:
+            assert destination.read_bytes() == b"preserved destination\n"
+        else:
+            assert list(csv.reader(io.StringIO(destination.read_text())))[1:] == [
+                ["1970-01-01 00:00:00+00:00"],
+                ["1677-09-21 00:12:43.145224192+00:00"],
+                [""],
+            ]
+        after = manager.get_page(session_id, revision, 0, 1, {"filters": [], "sort": []})
+        assert after["metadata"] == opened["metadata"] and after["page"] == opened["page"]
+        assert _regular_file_identity(destination) == identity
+        current: Any = source["value"].array
+        assert current.__arrow_array__().equals(pa.chunked_array([values]))
+    finally:
+        manager.close_all()
+
+
+def test_pandas_temporal_csv_bounds_high_cardinality_category_boxing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import pyarrow as pa
+
+    ticks = [*range(70000), -(2**63)]
+    values = pa.array(ticks, type=pa.duration("ns"))
+    categories = pd.Index(pd.arrays.ArrowExtensionArray(values))
+    codes = list(range(len(ticks)))
+    source = pd.DataFrame({"value": pd.Categorical.from_codes(codes, categories=categories)})
+    native_astype = pd.arrays.ArrowExtensionArray.astype
+
+    def bounded_astype(array: Any, dtype: Any, *args: Any, **kwargs: Any) -> Any:
+        if (
+            isinstance(array.dtype, pd.ArrowDtype)
+            and pa.types.is_duration(array.dtype.pyarrow_dtype)
+            and pd.api.types.is_object_dtype(dtype)
+        ):
+            assert len(array) <= 64000, "temporal export boxed a complete high-cardinality category dictionary"
+        return native_astype(array, dtype, *args, **kwargs)
+
+    monkeypatch.setattr(pd.arrays.ArrowExtensionArray, "astype", bounded_astype)
+    destination = tmp_path / "bounded.csv"
+    destination.touch()
+    PandasEngine().export_data(source, destination, {**PANDAS_CSV_OPTIONS, "rowAxisPolicy": "omit"})
+    fields = [row[0] for row in list(csv.reader(io.StringIO(destination.read_text())))[1:]]
+    assert fields == [
+        *[str(pd.Timedelta(value, unit="ns")) for value in range(70000)],
+        "-9223372036854775808 ns",
+    ]
+    assert source["value"].cat.codes.tolist() == codes
+    assert source["value"].cat.categories.array.__arrow_array__().equals(pa.chunked_array([values]))
+
+
+@pytest.mark.parametrize("unit", ["ns", "us", "ms"])
+def test_pandas_temporal_parquet_keeps_native_ticks(tmp_path: Path, unit: str) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    source = pd.DataFrame(
+        {
+            name: pd.arrays.ArrowExtensionArray(pa.array([0, -(2**63), None], type=dtype))
+            for name, dtype in [("timestamp", pa.timestamp(unit, "UTC")), ("duration", pa.duration(unit))]
+        }
+    )
+    arrays: list[Any] = [source[name].array for name in source]
+    original = [array.__arrow_array__() for array in arrays]
+    destination = tmp_path / "temporal.parquet"
+    destination.touch()
+    PandasEngine().export_data(source, destination, {"format": "parquet", "rowAxisPolicy": "omit"})
+    loaded = pq.read_table(destination)
+    for name, expected in zip(source, original, strict=True):
+        assert loaded[name].equals(expected)
+        current: Any = source[name].array
+        assert current.__arrow_array__().equals(expected)
 
 
 @pytest.fixture(params=["pandas", "polars-eager", "polars-lazy"])

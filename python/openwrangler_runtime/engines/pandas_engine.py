@@ -117,6 +117,7 @@ _ASCII_TO_LOWER = str.maketrans(_ASCII_UPPER, _ASCII_LOWER)
 _ASCII_TO_UPPER = str.maketrans(_ASCII_LOWER, _ASCII_UPPER)
 _INT64_MIN = -(2**63)
 _INT64_MAX = (2**63) - 1
+_MAX_CSV_TEMPORAL_CHUNK_VALUES = 64_000
 _PORTABLE_INTEGER_LIMIT = 10**38
 _MAX_EXACT_NUMERIC_EXTREMUM_CHARACTERS = 65_536
 _MAX_ROW_AXIS_LEVELS = 64
@@ -4431,9 +4432,165 @@ def _pandas_preserve_integer_result(value: Any) -> Any:
     return _pandas_normalize_integer_series(value, enforce_envelope=False)
 
 
+def _pandas_csv_temporal_values(series: Any, *, format_category_values: bool = False) -> Any:
+    import pandas as pd
+
+    categorical = isinstance(series.dtype, pd.CategoricalDtype)
+    values = pd.Series(series.cat.categories.array, copy=False) if categorical else series
+    array = _pandas_arrow_temporal_array(values)
+    if array is None:
+        return series
+    import numpy as np
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    ticks = array.cast(pa.int64())
+    bounds = pc.call_function("min_max", [ticks]).as_py()
+    if bounds["min"] is None and not categorical and not format_category_values:
+        return series
+    duration = pa.types.is_duration(array.type)
+    coarse_timestamp = not duration and array.type.unit != "ns"
+    calendar_bounds: tuple[int, int] | None = None
+    coarse_zone = None
+    day_ns = 86_400_000_000_000
+    if bounds["min"] is None:
+        needs_preparation = False
+    elif duration:
+        needs_preparation = bounds["min"] == _INT64_MIN
+    elif coarse_timestamp:
+        scale = {"s": 1, "ms": 1000, "us": 1_000_000}[array.type.unit]
+        lower, upper = -62_135_596_800 * scale, 253_402_300_800 * scale
+        calendar_bounds = lower, upper
+        margin = 86_400 * scale if array.type.tz is not None else 0
+        needs_preparation = bounds["min"] < lower + margin or bounds["max"] >= upper - margin
+    else:
+        # Native boxing can wrap local timestamps near either ns endpoint.
+        needs_preparation = bounds["min"] <= _INT64_MIN + day_ns or bounds["max"] >= _INT64_MAX - day_ns
+        if not needs_preparation and array.type.tz is not None:
+            for start in range(0, len(array), _MAX_CSV_TEMPORAL_CHUNK_VALUES):
+                part = array.slice(start, _MAX_CSV_TEMPORAL_CHUNK_VALUES)
+                try:
+                    local = pc.call_function("local_timestamp", [part])
+                except pa.ArrowInvalid:
+                    # Native Pandas accepts timezone names outside Arrow's namespace.
+                    needs_preparation = True
+                    break
+                local_seconds = pc.call_function("second", [local])
+                utc_seconds = pc.call_function("second", [part.cast(pa.timestamp("ns"))])
+                # Pandas can insert submicrosecond digits into historical offset seconds.
+                historical_fraction = pc.call_function(
+                    "and",
+                    [
+                        pc.call_function("not_equal", [local_seconds, utc_seconds]),
+                        pc.call_function("not_equal", [pc.call_function("nanosecond", [part]), 0]),
+                    ],
+                )
+                if pc.call_function("any", [historical_fraction]).as_py():
+                    needs_preparation = True
+                    break
+    if categorical:
+        missing_codes = (series.cat.codes < 0).any()
+        if not needs_preparation and not missing_codes:
+            return series
+        retained = series.cat.remove_unused_categories() if needs_preparation else series
+        # Native temporal category filling cannot use the CSV writer's empty-string null value.
+        logical = _pandas_csv_temporal_values(
+            pd.Series(retained.cat.categories.array, copy=False), format_category_values=True
+        )
+        categorical_result = pd.Categorical.from_codes(
+            retained.cat.codes, categories=pd.Index(logical.array), ordered=retained.cat.ordered
+        )
+        return pd.Series(categorical_result, index=series.index, name=series.name)
+    if calendar_bounds is not None and needs_preparation:
+        lower, upper = calendar_bounds
+        if bounds["min"] < lower or bounds["max"] >= upper:
+            raise EngineError("CSV export requires Arrow timestamps within years 1 through 9999.")
+        try:
+            local = pc.call_function("local_timestamp", [array])
+        except pa.ArrowInvalid:
+            coarse_zone = pd.Timestamp(0, unit="s", tz=array.type.tz).tzinfo
+        else:
+            local_bounds = pc.call_function("min_max", [local.cast(pa.int64())]).as_py()
+            if local_bounds["min"] < lower or local_bounds["max"] >= upper:
+                raise EngineError("CSV export requires local Arrow timestamps within years 1 through 9999.")
+        if not format_category_values and coarse_zone is None:
+            return series
+    if not needs_preparation and not format_category_values:
+        return series
+
+    # Retain native string chunks; Python boxing and strings live for only one slice.
+    endpoint_zone = None
+    if not duration and not coarse_timestamp:
+        from pytz import UnknownTimeZoneError
+
+        try:
+            _pandas_temporal_text(pd.NaT, pa.scalar(0, type=array.type))
+        except UnknownTimeZoneError:
+            endpoint_zone = pd.Timestamp(0, unit="s", tz=array.type.tz).tzinfo
+    chunks = []
+    sentinel_text = (
+        _pandas_temporal_text(pd.NaT, pa.scalar(_INT64_MIN, type=array.type))
+        if duration and needs_preparation
+        else None
+    )
+    for start in range(0, len(series), _MAX_CSV_TEMPORAL_CHUNK_VALUES):
+        part = array.slice(start, _MAX_CSV_TEMPORAL_CHUNK_VALUES)
+        boxed = series.iloc[start : start + len(part)].astype(object) if coarse_zone is None else None
+        valid = part.is_valid().to_numpy()
+        if coarse_timestamp:
+            forced = np.zeros(len(part), dtype=bool)
+        else:
+            part_ticks = part.cast(pa.int64())
+            mask = (
+                pc.call_function("equal", [part_ticks, _INT64_MIN])
+                if duration
+                else pc.call_function(
+                    "or",
+                    [
+                        pc.call_function("less_equal", [part_ticks, _INT64_MIN + day_ns]),
+                        pc.call_function("greater_equal", [part_ticks, _INT64_MAX - day_ns]),
+                    ],
+                )
+            )
+            forced = pc.fill_null(mask, False).to_numpy()
+        text = []
+        values = boxed.array if boxed is not None else part.cast(pa.timestamp(array.type.unit))
+        for position, value in enumerate(values):
+            if not valid[position]:
+                text.append(None)
+            elif coarse_zone is not None:
+                utc = value.as_py().replace(tzinfo=timezone.utc)
+                try:
+                    text.append(datetime_isoformat(utc.astimezone(coarse_zone), sep=" "))
+                except OverflowError as error:
+                    raise EngineError(
+                        "CSV export requires local Arrow timestamps within years 1 through 9999."
+                    ) from error
+            elif forced[position]:
+                if endpoint_zone is not None:
+                    seconds, nanoseconds = divmod(part[position].value, 1_000_000_000)
+                    utc = pa.scalar(seconds, type=pa.timestamp("s")).as_py().replace(tzinfo=timezone.utc)
+                    text.append(datetime_isoformat(utc.astimezone(endpoint_zone), sep=" ", nanoseconds=nanoseconds))
+                else:
+                    text.append(
+                        sentinel_text
+                        if duration
+                        else _pandas_temporal_text(pd.NaT, part[position]).replace("T", " ", 1)
+                    )
+            else:
+                text.append(_pandas_temporal_text(value, None))
+        chunks.append(pa.array(text, type=pa.string()))
+        del boxed, text, values
+    result = pd.arrays.ArrowExtensionArray(pa.chunked_array(chunks, type=pa.string()))
+    return pd.Series(result, index=series.index, name=series.name)
+
+
 def _pandas_scalar_export_frame(df: Any, preserve_index: bool, *, for_csv: bool = False) -> Any:
     import numpy as np
     import pandas as pd
+
+    if for_csv and len(df) == 0:
+        return df
 
     def export_values(series: Any) -> Any:
         if (
@@ -4444,7 +4601,8 @@ def _pandas_scalar_export_frame(df: Any, preserve_index: bool, *, for_csv: bool 
             and np.datetime_data(series.dtype.subtype)[1] != 1
         ):
             raise EngineError("CSV export does not support Sparse duration unit multipliers.")
-        return _pandas_scalar_values(series)
+        logical = _pandas_scalar_values(series)
+        return _pandas_csv_temporal_values(logical) if for_csv else logical
 
     result = df
     for position in range(df.shape[1]):
@@ -4456,7 +4614,7 @@ def _pandas_scalar_export_frame(df: Any, preserve_index: bool, *, for_csv: bool 
             result = df.copy(deep=False)
         result.isetitem(position, logical)
     if preserve_index:
-        index = df.index
+        index = df.index.remove_unused_levels() if for_csv and isinstance(df.index, pd.MultiIndex) else df.index
         levels = list(index.levels) if isinstance(index, pd.MultiIndex) else [index]
         changed: dict[int, Any] = {}
         for position, level in enumerate(levels):
@@ -4481,6 +4639,11 @@ def _pandas_scalar_export_frame(df: Any, preserve_index: bool, *, for_csv: bool 
                 result.index = pd.MultiIndex.from_arrays(arrays, names=index.names)
             else:
                 result.index = pd.Index(changed[0], name=index.name)
+    elif for_csv and not isinstance(result.index, pd.RangeIndex):
+        # Pandas 2 formats the index even when CSV output omits it.
+        if result is df:
+            result = df.copy(deep=False)
+        result.index = pd.RangeIndex(len(result))
     return result
 
 
