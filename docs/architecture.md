@@ -836,6 +836,11 @@ handling checks actual native types;
 Pandas `Timedelta` subclasses retain their stored unit through the native NumPy scalar, including values outside the
 nanosecond range, while ordinary Python timedeltas keep their own value. None,
 floating NaN, Decimal NaN and Arrow temporal validity retain their separate existing rules.
+Missing masks for ordinary NumPy-backed Pandas Series use native array operations for integer, Boolean, float and
+temporal storage. Live and generated masks keep floating NaN separate from temporal NaT. Profile and header counts
+use the same native classifications, independent of the legacy `mode.use_inf_as_na` option. Existing object, extension
+and subclass fallbacks retain their behavior. Header counts reuse each column mask for its total and positional row
+aggregation, without retaining a full-frame Boolean matrix.
 
 ### Polars
 
