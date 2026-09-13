@@ -789,8 +789,16 @@ CSV export refuses nonempty Pandas frames containing exported Sparse duration co
 unit multipliers, because native writing can change their physical values. Refusal precedes writer opening and preserves
 the reserved destination. Empty positive-multiplier exports and omitted indexes retain their existing behavior; no
 full-column conversion or alternate serializer is used.
-Pandas Parquet export refuses retained negative-scale Arrow Decimal columns, including original operands preserved
-by Formula. A successful arithmetic result does not convert those source columns or remove this native writer limit.
+Pandas Parquet export converts logical negative-scale Arrow Decimal columns and preserved index levels to exact
+scale-zero Decimal128 or Decimal256 storage. The source keeps its arrays, index and attributes; the existing reader
+reopens logical Decimal values as object storage. Scales below -76 are refused. Decimal32/64 require a declared
+whole-digit range (`precision - scale`) of at most 76. Wider declared ranges are accepted for Decimal128/256 when
+actual values fit the selected output precision, capped at 76 digits. Negative-scale Pandas Categorical storage remains unsupported.
+Preparation validates affected native arrays and checks Decimal128/256 extrema before rescaling, since Arrow's safe
+cast and full validation alone can miss overflow. Only the two extrema are widened at the same scale and boxed for
+exact comparison; column conversion stays native. Preserved MultiIndexes inspect only used affected labels and use
+the existing reconstruction. Omitted indexes and unrelated types gain no additional value scan. Refusals precede writer opening;
+CSV and nonnegative-scale Decimal storage retain their existing behavior.
 Group By treats input NaN as missing while retaining NaN computed from present aggregate operands. Group By, Pivot
 and grouped Fill use the same missing-value and signed-zero equality for Arrow float32/float64 keys. Integer group
 keys use native factorization codes and restore exact scalar labels; Sparse fill values retain native equality,

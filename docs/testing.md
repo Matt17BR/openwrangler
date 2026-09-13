@@ -148,6 +148,9 @@ Use the existing owners to choose a focused source check:
   a hidden row in an editing Session with unchanged destination, source and revision.
   Pandas Sparse duration CSV cases check multiplier refusal through an editing Session, unchanged destination bytes
   and identity, source/revision preservation, and ordinary-unit, empty and omitted-index exports.
+  Pandas negative-scale Decimal Parquet cases check exact native readback, preserved and omitted labels, Formula
+  export and generated results. Overflow and invalid-precision cases must refuse before writer opening, including
+  a hidden row, without changing the destination, source or session revision.
 - **Python engines and generated programs:** [Pandas](../python/tests/test_pandas_engine.py),
   [Polars](../python/tests/test_polars_engine.py) and [DuckDB](../python/tests/test_duckdb_engine.py) own native profiles,
   queries, source preservation and engine-specific evaluation bounds. [Operation edges](../python/tests/test_operation_edges.py),

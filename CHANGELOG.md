@@ -4,6 +4,10 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ## [Unreleased]
 
+### Added
+
+- Pandas exports negative-scale Arrow Decimal columns and row labels to Parquet with exact values, within the documented native capacity limits.
+
 ### Fixed
 
 - DuckDB CSV and TSV imports retain literal `#` values instead of inferring comments and dropping records.

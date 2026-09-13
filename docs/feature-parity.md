@@ -95,7 +95,10 @@ Pandas CSV and Parquet exports require an explicit preserve-or-omit index choice
 use identity-checked handles before truncation.
 Pandas CSV preserves exact Arrow temporal values and missing categories. Arrow timestamps stored in seconds,
 milliseconds or microseconds require UTC and local years 1 through 9999; an unsupported export leaves the destination unchanged.
-Pandas dataframes retaining negative-scale Arrow Decimal columns cannot be exported to Parquet.
+Pandas exports negative-scale Arrow Decimal columns and requested row labels to Parquet at scale zero, preserving
+logical values and nulls. This includes original operands retained by Formula. The source keeps its original storage;
+reopened values use Pandas Decimal objects. Unsupported scales, capacities and categorical storage follow the
+[Pandas export limits](architecture.md#pandas).
 Script and data exports protect the session's concrete source files even after a rename. They also reject source-path
 replacement during code synchronization or destination selection. If source identity is unavailable, viewing remains
 available and export requires reopening the dataframe.

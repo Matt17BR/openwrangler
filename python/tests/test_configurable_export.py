@@ -25,6 +25,244 @@ from openwrangler_runtime.session import SessionManager
 PANDAS_CSV_OPTIONS = {"format": "csv", "delimiter": ",", "quoteChar": '"', "encoding": "utf-8", "header": True}
 
 
+@pytest.mark.parametrize("shape", ["chunked", "empty", "all-null"])
+def test_pandas_negative_scale_decimal_parquet_preserves_exact_values(tmp_path: Path, shape: str) -> None:
+    from decimal import localcontext
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    columns, expected = {}, {}
+    for bits, precision, scale, coefficient in [
+        (32, 8, -2, 12),
+        (64, 18, -2, 10**18 - 1),
+        (128, 38, -2, 10**38 - 1),
+        (128, 38, -50, 1),
+        (256, 76, -1, 10**75 - 1),
+        (256, 76, -76, 0),
+    ]:
+        name = f"decimal{bits}_{scale}"
+        coefficients = (
+            [coefficient, -coefficient, None] if shape == "chunked" else [] if shape == "empty" else [None] * 3
+        )
+        native_type = getattr(pa, f"decimal{bits}")
+        physical = pa.array(
+            [Decimal(0), *(None if value is None else Decimal(value) for value in coefficients)],
+            type=native_type(precision, 0),
+        )
+        values = physical.view(native_type(precision, scale)).slice(1)
+        chunks = pa.chunked_array([values.slice(0, 1), values.slice(1)])
+        columns[name] = pd.Series(pd.arrays.ArrowExtensionArray(chunks))
+        expected[name] = [None if value is None else Decimal(value * 10**-scale) for value in coefficients]
+    source = pd.DataFrame(columns)
+    source["neighbor"] = range(len(source))
+    source.index = pd.Index([7] * len(source), dtype="int64", name="row")
+    source.attrs = {"owner": "unchanged"}
+    original_arrays = {}
+    for name in columns:
+        original_array: Any = source[name].array
+        original_arrays[name] = original_array.__arrow_array__()
+    original_index = source.index
+    destination = tmp_path / "decimals.parquet"
+    destination.touch()
+    with (
+        localcontext() as context,
+        ExportTarget(destination, *_regular_file_identity(destination)).pinned_writer_path() as writer,
+    ):
+        context.prec = 2
+        context.clear_flags()
+        PandasEngine().export_data(source, writer, {"format": "parquet", "rowAxisPolicy": "preserve"})
+        assert not any(context.flags.values())
+    table = pq.read_table(destination)
+    reopened = PandasEngine().read_file(str(destination))
+    for name, values in expected.items():
+        assert table[name].to_pylist() == values
+        assert table[name].type.scale == 0
+        assert [None if pd.isna(value) else value for value in reopened[name]] == values
+        current_array: Any = source[name].array
+        assert current_array.__arrow_array__().equals(original_arrays[name])
+    assert table["neighbor"].to_pylist() == source["neighbor"].tolist() == list(range(len(source)))
+    pd.testing.assert_index_equal(reopened.index, original_index)
+    assert source.index is original_index and source.attrs == {"owner": "unchanged"}
+
+
+@pytest.mark.parametrize("index_kind", ["single", "multi", "omitted"])
+def test_pandas_negative_scale_decimal_parquet_exports_only_requested_index_values(
+    tmp_path: Path, index_kind: str
+) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    physical = pa.array([Decimal(120), Decimal(-30), Decimal(10**75)], type=pa.decimal256(76, 0))
+    level = pd.Index(pd.arrays.ArrowExtensionArray(physical.view(pa.decimal256(76, -1))), name="decimal row")
+    if index_kind == "single":
+        index = pd.Index(level.array.take([0, 1, -1, 0], allow_fill=True), name=level.name)
+    else:
+        index = pd.MultiIndex(
+            levels=[level, pd.Index(["a", "b"])],
+            codes=[[2 if index_kind == "omitted" else 0, 1, -1, 0], [0, 1, 0, 0]],
+            names=["decimal row", "label"],
+        )
+    source = pd.DataFrame({"value": range(4)}, index=index)
+    destination = tmp_path / "index.parquet"
+    destination.touch()
+    with ExportTarget(destination, *_regular_file_identity(destination)).pinned_writer_path() as writer:
+        PandasEngine().export_data(
+            source, writer, {"format": "parquet", "rowAxisPolicy": "omit" if index_kind == "omitted" else "preserve"}
+        )
+    table = pq.read_table(destination)
+    assert table["value"].to_pylist() == [0, 1, 2, 3]
+    if index_kind == "omitted":
+        assert table.column_names == ["value"]
+    else:
+        assert table["decimal row"].to_pylist() == [Decimal(1200), Decimal(-300), None, Decimal(1200)]
+        if index_kind == "multi":
+            assert table["label"].to_pylist() == ["a", "b", "a", "a"]
+    assert source.index is index
+    if isinstance(index, pd.MultiIndex):
+        assert list(index.codes[0]) == [2 if index_kind == "omitted" else 0, 1, -1, 0]
+        current_level: Any = index.levels[0]
+        expected_array: Any = level.array
+        assert current_level.array.__arrow_array__().equals(expected_array.__arrow_array__())
+
+
+@pytest.mark.parametrize(
+    ("bits", "precision", "scale", "coefficient", "message"),
+    [
+        pytest.param(256, 76, -1, 10**75, "76 digits", id="actual-77-digits"),
+        pytest.param(256, 76, -2, (2**256 // 100) + 10**74, "76 digits", id="native-multiple-wrap"),
+        pytest.param(256, 76, -76, 1, "76 digits", id="scale-76-overflow"),
+        pytest.param(256, 76, -77, 1, "scales down to -76", id="unsupported-scale"),
+        pytest.param(32, 9, -70, 1, "declared range", id="decimal32-wide-declaration"),
+        pytest.param(64, 18, -70, 1, "declared range", id="decimal64-wide-declaration"),
+        pytest.param(256, 74, -2, (2**256 // 100) + 10**74, "precision", id="invalid-storage"),
+        pytest.param(128, 14, -62, -(2**127), "precision", id="invalid-physical-minimum128"),
+        pytest.param(256, 76, -1, -(2**255), "76 digits", id="invalid-physical-minimum256"),
+    ],
+)
+def test_pandas_negative_scale_decimal_parquet_refuses_before_writer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bits: int,
+    precision: int,
+    scale: int,
+    coefficient: int,
+    message: str,
+) -> None:
+    import pyarrow as pa
+
+    native_type = getattr(pa, f"decimal{bits}")
+    if coefficient < 0:
+        array = pa.Array.from_buffers(
+            native_type(precision, scale),
+            2,
+            [
+                pa.py_buffer(b"\x01"),
+                pa.py_buffer(coefficient.to_bytes(bits // 8, "little", signed=True) + bytes(bits // 8)),
+            ],
+        )
+    else:
+        physical = pa.array(
+            [Decimal(coefficient), Decimal(-coefficient), None],
+            type=native_type(9 if bits == 32 else 18 if bits == 64 else 76, 0),
+        )
+        array = physical.view(native_type(precision, scale))
+    source = pd.DataFrame({"value": pd.arrays.ArrowExtensionArray(array)})
+    destination = tmp_path / "retained.parquet"
+    destination.write_bytes(b"retained destination")
+
+    def opened_writer(_writer: Any) -> Any:
+        raise AssertionError("An unrepresentable Decimal reached the destination writer")
+
+    monkeypatch.setattr(ExportWriterPath, "open_binary_writer", opened_writer)
+    with (
+        ExportTarget(destination, *_regular_file_identity(destination)).pinned_writer_path() as writer,
+        pytest.raises((EngineError, pa.ArrowInvalid), match=message),
+    ):
+        PandasEngine().export_data(source, writer, {"format": "parquet", "rowAxisPolicy": "omit"})
+    assert destination.read_bytes() == b"retained destination"
+    source_array: Any = source["value"].array
+    assert source_array.__arrow_array__().equals(pa.chunked_array([array]))
+
+
+@pytest.mark.parametrize("family", ["fitting", "hidden-overflow", "invalid-precision"])
+def test_session_negative_scale_decimal_parquet_preserves_confirmed_formula_and_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, family: str
+) -> None:
+    from copy import deepcopy
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from openwrangler_runtime import session as runtime
+
+    scale = -1 if family == "fitting" else -2
+    coefficients = [120, 10**75 - 1 if family == "fitting" else (2**256 // 100) + 10**74, None]
+    physical = pa.array(
+        [None if value is None else Decimal(value) for value in coefficients], type=pa.decimal256(76, 0)
+    )
+    values = physical.view(pa.decimal256(74 if family == "invalid-precision" else 76, scale))
+    source = pd.DataFrame({"value": pd.arrays.ArrowExtensionArray(values)})
+    before = source.copy(deep=True)
+    monkeypatch.setattr(runtime, "resolve_notebook_variable", lambda _: source)
+    manager = SessionManager()
+    try:
+        opened = manager.open_session(
+            {"kind": "notebookVariable", "variableName": "frame"}, backend="pandas", mode="editing", page_size=1
+        )
+        sid = opened["metadata"]["sessionId"]
+        session = manager.sessions[sid]
+        engine = session.engine
+        assert isinstance(engine, PandasEngine)
+        if family != "invalid-precision":
+            column = opened["metadata"]["schema"][0]
+            operation = {
+                "id": "keep-unit",
+                "kind": "formula",
+                "params": {
+                    "leftColumn": {"id": column["id"], "name": column["name"]},
+                    "operator": "multiply",
+                    "value": 1,
+                    "newColumn": "result",
+                },
+            }
+            preview = manager.preview_step(sid, 0, operation, 0, 1)
+            manager.apply_draft(sid, preview["revision"], 0, 1)
+            namespace: dict[str, Any] = {}
+            exec(engine.compile_plan(session.bound_plan), namespace, namespace)
+            pd.testing.assert_frame_equal(namespace["clean_data"](source), engine._visible_frame(session.committed))
+            assert session.committed["result"].dtype == pd.ArrowDtype(pa.decimal256(76, scale))
+        revision, plan, filter_model = session.revision, deepcopy(session.plan), deepcopy(session.filter_model)
+        committed = session.committed.copy(deep=True)
+        destination = tmp_path / "session.parquet"
+        destination.write_bytes(b"retained destination")
+        device, inode = _regular_file_identity(destination)
+        error = nullcontext() if family == "fitting" else pytest.raises((EngineError, pa.ArrowInvalid))
+        with error:
+            response = manager.export_data(
+                sid,
+                revision,
+                str(destination),
+                {"format": "parquet", "rowAxisPolicy": "preserve"},
+                {"device": str(device), "inode": str(inode)},
+            )
+            assert response["kind"] == "dataExported"
+        if family == "fitting":
+            expected = [None if value is None else Decimal(value * 10) for value in coefficients]
+            table = pq.read_table(destination)
+            reopened = PandasEngine().read_file(str(destination))
+            for name in ("value", "result"):
+                assert table[name].to_pylist() == expected
+                assert [None if pd.isna(value) else value for value in reopened[name]] == expected
+        else:
+            assert destination.read_bytes() == b"retained destination"
+        pd.testing.assert_frame_equal(source, before)
+        pd.testing.assert_frame_equal(session.committed, committed)
+        assert session.revision == revision and session.plan == plan and session.filter_model == filter_model
+    finally:
+        manager.close_all()
+
+
 @pytest.mark.parametrize("format_name", ["csv", "parquet"])
 def test_pandas_scalar_export_does_not_materialize_range_axis(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, format_name: str
@@ -233,6 +471,7 @@ def test_pandas_dictionary_exports_use_logical_values_and_reopen(
         "unsigned": (pa.uint64(), 2**64 - 1, 1),
         "float": (pa.float64(), 2.5, -0.0),
         "decimal": (pa.decimal128(30, 6), Decimal("2.000001"), Decimal("-1.123456")),
+        "negative_decimal": (pa.decimal256(76, -1), Decimal("1200"), Decimal("-300")),
         "boolean": (pa.bool_(), True, False),
         "date": (pa.date32(), date(2024, 2, 29), date(1960, 1, 1)),
         "timestamp": (
