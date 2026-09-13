@@ -1345,6 +1345,7 @@ def test_polars_decimal_filters_keep_exact_thresholds_and_source_capacity(lazy, 
     cases.append((null_alternative, ["null"]))
     with localcontext() as context:
         context.prec = 2
+        context.clear_flags()
         for model, labels in cases:
             expected = source.filter(pl.col("label").is_in(labels))
             for result in [engine.apply_filter_model(frame, model), _execute_generated_filter(engine, frame, model)]:
