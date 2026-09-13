@@ -139,8 +139,9 @@ All three jobs must pass on the original candidate attempt.
 
 R support is Preview. Published 2.4 qualification did not include this candidate-bound R matrix. A fresh successful run
 and the reliability review in the [first stable R notebook criteria](feature-parity.md#first-stable-r-notebook-scope)
-are still required before changing that label. Terminal, managed-document and Cursor support can retain separate
-labels. The macOS default's existing direct-document check is coupled coverage, not a stable document-support claim.
+are still required before publishing a version that graduates notebook support. Terminal, managed-document and Cursor
+support can retain separate labels. The macOS default's existing direct-document check is coupled coverage, not a
+stable document-support claim.
 Ordinary source checks permit documented limitations so maintenance can record them accurately; passing those checks
 does not establish release readiness.
 

@@ -495,8 +495,11 @@ Graduation requires:
    that uncertainty; a recurrence in candidate qualification blocks promotion.
    [R test-runner cleanup](https://github.com/Matt17BR/openwrangler/issues/955) concerns source-test CLI
    containment and is not evidence of an IRkernel product failure.
-4. Review the required candidate results before changing the notebook support label. Update this guide, README and
-   release notes together. Passing workflow or documentation checks does not establish stable R support.
+4. Prepare consistent, version-scoped support text before building the candidate. Land this guide and README before
+   the [release change](releasing.md#release-change), then freeze matching release notes in that change. Review the
+   required candidate results and reliability assessment before publication. The proposed stable support takes effect
+   only when that qualified version is published; no later label-only source change is needed. Passing workflow or
+   documentation checks alone does not establish stable R support.
 
 The immediate missing work is a fresh successful R notebook qualification on the same immutable release candidate,
 with the selected-scope reliability review above. Unsupported grouped/indexed objects, full Quarto rendering, Windows
