@@ -6,6 +6,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Pandas Convert Type and Format Datetime retain native Arrow dates such as year 2500 on the minimum runtime. Date conversion no longer wraps at timezone boundaries, and formatting honors Python `%f` and `%S` syntax.
 - Pandas Formula multiplies Arrow Decimal128 `(38, 38)` columns exactly, returning Decimal256 `(76, 76)` results without losing fractional digits.
 - Generated DuckDB One-hot encoding preserves binary categories when the input connection defines a `from_hex` macro.
 - Find and Replace shows the selected engine's capture-group replacement notation and explains that regex syntax is engine-specific.

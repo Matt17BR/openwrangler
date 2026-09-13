@@ -137,6 +137,62 @@ _JSON_CHARACTER_ESCAPES = {
 }
 
 
+def _open_wrangler_datetime_result(series: Any, target: str, datetime_format: str | None = None) -> Any:
+    import numpy as np
+    import pandas as pd
+
+    arrow_type = getattr(series.dtype, "pyarrow_dtype", None)
+    if arrow_type is not None:
+        import pyarrow as pa
+
+        if pa.types.is_date(arrow_type):
+            if target == "date":
+                return series
+            arrow_type = pa.timestamp("s" if pa.types.is_date32(arrow_type) else "ms")
+            series = series.astype(pd.ArrowDtype(arrow_type))
+        if pa.types.is_timestamp(arrow_type):
+            if target == "datetime":
+                return series
+            unit = arrow_type.unit
+            nulls = series.isna().to_numpy()
+            ticks = series.astype(pd.ArrowDtype(pa.int64())).to_numpy(dtype=np.int64, na_value=0)
+            if target == "date":
+                import pyarrow.compute as pc
+
+                # Floor before timezone conversion so fractional endpoints cannot wrap local timestamps.
+                scale = {"s": 1, "ms": 1000, "us": 10**6, "ns": 10**9}[unit]
+                seconds = ticks if scale == 1 else np.floor_divide(ticks, scale)
+                local = pa.array(seconds, mask=nulls, type=pa.timestamp("s", arrow_type.tz))
+                if arrow_type.tz is not None:
+                    local = pc.call_function("local_timestamp", [local])
+                bounds = pc.call_function("min_max", [pc.cast(local, pa.int64())]).as_py()
+                if bounds["min"] is not None and (bounds["min"] < -(2**31) * 86400 or bounds["max"] >= 2**31 * 86400):
+                    raise ValueError("The selected datetime is outside the supported date range.")
+                return pd.Series(
+                    pd.arrays.ArrowExtensionArray(pc.cast(local, pa.date32())), index=series.index, name=series.name
+                )
+            # Python strftime exposes microseconds; floor preserves dates before the epoch and Arrow's ns minimum.
+            if unit == "ns":
+                ticks = np.floor_divide(ticks, 1000)
+                unit = "us"
+            if np.any(ticks == np.iinfo(np.int64).min):
+                raise ValueError("The selected datetime cannot be represented for formatting.")
+            result = pd.Series(ticks.view(f"datetime64[{unit}]"), index=series.index, name=series.name)
+            if arrow_type.tz is not None:
+                from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+                try:
+                    zone = ZoneInfo(arrow_type.tz)
+                except ZoneInfoNotFoundError:
+                    zone = arrow_type.tz
+                result = result.dt.tz_localize("UTC").dt.tz_convert(zone)
+            return result.mask(nulls).dt.strftime(datetime_format)
+    result = pd.to_datetime(series, errors="coerce")
+    if target == "date":
+        return result.dt.date
+    return result.dt.strftime(datetime_format) if target == "format" else result
+
+
 def _pandas_cast_strategy(dtype: str) -> tuple[str, str]:
     if dtype in {"date", "datetime"}:
         return "to_datetime", dtype
@@ -1478,12 +1534,10 @@ class PandasEngine(DataFrameEngine):
             conversion, target = _pandas_cast_strategy(params["dtype"])
             if target == "Int64":
                 result = _pandas_cast_integer(series)
+            elif conversion == "to_datetime":
+                result = _open_wrangler_datetime_result(series, target)
             else:
-                result = (
-                    pd.to_datetime(series, errors="coerce") if conversion == "to_datetime" else series.astype(target)
-                )
-            if target == "date":
-                result = result.dt.date
+                result = series.astype(target)
             df.isetitem(position, result)
             return df
         if kind == "formula":
@@ -1672,8 +1726,8 @@ class PandasEngine(DataFrameEngine):
             position = self._bound_frame_position(df, params["column"], kind)
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn")
-            result = pd.to_datetime(_pandas_dictionary_values(df.iloc[:, position]), errors="coerce").dt.strftime(
-                params["format"]
+            result = _open_wrangler_datetime_result(
+                _pandas_dictionary_values(df.iloc[:, position]), "format", params["format"]
             )
             if target is None or target == column:
                 df.isetitem(position, result)
@@ -1915,6 +1969,13 @@ class PandasEngine(DataFrameEngine):
         if lines:
             lines.append("")
         lines.extend(["import numpy as np", "import pandas as pd", "", ""])
+        if any(
+            step["kind"] == "formatDatetime"
+            or step["kind"] == "castColumn"
+            and step["params"]["dtype"] in {"datetime", "date"}
+            for step in plan
+        ):
+            lines.extend(["from typing import Any", "", getsource(_open_wrangler_datetime_result), ""])
         if needs_missing_helpers or needs_nullable_result_helpers:
             lines.extend(
                 [
@@ -2632,8 +2693,7 @@ class PandasEngine(DataFrameEngine):
             series = f"_open_wrangler_scalar_values(df.iloc[:, {position}])"
             conversion, target = _pandas_cast_strategy(params["dtype"])
             if conversion == "to_datetime":
-                accessor = ".dt.date" if target == "date" else ""
-                expression = f"pd.to_datetime({series}, errors='coerce'){accessor}"
+                expression = f"_open_wrangler_datetime_result({series}, {target!r})"
             elif target == "Int64":
                 expression = f"_open_wrangler_cast_integer({series})"
             else:
@@ -2946,8 +3006,8 @@ class PandasEngine(DataFrameEngine):
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn")
             expression = (
-                f"pd.to_datetime(_open_wrangler_dictionary_values(df.iloc[:, {position}]), errors='coerce')"
-                f".dt.strftime({params['format']!r})"
+                f"_open_wrangler_datetime_result(_open_wrangler_dictionary_values(df.iloc[:, {position}]), "
+                f"'format', {params['format']!r})"
             )
             if target is None or target == column:
                 return [f"{prefix}df.isetitem({position}, {expression})"]

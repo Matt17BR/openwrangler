@@ -207,6 +207,12 @@ this change cannot recover digits already lost.
 Polars datetime formatting preserves native time zones and nanosecond fractions in live and generated code.
 Eager and lazy frames support native temporal and text inputs, including nulls, without modifying the source.
 
+Pandas Convert Type and Format Datetime retain native Arrow dates outside the nanosecond range, including year 2500
+on the minimum runtime. Datetime conversion preserves timestamp storage; date conversion preserves local days or
+refuses values outside date32 capacity. Formatting uses Python strftime syntax: `%f` produces six fractional digits
+and `%S` produces seconds. Named timezones retain historical offset seconds. Unsupported native formatting ranges
+refuse instead of silently producing missing values. Live and generated code preserve the original data.
+
 Polars grouped median Fill works on the declared minimum runtime, including native integer and Decimal targets.
 Its live and generated paths preserve exact values and retain fractional-median and Decimal-scale refusals.
 
