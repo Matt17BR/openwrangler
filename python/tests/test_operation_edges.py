@@ -3167,6 +3167,76 @@ def test_pandas_arrow_formula_capacity_rescales_negative_decimal(
         assert frame.attrs == before.attrs
 
 
+@pytest.mark.parametrize("shape", ["values", "empty", "null"])
+def test_pandas_arrow_formula_full_precision_fractional_products(shape: str) -> None:
+    from decimal import Decimal, localcontext
+
+    pa = pytest.importorskip("pyarrow")
+    dtype = pa.decimal128(38, 38)
+    maximum = Decimal("0." + "9" * 38)
+    tiny = Decimal("-0." + "0" * 37 + "1")
+    left_values = [
+        maximum,
+        maximum.copy_negate(),
+        tiny,
+        Decimal(0),
+        None,
+        Decimal("0.1"),
+        Decimal("-0.12345678901234567890123456789012345678"),
+    ]
+    right_values = [
+        maximum,
+        maximum,
+        tiny.copy_negate(),
+        maximum,
+        Decimal("0.1"),
+        None,
+        Decimal("-0.98765432109876543210987654321098765432"),
+    ]
+    if shape == "null":
+        left_values = right_values = [None, None]
+    elif shape != "values":
+        left_values = right_values = []
+    first = pa.array([Decimal(0), *left_values, Decimal(0)], type=dtype).slice(1, len(left_values))
+    second = pa.array([Decimal(0), *right_values, Decimal(0)], type=dtype).slice(1, len(right_values))
+    first = pa.chunked_array(
+        [] if shape == "empty" else [first.slice(0, 1), first.slice(1), first.slice(0, 0)], type=dtype
+    )
+    second = pa.chunked_array([] if shape == "empty" else [second.slice(0, 3), second.slice(3)], type=dtype)
+    frame = pd.DataFrame(
+        {
+            "left": pd.Series(pd.arrays.ArrowExtensionArray(first)),
+            "right": pd.Series(pd.arrays.ArrowExtensionArray(second)),
+        }
+    )
+    frame.index = pd.Index(["same"] * len(frame), name="source row")
+    frame.attrs = {"source": "retained"}
+    before = frame.copy(deep=True)
+    owners = [frame[column].array for column in frame]
+    runtime = PandasEngine()
+    schema = runtime.schema(frame)
+    lineage = source_lineage(schema)
+    operation = bind_step(
+        step("formula", leftColumn=lineage[0], rightColumn=lineage[1], operator="multiply", newColumn="result"),
+        schema,
+        lineage,
+    )
+    with localcontext() as context:
+        context.prec = 100
+        expected_values = [
+            None if a is None or b is None else a * b for a, b in zip(left_values, right_values, strict=True)
+        ]
+    expected = pd.Series(expected_values, index=frame.index, name="result", dtype=pd.ArrowDtype(pa.decimal256(76, 76)))
+    runtime.validate_transform_preflight(frame, operation, runtime.shape(frame))
+    for actual in (runtime.apply_transform(frame, operation), execute_generated(runtime, frame, operation)):
+        pd.testing.assert_series_equal(actual["result"], expected)
+        actual["result"].array.__arrow_array__().validate(full=True)
+        pd.testing.assert_frame_equal(actual.iloc[:, :-1], before)
+        pd.testing.assert_frame_equal(frame, before)
+        assert all(frame[column].array is owner for column, owner in zip(frame, owners, strict=True))
+        assert frame.attrs == before.attrs
+
+
 @pytest.mark.parametrize("right_column", [False, True])
 def test_pandas_arrow_formula_capacity_widens_selected_decimal_columns(right_column: bool) -> None:
     from decimal import Decimal
@@ -3363,6 +3433,8 @@ def test_pandas_arrow_formula_capacity_preserves_successful_native_results(famil
         "wide-odd-power-positive-overflow",
         "wide-odd-power-above-uint64",
         "decimal-capacity",
+        "decimal-fractional-other-scale",
+        "decimal-fractional-other-width",
         "decimal-other-factor",
         "decimal-unit-column",
         "decimal-positive-unit-column",
@@ -3404,6 +3476,9 @@ def test_pandas_arrow_formula_capacity_retains_native_refusals(family: str) -> N
         operand, op, error = 2**64 + 1 if outside else 2**64 - 1, "power", OverflowError
     elif family == "decimal-capacity":
         value = pd.Series([Decimal("9" * 76), None], dtype=pd.ArrowDtype(pa.decimal256(76, 0)))
+    elif family.startswith("decimal-fractional-"):
+        value = pd.Series([Decimal("0.1"), None], dtype=pd.ArrowDtype(pa.decimal128(38, 38)))
+        op = "multiply"
     elif family in {
         "decimal-other-factor",
         "decimal-unit-column",
@@ -3425,6 +3500,8 @@ def test_pandas_arrow_formula_capacity_retains_native_refusals(family: str) -> N
         "decimal-positive-unit-column",
         "decimal-zero-column",
         "signed-add-sparse",
+        "decimal-fractional-other-scale",
+        "decimal-fractional-other-width",
     }
     if column_operand:
         right = [-1, None]
@@ -3454,6 +3531,9 @@ def test_pandas_arrow_formula_capacity_retains_native_refusals(family: str) -> N
         op = "add"
     if family == "signed-add-sparse":
         frame["right"] = pd.Series([1, 0], dtype=pd.SparseDtype("int64", 0))
+    if family.startswith("decimal-fractional-"):
+        dtype = pa.decimal128(38, 37) if family.endswith("scale") else pa.decimal256(38, 38)
+        frame["right"] = pd.Series([Decimal("0.1"), None], dtype=pd.ArrowDtype(dtype))
     before = frame.copy(deep=True)
     runtime = PandasEngine()
     lineage = source_lineage(runtime.schema(frame))

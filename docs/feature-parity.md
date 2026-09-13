@@ -185,9 +185,11 @@ when the declared capacity fits Decimal256. Sparse, object and custom extension 
 additional support. These Decimal repairs preserve nulls; native arithmetic determines the result scale and division
 rounding, so the result need not retain a negative source scale.
 
+Multiplying two Arrow Decimal128 `(38, 38)` columns produces exact Decimal256 `(76, 76)` results, including squares
+with all 38 fractional digits. Either missing operand gives a missing result; empty inputs retain the result type.
+
 Some mathematically representable results still exceed Arrow's inferred capacity and are refused. These Decimal
-capacity restrictions also apply to empty and all-null inputs. Remaining negative-power and Decimal capacity gaps
-stay tracked in [#979](https://github.com/Matt17BR/openwrangler/issues/979). See
+capacity restrictions also apply to empty and all-null inputs outside the supported repairs. See
 [Pandas numeric and operand rules](architecture.md#pandas) for the exact supported domains and result types.
 
 Polars Formula requires a numeric release version from 1.36 onward for two-column addition, subtraction or

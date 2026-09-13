@@ -6,6 +6,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Pandas Formula multiplies Arrow Decimal128 `(38, 38)` columns exactly, returning Decimal256 `(76, 76)` results without losing fractional digits.
 - Generated DuckDB One-hot encoding preserves binary categories when the input connection defines a `from_hex` macro.
 - Find and Replace shows the selected engine's capture-group replacement notation and explains that regex syntax is engine-specific.
 - DuckDB Split Column and literal Find/Replace accept NUL characters in text values without SQL parsing errors.

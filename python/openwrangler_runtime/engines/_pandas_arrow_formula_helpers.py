@@ -232,6 +232,39 @@ def _open_wrangler_arrow_formula_repair(
                 except pa.ArrowInvalid:
                     raise original_error from None
             return pd.Series(pd.arrays.ArrowExtensionArray(result), index=left.index, name=left.name)
+        if (
+            isinstance(original_error, pa.ArrowInvalid)
+            and operator == "multiply"
+            and isinstance(left, pd.Series)
+            and isinstance(right, pd.Series)
+            and left_type == right_type == pa.decimal128(38, 38)
+        ):
+            import pyarrow.compute as pc
+
+            wide = pa.decimal256(38, 38)
+            first = pc.cast(cast(pd.arrays.ArrowExtensionArray, left.array).__arrow_array__(), wide)
+            second = pc.cast(cast(pd.arrays.ArrowExtensionArray, right.array).__arrow_array__(), wide)
+            # Each group contains exactly two safely widened integer coefficients.
+            # Their product fits 76 digits; scale-zero aggregation avoids rounding.
+            coefficient = pa.decimal256(76, 0)
+            ids = pa.array(np.arange(len(left), dtype=np.int64))
+            table = pa.table(
+                {
+                    "row": pa.chunked_array([ids, ids]),
+                    "coefficient": pa.chunked_array(
+                        [chunk.view(coefficient) for chunk in [*first.chunks, *second.chunks]], type=coefficient
+                    ),
+                }
+            )
+            options = pc.ScalarAggregateOptions(skip_nulls=False, min_count=1)
+            grouped = table.group_by("row", use_threads=False).aggregate([("coefficient", "product", options)])
+            output = pa.decimal256(76, 76)
+            result = pa.chunked_array(
+                [chunk.view(output) for chunk in grouped["coefficient_product"].chunks], type=output
+            )
+            result = pc.take(result, pc.call_function("array_sort_indices", [grouped["row"]]))
+            return pd.Series(pd.arrays.ArrowExtensionArray(result), index=left.index, name=left.name)
+
         if isinstance(original_error, pa.ArrowInvalid) and operator in {"add", "subtract", "multiply", "divide"}:
             left_decimal = left_type if left_type is not None and pa.types.is_decimal128(left_type) else None
             right_decimal = right_type if right_type is not None and pa.types.is_decimal128(right_type) else None
