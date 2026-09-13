@@ -970,6 +970,8 @@ exports.run = async function () {
         return !state.visible;
       };
       const controlFacts = (element, expected) => ({
+        connected: element.isConnected && element.ownerDocument === document,
+        visible: element.checkVisibility({ checkVisibilityCSS: true }),
         role: ["button", "menuitem", "option", "treeitem", "combobox"].includes(element.getAttribute("role"))
           ? element.getAttribute("role")
           : element.getAttribute("role")
@@ -979,7 +981,15 @@ exports.run = async function () {
           ? element.tagName.toLowerCase()
           : "other",
         ariaNameMatches: (element.getAttribute("aria-label") || "").toLowerCase() === expected.toLowerCase(),
-        textMatches: (element.textContent || "").replace(/\s+/g, " ").trim().toLowerCase() === expected.toLowerCase()
+        textMatches: (element.textContent || "").replace(/\s+/g, " ").trim().toLowerCase() === expected.toLowerCase(),
+        hasPopup: [null, "false", "true", "menu", "listbox", "tree", "grid", "dialog"].includes(
+          element.getAttribute("aria-haspopup")
+        )
+          ? element.getAttribute("aria-haspopup")
+          : "other",
+        expanded: [null, "false", "true"].includes(element.getAttribute("aria-expanded"))
+          ? element.getAttribute("aria-expanded")
+          : "other"
       });
       const act = async (element, name) => {
         await currentGrid();
@@ -1107,6 +1117,59 @@ exports.run = async function () {
           await captureEntryState("beforeViewing");
           await currentGrid();
           await act(viewing, "Viewing");
+          // One passive sample after the existing action's grid-readiness check.
+          const afterViewingReady = {
+            millisecondsFromFirstInteraction: performance.now() - opened,
+            viewingControl: null,
+            editing: {},
+            popups: {}
+          };
+          const currentViewing = await capture(
+            productFrame.getByRole("menuitem", { name: "Viewing", exact: true }),
+            "viewing"
+          );
+          try {
+            if (currentViewing) {
+              const facts = await currentViewing.evaluate(controlFacts, "Viewing");
+              assert(facts.connected, "DIAGNOSTIC:detached-viewing");
+              assert(facts.visible, "DIAGNOSTIC:incomplete-mode-controls");
+              afterViewingReady.viewingControl = facts;
+            }
+          } finally {
+            if (currentViewing) {
+              held.delete(currentViewing);
+              await currentViewing.dispose();
+            }
+          }
+          for (const [kind, role] of [
+            ["editing", "button"],
+            ["editing", "menuitem"],
+            ["editing", "option"],
+            ["editing", "treeitem"],
+            ["editing", "menuitemradio"],
+            ["editing", "menuitemcheckbox"],
+            ["popups", "menu"],
+            ["popups", "listbox"],
+            ["popups", "dialog"]
+          ]) {
+            const candidates = productFrame.getByRole(role, kind === "editing" ? { name: /\bEditing\b/i } : {});
+            const count = await candidates.count();
+            assert(count <= 32, "DIAGNOSTIC:mode-control-bound");
+            const complete = await candidates.evaluateAll((elements) => ({
+              count: elements.length,
+              valid:
+                elements.length <= 32 &&
+                elements.every((element) => element.isConnected && element.ownerDocument === document)
+            }));
+            assert(complete.valid && complete.count === count, "DIAGNOSTIC:incomplete-mode-controls");
+            if (kind === "editing") {
+              const exact = await productFrame.getByRole(role, { name: /^Editing$/i }).count();
+              assert(exact <= count, "DIAGNOSTIC:incomplete-mode-controls");
+              afterViewingReady.editing[role] = { exact, mention: count };
+            } else afterViewingReady.popups[role] = count;
+          }
+          await currentGrid();
+          observation.mode.afterViewingReady = afterViewingReady;
           let editing;
           try {
             editing = await poll(() => capture(namedControl("Editing"), "editing-option"), "editing-offer", 5000);
@@ -1457,6 +1520,8 @@ exports.run = async function () {
                 "PILOT_GATE:incomplete-grid-discovery",
                 "DIAGNOSTIC:workbench-control-bound",
                 "DIAGNOSTIC:incomplete-workbench-controls",
+                "DIAGNOSTIC:mode-control-bound",
+                "DIAGNOSTIC:incomplete-mode-controls",
                 "DIAGNOSTIC:observation-bound",
                 "DIAGNOSTIC:incomplete-absence",
                 "DIAGNOSTIC:incomplete-surface",
