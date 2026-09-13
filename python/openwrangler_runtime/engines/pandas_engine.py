@@ -8075,6 +8075,8 @@ def _pandas_temporal_text(value: Any, scalar: Any) -> str:
 
 
 def _pandas_numpy_missing_mask(series: Any, *, nan: bool) -> Any:
+    from builtins import len, type
+
     import numpy as np
     import pandas as pd
 

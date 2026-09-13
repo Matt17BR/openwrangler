@@ -181,8 +181,10 @@ def _engine(backend: str) -> Any:
     return {"pandas": PandasEngine, "polars": PolarsEngine, "duckdb": DuckDBEngine}[backend]()
 
 
-def _execute_generated_filter(engine: Any, frame: Any, model: dict[str, Any]) -> Any:
-    namespace: dict[str, Any] = {}
+def _execute_generated_filter(
+    engine: Any, frame: Any, model: dict[str, Any], *, namespace: dict[str, Any] | None = None
+) -> Any:
+    namespace = {} if namespace is None else namespace
     bound_model = deepcopy(model)
     columns = frame.collect_schema().names() if isinstance(frame, pl.LazyFrame) else frame.columns
     positions = {str(name): position for position, name in enumerate(columns)}
@@ -658,6 +660,7 @@ def test_live_and_generated_missing_predicates_distinguish_null_from_nan(backend
         ("uint64", [0, 1, 2], "integer", "gte", "1", [1, 2]),
         ("bool", [False, True, False], "boolean", "equals", True, [1]),
         ("float64", [0, np.nan, np.inf, -np.inf], "float", "isNaN", None, [1]),
+        ("float64", [0, np.nan, np.inf, -np.inf], "float", "isNull", None, []),
         ("float64", [0, np.nan, np.inf, -np.inf], "float", "gte", "0", [0, 2]),
         ("datetime64[us]", [0, None, 1], "datetime", "isNull", None, [1]),
         ("timedelta64[ns]", [0, None, 1], "duration", "isNull", None, [1]),
@@ -681,13 +684,17 @@ def test_pandas_native_masks_preserve_view_bound_and_generated_rows(
     bound = {"id": "filter", "kind": "filterRows", "params": {"filterModel": bound_model}}
     for frame in [source, source.iloc[:0]]:
         expected = frame.iloc[positions] if len(frame) else frame
+        caller_names = {"type": frame, "len": frame} if operation in {"isNull", "isNaN"} else {}
+        namespace = dict(caller_names)
         for result in (
             engine.apply_filter_model(frame, model),
             engine.apply_transform(frame, bound),
-            _execute_generated_filter(engine, frame, model),
+            _execute_generated_filter(engine, frame, model, namespace=namespace),
         ):
             pd.testing.assert_frame_equal(result, expected)
             assert result.attrs == expected.attrs
+        for name, value in caller_names.items():
+            assert namespace[name] is value
     pd.testing.assert_frame_equal(source, before)
     assert source.index is index
 
