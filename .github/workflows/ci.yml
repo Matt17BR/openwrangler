@@ -19,6 +19,7 @@ jobs:
     outputs:
       docs_only: ${{ steps.proof.outputs.docs_only }}
       r_omittable: ${{ steps.proof.outputs.r_omittable }}
+      r_runtime_omittable: ${{ steps.proof.outputs.r_runtime_omittable }}
       python_omittable: ${{ steps.proof.outputs.python_omittable }}
       r_editor_omittable: ${{ steps.proof.outputs.r_editor_omittable }}
       native_spark_omittable: ${{ steps.proof.outputs.native_spark_omittable }}
@@ -174,7 +175,7 @@ jobs:
   r-runtime:
     name: Execute native R contracts (${{ matrix.shard }})
     needs: docs-proof
-    if: ${{ !cancelled() && needs.docs-proof.result == 'success' && needs.docs-proof.outputs.r_omittable == 'false' }}
+    if: ${{ !cancelled() && needs.docs-proof.result == 'success' && needs.docs-proof.outputs.r_runtime_omittable == 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
@@ -280,6 +281,7 @@ jobs:
         env:
           PROOF_RESULT: ${{ needs.docs-proof.result }}
           R_OMITTABLE: ${{ needs.docs-proof.outputs.r_omittable }}
+          R_RUNTIME_OMITTABLE: ${{ needs.docs-proof.outputs.r_runtime_omittable }}
           RUNTIME_RESULT: ${{ needs.r-runtime.result }}
           MACOS_CALL_RESULT: ${{ needs.r-macos.result }}
           MACOS_RESULT: ${{ needs.r-macos.outputs.macos_result }}
@@ -287,11 +289,14 @@ jobs:
           WINDOWS_RESULT: ${{ needs.r-windows.outputs.windows_result }}
         run: |
           test "$PROOF_RESULT" = success
-          case "$R_OMITTABLE:$RUNTIME_RESULT:$MACOS_CALL_RESULT:$MACOS_RESULT:$WINDOWS_CALL_RESULT:$WINDOWS_RESULT" in
-            true:skipped:skipped::skipped:)
+          case "$R_OMITTABLE:$R_RUNTIME_OMITTABLE:$RUNTIME_RESULT:$MACOS_CALL_RESULT:$MACOS_RESULT:$WINDOWS_CALL_RESULT:$WINDOWS_RESULT" in
+            true:true:skipped:skipped::skipped:)
               echo 'Native R checks omitted: the tested merge contains only paths proven independent of R. No fresh R execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
               ;;
-            false:success:success:success:success:success) ;;
+            false:true:skipped:success:success:success:success)
+              echo 'Linux R source checks omitted for proven renderer edits. Both platform R jobs passed; no fresh Linux R source execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            false:false:success:success:success:success:success) ;;
             *) exit 1 ;;
           esac
 

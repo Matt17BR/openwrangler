@@ -38,6 +38,7 @@ export function proveRuntimeOmissions({ cwd = process.cwd(), env = process.env }
   const required = {
     docsOnly: false,
     rOmittable: false,
+    rRuntimeOmittable: false,
     pythonOmittable: false,
     rEditorOmittable: false,
     nativeSparkOmittable: false
@@ -87,6 +88,7 @@ export function proveRuntimeOmissions({ cwd = process.cwd(), env = process.env }
   if (records.pop() !== "" || records.length === 0 || records.length % 2 !== 0) return required;
   let docsOnly = true;
   let rOmittable = true;
+  let rRuntimeOmittable = true;
   let pythonOmittable = true;
   let rEditorOmittable = true;
   let nativeSparkOmittable = true;
@@ -109,25 +111,24 @@ export function proveRuntimeOmissions({ cwd = process.cwd(), env = process.env }
       continue;
     nativeSparkOmittable &&= modified && nativeSparkOmissionFiles.has(path);
     docsOnly = false;
+    const webviewSource = modified && /^src\/webviews\/[^\p{Cc}]+$/u.test(path);
+    const componentTest = modified && /^src\/test\/[^/\p{Cc}]+\.component\.test\.tsx$/u.test(path);
+    rRuntimeOmittable &&= webviewSource || componentTest;
     if (modified && rEditorOmissionTestFiles.has(path)) {
       rOmittable = false;
       continue;
     }
     rEditorOmittable = false;
-    if (
-      modified &&
-      (/^src\/test\/[^/\p{Cc}]+\.component\.test\.tsx$/u.test(path) || runtimeOmissionScriptFiles.has(path))
-    )
-      continue;
+    if (componentTest || (modified && runtimeOmissionScriptFiles.has(path))) continue;
     if (pythonSource) {
       pythonOmittable = false;
       continue;
     }
     if (
       rSource ||
+      webviewSource ||
       (modified &&
-        (/^src\/webviews\/[^\p{Cc}]+$/u.test(path) ||
-          path === "src/test/progressiveProfilingLifecycle.unit.test.tsx" ||
+        (path === "src/test/progressiveProfilingLifecycle.unit.test.tsx" ||
           /^src\/test\/extensionHost\/[^/\p{Cc}]+\.ts$/u.test(path) ||
           path === "scripts/editor-acceptance.mjs" ||
           path === "scripts/editor-acceptance-artifact.test.mjs"))
@@ -140,6 +141,7 @@ export function proveRuntimeOmissions({ cwd = process.cwd(), env = process.env }
   return {
     docsOnly,
     rOmittable,
+    rRuntimeOmittable: rOmittable || rRuntimeOmittable,
     pythonOmittable,
     rEditorOmittable: !docsOnly && rEditorOmittable,
     nativeSparkOmittable: !docsOnly && nativeSparkOmittable
@@ -148,10 +150,11 @@ export function proveRuntimeOmissions({ cwd = process.cwd(), env = process.env }
 
 if (process.argv[1] !== undefined && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   if (process.argv.length !== 2) throw new Error("The CI documentation proof takes no arguments.");
-  const { docsOnly, rOmittable, pythonOmittable, rEditorOmittable, nativeSparkOmittable } = proveRuntimeOmissions();
+  const { docsOnly, rOmittable, rRuntimeOmittable, pythonOmittable, rEditorOmittable, nativeSparkOmittable } =
+    proveRuntimeOmissions();
   appendFileSync(
     process.env.GITHUB_OUTPUT,
-    `docs_only=${docsOnly}\nr_omittable=${rOmittable}\npython_omittable=${pythonOmittable}\nr_editor_omittable=${rEditorOmittable}\nnative_spark_omittable=${nativeSparkOmittable}\n`
+    `docs_only=${docsOnly}\nr_omittable=${rOmittable}\nr_runtime_omittable=${rRuntimeOmittable}\npython_omittable=${pythonOmittable}\nr_editor_omittable=${rEditorOmittable}\nnative_spark_omittable=${nativeSparkOmittable}\n`
   );
   console.log(
     docsOnly
@@ -162,8 +165,10 @@ if (process.argv[1] !== undefined && pathToFileURL(resolve(process.argv[1])).hre
           ? "Verified edits permit omission of Python, R and Windows runtime checks."
           : rOmittable
             ? "Verified changes independent of native R."
-            : pythonOmittable
-              ? "Verified edits permit omission of the Python worker; R, editor and Windows checks remain required."
-              : "Full runtime checks required."
+            : rRuntimeOmittable
+              ? "Verified renderer edits permit omission of Linux R source and Python checks; platform R, editor and Windows checks remain required."
+              : pythonOmittable
+                ? "Verified edits permit omission of the Python worker; R, editor and Windows checks remain required."
+                : "Full runtime checks required."
   );
 }
