@@ -100,7 +100,7 @@ describe("DataGrid rectangular selection", () => {
   it("selects a rectangular mouse drag without native text selection and restores focus to its endpoint", () => {
     renderGrid();
     const city = screen.getByRole("cell", { name: "Milan" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
 
     const pointerDownAllowed = fireEvent.pointerDown(city, pointerEvent(7));
     fireEvent.pointerMove(emptySales, pointerEvent(7));
@@ -134,7 +134,7 @@ describe("DataGrid rectangular selection", () => {
     const city = screen.getByRole("cell", { name: "Milan" });
     const sales = screen.getByRole("cell", { name: "10.5" });
     const paris = screen.getByRole("cell", { name: "Paris" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
 
     pointerDrag(city, sales, 9);
 
@@ -175,7 +175,7 @@ describe("DataGrid rectangular selection", () => {
     renderGrid();
     const city = screen.getByRole("cell", { name: "Milan" });
     const paris = screen.getByRole("cell", { name: "Paris" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
     pointerDrag(city, emptySales, 13);
     expect(document.querySelectorAll('[data-clipboard-selected="true"]')).toHaveLength(4);
 
@@ -196,7 +196,7 @@ describe("DataGrid rectangular selection", () => {
     const firstPage = { ...page, totalRows: 4 };
     const view = renderGrid({ metadata: pagedMetadata, page: firstPage, onPage });
     const city = screen.getByRole("cell", { name: "Milan" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
     const scroller = screen.getByTestId("data-grid-scroller");
     defineDimension(scroller, "clientWidth", 400);
     defineDimension(scroller, "clientHeight", gridRowHeight);
@@ -249,7 +249,7 @@ describe("DataGrid rectangular selection", () => {
     const firstPage = { ...page, totalRows: 4 };
     const view = renderGrid({ metadata: pagedMetadata, page: firstPage, onPage });
     const city = screen.getByRole("cell", { name: "Milan" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
     const scroller = screen.getByTestId("data-grid-scroller");
     defineDimension(scroller, "clientWidth", 400);
     defineDimension(scroller, "clientHeight", gridRowHeight);
@@ -297,7 +297,7 @@ describe("DataGrid rectangular selection", () => {
   it("bounds edge autoscroll to one row-height step per pointer event", () => {
     renderGrid();
     const city = screen.getByRole("cell", { name: "Milan" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
     const scroller = screen.getByTestId("data-grid-scroller");
     defineDimension(scroller, "clientWidth", 400);
     defineDimension(scroller, "clientHeight", 200);
@@ -330,7 +330,7 @@ describe("DataGrid rectangular selection", () => {
   it("leaves touch pointer movement available for native scrolling", () => {
     renderGrid();
     const city = screen.getByRole("cell", { name: "Milan" });
-    const emptySales = screen.getByRole("cell", { name: "" });
+    const emptySales = screen.getByRole("cell", { name: "Null value" });
 
     const pointerDownAllowed = fireEvent.pointerDown(city, pointerEvent(19, { pointerType: "touch" }));
     fireEvent.pointerMove(emptySales, pointerEvent(19, { pointerType: "touch" }));
@@ -346,7 +346,7 @@ describe("DataGrid rectangular selection", () => {
 
     fireEvent.pointerDown(city, pointerEvent(23));
     view.rerender(gridElement({ viewContextId: "selection-view-b" }));
-    fireEvent.pointerMove(screen.getByRole("cell", { name: "" }), pointerEvent(23));
+    fireEvent.pointerMove(screen.getByRole("cell", { name: "Null value" }), pointerEvent(23));
 
     expect(releasePointerCapture).toHaveBeenCalledWith(23);
     expect(document.querySelectorAll('[data-clipboard-selected="true"]')).toHaveLength(1);

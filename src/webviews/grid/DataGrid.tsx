@@ -1150,7 +1150,7 @@ export function DataGrid({
                       data-grid-column={column.position}
                       aria-colindex={column.position + 2}
                       aria-selected={clipboardSelected}
-                      aria-label={accessibleLabel ?? renderedCell ?? ""}
+                      aria-label={accessibleLabel ?? displayCell.accessibilityLabel ?? renderedCell ?? ""}
                       data-diff-state={changedCell ? "changed" : addedColumn ? "added" : undefined}
                       data-clipboard-selected={clipboardSelected ? "true" : undefined}
                       tabIndex={rovingRow === row.rowNumber && rovingColumn === column.position ? 0 : -1}
@@ -1482,7 +1482,16 @@ function boundedGridText(value: string | undefined): string | undefined {
 
 const maximumGridNumberSignificantDigits = 12;
 
-function gridCellPresentation(cell: CellValue | undefined): { text: string | undefined; title?: string } {
+function gridCellPresentation(cell: CellValue | undefined): {
+  text: string | undefined;
+  title?: string;
+  accessibilityLabel?: string;
+} {
+  if (cell?.isNull) return { text: cell.display, accessibilityLabel: "Null value" };
+  if (cell?.kind === "string") {
+    if (cell.display.length === 0) return { text: cell.display, accessibilityLabel: "Empty string" };
+    if (/^\s+$/u.test(cell.display)) return { text: cell.display, accessibilityLabel: "Whitespace string" };
+  }
   if (
     cell?.kind !== "number" ||
     typeof cell.raw !== "number" ||
