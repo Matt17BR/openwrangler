@@ -481,9 +481,15 @@ a floating result that exceeds its output type becomes signed infinity.
 Pandas may retain large exact integers in object storage. Polars and DuckDB retain native numeric storage, widening
 or reducing fractional scale when needed for a carry. Arrow Decimals keep their original dtype when possible;
 otherwise they use the smallest compatible native width and scale. A nonnegative source scale stays nonnegative so
-rounding does not remove existing Parquet export support. Already negative scales must remain readable by Arrow.
+rounding does not remove existing Parquet export support. Results that need Decimal-to-Python conversion must stay
+within Arrow's binding range; native coarse zeroing need not box logical values.
 Polars, DuckDB and Arrow Decimal results beyond usable native capacity are rejected without a floating or object
 fallback. Object Decimal arithmetic uses its own precision context and preserves the caller's.
+Pandas checks stored Arrow values before taking its metadata-based zero shortcut. Decimal32/64 use native validation;
+Decimal128/256 use native extrema viewed as zero-scale coefficients, converting only those two bounds to Python.
+Understated precision therefore leads to exact rounding or an explicit refusal instead of an incorrect zero.
+The coefficient check also preserves native zeroing at negative scales outside Arrow's logical-value formatting range.
+Standalone generated code applies the same checks.
 DuckDB compares the rounded unsigned 128-bit coefficient against its exact capacity before the final native cast;
 some native Windows casts otherwise wrap an overflowing value. The same expression owns live and generated checks.
 

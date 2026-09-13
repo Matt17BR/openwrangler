@@ -161,7 +161,8 @@ and session-transaction tests cover value boundaries, missing values and rollbac
 Round retains exact integer and Decimal values in live and generated Python execution, including half-even ties
 and negative precision. Pandas may retain large integers in object storage. Polars, DuckDB and Arrow Decimal output
 storage may widen or reduce scale; results beyond usable native capacity are rejected. Arrow Decimal results preserve
-existing CSV and Parquet export support.
+existing CSV and Parquet export support. Pandas checks stored Arrow Decimal values before choosing its zero shortcut,
+so understated precision cannot silently turn a nonzero rounded result into zero.
 Polars Floor, Ceiling and Round support Decimal carries in streaming file previews and generated code, including
 values at the maximum precision.
 

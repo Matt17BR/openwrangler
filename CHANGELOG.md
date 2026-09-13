@@ -10,6 +10,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Pandas Round checks stored Arrow Decimal values before deciding that a column rounds to zero, even when its declared precision is inconsistent.
 - DuckDB CSV and TSV imports retain literal `#` values instead of inferring comments and dropping records.
 - Polars Enum equality and selected-value filters no longer fail on labels outside their categories.
 - Grid accessible names distinguish null, empty strings and whitespace-only strings during keyboard navigation.
