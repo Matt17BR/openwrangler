@@ -6,6 +6,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- DuckDB CSV and TSV imports retain literal `#` values instead of inferring comments and dropping records.
 - Polars Enum equality and selected-value filters no longer fail on labels outside their categories.
 - Grid accessible names distinguish null, empty strings and whitespace-only strings during keyboard navigation.
 - Pandas CSV export preserves extreme Arrow timestamps and durations, nanoseconds and historical timezone offsets. Temporal categories can include missing values; timestamps outside the supported calendar range are refused before writing.

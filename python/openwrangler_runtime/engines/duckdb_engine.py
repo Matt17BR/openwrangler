@@ -409,6 +409,7 @@ class DuckDBEngine(DataFrameEngine):
                             encoding="utf-8",
                             quotechar=options.get("quoteChar", '"'),
                             header=options.get("hasHeader", True),
+                            comment="",
                         )
                     )
                     # Native binding above validates options even for empty input.

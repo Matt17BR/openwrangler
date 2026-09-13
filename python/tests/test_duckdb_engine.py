@@ -1714,6 +1714,71 @@ def test_duckdb_literal_selected_file_windows_anchor_refusal(path: str) -> None:
 
 
 @pytest.mark.parametrize(
+    ("suffix", "delimiter"),
+    [(".csv", ","), (".tsv", "\t")],
+)
+@pytest.mark.parametrize("has_header", [True, False], ids=["header", "headerless"])
+def test_duckdb_delimited_hash_records_survive_pages_and_cleaning(
+    tmp_path: Path, suffix: str, delimiter: str, has_header: bool
+) -> None:
+    path = tmp_path / f"hash-records{suffix}"
+    contents = (
+        (f"label{delimiter}value\n" if has_header else "") + f"1{delimiter}2\n#retained{delimiter}3\n4{delimiter}5\n"
+    ).encode("utf-8")
+    path.write_bytes(contents)
+    before = path.stat()
+    options = {"delimiter": delimiter, "hasHeader": has_header}
+    expected = [("1", 2), ("#retained", 3), ("4", 5)]
+    names = ["label", "value"] if has_header else ["column0", "column1"]
+    manager = SessionManager(EngineRegistry((("duckdb", DuckDBEngine),)))
+    try:
+        opened = manager.open_session(
+            {"kind": "file", "label": path.name, "path": str(path), "importOptions": options},
+            backend="duckdb",
+            page_size=1,
+        )
+        metadata = opened["metadata"]
+        session_id = metadata["sessionId"]
+        session = manager.sessions[session_id]
+        assert metadata["shape"] == {"rows": 3, "columns": 2}
+        assert metadata["source"]["importOptions"] == options
+        assert [column["name"] for column in metadata["schema"]] == names
+        assert [cell["raw"] for cell in opened["page"]["rows"][0]["values"]] == list(expected[0])
+        later = manager.get_page(session_id, 0, 1, 2, {"filters": [], "sort": []})
+        assert [tuple(cell["raw"] for cell in row["values"]) for row in later["page"]["rows"]] == expected[1:]
+        value_column = metadata["schema"][1]
+        operation = step(
+            "formula",
+            leftColumn={"id": value_column["id"], "name": value_column["name"]},
+            operator="multiply",
+            value=10,
+            newColumn="score",
+        )
+        preview = manager.preview_step(session_id, 0, operation, 0, 10)
+        applied = manager.apply_draft(session_id, preview["revision"], 0, 10)
+        cleaned = [(label, value, value * 10) for label, value in expected]
+        for response in (preview, applied):
+            assert response["metadata"]["shape"] == {"rows": 3, "columns": 3}
+            assert [tuple(cell["raw"] for cell in row["values"]) for row in response["page"]["rows"]] == cleaned
+        namespace: dict[str, Any] = {}
+        exec(compile(applied["code"], "<hash-record-cleaning>", "exec"), namespace)
+        assert isinstance(session.engine, DuckDBEngine)
+        with duckdb_runtime._connect() as connection:
+            source = connection.sql(session.engine._visible_relation(session.original).sql_query())
+            generated = namespace["clean_data"](source)
+            assert generated.columns == [*names, "score"]
+            assert [str(dtype) for dtype in generated.types] == ["VARCHAR", "BIGINT", "BIGINT"]
+            assert generated.fetchall() == cleaned
+            assert source.fetchall() == expected
+    finally:
+        manager.close_all()
+    assert manager.sessions == {}
+    after = path.stat()
+    assert path.read_bytes() == contents
+    assert (after.st_ino, after.st_size, after.st_mtime_ns) == (before.st_ino, before.st_size, before.st_mtime_ns)
+
+
+@pytest.mark.parametrize(
     ("record_ending", "line_ending"),
     [("\n", None), ("\r", "cr"), ("\r\n", "lf")],
     ids=["lf-omitted", "cr", "crlf"],

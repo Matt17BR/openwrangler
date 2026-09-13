@@ -967,6 +967,11 @@ Unix paths containing both backslashes and glob syntax, and Windows drive, share
 syntax, are refused because native expansion can select another file. Existing source fingerprint checks still
 surround lazy reads; the adapter adds no dataframe scan or filesystem owner.
 
+CSV and TSV readers disable native comment inference so literal `#` values cannot remove records or truncate fields.
+DuckDB still owns dialect and type inference, including its existing leading-blank behavior. Its separate preamble
+inference can skip an irregular first record; the [file-support limitations](feature-parity.md#duckdb-experimental-file-support)
+describe that unresolved case. Generated cleaning programs receive an already-loaded relation.
+
 Generated Sort Rows, Drop Duplicates and Mark Duplicates reserve current input names and requested keys when choosing
 temporary row ordinals. Missing requested keys are rejected; an internal ordinal cannot supply them. Native
 case-insensitive key binding remains valid. Sort Rows preserves every user column and input order within ties.
