@@ -16,7 +16,6 @@ export function useSessionModeChangeLifecycle({
   scheduleFocusRestoration,
   canRestoreFocus
 }: SessionModeChangeLifecycleOptions) {
-  const [pending, setPending] = useState(false);
   const [target, setTarget] = useState<SessionMode | undefined>();
   const targetRef = useRef<SessionMode | undefined>(undefined);
   const isModeChangePending = useCallback(() => targetRef.current !== undefined, []);
@@ -46,7 +45,6 @@ export function useSessionModeChangeLifecycle({
   const settleModeChange = useCallback(
     (busy: boolean, targetMode: SessionMode) => {
       targetRef.current = busy ? targetMode : undefined;
-      setPending(busy);
       if (busy) {
         setTarget(targetMode);
         return;
@@ -73,5 +71,5 @@ export function useSessionModeChangeLifecycle({
     [canRestoreFocus, readCurrentMode, scheduleFocusRestoration]
   );
 
-  return { pending, target, isModeChangePending, requestModeChange, settleModeChange };
+  return { pending: target !== undefined, target, isModeChangePending, requestModeChange, settleModeChange };
 }

@@ -1448,8 +1448,9 @@ responses and ephemeral or unscoped page admission remain unchanged; persistence
 The coordinator retains one bounded produced-page reference, sharing its cells rather than copying them and deriving
 metadata from its current session. Mutation, runtime replacement and snapshot retirement clear it. If a storage error
 leaves that page active, snapshot preparation retains the active page while preserving the error; it does not run a query.
-Mode changes suspend recovery acceptance from the local request through host settlement. A failed mode change can
-resume the pending replacement; a successful reopen supplies the new authoritative session.
+Mode changes disable the switch and workspace and suspend recovery acceptance from the local request through host
+settlement. The requested target owns the busy state. A failed mode change can resume the pending replacement;
+a successful reopen supplies the new authoritative session.
 A current page-bearing response supplies the snapshot directly. Recovery through a page-less request uses one bounded
 read of the confirmed viewport after active work settles. Renderer synchronization waits for that publication instead
 of replaying the retired snapshot or treating the pending replacement as a missing session.
