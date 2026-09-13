@@ -67,7 +67,8 @@ test("proves existing Markdown edits against the exact tested merge", async (con
   for (const files of [
     ["README.md", "docs/testing.md", "docs/guides/über view.md"],
     ["CHANGELOG.md"],
-    ["README.md", "CHANGELOG.md", "docs/testing.md"]
+    ["CONTRIBUTING.md"],
+    ["README.md", "CHANGELOG.md", "CONTRIBUTING.md", "docs/testing.md"]
   ]) {
     await context.test(files.join(", "), (child) => {
       const cwd = repository(child, files);
@@ -685,7 +686,8 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
     "scripts/ci-docs-only.mjs",
     "docs/example.py",
     "docs/image.svg",
-    "CONTRIBUTING.md",
+    "AGENTS.md",
+    "CONTRIBUTING.md.bak",
     "src/shared/protocol.ts",
     "src/webviews-extra/App.tsx",
     "src/webviews.ts",
@@ -735,12 +737,13 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
       const component = "src/test/webview.component.test.tsx";
       const releasePolicy = "scripts/release-metadata.mjs";
       const webview = "src/webviews/grid/DataGrid.tsx";
-      const cwd = repository(child, [file, "CHANGELOG.md", component, releasePolicy, webview]);
+      const cwd = repository(child, [file, "CHANGELOG.md", "CONTRIBUTING.md", component, releasePolicy, webview]);
       write(cwd, component);
       write(cwd, releasePolicy);
       write(cwd, webview);
       write(cwd, "README.md");
       write(cwd, "CHANGELOG.md");
+      write(cwd, "CONTRIBUTING.md");
       write(cwd, file);
       const env = merge(cwd);
       assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
@@ -755,14 +758,29 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
 });
 
 test("does not hide deletions or renames behind a Markdown destination", async (context) => {
-  for (const change of ["add docs", "delete docs", "delete runtime", "rename docs", "rename runtime"]) {
+  for (const change of [
+    "add docs",
+    "delete docs",
+    "delete runtime",
+    "rename docs",
+    "rename runtime",
+    "add contributing",
+    "delete contributing",
+    "rename contributing"
+  ]) {
     await context.test(change, (child) => {
-      const cwd = repository(child);
+      const cwd = repository(
+        child,
+        change === "delete contributing" || change === "rename contributing" ? ["CONTRIBUTING.md"] : []
+      );
       if (change === "add docs") write(cwd, "docs/new.md");
       if (change === "delete docs") rmSync(join(cwd, "docs/testing.md"));
       if (change === "delete runtime") rmSync(join(cwd, "src/runtime.py"));
       if (change === "rename docs") renameSync(join(cwd, "docs/testing.md"), join(cwd, "docs/renamed.md"));
       if (change === "rename runtime") renameSync(join(cwd, "src/runtime.py"), join(cwd, "docs/runtime.md"));
+      if (change === "add contributing") write(cwd, "CONTRIBUTING.md");
+      if (change === "delete contributing") rmSync(join(cwd, "CONTRIBUTING.md"));
+      if (change === "rename contributing") renameSync(join(cwd, "CONTRIBUTING.md"), join(cwd, "docs/contributing.md"));
       const env = merge(cwd);
       assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
         docsOnly: false,
@@ -776,7 +794,7 @@ test("does not hide deletions or renames behind a Markdown destination", async (
 });
 
 test("requires full owners for executable or symlink Markdown entries", async (context) => {
-  for (const file of ["README.md", "CHANGELOG.md"]) {
+  for (const file of ["README.md", "CHANGELOG.md", "CONTRIBUTING.md"]) {
     for (const mode of ["100755", "120000"]) {
       await context.test(`${file}: ${mode}`, (child) => {
         const cwd = repository(child, [file]);
