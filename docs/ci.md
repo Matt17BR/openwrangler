@@ -51,6 +51,8 @@ The allowed Markdown files are not inputs to ESLint, TypeScript checking, Vitest
 README and CHANGELOG remain shipped content, so packaging still validates their exact source bytes. Formatting,
 documentation, reference and script checks retain their document validation; these checks do not establish the
 accuracy of every prose claim.
+CONTRIBUTING is excluded from the VSIX. Retained formatting and documentation checks cover it; runtime and
+installed-editor tests do not execute its contributor instructions.
 On code changes, lint and type checking run after the direct script contracts, so their failures are reported later.
 
 The scope-only job uses Node and Git without installing npm dependencies or restoring the npm cache.
@@ -58,7 +60,7 @@ The scope-only job uses Node and Git without installing npm dependencies or rest
 
 - Python may be omitted for additions or edits to `.R` files under `r/openwrangler_runtime/` or `r/tests/`; edits to
   existing top-level `src/test/extensionHost/*.ts`, `scripts/editor-acceptance.mjs` or
-  `scripts/editor-acceptance-artifact.test.mjs` files; and edits to existing `README.md`, `CHANGELOG.md` or
+  `scripts/editor-acceptance-artifact.test.mjs` files; and edits to existing `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md` or
   `docs/**/*.md` files. The installed-harness edits retain all R and Windows execution. Added or nested harness files
   and other scripts are outside this permission.
 - The Python worker may also be omitted for modifications to existing files under `src/webviews/` and the existing
@@ -66,7 +68,8 @@ The scope-only job uses Node and Git without installing npm dependencies or rest
   edits. All R source and installed-editor checks, Windows contracts, Source and packaged smoke remain required.
   Additions, deletions, renames and mode changes remain outside this permission.
 - R source and installed-editor execution may be omitted for additions or edits to `.py` files under
-  `python/openwrangler_runtime/` or `python/tests/`, and edits to existing `README.md`, `CHANGELOG.md` or `docs/**/*.md`.
+  `python/openwrangler_runtime/` or `python/tests/`, and edits to existing `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md` or
+  `docs/**/*.md`.
 - Native Spark may be omitted for modifications to one or more of the existing
   `python/openwrangler_runtime/engines/_pandas_arrow_formula_helpers.py`, `pandas_engine.py` and `duckdb_engine.py`
   files, or `python/tests/test_operation_edges.py`, `test_session_transactions.py`, `test_duckdb_engine.py` and
@@ -86,7 +89,7 @@ The scope-only job uses Node and Git without installing npm dependencies or rest
   [`ci-docs-only.mjs`](../scripts/ci-docs-only.mjs). These edits keep `docs_only=false`, so Source runs Vitest, the Node
   script owners and the Node 22 build, and packaged smoke retains both Linux VS Code launches.
 - ESLint, Node 24 type checking, Vitest and the minimum/stable VS Code launches may be omitted only for edits to
-  existing `README.md`, `CHANGELOG.md` or `docs/**/*.md` files. Windows also omits those documentation-only changes.
+  existing `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md` or `docs/**/*.md` files. Windows also omits those documentation-only changes.
 
 Mixed Python/R changes require both runtimes. The Python job does not consume the allowed R or installed-harness files.
 The R checks do not execute the allowed Python files; the selected installed R journeys use Python only for Jupyter client readiness
