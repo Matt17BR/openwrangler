@@ -10,7 +10,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 - Native Edit Step requests resume after a pending page finishes, instead of waiting indefinitely for an inspection that never started.
 - Switching a live dataframe's mode preserves a viewing filter or sort confirmed while the switch waits. Earlier-step rewrites also retain the view accepted by preceding requests.
 - Pandas Convert Type and Format Datetime retain native Arrow dates such as year 2500 on the minimum runtime. Date conversion no longer wraps at timezone boundaries, and formatting honors Python `%f` and `%S` syntax.
-- Switching a live dataframe's mode shows progress immediately and disables further clicks while waiting for the host.
+- Switching a live dataframe's mode shows progress immediately and disables further clicks while waiting for the host. A following switch is accepted as soon as the host announces that it is ready.
 - Pandas Formula multiplies Arrow Decimal128 `(38, 38)` columns exactly, returning Decimal256 `(76, 76)` results without losing fractional digits.
 - Generated DuckDB One-hot encoding preserves binary categories when the input connection defines a `from_hex` macro.
 - Find and Replace shows the selected engine's capture-group replacement notation and explains that regex syntax is engine-specific.
