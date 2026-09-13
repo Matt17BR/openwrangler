@@ -770,95 +770,90 @@ export class OpenWranglerPanel {
   private switchSessionMode(mode: SessionMode, viewState: GridViewState): Promise<void> {
     if (this.sessionModeChangeTask) return this.sessionModeChangeTask;
     const task = (async () => {
-      try {
-        const sessionId = this.sessionId;
-        const revision = this.sessionRevision;
-        const metadata = this.snapshot?.metadata;
-        if (!sessionId || !metadata || this.disposed) return;
-        if (!canRequestLiveSessionMode(metadata, mode)) {
-          const action = sessionModeAction(metadata);
-          await this.post({
-            kind: "error",
-            code: `${mode}_mode_unavailable`,
-            message:
-              action?.target === mode && action.disabledReason
-                ? action.disabledReason
-                : `This Open Wrangler session cannot switch to ${modeName(mode)} mode.`,
-            recoverable: true,
-            sessionId
-          });
-          return;
-        }
-        if (!this.bridge.reconfigureLiveSessionMode) {
-          await this.post({
-            kind: "error",
-            code: `${mode}_mode_unavailable`,
-            message: `This Open Wrangler session cannot switch to ${modeName(mode)} mode.`,
-            recoverable: true,
-            sessionId
-          });
-          return;
-        }
+      const sessionId = this.sessionId;
+      const revision = this.sessionRevision;
+      const metadata = this.snapshot?.metadata;
+      if (!sessionId || !metadata || this.disposed) return;
+      if (!canRequestLiveSessionMode(metadata, mode)) {
+        const action = sessionModeAction(metadata);
+        await this.post({
+          kind: "error",
+          code: `${mode}_mode_unavailable`,
+          message:
+            action?.target === mode && action.disabledReason
+              ? action.disabledReason
+              : `This Open Wrangler session cannot switch to ${modeName(mode)} mode.`,
+          recoverable: true,
+          sessionId
+        });
+        return;
+      }
+      if (!this.bridge.reconfigureLiveSessionMode) {
+        await this.post({
+          kind: "error",
+          code: `${mode}_mode_unavailable`,
+          message: `This Open Wrangler session cannot switch to ${modeName(mode)} mode.`,
+          recoverable: true,
+          sessionId
+        });
+        return;
+      }
 
-        await this.postRendererMessage({ kind: "sessionModeChangeState", busy: true, mode });
-        try {
-          const response = await this.bridge.reconfigureLiveSessionMode(sessionId, revision, mode, viewState, {
-            priority: "interactive",
-            backendPreference: this.backendPreference
-          });
-          if (this.disposed || this.sessionId !== sessionId || this.sessionRevision !== revision) return;
-          if (response.kind === "sessionOpened") {
-            if (
-              response.metadata.sessionId !== sessionId ||
-              response.metadata.revision <= revision ||
-              response.metadata.mode !== mode ||
-              response.metadata.source.kind !== metadata.source.kind
-            ) {
-              await this.post({
-                kind: "error",
-                code: "invalid_runtime_response",
-                message: `Open Wrangler rejected an invalid ${modeName(mode)}-mode response.`,
-                recoverable: true,
-                sessionId
-              });
-              return;
-            }
-            this.pendingRuntimeReplacement = undefined;
-            this.invalidateRendererSynchronization();
-            this.source = response.metadata.source;
-            this.openResponse = response;
-            this.sessionId = response.metadata.sessionId;
-            this.sessionRevision = response.metadata.revision;
-            this.snapshot = response;
-            this.snapshotViewContextId = undefined;
-            this.latestPageViewRequestId = undefined;
-            await this.post(response);
-            await this.postSessionPresentation();
-            await this.postViewState();
-            if (this.rendererSync.rendererReady) this.scheduleRendererSynchronization(false);
+      await this.postRendererMessage({ kind: "sessionModeChangeState", busy: true, mode });
+      try {
+        const response = await this.bridge.reconfigureLiveSessionMode(sessionId, revision, mode, viewState, {
+          priority: "interactive",
+          backendPreference: this.backendPreference
+        });
+        if (this.disposed || this.sessionId !== sessionId || this.sessionRevision !== revision) return;
+        if (response.kind === "sessionOpened") {
+          if (
+            response.metadata.sessionId !== sessionId ||
+            response.metadata.revision <= revision ||
+            response.metadata.mode !== mode ||
+            response.metadata.source.kind !== metadata.source.kind
+          ) {
+            await this.post({
+              kind: "error",
+              code: "invalid_runtime_response",
+              message: `Open Wrangler rejected an invalid ${modeName(mode)}-mode response.`,
+              recoverable: true,
+              sessionId
+            });
             return;
           }
+          this.pendingRuntimeReplacement = undefined;
+          this.invalidateRendererSynchronization();
+          this.source = response.metadata.source;
+          this.openResponse = response;
+          this.sessionId = response.metadata.sessionId;
+          this.sessionRevision = response.metadata.revision;
+          this.snapshot = response;
+          this.snapshotViewContextId = undefined;
+          this.latestPageViewRequestId = undefined;
           await this.post(response);
-        } catch (error) {
-          if (this.disposed || this.sessionId !== sessionId || this.sessionRevision !== revision) return;
-          await this.post({
-            kind: "error",
-            code: `${mode}_mode_open_failed`,
-            message: error instanceof Error ? error.message : String(error),
-            recoverable: true,
-            sessionId
-          });
+          await this.postSessionPresentation();
+          await this.postViewState();
+          if (this.rendererSync.rendererReady) this.scheduleRendererSynchronization(false);
+          return;
         }
-      } finally {
-        if (!this.disposed) {
-          await this.postRendererMessage({ kind: "sessionModeChangeState", busy: false, mode });
-        }
+        await this.post(response);
+      } catch (error) {
+        if (this.disposed || this.sessionId !== sessionId || this.sessionRevision !== revision) return;
+        await this.post({
+          kind: "error",
+          code: `${mode}_mode_open_failed`,
+          message: error instanceof Error ? error.message : String(error),
+          recoverable: true,
+          sessionId
+        });
       }
-    })();
-    this.sessionModeChangeTask = task;
-    const settled = (): void => {
+    })().finally(async () => {
       if (this.sessionModeChangeTask !== task) return;
       this.sessionModeChangeTask = undefined;
+      if (!this.disposed) {
+        await this.postRendererMessage({ kind: "sessionModeChangeState", busy: false, mode });
+      }
       const pending = this.currentRuntimeReplacement();
       if (!pending) return;
       if (!pending.offer?.isCurrent()) {
@@ -866,8 +861,8 @@ export class OpenWranglerPanel {
         pending.context = { ...pending.context };
       }
       this.publishPendingRecoveryOffer();
-    };
-    void task.then(settled, settled);
+    });
+    this.sessionModeChangeTask = task;
     return task;
   }
 

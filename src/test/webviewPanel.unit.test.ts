@@ -6875,9 +6875,25 @@ describe("OpenWranglerPanel retained view state", () => {
       async (_sessionId: string, _revision: number, mode: SessionMetadata["mode"]): Promise<OpenWranglerResponse> =>
         mode === "editing" ? editing : viewingAgain
     );
+    const idlePosted = deferred<void>();
+    const idleReply = deferred<boolean>();
     const harness = createPanelHarness(
       { request, reconfigureLiveSessionMode },
-      { createViaFactory: true, delegateOpen: true, source, backend: "r", backendPreference: "r" }
+      {
+        createViaFactory: true,
+        delegateOpen: true,
+        source,
+        backend: "r",
+        backendPreference: "r",
+        postMessage: (message) => {
+          const state = message as { kind?: string; busy?: boolean; mode?: string };
+          if (state.kind === "sessionModeChangeState" && state.busy === false && state.mode === "editing") {
+            idlePosted.resolve();
+            return idleReply.promise;
+          }
+          return Promise.resolve(true);
+        }
+      }
     );
     await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
     await vi.waitFor(() => expect(harness.posted).toContainEqual(hostSnapshot(viewing)));
@@ -6892,7 +6908,9 @@ describe("OpenWranglerPanel retained view state", () => {
       ...currentViewState,
       columnWidths: new Map([["c:0", 240]])
     };
-    await harness.receive({ kind: "switchSessionMode", mode: "editing", state: currentViewState });
+    const first = harness.receive({ kind: "switchSessionMode", mode: "editing", state: currentViewState });
+    const coalesced = harness.receive({ kind: "switchSessionMode", mode: "editing", state: currentViewState });
+    await idlePosted.promise;
 
     expect(reconfigureLiveSessionMode).toHaveBeenCalledWith("session", 0, "editing", decodedCurrentViewState, {
       priority: "interactive",
@@ -6910,7 +6928,12 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(reconfigureLiveSessionMode).toHaveBeenCalledOnce();
 
     harness.posted.length = 0;
-    await harness.receive({ kind: "switchSessionMode", mode: "viewing", state: currentViewState });
+    // Buffered transport can resolve the idle reply and deliver the next
+    // request in one turn, before publication continuations have run.
+    idleReply.resolve(true);
+    const second = harness.receive({ kind: "switchSessionMode", mode: "viewing", state: currentViewState });
+    await Promise.all([first, coalesced, second]);
+    expect(reconfigureLiveSessionMode).toHaveBeenCalledTimes(2);
     expect(reconfigureLiveSessionMode).toHaveBeenLastCalledWith("session", 1, "viewing", decodedCurrentViewState, {
       priority: "interactive",
       backendPreference: "r"
