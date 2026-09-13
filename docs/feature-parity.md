@@ -549,6 +549,10 @@ wildcard characters. Unix paths combining backslashes and glob syntax, and Windo
 glob syntax, are refused. Choose another supported engine or a path without those characters. Ordinary local-drive
 paths retain native lazy reading; the full cross-platform import matrix remains incomplete.
 
+CSV and TSV imports retain literal `#` values without treating them as comments. DuckDB can still skip an irregular
+first record when inferring a preamble, even with an explicit header choice ([#1378](https://github.com/Matt17BR/openwrangler/issues/1378)).
+Correct the inconsistent record, or choose Pandas and check the resulting column names and row labels.
+
 DuckDB file sessions use native SQL plans with request-owned connections, without converting through Pandas, Polars
 or Arrow. Extension auto-install, autoload and external-file caching remain disabled. Generated programs use the input
 relation's connection, preserving its private tables and functions. Live and generated execution check computed
