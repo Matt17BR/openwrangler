@@ -133,9 +133,9 @@ Development Host, and produce a development VSIX.
    npm run verify:vsix -- openwrangler-dev.vsix
    ```
 
-   `package:dev` performs a clean build and writes `openwrangler-dev.vsix`. It does not run the source test suite or
-   installed release qualification. Install it with one of these commands when you need to test the package in your
-   normal editor:
+   `package:dev` performs a clean build and writes `openwrangler-dev.vsix`. Move any previous copy before running it
+   again: packaging refuses to overwrite an existing VSIX. It does not run the source test suite or installed release
+   qualification. Install it with one of these commands when you need to test the package in your normal editor:
 
    ```bash
    code --install-extension openwrangler-dev.vsix --force
