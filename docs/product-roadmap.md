@@ -1,74 +1,49 @@
 # Product roadmap
 
-This roadmap describes current support and planned work. [Feature parity](feature-parity.md) shows which capabilities
-are ready. The generated [reference](reference.md) lists commands, settings, operations, and protocol names.
+[Feature parity](feature-parity.md) describes what works today and its limits. [Changelog](../CHANGELOG.md)
+records delivered changes. This page links the work selected next and proposals that need further review.
 
-## Current supported scope
+## Current focus
 
-- Pandas and Polars are the main editing engines for files and supported Python notebook variables.
-- R support is **Preview** until its [first stable notebook scope](feature-parity.md#first-stable-r-notebook-scope)
-  meets the defined native and exact-candidate qualification criteria. Base `data.frame`, tibble,
-  and `data.table` values use R directly through the documented notebook, terminal, and document paths.
-- DuckDB is experimental. File sessions support native editing and export; notebook `DuckDBPyRelation` values are
-  view-only. Open Wrangler does not yet browse `.duckdb` catalogs, schemas, tables, views, or arbitrary SQL.
-- PySpark 4.2 support is limited to local-notebook viewing of Classic and Connect batch DataFrames. Open Wrangler does
-  not edit, export, install, or configure Spark. Streaming, remote clusters, and authenticated clusters are
-  unsupported.
-- Open Wrangler is release-qualified on desktop VS Code. Cursor receives a smaller Linux compatibility check covering
-  representative grid, cleaning, export, and recovery flows, not the full VS Code test set. Compatibility with Cursor
-  and other VS Code-based editors remains experimental. Browser and virtual workspace hosts are unsupported, and
-  Remote SSH is not part of release testing.
+Fix confirmed data-integrity and reliability problems, and simplify code or checks when their maintenance cost has a
+concrete cause. [Current maintenance](https://github.com/Matt17BR/openwrangler/issues/905) tracks those findings,
+including the remaining DuckDB CSV import and R source-test containment problems. The continuous maintenance tracker
+is not a release milestone, and an open feature proposal is not an unresolved defect.
 
-## Release priorities
+## Next selected outcome
 
-Stable releases require the Pandas and Polars rows named in [feature parity](feature-parity.md) and must follow the
-[release process](releasing.md), including its required R notebook candidate checks. R support is Preview until fresh
-results and reliability review support graduation. Experimental DuckDB and the PySpark viewer stay outside the
-required capability table while their labels and limitations remain accurate.
+The next stable target is [Open Wrangler 2.5.0](https://github.com/Matt17BR/openwrangler/milestone/15), following the [version policy](releasing.md#version-and-channel-policy).
+Its selected product outcome is [stable R notebook support](https://github.com/Matt17BR/openwrangler/issues/1381) for the existing ordinary base `data.frame`,
+tibble and `data.table` scope in IRkernel notebooks in desktop VS Code for Linux, macOS and Windows.
 
-Fixes for data loss, runtime corruption, and release publication take priority over adding another backend.
+R remains **Preview**. Graduation needs the [defined reliability review and candidate evidence](feature-parity.md#first-stable-r-notebook-scope).
+Terminal, managed-document and Cursor support keep their separate labels. The milestone has no promised date;
+publication still requires the [release process](releasing.md). Other work joins this milestone only when it is
+explicitly selected and can meet its acceptance criteria.
 
-## Current maintenance priorities
+## Feature proposals
 
-Before adding more features, current work focuses on:
+These are open, unscheduled proposals. User demand is not yet established; examples and practical constraints are
+welcome in their issues. Start with useful single-source operations before taking on broader source ownership.
 
-- separating large UI, session, protocol, and runtime responsibilities so each can be tested directly;
-- removing duplicate live and generated operation rules while keeping generated code standalone and readable; and
-- improving Python type checking and making supported-version rules, dependency checks, test suites, release scripts,
-  and public documentation easier to maintain.
+- [Conditional columns](https://github.com/Matt17BR/openwrangler/issues/1382): derive a typed value from one condition, such as flagging overdue invoices.
+- [Explicit date parsing and typed date parts](https://github.com/Matt17BR/openwrangler/issues/1383): choose a parsing format and create date or numeric outputs.
+- [Bounded explode and unnest](https://github.com/Matt17BR/openwrangler/issues/1384): expand one supported list or struct column with clear row and type rules.
+- [Apply a cleaning plan to another input](https://github.com/Matt17BR/openwrangler/issues/1385): review column mapping for one compatible target.
+- [Clean a DuckDB notebook relation](https://github.com/Matt17BR/openwrangler/issues/1386): extend today's viewer with native cleaning, code and export.
+- [Browse a DuckDB database](https://github.com/Matt17BR/openwrangler/issues/1387): choose a read-only table or view without writing SQL.
+- [Join or append a second input](https://github.com/Matt17BR/openwrangler/issues/1388): a later proposal that first needs explicit source and row-growth rules.
 
-Open Wrangler 2.1.0 shipped before this broader maintenance work was complete. Further changes must preserve data
-safety, trust checks, accessibility, engine-native execution, and verified release artifacts. Split or consolidate
-code when it removes a demonstrated ownership problem or duplicate behavior; module size alone is not a reason.
+Spark remains a bounded local-notebook viewer. Broader Spark support, additional backends and remote or browser hosts
+need a concrete user job before selection. Historical ideas and their closure reasons remain in the
+[archived product-expansion milestone](https://github.com/Matt17BR/openwrangler/milestone/13); they are not a promised backlog.
 
-## Later product work
+## Keeping plans useful
 
-### Deterministic transforms and validation
+Each issue owns its proposed scope, exclusions, acceptance criteria and main cost. Milestones contain selected release
+work. Keep useful deferred proposals open without a milestone; close rejected or superseded proposals with the reason.
+Completed work links its implementation and relevant release evidence, then updates the capability guide or changelog.
 
-Dense Rank covers numeric ranking, and Mark Duplicates retains conflicting records for review. Add broader window
-operations, more typed formulas, and schema or data-quality checks with clear results. Transpose, explode, and unnest
-need engine-native type and lineage rules. Joins and merge remain deferred until source identity, lifecycle, persistence,
-and immutability rules are defined.
-
-Every new editing operation must work both live and in executable generated code for every editing engine. Cleaning
-steps cannot be reordered until lineage, dependencies, and conflicts can be preserved. Editing and deleting a step do
-not imply a hidden move operation.
-
-### Portable cleaning recipes
-
-Define a versioned recipe that users can export and import without workspace-private source or backend keys. Import
-must reject ambiguous column mappings, show the proposed mapping and incompatibilities, and preserve engine support,
-source immutability, rollback, generated code, and confirmation rules. Natural-language input may propose a draft; it
-cannot skip mapping, preview, or confirmation.
-
-### DuckDB database browsing
-
-Add a browser for `.duckdb` catalogs, schemas, tables, and views before exposing general SQL. Keep queries in DuckDB,
-preserve connection ownership, and leave extension auto-install, autoload, and external-file caching off. The UI must
-state when a source is read-only and whether editing or export is available.
-
-### Entry points and platform coverage
-
-Evaluate debugger variables, remote environments, browser and code-server hosts, localization, non-dataframe
-collections, and multidimensional arrays or tensors separately. Each addition needs a named source and lifecycle
-owner, transport limits, accessibility coverage, and a support claim that matches the hosts actually tested.
+Use existing engine, session and validation owners where they fit. New editing behavior needs matching live and
+generated results, explicit support limits and source preservation. A new workflow, abstraction or test matrix needs a
+demonstrated benefit; keeping the issue list empty or making modules smaller is not a product goal.
