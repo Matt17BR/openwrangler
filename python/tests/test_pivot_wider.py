@@ -543,6 +543,27 @@ def test_pandas_pivot_wider_nullable_allocation_without_identifiers(empty: bool)
         pd.testing.assert_frame_equal(frame, before)
 
 
+@pytest.mark.parametrize("empty", [False, True])
+@pytest.mark.parametrize("lazy", [False, True])
+def test_polars_pivot_wider_nullable_allocation_without_identifiers(empty: bool, lazy: bool) -> None:
+    frame = pl.DataFrame(
+        {"key": [] if empty else ["x"], "value": [] if empty else [2**63 + 1]},
+        schema={"key": pl.String, "value": pl.UInt64},
+    )
+    source = frame.lazy() if lazy else frame
+    before = frame.clone()
+    engine = PolarsEngine()
+    step = bind(engine, source, public_step(names_id="c:source:0", values_id="c:source:1"))
+    expected = pl.DataFrame(
+        {"x_value": [] if empty else [2**63 + 1], "y_value": [] if empty else [None]},
+        schema={"x_value": pl.UInt64, "y_value": pl.UInt64},
+    )
+    for actual in (engine.apply_transform(source, step), execute_generated(engine, source, step)):
+        assert isinstance(actual, pl.LazyFrame) is lazy
+        assert_frame_equal(actual.collect() if lazy else actual, expected)
+        assert_frame_equal(source.collect() if isinstance(source, pl.LazyFrame) else source, before)
+
+
 def test_pandas_pivot_wider_generated_allocation_keeps_caller_bindings() -> None:
     frame = pd.DataFrame({"group": ["a", "a"], "key": ["x", "y"], "value": [1, 2]})
     before = frame.copy(deep=True)
@@ -843,6 +864,40 @@ def test_pandas_pivot_wider_native_arrow_identifiers_match_generated_guard(famil
     for actual in _pandas_pivot_results(frame):
         pd.testing.assert_frame_equal(actual, expected)
     assert frame["group"].array.__arrow_array__().equals(before)
+
+
+@pytest.mark.parametrize("family", ["timestamp", "duration"])
+@pytest.mark.parametrize("dictionary", [False, True])
+def test_pandas_pivot_wider_temporal_identifiers_preserve_present_int64_min(family: str, dictionary: bool) -> None:
+    import pyarrow as pa
+
+    dtype = pa.timestamp("ns", "UTC") if family == "timestamp" else pa.duration("ns")
+    chunks = [pa.array([-(2**63), None], type=dtype), pa.array([-(2**63) + 1], type=dtype)]
+    if dictionary:
+        chunks = [chunk.dictionary_encode() for chunk in chunks]
+    frame = pd.DataFrame(
+        {
+            "group": pd.Series(pd.arrays.ArrowExtensionArray(pa.chunked_array(chunks))),
+            "key": ["x", "y", "x"],
+            "value": pd.Series([10, 20, 30], dtype="Int64"),
+        }
+    )
+    frame.index = pd.Index(["same"] * 3, name="source")
+    frame.attrs["annotation"] = "retained"
+    before = frame.copy(deep=True)
+    expected = pd.DataFrame(
+        {
+            "group": pd.Series(pd.arrays.ArrowExtensionArray(pa.array([-(2**63), None, -(2**63) + 1], type=dtype))),
+            "x_value": pd.Series([10, None, 30], dtype="Int64"),
+            "y_value": pd.Series([None, 20, None], dtype="Int64"),
+        }
+    )
+    expected.columns = pd.Index(expected.columns, dtype="object")
+    for actual in _pandas_pivot_results(frame):
+        pd.testing.assert_frame_equal(actual, expected)
+        assert actual["group"].array.__arrow_array__().cast(pa.int64()).to_pylist() == [-(2**63), None, -(2**63) + 1]
+        pd.testing.assert_frame_equal(frame, before)
+        assert frame.attrs == before.attrs
 
 
 @pytest.mark.parametrize("family", ["string", "integer", "decimal", "boolean", "date", "timestamp", "duration"])

@@ -1544,8 +1544,11 @@ class PolarsEngine(DataFrameEngine):
             if identifiers:
                 return normalized.group_by(identifiers, maintain_order=True).agg(expressions)
             group_name = f"{INTERNAL_ROW_ID_PREFIX}pivot_wider_group"
+            # Validation guarantees present names; a column key keeps empty input empty.
             return (
-                normalized.group_by(pl.lit(0).alias(group_name), maintain_order=True).agg(expressions).drop(group_name)
+                normalized.group_by(pl.col(names_from).is_not_null().alias(group_name), maintain_order=True)
+                .agg(expressions)
+                .drop(group_name)
             )
         if kind == "extractRegexGroup":
             portable_regex_contract(params["pattern"], params["group"])
@@ -1869,7 +1872,8 @@ class PolarsEngine(DataFrameEngine):
                     "        return normalized.group_by(identifiers, maintain_order=True).agg(expressions)",
                     f"    group_name = {f'{INTERNAL_ROW_ID_PREFIX}pivot_wider_group'!r}",
                     (
-                        "    return normalized.group_by(pl.lit(0).alias(group_name), maintain_order=True)"
+                        "    return normalized.group_by(pl.col(names_from).is_not_null().alias(group_name), "
+                        "maintain_order=True)"
                         ".agg(expressions).drop(group_name)"
                     ),
                     "",

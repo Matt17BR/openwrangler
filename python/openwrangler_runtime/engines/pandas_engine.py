@@ -3315,8 +3315,13 @@ def _pandas_pivot_wider_identifier_frame(
             )
         prepared, uniques = _pandas_prepare_group_key(source)
         if uniques is None:
-            missing = [_pandas_is_missing_scalar(item) for item in source.array]
-            prepared = _pandas_group_nulls(prepared, missing)
+            if isinstance(prepared.dtype, pd.ArrowDtype):
+                # Arrow validity preserves temporal payloads that Pandas boxes or masks as NaT.
+                if pd.api.types.is_float_dtype(prepared.dtype):
+                    prepared = _pandas_group_nulls(prepared, prepared.isna())
+            else:
+                missing = [_pandas_is_missing_scalar(item) for item in source.array]
+                prepared = _pandas_group_nulls(prepared, missing)
         columns.append(prepared)
         states.append(uniques)
     frame = pd.concat(columns, axis=1) if columns else pd.DataFrame(index=range(len(df)))
@@ -3394,8 +3399,12 @@ def _generated_pandas_pivot_wider_helpers() -> list[str]:
         "            raise ValueError('Pivot wider identifier columns must use the portable group-key scalar family.')",
         "        prepared, uniques = _open_wrangler_prepare_group_key(source)",
         "        if uniques is None:",
+        "            if isinstance(prepared.dtype, pd.ArrowDtype):",
+        "                if pd.api.types.is_float_dtype(prepared.dtype):",
+        "                    prepared = _open_wrangler_group_nulls(prepared, prepared.isna())",
+        "            else:",
         (
-            "            prepared = _open_wrangler_group_nulls(prepared, "
+            "                prepared = _open_wrangler_group_nulls(prepared, "
             "[_open_wrangler_missing_scalar(item) for item in source.array])"
         ),
         "        identifier_columns.append(prepared)",
