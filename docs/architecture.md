@@ -709,9 +709,18 @@ negative results and values above Int64 maximum retain the original refusal. Onl
 storage. Boolean, Sparse, arbitrary extension, floating and Decimal operands remain on their existing paths.
 
 Selected Decimal128 operands may widen to Decimal256 for add, subtract, multiply and divide, retaining each operand's
-precision and scale. Native arithmetic determines the result type. After a Decimal256 capacity failure, adding or
-subtracting the exact integer literal 0, or multiplying or dividing by 1, preserves the column's values. Multiplication
-and division by -1 use native checked negation. These repairs also accept native TypeError refusals for negative-scale
+precision and scale. Native arithmetic determines the result type.
+
+When native multiplication refuses two Decimal128 `(38, 38)` columns, Formula returns exact Decimal256 `(76, 76)`
+products. Safe widening precedes public Arrow views of the integer coefficients. Native grouped multiplication combines
+exactly two coefficients per source row; their product fits 76 digits. A final view restores scale 76, and positional
+sorting restores row order. Either null operand produces null; empty inputs retain the output type. This path adds
+temporary Decimal256 buffers, positional row identifiers and two aggregate entries per row. It preserves source values
+and indexes, and does not extend other Decimal precision, scale or input-width combinations.
+
+After a Decimal256 capacity failure, adding or subtracting the exact integer literal 0, or multiplying or dividing
+by 1, preserves the column's values. Multiplication and division by -1 use native checked negation. These repairs also
+accept native TypeError refusals for negative-scale
 Decimal256 operands whose full declared capacity cannot fit the 76-digit scale-zero intermediate described below.
 All retain the declared precision, scale and nulls. The identity result wraps the unchanged immutable Arrow storage
 in an independent Pandas array, so assigning to the result cannot change the source. Successful native and existing
@@ -727,7 +736,7 @@ Native arithmetic then determines the output precision, scale and division round
 outside its inferred capacity, including empty or all-null inputs. The new result need not retain the source's
 negative scale. TypeError admission is limited to this rescaling and the exact Decimal256 scalar repairs above;
 other operand errors retain their previous paths.
-Negative power and remaining Decimal capacity gaps stay tracked in [#979](https://github.com/Matt17BR/openwrangler/issues/979).
+Other powers and Decimal capacity refusals retain their existing native behavior and the explicit repairs above.
 
 Convert Type's integer target is nullable signed 64-bit storage. Unsigned or floating values outside that range and
 present infinities are rejected before conversion; failed previews or applies preserve the confirmed session state.
