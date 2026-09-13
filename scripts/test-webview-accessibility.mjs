@@ -939,10 +939,6 @@ async function verifyInsightsDrawerWorkflow(browser) {
   const textHarness = "summary-text-dark-800.html";
   await textPage.goto(pathToFileURL(resolve(harnessDir, textHarness)).href, { waitUntil: "load" });
   const textToggle = textPage.getByRole("button", { name: "Column profiles and filters" });
-  if ((await textToggle.getAttribute("aria-expanded")) !== "true") {
-    await textToggle.focus();
-    await textPage.keyboard.press("Enter");
-  }
   const textPanel = textPage.getByRole("complementary", { name: "Column profiles and filters" });
   await textPanel.getByRole("heading", { name: "account_note" }).waitFor();
   for (const [label, value] of [
