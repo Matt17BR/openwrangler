@@ -1731,7 +1731,7 @@ def test_pandas_float_nan_mask_uses_native_arrays_without_scalar_classification(
     pd.testing.assert_series_equal(source, before)
 
 
-def test_pandas_float_nan_mask_preserves_float_only_fallback_semantics() -> None:
+def test_pandas_float_nan_mask_preserves_float_only_fallback_semantics(monkeypatch: pytest.MonkeyPatch) -> None:
     pa = pytest.importorskip("pyarrow")
 
     class CustomSeries(pd.Series):
@@ -1739,8 +1739,10 @@ def test_pandas_float_nan_mask_preserves_float_only_fallback_semantics() -> None
         def _constructor(self):
             return CustomSeries
 
-        def to_numpy(self, *args: Any, **kwargs: Any) -> Any:
-            raise AssertionError("Custom Series must retain scalar classification.")
+    def forbid_native_array(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("Custom Series must retain scalar classification.")
+
+    monkeypatch.setattr(CustomSeries, "to_numpy", forbid_native_array)
 
     cases = [
         (pd.Series([Decimal("NaN"), float("nan"), None], dtype=object), [False, True, False]),
