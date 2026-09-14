@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type {
   ByExampleTransformStep,
   ColumnSchema,
+  ConditionalColumnTransformStep,
   DenseRankTransformStep,
   MarkDuplicatesTransformStep,
   FillMissingReplacement,
@@ -21,6 +22,44 @@ import {
 import { copyRetainedStep, copyRTransformStep } from "../extension/r/rKernelTransformState";
 
 describe("R kernel transform binding", () => {
+  it("binds and retains one exact conditional predicate and all typed arms", () => {
+    const step: ConditionalColumnTransformStep = {
+      id: "condition",
+      kind: "conditionalColumn",
+      params: {
+        column: reference(1),
+        columnType: "integer",
+        predicate: { kind: "predicate", operator: "equals", value: "9007199254740993" },
+        newColumn: "label",
+        resultType: "string",
+        trueValue: "",
+        falseValue: "no",
+        missingValue: null
+      }
+    };
+    const bound = rTransformStep(step, schema);
+    const copied = copyRetainedStep(step);
+    expect(bound).toEqual(step);
+    expect(copied).toEqual(step);
+    expect(copyRTransformStep(step)).toEqual(step);
+    if (bound.kind !== "conditionalColumn" || copied.kind !== "conditionalColumn") throw new Error("wrong kind");
+    expect(bound.params.column).not.toBe(step.params.column);
+    expect(bound.params.predicate).not.toBe(step.params.predicate);
+    expect(copied.params.predicate).not.toBe(step.params.predicate);
+    expect(Object.isFrozen(bound.params.predicate)).toBe(true);
+    expect(() => rTransformStep({ ...step, params: { ...step.params, columnType: "float" } }, schema)).toThrow(
+      "declares"
+    );
+    expect(() =>
+      rTransformStep({ ...step, params: { ...step.params, column: { ...reference(1), name: "stale" } } }, schema)
+    ).toThrow();
+    expect(() => rTransformStep({ ...step, params: { ...step.params, trueValue: "é".repeat(4097) } }, schema)).toThrow(
+      "text limit"
+    );
+    expect(() => rTransformStep({ ...step, params: { ...step.params, resultType: "boolean" } }, schema)).toThrow(
+      "malformed"
+    );
+  });
   it("binds duplicate comparisons by exact identity and copies the command independently", () => {
     const step: MarkDuplicatesTransformStep = {
       id: "mark",

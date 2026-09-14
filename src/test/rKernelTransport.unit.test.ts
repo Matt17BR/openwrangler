@@ -53,6 +53,63 @@ afterEach(() => {
 });
 
 describe("native R kernel runtime bundle", () => {
+  it("retains explicit conditional null arms and refuses malformed or oversized unused arms", () => {
+    const step = {
+      id: "condition",
+      kind: "conditionalColumn",
+      params: {
+        column: { id: "r:c:0", name: "value" },
+        columnType: "float",
+        predicate: { kind: "predicate", operator: "isNull" },
+        newColumn: "flag",
+        resultType: "boolean",
+        trueValue: true,
+        falseValue: false,
+        missingValue: null
+      }
+    } as const;
+    const request = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "previewStep",
+      payload: { sessionId, revision: 0, step, page: pageWindow() }
+    } as const;
+    expect(JSON.parse(encodeRKernelRequest(request)).payload.step).toEqual(step);
+    for (const arm of ["trueValue", "falseValue", "missingValue"] as const) {
+      const absent: Record<string, unknown> = { ...step.params };
+      delete absent[arm];
+      for (const params of [absent, { ...step.params, [arm]: "not a Boolean" }]) {
+        expect(() =>
+          encodeRKernelRequest({
+            ...request,
+            payload: { ...request.payload, step: { ...step, params } }
+          } as unknown as RKernelRequest)
+        ).toThrow();
+      }
+    }
+    const textStep = {
+      ...step,
+      params: {
+        ...step.params,
+        resultType: "string" as const,
+        trueValue: "",
+        falseValue: null,
+        missingValue: "é".repeat(4096)
+      }
+    };
+    expect(
+      JSON.parse(encodeRKernelRequest({ ...request, payload: { ...request.payload, step: textStep } })).payload.step
+    ).toEqual(textStep);
+    expect(() =>
+      encodeRKernelRequest({
+        ...request,
+        payload: {
+          ...request.payload,
+          step: { ...textStep, params: { ...textStep.params, missingValue: "é".repeat(4097) } }
+        }
+      })
+    ).toThrow();
+  });
   it("admits only explicit nonempty duplicate comparisons and a fresh-name field", () => {
     const step = {
       id: "mark",

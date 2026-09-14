@@ -2798,6 +2798,17 @@ def test_duckdb_all_operations_and_generated_code_stay_native(monkeypatch: pytes
         ),
     ]
     column_plan = [
+        bound_step(
+            "conditionalColumn",
+            column=bound_ref("c:source:3", "value", 3),
+            columnType="float",
+            predicate={"kind": "predicate", "operator": "gte", "value": "2"},
+            newColumn="above_two",
+            resultType="boolean",
+            trueValue=True,
+            falseValue=False,
+            missingValue=None,
+        ),
         bound_step("markDuplicates", columns=[bound_ref("c:source:3", "value", 3)], newColumn="is_duplicate"),
         bound_step(
             "cloneColumn",
@@ -4076,5 +4087,142 @@ def test_duckdb_floor_ceil_keep_nonnumeric_coercion(kind: str, value: str) -> No
         assert generated.fetchall() == expected
         assert str(live.types[-1]) == str(generated.types[-1]) == "DOUBLE"
         assert source.fetchall() == before
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize(
+    ("expression", "column_type", "predicate", "result_type", "arms", "expected"),
+    [
+        (
+            "CASE row WHEN 0 THEN 5.0 WHEN 1 THEN 10.0 WHEN 2 THEN NULL "
+            "WHEN 3 THEN 'NaN'::DOUBLE ELSE 'Infinity'::DOUBLE END",
+            "float",
+            {"operator": "gte", "value": "10"},
+            "string",
+            ("high'\n", "", " "),
+            ["", "high'\n", " ", " ", "high'\n"],
+        ),
+        (
+            "CASE WHEN row = 2 THEN NULL ELSE 9007199254740992::BIGINT + row END",
+            "integer",
+            {"operator": "gte", "value": "9007199254740993"},
+            "boolean",
+            (True, False, None),
+            [False, True, None, True, True],
+        ),
+        (
+            "CASE row WHEN 0 THEN 'alpha' WHEN 1 THEN 'Beta' WHEN 2 THEN NULL ELSE 'NaN' END",
+            "string",
+            {"operator": "contains", "value": "PH"},
+            "string",
+            ("match", "other", None),
+            ["match", "other", None, "other", "other"],
+        ),
+        ("NULL::DOUBLE", "float", {"operator": "gt", "value": "0"}, "string", (None, None, None), [None] * 5),
+    ],
+    ids=["threshold", "exact-integer", "literal-text", "all-null"],
+)
+@pytest.mark.parametrize("empty", [False, True])
+def test_duckdb_conditional_column_retains_native_source_and_declared_output(
+    expression, column_type, predicate, result_type, arms, expected, empty
+) -> None:
+    engine = DuckDBEngine()
+    source = duckdb.sql(f"SELECT {expression} AS value, row FROM range({0 if empty else 5}) source(row)")
+    before = source.fetchall()
+    before_sql = source.sql_query()
+    operation = step(
+        "conditionalColumn",
+        column={"id": "c:source:0", "name": "value"},
+        columnType=column_type,
+        predicate={"kind": "predicate", **predicate},
+        newColumn="result",
+        resultType=result_type,
+        trueValue=arms[0],
+        falseValue=arms[1],
+        missingValue=arms[2],
+    )
+    schema = engine.schema(source)
+    operation = bind_step(operation, schema, source_lineage(schema))
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+        live_rows = engine._terminal_rows(live, "SELECT * FROM ow ORDER BY row")
+        generated_rows = generated.order("row").fetchall()
+        for actual in (live_rows, generated_rows):
+            assert [row[-1] for row in actual] == ([] if empty else expected)
+            assert [
+                ["NaN" if isinstance(value, float) and isnan(value) else value for value in row[:2]] for row in actual
+            ] == [["NaN" if isinstance(value, float) and isnan(value) else value for value in row] for row in before]
+        assert str(live.types[-1]) == ("VARCHAR" if result_type == "string" else "BOOLEAN")
+        assert str(generated.types[-1]) == ("VARCHAR" if result_type == "string" else "BOOLEAN")
+        assert source.sql_query() == before_sql
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize(
+    ("operator", "expected"),
+    [
+        ("isNull", [True, False, False]),
+        ("isNotNull", [False, True, True]),
+        ("isNaN", [False, True, False]),
+        ("isNotNaN", [True, False, True]),
+    ],
+)
+def test_duckdb_conditional_nullary_predicates_ignore_missing_arm(operator, expected) -> None:
+    engine = DuckDBEngine()
+    source = duckdb.sql("SELECT * FROM (VALUES (NULL::DOUBLE,0), ('NaN'::DOUBLE,1), (1.0,2)) source(value,row)")
+    operation = step(
+        "conditionalColumn",
+        column={"id": "c:source:0", "name": "value"},
+        columnType="float",
+        predicate={"kind": "predicate", "operator": operator},
+        newColumn="result",
+        resultType="boolean",
+        trueValue=True,
+        falseValue=False,
+        missingValue=None,
+    )
+    schema = engine.schema(source)
+    operation = bind_step(operation, schema, source_lineage(schema))
+    try:
+        result = engine.apply_transform(source, operation)
+        assert [row[0] for row in engine._terminal_rows(result, "SELECT result FROM ow ORDER BY row")] == expected
+        assert [row[-1] for row in execute_generated(engine, source, [operation]).order("row").fetchall()] == expected
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("failure", ["type", "collision"])
+def test_duckdb_conditional_column_refuses_changed_generated_input(failure) -> None:
+    engine = DuckDBEngine()
+    source = duckdb.sql("SELECT 1::INTEGER AS value")
+    schema = engine.schema(source)
+    operation = bind_step(
+        step(
+            "conditionalColumn",
+            column={"id": "c:source:0", "name": "value"},
+            columnType="integer",
+            predicate={"kind": "predicate", "operator": "equals", "value": "1"},
+            newColumn="result",
+            resultType="boolean",
+            trueValue=True,
+            falseValue=False,
+            missingValue=None,
+        ),
+        schema,
+        source_lineage(schema),
+    )
+    changed = duckdb.sql("SELECT '1' AS value" if failure == "type" else "SELECT 1::INTEGER AS value, 3 AS result")
+    before = changed.fetchall()
+    try:
+        for execute in (
+            lambda: engine.apply_transform(changed, operation),
+            lambda: execute_generated(engine, changed, [operation]),
+        ):
+            with pytest.raises((EngineError, ValueError), match="type|declares|collid|existing"):
+                execute()
+            assert changed.fetchall() == before
     finally:
         engine.close()

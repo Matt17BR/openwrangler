@@ -137,6 +137,11 @@ during loading or file preflight.
 The complete operation list and parameters are in the [generated catalog](reference.md#transformation-operations).
 Transpose, explode, and unnest are not hidden catalog entries.
 
+Conditional Column adds one Text or Boolean column using an existing typed predicate. All three results are explicit
+and may be null; empty text and false remain values. Pandas, Polars, DuckDB and native R use their existing predicate
+and input limits. See the [conditional result contract](architecture.md#engine-boundaries-and-capabilities) for missing
+inputs and output bounds. This operation does not change R's Preview status.
+
 Find and Replace uses the selected engine's native regex syntax. In regex replacements, `$1` inserts the first
 capture group in Polars; Pandas, DuckDB and R use `\1`. With regular expressions off, replacement text is literal.
 Extract regex group uses its separate portable pattern subset.

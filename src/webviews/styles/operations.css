@@ -99,6 +99,10 @@
   padding: 10px;
 }
 
+.operationControls {
+  display: contents;
+}
+
 .operationSearch {
   align-items: center;
   display: grid;
@@ -292,6 +296,15 @@
 
 .operationInputRow {
   grid-template-columns: minmax(120px, 1.2fr) minmax(96px, 0.9fr) minmax(82px, 0.8fr) auto;
+}
+
+.conditionalResultRow {
+  align-items: start;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.conditionalResultRow > p {
+  grid-column: 1 / -1;
 }
 
 .aggregationRow {

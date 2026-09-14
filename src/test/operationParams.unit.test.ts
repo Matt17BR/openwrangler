@@ -151,6 +151,33 @@ const validCases: ParamsCases = {
     ],
     expected: { leftColumn: sales, operator: "multiply", rightColumn: units, newColumn: "revenue" }
   },
+  conditionalColumn: {
+    kind: "conditionalColumn",
+    fields: [
+      ["column", "c:units"],
+      ["columnType", "integer"],
+      ["operator", "gte"],
+      ["predicateValue", "9007199254740993"],
+      ["newColumn", "label"],
+      ["resultType", "string"],
+      ["trueValueChoice", "string"],
+      ["trueValue", "  high  "],
+      ["falseValueChoice", "string"],
+      ["falseValue", ""],
+      ["missingValueChoice", "null"]
+    ],
+    expected: {
+      column: units,
+      columnType: "integer",
+      predicate: { kind: "predicate", operator: "gte", value: "9007199254740993" },
+      newColumn: "label",
+      resultType: "string",
+      trueValue: "  high  ",
+      falseValue: "",
+      missingValue: null
+    },
+    filterModel: viewingFilterModel
+  },
   textLength: {
     kind: "textLength",
     fields: [
@@ -401,6 +428,47 @@ describe("buildParams", () => {
         testCase.savedFilterModel
       )
     ).toEqual(testCase.expected);
+  });
+
+  it("keeps nullary conditional results explicit and ignores inactive text inputs", () => {
+    const fields = form(validCases.conditionalColumn.fields);
+    fields.set("operator", "isNull");
+    fields.set("resultType", "boolean");
+    fields.set("trueValueChoice", "false");
+    fields.set("falseValueChoice", "null");
+    fields.set("missingValueChoice", "true");
+    expect(buildParams("conditionalColumn", fields, viewingFilterModel, schema)).toEqual({
+      column: units,
+      columnType: "integer",
+      predicate: { kind: "predicate", operator: "isNull" },
+      newColumn: "label",
+      resultType: "boolean",
+      trueValue: false,
+      falseValue: null,
+      missingValue: true
+    });
+    fields.set("column", city.id);
+    fields.set("columnType", "string");
+    fields.set("operator", "equals");
+    fields.set("predicateValue", "");
+    expect(buildParams("conditionalColumn", fields, emptyFilterModel, schema).predicate).toEqual({
+      kind: "predicate",
+      operator: "equals",
+      value: ""
+    });
+  });
+
+  it.each([
+    ["columnType", "float"],
+    ["operator", "contains"],
+    ["predicateValue", ""],
+    ["resultType", "integer"],
+    ["falseValueChoice", "false"],
+    ["missingValueChoice", ""]
+  ])("refuses incomplete or incompatible conditional form field %s", (name, value) => {
+    const fields = form(validCases.conditionalColumn.fields);
+    fields.set(name, value);
+    expect(() => buildParams("conditionalColumn", fields, emptyFilterModel, schema)).toThrow();
   });
 
   it("keeps an existing saved filter unless the form explicitly selects the current view", () => {

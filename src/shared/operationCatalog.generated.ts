@@ -142,6 +142,24 @@ export const operationCatalog: readonly OperationCatalogItem[] = Object.freeze([
     optional: Object.freeze(["rightColumn", "value"])
   }),
   Object.freeze({
+    kind: "conditionalColumn",
+    title: "Conditional column",
+    description: "Create text labels or Boolean flags from one condition, with an explicit result for missing inputs.",
+    group: "Columns / types",
+    icon: "git-compare",
+    required: Object.freeze([
+      "column",
+      "columnType",
+      "predicate",
+      "newColumn",
+      "resultType",
+      "trueValue",
+      "falseValue",
+      "missingValue"
+    ]),
+    optional: Object.freeze([])
+  }),
+  Object.freeze({
     kind: "textLength",
     title: "Text length",
     description: "Create a column containing character counts.",

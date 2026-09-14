@@ -3,6 +3,7 @@ import { useRef, useState } from "react";
 import type { FilterModel } from "../../shared/filterModel";
 import { hasActiveViewQuery, isActiveColumnFilter } from "../../shared/filterModel";
 import type { ColumnSchema, OperationKind, SessionMetadata, TransformStep } from "../../shared/protocol";
+import { ConditionalColumnFields } from "./ConditionalColumnFields";
 import { FillMissingFields } from "./FillMissingFields";
 import {
   aggregationOperations,
@@ -76,6 +77,14 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
   const initialColumnReferences = (name: string) =>
     Array.isArray(params[name]) ? params[name].map(columnReferenceId).filter(isDefined) : [];
 
+  if (kind === "conditionalColumn") {
+    return (
+      <ConditionalColumnFields
+        columns={columns}
+        initial={initialStep?.kind === kind ? initialStep.params : undefined}
+      />
+    );
+  }
   if (kind === "sortRows") {
     const rulesById = new Map<string, Record<string, unknown>>(
       initialSortRules.map((rule, index) => [`sort-${index}`, rule])

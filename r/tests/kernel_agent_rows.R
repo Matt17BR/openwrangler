@@ -1,3 +1,93 @@
+# Conditional Column uses the real decoder, preview, capture and complete emitted program.
+conditional_roundtrip <- function(values, column_type, predicate, result_type, arms, expected, flavor = "base") {
+  environment <- new.env(parent = baseenv())
+  source <- data.frame(key = seq_along(values), value = values,
+    row.names = if (length(values) == 0L) character() else paste0("row-", seq_along(values)))
+  if (identical(flavor, "tibble")) source <- tibble::as_tibble(source)
+  if (identical(flavor, "data.table")) {
+    source <- data.table::as.data.table(source)
+    data.table::setkeyv(source, "key")
+  }
+  environment$frame <- source
+  before <- serialize(source, NULL, version = 3L)
+  agent <- openwrangler_r_kernel_agent$new_agent(instrumented_frame_contract, environment)
+  on.exit(agent$dispose(), add = TRUE)
+  session <- "75757575-7575-4575-8575-757575757575"
+  opened <- dispatch_with(agent, "openSession", list(sessionId = session, variableName = "frame", page = page_window()))
+  step <- list(id = "condition", kind = "conditionalColumn", params = c(list(
+    column = list(id = "r:c:1", name = "value"), columnType = column_type, predicate = predicate,
+    newColumn = "result", resultType = result_type), arms))
+  if (length(values) == 0L && identical(result_type, "boolean")) {
+    for (arm in c("trueValue", "falseValue", "missingValue")) {
+      for (omitted in c(FALSE, TRUE)) {
+        invalid <- step
+        invalid$params[arm] <- if (omitted) NULL else list("not a Boolean")
+        refused <- dispatch_with(agent, "previewStep", list(sessionId = session, revision = 0L,
+          step = invalid, page = page_window()))
+        assert_identical(refused$kind, "error", "Conditional decoder admitted an invalid unused arm")
+        assert_identical(refused$code, "invalid_request", "Conditional decoder did not reject the request")
+      }
+    }
+  }
+  latest_full_capture <<- NULL
+  preview <- dispatch_with(agent, "previewStep", list(sessionId = session, revision = 0L, step = step, page = page_window()))
+  assert_identical(preview$kind, "stepPreview", "Conditional Column preview failed")
+  live <- get("snapshot", envir = latest_full_capture, inherits = FALSE)
+  assert_identical(live$result, expected, "Conditional Column selected wrong native branches")
+  assert_identical(preview$page$schema[1:2], opened$page$schema, "Conditional Column changed source schema")
+  assert_identical(preview$page$schema[[3L]]$id, "c:step:condition:0", "Conditional Column lost output identity")
+  assert_identical(preview$page$schema[[3L]]$rawType, if (identical(result_type, "string")) "character" else "logical", "Conditional output type was inferred")
+  nullary <- predicate$operator %in% c("isNull", "isNotNull", "isNaN", "isNotNaN")
+  assert_identical(preview$page$schema[[3L]]$nullable,
+    is.null(arms$trueValue) || is.null(arms$falseValue) || (!nullary && is.null(arms$missingValue)),
+    "Conditional output nullability disagreed with declared arms")
+  assert_identical(preview$page$frameSemantics, opened$page$frameSemantics, "Conditional Column changed frame/key metadata")
+  assert_identical(lapply(preview$page$page$rows, `[[`, "id"), lapply(opened$page$page$rows, `[[`, "id"), "Conditional Column changed row IDs")
+  applied <- dispatch_with(agent, "applyDraft", list(sessionId = session, revision = 1L, page = page_window()))
+  assert_identical(applied$page, preview$page, "Conditional Apply changed its preview")
+  generated <- new.env(parent = baseenv()); generated$frame <- unserialize(before)
+  eval(parse(text = applied$code), envir = generated)
+  assert_identical(lapply(generated$open_wrangler_result, identity), lapply(live, identity), "Complete generated Conditional Column disagreed")
+  assert_identical(class(generated$open_wrangler_result), class(live), "Generated conditional changed frame class")
+  assert_identical(row.names(generated$open_wrangler_result), row.names(live), "Generated conditional changed row names")
+  assert_identical(attr(generated$open_wrangler_result, "sorted"), attr(live, "sorted"), "Generated conditional changed keys")
+  assert_identical(serialize(generated$frame, NULL, version = 3L), before, "Generated conditional changed source")
+  assert_identical(serialize(environment$frame, NULL, version = 3L), before, "Native conditional changed source")
+  assert_identical(dispatch_with(agent, "closeSession", list(sessionId = session))$kind, "closed", "Conditional session did not close")
+  list(code = applied$code, before = before)
+}
+conditional_numeric <- c(-Inf, 1, 2, NA_real_, NaN, Inf)
+for (flavor in c("base", "tibble", "data.table")) {
+  conditional_roundtrip(conditional_numeric, "float", list(kind = "predicate", operator = "gte", value = 2),
+    "string", list(trueValue = "high", falseValue = "", missingValue = NULL),
+    c("", "", "high", NA_character_, NA_character_, "high"), flavor)
+}
+for (operator in c("isNull", "isNotNull", "isNaN", "isNotNaN")) {
+  expected <- switch(operator, isNull = is.na(conditional_numeric) & !is.nan(conditional_numeric),
+    isNotNull = !(is.na(conditional_numeric) & !is.nan(conditional_numeric)), isNaN = is.nan(conditional_numeric),
+    isNotNaN = !is.nan(conditional_numeric))
+  conditional_roundtrip(conditional_numeric, "float", list(kind = "predicate", operator = operator),
+    "boolean", list(trueValue = TRUE, falseValue = FALSE, missingValue = NULL), expected)
+}
+conditional_roundtrip(bit64::as.integer64(c("9007199254740992", "9007199254740993", NA_character_)), "integer",
+  list(kind = "predicate", operator = "equals", value = "9007199254740993"),
+  "boolean", list(trueValue = TRUE, falseValue = FALSE, missingValue = NULL), c(FALSE, TRUE, NA))
+conditional_roundtrip(c(TRUE, FALSE, NA), "boolean", list(kind = "predicate", operator = "equals", value = TRUE),
+  "string", list(trueValue = NULL, falseValue = " ", missingValue = "missing"), c(NA_character_, " ", "missing"))
+conditional_roundtrip(character(), "string", list(kind = "predicate", operator = "contains", value = "NaN"),
+  "boolean", list(trueValue = TRUE, falseValue = FALSE, missingValue = NULL), logical())
+conditional_roundtrip(c(NA_character_, NA_character_), "string", list(kind = "predicate", operator = "contains", value = "NaN"),
+  "string", list(trueValue = "present", falseValue = "", missingValue = NULL), rep(NA_character_, 2L))
+conditional_budget <- conditional_roundtrip(c(1, 2), "float", list(kind = "predicate", operator = "gte", value = 1),
+  "string", list(trueValue = strrep("x", 8192L), falseValue = "", missingValue = NULL), rep(strrep("x", 8192L), 2L))
+conditional_generated <- new.env(parent = baseenv())
+conditional_generated$frame <- data.frame(key = seq_len(9000L), value = rep(2, 9000L))
+conditional_budget_source <- serialize(conditional_generated$frame, NULL, version = 3L)
+conditional_error <- tryCatch({ eval(parse(text = conditional_budget$code), envir = conditional_generated); NULL }, error = identity)
+stopifnot(inherits(conditional_error, "error"), grepl("operation output budget", conditionMessage(conditional_error), fixed = TRUE))
+stopifnot(!exists("open_wrangler_result", envir = conditional_generated, inherits = FALSE))
+assert_identical(serialize(conditional_generated$frame, NULL, version = 3L), conditional_budget_source, "Generated conditional budget refusal changed source")
+
 # Append/capture and emitted metadata are distinct from duplicate-mask arithmetic.
 for (mark_flavor in c("base", "tibble", "data.table")) {
   for (mark_case in c("special", "wide-composite", "empty")) {

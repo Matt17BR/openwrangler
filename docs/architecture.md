@@ -316,6 +316,18 @@ binds public references against the exact input schema and lineage to private po
 disallowed, type/name-mismatched, colliding, or private row-identity references fail closed. The current catalog and
 parameters are listed in the generated [transformation reference](reference.md#transformation-operations).
 
+Conditional Column binds one source reference and its exact semantic type, then appends one fresh Text or Boolean
+column without changing source columns or rows. Matching, nonmatching and missing results are required scalar values
+of the declared output type or explicit null. Every result is validated, even when unused or the input is empty.
+For ordinary predicates, native null/NaN inputs use the missing result. Nullary predicates (`isNull`, `isNotNull`,
+`isNaN`, `isNotNaN`) evaluate every row using their existing distinctions; their missing result is unused.
+Text results use the existing 65,536-code-point scalar bound; native R also retains its UTF-8 and aggregate output
+bounds. No result-type inference or implicit coercion changes empty text, whitespace, false or null. Generated code
+rechecks the actual input type and destination before producing the same declared output type, including empty output.
+Saved Conditional Column steps whose values cannot be represented losslessly by the form remain executable but require
+recreation to edit. The form does not stringify stored operand objects, change their types or remove line breaks from
+saved operands, output names or results.
+
 Generated Python defines one public function, `clean_data(df)`, with its selected imports and helpers local to that
 function. A retained notebook source named `clean_data` instead uses `clean_data_1(df)`. Preview, inspection and
 history regeneration select that name from the same captured source metadata. Files and direct compiler calls keep

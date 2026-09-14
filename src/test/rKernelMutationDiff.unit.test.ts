@@ -17,6 +17,53 @@ import {
 } from "../extension/r/rKernelMutationDiff";
 
 describe("R kernel mutation diff", () => {
+  it("requires the conditional append name and fresh identity without changing source columns", () => {
+    const step: RTransformStep = {
+      id: "condition",
+      kind: "conditionalColumn",
+      params: {
+        column: reference(1),
+        columnType: "integer",
+        predicate: { kind: "predicate", operator: "gt", value: 1 },
+        newColumn: "flag",
+        resultType: "boolean",
+        trueValue: true,
+        falseValue: false,
+        missingValue: null
+      }
+    };
+    const output = [
+      ...schema,
+      {
+        id: "c:step:condition:0",
+        name: "flag",
+        position: 2,
+        rawType: "logical",
+        type: "boolean" as const,
+        nullable: true
+      }
+    ];
+    const diff: DataDiff = {
+      addedRows: 0,
+      removedRows: 0,
+      addedColumns: ["flag"],
+      removedColumns: [],
+      changedCells: 0,
+      cells: [],
+      truncated: false
+    };
+    const check = (columns: readonly ColumnSchema[], observed: DataDiff) =>
+      assertMutationDiff(step, schema, columns, 1, 1, pageContract([["alpha", "1"]]), observed, emptyView);
+    expect(() => check(output, diff)).not.toThrow();
+    expect(() => check(output, { ...diff, addedColumns: ["wrong"] })).toThrow();
+    expect(() =>
+      check(
+        output.map((column, index) => (index === 2 ? { ...column, id: "other" } : column)),
+        diff
+      )
+    ).toThrow();
+    expect(() => check(output.slice(1), diff)).toThrow();
+  });
   it("owns categorical retention and rejects stale, repeated, and private references", () => {
     const oneHot: OneHotEncodeTransformStep = {
       id: "encode",

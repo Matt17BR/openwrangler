@@ -424,6 +424,21 @@ export interface RKernelFilterRowsStep {
   }>;
 }
 
+export interface RKernelConditionalColumnStep {
+  readonly id: string;
+  readonly kind: "conditionalColumn";
+  readonly params: Readonly<{
+    column: RKernelColumnReference;
+    columnType: RColumnType;
+    predicate: PredicateFilter;
+    newColumn: string;
+    resultType: "string" | "boolean";
+    trueValue: string | boolean | null;
+    falseValue: string | boolean | null;
+    missingValue: string | boolean | null;
+  }>;
+}
+
 export interface RKernelDropMissingRowsStep {
   readonly id: string;
   readonly kind: "dropMissingRows";
@@ -539,6 +554,7 @@ export type RKernelTransformStep =
   | RKernelGroupByStep
   | RKernelRenameColumnStep
   | RKernelCloneColumnStep
+  | RKernelConditionalColumnStep
   | RKernelCastColumnStep
   | RKernelFormulaStep
   | RKernelTextLengthStep
@@ -1478,6 +1494,24 @@ function validateTransformStep(value: unknown): void {
   if (step.kind === "filterRows") {
     const params = exactRecord(step.params, ["filterModel"], "R kernel filter-rows parameters");
     validateTransformFilterModel(params.filterModel);
+    return;
+  }
+  if (step.kind === "conditionalColumn") {
+    if (!isTransformStep(value)) fail("R kernel conditional-column parameters are malformed.");
+    const params = exactRecord(
+      step.params,
+      ["column", "columnType", "predicate", "newColumn", "resultType", "trueValue", "falseValue", "missingValue"],
+      "R kernel conditional-column parameters"
+    );
+    validateColumnReference(params.column, "request.payload.step.params.column");
+    if (!isRColumnType(params.columnType)) fail("R kernel conditional-column type is invalid.");
+    validatePredicate(params.predicate, "request.payload.step.params.predicate", params.columnType);
+    boundedText(params.newColumn, "request.payload.step.params.newColumn", maximumVariableNameBytes, false);
+    for (const arm of ["trueValue", "falseValue", "missingValue"] as const) {
+      if (typeof params[arm] === "string") {
+        boundedText(params[arm], `request.payload.step.params.${arm}`, R_FRAME_CONTRACT_LIMITS.textBytes, true);
+      }
+    }
     return;
   }
   if (step.kind === "dropMissingRows") {

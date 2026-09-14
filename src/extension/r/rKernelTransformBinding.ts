@@ -6,6 +6,7 @@ import type {
   CastColumnTransformStep,
   CeilNumberTransformStep,
   CloneColumnTransformStep,
+  ConditionalColumnTransformStep,
   ColumnSchema,
   CustomCodeTransformStep,
   DenseRankTransformStep,
@@ -66,6 +67,7 @@ export type RTransformStepWithoutByExample =
   | DropDuplicatesTransformStep
   | RenameColumnTransformStep
   | CloneColumnTransformStep
+  | ConditionalColumnTransformStep
   | CastColumnTransformStep
   | FormulaTransformStep
   | TextLengthTransformStep
@@ -501,6 +503,39 @@ export function rTransformStep(
       id: step.id,
       kind: "filterRows" as const,
       params: Object.freeze({ filterModel: resolveTransformFilterModel(step.params.filterModel, inputSchema) })
+    });
+  }
+  if (step.kind === "conditionalColumn") {
+    if (!isTransformStep(step)) throw new TypeError("Conditional Column parameters are malformed.");
+    const model = resolveTransformFilterModel(
+      {
+        filters: [
+          {
+            column: step.params.column,
+            type: step.params.columnType,
+            predicates: [step.params.predicate]
+          }
+        ],
+        sort: []
+      },
+      inputSchema
+    );
+    const filter = model.filters[0];
+    if (!filter) throw new TypeError("Conditional Column requires one R condition.");
+    for (const arm of [step.params.trueValue, step.params.falseValue, step.params.missingValue]) {
+      if (typeof arm === "string" && Buffer.byteLength(arm, "utf8") > R_FRAME_CONTRACT_LIMITS.textBytes) {
+        throw new TypeError("Conditional Column text exceeds the native R text limit.");
+      }
+    }
+    return Object.freeze({
+      id: step.id,
+      kind: "conditionalColumn" as const,
+      params: Object.freeze({
+        ...step.params,
+        column: filter.column,
+        columnType: filter.type,
+        predicate: filter.predicates[0]!
+      })
     });
   }
   if (step.kind === "dropMissingRows") {

@@ -123,6 +123,17 @@ export function copyRTransformStep(step: RTransformStep): RTransformStep {
       params: { filterModel: copyTransformFilterModel(step.params.filterModel) }
     };
   }
+  if (step.kind === "conditionalColumn") {
+    return {
+      id: step.id,
+      kind: "conditionalColumn",
+      params: {
+        ...step.params,
+        column: { ...step.params.column },
+        predicate: { ...step.params.predicate }
+      }
+    };
+  }
   if (step.kind === "dropMissingRows") {
     return {
       id: step.id,
@@ -451,6 +462,7 @@ export function copyRetainedStep(step: RetainedTransformStep): RetainedTransform
   if (
     step.kind !== "sortRows" &&
     step.kind !== "filterRows" &&
+    step.kind !== "conditionalColumn" &&
     step.kind !== "dropMissingRows" &&
     step.kind !== "fillMissingValues" &&
     step.kind !== "dropDuplicates" &&

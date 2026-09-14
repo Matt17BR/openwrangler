@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from glob import escape as escape_glob
+from inspect import getsource
 from math import inf, isfinite, isinf, isnan, nextafter
 from pathlib import Path
 from textwrap import indent
@@ -50,6 +51,7 @@ from .base import (
     SessionDataShape,
     SummaryColumnProjection,
     bound_column_name,
+    bound_column_position,
     categorical_visualization,
     coerce_typed_view_value,
     datetime_visualization,
@@ -890,6 +892,28 @@ class DuckDBEngine(DataFrameEngine):
             return self.apply_filter_model(frame, {"filters": [], "sort": rules})
         if kind == "filterRows":
             return self.apply_filter_model(frame, _bound_duckdb_filter_model(params["filterModel"]))
+        if kind == "conditionalColumn":
+            column = bound_column_name(params["column"], kind)
+            columns = self._columns(frame)
+            raw_type = str(frame.types[columns.index(column)])
+            if _semantic_type(raw_type) != params["columnType"]:
+                raise EngineError("Conditional column input type no longer matches its declared type.")
+            if params["newColumn"] in columns:
+                raise EngineError("Conditional column output collides with an existing column.")
+            identifier = _quote_ident(column)
+            mask = _predicate_expression(identifier, params["predicate"], params["columnType"])
+            dtype = "VARCHAR" if params["resultType"] == "string" else "BOOLEAN"
+            arms = {
+                key: f"CAST({_sql_literal(params[key])} AS {dtype})"
+                for key in ("trueValue", "falseValue", "missingValue")
+            }
+            expression = f"CASE WHEN {mask} THEN {arms['trueValue']} ELSE {arms['falseValue']} END"
+            if params["predicate"]["operator"] not in {"isNull", "isNotNull", "isNaN", "isNotNaN"}:
+                expression = (
+                    f"CASE WHEN {_valid_predicate(identifier, raw_type)} THEN {expression} "
+                    f"ELSE {arms['missingValue']} END"
+                )
+            return self._assign(frame, params["newColumn"], expression)
         if kind == "dropMissingRows":
             columns = (
                 [bound_column_name(column, kind) for column in params["columns"]] if params.get("columns") else None
@@ -1337,6 +1361,15 @@ class DuckDBEngine(DataFrameEngine):
         if kind == "sortRows":
             rules = [{**rule, "column": bound_column_name(rule["column"], kind)} for rule in params["rules"]]
             return [f"{prefix}df = _ow_sort(df, {rules!r})"]
+        if kind == "conditionalColumn":
+            column = bound_column_name(params["column"], kind)
+            position = bound_column_position(params["column"], kind)
+            validate_view_predicate_operator(params["columnType"], params["predicate"]["operator"])
+            return [
+                f"{prefix}df = _ow_conditional_column(df, {column!r}, {position}, {params['columnType']!r}, "
+                f"{params['predicate']!r}, {output_name or repr(params['newColumn'])}, {params['resultType']!r}, "
+                f"{params['trueValue']!r}, {params['falseValue']!r}, {params['missingValue']!r})"
+            ]
         if kind == "filterRows":
             # The runtime helper receives the current columns so unknown saved
             # filters remain ignorable after an earlier drop/rename step.
@@ -3693,6 +3726,7 @@ def _generated_helper_source() -> str:
         [
             _GENERATED_HELPERS.rstrip(),
             "",
+            getsource(_semantic_type),
             *generated_view_value_helper_lines(),
         ]
     ).rstrip()
@@ -4049,6 +4083,29 @@ def _ow_sort(df, rules):
         "SELECT * EXCLUDE (" + order_name + ") FROM (SELECT *, row_number() OVER () AS "
         + order_name + " FROM ow) AS sorted ORDER BY " + order + ", " + order_name,
     )
+
+
+def _ow_conditional_column(
+    df, column, position, column_type, predicate, target, result_type, true_value, false_value, missing_value
+):
+    if df.columns[position:position + 1] != [column]:
+        raise ValueError("Conditional column binding no longer matches its input schema.")
+    raw_type = str(df.types[position])
+    if _semantic_type(raw_type) != column_type:
+        raise ValueError("Conditional column input type no longer matches its declared type.")
+    identifier = _ow_ident(column)
+    mask = _ow_predicate(identifier, predicate, column_type)
+    dtype = "VARCHAR" if result_type == "string" else "BOOLEAN"
+    true_sql, false_sql, missing_sql = [
+        "CAST(" + _ow_literal(value) + " AS " + dtype + ")" for value in (true_value, false_value, missing_value)
+    ]
+    expression = "CASE WHEN " + mask + " THEN " + true_sql + " ELSE " + false_sql + " END"
+    if predicate["operator"] not in {"isNull", "isNotNull", "isNaN", "isNotNaN"}:
+        valid = identifier + " IS NOT NULL"
+        if column_type == "float":
+            valid += " AND coalesce(NOT isnan(" + identifier + "), FALSE)"
+        expression = "CASE WHEN " + valid + " THEN " + expression + " ELSE " + missing_sql + " END"
+    return _ow_assign(df, target, expression)
 
 
 def _ow_filter(df, model):

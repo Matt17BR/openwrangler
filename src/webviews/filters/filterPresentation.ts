@@ -17,7 +17,7 @@ export const activeFilterColumnLabel = (name: string, metadata: SessionMetadata)
   return `${display} (unavailable column)`;
 };
 
-const predicateLabels: Readonly<Record<PredicateOperator, string>> = {
+export const predicateLabels: Readonly<Record<PredicateOperator, string>> = {
   equals: "equals",
   notEquals: "does not equal",
   contains: "contains",

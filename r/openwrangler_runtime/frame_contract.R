@@ -2822,6 +2822,7 @@ openwrangler_r_frame_contract <- local({
     min_max_scale_positions = NULL,
     dense_rank_positions = NULL,
     mark_duplicate_positions = NULL,
+    conditional_output = NULL,
     datetime_format_positions = NULL,
     fill_missing_positions = NULL,
     fallback_fill_positions = NULL,
@@ -2858,6 +2859,7 @@ openwrangler_r_frame_contract <- local({
             !is.null(min_max_scale_positions) ||
             !is.null(dense_rank_positions) ||
             !is.null(mark_duplicate_positions) ||
+            !is.null(conditional_output) ||
             !is.null(datetime_format_positions) ||
             !is.null(fill_missing_positions) ||
             !is.null(fallback_fill_positions) ||
@@ -2890,6 +2892,9 @@ openwrangler_r_frame_contract <- local({
     }
     if (!is.null(mark_duplicate_positions) && (is.null(source_positions) || is.null(output_ids))) {
       abort("internal-error", "R mark-duplicate outputs require explicit source mappings and identities")
+    }
+    if (!is.null(conditional_output) && (is.null(source_positions) || is.null(output_ids))) {
+      abort("internal-error", "R conditional outputs require explicit source mappings and identities")
     }
     if (!is.null(text_length_positions) && (is.null(source_positions) || is.null(output_ids))) {
       abort("internal-error", "R text-length outputs require explicit source mappings and identities")
@@ -3116,6 +3121,17 @@ openwrangler_r_frame_contract <- local({
         }
         mark_duplicate_positions <- as.integer(mark_duplicate_positions)
       }
+      conditional_position <- integer()
+      if (!is.null(conditional_output)) {
+        conditional_output <- exact_named_list(conditional_output, c("position", "kind", "nullable"), "conditional output")
+        conditional_position <- whole_number(conditional_output$position, "conditional output position", length(output_schema))
+        conditional_output$kind <- scalar_choice(conditional_output$kind, c("character", "logical"), "conditional output kind")
+        if (conditional_position < 1L ||
+            !is.logical(conditional_output$nullable) || length(conditional_output$nullable) != 1L ||
+            is.na(conditional_output$nullable)) {
+          abort("internal-error", "a derived R frame has invalid conditional output metadata")
+        }
+      }
       if (is.null(text_length_positions)) {
         text_length_positions <- integer()
       } else {
@@ -3259,6 +3275,7 @@ openwrangler_r_frame_contract <- local({
         min_max_scale_positions,
         dense_rank_positions,
         mark_duplicate_positions,
+        conditional_position,
         datetime_format_positions,
         fill_missing_positions,
         fallback_fill_positions,
@@ -3414,6 +3431,14 @@ openwrangler_r_frame_contract <- local({
           ) {
             abort("internal-error", "a derived R frame has an invalid formula output")
           }
+        } else if (index %in% conditional_position) {
+          output_values <- snapshot[[index]]
+          if (!identical(output_column$semantics$kind, conditional_output$kind) ||
+              !is.null(attributes(output_values)) ||
+              identical(output_ids[[index]], mapped_source_ids[[index]]) ||
+              (!conditional_output$nullable && anyNA(output_values))) {
+            abort("internal-error", "a derived R frame has an invalid conditional output")
+          }
         } else if (index %in% mark_duplicate_positions) {
           output_values <- snapshot[[index]]
           if (
@@ -3545,6 +3570,8 @@ openwrangler_r_frame_contract <- local({
         output_schema[[index]]$id <- output_ids[[index]]
         output_schema[[index]]$nullable <- if (index %in% c(categorical_positions, mark_duplicate_positions)) {
           FALSE
+        } else if (index %in% conditional_position) {
+          conditional_output$nullable
         } else if (index %in% c(by_example_positions, dense_rank_positions)) {
           column_has_missing(snapshot[[index]], output_column$semantics)
         } else if (index %in% formula_positions) {
@@ -3917,6 +3944,65 @@ openwrangler_r_frame_contract <- local({
       result <- columns
     }
     result
+  }
+
+  conditional_column <- function(capture, condition, new_name, result_type, arms) {
+    validate_capture(capture)
+    result_type <- scalar_choice(result_type, c("string", "boolean"), "conditional result type")
+    arms <- exact_named_list(arms, c("trueValue", "falseValue", "missingValue"), "conditional arms")
+    arms <- arms[c("trueValue", "falseValue", "missingValue")]
+    for (name in names(arms)) {
+      value <- arms[[name]]
+      if (is.null(value)) next
+      if (identical(result_type, "string")) {
+        arms[name] <- list(bounded_utf8(value, paste0("conditional ", name)))
+      } else if (!is.logical(value) || length(value) != 1L || is.na(value) || !is.null(attributes(value))) {
+        abort("invalid-view-query", "conditional Boolean arms must be true, false or null")
+      }
+    }
+    resolved <- resolve_view_query(list(filters = list(condition), sorts = list()), capture$descriptor)
+    filter <- resolved$filters[[1L]]
+    if (length(filter$predicates) != 1L || !is.null(filter$valueFilter)) {
+      abort("invalid-view-query", "Conditional Column requires exactly one predicate")
+    }
+    descriptor <- capture$descriptor$schema[[filter$position]]
+    source <- read_capture_frame(capture, validated = TRUE)
+    column <- source[[filter$position]]
+    predicate <- filter$predicates[[1L]]
+    matched <- predicate_mask(column, descriptor, predicate)
+    nullary <- predicate$operator %in% c("isNull", "isNotNull", "isNaN", "isNotNaN")
+    missing <- if (nullary) rep.int(FALSE, storage_length(column)) else {
+      masks <- profile_missing_masks(column, descriptor$semantics)
+      masks$null | masks$nan
+    }
+    counts <- c(sum(matched & !missing), sum(!matched & !missing), sum(missing))
+    budget <- new_payload_budget()
+    slot_bytes <- if (identical(result_type, "string")) character_vector_slot_bytes else 4L
+    spend_operation_output_budget(budget, as.double(length(matched)) * slot_bytes, "Conditional Column")
+    for (index in seq_along(arms)) {
+      if (identical(result_type, "string") && !is.null(arms[[index]])) {
+        text <- bounded_operation_output(arms[[index]], "Conditional Column")
+        spend_operation_output_budget(budget, as.double(nchar(text, type = "bytes")) * counts[[index]], "Conditional Column")
+      }
+    }
+    missing_scalar <- if (identical(result_type, "string")) NA_character_ else NA
+    values <- rep.int(missing_scalar, length(matched))
+    if (!is.null(arms$trueValue)) values[matched & !missing] <- arms$trueValue
+    if (!is.null(arms$falseValue)) values[!matched & !missing] <- arms$falseValue
+    if (!is.null(arms$missingValue)) values[missing] <- arms$missingValue
+    result <- clone_column_at(source, filter$position, descriptor$name, new_name)
+    if (identical(frame_flavor(result), "r.data.table")) {
+      data.table::set(result, j = new_name, value = values)
+    } else {
+      frame_attributes <- attributes(result)
+      frame_attributes[["row.names"]] <- .row_names_info(result, type = 0L)
+      columns <- unclass(result)
+      columns[[storage_length(columns)]] <- values
+      attributes(columns) <- frame_attributes
+      result <- columns
+    }
+    list(frame = result, filter = filter,
+      nullable = is.null(arms$trueValue) || is.null(arms$falseValue) || (!nullary && is.null(arms$missingValue)))
   }
 
   dense_rank_values <- function(values, direction) {
@@ -10014,6 +10100,7 @@ openwrangler_r_frame_contract <- local({
     isolate_custom_code_input = isolate_custom_code_input,
     rename_column_at = rename_column_at,
     clone_column_at = clone_column_at,
+    conditional_column = conditional_column,
     dense_rank_values = dense_rank_values,
     duplicate_row_mask = duplicate_row_mask,
     mark_duplicate_rows_at = mark_duplicate_rows_at,

@@ -6,10 +6,12 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Added
 
+- Conditional Column creates text labels or Boolean flags from one condition, with explicit results for matching, nonmatching and missing inputs.
 - Pandas exports negative-scale Arrow Decimal columns and row labels to Parquet with exact values, within the documented native capacity limits.
 
 ### Fixed
 
+- The cleaning dialog keeps keyboard access to its scrollable panes while a preview is pending.
 - DuckDB CSV and TSV imports refuse headers containing apostrophes before the native saved query can silently change their names. The error suggests Pandas or Polars for those files.
 - Pandas Group By avoids a scalar NaN scan when restoring ordinary NumPy-backed result keys, reducing the cost of results with many groups.
 - Pandas profiles and dataset statistics no longer count infinities as missing in ordinary NumPy-backed columns when the legacy `mode.use_inf_as_na` option is enabled. Numeric and temporal filters also avoid scalar missing-value scans.

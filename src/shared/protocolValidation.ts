@@ -1037,6 +1037,20 @@ export function isTransformStep(value: unknown): value is TransformStep {
         (!hasValue || isFormulaLiteral(params.value))
       );
     }
+    case "conditionalColumn":
+      return (
+        isColumnReference(params.column) &&
+        isEnumMember(params.columnType, COLUMN_TYPES) &&
+        isPredicateFilter(params.predicate) &&
+        isNonEmptyString(params.newColumn) &&
+        isOneOf(params.resultType, ["string", "boolean"]) &&
+        [params.trueValue, params.falseValue, params.missingValue].every(
+          (value) =>
+            value === null ||
+            (typeof value === params.resultType &&
+              (typeof value !== "string" || hasAtMostViewValueTextCodePoints(value)))
+        )
+      );
     case "textLength":
       return isColumnReference(params.column) && isNonEmptyString(params.newColumn);
     case "denseRank":

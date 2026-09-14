@@ -250,33 +250,36 @@ def _pandas_filter_conditions(
                 include_nan=bool(value_filter.get("includeNaN")),
             )
         )
-    for predicate in column_filter.get("predicates", []):
-        operator = validate_view_predicate_operator(column_type, predicate.get("operator"))
-        missing = operator in {"isNull", "isNotNull", "isNaN", "isNotNaN"}
-        values: tuple[Any, ...] = () if missing else (predicate.get("value"),)
-        if operator == "between":
-            values += (predicate.get("secondValue"),)
-        method = {
-            "equals": "eq",
-            "notEquals": "ne",
-            "startsWith": "startswith",
-            "endsWith": "endswith",
-            "gte": "ge",
-            "lte": "le",
-        }.get(operator, operator)
-        if missing:
-            method = "null" if operator.endswith("Null") else "nan"
-        conditions.append(
-            _PandasFilterCondition(
-                method,
-                column_type,
-                values,
-                coerce_values=not missing and method not in {"contains", "startswith", "endswith"},
-                negated=operator in {"isNotNull", "isNotNaN"},
-                excludes_missing=not missing,
-            )
-        )
+    conditions.extend(
+        _pandas_predicate_condition(predicate, column_type) for predicate in column_filter.get("predicates", [])
+    )
     return tuple(conditions)
+
+
+def _pandas_predicate_condition(predicate: Mapping[str, Any], column_type: str | None) -> _PandasFilterCondition:
+    operator = validate_view_predicate_operator(column_type, predicate.get("operator"))
+    missing = operator in {"isNull", "isNotNull", "isNaN", "isNotNaN"}
+    values: tuple[Any, ...] = () if missing else (predicate.get("value"),)
+    if operator == "between":
+        values += (predicate.get("secondValue"),)
+    method = {
+        "equals": "eq",
+        "notEquals": "ne",
+        "startsWith": "startswith",
+        "endsWith": "endswith",
+        "gte": "ge",
+        "lte": "le",
+    }.get(operator, operator)
+    if missing:
+        method = "null" if operator.endswith("Null") else "nan"
+    return _PandasFilterCondition(
+        method,
+        column_type,
+        values,
+        coerce_values=not missing and method not in {"contains", "startswith", "endswith"},
+        negated=operator in {"isNotNull", "isNotNaN"},
+        excludes_missing=not missing,
+    )
 
 
 def _pandas_integer_filter(series: Any, method: str, values: Sequence[Any]) -> Any:
@@ -1472,6 +1475,30 @@ class PandasEngine(DataFrameEngine):
             return self._apply_bound_sort_rules(df, params["rules"], kind)
         if kind == "filterRows":
             return self._apply_bound_filter_model(df, params["filterModel"])
+        if kind == "conditionalColumn":
+            position = self._bound_frame_position(df, params["column"], kind)
+            source = df.iloc[:, position]
+            if _pandas_semantic_type(source) != params["columnType"]:
+                raise EngineError("Conditional column input type no longer matches its declared type.")
+            if params["newColumn"] in {str(name) for name in df.columns}:
+                raise EngineError("Conditional column output collides with an existing column.")
+            source = _pandas_scalar_values(source)
+            condition = _pandas_predicate_condition(params["predicate"], params["columnType"])
+            keys = (
+                _pandas_duration_keys(source, _NUMPY_DURATION_SECONDS)
+                if params["columnType"] == "duration" and condition.values
+                else None
+            )
+            mask = _pandas_live_filter_condition(source, condition, keys).fillna(False).to_numpy(dtype=bool)
+            result = pd.Series(
+                params["falseValue"], index=df.index, dtype="string" if params["resultType"] == "string" else "boolean"
+            )
+            result.iloc[mask] = params["trueValue"]
+            if condition.excludes_missing:
+                missing = (_null_mask(source) | _nan_mask(source)).to_numpy(dtype=bool)
+                result.iloc[missing] = params["missingValue"]
+            df[params["newColumn"]] = result.array
+            return df
         if kind == "dropMissingRows":
             positions = self._bound_or_all_visible_positions(df, params.get("columns"), kind)
             if not positions:
@@ -1960,8 +1987,11 @@ class PandasEngine(DataFrameEngine):
 
     def compile_plan(self, steps: Iterable[Mapping[str, Any]], *, function_name: str = "clean_data") -> str:
         plan = list(steps)
-        needs_missing_helpers = any(step["kind"] in {"filterRows", "fillMissingValues"} for step in plan)
-        needs_view_value_helpers = any(step["kind"] == "filterRows" for step in plan)
+        needs_missing_helpers = any(
+            step["kind"] in {"filterRows", "fillMissingValues", "conditionalColumn"} for step in plan
+        )
+        needs_view_value_helpers = any(step["kind"] in {"filterRows", "conditionalColumn"} for step in plan)
+        needs_conditional_helpers = any(step["kind"] == "conditionalColumn" for step in plan)
         needs_fill_helpers = any(step["kind"] == "fillMissingValues" for step in plan)
         fill_strategies = {
             _pandas_fill_strategy(step["params"]["replacement"]) for step in plan if step["kind"] == "fillMissingValues"
@@ -2084,6 +2114,7 @@ class PandasEngine(DataFrameEngine):
             step["kind"]
             in {
                 "fillMissingValues",
+                "conditionalColumn",
                 "castColumn",
                 "groupBy",
                 "textLength",
@@ -2112,8 +2143,13 @@ class PandasEngine(DataFrameEngine):
             lines.extend(_generated_pandas_scalar_helpers())
         if needs_view_value_helpers:
             if any(
-                step["kind"] == "filterRows"
-                and any(column.get("type") == "duration" for column in step["params"]["filterModel"].get("filters", []))
+                (
+                    step["kind"] == "filterRows"
+                    and any(
+                        column.get("type") == "duration" for column in step["params"]["filterModel"].get("filters", [])
+                    )
+                )
+                or (step["kind"] == "conditionalColumn" and step["params"]["columnType"] == "duration")
                 for step in plan
             ):
                 lines.extend(
@@ -2527,6 +2563,24 @@ class PandasEngine(DataFrameEngine):
                     "",
                 ]
             )
+        if needs_conditional_helpers:
+            lines.extend(
+                [
+                    "import re",
+                    "import sys",
+                    "from builtins import len, type",
+                    "from typing import Any",
+                    "ColumnType = str",
+                    getsource(infer_semantic_type),
+                    getsource(_pandas_object_type_helpers),
+                    "_pandas_object_semantic_type = _open_wrangler_object_semantic_type",
+                    "_is_null_value = _open_wrangler_is_null",
+                    "_pandas_dictionary_value_type = _open_wrangler_dictionary_value_type",
+                    getsource(_pandas_is_missing_scalar),
+                    getsource(_pandas_is_integer_scalar),
+                    getsource(_pandas_semantic_type),
+                ]
+            )
         lines = [f"def {function_name}(df):", indent("\n".join(lines), "    ")]
         for index, step in enumerate(plan):
             if step["kind"] == "customCode":
@@ -2591,6 +2645,40 @@ class PandasEngine(DataFrameEngine):
             return lines
         if kind == "filterRows":
             return _compile_pandas_filter(params["filterModel"], index)
+        if kind == "conditionalColumn":
+            position = bound_column_position(params["column"], kind)
+            series, mask, result = (f"_conditional_{name}_{index}" for name in ("series", "mask", "result"))
+            condition = _pandas_predicate_condition(params["predicate"], params["columnType"])
+            keys = f"_conditional_keys_{index}" if params["columnType"] == "duration" and condition.values else None
+            expression = _pandas_filter_condition_expression(series, condition, keys)
+            lines = [
+                f"{prefix}{series} = df.iloc[:, {position}]",
+                f"{prefix}if _pandas_semantic_type({series}) != {params['columnType']!r}:",
+                f"{prefix}    raise ValueError('Conditional column input type no longer matches its declared type.')",
+                f"{prefix}{series} = _open_wrangler_scalar_values({series})",
+                *(
+                    [f"{prefix}{keys} = _open_wrangler_duration_keys({series}, _open_wrangler_duration_units)"]
+                    if keys
+                    else []
+                ),
+                f"{prefix}{mask} = ({expression}).fillna(False).to_numpy(dtype=bool)",
+                f"{prefix}{result} = pd.Series({params['falseValue']!r}, index=df.index, "
+                f"dtype={('string' if params['resultType'] == 'string' else 'boolean')!r})",
+                f"{prefix}{result}.iloc[{mask}] = {params['trueValue']!r}",
+            ]
+            if condition.excludes_missing:
+                lines.append(
+                    f"{prefix}{result}.iloc[(_open_wrangler_mask({series}, _open_wrangler_is_null) | "
+                    f"_open_wrangler_mask({series}, _open_wrangler_is_nan)).to_numpy(dtype=bool)] "
+                    f"= {params['missingValue']!r}"
+                )
+            lines.extend(
+                [
+                    f"{prefix}df[{output_name or repr(params['newColumn'])}] = {result}.array",
+                    f"{prefix}del {series}, {mask}, {result}" + (f", {keys}" if keys else ""),
+                ]
+            )
+            return lines
         if kind == "dropMissingRows":
             positions = (
                 [bound_column_position(column, kind) for column in params["columns"]] if params.get("columns") else None

@@ -87,6 +87,32 @@ def test_split_text_columns_binds_one_source_and_rejects_all_output_collisions_a
         bind_step({**public, "params": {**public["params"], "newColumns": ["first", "duplicate"]}}, SCHEMA, LINEAGE)
 
 
+def test_conditional_column_binds_exact_source_type_and_fresh_output() -> None:
+    public = step(
+        "conditionalColumn",
+        column=ref("c:source:1", "duplicate"),
+        columnType="integer",
+        predicate={"kind": "predicate", "operator": "gt", "value": "9007199254740993"},
+        newColumn="label",
+        resultType="string",
+        trueValue="large",
+        falseValue="",
+        missingValue=None,
+    )
+    bound = bind_step(public, SCHEMA, LINEAGE)
+    assert bound["params"]["column"] == {"id": "c:source:1", "name": "duplicate", "position": 1}
+    assert bound["params"]["predicate"] == public["params"]["predicate"]
+    assert "position" not in public["params"]["column"]
+    for override, message in [
+        ({"columnType": "float"}, "Column type mismatch"),
+        ({"newColumn": "duplicate"}, "collides"),
+        ({"column": ref("c:source:99", "duplicate")}, "Unknown or stale"),
+        ({"column": ref("c:source:1", "renamed")}, "name mismatch"),
+    ]:
+        with pytest.raises(ColumnBindingError, match=message):
+            bind_step({**public, "params": {**public["params"], **override}}, SCHEMA, LINEAGE)
+
+
 def test_binding_rejects_duplicate_requested_and_input_identities() -> None:
     duplicate = ref("c:source:0", "duplicate")
     with pytest.raises(ColumnBindingError, match="contains duplicate column identity"):

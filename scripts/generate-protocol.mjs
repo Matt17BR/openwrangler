@@ -416,5 +416,7 @@ function pythonString(value) {
 function pythonTuple(values) {
   if (values.length === 0) return "()";
   const members = values.map(pythonString).join(", ");
-  return `(${members}${values.length === 1 ? "," : ""})`;
+  const tuple = `(${members}${values.length === 1 ? "," : ""})`;
+  if (`        required=${tuple},`.length <= 120) return tuple;
+  return `(\n${values.map((value) => `            ${pythonString(value)},`).join("\n")}\n        )`;
 }

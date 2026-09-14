@@ -2,6 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SessionMetadata, TransformStep } from "../shared/protocol";
+import { MAX_VIEW_VALUE_TEXT_CHARACTERS } from "../shared/viewValueLimits";
 import { operationCatalog } from "../shared/operations";
 import { OperationBuilder } from "../webviews/operations/OperationBuilder";
 
@@ -118,6 +119,225 @@ describe("OperationBuilder", () => {
       },
       undefined
     );
+  });
+
+  it("previews and edits conditional text with an exact source and explicit missing result", () => {
+    const onPreview = vi.fn();
+    const duplicate = { ...metadata.schema[1], id: "c:2", name: "sales", position: 2, type: "integer" as const };
+    const inputSchema = [metadata.schema[0], { ...metadata.schema[1], name: "sales" }, duplicate];
+    const props = {
+      metadata: { ...metadata, schema: inputSchema },
+      filterModel: metadata.filterModel,
+      initialKind: "conditionalColumn" as const,
+      onClose: () => undefined,
+      onPreview
+    };
+    const view = render(<OperationBuilder {...props} />);
+    expect(screen.getByRole("group", { name: "Condition" })).toBeVisible();
+    expect(screen.getByRole("group", { name: "New column" })).toBeVisible();
+    expect(screen.getByRole("group", { name: "Results" })).toBeVisible();
+    const column = screen.getByRole("combobox", { name: "Condition column" });
+    column.focus();
+    expect(column).toHaveFocus();
+    fireEvent.change(column, { target: { value: "c:2" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "Operator" }), { target: { value: "gte" } });
+    const operand = screen.getByRole("textbox", { name: "Comparison value" });
+    operand.focus();
+    expect(operand).toHaveFocus();
+    fireEvent.change(operand, { target: { value: "9007199254740993" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "New column name" }), { target: { value: "decision" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "When condition matches: text" }), {
+      target: { value: "  high  " }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    const expected = {
+      column: { id: "c:2", name: "sales" },
+      columnType: "integer",
+      predicate: { kind: "predicate", operator: "gte", value: "9007199254740993" },
+      newColumn: "decision",
+      resultType: "string",
+      trueValue: "  high  ",
+      falseValue: "",
+      missingValue: null
+    };
+    expect(onPreview).toHaveBeenCalledExactlyOnceWith(
+      { id: expect.any(String), kind: "conditionalColumn", params: expected },
+      undefined
+    );
+    const saved: TransformStep = onPreview.mock.calls[0][0];
+    view.unmount();
+    onPreview.mockClear();
+    render(<OperationBuilder {...props} initialStep={saved} editInputSchema={inputSchema} />);
+    expect(screen.getByRole("textbox", { name: "When condition matches: text" })).toHaveValue("  high  ");
+    expect(screen.getByRole("textbox", { name: "When condition does not match: text" })).toHaveValue("");
+    expect(screen.getByRole("combobox", { name: "When input is missing" })).toHaveValue("null");
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledExactlyOnceWith(saved, saved.id);
+    fireEvent.change(screen.getByRole("combobox", { name: "Operator" }), { target: { value: "between" } });
+    const upper = screen.getByRole("textbox", { name: "Upper comparison value" });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledOnce();
+    fireEvent.change(upper, { target: { value: "9007199254740994" } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenLastCalledWith(
+      {
+        ...saved,
+        params: {
+          ...expected,
+          predicate: {
+            kind: "predicate",
+            operator: "between",
+            value: "9007199254740993",
+            secondValue: "9007199254740994"
+          }
+        }
+      },
+      saved.id
+    );
+  });
+
+  it("does not resubmit a saved conditional result with its line breaks removed", () => {
+    const onPreview = vi.fn();
+    const initialStep: TransformStep = {
+      id: "multiline-result",
+      kind: "conditionalColumn",
+      params: {
+        column: { id: metadata.schema[0].id, name: metadata.schema[0].name },
+        columnType: metadata.schema[0].type,
+        predicate: { kind: "predicate", operator: "equals", value: "" },
+        newColumn: "label",
+        resultType: "string",
+        trueValue: "a\r\nb",
+        falseValue: "",
+        missingValue: null
+      }
+    };
+    render(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={metadata.filterModel}
+        initialStep={initialStep}
+        editInputSchema={metadata.schema}
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent("cannot preserve");
+    expect(initialStep.params.trueValue).toBe("a\r\nb");
+  });
+
+  it("requires explicit conditional results after type changes and keeps the unused missing arm", () => {
+    const onPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={metadata.filterModel}
+        initialKind="conditionalColumn"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+    fireEvent.change(screen.getByRole("textbox", { name: "New column name" }), { target: { value: "flag" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "When condition matches: text" }), {
+      target: { value: "  kept  " }
+    });
+    fireEvent.change(screen.getByRole("combobox", { name: "Result type" }), { target: { value: "boolean" } });
+    const matching = screen.getByRole("combobox", { name: "When condition matches" });
+    expect(matching).toHaveAttribute("aria-invalid", "true");
+    expect(matching).toHaveAccessibleDescription(/previous value has not been converted/);
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).not.toHaveBeenCalled();
+    fireEvent.change(matching, { target: { value: "false" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "When condition does not match" }), {
+      target: { value: "true" }
+    });
+    fireEvent.change(screen.getByRole("combobox", { name: "Operator" }), { target: { value: "isNull" } });
+    const missing = screen.getByRole("combobox", { name: "When input is missing" });
+    expect(missing).toHaveAccessibleDescription(/missing-input result is not used/);
+    expect(screen.queryByRole("textbox", { name: "Comparison value" })).not.toBeInTheDocument();
+    fireEvent.change(missing, { target: { value: "false" } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        params: {
+          column: { id: "c:0", name: "city" },
+          columnType: "string",
+          predicate: { kind: "predicate", operator: "isNull" },
+          newColumn: "flag",
+          resultType: "boolean",
+          trueValue: false,
+          falseValue: true,
+          missingValue: false
+        }
+      }),
+      undefined
+    );
+    fireEvent.change(screen.getByRole("combobox", { name: "Result type" }), { target: { value: "string" } });
+    expect(matching).toHaveAttribute("aria-invalid", "true");
+    fireEvent.change(matching, { target: { value: "string" } });
+    expect(screen.getByRole("textbox", { name: "When condition matches: text" })).toHaveValue("  kept  ");
+  });
+
+  it("bounds conditional text by code points without blocking an explicit null result", () => {
+    const onPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={metadata.filterModel}
+        initialKind="conditionalColumn"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+    fireEvent.change(screen.getByRole("textbox", { name: "New column name" }), { target: { value: "label" } });
+    const matching = screen.getByRole("textbox", { name: "When condition matches: text" }) as HTMLInputElement;
+    fireEvent.input(matching, { target: { value: "😀".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS) } });
+    expect(matching.checkValidity()).toBe(true);
+    fireEvent.input(matching, { target: { value: matching.value + "😀" } });
+    expect(matching.checkValidity()).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByRole("combobox", { name: "When condition matches" }), { target: { value: "null" } });
+    expect(matching).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledOnce();
+    expect(onPreview.mock.calls[0][0].params).toMatchObject({
+      predicate: { kind: "predicate", operator: "equals", value: "" },
+      trueValue: null,
+      falseValue: "",
+      missingValue: null
+    });
+    fireEvent.change(screen.getByRole("combobox", { name: "When condition matches" }), { target: { value: "string" } });
+    expect(matching.value.length).toBe((MAX_VIEW_VALUE_TEXT_CHARACTERS + 1) * 2);
+    expect(matching.checkValidity()).toBe(false);
+  });
+
+  it("requires a new conditional column choice when its semantic type changes", () => {
+    const onPreview = vi.fn();
+    const props = {
+      metadata,
+      filterModel: metadata.filterModel,
+      initialKind: "conditionalColumn" as const,
+      onClose: () => undefined,
+      onPreview
+    };
+    const view = render(<OperationBuilder {...props} />);
+    fireEvent.change(screen.getByRole("textbox", { name: "New column name" }), { target: { value: "label" } });
+    const changed = { ...metadata.schema[0], type: "integer" as const, rawType: "Int64" };
+    view.rerender(<OperationBuilder {...props} metadata={{ ...metadata, schema: [changed, metadata.schema[1]] }} />);
+    expect(screen.getByRole("combobox", { name: "Condition column" })).toHaveValue("");
+    expect(within(screen.getByRole("group", { name: "Condition" })).getByRole("status")).toHaveTextContent(
+      "column type changed"
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByRole("combobox", { name: "Condition column" }), { target: { value: "c:0" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Comparison value" }), { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledOnce();
+    expect(onPreview.mock.calls[0][0].params.columnType).toBe("integer");
   });
 
   it("refuses a dense rank preview when no numeric input is available", () => {
@@ -425,6 +645,8 @@ describe("OperationBuilder", () => {
 
     expect(screen.getByRole("dialog", { name: "Add cleaning step" })).toHaveAttribute("aria-busy", "true");
     expect(screen.getByRole("status")).toHaveTextContent("Previewing changes…");
+    expect(screen.getByRole("navigation", { name: "Operation catalog" })).toHaveAttribute("tabindex", "0");
+    expect(screen.getByRole("form", { name: "Operation settings" })).toHaveAttribute("tabindex", "0");
     expect(screen.getByRole("button", { name: "Close operation picker" })).toBeDisabled();
     expect(screen.getByRole("textbox", { name: "Search operations" })).toBeDisabled();
     expect(screen.getByText("Select columns", { selector: "strong" }).closest("button")).toBeDisabled();
@@ -461,6 +683,9 @@ describe("OperationBuilder", () => {
     expect(focus).not.toHaveBeenCalled();
     focus.mockRestore();
     hasFocus.mockRestore();
+    rerender(<OperationBuilder {...props} />);
+    expect(screen.getByRole("navigation", { name: "Operation catalog" })).not.toHaveAttribute("tabindex");
+    expect(screen.getByRole("form", { name: "Operation settings" })).not.toHaveAttribute("tabindex");
   });
 
   it("contains keyboard focus within the modal operation picker", () => {

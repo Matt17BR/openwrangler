@@ -11,6 +11,64 @@ import {
 import { otherReference, requests, validateTransportSchema, valueReference } from "./protocolValidation.fixtures";
 
 describe("protocol-v4 operation request validation", () => {
+  it("preserves explicit conditional results and rejects incompatible or omitted arms", () => {
+    const params = {
+      column: valueReference,
+      columnType: "integer",
+      predicate: { kind: "predicate", operator: "isNull" },
+      newColumn: "label",
+      resultType: "string",
+      trueValue: "",
+      falseValue: "  ",
+      missingValue: null
+    };
+    const admission = (value: unknown) => {
+      const step = { id: "conditional", kind: "conditionalColumn", params: value };
+      const envelope = {
+        protocolVersion: 4,
+        requestId: "conditional-preview",
+        priority: "interactive",
+        request: {
+          kind: "previewStep",
+          sessionId: "session",
+          revision: 0,
+          offset: 0,
+          limit: 1,
+          columnOffset: 0,
+          columnLimit: 1,
+          step
+        }
+      };
+      return [isRuntimeRequestEnvelope(envelope), validateTransportSchema(envelope)];
+    };
+    expect(admission(params)).toEqual([true, true]);
+    expect(admission({ ...params, resultType: "boolean", trueValue: false, falseValue: true })).toEqual([true, true]);
+    const exact = "😀".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS);
+    expect(admission({ ...params, missingValue: exact })).toEqual([true, true]);
+    expect(admission({ ...params, missingValue: exact + "x" })).toEqual([false, false]);
+    for (const key of ["trueValue", "falseValue", "missingValue"] as const) {
+      const omitted: Record<string, unknown> = { ...params };
+      delete omitted[key];
+      expect(admission(omitted)).toEqual([false, false]);
+      for (const invalid of [false, 1, [], {}]) {
+        expect(admission({ ...params, [key]: invalid })).toEqual([false, false]);
+      }
+      expect(
+        admission({ ...params, resultType: "boolean", trueValue: true, falseValue: false, [key]: "false" })
+      ).toEqual([false, false]);
+    }
+    for (const override of [
+      { resultType: "integer" },
+      { columnType: [] },
+      { column: "value" },
+      { newColumn: "" },
+      { expression: "value > 1" },
+      { predicate: { kind: "predicate", operator: "unknown" } }
+    ]) {
+      expect(admission({ ...params, ...override })).toEqual([false, false]);
+    }
+  });
+
   it("admits only the closed Mark Duplicates column-list and output contract", () => {
     const valid = { columns: [valueReference, otherReference], newColumn: "is_duplicate" };
     const admission = (params: unknown) => {

@@ -44,6 +44,65 @@ def contains_private_position(value: Any) -> bool:
 
 
 @pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_conditional_column_retains_output_identity_through_edit_and_replay(tmp_path: Path, backend: str) -> None:
+    path = tmp_path / f"conditional-{backend}.csv"
+    original = b"name,value\na,1\nb,3\nc,\n"
+    path.write_bytes(original)
+    identity = (path.stat().st_dev, path.stat().st_ino)
+    manager = SessionManager()
+    try:
+        opened = manager.open_session({"kind": "file", "label": path.name, "path": str(path)}, backend=backend)
+        sid = opened["metadata"]["sessionId"]
+        schema = opened["metadata"]["schema"]
+        value = schema[1]
+        public = step(
+            "label",
+            "conditionalColumn",
+            column=ref(value["id"], value["name"]),
+            columnType=value["type"],
+            predicate={"kind": "predicate", "operator": "gt", "value": "2"},
+            newColumn="label",
+            resultType="string",
+            trueValue="high",
+            falseValue="",
+            missingValue=None,
+        )
+        preview = manager.preview_step(sid, 0, public, 0, 10)
+        assert manager.sessions[sid].plan == []
+        assert preview["metadata"]["schema"][-1]["id"] == "c:step:label:0"
+        assert preview["metadata"]["draftStep"] == public
+        applied = manager.apply_draft(sid, preview["revision"], 0, 10)
+        assert applied["metadata"]["schema"][:2] == schema
+        assert [(row["values"][2]["kind"], row["values"][2]["raw"]) for row in applied["page"]["rows"]] == [
+            ("string", ""),
+            ("string", "high"),
+            ("null", None),
+        ]
+        assert applied["metadata"]["steps"] == [public]
+        assert not contains_private_position(applied["metadata"]["steps"])
+        undone = manager.undo_step(sid, applied["revision"], 0, 10)
+        assert undone["metadata"]["schema"] == schema
+        redone = manager.redo_step(sid, undone["revision"], 0, 10)
+        assert redone["page"] == applied["page"]
+        assert redone["code"] == applied["code"]
+        assert redone["metadata"]["steps"] == [public]
+        edited = {**public, "params": {**public["params"], "trueValue": "large"}}
+        preview_edit = manager.preview_step(sid, redone["revision"], edited, 0, 10, replace_step_id="label")
+        confirmed = manager.apply_draft(sid, preview_edit["revision"], 0, 10)
+        assert confirmed["metadata"]["schema"][-1]["id"] == "c:step:label:0"
+        assert [(row["values"][2]["kind"], row["values"][2]["raw"]) for row in confirmed["page"]["rows"]] == [
+            ("string", ""),
+            ("string", "large"),
+            ("null", None),
+        ]
+        assert confirmed["metadata"]["steps"] == [edited]
+        assert path.read_bytes() == original
+        assert (path.stat().st_dev, path.stat().st_ino) == identity
+    finally:
+        manager.close_all()
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
 def test_bound_plan_survives_apply_replay_inspection_edit_and_undo(tmp_path: Path, backend: str) -> None:
     manager, session_id, schema = open_session(tmp_path, backend)
     value = ref(schema[1]["id"], schema[1]["name"])

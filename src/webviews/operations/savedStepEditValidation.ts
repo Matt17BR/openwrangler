@@ -6,6 +6,7 @@ import type {
   FillMissingReplacement,
   TransformStep
 } from "../../shared/protocol";
+import { createPredicate } from "../../shared/filterModel";
 import {
   directionalOrderColumnsForTarget,
   explicitFillValueKind,
@@ -138,6 +139,16 @@ function savedReferencePolicy(step: TransformStep): SavedReferencePolicy {
             reference: rule.column
           })),
           rejectRepeatedIds: true
+        }
+      ];
+    case "conditionalColumn":
+      return [
+        {
+          label: "condition column",
+          references: [
+            { label: "condition column", reference: step.params.column, expectedType: step.params.columnType }
+          ],
+          rejectRepeatedIds: false
         }
       ];
     case "filterRows":
@@ -383,6 +394,36 @@ function savedOperationTypeError(
   columnsById: ReadonlyMap<string, ColumnSchema>
 ): string | undefined {
   switch (step.kind) {
+    case "conditionalColumn": {
+      const original = step.params.predicate;
+      if (
+        [
+          step.params.newColumn,
+          step.params.trueValue,
+          step.params.falseValue,
+          step.params.missingValue,
+          original.value,
+          original.secondValue
+        ].some((value) => typeof value === "string" && /[\r\n]/u.test(value))
+      )
+        return "This form cannot preserve line breaks in the saved condition, column name or results.";
+      const text = (value: unknown) => (typeof value === "string" || typeof value === "boolean" ? String(value) : "");
+      const represented = createPredicate(
+        original.operator,
+        text(original.value),
+        text(original.secondValue),
+        step.params.columnType
+      );
+      if (
+        (["value", "secondValue"] as const).some(
+          (key) =>
+            Object.hasOwn(original, key) !== Object.hasOwn(represented, key) ||
+            !Object.is(original[key], represented[key])
+        )
+      )
+        return "This form cannot preserve the saved condition operand exactly. Recreate the condition with text or Boolean comparison values.";
+      return undefined;
+    }
     case "formula":
       return incompatibleReferenceType(
         [
