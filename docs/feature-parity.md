@@ -5,8 +5,8 @@ authoritative for command, setting, protocol, MIME, and operation names.
 
 **Done** is the standing capability status: the surface is implemented and backed by its current source or installed
 owner. **Partial** means the capability is usable but remains deliberately limited or lacks evidence for part of its
-claim. **Planned** means it is unavailable. **Out of scope** means it is deliberately unavailable for the stated
-surface.
+claim. **Unavailable** means the capability is not implemented. **Out of scope** means it is deliberately unavailable
+for the stated surface.
 
 The Pandas and Polars rows below are required for stable releases.
 
@@ -147,7 +147,7 @@ Extract regex group uses its separate portable pattern subset.
 Dense Rank appends ranks from a numeric column without reordering rows. For `[20, 10, 20, missing]`, ascending ranks
 are `[2, 1, 2, missing]`; descending ranks are `[1, 2, 1, missing]`. It ranks the cleaning input independently of viewing
 filters and sorts. Pandas, Polars, DuckDB file sessions and native R support the same value rules; native integer
-storage and capacity limits remain engine-specific. General window and partitioned ranking operations remain planned.
+storage and capacity limits remain engine-specific. General window and partitioned ranking operations are unavailable.
 
 Mark Duplicates adds a Boolean column for reviewing repeated selected keys without removing any records. For keys
 `[a, a, b]`, it produces `[true, true, false]`. Hidden matching rows still count because the operation uses the complete
@@ -465,7 +465,7 @@ cell is simultaneously present in the DOM.
 
 A stable release requires every required Pandas and Polars row above to be **Done**, no known release-blocking defect,
 and one exact candidate to pass the [qualification flow](releasing.md#release-candidate). Outside the required
-Pandas/Polars table, accurate Preview, experimental, Partial, Planned and Out-of-scope labels do not themselves block
+Pandas/Polars table, accurate Preview, experimental, Partial, Unavailable and Out-of-scope labels do not themselves block
 stable publication. Explicit candidate checks, including the R notebook matrix, must still pass.
 
 ## Native R support
@@ -600,22 +600,22 @@ Top-level TIMETZ values retain their UTC time; DuckDB 1.5.4 requires explicit co
 Representable intervals, compatible keys, nulls and empty containers remain supported. CSV retains its native text
 output.
 
-| Surface                                      | Availability       | Status  | Current evidence                               | Limit or missing proof                              |
-| -------------------------------------------- | ------------------ | ------- | ---------------------------------------------- | --------------------------------------------------- |
-| CSV and TSV file sessions                    | Yes                | Partial | Native lazy reader and packaged import slices  | Complete import-option and cross-platform matrix    |
-| Parquet file sessions                        | Yes                | Partial | Native typed pages and source invalidation     | Large-scale and repeated cross-platform matrix      |
-| JSONL file sessions                          | Yes                | Partial | Native malformed-input and packaged import     | Installed malformed/import-state interaction matrix |
-| Excel file sessions                          | No                 | Planned | Explicit unsupported diagnostic                | Use Pandas or Polars                                |
-| `.duckdb` database/catalog/table browsing    | No                 | Planned | Source kind is not registered                  | Separate connection, discovery, and security design |
-| Notebook variables and inline MIME rendering | Viewing only       | Partial | Native relation package slices                 | No cleaning, code insertion, or data export         |
-| Grid pages, typed cells, filters, and sorts  | Yes                | Partial | Native rich-type and query contracts           | Large-scale mixed-data and cross-platform matrix    |
-| Summaries, statistics, and distinct values   | Yes                | Partial | Native fixed-size profile contracts            | Repeated large-data resource evidence               |
-| Complete operation catalog                   | File sessions only | Partial | Exact direct live/generated catalog equality   | Complete installed catalog and semantic-edge matrix |
-| Draft preview, diff, apply, and history      | File sessions only | Partial | Runtime and representative packaged lifecycle  | Complete edit/discard/undo interaction matrix       |
-| Executable generated DuckDB code             | File sessions only | Partial | Direct equality and packaged copy/script slice | Edited-code execution acceptance                    |
-| CSV and Parquet cleaned-data export          | File sessions only | Partial | Native export and publication failure tests    | Cross-platform installed destination matrix         |
-| Runtime crash/reload/session replay          | Yes                | Partial | Backend-keyed replay and injected recovery     | Repeated cross-platform failure matrix              |
-| Runtime performance benchmark                | Diagnostic         | Partial | Direct and stdio smoke                         | No strict DuckDB release threshold                  |
+| Surface                                      | Availability       | Status      | Current evidence                               | Limit or missing proof                              |
+| -------------------------------------------- | ------------------ | ----------- | ---------------------------------------------- | --------------------------------------------------- |
+| CSV and TSV file sessions                    | Yes                | Partial     | Native lazy reader and packaged import slices  | Complete import-option and cross-platform matrix    |
+| Parquet file sessions                        | Yes                | Partial     | Native typed pages and source invalidation     | Large-scale and repeated cross-platform matrix      |
+| JSONL file sessions                          | Yes                | Partial     | Native malformed-input and packaged import     | Installed malformed/import-state interaction matrix |
+| Excel file sessions                          | No                 | Unavailable | Explicit unsupported diagnostic                | Use Pandas or Polars                                |
+| `.duckdb` database/catalog/table browsing    | No                 | Unavailable | Source kind is not registered                  | Separate connection, discovery, and security design |
+| Notebook variables and inline MIME rendering | Viewing only       | Partial     | Native relation package slices                 | No cleaning, code insertion, or data export         |
+| Grid pages, typed cells, filters, and sorts  | Yes                | Partial     | Native rich-type and query contracts           | Large-scale mixed-data and cross-platform matrix    |
+| Summaries, statistics, and distinct values   | Yes                | Partial     | Native fixed-size profile contracts            | Repeated large-data resource evidence               |
+| Complete operation catalog                   | File sessions only | Partial     | Exact direct live/generated catalog equality   | Complete installed catalog and semantic-edge matrix |
+| Draft preview, diff, apply, and history      | File sessions only | Partial     | Runtime and representative packaged lifecycle  | Complete edit/discard/undo interaction matrix       |
+| Executable generated DuckDB code             | File sessions only | Partial     | Direct equality and packaged copy/script slice | Edited-code execution acceptance                    |
+| CSV and Parquet cleaned-data export          | File sessions only | Partial     | Native export and publication failure tests    | Cross-platform installed destination matrix         |
+| Runtime crash/reload/session replay          | Yes                | Partial     | Backend-keyed replay and injected recovery     | Repeated cross-platform failure matrix              |
+| Runtime performance benchmark                | Diagnostic         | Partial     | Direct and stdio smoke                         | No strict DuckDB release threshold                  |
 
 DuckDB file imports support CSV, TSV, Parquet, and JSONL. A multibyte quote character is incompatible and fails
 before runtime startup. CSV export is UTF-8 with single-byte delimiter and quote syntax. DuckDB rejects schemas whose
@@ -655,16 +655,16 @@ These dispositions do not block stable publication unless a release starts adver
 | Surface                                                                                   | Current disposition                                                                                   |
 | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
 | Cleaning-step reorder                                                                     | Deferred; edit and delete earlier steps are supported, but no move primitive exists                   |
-| Transpose, explode, and unnest                                                            | Planned after the implemented deterministic split, regex, and pivot operations                        |
-| Broader window operations, formulas, and assertions                                       | Planned operation work                                                                                |
+| Transpose, explode, and unnest                                                            | Unavailable as built-in operations; Split Column and pivots are available                             |
+| General windows, partitioned ranking, and data-quality assertions                         | Unavailable as built-in operations; Dense Rank is available                                           |
 | Joins and merge                                                                           | Deferred until multi-source identity, lifecycle, persistence, and source-immutability have one design |
-| Portable cleaning recipes and batch apply                                                 | Planned after the deterministic operation primitives                                                  |
-| Natural-language and Copilot operations                                                   | Deferred until deterministic operations and portable recipe validation exist                          |
-| DuckDB Excel and database browsing                                                        | Planned experimental expansion; not part of current support                                           |
+| Portable cleaning recipes and batch apply                                                 | No public recipe format or batch runner; exported native scripts can be reused                        |
+| Natural-language and Copilot operations                                                   | Unavailable                                                                                           |
+| DuckDB Excel and database browsing                                                        | Unsupported; use Pandas or Polars for Excel files                                                     |
 | Debugger variables and non-dataframe list, dictionary, array, tensor, or scalar renderers | Deferred entry-point and data-model work                                                              |
 | Browser, code-server, virtual-workspace, and Remote SSH hosts                             | Not release-qualified; the desktop target is VS Code and editors based on it                          |
 | VS Code-based desktop editors                                                             | Bounded Linux Cursor platform smoke is representative; broader compatibility remains experimental     |
 | Localization and telemetry                                                                | Deferred product breadth                                                                              |
 | Broader cross-engine CSV codec parity and polished row-header presentation                | Deferred                                                                                              |
 
-The current priorities and deferral dependencies live in the [product roadmap](product-roadmap.md).
+Current proposals and their scope are tracked in the [product roadmap](product-roadmap.md).
