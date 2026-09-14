@@ -137,21 +137,10 @@ Use the existing owners to choose a focused source check:
   quarantine and zero-byte cleanup. Metadata identity checks do not detect every same-size content change.
   The R substitution and [Windows export-pin](../python/tests/test_export_target.py) symlink cases attempt real
   symlink creation; a recognized Windows setup refusal reports a skip rather than a passing protection check.
-  Native R's `capture-and-export` case owns timestamp rounding carry, named-column preservation, native formatter
-  cleanup, CSV delimiter restrictions, bounded checks and empty/missing columns. Its `group-pivot-and-export` kernel
-  case checks timestamp bytes, decoded custom-delimiter fields, recoverable refusal and
-  correction through the public export transport, with unchanged source and session state.
-  Configurable-export checks also own Polars schema-based CSV syntax refusal before writer opening or lazy execution,
-  safe correction, decoded fields and native null-versus-empty readback. The existing Polars lazy-writer test owns
-  streaming to the exact reserved file object.
-  Pandas Arrow temporal CSV cases check exact decoded fields, category nulls, preserved indexes, historical offsets,
-  bounded boxing and native Parquet controls. Calendar-range refusals are checked before writer opening, including
-  a hidden row in an editing Session with unchanged destination, source and revision.
-  Pandas Sparse duration CSV cases check multiplier refusal through an editing Session, unchanged destination bytes
-  and identity, source/revision preservation, and ordinary-unit, empty and omitted-index exports.
-  Pandas negative-scale Decimal Parquet cases check exact native readback, preserved and omitted labels, Formula
-  export and generated results. Overflow and invalid-precision cases must refuse before writer opening, including
-  a hidden row, without changing the destination, source or session revision.
+  Native R exports belong in the [frame owner's](../r/tests/frame_contract.R) `capture-and-export` case and the
+  [kernel owner's](../r/tests/kernel_agent.R) `group-pivot-and-export` case. These and the configurable-export owner
+  check native CSV/Parquet readback, format refusal and recovery, and source/session preservation. Keep refusal before
+  writer opening, destination preservation, bounded conversion and lazy streaming assertions in their existing owners.
 - **Python engines and generated programs:** [Pandas](../python/tests/test_pandas_engine.py),
   [Polars](../python/tests/test_polars_engine.py) and [DuckDB](../python/tests/test_duckdb_engine.py) own native profiles,
   queries, source preservation and engine-specific evaluation bounds. [Operation edges](../python/tests/test_operation_edges.py),
@@ -159,27 +148,13 @@ Use the existing owners to choose a focused source check:
   live and generated results, types and indexes. [Session transactions](../python/tests/test_session_transactions.py)
   cover public Preview/Apply, history, refusal/correction, export and replay. Keep individual numeric, dtype and
   collision cases in those tests; supported behavior belongs in [engine boundaries](architecture.md#engine-boundaries-and-capabilities).
-  [Typed cells](../python/tests/test_typed_cells.py) owns exact duration transport, bounded session selections and
-  unsupported-precision refusal, including native Pandas stored units and generated selections beyond the nanosecond
-  range. It also checks native duration choice searches against exact labels, counts, limits and missing inputs,
-  and rejects inferred calendar/unitless duration count labels while retaining paging and session state.
-  Its NumPy `NaT` Session cases compare grid flags, counts and live/generated null filters; the existing Fill Missing
-  and Pandas Group By owners cover donor handling and standalone generated nullable keys.
-  Arrow duration cases retain native extrema, dictionary spelling and validity, bounded output work, and exact
-  minimum-microsecond Session selections without changing source storage. Object duration choices must select their
-  counted rows across mixed NumPy, Pandas and Python values; the existing temporal Session owner retains recovery.
-  Sparse duration cases compare physical native ticks with cells, choices, profiles and live/generated membership,
-  including used fills, duplicate indexes, bounded simple-index output, null-only selections and precision refusal.
-  Nonempty selected rows retain Sparse units and physical nulls; expected missing inputs use contiguous slices because native
-  fill-aware row taking can corrupt multiplied NaT values on older supported NumPy versions.
+  [Typed cells](../python/tests/test_typed_cells.py) checks bounded pages, profiles and value choices against native
+  storage, including precision, missing values and live/generated selection agreement. [Filter logic](../python/tests/test_filter_logic.py)
+  owns cross-engine duration filters under a changed notebook Decimal context and native-tick comparisons with an
+  independent rational oracle. Engine-specific precision and lazy-query checks stay with the engine owners above.
+  Expected missing Sparse duration inputs use contiguous slices because native fill-aware row taking can corrupt
+  multiplied `NaT` values on older supported NumPy versions.
   Zero-unit refusal uses metadata with native access forbidden; tests do not execute zero-unit arrays.
-  [Filter logic](../python/tests/test_filter_logic.py) executes live and generated
-  duration filters under a changed notebook Decimal context in each editing-capable Python engine.
-  Its native and object duration cases compare stored ticks with an independent rational oracle across all supported units,
-  fractional and out-of-range operands, dictionary chunks and null selections.
-  The Polars owner also checks native temporal page, choice and profile precision before Python row conversion,
-  with eager/lazy session recovery, generated filtering, padded-fraction search, portable selection keys and a projected
-  Parquet scan.
 - **Generated source and Custom Code:** [helper selection](../python/tests/test_generated_helpers.py),
   [output columns](../python/tests/test_generated_output_columns.py),
   [Custom Code scope](../python/tests/test_custom_code_scope.py) and [session plans](../python/tests/test_session_plan.py)
