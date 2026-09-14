@@ -303,9 +303,13 @@ bounded action acquisition, including after code insertion or session disposal c
 owns this preparation for Pandas, DuckDB and PySpark; it still requires one trusted keyboard activation and the exact
 session receipt. Preparation does not retry a failed activation or extend acquisition deadlines.
 If acquisition fails, the existing diagnostic distinguishes hidden Variables tables from absent ones and records
-fixed Variables-document and panel-container presence/visibility. Failed or timed-out observations are `null`, not
-empty results. Failure-only reads are bounded and include no page content or raw probe errors; they do not identify
-which event caused the observed state.
+fixed Variables-document and panel-container presence/visibility. It also records capped pane header/body counts,
+expansion and body visibility, then inspects up to twelve Jupyter webview shells attached to the workbench root.
+Each shell reports visibility and its current active/pending content-frame counts. A single readable content document
+reports only root, `variableView.js` script-suffix and Variables-panel presence; a script tag does not prove execution.
+Jupyter shells are not assumed to belong to Variables. Missing, ambiguous, inaccessible or timed-out document reads
+remain `null`. These failure-only observations use one-second collection bounds and include no page content, URLs or
+raw probe errors; they do not identify which event caused the observed state.
 The released-Jupyter DuckDB journey waits for the exact panel's committed renderer after inline open and toolbar
 reopen before changing filters. Far-row inspection is read-only; filter persistence and recovery still use committed
 view requests. These page assertions report bounded error codes and recoverability when a request fails.
