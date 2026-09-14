@@ -12,6 +12,7 @@ import { createRContractPhases, selectRContractPhases } from "./run-r-contract-t
 const script = resolve(import.meta.dirname, "ci-docs-only.mjs");
 const arrowFormulaHelper = "python/openwrangler_runtime/engines/_pandas_arrow_formula_helpers.py";
 const arrowFormulaTests = ["python/tests/test_operation_edges.py", "python/tests/test_session_transactions.py"];
+const pandasFilterTests = ["python/tests/test_pandas_engine.py", "python/tests/test_filter_logic.py"];
 const workflow = load(readFileSync(resolve(import.meta.dirname, "../.github/workflows/ci.yml"), "utf8"));
 const releasedJupyter = load(
   readFileSync(resolve(import.meta.dirname, "../.github/workflows/released-jupyter.yml"), "utf8")
@@ -291,11 +292,14 @@ test("omits native Spark for nonempty subsets of the existing local-engine owner
     ["python/openwrangler_runtime/engines/duckdb_engine.py"],
     ["python/tests/test_duckdb_engine.py"],
     ["python/tests/test_split_text_columns.py"],
+    [pandasFilterTests[0]],
+    [pandasFilterTests[1]],
     [
       "python/openwrangler_runtime/engines/pandas_engine.py",
       "python/openwrangler_runtime/engines/duckdb_engine.py",
       "python/tests/test_duckdb_engine.py",
       "python/tests/test_split_text_columns.py",
+      ...pandasFilterTests,
       "CHANGELOG.md",
       "docs/architecture.md",
       "docs/feature-parity.md"
@@ -338,7 +342,7 @@ test("keeps native Spark for other inputs alongside the eligible local-engine ow
     ".github/workflows/ci.yml",
     "scripts/ci-docs-only.mjs",
     "scripts/ci-docs-only.test.mjs"
-  ].map((file) => [arrowFormulaHelper, ...arrowFormulaTests, file]);
+  ].map((file) => [arrowFormulaHelper, ...arrowFormulaTests, ...pandasFilterTests, file]);
   for (const files of cases) {
     await context.test(files.join(", "), (child) => {
       const cwd = repository(child, [arrowFormulaHelper, ...files]);
@@ -355,6 +359,8 @@ test("proves added regular Python source only for native R", async (context) => 
     { added: ["python/openwrangler_runtime/nested/__init__.py"], modified: [] },
     { added: [arrowFormulaHelper], modified: arrowFormulaTests },
     { added: [arrowFormulaTests[0]], modified: [arrowFormulaHelper] },
+    { added: [pandasFilterTests[0]], modified: [arrowFormulaHelper] },
+    { added: [pandasFilterTests[1]], modified: [arrowFormulaHelper] },
     { added: ["python/tests/new_formula.py"], modified: [arrowFormulaHelper] },
     {
       added: ["python/openwrangler_runtime/helper.py", "python/tests/test_helper.py"],
@@ -521,6 +527,7 @@ test("requires full owners for deleted or renamed source, including alongside ad
     "src/test/progressiveProfilingLifecycle.unit.test.tsx",
     arrowFormulaHelper,
     arrowFormulaTests[1],
+    ...pandasFilterTests,
     "python/openwrangler_runtime/session.py",
     "r/openwrangler_runtime/kernel_agent.R",
     "r/tests/kernel_agent.R",
@@ -561,6 +568,7 @@ test("requires full owners for source mode changes and existing executable or sy
     "src/test/progressiveProfilingLifecycle.unit.test.tsx",
     arrowFormulaHelper,
     "python/tests/helper.py",
+    ...pandasFilterTests,
     "r/tests/kernel_agent.R",
     "src/test/extensionHost/releasedRCoreEditing.ts",
     "scripts/editor-acceptance-artifact.test.mjs",

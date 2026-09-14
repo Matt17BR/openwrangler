@@ -77,8 +77,9 @@ The scope-only job uses Node and Git without installing npm dependencies or rest
   `docs/**/*.md`.
 - Native Spark may be omitted for modifications to one or more of the existing
   `python/openwrangler_runtime/engines/_pandas_arrow_formula_helpers.py`, `pandas_engine.py` and `duckdb_engine.py`
-  files, or `python/tests/test_operation_edges.py`, `test_session_transactions.py`, `test_duckdb_engine.py` and
-  `test_split_text_columns.py`, optionally with the allowed Markdown edits. Each owner qualifies independently.
+  files, or `python/tests/test_operation_edges.py`, `test_session_transactions.py`, `test_duckdb_engine.py`,
+  `test_split_text_columns.py`, `test_pandas_engine.py` and `test_filter_logic.py`, optionally with the allowed Markdown
+  edits. Each owner qualifies independently.
   Documentation-only edits do not set this omission flag. Additions,
   deletions, renames, mode changes and other inputs keep native Spark execution required.
 - Only the macOS and Windows editor steps may be omitted when at least one of the existing
