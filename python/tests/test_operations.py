@@ -1396,9 +1396,56 @@ def test_polars_group_missing_value_aggregations_match_generated_code(lazy: bool
     assert_semantically_equal(live, generated)
 
 
+@pytest.mark.parametrize(
+    "value", ["constant", "", None, False, 0, 1.25], ids=["text", "empty-text", "null", "false", "zero", "fraction"]
+)
+def test_pandas_constant_by_example_omits_unused_helpers_and_preserves_native_results(value: Any) -> None:
+    engine = PandasEngine()
+    frame = pd.DataFrame(
+        {"text": pd.Series(["one", "two", None], dtype=object), "kept": pd.array([1, None, 3], dtype="Int64")}
+    )
+    frame.columns = ["text", "text"]
+    frame.index = pd.Index([5, 5, 9], name="rows")
+    frame.attrs = {"source": "unchanged"}
+    schema = engine.schema(frame)
+    lineage = source_lineage(schema)
+    operation = bind_step(
+        step(
+            "constant-example",
+            "byExample",
+            sourceColumns=[lineage[0]],
+            newColumn="label",
+            examples=[{"inputs": ["one"], "output": value}, {"inputs": ["two"], "output": value}],
+        ),
+        schema,
+        lineage,
+    )
+    assert operation["params"]["program"] == {"kind": "literal", "value": value}
+    code = engine.compile_plan([operation])
+    assert "    def " not in code
+    for source in (frame, frame.iloc[:0]):
+        before = source.copy(deep=True)
+        original_index = source.index
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+        pd.testing.assert_frame_equal(live, generated)
+        pd.testing.assert_frame_equal(generated.iloc[:, :2], source)
+        pd.testing.assert_series_equal(generated["label"], pd.Series(value, index=source.index, name="label"))
+        pd.testing.assert_frame_equal(source, before)
+        assert source.index is original_index
+        assert source.attrs == before.attrs
+
+
 def test_by_example_is_native_and_generated_code_matches(engine_and_frame):
     engine, frame = engine_and_frame
     public_plan = [
+        step(
+            "example-constant",
+            "byExample",
+            sourceColumns=[public_ref("c:source:0", "group")],
+            newColumn="constant",
+            examples=[{"inputs": ["a"], "output": "fixed"}, {"inputs": ["b"], "output": "fixed"}],
+        ),
         step(
             "example-label",
             "byExample",
@@ -1431,6 +1478,7 @@ def test_by_example_is_native_and_generated_code_matches(engine_and_frame):
         ),
     ]
     assert [operation["params"]["program"]["kind"] for operation in public_plan] == [
+        "literal",
         "concat",
         "datetimeFormat",
         "arithmetic",
@@ -1439,9 +1487,12 @@ def test_by_example_is_native_and_generated_code_matches(engine_and_frame):
     lineage = source_lineage(schema)
     plan = [bind_step(operation, schema, lineage) for operation in public_plan]
     transformed = apply_plan(engine, frame, plan)
+    assert [row["constant"] for row in records(transformed)] == ["fixed"] * 4
     assert [row["label"] for row in records(transformed)] == ["a-2", "a-3", "b-4", "b-3"]
     assert [row["month"] for row in records(transformed)] == ["01/2024", "02/2024", "03/2024", "02/2024"]
     assert records(transformed)[0]["score"] == pytest.approx(3.2)
+    if isinstance(engine, PandasEngine):
+        assert "def _open_wrangler_nullable_string_copy(" in engine.compile_plan(plan)
     assert_semantically_equal(transformed, execute_generated(engine, frame, plan))
 
 

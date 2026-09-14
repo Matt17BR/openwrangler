@@ -2002,7 +2002,11 @@ class PandasEngine(DataFrameEngine):
             for step in plan
         )
         needs_object_isolation = any(step["kind"] == "customCode" for step in plan)
-        needs_nullable_result_helpers = any(step["kind"] in {"groupBy", "byExample", "pivotWider"} for step in plan)
+        needs_nullable_result_helpers = any(
+            step["kind"] in {"groupBy", "pivotWider"}
+            or (step["kind"] == "byExample" and step["params"]["program"]["kind"] != "literal")
+            for step in plan
+        )
         needs_group_helpers = any(step["kind"] == "groupBy" for step in plan)
         needs_rank_helpers = any(step["kind"] == "denseRank" for step in plan)
         needs_duplicate_keys = any(step["kind"] == "markDuplicates" for step in plan)

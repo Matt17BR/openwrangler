@@ -7,6 +7,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 ### Changed
 
 - Generated Polars code includes only the integer helpers needed by its By Example and Group By steps.
+- Generated Pandas code for a constant By Example column omits unused helpers while preserving input and output checks.
 
 ### Fixed
 
