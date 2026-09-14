@@ -1251,6 +1251,7 @@ class DuckDBEngine(DataFrameEngine):
         if kind == "groupBy":
             return self._group_by(frame, _bound_duckdb_group_params(params))
         if kind == "byExample":
+            self._validate_by_example_date_examples([step])
             return self._assign(frame, params["newColumn"], _by_example_expression(params["program"]))
         if kind == "customCode":
             visible = self._visible_relation(frame)
@@ -1261,6 +1262,44 @@ class DuckDBEngine(DataFrameEngine):
             # and guarantees no custom relation owner enters session state.
             return self._relation_from_sql(result_sql)
         raise EngineError(f"DuckDB does not implement transformation: {kind}")
+
+    def _validate_by_example_date_examples(self, steps: Iterable[Mapping[str, Any]]) -> None:
+        parameters = [
+            step["params"]
+            for step in steps
+            if step["kind"] == "byExample"
+            and step["params"]["program"]["kind"] == "datetimeFormat"
+            and any(
+                token in step["params"]["program"][field]
+                for field in ("inputFormat", "outputFormat")
+                for token in ("%B", "%b")
+            )
+        ]
+        if not parameters:
+            return
+
+        import duckdb
+
+        message = "DuckDB cannot reproduce these date examples. Use numeric month values or Custom Code."
+        with self._tracked_connection() as connection:
+            for params in parameters:
+                program = params["program"]
+                reference = program["input"]["column"]
+                source_index = next(
+                    index for index, column in enumerate(params["sourceColumns"]) if column["id"] == reference["id"]
+                )
+                values = ", ".join("(CAST(? AS VARCHAR))" for _ in params["examples"])
+                query = (
+                    f"SELECT {_by_example_expression(program)} FROM (VALUES {values}) "
+                    f"AS ow_examples({_quote_ident(reference['name'])})"
+                )
+                inputs = [example["inputs"][source_index] for example in params["examples"]]
+                try:
+                    actual = connection.execute(query, inputs).fetchall()
+                except (duckdb.InvalidInputException, duckdb.ConversionException, duckdb.OutOfRangeException):
+                    raise EngineError(message) from None
+                if actual != [(example["output"],) for example in params["examples"]]:
+                    raise EngineError(message)
 
     def _validate_pivot_wider(
         self,
@@ -1358,6 +1397,7 @@ class DuckDBEngine(DataFrameEngine):
 
     def compile_plan(self, steps: Iterable[Mapping[str, Any]], *, function_name: str = "clean_data") -> str:
         plan = list(steps)
+        self._validate_by_example_date_examples(plan)
         if plan and all(step["kind"] == "renameColumn" for step in plan):
             lines = [f"def {function_name}(df):", "    _ow_check_addressability(df)"]
             for index, step in enumerate(plan):

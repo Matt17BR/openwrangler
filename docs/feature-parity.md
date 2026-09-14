@@ -398,6 +398,9 @@ fill values. Current Pandas still rejects fractional fills that only the support
 Polars and DuckDB enum profiles and typed filters use string values even when category labels resemble numeric or
 container type names. Fixed-size DuckDB arrays remain containers, with unsupported comparisons and sorts refused.
 Polars By Example supports exact unsigned cancellation and multiplication by zero on the minimum runtime.
+Polars and DuckDB refuse By Example date transformations when native month-name parsing or formatting disagrees with
+the supplied examples. Numeric month values or Custom Code can express an alternative. Matching examples do not
+guarantee the intended language on other rows; inspect Preview before applying the transformation.
 Polars One-hot and Multi-label generated code supports dropping every original column, including on single-column
 inputs. Pandas and Polars generated categorical code rejects results with no visible columns, matching live Preview;
 empty-row inputs remain valid when a visible column is retained.

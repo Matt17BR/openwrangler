@@ -1853,6 +1853,7 @@ class PolarsEngine(DataFrameEngine):
             ]
             return normalized.group_by(keys, maintain_order=True).agg(expressions)
         if kind == "byExample":
+            _polars_validate_datetime_examples(params)
             schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
             scalar_checked_integers = _polars_program_uses_uint128(params["program"], schema)
             return df.with_columns(
@@ -2992,6 +2993,7 @@ class PolarsEngine(DataFrameEngine):
             lines.append(f"{prefix}df = df.group_by({keys!r}, maintain_order=True).agg({expressions})")
             return lines
         if kind == "byExample":
+            _polars_validate_datetime_examples(params)
             program = params["program"]
             if not _polars_program_needs_checked_integer_helpers(program):
                 expression = _compile_polars_by_example(program)
@@ -3011,6 +3013,33 @@ class PolarsEngine(DataFrameEngine):
         if kind == "customCode":
             return custom_code_step_lines(prefix=prefix, engine_name=self.name, index=index)
         raise EngineError(f"Polars cannot compile transformation: {kind}")
+
+
+def _polars_validate_datetime_examples(params: Mapping[str, Any]) -> None:
+    program = params["program"]
+    if program["kind"] != "datetimeFormat" or not any(
+        token in program[field] for field in ("inputFormat", "outputFormat") for token in ("%B", "%b")
+    ):
+        return
+
+    import polars as pl
+
+    reference = program["input"]["column"]
+    input_index = next(index for index, column in enumerate(params["sourceColumns"]) if column["id"] == reference["id"])
+    examples = params["examples"]
+    message = "Polars cannot reproduce these date examples. Use numeric month values or Custom Code."
+    try:
+        values = pl.Series(
+            bound_column_name(reference, "byExample"),
+            [example["inputs"][input_index] for example in examples],
+            dtype=pl.String,
+            strict=False,
+        )
+        actual = pl.DataFrame([values]).select(_polars_by_example_expression(program)).to_series().to_list()
+    except (pl.exceptions.PolarsError, TypeError, ValueError):
+        raise EngineError(message) from None
+    if actual != [example["output"] for example in examples]:
+        raise EngineError(message)
 
 
 def _polars_by_example_expression(
