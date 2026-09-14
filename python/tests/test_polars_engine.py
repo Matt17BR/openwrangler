@@ -34,6 +34,182 @@ ROOT = Path(__file__).resolve().parents[2]
 
 @pytest.mark.parametrize("lazy", [False, True])
 @pytest.mark.parametrize(
+    "dtype,tick,raw",
+    [
+        (pl.Datetime("ns"), -1, "1969-12-31T23:59:59.999999999"),
+        (pl.Datetime("ns", "America/New_York"), -1, "1969-12-31T18:59:59.999999999-05:00"),
+        (pl.Datetime("us"), 1, "1970-01-01T00:00:00.000001"),
+        (pl.Datetime("ms"), 1, "1970-01-01T00:00:00.001000"),
+        (pl.Duration("ns"), 1, "0.000000001"),
+        (pl.Duration("ns"), -(2**63), "-9223372036.854775808"),
+        (pl.Duration("us"), 1, "0.000001"),
+        (pl.Duration("ms"), -12345, -12.345),
+    ],
+)
+def test_polars_nested_temporal_output_preserves_values_and_native_counts(
+    lazy: bool, dtype: Any, tick: int, raw: Any
+) -> None:
+    source = pl.DataFrame({"value": pl.Series([tick, tick + 1, tick, None], dtype=pl.Int64).cast(dtype)})
+    source = source.select(
+        pl.concat_list("value").alias("items"),
+        pl.concat_list("value", pl.lit(None, dtype=dtype)).list.to_array(2).alias("fixed"),
+        pl.struct(pl.col("value").alias("when"), pl.lit(41).alias("ticks"), pl.lit("keep").alias("text")).alias(
+            "record"
+        ),
+    )
+    source = pl.concat(
+        [
+            source,
+            pl.DataFrame(
+                {
+                    "items": [[], None],
+                    "fixed": [None, [None, None]],
+                    "record": [None, {"when": None, "ticks": 41, "text": "keep"}],
+                },
+                schema=source.schema,
+            ),
+        ]
+    ).with_columns(pl.concat_list("record").alias("nested"))
+    before = source.clone()
+    frame = source.lazy() if lazy else source
+    engine = PolarsEngine()
+    original_schema = engine.schema(frame)
+    page = engine.page(frame, 0, 6)
+    expected_record = {"when": raw, "ticks": 41, "text": "keep"}
+    expected = [[raw], [raw, None], expected_record, [expected_record]]
+    assert [cell["raw"] for cell in page["rows"][0]["values"]] == expected
+    assert page["rows"][0]["values"] == page["rows"][2]["values"]
+    assert page["rows"][0]["values"] != page["rows"][1]["values"]
+    assert [cell["raw"] for cell in page["rows"][4]["values"]] == [[], None, None, [None]]
+    assert [cell["raw"] for cell in page["rows"][5]["values"]] == [
+        None,
+        [None, None],
+        {"when": None, "ticks": 41, "text": "keep"},
+        [{"when": None, "ticks": 41, "text": "keep"}],
+    ]
+    for position, summary in enumerate(engine.summaries(frame)):
+        label = json.dumps(expected[position], ensure_ascii=False, separators=(",", ":"))
+        assert {item["value"]: item["count"] for item in summary["topValues"]}[label] == 2
+        assert summary["distinctCount"] == source[:, position].drop_nulls().n_unique()
+        assert summary["nullCount"] == source[:, position].null_count()
+        assert all(item["selectionValue"] is None for item in summary["topValues"])
+    choices, has_more = engine.column_values(frame.head(3), "record")
+    record_label = json.dumps(expected_record, ensure_ascii=False, separators=(",", ":"))
+    assert {item["value"]: item["count"] for item in choices}[record_label] == 2
+    assert not has_more and all(item["selectionValue"] is None for item in choices)
+    with pytest.raises(pl.exceptions.InvalidOperationError, match="cannot cast List"):
+        engine.column_values(frame, "items")
+    for empty in (source.head(0), source.slice(4, 1)):
+        selected = empty.lazy() if lazy else empty
+        assert len(engine.page(selected, 0, 2)["rows"]) == empty.height
+        assert all(summary["totalCount"] == empty.height for summary in engine.summaries(selected))
+    assert engine.schema(frame) == original_schema
+    assert source.equals(before) and source.schema == before.schema
+    json.dumps(page, allow_nan=False)
+    engine.close()
+
+
+def test_polars_nontemporal_containers_do_not_enter_temporal_value_traversal(monkeypatch: pytest.MonkeyPatch) -> None:
+    source = pl.DataFrame(
+        {
+            "items": pl.Series([[1, None], [], None], dtype=pl.List(pl.Int64)),
+            "record": pl.Series([{"ticks": 1, "text": "keep"}, None, {"ticks": None, "text": "last"}]),
+            "unselected": pl.Series([[1], [None], []], dtype=pl.List(pl.Int64)).cast(pl.List(pl.Datetime("ns"))),
+        }
+    )
+
+    def refuse(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("Non-temporal values must not enter temporal formatting or decoding.")
+
+    monkeypatch.setattr(polars_engine, "_polars_query_text", refuse)
+    monkeypatch.setattr(polars_engine, "_polars_nested_temporal_value", refuse)
+    ordinary = source.select("items", "record")
+    assert polars_engine._polars_prepare_temporal_cells(ordinary, ordinary.schema) is ordinary
+    engine = PolarsEngine()
+    projection = [(0, "selected:items"), (1, "selected:record")]
+    for frame in (source, source.lazy()):
+        page = engine.page(frame, 0, 2, column_projection=projection)
+        assert page["columnIds"] == [identifier for _, identifier in projection] and len(page["rows"]) == 2
+        assert [cell["raw"] for cell in page["rows"][0]["values"]] == [[1, None], {"ticks": 1, "text": "keep"}]
+        assert [summary["distinctCount"] for summary in engine.summaries(frame, projection)] == [2, 2]
+    engine.close()
+
+
+def test_polars_sliced_nested_page_formats_only_returned_children_in_one_batch(monkeypatch: pytest.MonkeyPatch) -> None:
+    chunk = pl.DataFrame({"items": [[-1, None]]}).cast({"items": pl.List(pl.Datetime("ns"))})
+    source = pl.concat([chunk] * 20, rechunk=False)
+    before = source.clone()
+    calls: list[int] = []
+    native_text = polars_engine._polars_query_text
+
+    def observe(values: pl.Series) -> pl.Series:
+        calls.append(len(values))
+        return values
+
+    def tracked_text(expression: Any, dtype: Any) -> Any:
+        return native_text(expression, dtype).map_batches(observe, return_dtype=pl.String, is_elementwise=True)
+
+    monkeypatch.setattr(polars_engine, "_polars_query_text", tracked_text)
+    engine = PolarsEngine()
+    page = engine.page(source.lazy(), 3, 8)
+    assert calls == [16]
+    assert [row["rowNumber"] for row in page["rows"]] == list(range(3, 11))
+    assert all(row["values"][0]["raw"] == ["1969-12-31T23:59:59.999999999", None] for row in page["rows"])
+    assert source.equals(before) and source.schema == before.schema
+    engine.close()
+
+
+def test_polars_nested_temporal_file_session_keeps_native_generated_export_and_source(tmp_path: Path) -> None:
+    source = pl.DataFrame({"value": pl.Series([-1, 0, 1, None], dtype=pl.Int64).cast(pl.Datetime("ns"))}).select(
+        pl.concat_list("value").alias("items"),
+        pl.struct(pl.col("value").alias("when"), pl.lit("source").alias("text")).alias("record"),
+    )
+    before = source.clone()
+    path = tmp_path / "nested.parquet"
+    source.write_parquet(path)
+    contents, stat = path.read_bytes(), path.stat()
+    manager = SessionManager()
+    try:
+        opened = manager.open_session({"kind": "file", "path": str(path)}, backend="polars", mode="editing")
+        sid = opened["metadata"]["sessionId"]
+        reference = {key: opened["metadata"]["schema"][0][key] for key in ("id", "name")}
+        preview = manager.preview_step(
+            sid, 0, {"id": "copy", "kind": "cloneColumn", "params": {"column": reference, "newName": "copy"}}, 0, 4
+        )
+        applied = manager.apply_draft(sid, preview["revision"], 0, 4)
+        assert [row["id"] for row in applied["page"]["rows"]] == [row["id"] for row in opened["page"]["rows"]]
+        assert applied["page"]["rows"][0]["values"][0]["raw"] == ["1969-12-31T23:59:59.999999999"]
+        assert [row["values"][-1] for row in applied["page"]["rows"]] == [
+            row["values"][0] for row in opened["page"]["rows"]
+        ]
+        namespace: dict[str, Any] = {}
+        exec(applied["code"], namespace)
+        expected = source.with_columns(pl.col("items").alias("copy"))
+        generated = namespace["clean_data"](source.lazy()).collect()
+        assert generated.equals(expected) and generated.schema == expected.schema
+        output = tmp_path / "export.parquet"
+        output.touch()
+        device, inode = _regular_file_identity(output)
+        manager.export_data(
+            sid, applied["revision"], str(output), {"format": "parquet"}, {"device": str(device), "inode": str(inode)}
+        )
+        exported = pl.read_parquet(output)
+        assert exported.equals(expected) and exported.schema == expected.schema
+    finally:
+        manager.close_all()
+    assert not manager.sessions and source.equals(before)
+    after = path.stat()
+    assert path.read_bytes() == contents
+    assert (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) == (
+        stat.st_dev,
+        stat.st_ino,
+        stat.st_size,
+        stat.st_mtime_ns,
+    )
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize(
     "dtype,tick,raw,text,portable",
     [
         (pl.Duration("ns"), 10**17 + 1, "100000000.000000001", "1157d 9h 46m 40s 1ns", False),

@@ -321,7 +321,10 @@ Polars Datetime and Duration columns retain nanoseconds in grid cells, value cho
 offsets retain seconds. Duration choices now work and use native signed-unit labels, such as `1m 40s 1µs`.
 Datetime labels retain the native unit's three, six or nine fractional digits. Search accepts the displayed labels,
 padded fractions and either a `T` or space datetime separator.
-Values beyond the existing filter precision remain visible but cannot be selected.
+Values beyond the existing filter precision remain visible but cannot be selected. Datetime and Duration values
+inside Polars lists, fixed arrays and structs retain their precision in grid text, copied cells and profile labels.
+Null containers, null children and empty containers stay distinct. Complex-value selection and comparisons remain unavailable,
+and native List value-choice requests can still refuse.
 
 On Pandas versions that infer temporal count keys from object columns, profiles and value choices refuse nonzero
 NumPy datetime values with unit multipliers or units finer than nanoseconds. Fixed-unit duration counts use exact

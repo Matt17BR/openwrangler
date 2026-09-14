@@ -872,7 +872,15 @@ timezone data. Duration text uses Polars' signed-unit format, including at the I
 accepts either `T` or a space between the date and time, and preserves searches for padded fractions such as `.123000`.
 The shared duration raw conversion and typed-cell selection decoder retain the
 existing microsecond filter precision and minute-offset limit: unsupported values remain visible but refuse
-selection. Date columns and nested temporal values retain their existing behavior.
+selection. Date columns retain their existing behavior.
+
+List, Array and Struct output also prepares Datetime and Duration leaves before Python boxing, preserving their
+precision and null structure. Original dtype metadata directs decoding; source arrays and native grouping are unchanged.
+Array output temporarily uses a List expression to support the minimum Polars version. Only affected branches are
+transformed, after the page slice or bounded profile aggregation. Work within each returned container grows with its
+child values. Eager output consolidates affected container Series before expression evaluation, avoiding per-row
+dispatch in minimum Polars. This can copy ordinary siblings within an affected Struct; lazy profile expressions keep
+their existing aggregation path. Complex-value selection and comparisons remain unavailable; native List value-choice casting can still refuse.
 
 CSV export retains native Necessary quoting, which preserves null and empty-string distinctions. Native primitive
 formatters do not escape arbitrary delimiter or quote characters, so eager and lazy exports check the retained schema

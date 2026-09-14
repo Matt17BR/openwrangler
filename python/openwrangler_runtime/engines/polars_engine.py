@@ -265,25 +265,82 @@ def _polars_query_text(expression: Any, dtype: Any) -> Any:
     return expression.cast(pl.String)
 
 
-def _polars_prepare_temporal_cells(frame: Any, schema: Mapping[str, Any]) -> Any:
+def _polars_has_temporal(dtype: Any) -> bool:
     import polars as pl
 
+    if isinstance(dtype, (pl.Duration, pl.Datetime)):
+        return True
+    if isinstance(dtype, (pl.List, pl.Array)):
+        return _polars_has_temporal(dtype.inner)
+    return isinstance(dtype, pl.Struct) and any(_polars_has_temporal(field.dtype) for field in dtype.fields)
+
+
+def _polars_temporal_expression(expression: Any, dtype: Any) -> Any | None:
+    import polars as pl
+
+    if isinstance(dtype, (pl.Duration, pl.Datetime)):
+        return pl.struct(
+            expression.cast(pl.Int64).alias("ticks"),
+            _polars_query_text(expression, dtype).alias("text"),
+        )
+    if isinstance(dtype, (pl.List, pl.Array)):
+        inner = _polars_temporal_expression(pl.element(), dtype.inner)
+        if inner is not None:
+            # Minimum Polars can panic when Array.eval changes the child type.
+            values = expression.arr.to_list() if isinstance(dtype, pl.Array) else expression
+            return values.list.eval(inner)
+    if isinstance(dtype, pl.Struct):
+        fields = [
+            projected.alias(field.name)
+            for field in dtype.fields
+            if (projected := _polars_temporal_expression(expression.struct.field(field.name), field.dtype)) is not None
+        ]
+        # Updating fields preserves the parent validity, including null structs.
+        return expression.struct.with_fields(fields) if fields else None
+    return None
+
+
+def _polars_prepare_temporal_cells(frame: Any, schema: Mapping[str, Any]) -> Any:
     # Call only after limiting the result: Python row boxing discards nanoseconds.
-    expressions = [
-        pl.struct(
-            pl.col(column).cast(pl.Int64).alias("ticks"),
-            _polars_query_text(pl.col(column), dtype).alias("text"),
-        ).alias(column)
-        for column, dtype in schema.items()
-        if isinstance(dtype, (pl.Duration, pl.Datetime))
-    ]
+    import polars as pl
+
+    expressions = []
+    rechunked = []
+    for column, dtype in schema.items():
+        projected = _polars_temporal_expression(pl.col(column), dtype)
+        if projected is not None:
+            if isinstance(dtype, (pl.List, pl.Array, pl.Struct)):
+                # Minimum Polars evaluates fragmented sliced lists one row at a time.
+                rechunked.append(frame.get_column(column).rechunk())
+            expressions.append(projected.alias(column))
+    if rechunked:
+        frame = frame.with_columns(rechunked)
     return frame.with_columns(expressions) if expressions else frame
+
+
+def _polars_nested_temporal_value(value: Any, dtype: Any) -> Any:
+    import polars as pl
+
+    if value is None:
+        return None
+    if isinstance(dtype, (pl.Duration, pl.Datetime)):
+        return _polars_query_cell(value, dtype)["raw"]
+    if isinstance(dtype, (pl.List, pl.Array)) and _polars_has_temporal(dtype.inner):
+        return [_polars_nested_temporal_value(item, dtype.inner) for item in value]
+    if isinstance(dtype, pl.Struct):
+        value = value.copy()
+        for field in dtype.fields:
+            if _polars_has_temporal(field.dtype):
+                value[field.name] = _polars_nested_temporal_value(value[field.name], field.dtype)
+    return value
 
 
 def _polars_query_cell(value: Any, dtype: Any) -> dict[str, Any]:
     import polars as pl
 
     if not isinstance(dtype, (pl.Duration, pl.Datetime)):
+        if isinstance(dtype, (pl.List, pl.Array, pl.Struct)) and _polars_has_temporal(dtype):
+            value = _polars_nested_temporal_value(value, dtype)
         return normalize_cell(value)
     if value["ticks"] is None:
         return normalize_cell(None)
@@ -1045,16 +1102,10 @@ class PolarsEngine(DataFrameEngine):
         for definition, result in zip(definitions, results, strict=True):
             column, _, _, semantic_type, _, count_name = definition
             dtype = schema[column]
-            if isinstance(dtype, (pl.Duration, pl.Datetime)):
+            projected = _polars_temporal_expression(pl.element().struct.field(column), dtype)
+            if projected is not None:
                 result = result.with_columns(
-                    pl.col("top").list.eval(
-                        pl.element().struct.with_fields(
-                            pl.struct(
-                                pl.field(column).cast(pl.Int64).alias("ticks"),
-                                _polars_query_text(pl.field(column), dtype).alias("text"),
-                            ).alias(column)
-                        )
-                    )
+                    pl.col("top").list.eval(pl.element().struct.with_fields(projected.alias(column)))
                 )
             row = result.row(0, named=True)
             top_values = []
@@ -1269,7 +1320,7 @@ class PolarsEngine(DataFrameEngine):
         for row in counts.head(limit).iter_rows(named=True):
             cell = _polars_query_cell(row[column], dtype)
             item: dict[str, Any] = {
-                "value": cell["display"] if isinstance(dtype, (pl.Duration, pl.Datetime)) else str(row[column]),
+                "value": cell["display"] if _polars_has_temporal(dtype) else str(row[column]),
                 "count": int(row[count_name]),
             }
             selection = typed_cell_selection_value(cell, column_type)
