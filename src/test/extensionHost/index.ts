@@ -18509,148 +18509,151 @@ async function crashAcceptanceGuardParent(
   return result;
 }
 
-async function exercisePackagedViewingQueries(testing: TestApi, fixture: vscode.Uri): Promise<void> {
-  const original = readFileSync(fixture.fsPath, "utf8");
-  const filterModel: FilterModel = {
-    logic: "or",
-    filters: [
-      {
-        column: "city",
-        type: "string",
-        predicates: [{ kind: "predicate", operator: "startsWith", value: "M" }]
-      },
-      {
-        column: "sales",
-        type: "float",
-        predicates: [{ kind: "predicate", operator: "gt", value: 11 }]
-      }
-    ],
-    sort: [
-      { column: "active", direction: "asc", nulls: "last" },
-      { column: "sales", direction: "desc", nulls: "last" }
-    ]
-  };
-
-  for (const backend of ["pandas", "polars", "duckdb"] as const) {
-    recordAcceptanceProgress(`verify:viewing-queries:${backend}:openSession:start`);
-    const opened = await testing.request({
-      kind: "openSession",
-      ...GRID_COLUMN_WINDOW,
-      source: csvSource(fixture),
-      backend,
-      pageSize: 2,
-      mode: "viewing"
-    });
-    recordAcceptanceProgress(`verify:viewing-queries:${backend}:openSession:complete`);
-    assert.equal(opened.kind, "sessionOpened", `${backend} viewing session must open.`);
-    if (opened.kind !== "sessionOpened") continue;
-
-    recordAcceptanceProgress(`verify:viewing-queries:${backend}:getPage:start`);
-    const page = await testing.request({
-      kind: "getPage",
-      ...GRID_COLUMN_WINDOW,
-      viewRequestId: `${backend}-filter-page`,
-      sessionId: opened.metadata.sessionId,
-      revision: opened.metadata.revision,
-      offset: 0,
-      limit: 2,
-      filterModel
-    });
-    recordAcceptanceProgress(`verify:viewing-queries:${backend}:getPage:complete`);
-    assert.equal(page.kind, "page", `${backend} advanced filter and multi-sort must return a page.`);
-    if (page.kind !== "page") continue;
-    assert.equal(page.page.totalRows, 2);
-    assert.deepEqual(
-      page.page.rows.map((row) => row.values[0]?.display),
-      ["Berlin", "Milan"]
-    );
-    assert.equal(page.metadata.steps.length, 0, "Viewing queries must not become cleaning steps.");
-    assert.deepEqual(page.metadata.filterModel, filterModel);
-
-    recordAcceptanceProgress(`verify:viewing-queries:${backend}:getSummary:start`);
-    const summary = await testing.request({
-      kind: "getSummary",
-      viewRequestId: `${backend}-filter-summary`,
-      sessionId: opened.metadata.sessionId,
-      revision: page.revision,
-      filterModel
-    });
-    recordAcceptanceProgress(`verify:viewing-queries:${backend}:getSummary:complete`);
-    assert.equal(summary.kind, "summary", `${backend} progressive summary must resolve.`);
-    if (summary.kind === "summary") {
-      assert.equal(summary.summaries.length, 4);
-      assert.ok(summary.summaries.every((column) => column.totalCount === 2));
-      assert.equal(summary.summaries.find((column) => column.column === "sales")?.numeric?.max, 12);
-    }
-
-    recordAcceptanceProgress(`verify:viewing-queries:${backend}:getDatasetStats:start`);
-    const stats = await testing.request({
-      kind: "getDatasetStats",
-      viewRequestId: `${backend}-filter-stats`,
-      sessionId: opened.metadata.sessionId,
-      revision: page.revision,
-      filterModel
-    });
-    recordAcceptanceProgress(`verify:viewing-queries:${backend}:getDatasetStats:complete`);
-    assert.equal(stats.kind, "datasetStats", `${backend} exact dataset stats must resolve.`);
-    if (stats.kind === "datasetStats") {
-      assert.equal(stats.stats.missingCells, 0);
-      assert.equal(stats.stats.missingRows, 0);
-      assert.equal(stats.stats.duplicateRows, 0);
-    }
-
-    recordAcceptanceProgress(`verify:viewing-queries:${backend}:getColumnValues:start`);
-    const values = await testing.request({
-      kind: "getColumnValues",
-      viewRequestId: `${backend}-filter-values`,
-      sessionId: opened.metadata.sessionId,
-      revision: page.revision,
-      column: "city",
-      filterModel,
-      search: "il",
-      limit: 10
-    });
-    recordAcceptanceProgress(`verify:viewing-queries:${backend}:getColumnValues:complete`);
-    assert.equal(values.kind, "columnValues", `${backend} searchable column values must resolve.`);
-    if (values.kind === "columnValues") {
-      assert.deepEqual(values.values, [
+async function exercisePackagedViewingQueries(testing: TestApi, sourceFixture: vscode.Uri): Promise<void> {
+  const original = readFileSync(sourceFixture.fsPath);
+  const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-viewing-queries-"));
+  const fixture = vscode.Uri.file(path.join(directory, "sample.csv"));
+  try {
+    writeFileSync(fixture.fsPath, original, { flag: "wx" });
+    const filterModel: FilterModel = {
+      logic: "or",
+      filters: [
         {
-          value: "Milan",
-          count: 1,
-          selectionValue: {
-            kind: "typedSelection",
-            version: 1,
-            columnType: "string",
-            cell: { kind: "string", raw: "Milan", display: "Milan", isNull: false, isNaN: false }
-          }
+          column: "city",
+          type: "string",
+          predicates: [{ kind: "predicate", operator: "startsWith", value: "M" }]
+        },
+        {
+          column: "sales",
+          type: "float",
+          predicates: [{ kind: "predicate", operator: "gt", value: 11 }]
         }
-      ]);
-      assert.equal(values.hasMore, false);
+      ],
+      sort: [
+        { column: "active", direction: "asc", nulls: "last" },
+        { column: "sales", direction: "desc", nulls: "last" }
+      ]
+    };
+
+    for (const backend of ["pandas", "polars", "duckdb"] as const) {
+      recordAcceptanceProgress(`verify:viewing-queries:${backend}:openSession:start`);
+      const opened = await testing.request({
+        kind: "openSession",
+        ...GRID_COLUMN_WINDOW,
+        source: csvSource(fixture),
+        backend,
+        pageSize: 2,
+        mode: "viewing"
+      });
+      recordAcceptanceProgress(`verify:viewing-queries:${backend}:openSession:complete`);
+      assert.equal(opened.kind, "sessionOpened", `${backend} viewing session must open.`);
+      if (opened.kind !== "sessionOpened") continue;
+
+      recordAcceptanceProgress(`verify:viewing-queries:${backend}:getPage:start`);
+      const page = await testing.request({
+        kind: "getPage",
+        ...GRID_COLUMN_WINDOW,
+        viewRequestId: `${backend}-filter-page`,
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision,
+        offset: 0,
+        limit: 2,
+        filterModel
+      });
+      recordAcceptanceProgress(`verify:viewing-queries:${backend}:getPage:complete`);
+      assert.equal(page.kind, "page", `${backend} advanced filter and multi-sort must return a page.`);
+      if (page.kind !== "page") continue;
+      assert.equal(page.page.totalRows, 2);
+      assert.deepEqual(
+        page.page.rows.map((row) => row.values[0]?.display),
+        ["Berlin", "Milan"]
+      );
+      assert.equal(page.metadata.steps.length, 0, "Viewing queries must not become cleaning steps.");
+      assert.deepEqual(page.metadata.filterModel, filterModel);
+
+      recordAcceptanceProgress(`verify:viewing-queries:${backend}:getSummary:start`);
+      const summary = await testing.request({
+        kind: "getSummary",
+        viewRequestId: `${backend}-filter-summary`,
+        sessionId: opened.metadata.sessionId,
+        revision: page.revision,
+        filterModel
+      });
+      recordAcceptanceProgress(`verify:viewing-queries:${backend}:getSummary:complete`);
+      assert.equal(summary.kind, "summary", `${backend} progressive summary must resolve.`);
+      if (summary.kind === "summary") {
+        assert.equal(summary.summaries.length, 4);
+        assert.ok(summary.summaries.every((column) => column.totalCount === 2));
+        assert.equal(summary.summaries.find((column) => column.column === "sales")?.numeric?.max, 12);
+      }
+
+      recordAcceptanceProgress(`verify:viewing-queries:${backend}:getDatasetStats:start`);
+      const stats = await testing.request({
+        kind: "getDatasetStats",
+        viewRequestId: `${backend}-filter-stats`,
+        sessionId: opened.metadata.sessionId,
+        revision: page.revision,
+        filterModel
+      });
+      recordAcceptanceProgress(`verify:viewing-queries:${backend}:getDatasetStats:complete`);
+      assert.equal(stats.kind, "datasetStats", `${backend} exact dataset stats must resolve.`);
+      if (stats.kind === "datasetStats") {
+        assert.equal(stats.stats.missingCells, 0);
+        assert.equal(stats.stats.missingRows, 0);
+        assert.equal(stats.stats.duplicateRows, 0);
+      }
+
+      recordAcceptanceProgress(`verify:viewing-queries:${backend}:getColumnValues:start`);
+      const values = await testing.request({
+        kind: "getColumnValues",
+        viewRequestId: `${backend}-filter-values`,
+        sessionId: opened.metadata.sessionId,
+        revision: page.revision,
+        column: "city",
+        filterModel,
+        search: "il",
+        limit: 10
+      });
+      recordAcceptanceProgress(`verify:viewing-queries:${backend}:getColumnValues:complete`);
+      assert.equal(values.kind, "columnValues", `${backend} searchable column values must resolve.`);
+      if (values.kind === "columnValues") {
+        assert.deepEqual(values.values, [
+          {
+            value: "Milan",
+            count: 1,
+            selectionValue: {
+              kind: "typedSelection",
+              version: 1,
+              columnType: "string",
+              cell: { kind: "string", raw: "Milan", display: "Milan", isNull: false, isNaN: false }
+            }
+          }
+        ]);
+        assert.equal(values.hasMore, false);
+      }
+
+      assert.equal(testing.activeSession()?.metadata.steps.length, 0);
+      recordAcceptanceProgress(`verify:viewing-queries:${backend}:closeSession:start`);
+      const closed = await testing.request({
+        kind: "closeSession",
+        sessionId: opened.metadata.sessionId,
+        revision: page.revision
+      });
+      recordAcceptanceProgress(`verify:viewing-queries:${backend}:closeSession:complete`);
+      assert.equal(closed.kind, "sessionClosed");
+      recordAcceptanceProgress(`verify:viewing-queries:${backend}:idle:start`);
+      await waitFor(
+        () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+        10_000,
+        `${backend} viewing-query session to dispose`
+      );
+      recordAcceptanceProgress(`verify:viewing-queries:${backend}:idle:complete`);
     }
 
-    assert.equal(testing.activeSession()?.metadata.steps.length, 0);
-    recordAcceptanceProgress(`verify:viewing-queries:${backend}:closeSession:start`);
-    const closed = await testing.request({
-      kind: "closeSession",
-      sessionId: opened.metadata.sessionId,
-      revision: page.revision
-    });
-    recordAcceptanceProgress(`verify:viewing-queries:${backend}:closeSession:complete`);
-    assert.equal(closed.kind, "sessionClosed");
-    recordAcceptanceProgress(`verify:viewing-queries:${backend}:idle:start`);
-    await waitFor(
-      () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
-      10_000,
-      `${backend} viewing-query session to dispose`
-    );
-    recordAcceptanceProgress(`verify:viewing-queries:${backend}:idle:complete`);
+    assertExactBytes(readFileSync(fixture.fsPath), original, "Viewing queries must not alter the source.");
+  } finally {
+    cleanupAcceptanceTemporaryDirectory(directory);
   }
-
-  assertExactBytes(
-    readFileSync(fixture.fsPath),
-    Buffer.from(original, "utf8"),
-    "Viewing queries must not alter the source."
-  );
 }
 
 async function exerciseWideColumnProjection(testing: TestApi): Promise<void> {
