@@ -128,7 +128,8 @@ run_case <- function(frame, task) {
       } else if (task == "fill_zero_preview_apply") {
         preview <- decode(first_text, "stepPreview")
         result <- decode(final_text, "planUpdated")
-        stopifnot(preview$revision == 1L, preview$diff$changedCells == n / 10L,
+        stopifnot(preview$revision == 1L, preview$diff$changedCells == 20L,
+          isTRUE(preview$diff$truncated), preview$remainingMissingCells == 0L,
           result$revision == 2L, identical(result$action, "apply"))
         check_page(preview, filled, seq_len(200L), n)
         check_page(result, filled, seq_len(200L), n)
