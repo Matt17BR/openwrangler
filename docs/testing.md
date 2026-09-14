@@ -302,6 +302,10 @@ The released-Jupyter Variables action shows its exact notebook and opens Jupyter
 bounded action acquisition, including after code insertion or session disposal changes focus. The shared dispatcher
 owns this preparation for Pandas, DuckDB and PySpark; it still requires one trusted keyboard activation and the exact
 session receipt. Preparation does not retry a failed activation or extend acquisition deadlines.
+If acquisition fails, the existing diagnostic distinguishes hidden Variables tables from absent ones and records
+fixed Variables-document and panel-container presence/visibility. Failed or timed-out observations are `null`, not
+empty results. Failure-only reads are bounded and include no page content or raw probe errors; they do not identify
+which event caused the observed state.
 The released-Jupyter DuckDB journey waits for the exact panel's committed renderer after inline open and toolbar
 reopen before changing filters. Far-row inspection is read-only; filter persistence and recovery still use committed
 view requests. These page assertions report bounded error codes and recoverability when a request fails.

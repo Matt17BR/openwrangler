@@ -4967,6 +4967,16 @@ async function releasedWorkbenchDiagnostics(
 ): Promise<unknown> {
   const frames = releasedWorkbenchFrames(workbench);
   const frameLimit = 12;
+  const containers = await withAcceptanceOperationDeadline(
+    Promise.all(
+      ["jupyter-variables", "openWranglerCode"].map(async (id) => {
+        const container = workbench.locator(`[id="workbench.view.extension.${id}"]`);
+        return { id, present: (await container.count()) > 0, visible: await container.isVisible() };
+      })
+    ),
+    1_000,
+    "the released-Jupyter failure container observations"
+  ).catch(() => null);
   return {
     activeNotebook:
       vscode.window.activeNotebookEditor?.notebook === notebook
@@ -4976,22 +4986,31 @@ async function releasedWorkbenchDiagnostics(
           : "none",
     frameCount: Math.min(frames.length, 999),
     framesTruncated: frames.length > frameLimit,
+    containers,
     frames: await Promise.all(
       frames.slice(0, frameLimit).map(async (frame) => {
-        const table = frame.getByRole("table", { name: "Variables", exact: true }).first();
-        const emptyRows = frame.locator("#variable-explorer-empty-rows").first();
-        const [tables, tableVisible, variableCells, loading] = await Promise.all([
-          frame
-            .getByRole("table", { name: "Variables", exact: true })
-            .count()
-            .catch(() => 0),
-          table.isVisible().catch(() => false),
-          frame
-            .locator(`[role="cell"][title=${JSON.stringify(variableName)}]`)
-            .count()
-            .catch(() => 0),
-          emptyRows.evaluate((element) => (element.textContent ?? "").trim() === "Loading variables").catch(() => false)
-        ]);
+        const tables = frame.getByRole("table", { name: "Variables", exact: true, includeHidden: true });
+        const observations = await withAcceptanceOperationDeadline(
+          Promise.all([
+            tables.count(),
+            tables.first().isVisible(),
+            frame.locator(`[role="cell"][title=${JSON.stringify(variableName)}]`).count(),
+            frame
+              .locator("#variable-explorer-empty-rows")
+              .evaluateAll((elements) =>
+                elements.some((element) => (element.textContent ?? "").trim() === "Loading variables")
+              ),
+            frame.locator("#variable-view-main-panel").count()
+          ]).then(([tableCount, tableVisible, variableCells, loading, variablesDocuments]) => ({
+            tables: Math.min(Math.max(tableCount, 0), 999),
+            tableVisible,
+            variableCells: Math.min(Math.max(variableCells, 0), 999),
+            loading,
+            variablesDocumentPresent: variablesDocuments > 0
+          })),
+          1_000,
+          "the released-Jupyter failure frame observations"
+        ).catch(() => null);
         return {
           kind:
             frame.page() === workbench && frame === workbench.mainFrame()
@@ -5001,10 +5020,7 @@ async function releasedWorkbenchDiagnostics(
                 : frame.url().startsWith("vscode-webview:")
                   ? "webview"
                   : "other",
-          tables: Math.min(Math.max(tables, 0), 999),
-          tableVisible,
-          variableCells: Math.min(Math.max(variableCells, 0), 999),
-          loading
+          observations
         };
       })
     )
