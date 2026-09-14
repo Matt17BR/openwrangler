@@ -608,13 +608,24 @@ including when loaded from Parquet.
 
 Parquet reads repair nullable integer index levels and integer data that ordinary Pandas decoding would convert to
 floating storage. Object columns containing integer children in lists, structs or maps use native Arrow arrays;
-other data columns retain ordinary Pandas decoding. Data and index repair share one supplemental projection through
+Struct columns containing nanosecond timestamps through Struct or List children also retain native Arrow storage,
+including LargeList and fixed-size List children. Other data columns retain ordinary Pandas decoding. This prevents
+ordinary Struct decoding from turning timestamp children into integers. Data and index repair share one supplemental projection through
 the same open file. Its field names, physical types, row count and source fingerprint are checked before publication.
 A changed source is refused; this guard does not persist beyond the read.
 
 Profiles and duplicate comparisons use temporary exact Python values for these Arrow containers because native
 Arrow lacks their count and duplicate kernels. Live and generated comparisons share that conversion policy;
-stored arrays and export types remain unchanged. No comparison keys persist between requests.
+stored arrays and export types remain unchanged. Temporary keys box the complete selected columns; large nested
+payloads can substantially increase profiling time and memory. No comparison keys persist between requests.
+
+For timestamp-containing Structs, output and comparison preparation refuses present minimum nanosecond timestamps
+or durations that Python boxing would turn into `NaT`, including Map siblings. Native field and list kernels respect
+parent validity and skip unrelated child types. Map inspection uses a List view of the same native buffers; it does
+not widen import admission to Map-only timestamps. Page checks follow row and column projection; comparisons and text operations inspect their
+selected operands. Live and generated text operations share a guarded string-conversion owner. CSV checks precede
+writer opening; native Clone and Parquet export retain the stored types and ticks without this boxing restriction.
+Other native boxing limits, including timezone-dependent endpoint overflow, retain their errors.
 
 Dataset statistics reuse per-column missing counts for the total, including Sparse columns, without a second
 aggregate scan. Duplicate counting tries the native path first. Its specific unhashable-value TypeErrors for list,

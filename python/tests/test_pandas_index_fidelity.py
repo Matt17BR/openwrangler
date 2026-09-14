@@ -205,6 +205,301 @@ def test_parquet_integer_containers_keep_native_children_and_siblings(tmp_path: 
     assert path.read_bytes() == before
 
 
+@pytest.mark.parametrize("shape", ["present", "empty", "all-null"])
+def test_parquet_timestamp_structs_preserve_native_types_through_session_and_export(tmp_path: Path, shape: str) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    dtype = pa.struct(
+        [
+            ("when", pa.timestamp("ns")),
+            ("child", pa.struct([("when", pa.timestamp("ns", tz="UTC"))])),
+            ("items", pa.list_(pa.timestamp("ns", tz="America/New_York"))),
+            ("text", pa.string()),
+        ]
+    )
+    values = [
+        {"when": value, "child": {"when": value}, "items": [value, None], "text": "keep"} for value in [-1, 1, -1, None]
+    ] + [None]
+    if shape != "present":
+        values = [] if shape == "empty" else [None] * 5
+    index = pd.Index([7, 2, 7, 4, 1][: len(values)], name="source rows")
+    ordinary = pd.DataFrame({"record": [None] * len(values), "ordinary": range(len(values))}, index=index)
+    table = pa.Table.from_pandas(ordinary, preserve_index=True).set_column(0, "record", pa.array(values, type=dtype))
+    path = tmp_path / "timestamps.parquet"
+    pq.write_table(table, path)
+    contents = path.read_bytes()
+    manager = SessionManager()
+    try:
+        opened = manager.open_session(
+            {"kind": "file", "path": str(path)}, backend="pandas", mode="editing", page_size=10
+        )
+        sid = opened["metadata"]["sessionId"]
+        engine = manager.sessions[sid].engine
+        loaded = engine.read_file(str(path))
+        assert isinstance(loaded["record"].dtype, pd.ArrowDtype)
+        assert loaded["record"].array.__arrow_array__() == table["record"]
+        pd.testing.assert_index_equal(loaded.index, index)
+        pd.testing.assert_series_equal(loaded["ordinary"], ordinary["ordinary"])
+        summary = engine.summaries(loaded, [(0, "record")])[0]
+        assert summary["nullCount"] == (1 if shape == "present" else len(values))
+        assert summary["distinctCount"] == (3 if shape == "present" else 0)
+        if shape == "present":
+            assert opened["page"]["rows"][0]["values"][0]["raw"]["when"] == "1969-12-31T23:59:59.999999999"
+        reference = {key: opened["metadata"]["schema"][0][key] for key in ("id", "name")}
+        preview = manager.preview_step(
+            sid, 0, {"id": "copy", "kind": "cloneColumn", "params": {"column": reference, "newName": "copy"}}, 0, 10
+        )
+        applied = manager.apply_draft(sid, preview["revision"], 0, 10)
+        assert [row["id"] for row in applied["page"]["rows"]] == [row["id"] for row in opened["page"]["rows"]]
+        namespace: dict[str, Any] = {}
+        exec(applied["code"], namespace)
+        generated = namespace["clean_data"](loaded)
+        expected = table.append_column("copy", table["record"]).select(["record", "ordinary", "copy", "source rows"])
+        assert pa.Table.from_pandas(generated, preserve_index=True).equals(expected, check_metadata=False)
+        output = tmp_path / "output.parquet"
+        manager.export_data(
+            sid,
+            applied["revision"],
+            str(output),
+            {"format": "parquet", "rowAxisPolicy": "preserve"},
+            reserve_export_target(output),
+        )
+        assert pq.read_table(output).equals(expected, check_metadata=False)
+        assert loaded["record"].array.__arrow_array__() == table["record"]
+    finally:
+        manager.close_all()
+    assert not manager.sessions and path.read_bytes() == contents
+
+
+@pytest.mark.parametrize("storage", ["timestamp", "map-sibling"])
+def test_parquet_timestamp_struct_minimum_stays_stored_but_refuses_lossy_output(tmp_path: Path, storage: str) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    dtype = pa.struct([("when", pa.timestamp("ns", tz="America/New_York"))])
+    array = pa.array([{"when": -1}, {"when": None}, {"when": -(2**63)}], type=dtype)
+    if storage == "map-sibling":
+        array = pa.array(
+            [
+                {"when": -1, "entries": [("k", -1)]},
+                {"when": -1, "entries": None},
+                {"when": -1, "entries": [("k", -(2**63))]},
+            ],
+            type=pa.struct([("when", pa.timestamp("ns")), ("entries", pa.map_(pa.string(), pa.timestamp("ns")))]),
+        )
+    table = pa.table({"record": array, "ordinary": [1, 2, 3]})
+    path = tmp_path / "minimum.parquet"
+    pq.write_table(table, path)
+    contents = path.read_bytes()
+    manager = SessionManager()
+    try:
+        opened = manager.open_session(
+            {"kind": "file", "path": str(path)}, backend="pandas", mode="editing", page_size=2
+        )
+        sid = opened["metadata"]["sessionId"]
+        engine = manager.sessions[sid].engine
+        frame = engine.read_file(str(path))
+        assert isinstance(frame["record"].dtype, pd.ArrowDtype)
+        assert frame["record"].array.__arrow_array__() == table["record"]
+        assert len(engine.page(frame, 0, 2)["rows"]) == 2
+        assert len(engine.page(frame, 2, 1, column_projection=[(1, "ordinary")])["rows"]) == 1
+        assert engine.summaries(frame, [(1, "ordinary")])[0]["distinctCount"] == 3
+        for action in (
+            lambda: engine.page(frame, 2, 1),
+            lambda: engine.summaries(frame, [(0, "record")]),
+            lambda: engine.column_values(frame, "record", search="1677"),
+            lambda: engine.column_values(frame, "record"),
+        ):
+            with pytest.raises(ValueError, match="minimum nanosecond timestamp"):
+                action()
+        reference = {key: opened["metadata"]["schema"][0][key] for key in ("id", "name")}
+        preview = manager.preview_step(
+            sid, 0, {"id": "copy", "kind": "cloneColumn", "params": {"column": reference, "newName": "copy"}}, 0, 2
+        )
+        applied = manager.apply_draft(sid, preview["revision"], 0, 2)
+        namespace: dict[str, Any] = {}
+        exec(applied["code"], namespace)
+        expected = table.append_column("copy", table["record"])
+        assert pa.Table.from_pandas(namespace["clean_data"](frame), preserve_index=False).equals(
+            expected, check_metadata=False
+        )
+        output = tmp_path / "preserved.parquet"
+        manager.export_data(
+            sid,
+            applied["revision"],
+            str(output),
+            {"format": "parquet", "rowAxisPolicy": "omit"},
+            reserve_export_target(output),
+        )
+        assert pq.read_table(output).equals(expected, check_metadata=False)
+        csv = tmp_path / "refused.csv"
+        identity = reserve_export_target(csv)
+        csv.write_bytes(b"keep destination")
+        with pytest.raises(ValueError, match="minimum nanosecond timestamp"):
+            manager.export_data(
+                sid,
+                applied["revision"],
+                str(csv),
+                {
+                    "format": "csv",
+                    "rowAxisPolicy": "omit",
+                    "delimiter": ",",
+                    "quoteChar": '"',
+                    "encoding": "utf-8",
+                    "header": True,
+                },
+                identity,
+            )
+        assert csv.read_bytes() == b"keep destination"
+        assert frame["record"].array.__arrow_array__() == table["record"]
+        assert manager.sessions[sid].revision == applied["revision"]
+    finally:
+        manager.close_all()
+    assert not manager.sessions and path.read_bytes() == contents
+
+    # Scalar Arrow timestamps keep their existing exact tick-key path.
+    scalar = pd.DataFrame(
+        {"when": pd.arrays.ArrowExtensionArray(pa.array([-(2**63), None], type=pa.int64()).cast(pa.timestamp("ns")))}
+    )
+    assert engine.summaries(scalar)[0]["nullCount"] == 1
+    assert engine.page(scalar, 0, 2)["rows"][0]["values"][0]["raw"] == "1677-09-21T00:12:43.145224192"
+
+
+@pytest.mark.parametrize("list_kind", ["list", "large-list", "fixed-list", "map"])
+def test_timestamp_struct_keys_respect_parent_masks_and_keep_native_rows(list_kind: str) -> None:
+    import pyarrow as pa
+
+    child_type = pa.timestamp("ns", tz="UTC")
+    dtype = (
+        pa.list_(child_type)
+        if list_kind == "list"
+        else pa.large_list(child_type)
+        if list_kind == "large-list"
+        else pa.list_(child_type, 1)
+    )
+    children = pa.array([[-(2**63)], [None], [-1], [-1]], type=dtype)
+    if list_kind == "map":
+        children = pa.array(
+            [[("k", value)] for value in (-(2**63), None, -1, -1)], type=pa.map_(pa.string(), child_type)
+        )
+    array = pa.StructArray.from_arrays(
+        [children, pa.array([-1] * 4, type=pa.timestamp("ns"))],
+        names=["times", "when"],
+        mask=pa.array([True, False, False, False]),
+    )
+    frame = pd.DataFrame(
+        {"record": pd.arrays.ArrowExtensionArray(array), "ordinary": [1, 2, 3, 4]},
+        index=pd.Index([7, 7, 2, 2], name="rows"),
+    )
+    engine = PandasEngine()
+    page = engine.page(frame, 0, 4)
+    assert page["rows"][0]["values"][0]["raw"] is None
+    missing = [["k", None]] if list_kind == "map" else [None]
+    text = "1969-12-31T23:59:59.999999999+00:00"
+    present = [["k", text]] if list_kind == "map" else [text]
+    assert page["rows"][1]["values"][0]["raw"]["times"] == missing
+    assert page["rows"][2]["values"][0]["raw"]["times"] == present
+    summary = engine.summaries(frame, [(0, "record")])[0]
+    assert summary["nullCount"] == 1 and summary["distinctCount"] == 2
+    schema = engine.schema(frame)
+    lineage = source_lineage(schema)
+    step = bind_step(
+        validate_step({"id": "keep", "kind": "dropDuplicates", "params": {"columns": [lineage[0]], "keep": "first"}}),
+        schema,
+        lineage,
+    )
+    namespace: dict[str, Any] = {
+        "_pandas_arrow_contains_ns_temporal": None,
+        "_pandas_require_nested_timestamp_boxing": None,
+    }
+    exec(engine.compile_plan([step]), namespace)
+    expected = frame.iloc[:3]
+    for result in (engine.apply_transform(frame, step), namespace["clean_data"](frame)):
+        pd.testing.assert_frame_equal(result, expected)
+    assert pa.array(frame["record"]) == array
+
+
+def test_timestamp_struct_boxing_guard_skips_unrelated_large_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    from openwrangler_runtime.engines.pandas_engine import _pandas_require_nested_timestamp_boxing
+
+    array = pa.StructArray.from_arrays(
+        [pa.array([-1], type=pa.timestamp("ns")), pa.array([["unchanged"] * 10_000], type=pa.large_list(pa.string()))],
+        names=["when", "payload"],
+    )
+    series = pd.Series(pd.arrays.ArrowExtensionArray(array))
+    native_call = pc.call_function
+    functions = []
+
+    def selected_call(function: str, args: Any, *options: Any, **kwargs: Any) -> Any:
+        functions.append(function)
+        result = native_call(function, args, *options, **kwargs)
+        if function == "struct_field":
+            assert pa.types.is_timestamp(result.type), "The guard must not extract unrelated payload fields."
+        return result
+
+    monkeypatch.setattr(pc, "call_function", selected_call)
+    _pandas_require_nested_timestamp_boxing(series)
+    assert functions.count("struct_field") == 1 and "list_flatten" not in functions
+    assert pa.array(series) == array
+
+
+@pytest.mark.parametrize("kind", ["castColumn", "textLength", "byExample", "dropDuplicates", "duration-sibling"])
+def test_pandas_timestamp_struct_string_and_key_consumers_refuse_minimum_in_generated_code(kind: str) -> None:
+    import pyarrow as pa
+
+    array = pa.array([{"when": -(2**63)}, {"when": None}], type=pa.struct([("when", pa.timestamp("ns"))]))
+    if kind == "duration-sibling":
+        array = pa.array(
+            [{"when": -1, "elapsed": -(2**63)}, {"when": 1, "elapsed": None}],
+            type=pa.struct([("when", pa.timestamp("ns")), ("elapsed", pa.duration("ns"))]),
+        )
+        kind = "castColumn"
+    frame = pd.DataFrame(
+        {"record": pd.arrays.ArrowExtensionArray(array), "ordinary": [1, 2]}, index=pd.Index([7, 7], name="rows")
+    )
+    engine = PandasEngine()
+    admitted = (
+        frame.assign(record=pd.Series(["A", "B"], index=frame.index, dtype="string")) if kind == "byExample" else frame
+    )
+    schema = engine.schema(admitted)
+    lineage = source_lineage(schema)
+    params: dict[str, Any] = {"column": lineage[0]}
+    if kind == "castColumn":
+        params["dtype"] = "string"
+    elif kind == "textLength":
+        params["newColumn"] = "result"
+    elif kind == "byExample":
+        params = {
+            "sourceColumns": [lineage[0]],
+            "newColumn": "result",
+            "examples": [
+                {"inputs": ["A"], "output": "a"},
+                {"inputs": ["B"], "output": "b"},
+            ],
+        }
+    else:
+        params = {"columns": [lineage[0]], "keep": "first"}
+    step = bind_step(validate_step({"id": "check", "kind": kind, "params": params}), schema, lineage)
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([step]), namespace)
+    if kind == "byExample":
+        assert engine.apply_transform(admitted, step)["result"].tolist() == ["a", "b"]
+        assert namespace["clean_data"](admitted)["result"].tolist() == ["a", "b"]
+    executions = [lambda: namespace["clean_data"](frame)]
+    if kind != "byExample":
+        executions.append(lambda: engine.apply_transform(frame, step))
+    for execute in executions:
+        with pytest.raises(ValueError, match="minimum nanosecond timestamp"):
+            execute()
+    assert pa.array(frame["record"]) == array
+    assert frame["ordinary"].tolist() == [1, 2]
+    pd.testing.assert_index_equal(frame.index, pd.Index([7, 7], name="rows"))
+
+
 @pytest.mark.parametrize("family", ["bool8", "uuid"])
 @pytest.mark.parametrize("shape", ["present", "empty", "all-null"])
 @pytest.mark.parametrize("location", ["column", "index", "multi-index"])
