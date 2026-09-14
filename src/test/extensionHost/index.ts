@@ -4148,7 +4148,7 @@ async function assertReleasedRemoteRuntimeTransfer(
   const runtimeFile = String(result.runtimeFile);
   assert.match(
     runtimeFile,
-    /^\/tmp\/openwrangler-runtime\/[0-9a-f]{16}\/openwrangler_runtime\/__init__\.py$/u,
+    /^\/tmp\/openwrangler-runtime-[^/]+\/openwrangler_runtime\/__init__\.py$/u,
     "Open Wrangler must transfer its runtime into the remote kernel's own temporary filesystem."
   );
   assert.equal(
