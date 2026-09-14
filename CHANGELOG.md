@@ -4,14 +4,20 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-09-14
+
 ### Added
 
 - Conditional Column creates text labels or Boolean flags from one condition, with explicit results for matching, nonmatching and missing inputs.
 - Pandas exports negative-scale Arrow Decimal columns and row labels to Parquet with exact values, within the documented native capacity limits.
 
+### Changed
+
+- R notebook support is stable for ordinary base `data.frame`, tibble and `data.table` values in IRkernel on desktop VS Code for Linux, macOS and Windows. Terminal and managed-document support remain Preview; Cursor remains experimental.
+- Generated DuckDB code uses fewer helpers for simple column edits while preserving validation and source data.
+
 ### Fixed
 
-- Generated DuckDB code uses fewer helpers for simple column edits while preserving validation and source data.
 - Reopening a dataframe in Viewing mode no longer offers to reset a valid saved cleaning plan. The error keeps the saved work and explains how to reopen in Editing when the source supports it.
 - DuckDB CSV and TSV imports no longer skip an irregular first record. Files starting with a line break are refused to prevent incorrect header or row interpretation; Pandas and Polars remain alternatives.
 - DuckDB grids, filter choices and profiles retain nanoseconds in timestamp columns. Values that cannot be selected exactly no longer select a rounded neighbor.
