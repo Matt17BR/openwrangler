@@ -9,6 +9,7 @@ import duckdb
 import pandas as pd
 import polars as pl
 import pytest
+from polars.testing import assert_frame_equal
 
 from openwrangler_runtime._column_binding import bind_step
 from openwrangler_runtime.engines import DuckDBEngine, PandasEngine, PolarsEngine
@@ -216,19 +217,28 @@ def test_pandas_group_sum_generated_helper_is_local_selected_once_and_reusable()
         (pl.UInt128, [1, 2], 3),
     ],
 )
+@pytest.mark.parametrize("case", ["present", "empty", "all-null"])
+@pytest.mark.parametrize("lazy", [False, True], ids=["eager", "lazy"])
+@pytest.mark.parametrize("compiled", [False, True], ids=["live", "generated"])
 def test_polars_small_group_sum_keeps_its_declared_int128_type_live_and_generated(
     dtype: Any,
     values: list[int],
     expected: int,
+    case: str,
+    lazy: bool,
+    compiled: bool,
 ) -> None:
     engine = PolarsEngine()
+    source_values = [] if case == "empty" else [None] * len(values) if case == "all-null" else values
     frame = pl.DataFrame(
         {
-            "group": ["a", "a"],
-            "value": pl.Series(values, dtype=dtype),
+            "group": pl.Series(["a"] * len(source_values), dtype=pl.String),
+            "value": pl.Series(source_values, dtype=dtype),
         }
     )
-    schema = engine.schema(frame)
+    before = frame.clone()
+    source = frame.lazy() if lazy else frame
+    schema = engine.schema(source)
     lineage = source_lineage(schema)
     public = validate_step(
         {
@@ -244,9 +254,18 @@ def test_polars_small_group_sum_keeps_its_declared_int128_type_live_and_generate
     )
     operation = bind_step(public, schema, lineage)
 
-    for result in (engine.apply_transform(frame, operation), generated(engine, frame, [operation])):
-        assert result.schema["total"] == pl.Int128
-        assert result.get_column("total").item() == expected
+    result = generated(engine, source, [operation]) if compiled else engine.apply_transform(source, operation)
+    assert isinstance(result, pl.LazyFrame) is lazy
+    if lazy:
+        result = result.collect()
+    expected_frame = pl.DataFrame(
+        {
+            "group": pl.Series([] if case == "empty" else ["a"], dtype=pl.String),
+            "total": pl.Series([] if case == "empty" else [0 if case == "all-null" else expected], dtype=pl.Int128),
+        }
+    )
+    assert_frame_equal(result, expected_frame)
+    assert_frame_equal(frame, before)
 
 
 def test_by_example_integer_arithmetic_widens_before_overflow_in_live_and_generated_code(engine: Any) -> None:

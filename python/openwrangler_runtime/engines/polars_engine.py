@@ -2037,6 +2037,8 @@ class PolarsEngine(DataFrameEngine):
                     "",
                     "",
                     "def _ow_checked_integer_sum_result(parts):",
+                    "    if parts.is_empty():",
+                    "        return pl.Series([], dtype=pl.Int128)",
                     "    # Older supported Polars infers a small Python result as Int64.",
                     "    # Return a native Series so the physical callback type remains Int128.",
                     "    return pl.Series([_ow_checked_integer_sum_parts(parts.item())], dtype=pl.Int128)",
@@ -4197,6 +4199,8 @@ def _polars_checked_integer_sum_parts(parts: Mapping[str, Any]) -> int:
 def _polars_checked_integer_sum_result(parts: Any) -> Any:
     import polars as pl
 
+    if parts.is_empty():
+        return pl.Series([], dtype=pl.Int128)
     # Older supported Polars infers a small Python result as Int64.
     # Return a native Series so the physical callback type remains Int128.
     return pl.Series([_polars_checked_integer_sum_parts(parts.item())], dtype=pl.Int128)
