@@ -373,10 +373,10 @@ records for core packages, supplemental packages and the macOS collapse source b
 and installation; it does not separate transfer from compilation. Other successful installer output is omitted.
 These diagnostics preserve the existing inactivity and absolute phase deadlines.
 
-Generic viewing-query verification uses a unique temporary copy of the sample CSV, preserving its bytes while keeping
-seeded cleaning history on the original source separate. The existing cleanup owner removes the copy after the journey;
-on Windows, physical removal waits for editor and Job Object shutdown. Verification also records entry and completion
-for each Pandas, Polars and DuckDB viewing request and session-idle wait. The same 100 ms progress poll logs only these
+Generic viewing-query verification and dependency recovery each use a private copy of the sample CSV, so neither
+inherits the seeded cleaning history on the original source. Each journey retains its source-byte checks and existing
+cleanup owner; Windows removal waits for editor and Job Object shutdown. Viewing-query verification records entry and
+completion for each Pandas, Polars and DuckDB request and session-idle wait. The same 100 ms progress poll logs only these
 fixed backend and operation labels when live progress is readable,
 including on success. Arrivals are sampled milestones, not exact durations; quick transitions may be missed. A new stage
 resets the unchanged 180-second inactivity deadline; the 300-second absolute deadline still bounds the phase. These
