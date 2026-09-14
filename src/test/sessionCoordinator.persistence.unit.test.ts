@@ -53,7 +53,7 @@ describe("SessionCoordinator persistence diagnostics", () => {
     const source: SessionSource = notebookSource
       ? { kind: "notebookVariable", label: "frame", variableName: "frame", uri: notebook.uri.toString() }
       : { ...openRequest.source, path: sourcePath };
-    const opening = {
+    const opening: OpenWranglerRequest = {
       ...openRequest,
       source,
       backend,
