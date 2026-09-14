@@ -1,9 +1,7 @@
 # Feature parity matrix
 
 This is the normative capability ledger for the current source. The generated [interface reference](reference.md) is
-authoritative for command, setting, protocol, MIME, and operation names. The optional
-[Data Wrangler comparison](performance-comparison.md) is retained as historical product evidence, not as a
-stable-release gate.
+authoritative for command, setting, protocol, MIME, and operation names.
 
 **Done** is the standing capability status: the surface is implemented and backed by its current source or installed
 owner. **Partial** means the capability is usable but remains deliberately limited or lacks evidence for part of its

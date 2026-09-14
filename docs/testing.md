@@ -589,8 +589,9 @@ These candidate checks do not by themselves graduate R support. The
 reliability review. Keep original failures, package identity, source-preservation assertions and existing time and
 cleanup bounds; do not add an installed copy of the complete native operation catalog.
 
-The optional [competitor comparison](performance-comparison.md) is archived; its `comparison:*` commands are no longer
-available. Direct installed-performance, weekly runtime performance and Data Wrangler coexistence checks remain.
+The weekly [runtime performance workflow](../.github/workflows/performance.yml) checks Polars runtime performance.
+The installed `data-wrangler-coexistence` journey checks notebook preview-provider choices with both extensions
+active; it does not measure comparative performance.
 
 ## Change-focused editor checks
 

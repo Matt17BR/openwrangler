@@ -4,7 +4,7 @@
 
 Status: reviewed on 2026-08-04.
 
-The collection followed [`docs/performance-comparison.md`](../../performance-comparison.md): four engine/format
+The collection followed the [historical method](https://github.com/Matt17BR/openwrangler/blob/f7503ef9eb5af50c0c62bd7f341fe15a8ff01224/docs/performance-comparison.md): four engine/format
 combinations (Pandas/CSV, Polars/CSV, Pandas/Parquet, and Polars/Parquet), one isolated headless VS Code session per
 product and workload, and ten warm timed samples per session. Each sample used the public inline preview, launch,
 grid, and all-column profiling controls. Process-tree PSS was sampled across the same measured window.
