@@ -4,6 +4,10 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ## [Unreleased]
 
+### Changed
+
+- Generated Polars code includes only the integer helpers needed by its By Example and Group By steps.
+
 ### Fixed
 
 - New columns remain in view when Code Preview opens automatically.

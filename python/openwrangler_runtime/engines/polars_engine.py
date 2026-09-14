@@ -1837,6 +1837,18 @@ class PolarsEngine(DataFrameEngine):
         clean_data = "\n".join(clean_data_lines)
         needs_filter_helpers = any(step["kind"] in {"filterRows", "conditionalColumn"} for step in plan)
         needs_fill_helpers = any(step["kind"] == "fillMissingValues" for step in plan)
+        needs_checked_integer_sum = any(
+            step["kind"] == "groupBy"
+            and any(
+                _polars_group_aggregation_semantics(aggregation["operation"])[2]
+                for aggregation in step["params"]["aggregations"]
+            )
+            for step in plan
+        )
+        needs_checked_integer_arithmetic = any(
+            step["kind"] == "byExample" and _polars_program_needs_checked_integer_helpers(step["params"]["program"])
+            for step in plan
+        )
         needs_counter = any(step["kind"] in {"oneHotEncode", "multiLabelBinarize", "splitTextColumns"} for step in plan)
         has_custom_code = any(step["kind"] == "customCode" for step in plan)
         lines = custom_code_prelude_lines() if has_custom_code else []
@@ -2016,12 +2028,17 @@ class PolarsEngine(DataFrameEngine):
                     "",
                 ]
             )
-        if any(_polars_step_needs_checked_integer_helpers(step) for step in plan):
+        if needs_checked_integer_sum or needs_checked_integer_arithmetic:
             lines.extend(
                 [
                     "",
                     f"_OW_INTEGER_MAX = {_PORTABLE_INTEGER_MAX}",
                     "_OW_INTEGER_MIN = -_OW_INTEGER_MAX",
+                ]
+            )
+        if needs_checked_integer_sum:
+            lines.extend(
+                [
                     f"_OW_INTEGER_LIMB_BASE = {_POLARS_INTEGER_LIMB_BASE}",
                     f"_OW_INTEGER_LIMB_COUNT = {_POLARS_INTEGER_LIMB_COUNT}",
                     "",
@@ -2060,6 +2077,11 @@ class PolarsEngine(DataFrameEngine):
                     "    return pl.struct(limbs).map_batches(",
                     "        _ow_checked_integer_sum_result, return_dtype=pl.Int128, returns_scalar=True",
                     "    )",
+                ]
+            )
+        if needs_checked_integer_arithmetic:
+            lines.extend(
+                [
                     "",
                     "",
                     "def _ow_checked_integer_value(left, right, operator):",
@@ -4133,21 +4155,6 @@ def _polars_formula(left: Any, right: Any, operator: str) -> Any:
     if operator == "power":
         return left**right
     raise EngineError(f"Unsupported formula operator: {operator}")
-
-
-def _polars_step_needs_checked_integer_helpers(step: Mapping[str, Any]) -> bool:
-    if step.get("kind") == "groupBy":
-        params = step.get("params")
-        return isinstance(params, Mapping) and any(
-            isinstance(aggregation, Mapping)
-            and isinstance(aggregation.get("operation"), str)
-            and _polars_group_aggregation_semantics(aggregation["operation"])[2]
-            for aggregation in params.get("aggregations", [])
-        )
-    if step.get("kind") != "byExample":
-        return False
-    params = step.get("params")
-    return isinstance(params, Mapping) and _polars_program_needs_checked_integer_helpers(params.get("program"))
 
 
 def _polars_program_column_names(value: Any) -> list[str]:
