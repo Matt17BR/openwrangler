@@ -11,6 +11,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Reopening a dataframe in Viewing mode no longer offers to reset a valid saved cleaning plan. The error keeps the saved work and explains how to reopen in Editing when the source supports it.
 - DuckDB CSV and TSV imports no longer skip an irregular first record. Files starting with a line break are refused to prevent incorrect header or row interpretation; Pandas and Polars remain alternatives.
 - DuckDB grids, filter choices and profiles retain nanoseconds in timestamp columns. Values that cannot be selected exactly no longer select a rounded neighbor.
 - DuckDB datetime formatting preserves nanoseconds, wide dates and timezone information instead of narrowing values before formatting.
