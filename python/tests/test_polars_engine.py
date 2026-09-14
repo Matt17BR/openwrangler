@@ -1750,7 +1750,7 @@ def test_lazy_polars_object_stats_keep_exact_missing_metrics_without_grouping(
         ],
     }
     engine = PolarsEngine()
-    with pl.Config(engine_affinity=None):
+    with pl.Config(set_engine_affinity=None):
         assert engine.header_stats(source) == {
             **expected,
             "duplicateRows": 1 if case in {"mixed", "single"} else 0,
@@ -1772,7 +1772,7 @@ def test_lazy_polars_object_stats_keep_exact_missing_metrics_without_grouping(
 
     monkeypatch.setattr(pl, "collect_all", scalar_collect_all)
     monkeypatch.setattr(pl.LazyFrame, "unique", reject_unique)
-    with pl.Config(engine_affinity=affinity):
+    with pl.Config(set_engine_affinity=affinity):
         assert engine.header_stats(source.lazy()) == expected
     assert collected_shapes == ([(1, 2 + source.width)] if source.width else [])
     assert source.schema == before.schema

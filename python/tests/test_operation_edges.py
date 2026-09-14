@@ -1998,7 +1998,7 @@ def test_polars_floor_ceil_decimal_output_has_valid_capacity(
     before = source.clone()
     source = source.lazy() if lazy else source
     engine = PolarsEngine()
-    with pl.Config(engine_affinity="streaming" if lazy else None):
+    with pl.Config(set_engine_affinity="streaming" if lazy else None):
         configuration = pl.Config.state()
         results = floor_ceil_results(engine, source, kind, False)
         engine.validate_transformation_result(results[0])
