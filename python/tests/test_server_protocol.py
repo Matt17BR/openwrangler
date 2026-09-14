@@ -210,7 +210,7 @@ def test_stdio_server_frames_protocol_v4_responses() -> None:
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
+        encoding="utf-8",
     )
     output = _ServerOutputPumps(process)
     responses: dict[str, Any] = {}
@@ -263,7 +263,7 @@ def test_stdio_confirmed_view_reaches_native_mutation_before_preview(tmp_path: P
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
+        encoding="utf-8",
     )
     output = _ServerOutputPumps(process)
 
@@ -351,7 +351,7 @@ def test_stdio_server_opens_polars_then_pandas_in_one_process(tmp_path: Path) ->
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
+        encoding="utf-8",
     )
     output = _ServerOutputPumps(process)
     return_code: int | None = None
@@ -417,7 +417,7 @@ def test_stdio_opaque_operand_refusal_keeps_the_same_process_usable(tmp_path: Pa
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
+        encoding="utf-8",
     )
     output = _ServerOutputPumps(process)
     return_code: int | None = None
@@ -510,7 +510,7 @@ def test_stdio_request_session_options_refuse_and_keep_the_same_process_usable(t
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
+        encoding="utf-8",
     )
     output = _ServerOutputPumps(process)
     return_code: int | None = None
@@ -593,7 +593,7 @@ def test_stdio_custom_output_cannot_impersonate_protocol_under_concurrent_native
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
+        encoding="utf-8",
     )
     output = _ServerOutputPumps(process)
     return_code: int | None = None
@@ -817,7 +817,7 @@ def test_stdio_server_opens_polars_excel_in_a_fresh_process(tmp_path: Path) -> N
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
+        encoding="utf-8",
     )
     output = _ServerOutputPumps(process)
     return_code: int | None = None
@@ -2050,7 +2050,7 @@ def test_stdio_redo_refusal_and_recovery_keep_one_correlated_process(tmp_path: P
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
+        encoding="utf-8",
     )
     output = _ServerOutputPumps(process)
     return_code = None
@@ -2117,7 +2117,7 @@ def test_stdio_runtime_error_settles_preview_and_preserves_followup(tmp_path: Pa
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
+        encoding="utf-8",
     )
     output = _ServerOutputPumps(process)
 
@@ -2166,7 +2166,7 @@ def test_stdio_runtime_error_settles_preview_and_preserves_followup(tmp_path: Pa
         assert failed["recoverable"] is True
         if failure == "native-panic":
             assert "panic-secret" not in failed["message"] and "panic-secret" not in failed["detail"]
-            assert "password=<redacted>" in failed["message"]
+            assert failed["message"].startswith("password=<redacted> é")
             assert len(failed["detail"].encode("utf-8")) <= runtime_protocol.MAX_DIAGNOSTIC_DETAIL_BYTES
         else:
             assert failed["message"] == "The runtime error message could not be formatted."
