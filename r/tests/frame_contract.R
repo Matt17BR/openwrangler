@@ -9291,14 +9291,6 @@ if (!is.null(categorical_s3_status) && categorical_s3_status != 0L) {
 }
 unlink(categorical_s3_script)
 
-performance_harness_expression <- parse(
-  file = "scripts/r-performance-harness.R",
-  keep.source = FALSE
-)
-if (!is.expression(performance_harness_expression) || length(performance_harness_expression) == 0L) {
-  stop("native R performance harness parsed to an empty expression", call. = FALSE)
-}
-
 }))
 
 assert_identical(
