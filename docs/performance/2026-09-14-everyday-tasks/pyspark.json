@@ -1,0 +1,92 @@
+{
+  "startedUtc": "2026-09-14T11:11:51.060638+00:00",
+  "sourceCommit": "85451b88224a3ecfc14e629f31de37bc43e00ab7",
+  "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+  "collectorSha256": "0a33b3d3dc89469217df250bd0eefc7e58d02bb48de0a1ef96698704fcff84da",
+  "method": "PySparkEngine local Classic native viewing calls. Already constructed lazy range source, no caching/persistence. New engine per trial. First call is warmup, followed by three samples. Spark startup and fixture setup outside task timing; native source/summary/page checks and engine close outside timing.",
+  "limits": "No SessionManager/protocol/kernel/editor/end-to-end timing, no Spark Connect, editing or exports, no local-engine conversion, no RSS or cross-engine ranking. JVM capped local[2],2 shuffle partitions,1GiB driver heap. Whole probe externally bounded to120seconds.",
+  "cases": [
+    {
+      "backend": "pyspark-classic",
+      "rows": 100000,
+      "columns": 6,
+      "task": "first_200",
+      "firstCallMs": 351.838257,
+      "warmSamplesMs": [142.819131, 164.121666, 141.390414],
+      "warmMedianMs": 142.819131,
+      "exactBoundedPageOrSummaryAndSourcePlanChecks": true,
+      "engineClosed": true
+    },
+    {
+      "backend": "pyspark-classic",
+      "rows": 100000,
+      "columns": 6,
+      "task": "filter_sort_first_200",
+      "firstCallMs": 256.794336,
+      "warmSamplesMs": [148.684949, 114.579949, 120.932199],
+      "warmMedianMs": 120.932199,
+      "exactBoundedPageOrSummaryAndSourcePlanChecks": true,
+      "engineClosed": true
+    },
+    {
+      "backend": "pyspark-classic",
+      "rows": 100000,
+      "columns": 6,
+      "task": "profile_amount",
+      "firstCallMs": 1570.529371,
+      "warmSamplesMs": [630.333187, 529.234597, 432.368852],
+      "warmMedianMs": 529.234597,
+      "exactBoundedPageOrSummaryAndSourcePlanChecks": true,
+      "engineClosed": true
+    },
+    {
+      "backend": "pyspark-classic",
+      "rows": 1000000,
+      "columns": 6,
+      "task": "first_200",
+      "firstCallMs": 96.478398,
+      "warmSamplesMs": [91.278753, 76.933263, 99.108358],
+      "warmMedianMs": 91.278753,
+      "exactBoundedPageOrSummaryAndSourcePlanChecks": true,
+      "engineClosed": true
+    },
+    {
+      "backend": "pyspark-classic",
+      "rows": 1000000,
+      "columns": 6,
+      "task": "filter_sort_first_200",
+      "firstCallMs": 164.168714,
+      "warmSamplesMs": [102.23938, 81.787115, 96.75072],
+      "warmMedianMs": 96.75072,
+      "exactBoundedPageOrSummaryAndSourcePlanChecks": true,
+      "engineClosed": true
+    },
+    {
+      "backend": "pyspark-classic",
+      "rows": 1000000,
+      "columns": 6,
+      "task": "profile_amount",
+      "firstCallMs": 1568.397386,
+      "warmSamplesMs": [1180.152563, 1161.202548, 1045.087423],
+      "warmMedianMs": 1161.202548,
+      "exactBoundedPageOrSummaryAndSourcePlanChecks": true,
+      "engineClosed": true
+    }
+  ],
+  "engineSha256": "02c76200da58e07dadb2188880adaf48504307b51e0a618455eb2bcfba0215dd",
+  "startupThroughFirstNativeActionMs": 4711.154171,
+  "spark": "4.2.0",
+  "java": "25.0.4",
+  "systemDetails": {
+    "cpuModel": "Intel Core Ultra 9 185H",
+    "memoryTotalKiB": 63963952,
+    "pythonTimeZone": ["CET", "CEST"],
+    "sparkSqlTimeZone": "UTC",
+    "localThreads": 2,
+    "note": "Native Spark timestamp collection uses the Python process local timezone; no cross-engine timestamp text comparison."
+  },
+  "sparkUsableAfterEngineClose": true,
+  "ownedSparkSessionStopped": true,
+  "ownedFixtureDirectoryRemoved": true,
+  "finishedUtc": "2026-09-14T11:12:08.152273+00:00"
+}
