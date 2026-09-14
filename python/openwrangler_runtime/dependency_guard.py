@@ -507,8 +507,6 @@ _WINDOWS_FILE_ATTRIBUTE_DIRECTORY = 0x00000010
 _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
 _WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
 _WINDOWS_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
-_WINDOWS_ERROR_ACCESS_DENIED = 5
-_WINDOWS_ERROR_WRITE_PROTECT = 19
 _WINDOWS_ERROR_FILE_EXISTS = 80
 _WINDOWS_ERROR_ALREADY_EXISTS = 183
 _WINDOWS_ERROR_INSUFFICIENT_BUFFER = 122
@@ -746,9 +744,8 @@ def _windows_security_attributes(*, is_directory: bool, code: str) -> Iterator[c
 def _windows_create_secure_directory(
     path: Path,
     *,
-    allow_permission_failure: bool,
     code: str,
-) -> bool | None:
+) -> bool:
     create_directory = _windows_kernel32().CreateDirectoryW
     create_directory.argtypes = [ctypes.c_wchar_p, ctypes.c_void_p]
     create_directory.restype = ctypes.c_int
@@ -759,11 +756,6 @@ def _windows_create_secure_directory(
         error = _windows_last_error()
     if error == _WINDOWS_ERROR_ALREADY_EXISTS:
         return False
-    if allow_permission_failure and error in {
-        _WINDOWS_ERROR_ACCESS_DENIED,
-        _WINDOWS_ERROR_WRITE_PROTECT,
-    }:
-        return None
     _fail(code)
 
 
@@ -1435,9 +1427,7 @@ def _existing_journal(environment: dict[str, Any]) -> tuple[Path | None, tuple[i
 
 def _open_or_create_journal(
     environment: dict[str, Any],
-    *,
-    allow_unwritable_absence: bool,
-) -> tuple[Path | None, tuple[int, int] | None]:
+) -> tuple[Path, tuple[int, int]]:
     root = Path(environment["packageRoot"])
     journal = root / JOURNAL_NAME
     created = False
@@ -1445,31 +1435,16 @@ def _open_or_create_journal(
         journal.lstat()
     except FileNotFoundError:
         if os.name == "nt":
-            result = _windows_create_secure_directory(
+            created = _windows_create_secure_directory(
                 journal,
-                allow_permission_failure=allow_unwritable_absence,
                 code="malformed_state",
             )
-            created = result is True
-            permission_failure = result is None
         else:
-            permission_failure = False
             try:
                 journal.mkdir(mode=0o700)
                 created = True
             except FileExistsError:
                 pass
-            except OSError as error:
-                if not allow_unwritable_absence or error.errno not in {errno.EACCES, errno.EPERM, errno.EROFS}:
-                    _fail("malformed_state")
-                permission_failure = True
-        if permission_failure:
-            _revalidate_actual_environment(environment)
-            try:
-                journal.lstat()
-            except FileNotFoundError:
-                _revalidate_actual_environment(environment)
-                return None, None
             except OSError:
                 _fail("malformed_state")
     except OSError:
@@ -2738,9 +2713,7 @@ def _validate_dependencies(dependencies: list[dict[str, Any]]) -> None:
 def _run_install(request: dict[str, Any]) -> int:
     environment = request["environment"]
     token = request["token"]
-    journal, journal_identity = _open_or_create_journal(environment, allow_unwritable_absence=False)
-    if journal is None or journal_identity is None:
-        _fail("malformed_state")
+    journal, journal_identity = _open_or_create_journal(environment)
     with _JournalLock(journal, journal_identity, create=True) as lock:
         _revalidate_actual_environment(environment)
         receipt = lock.publish(token, environment, request["dependencies"])
@@ -2789,8 +2762,9 @@ def _run_install(request: dict[str, Any]) -> int:
 
 def _run_status(request: dict[str, Any]) -> int:
     environment = request["environment"]
-    journal, journal_identity = _open_or_create_journal(environment, allow_unwritable_absence=True)
+    journal, journal_identity = _existing_journal(environment)
     if journal is None or journal_identity is None:
+        _revalidate_actual_environment(environment)
         _emit({"kind": "status", "protocol": PROTOCOL, "state": "clean", "token": None})
         return EXIT_SUCCESS
     _prepare_status_lock(journal)

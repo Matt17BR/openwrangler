@@ -336,7 +336,6 @@ def _create_manual_empty_journal(fixture: GuardFixture) -> None:
         assert (
             guard._windows_create_secure_directory(
                 fixture.journal,
-                allow_permission_failure=False,
                 code="malformed_state",
             )
             is True
@@ -348,16 +347,10 @@ def _create_manual_empty_journal(fixture: GuardFixture) -> None:
 
 
 def _create_manual_journal(fixture: GuardFixture) -> None:
-    if os.name == "nt":
-        code, frames, stderr = _run(fixture, "status", _status_request(fixture))
-        assert code == 0
-        assert frames == [{"kind": "status", "protocol": PROTOCOL, "state": "clean", "token": None}]
-        assert stderr == b""
-        return
     _create_manual_empty_journal(fixture)
-    lock = fixture.journal / "mutation.lock"
-    lock.write_bytes(b"")
-    lock.chmod(0o600)
+    identity = guard._validate_private_directory(fixture.journal)
+    with guard._JournalLock(fixture.journal, identity, create=True):
+        pass
 
 
 def _write_manual_journal_leaf(path: Path, payload: bytes) -> None:
@@ -830,13 +823,13 @@ def test_status_reports_clean_without_creating_journal_in_read_only_prefix(guard
     assert not guard_fixture.journal.exists()
 
 
-def test_status_establishes_guard_state_on_a_writable_absent_prefix(guard_fixture: GuardFixture) -> None:
-    code, frames, stderr = _run(guard_fixture, "status", _status_request(guard_fixture))
-    assert code == 0
-    assert frames == [{"kind": "status", "protocol": PROTOCOL, "state": "clean", "token": None}]
-    assert stderr == b""
-    assert guard_fixture.journal.is_dir()
-    assert (guard_fixture.journal / "mutation.lock").is_file()
+def test_status_leaves_a_writable_absent_journal_absent(guard_fixture: GuardFixture) -> None:
+    for _ in range(2):
+        code, frames, stderr = _run(guard_fixture, "status", _status_request(guard_fixture))
+        assert code == 0
+        assert frames == [{"kind": "status", "protocol": PROTOCOL, "state": "clean", "token": None}]
+        assert stderr == b""
+        assert not guard_fixture.journal.exists()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Requires POSIX flock and EROFS semantics.")
@@ -1122,45 +1115,32 @@ def test_mutating_dependency_paths_never_use_a_read_only_journal_lock(
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Requires native Windows security descriptors.")
-def test_windows_status_creates_exact_protected_journal_and_lock_acls(
+@pytest.mark.parametrize("broad_parent_access", [False, True], ids=["private-parent", "broad-inheritance"])
+def test_windows_install_creates_exact_protected_journal_and_lock_acls(
     guard_fixture: GuardFixture,
+    broad_parent_access: bool,
 ) -> None:
-    code, frames, stderr = _run(guard_fixture, "status", _status_request(guard_fixture))
-    assert code == 0
-    assert frames == [{"kind": "status", "protocol": PROTOCOL, "state": "clean", "token": None}]
-    assert stderr == b""
-
-    guard._validate_private_directory(guard_fixture.journal)
-    guard._lstat_private_file(
-        guard_fixture.journal / "mutation.lock",
-        code="malformed_state",
-    )
-
-
-@pytest.mark.skipif(os.name != "nt", reason="Requires native Windows security descriptors.")
-def test_windows_secure_state_excludes_broad_parent_inheritance(
-    guard_fixture: GuardFixture,
-) -> None:
-    _run_icacls(
-        guard_fixture.root,
-        "/grant",
-        "*S-1-1-0:(OI)(CI)F",
-    )
-    inherited_probe = guard_fixture.root / "ordinary-inherited-directory"
-    inherited_probe.mkdir()
-    with pytest.raises(guard.GuardError) as raised:
-        guard._validate_private_directory(inherited_probe)
-    assert raised.value.code == "malformed_state"
-
-    code, frames, stderr = _run(guard_fixture, "status", _status_request(guard_fixture))
-    assert code == 0
-    assert frames == [{"kind": "status", "protocol": PROTOCOL, "state": "clean", "token": None}]
-    assert stderr == b""
-    guard._validate_private_directory(guard_fixture.journal)
-    guard._lstat_private_file(
-        guard_fixture.journal / "mutation.lock",
-        code="malformed_state",
-    )
+    if broad_parent_access:
+        _run_icacls(
+            guard_fixture.root,
+            "/grant",
+            "*S-1-1-0:(OI)(CI)F",
+        )
+        inherited_probe = guard_fixture.root / "ordinary-inherited-directory"
+        inherited_probe.mkdir()
+        with pytest.raises(guard.GuardError, match="^malformed_state$"):
+            guard._validate_private_directory(inherited_probe)
+    process = _arm(guard_fixture, str(uuid.uuid4()))
+    try:
+        guard._validate_private_directory(guard_fixture.journal)
+        guard._lstat_private_file(
+            guard_fixture.journal / "mutation.lock",
+            code="malformed_state",
+        )
+    finally:
+        result = _finish(process)
+    assert result == (10, b"", b"")
+    assert not guard_fixture.pip_sentinel.exists()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Requires native Windows security descriptors.")
@@ -1329,6 +1309,90 @@ def test_status_lock_preparation_rechecks_after_directory_scan(
     assert lock.exists() is create_lock
 
 
+def test_status_lock_preparation_observes_install_after_first_absence(
+    guard_fixture: GuardFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_lstat = Path.lstat
+    process: subprocess.Popen[bytes] | None = None
+    emitted: list[dict[str, Any]] = []
+
+    def install_after_absence(path: Path) -> os.stat_result:
+        nonlocal process
+        try:
+            return original_lstat(path)
+        except FileNotFoundError:
+            if path == guard_fixture.journal and process is None:
+                process = _arm(guard_fixture, str(uuid.uuid4()))
+            raise
+
+    monkeypatch.setattr(Path, "lstat", install_after_absence)
+    monkeypatch.setattr(guard, "_actual_environment", lambda: _request_environment(guard_fixture))
+    monkeypatch.setattr(guard, "_emit", emitted.append)
+    try:
+        with pytest.raises(guard.GuardError, match="^busy$"):
+            guard._run_status(_status_request(guard_fixture))
+        assert process is not None
+        assert len(_marker_paths(guard_fixture)) == 1
+        assert emitted == []
+    finally:
+        if process is not None:
+            assert _finish(process) == (10, b"", b"")
+    assert not guard_fixture.pip_sentinel.exists()
+
+
+@pytest.mark.parametrize("replacement", ["executable", "package-root"])
+def test_status_lock_preparation_rejects_environment_replacement_after_absence(
+    guard_fixture: GuardFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    replacement: str,
+) -> None:
+    original_lstat = Path.lstat
+    absent_observations = 0
+    emitted: list[dict[str, Any]] = []
+
+    def replace_after_absence(path: Path) -> os.stat_result:
+        nonlocal absent_observations
+        try:
+            return original_lstat(path)
+        except FileNotFoundError:
+            if path == guard_fixture.journal:
+                absent_observations += 1
+                if absent_observations == 2:
+                    if replacement == "executable":
+                        executable = guard_fixture.root / "replacement-python"
+                        shutil.copyfile(guard_fixture.executable, executable)
+                        executable.chmod(0o755)
+                        os.replace(executable, guard_fixture.executable)
+                    else:
+                        retained = guard_fixture.root.with_name("retained-environment")
+                        guard_fixture.root.rename(retained)
+                        guard_fixture.root.mkdir()
+                        (retained / guard_fixture.executable.parent.name).rename(guard_fixture.executable.parent)
+                        assert (
+                            guard._stat_executable_identity(guard_fixture.executable.stat())
+                            == guard_fixture.environment["executableIdentity"]
+                        )
+            raise
+
+    monkeypatch.setattr(Path, "lstat", replace_after_absence)
+    monkeypatch.setattr(
+        guard,
+        "sys",
+        SimpleNamespace(
+            executable=str(guard_fixture.executable),
+            prefix=str(guard_fixture.root),
+            version_info=guard.sys.version_info,
+        ),
+    )
+    monkeypatch.setattr(guard, "_emit", emitted.append)
+    with pytest.raises(guard.GuardError, match="^environment_changed$"):
+        guard._run_status(_status_request(guard_fixture))
+    assert absent_observations == 2
+    assert not guard_fixture.journal.exists()
+    assert emitted == []
+
+
 def test_concurrent_status_on_absent_journal_never_misclassifies_clean_state(
     guard_fixture: GuardFixture,
 ) -> None:
@@ -1355,20 +1419,12 @@ def test_concurrent_status_on_absent_journal_never_misclassifies_clean_state(
                     if pipe is not None:
                         with contextlib.suppress(BrokenPipeError):
                             pipe.close()
-    assert any(code == 0 for code, _stdout, _stderr in results)
     for code, stdout, stderr in results:
-        assert code in {0, 11}
+        assert code == 0
         frames = [json.loads(line) for line in stdout.splitlines()]
-        if code == 0:
-            assert frames == [{"kind": "status", "protocol": PROTOCOL, "state": "clean", "token": None}]
-        else:
-            assert frames == [{"code": "busy", "kind": "error", "protocol": PROTOCOL}]
+        assert frames == [{"kind": "status", "protocol": PROTOCOL, "state": "clean", "token": None}]
         assert stderr == b""
-    lock = guard_fixture.journal / "mutation.lock"
-    assert lock.is_file()
-    assert _run(guard_fixture, "status", _status_request(guard_fixture))[0] == 0
-    lock.unlink()
-    guard_fixture.journal.rmdir()
+    assert not guard_fixture.journal.exists()
 
 
 @pytest.mark.parametrize(
