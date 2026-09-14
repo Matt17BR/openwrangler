@@ -897,6 +897,13 @@ Decimal NaN; live and generated code share that helper while preserving existing
 
 ### Polars
 
+Column references bind literal names, including `*` and names that resemble anchored regular expressions.
+The native selection owner checks those names against the current input schema before constructing an exact
+expression or immediate ordered selector. Ordinary names retain their existing native path. Generated selectors
+resolve names against the input at that step; missing names refuse and existing operation-specific checks remain.
+Internal lazy top-value payloads use a fixed value-field name; they retain the public column identity separately.
+These rules do not change selectors written by the user in Custom Code.
+
 Native Datetime and Duration columns retain their precision in pages, value choices and profile labels. Pages format
 only the projected, sliced result after its source collection. Choice search and tie ordering use native temporal
 text; exact ticks and labels are retained only for the limited choices. Profile labels are formatted after counting

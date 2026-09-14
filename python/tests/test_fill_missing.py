@@ -1379,8 +1379,8 @@ def test_polars_generated_fill_selects_mixed_dependencies_and_preserves_custom_c
     engine = PolarsEngine()
     frame = pl.DataFrame(
         {
-            "sequence": [0, 1, 2, 3],
-            "value": [1.0, None, 3.0, 4.0],
+            "*": [0, 1, 2, 3],
+            "^v.*$": [1.0, None, 3.0, 4.0],
             "money": pl.Series([Decimal("1.00"), None, Decimal("3.00"), None], dtype=pl.Decimal(12, 2)),
             "label": ["seed", None, None, "end"],
             "_ow_polars_fill_missing_from_columns": [9, 8, 7, 6],
@@ -1396,8 +1396,8 @@ def test_polars_generated_fill_selects_mixed_dependencies_and_preserves_custom_c
         {"id": "custom-before", "kind": "customCode", "params": {"code": custom_code}},
         fill_step(bound_ref("c:source:2", "money", 2), {"kind": "median"}, step_id="median-money"),
         fill_step(
-            bound_ref("c:source:1", "value", 1),
-            {"kind": "linearInterpolation", "coordinate": bound_ref("c:source:0", "sequence", 0)},
+            bound_ref("c:source:1", "^v.*$", 1),
+            {"kind": "linearInterpolation", "coordinate": bound_ref("c:source:0", "*", 0)},
             step_id="interpolate-value",
         ),
         fill_step(
@@ -1405,7 +1405,7 @@ def test_polars_generated_fill_selects_mixed_dependencies_and_preserves_custom_c
             {
                 "kind": "directional",
                 "direction": "forward",
-                "orderBy": [{"column": bound_ref("c:source:0", "sequence", 0), "direction": "asc", "nulls": "last"}],
+                "orderBy": [{"column": bound_ref("c:source:0", "*", 0), "direction": "asc", "nulls": "last"}],
                 "maxGap": 2,
             },
             step_id="directional-label",
@@ -1430,6 +1430,7 @@ def test_polars_generated_fill_selects_mixed_dependencies_and_preserves_custom_c
             "_ow_polars_interpolation_coordinate_expression",
             "_ow_polars_interpolation_coordinate_roundtrip",
             "_ow_polars_fill_missing_linear_interpolation",
+            "_ow_polars_col",
         }
         source = frame.lazy() if lazy else frame
         live = source
@@ -1439,7 +1440,7 @@ def test_polars_generated_fill_selects_mixed_dependencies_and_preserves_custom_c
         assert isinstance(live, pl.LazyFrame) is lazy
         assert isinstance(generated, pl.LazyFrame) is lazy
         expected = frame.with_columns(
-            pl.Series("value", [1.0, 2.0, 3.0, 4.0]),
+            pl.Series("^v.*$", [1.0, 2.0, 3.0, 4.0]),
             pl.Series(
                 "money",
                 [Decimal("1.00"), Decimal("2.00"), Decimal("3.00"), Decimal("2.00")],

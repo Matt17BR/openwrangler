@@ -117,6 +117,8 @@ limits are in the
 Generated Python keeps import and helper bindings local. Pandas and Polars notebook inputs named like those bindings
 remain available after executing the program; an input named `clean_data` uses the generated function `clean_data_1`.
 The [architecture contract](architecture.md#engine-boundaries-and-capabilities) describes scope and caller limitations.
+Polars viewing and built-in cleaning use literal column names, including `*` and `^a.*$`. Generated selectors
+resolve those names against each step's current input.
 
 Live and generated Python Custom Code preserve multiline and continued string values, comments and valid indentation.
 Syntax errors refer to the entered code's lines.

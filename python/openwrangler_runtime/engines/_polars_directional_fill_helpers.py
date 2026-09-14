@@ -1,3 +1,6 @@
+from ._polars_exact_columns import _ow_polars_col
+
+
 def _ow_polars_fill_missing_directional(frame, target, order_rules, direction, max_gap):
     """Fill complete missing runs in stable calculation order without collecting a lazy frame."""
 
@@ -19,7 +22,7 @@ def _ow_polars_fill_missing_directional(frame, target, order_rules, direction, m
     gap_name = unique("__ow_directional_gap")
     candidate_name = unique("__ow_directional_candidate")
 
-    target_value = pl.col(target)
+    target_value = _ow_polars_col(schema, target)
     target_missing = target_value.is_null()
     candidate = target_value
     if schema[target].is_float():
@@ -28,7 +31,7 @@ def _ow_polars_fill_missing_directional(frame, target, order_rules, direction, m
 
     order_expressions = []
     for rule in order_rules:
-        expression = pl.col(rule["column"])
+        expression = _ow_polars_col(schema, rule["column"])
         if schema[rule["column"]].is_float():
             expression = expression.fill_nan(None)
         order_expressions.append(expression)

@@ -16,6 +16,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Polars treats column names such as `*` and `^a.*$` literally in viewing, cleaning and generated code instead of selecting other columns.
 - R notebook discovery and runtime commands work when user functions share names with their implementation helpers.
 - DuckDB notebook viewing keeps correct counts, filters and timestamps when the caller defines conflicting functions.
 - Polars and DuckDB By Example refuse date transformations whose native month names disagree with the supplied examples.
