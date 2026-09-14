@@ -404,6 +404,10 @@ checks aligned with live results.
 
 ## Viewing and editing controls
 
+Generated Python Filter Rows rejects reused inputs whose selected filter columns have changed semantic type.
+DuckDB also refuses missing filter or sort columns instead of silently skipping their rules. Compatible physical
+types, including different integer widths, remain usable; existing column-binding requirements still apply.
+
 Filter choices retain their counts while selecting values in the same column. Changes to the other filters, sort
 or AND/OR logic clear affected choices; Search loads the current choices without changing existing selections.
 Opening value filters from a header, the Filters tab or Show More selects the requested column with fresh search input.

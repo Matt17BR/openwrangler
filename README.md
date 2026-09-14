@@ -99,6 +99,10 @@ Copy the generated code, save a Python script, or insert it into the notebook th
 uses the selected engine: Pandas stays Pandas and Polars stays Polars. You can review and reuse the cleaning function
 in the rest of your analysis.
 
+Generated Python defines a cleaning function; it does not load or export data automatically. To reuse it, load the
+next input with the same engine and import settings, preserve the expected column names and order, then call the
+generated function, for example `result = clean_data(next_frame)`.
+
 <a href="https://github.com/Matt17BR/openwrangler/blob/main/docs/images/readme/gallery/notebook-code-insertion.png"><img alt="Generated Pandas cleaning code inserted into an orders-analysis notebook" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/gallery/notebook-code-insertion.png" width="960"></a>
 
 _Bring the cleaning function back into the notebook that opened the dataframe._
