@@ -787,6 +787,274 @@ def test_type_incompatible_predicates_fail_closed_live_and_generated(backend):
         _execute_generated_filter(engine, frame, model)
 
 
+@pytest.mark.parametrize("backend", ["pandas", "polars", "polars-lazy", "duckdb"])
+@pytest.mark.parametrize("active", [True, False], ids=["predicate", "inactive-filter"])
+def test_generated_filter_rechecks_declared_type_on_reused_input(backend, active):
+    engine = _engine("polars" if backend == "polars-lazy" else backend)
+    connection = duckdb.connect() if backend == "duckdb" else None
+
+    def frame_for(dtype, shape="ordinary"):
+        values = [40.5, 7.5, None] if dtype == "float" else [40, 7, None]
+        labels = ["first", "second", "missing"]
+        if shape == "empty":
+            values, labels = [], []
+        elif shape == "null":
+            values, labels = [None], ["missing"]
+        if backend == "pandas":
+            frame = pd.DataFrame(
+                {
+                    "amount": pd.array(values, dtype={"integer": "Int32", "wide": "Int64", "float": "Float64"}[dtype]),
+                    "label": pd.array(labels, dtype="string"),
+                }
+            )
+            frame.index = pd.Index([4, 4, 1][: len(frame)], name="source_row")
+            return frame
+        if backend.startswith("polars"):
+            frame = pl.DataFrame(
+                {
+                    "amount": pl.Series(
+                        values, dtype={"integer": pl.Int32, "wide": pl.Int64, "float": pl.Float64}[dtype]
+                    ),
+                    "label": pl.Series(labels, dtype=pl.String),
+                }
+            )
+            return frame.lazy() if backend == "polars-lazy" else frame
+        native_type = {"integer": "INTEGER", "wide": "BIGINT", "float": "DOUBLE"}[dtype]
+        rows = (
+            "(40.5, 'first'), (7.5, 'second'), (NULL, 'missing')"
+            if dtype == "float"
+            else "(40, 'first'), (7, 'second'), (NULL, 'missing')"
+        )
+        assert connection is not None
+        source = connection.sql(
+            f"SELECT amount::{native_type} AS amount, label FROM (VALUES {rows}) input(amount,label)"
+        )
+        return source.limit(0) if shape == "empty" else source.filter("amount IS NULL") if shape == "null" else source
+
+    def snapshot(frame):
+        if backend == "pandas":
+            return frame.copy(deep=True)
+        if backend.startswith("polars"):
+            return frame.collect() if isinstance(frame, pl.LazyFrame) else frame.clone()
+        return frame.fetchall(), frame.columns, frame.types
+
+    def assert_source(frame, before):
+        after = snapshot(frame)
+        if backend == "pandas":
+            pd.testing.assert_frame_equal(after, before)
+        elif backend.startswith("polars"):
+            assert isinstance(after, pl.DataFrame)
+            assert after.equals(before)
+            assert after.schema == before.schema
+        else:
+            assert after == before
+
+    model = {
+        "filters": [
+            {
+                "column": "amount",
+                "type": "integer",
+                "predicates": ([{"kind": "predicate", "operator": "gt", "value": 10}] if active else []),
+            }
+        ],
+        "sort": [],
+    }
+    namespace = {}
+    try:
+        original = frame_for("integer")
+        _execute_generated_filter(engine, original, model, namespace=namespace)
+        for shape in ("ordinary", "empty", "null"):
+            compatible = frame_for("wide", shape)
+            before = snapshot(compatible)
+            result = namespace["clean_data"](compatible)
+            if backend == "polars-lazy":
+                assert isinstance(result, pl.LazyFrame)
+                result = result.collect()
+            expected = ["first"] if active else ["first", "second", "missing"]
+            if shape != "ordinary":
+                expected = ["missing"] if shape == "null" and not active else []
+            assert _filtered_labels(result, "polars" if backend == "polars-lazy" else backend) == expected
+            assert_source(compatible, before)
+            if backend == "pandas":
+                assert isinstance(result, pd.DataFrame)
+                assert result.index.name == "source_row"
+                if shape == "ordinary":
+                    assert result.index.tolist() == ([4] if active else [4, 4, 1])
+            changed = frame_for("float", shape)
+            before = snapshot(changed)
+            with pytest.raises(EngineError, match="declares"):
+                engine.apply_filter_model(changed, model)
+            with pytest.raises(ValueError, match="type"):
+                namespace["clean_data"](changed)
+            assert_source(changed, before)
+    finally:
+        engine.close()
+        if connection is not None:
+            connection.close()
+
+
+@pytest.mark.parametrize("missing", ["amount", "rank"])
+def test_generated_duckdb_filter_refuses_missing_reused_input_columns(missing):
+    engine = DuckDBEngine()
+    try:
+        with duckdb.connect() as connection:
+            source = connection.sql(
+                "SELECT * FROM (VALUES (20,1,'first'), (30,2,'second'), (0,3,'excluded')) input(amount,rank,label)"
+            )
+            model = {
+                "filters": [
+                    {
+                        "column": "amount",
+                        "type": "integer",
+                        "predicates": [{"kind": "predicate", "operator": "gt", "value": 10}],
+                    }
+                ],
+                "sort": [{"column": "rank", "direction": "desc", "nulls": "last"}],
+            }
+            namespace = {}
+            result = _execute_generated_filter(engine, source, model, namespace=namespace)
+            assert result.fetchall() == [(30, 2, "second"), (20, 1, "first")]
+            changed = source.project(",".join(f'"{name}"' for name in source.columns if name != missing))
+            before = changed.fetchall()
+            with pytest.raises(ValueError, match="column"):
+                namespace["clean_data"](changed)
+            assert changed.fetchall() == before
+            assert source.fetchall() == [(20, 1, "first"), (30, 2, "second"), (0, 3, "excluded")]
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("backend", ["polars", "polars-lazy", "duckdb"])
+def test_generated_filter_rechecks_current_sort_comparability(backend):
+    engine = _engine("polars" if backend == "polars-lazy" else backend)
+    connection = duckdb.connect() if backend == "duckdb" else None
+    try:
+        if connection is not None:
+            source = connection.sql("SELECT * FROM (VALUES (2,'first'), (1,'second')) input(value,label)")
+            changed = connection.sql("SELECT * FROM (VALUES ([2],'first'), ([1],'second')) input(value,label)")
+            comparable = source.project("CAST(value AS DOUBLE) + 0.5 AS value, label")
+        else:
+            source = pl.DataFrame({"value": [2, 1], "label": ["first", "second"]})
+            changed = pl.DataFrame({"value": [[2], [1]], "label": ["first", "second"]})
+            comparable = source.with_columns((pl.col("value").cast(pl.Float64) + 0.5).alias("value"))
+            if backend == "polars-lazy":
+                source, changed, comparable = source.lazy(), changed.lazy(), comparable.lazy()
+        model = {"filters": [], "sort": [{"column": "value", "direction": "asc", "nulls": "last"}]}
+        namespace = {}
+        result = _execute_generated_filter(engine, source, model, namespace=namespace)
+        if isinstance(result, pl.LazyFrame):
+            result = result.collect()
+        assert _filtered_labels(result, "polars" if backend == "polars-lazy" else backend) == ["second", "first"]
+        for result in [engine.apply_filter_model(comparable, model), namespace["clean_data"](comparable)]:
+            if isinstance(result, pl.LazyFrame):
+                result = result.collect()
+            assert engine.schema(result)[0]["type"] == "float"
+            assert _filtered_labels(result, "polars" if backend == "polars-lazy" else backend) == ["second", "first"]
+        preserved = comparable.collect() if isinstance(comparable, pl.LazyFrame) else comparable
+        assert _filtered_labels(preserved, "polars" if backend == "polars-lazy" else backend) == ["first", "second"]
+        with pytest.raises(EngineError, match="sorting is unavailable"):
+            engine.apply_filter_model(changed, model)
+        with pytest.raises(ValueError, match="sort"):
+            namespace["clean_data"](changed)
+        preserved = changed.collect() if isinstance(changed, pl.LazyFrame) else changed
+        assert _filtered_labels(preserved, "polars" if backend == "polars-lazy" else backend) == ["first", "second"]
+    finally:
+        engine.close()
+        if connection is not None:
+            connection.close()
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "polars-lazy", "duckdb"])
+def test_generated_filter_checks_the_input_established_by_an_earlier_cast(backend):
+    engine = _engine("polars" if backend == "polars-lazy" else backend)
+    connection = duckdb.connect() if backend == "duckdb" else None
+    try:
+        if backend == "pandas":
+            source = pd.DataFrame(
+                {"value": pd.array([40, 7, None], dtype="Int64"), "label": ["first", "second", "null"]}
+            )
+            source.index = pd.Index([4, 4, 1], name="source_row")
+            before = source.copy(deep=True)
+        elif connection is not None:
+            source = connection.sql(
+                "SELECT * FROM (VALUES (40,'first'), (7,'second'), (NULL,'null')) input(value,label)"
+            )
+            before = source.fetchall()
+        else:
+            source = pl.DataFrame({"value": [40, 7, None], "label": ["first", "second", "null"]})
+            before = source.clone()
+            if backend == "polars-lazy":
+                source = source.lazy()
+        schema = engine.schema(source)
+        assert schema[0]["type"] == "integer"
+        lineage = source_lineage(schema)
+        cast_step = bind_step(
+            validate_step(
+                {"id": "cast-value", "kind": "castColumn", "params": {"column": lineage[0], "dtype": "float"}}
+            ),
+            schema,
+            lineage,
+        )
+        converted = engine.apply_transform(source, cast_step)
+        converted_schema = engine.schema(converted)
+        assert converted_schema[0]["type"] == "float"
+        filter_step = bind_step(
+            validate_step(
+                {
+                    "id": "filter-value",
+                    "kind": "filterRows",
+                    "params": {
+                        "filterModel": {
+                            "filters": [
+                                {
+                                    "column": lineage[0],
+                                    "type": "float",
+                                    "predicates": [{"kind": "predicate", "operator": "gt", "value": 10}],
+                                }
+                            ],
+                            "sort": [],
+                        }
+                    },
+                }
+            ),
+            converted_schema,
+            lineage,
+        )
+        live = engine.apply_transform(converted, filter_step)
+        namespace = {}
+        exec(engine.compile_plan([cast_step, filter_step]), namespace, namespace)
+        generated = namespace["clean_data"](source)
+        if backend == "pandas":
+            assert isinstance(source, pd.DataFrame) and isinstance(before, pd.DataFrame)
+            assert isinstance(generated, pd.DataFrame) and isinstance(live, pd.DataFrame)
+            pd.testing.assert_frame_equal(generated, live, check_exact=True)
+            pd.testing.assert_frame_equal(source, before, check_exact=True)
+            assert generated["value"].tolist() == [40.0]
+            assert generated.index.tolist() == [4]
+            assert generated.index.name == "source_row"
+        elif connection is not None:
+            assert generated.fetchall() == engine._terminal_rows(live, "SELECT * FROM ow") == [(40.0, "first")]
+            assert isinstance(source, duckdb.DuckDBPyRelation)
+            assert source.fetchall() == before
+        else:
+            if backend == "polars-lazy":
+                assert isinstance(live, pl.LazyFrame) and isinstance(generated, pl.LazyFrame)
+                live, generated = live.collect(), generated.collect()
+            assert isinstance(live, pl.DataFrame) and isinstance(generated, pl.DataFrame)
+            assert isinstance(before, pl.DataFrame)
+            assert generated.equals(live) and generated.schema == live.schema
+            assert generated.get_column("value").to_list() == [40.0]
+            preserved = source.collect() if isinstance(source, pl.LazyFrame) else source
+            assert isinstance(preserved, pl.DataFrame)
+            assert preserved.equals(before) and preserved.schema == before.schema
+        assert engine.schema(generated)[0]["type"] == "float"
+        assert _filtered_labels(generated, "polars" if backend == "polars-lazy" else backend) == ["first"]
+    finally:
+        engine.close()
+        if connection is not None:
+            connection.close()
+
+
 @pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
 def test_nan_text_selection_requires_the_explicit_nan_option(backend):
     engine = _engine(backend)

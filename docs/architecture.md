@@ -378,6 +378,11 @@ Empty plans and zero-column viewing or row operations retain their existing beha
 Viewing `FilterModel` and `SortRule` remain name-addressed, presentation-only queries. A committed Filter Rows or Sort
 Rows step uses a separate transform filter/sort IR whose column operands are stable `{id, name}` references. The two
 representations are never inferred from one another by name fallback.
+Generated Python Filter Rows checks each referenced filter column's semantic type against its declared type before
+evaluation, including filters with no active predicates. Equivalent physical integer types remain compatible.
+DuckDB refuses missing filter and embedded-sort columns instead of omitting their rules. DuckDB and Polars also check
+current sort comparability; Pandas retains its existing native cleaning-sort behavior. These checks apply to each
+step's actual input and do not add automatic schema mapping or change permissive viewing-name handling.
 
 Unsubmitted filter input belongs to its session and selected column ID. If that column disappears, both column
 selectors show an unavailable target and retain the input until the user chooses another column or the same ID

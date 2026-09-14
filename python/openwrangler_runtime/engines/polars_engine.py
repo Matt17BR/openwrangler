@@ -1965,11 +1965,10 @@ class PolarsEngine(DataFrameEngine):
                     "",
                 ]
             )
-        if any(step["kind"] == "conditionalColumn" for step in plan):
+        if needs_filter_helpers:
             lines.extend(
                 ["import re", "from builtins import len, type", "ColumnType = str", getsource(infer_semantic_type)]
             )
-        if needs_filter_helpers:
             lines.extend(generated_view_value_helper_lines())
             lines.extend(
                 [
@@ -4424,14 +4423,24 @@ def _bound_polars_filter_model(model: Mapping[str, Any]) -> dict[str, Any]:
 def _compile_polars_filter(model: Mapping[str, Any], index: int) -> list[str]:
     column_masks: list[str] = []
     prelude: list[str] = []
-    for filter_index, column_filter in enumerate(model.get("filters", [])):
+    filters = model.get("filters", [])
+    rules = model.get("sort", [])
+    schema = f"_filter_schema_{index}"
+    if filters or rules:
+        prelude.append(f"    {schema} = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema")
+    for filter_index, column_filter in enumerate(filters):
         column = column_filter["column"]
         expression = f"pl.col({column!r})"
         column_type = column_filter.get("type")
         dtype_variable = f"_filter_dtype_{index}_{filter_index}"
-        prelude.append(
-            f"    {dtype_variable} = (df.collect_schema()[{column!r}] "
-            f"if isinstance(df, pl.LazyFrame) else df.schema[{column!r}])"
+        prelude.extend(
+            [
+                f"    if {column!r} not in {schema}:",
+                "        raise ValueError('Filter Rows input column is missing.')",
+                f"    {dtype_variable} = {schema}[{column!r}]",
+                f"    if infer_semantic_type(str({dtype_variable})) != {column_type!r}:",
+                "        raise ValueError('Filter Rows input type no longer matches its declared type.')",
+            ]
         )
         conditions: list[str] = []
         value_filter = column_filter.get("valueFilter")
@@ -4471,12 +4480,22 @@ def _compile_polars_filter(model: Mapping[str, Any], index: int) -> list[str]:
             operator = " | " if column_filter.get("logic") == "or" else " & "
             column_masks.append("(" + operator.join(conditions) + ")")
 
+    for rule in rules:
+        column = rule["column"]
+        prelude.extend(
+            [
+                f"    if {column!r} not in {schema}:",
+                "        raise ValueError('Filter Rows sort column is missing.')",
+                f"    if infer_semantic_type(str({schema}[{column!r}])) "
+                f"not in {tuple(sorted(VIEW_COMPARABLE_TYPES))!r}:",
+                "        raise ValueError('Filter Rows sort column is not comparable.')",
+            ]
+        )
     lines: list[str] = prelude
     if column_masks:
         operator = " | " if model.get("logic") == "or" else " & "
         lines.append(f"    _filter_expression_{index} = " + operator.join(column_masks))
         lines.append(f"    df = df.filter(_filter_expression_{index})")
-    rules = model.get("sort", [])
     if rules:
         lines.extend(
             [

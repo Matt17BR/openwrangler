@@ -1991,7 +1991,11 @@ class PandasEngine(DataFrameEngine):
             step["kind"] in {"filterRows", "fillMissingValues", "conditionalColumn"} for step in plan
         )
         needs_view_value_helpers = any(step["kind"] in {"filterRows", "conditionalColumn"} for step in plan)
-        needs_conditional_helpers = any(step["kind"] == "conditionalColumn" for step in plan)
+        needs_semantic_type_helpers = any(
+            step["kind"] == "conditionalColumn"
+            or (step["kind"] == "filterRows" and bool(step["params"]["filterModel"].get("filters")))
+            for step in plan
+        )
         needs_fill_helpers = any(step["kind"] == "fillMissingValues" for step in plan)
         fill_strategies = {
             _pandas_fill_strategy(step["params"]["replacement"]) for step in plan if step["kind"] == "fillMissingValues"
@@ -2597,7 +2601,7 @@ class PandasEngine(DataFrameEngine):
                     "",
                 ]
             )
-        if needs_conditional_helpers:
+        if needs_semantic_type_helpers:
             lines.extend(
                 [
                     "import re",
@@ -6585,6 +6589,14 @@ def _generated_pandas_row_query_helpers(*, include_queries: bool = True) -> list
 
 def _compile_pandas_filter(model: Mapping[str, Any], index: int) -> list[str]:
     lines: list[str] = []
+    for column_filter in model.get("filters", []):
+        position = bound_column_position(column_filter["column"], "filterRows")
+        lines.extend(
+            [
+                f"    if _pandas_semantic_type(df.iloc[:, {position}]) != {column_filter.get('type')!r}:",
+                "        raise ValueError('Filter Rows input type no longer matches its declared type.')",
+            ]
+        )
     column_masks: list[str] = []
     for column_index, column_filter in enumerate(model.get("filters", [])):
         position = bound_column_position(column_filter["column"], "filterRows")

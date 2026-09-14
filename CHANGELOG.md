@@ -11,6 +11,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Generated Python Filter Rows rejects changed input types instead of silently running a different query. DuckDB also refuses missing filter and sort columns.
 - Editing or deleting an earlier cleaning step removes incompatible viewing filters and sorts while preserving unaffected rules. Applying a replacement retains saved filters on columns recreated by later steps.
 - DuckDB refuses to display top-level Maps when distinct scalar Union keys would collapse into fewer entries.
 - Pandas preserves nanosecond timestamp types inside Parquet structs through editing and export. Lossy text conversion of supported nested temporal minima is refused.

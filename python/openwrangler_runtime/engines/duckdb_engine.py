@@ -1447,8 +1447,6 @@ class DuckDBEngine(DataFrameEngine):
                 f"{params['trueValue']!r}, {params['falseValue']!r}, {params['missingValue']!r})"
             ]
         if kind == "filterRows":
-            # The runtime helper receives the current columns so unknown saved
-            # filters remain ignorable after an earlier drop/rename step.
             model = _bound_duckdb_filter_model(params["filterModel"])
             for column_filter in model.get("filters", []):
                 for predicate in column_filter.get("predicates", []):
@@ -3901,6 +3899,7 @@ def _generated_helper_source() -> str:
         [
             _GENERATED_HELPERS.rstrip(),
             "",
+            f"_OW_VIEW_COMPARABLE_TYPES = {tuple(sorted(VIEW_COMPARABLE_TYPES))!r}",
             getsource(_semantic_type),
             getsource(_duckdb_datetime_format_expression),
             *generated_view_value_helper_lines(),
@@ -4285,16 +4284,18 @@ def _ow_conditional_column(
 
 
 def _ow_filter(df, model):
-    available = set(_ow_columns(df))
+    types = dict(zip(_ow_columns(df), df.types, strict=True))
     column_conditions = []
     for column_filter in model.get("filters", []):
         column = column_filter.get("column")
-        if column not in available:
-            continue
+        if column not in types:
+            raise ValueError("Filter Rows references a missing input column.")
+        column_type = column_filter.get("type")
+        if _semantic_type(str(types[column])) != column_type:
+            raise ValueError("Filter Rows input type no longer matches its declared type.")
         identifier = _ow_ident(column)
         conditions = []
         values = column_filter.get("valueFilter")
-        column_type = column_filter.get("type")
         if values and (values.get("selectedValues") or values.get("includeNulls") or values.get("includeNaN")):
             alternatives = []
             selected = [_open_wrangler_view_value(value, column_type) for value in values.get("selectedValues", [])]
@@ -4315,10 +4316,16 @@ def _ow_filter(df, model):
     where = ""
     if column_conditions:
         where = " WHERE " + (" OR " if model.get("logic") == "or" else " AND ").join(column_conditions)
-    rules = [rule for rule in model.get("sort", []) if rule.get("column") in available]
+    rules = model.get("sort", [])
+    for rule in rules:
+        column = rule.get("column")
+        if column not in types:
+            raise ValueError("Filter Rows sort references a missing input column.")
+        if _semantic_type(str(types[column])) not in _OW_VIEW_COMPARABLE_TYPES:
+            raise ValueError("Filter Rows sorting is unavailable for this input type.")
     if not rules:
         return _ow_query(df, "SELECT * FROM ow" + where)
-    order_name = _ow_unique(available, "__ow_sort_order")
+    order_name = _ow_unique(types, "__ow_sort_order")
     order = ", ".join(
         _ow_ident(rule["column"]) + " " + rule.get("direction", "asc").upper()
         + " NULLS " + rule.get("nulls", "last").upper()
