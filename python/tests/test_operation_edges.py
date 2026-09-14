@@ -1341,6 +1341,111 @@ def test_by_example_string_and_datetime_results_use_typed_nulls(
     assert [row["result"]["kind"] for row in live] == expected_kinds
 
 
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize(
+    ("input_format", "output_format", "values", "expected", "refuses"),
+    [
+        ("%d %B %Y", "%Y-%m-%d", ["02 marzo 2026", "03 ottobre 2027"], ["2026-03-02", "2027-10-03"], True),
+        ("%Y-%m-%d", "%d %B %Y", ["2026-03-02", "2027-10-03"], ["02 marzo 2026", "03 ottobre 2027"], True),
+        ("%b %d, %Y", "%Y-%m-%d", ["mar 02, 2026", "ott 03, 2027"], ["2026-03-02", "2027-10-03"], True),
+        ("%Y-%m-%d", "%b %d, %Y", ["2026-03-02", "2027-10-03"], ["mar 02, 2026", "ott 03, 2027"], True),
+        ("%Y-%m-%d", "%d %B %Y", [None] * 63 + ["2028-12-04"], [None] * 63 + ["04 dicembre 2028"], True),
+        (
+            "%d %B %Y",
+            "%b %d, %Y",
+            ["02 March 2026", "03 October 2027", None],
+            ["Mar 02, 2026", "Oct 03, 2027", None],
+            False,
+        ),
+        ("%Y-%m-%d", "%d/%m/%Y", ["2026-03-02", "2027-10-03", None], ["02/03/2026", "03/10/2027", None], False),
+        (None, None, ["alpha", "beta", None], ["ALPHA", "BETA", None], False),
+    ],
+    ids=[
+        "input-full",
+        "output-full",
+        "input-short",
+        "output-short",
+        "last-example",
+        "english-null",
+        "numeric-null",
+        "case-null",
+    ],
+)
+def test_polars_by_example_checks_native_month_name_examples(
+    monkeypatch: pytest.MonkeyPatch,
+    lazy: bool,
+    input_format: str | None,
+    output_format: str | None,
+    values: list[str | None],
+    expected: list[str | None],
+    refuses: bool,
+) -> None:
+    engine = PolarsEngine()
+    name = 'when "O\'Brien"'
+    frame = pl.DataFrame(
+        {"padding": range(len(values)), "kept": ["ignored"] * len(values), name: pl.Series(values, dtype=pl.String)}
+    )
+    before = frame.clone()
+    source = frame.lazy() if lazy else frame
+    schema = engine.schema(source)
+    lineage = source_lineage(schema)
+    column = {"kind": "column", "column": lineage[2]}
+    program = (
+        {"kind": "datetimeFormat", "input": column, "inputFormat": input_format, "outputFormat": output_format}
+        if input_format is not None
+        else {"kind": "case", "input": column, "style": "upper"}
+    )
+    # These are captured normalized programs, so CI needs no installed Italian
+    # locale. Native execution must still reproduce every retained example.
+    operation = bind_step(
+        bound_step(
+            "byExample",
+            sourceColumns=[lineage[1], lineage[2]],
+            newColumn="result",
+            examples=[
+                {"inputs": ["ignored", value], "output": output} for value, output in zip(values, expected, strict=True)
+            ],
+            program=program,
+        ),
+        schema,
+        lineage,
+    )
+    if refuses:
+        message = r"^Polars cannot reproduce these date examples\. Use numeric month values or Custom Code\.$"
+        with pytest.raises(EngineError, match=message):
+            engine.apply_transform(source, operation)
+        with pytest.raises(EngineError, match=message):
+            engine.compile_plan([operation])
+    else:
+        no_month_names = input_format is None or output_format == "%d/%m/%Y"
+        live: Any = None
+        if no_month_names:
+
+            def unexpected_collection(*_args: Any, **_kwargs: Any) -> Any:
+                raise AssertionError("Numeric-date and nondate admission must not evaluate a native frame")
+
+            with monkeypatch.context() as context:
+                context.setattr(pl.LazyFrame, "collect", unexpected_collection)
+                code = engine.compile_plan([operation])
+                if lazy:
+                    live = engine.apply_transform(source, operation)
+            if not lazy:
+                live = engine.apply_transform(source, operation)
+        else:
+            live = engine.apply_transform(source, operation)
+            code = engine.compile_plan([operation])
+        namespace: dict[str, Any] = {}
+        exec(code, namespace, namespace)
+        generated = namespace["clean_data"](source)
+        wanted = before.with_columns(pl.Series("result", expected, dtype=pl.String))
+        for result in (live, generated):
+            assert isinstance(result, pl.LazyFrame) == lazy
+            collected = result.collect() if lazy else result
+            assert_polars_frame_equal(collected, wanted)
+    assert_polars_frame_equal(source.collect() if isinstance(source, pl.LazyFrame) else source, before)
+    assert_polars_frame_equal(frame, before)
+
+
 def test_pandas_grouping_targets_duplicate_and_non_string_labels_positionally() -> None:
     engine = PandasEngine()
     frame = pd.DataFrame(

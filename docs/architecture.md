@@ -323,6 +323,13 @@ binds public references against the exact input schema and lineage to private po
 disallowed, type/name-mismatched, colliding, or private row-identity references fail closed. The current catalog and
 parameters are listed in the generated [transformation reference](reference.md#transformation-operations).
 
+By Example date synthesis uses Python's current locale. Before live execution or code generation, Polars and DuckDB
+check programs containing full or abbreviated month names (`%B` or `%b`) against every retained example using their
+native date expression. A mismatch refuses the operation before draft publication. The check evaluates only the
+bounded examples, never the source dataframe; DuckDB shares one owned connection across these checks when compiling
+a plan. Successful generated programs retain their native expressions without embedding examples or changing locale.
+Agreement on the examples does not establish the intended language for other rows, so users must still inspect Preview.
+
 Conditional Column binds one source reference and its exact semantic type, then appends one fresh Text or Boolean
 column without changing source columns or rows. Matching, nonmatching and missing results are required scalar values
 of the declared output type or explicit null. Every result is validated, even when unused or the input is empty.

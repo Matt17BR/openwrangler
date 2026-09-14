@@ -252,6 +252,168 @@ def execute_generated(engine: DuckDBEngine, frame: Any, plan: list[dict[str, Any
 
 
 @pytest.mark.parametrize(
+    ("input_format", "output_format", "values", "expected", "refuses"),
+    [
+        ("%d %B %Y", "%Y-%m-%d", ["02 marzo 2026", "03 ottobre 2027"], ["2026-03-02", "2027-10-03"], True),
+        ("%Y-%m-%d", "%d %B %Y", ["2026-03-02", "2027-10-03"], ["02 marzo 2026", "03 ottobre 2027"], True),
+        ("%b %d, %Y", "%Y-%m-%d", ["mar 02, 2026", "ott 03, 2027"], ["2026-03-02", "2027-10-03"], True),
+        ("%Y-%m-%d", "%b %d, %Y", ["2026-03-02", "2027-10-03"], ["mar 02, 2026", "ott 03, 2027"], True),
+        ("%Y-%m-%d", "%d %B %Y", [None] * 63 + ["2028-12-04"], [None] * 63 + ["04 dicembre 2028"], True),
+        (
+            "%d %B %Y",
+            "%b %d, %Y",
+            ["02 March 2026", "03 October 2027", None],
+            ["Mar 02, 2026", "Oct 03, 2027", None],
+            False,
+        ),
+        ("%Y-%m-%d", "%d/%m/%Y", ["2026-03-02", "2027-10-03", None], ["02/03/2026", "03/10/2027", None], False),
+        (None, None, ["alpha", "beta", None], ["ALPHA", "BETA", None], False),
+    ],
+    ids=[
+        "input-full",
+        "output-full",
+        "input-short",
+        "output-short",
+        "last-example",
+        "english-null",
+        "numeric-null",
+        "case-null",
+    ],
+)
+def test_duckdb_by_example_checks_native_month_name_examples(
+    monkeypatch: pytest.MonkeyPatch,
+    input_format: str | None,
+    output_format: str | None,
+    values: list[str | None],
+    expected: list[str | None],
+    refuses: bool,
+) -> None:
+    engine = DuckDBEngine()
+    name = 'when "O\'Brien"'
+    literals = ["NULL::VARCHAR" if value is None else "'" + value.replace("'", "''") + "'" for value in values]
+    rows = ", ".join(f"({index}, 'ignored', {value})" for index, value in enumerate(literals))
+    with duckdb.connect(":memory:") as connection:
+        source = connection.sql(f'SELECT * FROM (VALUES {rows}) AS source(padding, kept, "when ""O\'Brien""")')
+        before = source.fetchall()
+        identity = (source.sql_query(), source.columns, source.types)
+        try:
+            schema = engine.schema(source)
+            lineage = source_lineage(schema)
+            assert lineage[2]["name"] == name
+            column = {"kind": "column", "column": lineage[2]}
+            program = (
+                {"kind": "datetimeFormat", "input": column, "inputFormat": input_format, "outputFormat": output_format}
+                if input_format is not None
+                else {"kind": "case", "input": column, "style": "upper"}
+            )
+            # Captured normalized programs avoid requiring an Italian CI locale;
+            # neither the native parser nor formatter is mocked.
+            operation = bind_step(
+                bound_step(
+                    "byExample",
+                    sourceColumns=[lineage[1], lineage[2]],
+                    newColumn="result",
+                    examples=[
+                        {"inputs": ["ignored", value], "output": output}
+                        for value, output in zip(values, expected, strict=True)
+                    ],
+                    program=program,
+                ),
+                schema,
+                lineage,
+            )
+            if refuses:
+                message = r"^DuckDB cannot reproduce these date examples\. Use numeric month values or Custom Code\.$"
+                with pytest.raises(EngineError, match=message):
+                    engine.apply_transform(source, operation)
+                with pytest.raises(EngineError, match=message):
+                    engine.compile_plan([operation])
+            else:
+                if input_format is None or output_format == "%d/%m/%Y":
+
+                    def unexpected_connection() -> Any:
+                        raise AssertionError(
+                            "Numeric-date and nondate compilation must not acquire a native connection"
+                        )
+
+                    with monkeypatch.context() as context:
+                        context.setattr(duckdb_runtime, "_connect", unexpected_connection)
+                        code = engine.compile_plan([operation])
+                else:
+                    code = engine.compile_plan([operation])
+                live = engine.apply_transform(source, operation)
+                namespace: dict[str, Any] = {}
+                exec(code, namespace, namespace)
+                generated = namespace["clean_data"](source)
+                wanted = [(*row, value) for row, value in zip(before, expected, strict=True)]
+                assert engine._terminal_rows(live, "SELECT * FROM ow") == generated.fetchall() == wanted
+                assert generated.columns == live.columns == [*source.columns, "result"]
+                assert str(generated.types[-1]) == str(live.types[-1]) == "VARCHAR"
+            assert source.fetchall() == before
+            assert (source.sql_query(), source.columns, source.types) == identity
+            if not refuses and input_format == "%d %B %Y":
+                engine.close()
+                with pytest.raises(EngineError, match="The DuckDB engine is closed"):
+                    engine.compile_plan([operation])
+        finally:
+            engine.close()
+
+
+@pytest.mark.parametrize(
+    "failure_type", [duckdb.InterruptException, duckdb.ConnectionException, duckdb.InvalidInputException]
+)
+def test_duckdb_date_example_query_keeps_lifecycle_errors_and_hides_example_values(
+    monkeypatch: pytest.MonkeyPatch, failure_type: type[Exception]
+) -> None:
+    column = bound_ref("c:source:0", "value", 0)
+    inputs = ["2026-03-02", "2027-10-03"]
+    operation = bound_step(
+        "byExample",
+        sourceColumns=[column],
+        newColumn="result",
+        examples=[
+            {"inputs": [value], "output": output}
+            for value, output in zip(inputs, ["02 March 2026", "03 October 2027"], strict=True)
+        ],
+        program={
+            "kind": "datetimeFormat",
+            "input": {"kind": "column", "column": column},
+            "inputFormat": "%Y-%m-%d",
+            "outputFormat": "%d %B %Y",
+        },
+    )
+    failure = failure_type("synthetic private example")
+
+    class FailedQuery:
+        closed = False
+
+        def execute(self, query: str, parameters: list[Any]) -> Any:
+            assert parameters == inputs and all(value not in query for value in inputs)
+            raise failure
+
+        def close(self) -> None:
+            self.closed = True
+
+    connection = FailedQuery()
+    monkeypatch.setattr(duckdb_runtime, "_connect", lambda: connection)
+    engine = DuckDBEngine()
+    try:
+        with pytest.raises(EngineError if failure_type is duckdb.InvalidInputException else failure_type) as raised:
+            engine.compile_plan([operation])
+        if failure_type is duckdb.InvalidInputException:
+            assert (
+                str(raised.value)
+                == "DuckDB cannot reproduce these date examples. Use numeric month values or Custom Code."
+            )
+            assert raised.value.__suppress_context__
+        else:
+            assert raised.value is failure
+        assert connection.closed and not engine._active_connections
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize(
     ("operator", "left", "right", "exact", "refuse", "left_type", "right_type"),
     [
         ("add", 2**100 + 1, 1, 2**100 + 2, True, "HUGEINT", "UHUGEINT"),
