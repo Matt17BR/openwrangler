@@ -297,6 +297,30 @@ export function schemaAfterRStep(
   if (step.kind === "selectColumns") return schemaAfterSelect(inputSchema, step);
   if (step.kind === "dropColumns") return schemaAfterDrop(inputSchema, step);
   if (step.kind === "groupBy") return schemaAfterGroupBy(inputSchema, step);
+  if (step.kind === "conditionalColumn") {
+    const appended = schemaAfterClone(inputSchema, {
+      id: step.id,
+      kind: "cloneColumn",
+      params: { column: step.params.column, newName: step.params.newColumn }
+    });
+    const nullary = ["isNull", "isNotNull", "isNaN", "isNotNaN"].includes(step.params.predicate.operator);
+    const nullable =
+      step.params.trueValue === null ||
+      step.params.falseValue === null ||
+      (!nullary && step.params.missingValue === null);
+    return Object.freeze(
+      appended.map((column, index) =>
+        index === inputSchema.length
+          ? Object.freeze({
+              ...column,
+              rawType: step.params.resultType === "string" ? "character" : "logical",
+              type: step.params.resultType,
+              nullable
+            })
+          : column
+      )
+    );
+  }
   if (step.kind === "markDuplicates") {
     for (const reference of step.params.columns) requireTransformColumn(reference, inputSchema, "Mark duplicates");
     const appended = schemaAfterClone(inputSchema, {

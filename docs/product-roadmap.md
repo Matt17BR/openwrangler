@@ -26,7 +26,6 @@ explicitly selected and can meet its acceptance criteria.
 These are open, unscheduled proposals. User demand is not yet established; examples and practical constraints are
 welcome in their issues. Start with useful single-source operations before taking on broader source ownership.
 
-- [Conditional columns](https://github.com/Matt17BR/openwrangler/issues/1382): derive a typed value from one condition, such as flagging overdue invoices.
 - [Explicit date parsing and typed date parts](https://github.com/Matt17BR/openwrangler/issues/1383): choose a parsing format and create date or numeric outputs.
 - [Bounded explode and unnest](https://github.com/Matt17BR/openwrangler/issues/1384): expand one supported list or struct column with clear row and type rules.
 - [Apply a cleaning plan to another input](https://github.com/Matt17BR/openwrangler/issues/1385): review column mapping for one compatible target.

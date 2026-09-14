@@ -61,6 +61,7 @@ export type TransformStep =
   | CloneColumnTransformStep
   | CastColumnTransformStep
   | FormulaTransformStep
+  | ConditionalColumnTransformStep
   | TextLengthTransformStep
   | OneHotEncodeTransformStep
   | MultiLabelBinarizeTransformStep
@@ -101,6 +102,7 @@ export type OperationKind =
   | "cloneColumn"
   | "castColumn"
   | "formula"
+  | "conditionalColumn"
   | "textLength"
   | "oneHotEncode"
   | "multiLabelBinarize"
@@ -263,6 +265,23 @@ export type FormulaParams = {
 export type FormulaLiteral = number | string;
 export type FormulaParams1 = {
   [k: string]: unknown;
+};
+export type ConditionalColumnTransformStep = TransformStepTemplate & {
+  kind: "conditionalColumn";
+  params: ConditionalColumnParams;
+  [k: string]: unknown;
+};
+export type ConditionalColumnParams = {
+  [k: string]: unknown;
+} & {
+  column: ColumnReference;
+  columnType: ColumnType;
+  predicate: PredicateFilter;
+  newColumn: string;
+  resultType: "string" | "boolean";
+  trueValue: string | boolean | null;
+  falseValue: string | boolean | null;
+  missingValue: string | boolean | null;
 };
 export type TextLengthTransformStep = TransformStepTemplate & {
   kind: "textLength";

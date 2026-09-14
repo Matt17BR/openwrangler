@@ -181,7 +181,7 @@ text_step <- function(frame, id, kind, new_column = NULL, ...) {
 
 catalog_kinds <- c(
   "sortRows", "filterRows", "dropMissingRows", "fillMissingValues", "dropDuplicates", "markDuplicates",
-  "selectColumns", "dropColumns", "renameColumn", "cloneColumn", "castColumn", "formula",
+  "selectColumns", "dropColumns", "renameColumn", "cloneColumn", "castColumn", "formula", "conditionalColumn",
   "textLength", "oneHotEncode", "multiLabelBinarize", "findReplace", "stripText", "splitText", "splitTextColumns",
   "extractRegexGroup", "capitalizeText", "lowerText", "upperText", "denseRank", "minMaxScale", "roundNumber", "floorNumber",
   "ceilNumber", "formatDatetime", "pivotLonger", "pivotWider", "groupBy", "byExample", "customCode"
@@ -290,6 +290,15 @@ catalog_cases <- list(
     verify = function(output, input) assert_identical(
       unname(output[["number plus two"]]), unname(input$number) + 2, "Formula returned the wrong values"
     )
+  ),
+  conditionalColumn = list(
+    step = function(frame, id) step_with(id, "conditionalColumn", list(
+      column = column_reference(frame, "number"), columnType = "float",
+      predicate = list(kind = "predicate", operator = "gte", value = 2.75), newColumn = "label",
+      resultType = "string", trueValue = "high", falseValue = "", missingValue = NULL
+    )),
+    verify = function(output, input) assert_identical(output$label,
+      c("", "high", "high", NA_character_, "", "high"), "Conditional Column changed branch results")
   ),
   textLength = list(
     step = function(frame, id) step_with(id, "textLength", list(

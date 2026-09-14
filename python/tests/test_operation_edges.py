@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from math import copysign, isnan
 from typing import Any, cast
 
@@ -4087,3 +4088,205 @@ def test_pandas_arrow_formula_capacity_mixed_plan_keeps_by_example_and_custom_co
         assert actual["encoded"].array.__arrow_array__().equals(pa.chunked_array([dictionary]))
         pd.testing.assert_index_equal(actual.index, frame.index)
     pd.testing.assert_frame_equal(frame, before)
+
+
+@pytest.mark.parametrize(
+    ("column_type", "values", "predicate", "result_type", "arms", "expected"),
+    [
+        (
+            "float",
+            [5.0, 10.0, None, float("nan"), float("inf"), -float("inf")],
+            {"operator": "gte", "value": "10"},
+            "string",
+            ("high'\n", "", " "),
+            ["", "high'\n", " ", " ", "high'\n", ""],
+        ),
+        (
+            "integer",
+            [2**53, 2**53 + 1, None],
+            {"operator": "gte", "value": str(2**53 + 1)},
+            "boolean",
+            (True, False, None),
+            [False, True, None],
+        ),
+        (
+            "string",
+            ["alpha", "Beta", "NaN", None],
+            {"operator": "contains", "value": "PH"},
+            "string",
+            ("match", "other", None),
+            ["match", "other", "other", None],
+        ),
+        (
+            "float",
+            [None, float("nan"), 1.0],
+            {"operator": "isNull"},
+            "boolean",
+            (True, False, None),
+            [True, False, False],
+        ),
+        (
+            "float",
+            [None, float("nan"), 1.0],
+            {"operator": "isNotNull"},
+            "boolean",
+            (True, False, None),
+            [False, True, True],
+        ),
+        (
+            "float",
+            [None, float("nan"), 1.0],
+            {"operator": "isNaN"},
+            "boolean",
+            (True, False, None),
+            [False, True, False],
+        ),
+        (
+            "float",
+            [None, float("nan"), 1.0],
+            {"operator": "isNotNaN"},
+            "boolean",
+            (True, False, None),
+            [True, False, True],
+        ),
+        (
+            "decimal",
+            [Decimal("1.00"), Decimal("1.01"), None],
+            {"operator": "lt", "value": "1.001"},
+            "boolean",
+            (True, False, None),
+            [True, False, None],
+        ),
+        (
+            "duration",
+            [timedelta(0), timedelta(milliseconds=1), None],
+            {"operator": "gte", "value": "0.000001"},
+            "boolean",
+            (True, False, None),
+            [False, True, None],
+        ),
+        ("float", [], {"operator": "gt", "value": "0"}, "boolean", (True, False, None), []),
+        ("float", [None, None], {"operator": "gt", "value": "0"}, "string", (None, None, None), [None, None]),
+    ],
+    ids=[
+        "threshold",
+        "exact-integer",
+        "literal-text",
+        "null",
+        "not-null",
+        "nan",
+        "not-nan",
+        "decimal",
+        "duration",
+        "empty",
+        "all-null",
+    ],
+)
+def test_conditional_column_preserves_native_rows_types_and_generated_results(
+    engine, column_type, values, predicate, result_type, arms, expected
+) -> None:
+    import numpy as np
+
+    if isinstance(engine, PandasEngine):
+        index = pd.Index(["duplicate"] * len(values), name="source index")
+        data = (
+            pd.arrays.FloatingArray(
+                np.array([0.0 if value is None else value for value in values]),
+                np.array([value is None for value in values], dtype=bool),
+            )
+            if column_type == "float"
+            else pd.array(
+                values,
+                dtype={"integer": "Int64", "string": "string", "decimal": "object", "duration": "timedelta64[ms]"}[
+                    column_type
+                ],
+            )
+        )
+        if column_type == "float" and predicate["operator"] == "gte":
+            data = np.array(values, dtype="float64")
+        source = pd.DataFrame({"value": data, "row": range(len(values))}, index=index)
+        source.attrs["owner"] = "input"
+        frames = [source]
+        before = source.copy(deep=True)
+    else:
+        dtype = {
+            "float": pl.Float64,
+            "integer": pl.Int64,
+            "string": pl.String,
+            "decimal": pl.Decimal(8, 2),
+            "duration": pl.Duration("ms"),
+        }[column_type]
+        source = pl.DataFrame({"value": pl.Series(values, dtype=dtype), "row": range(len(values))})
+        frames = [source, source.lazy()]
+        before = source.clone()
+    operation = step(
+        "conditionalColumn",
+        column=public_ref("c:source:0", "value"),
+        columnType=column_type,
+        predicate={"kind": "predicate", **predicate},
+        newColumn="result",
+        resultType=result_type,
+        trueValue=arms[0],
+        falseValue=arms[1],
+        missingValue=arms[2],
+    )
+    schema = engine.schema(source)
+    operation = bind_step(operation, schema, source_lineage(schema))
+    program = engine.compile_plan([operation])
+    assert "openwrangler_runtime" not in program
+    namespace: dict[str, Any] = {"type": "caller type", "len": "caller length", "infer_semantic_type": source}
+    exec(program, namespace, namespace)
+    for frame in frames:
+        for result in (engine.apply_transform(frame, operation), namespace["clean_data"](frame)):
+            if isinstance(engine, PandasEngine):
+                assert isinstance(before, pd.DataFrame)
+                pd.testing.assert_frame_equal(result.iloc[:, :2], before)
+                pd.testing.assert_index_equal(result.index, before.index, exact=True)
+                assert result.attrs == before.attrs
+                assert str(result["result"].dtype) == ("string" if result_type == "string" else "boolean")
+                assert [normalized(value) for value in result["result"].tolist()] == expected
+            else:
+                assert isinstance(before, pl.DataFrame)
+                assert isinstance(result, pl.LazyFrame) is isinstance(frame, pl.LazyFrame)
+                actual = result.collect() if isinstance(result, pl.LazyFrame) else result
+                assert_polars_frame_equal(actual.select(before.columns), before)
+                assert actual.schema["result"] == (pl.String if result_type == "string" else pl.Boolean)
+                assert actual["result"].to_list() == expected
+    if isinstance(engine, PandasEngine):
+        pd.testing.assert_frame_equal(source, before)
+    else:
+        assert isinstance(source, pl.DataFrame) and isinstance(before, pl.DataFrame)
+        assert_polars_frame_equal(source, before)
+    assert namespace["type"] == "caller type"
+    assert namespace["len"] == "caller length"
+    assert namespace["infer_semantic_type"] is source
+
+
+@pytest.mark.parametrize("failure", ["type", "collision"])
+def test_conditional_column_refuses_changed_input_before_publication(engine, failure) -> None:
+    source = frame_for(engine, {"value": [1, 2]})
+    schema = engine.schema(source)
+    operation = bind_step(
+        step(
+            "conditionalColumn",
+            column=public_ref("c:source:0", "value"),
+            columnType="integer",
+            predicate={"kind": "predicate", "operator": "equals", "value": "1"},
+            newColumn="result",
+            resultType="boolean",
+            trueValue=True,
+            falseValue=False,
+            missingValue=None,
+        ),
+        schema,
+        source_lineage(schema),
+    )
+    changed = frame_for(engine, {"value": ["1", "2"]} if failure == "type" else {"value": [1, 2], "result": [3, 4]})
+    before = records(changed)
+    for execute in (
+        lambda: engine.apply_transform(changed, operation),
+        lambda: execute_generated(engine, changed, operation),
+    ):
+        with pytest.raises((EngineError, ValueError), match="type|declares|collid|existing"):
+            execute()
+        assert records(changed) == before

@@ -1402,6 +1402,42 @@ assert_error(
 
 }))
 run_frame_contract_case("column-operations", local({
+# Conditional output metadata is declared independently of the predicate column.
+conditional_source <- data.frame(value = c(1, 2, NA_real_, NaN), row.names = letters[1:4])
+conditional_before <- serialize(conditional_source, NULL, version = 3L)
+conditional_capture <- openwrangler_r_frame_contract$capture_frame(conditional_source)
+conditional_condition <- list(column = list(id = "r:c:0", name = "value"), type = "float",
+  predicates = list(list(kind = "predicate", operator = "gte", value = 2)))
+conditional_arms <- list(missingValue = NULL, falseValue = "", trueValue = "yes")
+conditional_result <- openwrangler_r_frame_contract$conditional_column(
+  conditional_capture, conditional_condition, "label", "string", conditional_arms)
+assert_identical(conditional_result$frame$label, c("", "yes", NA_character_, NA_character_), "Conditional arms lost ordering or typed missing values")
+conditional_derived <- function(value, kind = "character", nullable = TRUE, position = 2L) {
+  openwrangler_r_frame_contract$capture_frame(value, nullability_source = conditional_capture,
+    source_positions = c(1L, 1L), output_ids = c("r:c:0", "c:step:condition:0"),
+    conditional_output = list(position = position, kind = kind, nullable = nullable))
+}
+assert_identical(conditional_derived(conditional_result$frame)$descriptor$schema[[2L]]$nullable, TRUE, "Conditional capture lost declared nullability")
+assert_error(conditional_derived(conditional_result$frame, kind = "logical"), "invalid conditional output")
+assert_error(conditional_derived(conditional_result$frame, nullable = FALSE), "invalid conditional output")
+assert_error(conditional_derived(conditional_result$frame, position = 0L), "invalid conditional output metadata")
+assert_error(openwrangler_r_frame_contract$conditional_column(conditional_capture, conditional_condition,
+  "value", "string", conditional_arms), "column-name-collision")
+stale_condition <- conditional_condition; stale_condition$type <- "integer"
+assert_error(openwrangler_r_frame_contract$conditional_column(conditional_capture, stale_condition,
+  "label", "string", conditional_arms), "does not match")
+empty_conditional <- openwrangler_r_frame_contract$capture_frame(conditional_source[integer(), , drop = FALSE])
+nullary_condition <- conditional_condition
+nullary_condition$predicates <- list(list(kind = "predicate", operator = "isNull"))
+assert_error(openwrangler_r_frame_contract$conditional_column(empty_conditional, nullary_condition,
+  "label", "boolean", list(trueValue = TRUE, falseValue = FALSE, missingValue = "unused")), "Boolean arms")
+assert_error(openwrangler_r_frame_contract$conditional_column(empty_conditional, nullary_condition,
+  "label", "string", list(trueValue = "", falseValue = NULL, missingValue = strrep("é", 4097L))), "text-too-large")
+budget_capture <- openwrangler_r_frame_contract$capture_frame(data.frame(value = rep(2, 9000L)))
+assert_error(openwrangler_r_frame_contract$conditional_column(budget_capture, conditional_condition,
+  "label", "string", list(trueValue = strrep("x", 8192L), falseValue = "", missingValue = NULL)), "operation-output-too-large")
+assert_identical(serialize(conditional_source, NULL, version = 3L), conditional_before, "Conditional append mutated source")
+
 # Mark Duplicates owns a present logical capture, not a cloned key type.
 mark_source <- data.frame(value = c(1L, 1L, 2L), row.names = letters[1:3])
 mark_before <- serialize(mark_source, NULL, version = 3L)

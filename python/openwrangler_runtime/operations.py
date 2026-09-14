@@ -74,6 +74,7 @@ _COLUMN_REFERENCE_FIELDS: dict[str, tuple[str, ...]] = {
     "cloneColumn": ("column",),
     "castColumn": ("column",),
     "formula": ("leftColumn", "rightColumn"),
+    "conditionalColumn": ("column",),
     "textLength": ("column",),
     "denseRank": ("column",),
     "multiLabelBinarize": ("column",),
@@ -202,6 +203,23 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
             raise OperationError("denseRank.direction must be asc or desc.")
     elif kind == "filterRows":
         params["filterModel"] = _normalize_transform_filter_model(params["filterModel"])
+    elif kind == "conditionalColumn":
+        if not _is_string_choice(params["columnType"], COLUMN_TYPES):
+            raise OperationError("conditionalColumn.columnType is not a supported column type.")
+        params["predicate"] = _normalize_transform_predicate(params["predicate"], "conditionalColumn.predicate")
+        result_type = params["resultType"]
+        if not _is_string_choice(result_type, {"string", "boolean"}):
+            raise OperationError("conditionalColumn.resultType must be string or boolean.")
+        for key in ("trueValue", "falseValue", "missingValue"):
+            value = params[key]
+            if value is None:
+                continue
+            if not isinstance(value, str if result_type == "string" else bool):
+                raise OperationError(f"conditionalColumn.{key} must be {result_type} or null.")
+            if isinstance(value, str) and len(value) > MAX_VIEW_VALUE_TEXT_CHARACTERS:
+                raise OperationError(
+                    f"conditionalColumn.{key} must not exceed {MAX_VIEW_VALUE_TEXT_CHARACTERS:,} Unicode code points."
+                )
     elif kind == "dropMissingRows" and not _is_string_choice(params.get("how", "any"), {"any", "all"}):
         raise OperationError("dropMissingRows.how must be any or all.")
     elif kind == "fillMissingValues":
@@ -563,6 +581,37 @@ def _normalize_transform_sort_rules(value: Any, label: str, *, allow_empty: bool
     return normalized
 
 
+def _normalize_transform_predicate(predicate: Any, label: str) -> dict[str, Any]:
+    if not isinstance(predicate, Mapping):
+        raise OperationError(f"{label} must be an object.")
+    predicate_fields = set(predicate)
+    missing = {"kind", "operator"} - predicate_fields
+    if missing:
+        raise OperationError(f"{label} is missing required fields: {', '.join(sorted(missing))}.")
+    unexpected = predicate_fields - {"kind", "operator", "value", "secondValue"}
+    if unexpected:
+        raise OperationError(f"{label} contains unknown fields: {', '.join(sorted(map(str, unexpected)))}.")
+    if predicate.get("kind") != "predicate":
+        raise OperationError(f"{label}.kind must be 'predicate'.")
+    operator = predicate.get("operator") if isinstance(predicate, Mapping) else None
+    if not _is_string_choice(operator, FILTER_OPERATORS):
+        raise OperationError(f"Unsupported filter operator: {operator!r}.")
+    if operator not in {"isNull", "isNotNull", "isNaN", "isNotNaN"} and "value" not in predicate:
+        raise OperationError(f"Filter operator {operator} requires a value.")
+    if operator == "between" and "secondValue" not in predicate:
+        raise OperationError("Filter operator between requires a secondValue.")
+    for key in ("value", "secondValue"):
+        if (
+            key in predicate
+            and isinstance(predicate[key], str)
+            and len(predicate[key]) > MAX_VIEW_VALUE_TEXT_CHARACTERS
+        ):
+            raise OperationError(
+                f"{label}.{key} must not exceed {MAX_VIEW_VALUE_TEXT_CHARACTERS:,} Unicode code points."
+            )
+    return dict(predicate)
+
+
 def _normalize_transform_filter_model(value: Any) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise OperationError("filterRows.filterModel must be an object.")
@@ -603,37 +652,7 @@ def _normalize_transform_filter_model(value: Any) -> dict[str, Any]:
         normalized_predicates: list[dict[str, Any]] = []
         for predicate_index, predicate in enumerate(predicates):
             predicate_label = f"{label}.predicates[{predicate_index}]"
-            if not isinstance(predicate, Mapping):
-                raise OperationError(f"{predicate_label} must be an object.")
-            predicate_fields = set(predicate)
-            missing = {"kind", "operator"} - predicate_fields
-            if missing:
-                raise OperationError(f"{predicate_label} is missing required fields: {', '.join(sorted(missing))}.")
-            unexpected = predicate_fields - {"kind", "operator", "value", "secondValue"}
-            if unexpected:
-                raise OperationError(
-                    f"{predicate_label} contains unknown fields: {', '.join(sorted(map(str, unexpected)))}."
-                )
-            if predicate.get("kind") != "predicate":
-                raise OperationError(f"{predicate_label}.kind must be 'predicate'.")
-            operator = predicate.get("operator") if isinstance(predicate, Mapping) else None
-            if not _is_string_choice(operator, FILTER_OPERATORS):
-                raise OperationError(f"Unsupported filter operator: {operator!r}.")
-            if operator not in {"isNull", "isNotNull", "isNaN", "isNotNaN"} and "value" not in predicate:
-                raise OperationError(f"Filter operator {operator} requires a value.")
-            if operator == "between" and "secondValue" not in predicate:
-                raise OperationError("Filter operator between requires a secondValue.")
-            for key in ("value", "secondValue"):
-                if (
-                    key in predicate
-                    and isinstance(predicate[key], str)
-                    and len(predicate[key]) > MAX_VIEW_VALUE_TEXT_CHARACTERS
-                ):
-                    raise OperationError(
-                        f"{predicate_label}.{key} must not exceed "
-                        f"{MAX_VIEW_VALUE_TEXT_CHARACTERS:,} Unicode code points."
-                    )
-            normalized_predicates.append(dict(predicate))
+            normalized_predicates.append(_normalize_transform_predicate(predicate, predicate_label))
 
         value_filter = column_filter.get("valueFilter")
         if value_filter is not None:
@@ -712,6 +731,7 @@ def _reject_private_column_namespace(kind: str, params: Mapping[str, Any]) -> No
         "renameColumn",
         "cloneColumn",
         "castColumn",
+        "conditionalColumn",
         "textLength",
         "denseRank",
         "multiLabelBinarize",

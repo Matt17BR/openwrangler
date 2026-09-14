@@ -57,6 +57,16 @@ const validSteps = {
     operator: "add",
     newColumn: "total"
   }),
+  conditionalColumn: step("conditionalColumn", {
+    column: value,
+    columnType: "float",
+    predicate: { kind: "predicate", operator: "gte", value: "10" },
+    newColumn: "label",
+    resultType: "string",
+    trueValue: "high",
+    falseValue: "",
+    missingValue: null
+  }),
   textLength: step("textLength", { column: text, newColumn: "length" }),
   oneHotEncode: step("oneHotEncode", { columns: [text] }),
   multiLabelBinarize: step("multiLabelBinarize", { column: text, delimiter: "," }),
@@ -138,6 +148,55 @@ function step<Kind extends OperationKind>(
 describe("savedStepEditError", () => {
   it.each(Object.values(validSteps))("accepts a valid saved $kind operation", (savedStep) => {
     expect(savedStepEditError(savedStep, schema)).toBeUndefined();
+  });
+
+  it("requires exact conditional input identity/type and lossless form operands", () => {
+    const saved = validSteps.conditionalColumn;
+    for (const changed of [
+      { ...schema[2], id: "replacement" },
+      { ...schema[2], name: "renamed" },
+      { ...schema[2], type: "integer" as const }
+    ]) {
+      expect(
+        savedStepEditError(
+          saved,
+          schema.map((column) => (column.id === value.id ? changed : column))
+        )
+      ).toBeDefined();
+    }
+    const token = {
+      kind: "typedSelection",
+      version: 1,
+      columnType: "float",
+      cell: { kind: "float", raw: 10, display: "10", isNull: false, isNaN: false }
+    };
+    expect(
+      savedStepEditError(
+        { ...saved, params: { ...saved.params, predicate: { kind: "predicate", operator: "gte", value: token } } },
+        schema
+      )
+    ).toContain("cannot preserve");
+  });
+
+  it("refuses conditional text that single-line fields would change", () => {
+    const saved = validSteps.conditionalColumn;
+    for (const key of ["trueValue", "falseValue", "missingValue", "newColumn"] as const) {
+      expect(savedStepEditError({ ...saved, params: { ...saved.params, [key]: "a\r\nb" } }, schema)).toContain(
+        "cannot preserve"
+      );
+    }
+    for (const key of ["value", "secondValue"] as const) {
+      const predicate = {
+        kind: "predicate" as const,
+        operator: "between" as const,
+        value: "1",
+        secondValue: "2",
+        [key]: "1\n2"
+      };
+      expect(savedStepEditError({ ...saved, params: { ...saved.params, predicate } }, schema)).toContain(
+        "cannot preserve"
+      );
+    }
   });
 
   it("requires the recorded schema and rejects duplicate schema identities", () => {

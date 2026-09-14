@@ -77,6 +77,41 @@ export const viewPredicateOperators = (type: ColumnType): readonly PredicateOper
 export const supportsViewPredicate = (type: ColumnType, operator: PredicateOperator): boolean =>
   viewPredicateOperators(type).includes(operator);
 
+const coercePredicateValue = (value: string, columnType: ColumnType): string | boolean => {
+  if (columnType === "boolean") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true") return true;
+    if (normalized === "false") return false;
+    return value;
+  }
+  // The runtime owns numeric syntax and binds against the native dtype.
+  // A semantic float column may still contain exact integers in object storage.
+  return value;
+};
+
+export const operatorRequiresValue = (operator: PredicateOperator): boolean =>
+  !["isNull", "isNotNull", "isNaN", "isNotNaN"].includes(operator);
+
+export const hasCompletePredicateValues = (operator: PredicateOperator, value: string, secondValue: string): boolean =>
+  !operatorRequiresValue(operator) || (value !== "" && (operator !== "between" || secondValue !== ""));
+
+export const createPredicate = (
+  operator: PredicateOperator,
+  value: string,
+  secondValue: string,
+  columnType: ColumnType
+): PredicateFilter => {
+  if (!operatorRequiresValue(operator)) {
+    return { kind: "predicate", operator };
+  }
+  return {
+    kind: "predicate",
+    operator,
+    value: coercePredicateValue(value, columnType),
+    ...(operator === "between" ? { secondValue: coercePredicateValue(secondValue, columnType) } : {})
+  };
+};
+
 export const countViewColumnNames = (columns: readonly Pick<ColumnSchema, "name">[]): ReadonlyMap<string, number> => {
   const counts = new Map<string, number>();
   for (const column of columns) {

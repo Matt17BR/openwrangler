@@ -54,6 +54,7 @@ from .base import (
     SessionDataShape,
     SummaryColumnProjection,
     bound_column_name,
+    bound_column_position,
     categorical_visualization,
     coerce_typed_view_value,
     datetime_visualization,
@@ -1355,6 +1356,26 @@ class PolarsEngine(DataFrameEngine):
             return self.apply_filter_model(df, {"filters": [], "sort": rules})
         if kind == "filterRows":
             return self.apply_filter_model(df, _bound_polars_filter_model(params["filterModel"]))
+        if kind == "conditionalColumn":
+            column = bound_column_name(params["column"], kind)
+            schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
+            if infer_semantic_type(str(schema[column])) != params["columnType"]:
+                raise EngineError("Conditional column input type no longer matches its declared type.")
+            if params["newColumn"] in schema:
+                raise EngineError("Conditional column output collides with an existing column.")
+            mask = self._predicate_expr(column, params["predicate"], params["columnType"], schema[column])
+            dtype = pl.String if params["resultType"] == "string" else pl.Boolean
+            result = (
+                pl.when(mask)
+                .then(pl.lit(params["trueValue"], dtype=dtype))
+                .otherwise(pl.lit(params["falseValue"], dtype=dtype))
+            )
+            if params["predicate"]["operator"] not in {"isNull", "isNotNull", "isNaN", "isNotNaN"}:
+                missing = pl.col(column).is_null()
+                if params["columnType"] == "float":
+                    missing = missing | pl.col(column).is_nan().fill_null(False)
+                result = pl.when(missing).then(pl.lit(params["missingValue"], dtype=dtype)).otherwise(result)
+            return df.with_columns(result.alias(params["newColumn"]))
         if kind == "dropMissingRows":
             schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
             columns = (
@@ -1814,7 +1835,7 @@ class PolarsEngine(DataFrameEngine):
                 )
         clean_data_lines.append("    return df")
         clean_data = "\n".join(clean_data_lines)
-        needs_filter_helpers = any(step["kind"] == "filterRows" for step in plan)
+        needs_filter_helpers = any(step["kind"] in {"filterRows", "conditionalColumn"} for step in plan)
         needs_fill_helpers = any(step["kind"] == "fillMissingValues" for step in plan)
         needs_counter = any(step["kind"] in {"oneHotEncode", "multiLabelBinarize", "splitTextColumns"} for step in plan)
         has_custom_code = any(step["kind"] == "customCode" for step in plan)
@@ -1880,6 +1901,10 @@ class PolarsEngine(DataFrameEngine):
                     "",
                     "",
                 ]
+            )
+        if any(step["kind"] == "conditionalColumn" for step in plan):
+            lines.extend(
+                ["import re", "from builtins import len, type", "ColumnType = str", getsource(infer_semantic_type)]
             )
         if needs_filter_helpers:
             lines.extend(generated_view_value_helper_lines())
@@ -2135,6 +2160,34 @@ class PolarsEngine(DataFrameEngine):
             ]
         if kind == "filterRows":
             return _compile_polars_filter(_bound_polars_filter_model(params["filterModel"]), index)
+        if kind == "conditionalColumn":
+            column = bound_column_name(params["column"], kind)
+            position = bound_column_position(params["column"], kind)
+            schema = f"_conditional_schema_{index}"
+            dtype = f"{schema}[{column!r}]"
+            source = f"pl.col({column!r})"
+            mask = _polars_predicate_expression(source, params["predicate"], params["columnType"], dtype)
+            output_dtype = "pl.String" if params["resultType"] == "string" else "pl.Boolean"
+            result = (
+                f"pl.when({mask}).then(pl.lit({params['trueValue']!r}, dtype={output_dtype}))"
+                f".otherwise(pl.lit({params['falseValue']!r}, dtype={output_dtype}))"
+            )
+            if params["predicate"]["operator"] not in {"isNull", "isNotNull", "isNaN", "isNotNaN"}:
+                missing = f"{source}.is_null()"
+                if params["columnType"] == "float":
+                    missing += f" | {source}.is_nan().fill_null(False)"
+                result = (
+                    f"pl.when({missing}).then(pl.lit({params['missingValue']!r}, dtype={output_dtype}))"
+                    f".otherwise({result})"
+                )
+            return [
+                f"{prefix}{schema} = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema",
+                f"{prefix}if {schema}.names()[{position}:{position + 1}] != [{column!r}]:",
+                f"{prefix}    raise ValueError('Conditional column binding no longer matches its input schema.')",
+                f"{prefix}if infer_semantic_type(str({dtype})) != {params['columnType']!r}:",
+                f"{prefix}    raise ValueError('Conditional column input type no longer matches its declared type.')",
+                f"{prefix}df = df.with_columns(({result}).alias({output_name or repr(params['newColumn'])}))",
+            ]
         if kind == "dropMissingRows":
             columns = (
                 [bound_column_name(column, kind) for column in params["columns"]] if params.get("columns") else None

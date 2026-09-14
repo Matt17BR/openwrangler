@@ -1,16 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { SessionMetadata, ValuesResponse } from "../../shared/protocol";
 import { columnOptionLabels } from "../columnOptionLabels";
-import type {
-  ColumnFilter,
-  ColumnType,
-  FilterModel,
-  PredicateFilter,
-  PredicateOperator,
-  SortDirection
-} from "../../shared/filterModel";
+import type { ColumnFilter, ColumnType, FilterModel, PredicateOperator, SortDirection } from "../../shared/filterModel";
 import { MAX_VIEW_VALUE_TEXT_UTF16_CODE_UNITS, truncateViewValueTextToCodePoints } from "../../shared/viewValueLimits";
 import {
+  createPredicate,
+  hasCompletePredicateValues,
+  operatorRequiresValue,
   compactColumnFilter,
   countViewColumnNames,
   isActiveColumnFilter,
@@ -31,6 +27,7 @@ import {
   matchesLegacySelection,
   isTypedSelectionToken,
   predicateLabel,
+  predicateLabels,
   selectionValueKey
 } from "./filterPresentation";
 
@@ -563,7 +560,7 @@ export function FilterPanel({
           >
             {availableOperators.map((operator) => (
               <option key={operator} value={operator}>
-                {operator}
+                {predicateLabels[operator]}
               </option>
             ))}
           </select>
@@ -950,38 +947,3 @@ function FilterRuleButton({
     </button>
   );
 }
-
-const coercePredicateValue = (value: string, columnType: ColumnType): string | boolean => {
-  if (columnType === "boolean") {
-    const normalized = value.trim().toLowerCase();
-    if (normalized === "true") return true;
-    if (normalized === "false") return false;
-    return value;
-  }
-  // The runtime owns numeric syntax and binds against the native dtype.
-  // A semantic float column may still contain exact integers in object storage.
-  return value;
-};
-
-const operatorRequiresValue = (operator: PredicateOperator): boolean =>
-  !["isNull", "isNotNull", "isNaN", "isNotNaN"].includes(operator);
-
-const hasCompletePredicateValues = (operator: PredicateOperator, value: string, secondValue: string): boolean =>
-  !operatorRequiresValue(operator) || (value !== "" && (operator !== "between" || secondValue !== ""));
-
-const createPredicate = (
-  operator: PredicateOperator,
-  value: string,
-  secondValue: string,
-  columnType: ColumnType
-): PredicateFilter => {
-  if (!operatorRequiresValue(operator)) {
-    return { kind: "predicate", operator };
-  }
-  return {
-    kind: "predicate",
-    operator,
-    value: coercePredicateValue(value, columnType),
-    ...(operator === "between" ? { secondValue: coercePredicateValue(secondValue, columnType) } : {})
-  };
-};

@@ -314,6 +314,7 @@ export function TextField({
   label,
   defaultValue,
   required = false,
+  disabled = false,
   type = "text",
   min,
   max,
@@ -329,6 +330,7 @@ export function TextField({
   label: string;
   defaultValue: string;
   required?: boolean;
+  disabled?: boolean;
   type?: string;
   min?: number;
   max?: number;
@@ -366,6 +368,7 @@ export function TextField({
         maxLength={maxLength}
         defaultValue={defaultValue}
         required={required}
+        disabled={disabled}
         aria-describedby={
           maxCodePoints === undefined && maxUtf8Bytes === undefined && description === undefined ? undefined : helpId
         }

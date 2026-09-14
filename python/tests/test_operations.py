@@ -12,6 +12,7 @@ import pytest
 from openwrangler_runtime._column_binding import bind_step
 from openwrangler_runtime.engines import EngineError, PandasEngine, PolarsEngine
 from openwrangler_runtime.engines.base import INTERNAL_ROW_ID_PREFIX
+from openwrangler_runtime.limits import MAX_VIEW_VALUE_TEXT_CHARACTERS
 from openwrangler_runtime.lineage import source_lineage
 from openwrangler_runtime.operations import OperationError, operation_catalog, validate_step
 from openwrangler_runtime.protocol_limits_generated import MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES
@@ -57,7 +58,7 @@ def bound_step(step_id: str, kind: str, **params):
 
 def test_operation_registry_is_complete_and_validation_is_strict():
     catalog = operation_catalog()
-    assert len(catalog) == 34
+    assert len(catalog) == 35
     assert {item["kind"] for item in catalog} >= {
         "sortRows",
         "fillMissingValues",
@@ -65,6 +66,7 @@ def test_operation_registry_is_complete_and_validation_is_strict():
         "groupBy",
         "denseRank",
         "markDuplicates",
+        "conditionalColumn",
         "byExample",
         "customCode",
     }
@@ -87,6 +89,53 @@ def test_operation_registry_is_complete_and_validation_is_strict():
             value=True,
             newColumn="result",
         )
+
+
+@pytest.mark.parametrize("result_type,values", [("string", ("", "  ", None)), ("boolean", (False, True, None))])
+def test_conditional_column_requires_every_explicit_typed_result(result_type: str, values: tuple[Any, ...]) -> None:
+    params = {
+        "column": public_ref("c:source:0", "value"),
+        "columnType": "integer",
+        "predicate": {"kind": "predicate", "operator": "isNull"},
+        "newColumn": "label",
+        "resultType": result_type,
+        **dict(zip(("trueValue", "falseValue", "missingValue"), values, strict=True)),
+    }
+    assert step("conditional", "conditionalColumn", **params)["params"] == params
+    for key in ("trueValue", "falseValue", "missingValue"):
+        without_arm = {name: value for name, value in params.items() if name != key}
+        with pytest.raises(OperationError, match="missing required parameters"):
+            step("missing-arm", "conditionalColumn", **without_arm)
+        for invalid in (1, {}, [], True if result_type == "string" else "false"):
+            with pytest.raises(OperationError, match=f"{key} must be {result_type} or null"):
+                step("invalid-arm", "conditionalColumn", **{**params, key: invalid})
+    for key in ("resultType", "columnType"):
+        with pytest.raises(OperationError, match=key):
+            step("bad-type", "conditionalColumn", **{**params, key: []})
+    with pytest.raises(OperationError, match="requires a secondValue"):
+        step(
+            "incomplete-between",
+            "conditionalColumn",
+            **{**params, "predicate": {"kind": "predicate", "operator": "between", "value": "1"}},
+        )
+    with pytest.raises(OperationError, match="unknown parameters"):
+        step("extra-field", "conditionalColumn", **params, expression="value > 1")
+
+
+def test_conditional_column_bounds_even_unused_text_results_in_unicode_code_points() -> None:
+    params = {
+        "column": public_ref("c:source:0", "value"),
+        "columnType": "integer",
+        "predicate": {"kind": "predicate", "operator": "isNull"},
+        "newColumn": "label",
+        "resultType": "string",
+        "trueValue": "",
+        "falseValue": None,
+        "missingValue": "😀" * MAX_VIEW_VALUE_TEXT_CHARACTERS,
+    }
+    assert step("exact-bound", "conditionalColumn", **params)["params"] == params
+    with pytest.raises(OperationError, match="65,536 Unicode code points"):
+        step("too-long", "conditionalColumn", **{**params, "missingValue": params["missingValue"] + "x"})
 
 
 def test_custom_code_uses_the_canonical_utf8_byte_limit() -> None:

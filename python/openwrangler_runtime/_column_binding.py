@@ -497,7 +497,15 @@ def step_output_collision_checks(
         yield params.get("newName"), "renameColumn.newName", params["column"]
     elif kind == "cloneColumn":
         yield params.get("newName"), "cloneColumn.newName", None
-    elif kind in {"formula", "textLength", "denseRank", "byExample", "extractRegexGroup", "markDuplicates"}:
+    elif kind in {
+        "formula",
+        "conditionalColumn",
+        "textLength",
+        "denseRank",
+        "byExample",
+        "extractRegexGroup",
+        "markDuplicates",
+    }:
         yield params.get("newColumn"), f"{kind}.newColumn", None
     elif kind == "splitTextColumns":
         for index, output_name in enumerate(params.get("newColumns", [])):
@@ -563,6 +571,7 @@ def bind_step(
         "cloneColumn",
         "castColumn",
         "formula",
+        "conditionalColumn",
         "textLength",
         "denseRank",
         "sortRows",
@@ -715,6 +724,7 @@ def bind_step(
         "renameColumn",
         "cloneColumn",
         "castColumn",
+        "conditionalColumn",
         "fillMissingValues",
         "textLength",
         "denseRank",
@@ -798,6 +808,8 @@ def bind_step(
         params["leftColumn"] = context.bind(params.get("leftColumn"), "formula.leftColumn")
         if "rightColumn" in params:
             params["rightColumn"] = context.bind(params.get("rightColumn"), "formula.rightColumn")
+    elif kind == "conditionalColumn":
+        context.require_type(params["column"], params.get("columnType"), "conditionalColumn.columnType")
     elif kind == "denseRank":
         context.require_numeric_source(params["column"], "denseRank.column")
     elif kind == "extractRegexGroup":

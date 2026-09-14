@@ -2519,6 +2519,31 @@ openwrangler_r_kernel_agent <- local({
         ))
       ))
     }
+    if (identical(kind, "conditionalColumn")) {
+      params <- exact_record(step$params,
+        c("column", "columnType", "predicate", "newColumn", "resultType", "trueValue", "falseValue", "missingValue"),
+        "request.payload.step.params")
+      decoded <- decode_view(list(filters = list(list(column = params$column, type = params$columnType,
+        predicates = list(params$predicate))), sorts = list()), limits)$filters[[1L]]
+      params$column <- decoded$column
+      params$columnType <- decoded$type
+      params$predicate <- decoded$predicates[[1L]]
+      params$newColumn <- bounded_text(params$newColumn, "request.payload.step.params.newColumn", maximum_variable_name_bytes)
+      if (identical(params$newColumn, "")) abort("invalid_request", "Conditional Column requires a non-empty output name")
+      params$resultType <- bounded_text(params$resultType, "request.payload.step.params.resultType", 16L)
+      if (!params$resultType %in% c("string", "boolean")) abort("invalid_request", "Conditional Column result type is unsupported")
+      for (arm in c("trueValue", "falseValue", "missingValue")) {
+        value <- params[[arm]]
+        if (is.null(value)) next
+        if (identical(params$resultType, "string")) {
+          params[arm] <- list(bounded_text(value, paste0("request.payload.step.params.", arm), limits$textBytes))
+        } else if (!is.logical(value) || length(value) != 1L || is.na(value) || !is.null(attributes(value))) {
+          abort("invalid_request", "Conditional Column Boolean arms must be true, false or null")
+        }
+      }
+      return(list(id = step_id, kind = kind, params = params,
+        outputId = bounded_text(paste0("c:step:", step_id, ":0"), "conditional output identity", limits$columnIdBytes)))
+    }
     if (kind %in% c("dropMissingRows", "dropDuplicates")) {
       optional_fields <- if (identical(kind, "dropMissingRows")) c("columns", "how") else c("columns", "keep")
       params <- exact_record(
@@ -5130,6 +5155,22 @@ openwrangler_r_kernel_agent <- local({
         bound = bound
       ))
     }
+    if (identical(step$kind, "conditionalColumn")) {
+      arms <- step$params[c("trueValue", "falseValue", "missingValue")]
+      transformed <- frame_contract$conditional_column(capture,
+        list(column = step$params$column, type = step$params$columnType, predicates = list(step$params$predicate)),
+        step$params$newColumn, step$params$resultType, arms)
+      filter <- bind_row_filter(capture, transformed$filter)
+      bound <- list(id = step$id, kind = step$kind, position = filter$position, oldName = filter$name,
+        newName = step$params$newColumn, outputId = step$outputId, condition = filter,
+        resultType = step$params$resultType, arms = arms)
+      output_ids <- c(vapply(capture$descriptor$schema, `[[`, character(1L), "id", USE.NAMES = FALSE), bound$outputId)
+      return(list(capture = frame_contract$capture_frame(transformed$frame, nullability_source = capture,
+        source_positions = c(seq_along(capture$descriptor$schema), bound$position), output_ids = output_ids,
+        conditional_output = list(position = length(output_ids),
+          kind = if (identical(bound$resultType, "string")) "character" else "logical", nullable = transformed$nullable),
+        preserve_data_table_element_names = TRUE), bound = bound))
+    }
     if (step$kind %in% c("dropMissingRows", "dropDuplicates")) {
       bound <- bind_row_reduction_step(capture, step)
       positions <- vapply(bound$columns, `[[`, integer(1L), "position", USE.NAMES = FALSE)
@@ -6081,6 +6122,44 @@ openwrangler_r_kernel_agent <- local({
       )
     }
     lines
+  }
+
+  conditional_column_code_lines <- function(step) {
+    filter <- step$condition
+    predicate <- filter$predicates[[1L]]
+    nullary <- predicate$operator %in% c("isNull", "isNotNull", "isNaN", "isNotNaN")
+    text_result <- identical(step$resultType, "string")
+    missing_scalar <- if (text_result) "NA_character_" else "NA"
+    arm_text <- vapply(step$arms, function(value) {
+      if (is.null(value)) missing_scalar else if (text_result) r_string(value) else if (isTRUE(value)) "TRUE" else "FALSE"
+    }, character(1L), USE.NAMES = FALSE)
+    lines <- c(
+      if (identical(filter$semanticsKind, "integer64"))
+        "  if (!requireNamespace(\"bit64\", quietly = TRUE)) stop(\"bit64 is required for this condition\", call. = FALSE)" else character(),
+      row_column_lines(filter, ".ow_condition_column"),
+      if (identical(filter$semanticsKind, "double")) c(
+        "  .ow_condition_nan <- is.nan(.ow_condition_column)",
+        "  .ow_condition_null <- is.na(.ow_condition_column) & !.ow_condition_nan"
+      ) else c("  .ow_condition_nan <- rep.int(FALSE, length(.ow_condition_column))",
+        "  .ow_condition_null <- is.na(.ow_condition_column)"),
+      sprintf("  .ow_condition_match <- %s", row_predicate_expression(predicate, filter,
+        ".ow_condition_column", ".ow_condition_null", ".ow_condition_nan")),
+      sprintf("  .ow_condition_missing <- %s", if (nullary) "rep.int(FALSE, length(.ow_condition_column))" else ".ow_condition_null | .ow_condition_nan"),
+      "  .ow_condition_counts <- c(sum(.ow_condition_match & !.ow_condition_missing), sum(!.ow_condition_match & !.ow_condition_missing), sum(.ow_condition_missing))",
+      sprintf("  .ow_condition_bytes <- as.double(length(.ow_condition_column)) * %dL", if (text_result) 8L else 4L)
+    )
+    if (text_result) {
+      lengths <- vapply(step$arms, function(value) if (is.null(value)) 0L else nchar(value, type = "bytes"), integer(1L))
+      lines <- c(lines, sprintf("  .ow_condition_bytes <- .ow_condition_bytes + sum(.ow_condition_counts * c(%s))",
+        paste(lengths, collapse = ", ")))
+    }
+    c(lines,
+      sprintf("  if (!is.finite(.ow_condition_bytes) || .ow_condition_bytes > %dL) stop(\"Conditional Column exceeds the R operation output budget\", call. = FALSE)", maximum_operation_output_bytes),
+      sprintf("  .ow_clone_values <- rep.int(%s, length(.ow_condition_column))", missing_scalar),
+      sprintf("  .ow_clone_values[.ow_condition_match & !.ow_condition_missing] <- %s", arm_text[[1L]]),
+      sprintf("  .ow_clone_values[!.ow_condition_match & !.ow_condition_missing] <- %s", arm_text[[2L]]),
+      sprintf("  .ow_clone_values[.ow_condition_missing] <- %s", arm_text[[3L]])
+    )
   }
 
   row_step_code_lines <- function(step) {
@@ -8085,7 +8164,7 @@ openwrangler_r_kernel_agent <- local({
       # Match native copy metadata without copying the already-owned values.
       # Clone, Dense Rank, Mark Duplicates and Custom Code preserve names. By Example validates named
       # intermediates before its public result capture removes them.
-      if (!step$kind %in% c("cloneColumn", "denseRank", "markDuplicates", "customCode", "byExample")) {
+      if (!step$kind %in% c("cloneColumn", "conditionalColumn", "denseRank", "markDuplicates", "customCode", "byExample")) {
         lines <- c(lines, data_table_copy_metadata_lines)
       }
       if (identical(step$kind, "sortRows")) {
@@ -8170,7 +8249,7 @@ openwrangler_r_kernel_agent <- local({
             r_string(step$newName)
           )
         )
-      } else if (step$kind %in% c("cloneColumn", "denseRank", "markDuplicates")) {
+      } else if (step$kind %in% c("cloneColumn", "conditionalColumn", "denseRank", "markDuplicates")) {
         lines <- c(
           lines,
           sprintf("  .ow_clone_position <- %dL", step$position),
@@ -8197,6 +8276,8 @@ openwrangler_r_kernel_agent <- local({
               sprintf("  .ow_clone_values <- .ow_duplicate_row_mask(.ow_compared, \"none\", %s)",
                 if (any(vapply(step$columns, function(column) identical(column$semanticsKind, "integer64"), logical(1L)))) ".ow_duplicate_integer64_text" else "NULL")
             )
+          } else if (identical(step$kind, "conditionalColumn")) {
+            conditional_column_code_lines(step)
           } else "  .ow_clone_values <- base::.subset2(.ow_result, .ow_clone_position)",
           "  .ow_clone_element_names <- base::attr(.ow_clone_values, \"names\", exact = TRUE)",
           "  if (inherits(.ow_result, \"data.table\")) {",
@@ -9386,7 +9467,7 @@ openwrangler_r_kernel_agent <- local({
     } else if (identical(bound$kind, "splitTextColumns")) {
       bound$newNames
     } else if (
-      bound$kind %in% c("cloneColumn", "denseRank", "markDuplicates", "formula", "textLength", "byExample", "extractRegexGroup") ||
+      bound$kind %in% c("cloneColumn", "conditionalColumn", "denseRank", "markDuplicates", "formula", "textLength", "byExample", "extractRegexGroup") ||
         (
           bound$kind %in% c(
             "lowerText",

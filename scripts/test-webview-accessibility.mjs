@@ -72,6 +72,7 @@ try {
   await verifyNotebookPreviewDisclosure(browser);
   await verifyCodePreviewOrigin(browser);
   await verifyCompactDraftReview(browser);
+  await verifyConditionalColumnForm(browser);
   await verifyColumnSearchEscapePropagation(browser);
   await verifyAppliedPlanToolbarLayout(browser);
   await verifyStepInspectionWorkflow(browser);
@@ -90,6 +91,89 @@ try {
   } finally {
     browserIsolation.cleanup();
   }
+}
+
+async function verifyConditionalColumnForm(browser) {
+  for (const width of [1280, 800]) {
+    const page = await browser.newPage();
+    try {
+      await page.setViewportSize({ width, height: 600 });
+      page.setDefaultTimeout(15_000);
+      await page.goto(pathToFileURL(resolve(harnessDir, "operation-dialog.html")).href, { waitUntil: "load" });
+      await page.getByRole("button", { name: /^Conditional column/u }).click();
+      const form = page.getByRole("dialog");
+      await form.getByRole("textbox", { name: "New column name", exact: true }).fill("decision");
+      await form.getByRole("textbox", { name: "When condition matches: text", exact: true }).fill("  yes  ");
+      await form.getByRole("combobox", { name: "When condition does not match", exact: true }).selectOption("null");
+      const missing = form.getByRole("combobox", { name: "When input is missing", exact: true });
+      await missing.selectOption("string");
+      await form.getByRole("textbox", { name: "When input is missing: text", exact: true }).fill("");
+      await missing.focus();
+      await page.keyboard.press("Tab");
+      if (
+        !(await form
+          .getByRole("textbox", { name: "When input is missing: text", exact: true })
+          .evaluate((element) => element === document.activeElement))
+      )
+        throw new Error("Conditional result keyboard navigation missed its active text field.");
+      await form.getByRole("button", { name: "Preview changes", exact: true }).click();
+      await page.waitForFunction(() =>
+        globalThis.openWranglerMessages.some(
+          (message) => message.kind === "runtimeRequest" && message.request.kind === "previewStep"
+        )
+      );
+      const submitted = await page.evaluate(() => {
+        const requests = globalThis.openWranglerMessages.filter(
+          (message) => message.kind === "runtimeRequest" && message.request.kind === "previewStep"
+        );
+        return { requests, column: globalThis.openWranglerSessionPayload.metadata.schema[0] };
+      });
+      const params = submitted.requests[0].request.step.params;
+      if (
+        submitted.requests.length !== 1 ||
+        submitted.requests[0].request.step.kind !== "conditionalColumn" ||
+        params.column.id !== submitted.column.id ||
+        params.column.name !== submitted.column.name ||
+        params.columnType !== submitted.column.type ||
+        params.predicate.operator !== "equals" ||
+        params.predicate.value !== "" ||
+        params.newColumn !== "decision" ||
+        params.resultType !== "string" ||
+        params.trueValue !== "  yes  " ||
+        params.falseValue !== null ||
+        params.missingValue !== ""
+      ) {
+        throw new Error("Conditional form changed its selected input, empty comparison or explicit results.");
+      }
+      const settings = form.getByRole("form", { name: "Operation settings" });
+      const catalog = form.getByRole("navigation", { name: "Operation catalog" });
+      await page.keyboard.press("Tab");
+      if (!(await catalog.evaluate((element) => element === document.activeElement))) {
+        throw new Error("Pending Preview did not retain keyboard access to the operation catalog.");
+      }
+      await page.keyboard.press("Shift+Tab");
+      if (!(await settings.evaluate((element) => element === document.activeElement))) {
+        throw new Error("Pending Preview did not retain keyboard access to operation settings.");
+      }
+      await page.keyboard.press("Home");
+      await page.waitForFunction(() => document.querySelector(".operationForm").scrollTop === 0);
+      await page.keyboard.press("PageDown");
+      await page.waitForFunction(() => document.querySelector(".operationForm").scrollTop > 0);
+      await page.keyboard.press("Tab");
+      if (!(await catalog.evaluate((element) => element === document.activeElement))) {
+        throw new Error("Pending Preview let keyboard focus leave its dialog.");
+      }
+      if (!(await form.getByRole("button", { name: "Preview changes", exact: true }).isDisabled())) {
+        throw new Error("Pending Preview re-enabled editing controls.");
+      }
+      await page.addScriptTag({ path: axePath });
+      const result = await page.evaluate(() => globalThis.axe.run(document));
+      recordAxeScanResult(`conditional-column-${width}`, result.violations);
+    } finally {
+      await page.close();
+    }
+  }
+  console.log("Conditional Column form, exact submission and keyboard navigation verified at two widths.");
 }
 
 async function verifyNotebookPreviewDisclosure(browser) {

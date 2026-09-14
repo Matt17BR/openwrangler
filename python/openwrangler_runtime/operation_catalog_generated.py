@@ -99,6 +99,22 @@ OPERATION_DEFINITIONS: tuple[OperationDefinition, ...] = (
         optional=("rightColumn", "value"),
     ),
     OperationDefinition(
+        kind="conditionalColumn",
+        title="Conditional column",
+        group="Columns / types",
+        required=(
+            "column",
+            "columnType",
+            "predicate",
+            "newColumn",
+            "resultType",
+            "trueValue",
+            "falseValue",
+            "missingValue",
+        ),
+        optional=(),
+    ),
+    OperationDefinition(
         kind="textLength",
         title="Text length",
         group="Columns / types",

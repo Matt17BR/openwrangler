@@ -96,6 +96,13 @@
       "icon": "symbol-operator"
     },
     {
+      "kind": "conditionalColumn",
+      "title": "Conditional column",
+      "description": "Create text labels or Boolean flags from one condition, with an explicit result for missing inputs.",
+      "group": "Columns / types",
+      "icon": "git-compare"
+    },
+    {
       "kind": "textLength",
       "title": "Text length",
       "description": "Create a column containing character counts.",
@@ -977,6 +984,7 @@
         "cloneColumn",
         "castColumn",
         "formula",
+        "conditionalColumn",
         "textLength",
         "oneHotEncode",
         "multiLabelBinarize",
@@ -1272,6 +1280,49 @@
         "value": { "$ref": "#/definitions/FormulaLiteral" }
       },
       "oneOf": [{ "required": ["rightColumn"] }, { "required": ["value"] }]
+    },
+    "ConditionalColumnParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "column",
+        "columnType",
+        "predicate",
+        "newColumn",
+        "resultType",
+        "trueValue",
+        "falseValue",
+        "missingValue"
+      ],
+      "properties": {
+        "column": { "$ref": "#/definitions/ColumnReference" },
+        "columnType": { "$ref": "#/definitions/ColumnType" },
+        "predicate": { "$ref": "#/definitions/PredicateFilter" },
+        "newColumn": { "type": "string", "minLength": 1 },
+        "resultType": { "type": "string", "enum": ["string", "boolean"] },
+        "trueValue": { "type": ["string", "boolean", "null"], "maxLength": 65536 },
+        "falseValue": { "type": ["string", "boolean", "null"], "maxLength": 65536 },
+        "missingValue": { "type": ["string", "boolean", "null"], "maxLength": 65536 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "resultType": { "const": "string" } } },
+          "then": {
+            "properties": {
+              "trueValue": { "type": ["string", "null"] },
+              "falseValue": { "type": ["string", "null"] },
+              "missingValue": { "type": ["string", "null"] }
+            }
+          },
+          "else": {
+            "properties": {
+              "trueValue": { "type": ["boolean", "null"] },
+              "falseValue": { "type": ["boolean", "null"] },
+              "missingValue": { "type": ["boolean", "null"] }
+            }
+          }
+        }
+      ]
     },
     "ColumnOutputParams": {
       "type": "object",
@@ -1695,6 +1746,7 @@
         { "$ref": "#/definitions/CloneColumnTransformStep" },
         { "$ref": "#/definitions/CastColumnTransformStep" },
         { "$ref": "#/definitions/FormulaTransformStep" },
+        { "$ref": "#/definitions/ConditionalColumnTransformStep" },
         { "$ref": "#/definitions/TextLengthTransformStep" },
         { "$ref": "#/definitions/OneHotEncodeTransformStep" },
         { "$ref": "#/definitions/MultiLabelBinarizeTransformStep" },
@@ -1848,6 +1900,18 @@
         {
           "required": ["kind", "params"],
           "properties": { "kind": { "const": "formula" }, "params": { "$ref": "#/definitions/FormulaParams" } }
+        }
+      ]
+    },
+    "ConditionalColumnTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": {
+            "kind": { "const": "conditionalColumn" },
+            "params": { "$ref": "#/definitions/ConditionalColumnParams" }
+          }
         }
       ]
     },

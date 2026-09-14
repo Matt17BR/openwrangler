@@ -208,102 +208,112 @@ export function OperationBuilder({
             onClick={onClose}
           />
         </header>
-        <fieldset className="operationDialogBody" disabled={busy}>
-          <nav className="operationCatalog" aria-label="Operation catalog">
-            <label className="operationSearch">
-              <span className="codicon codicon-search" aria-hidden="true" />
-              <input
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                aria-label="Search operations"
-                placeholder="Search operations"
-                autoFocus
-              />
-            </label>
-            {operationGroups.map((group) => {
-              const operations = filteredCatalog.filter((operation) => operation.group === group);
-              if (!operations.length) return null;
-              return (
-                <section key={group} className="operationGroup">
-                  <h3>{group}</h3>
-                  {operations.map((operation) => (
-                    <button
-                      type="button"
-                      key={operation.kind}
-                      className={`operationChoice${selectedKind === operation.kind ? " selected" : ""}`}
-                      aria-pressed={selectedKind === operation.kind}
-                      onClick={() => {
-                        if (operation.kind !== selectedKind) {
-                          setFormError(undefined);
-                          onOperationChange?.();
-                        }
-                        setSelectedKind(operation.kind);
-                      }}
-                    >
-                      <span className={`codicon codicon-${operation.icon}`} aria-hidden="true" />
-                      <span>
-                        <strong>{operation.title}</strong>
-                        <small>{operation.description}</small>
-                      </span>
-                    </button>
-                  ))}
-                </section>
-              );
-            })}
-            {filteredCatalog.length === 0 && <p className="mutedText">No operations match “{search}”.</p>}
+        <div className="operationDialogBody">
+          <nav className="operationCatalog" aria-label="Operation catalog" tabIndex={busy ? 0 : undefined}>
+            <fieldset className="operationControls" disabled={busy}>
+              <label className="operationSearch">
+                <span className="codicon codicon-search" aria-hidden="true" />
+                <input
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  aria-label="Search operations"
+                  placeholder="Search operations"
+                  autoFocus
+                />
+              </label>
+              {operationGroups.map((group) => {
+                const operations = filteredCatalog.filter((operation) => operation.group === group);
+                if (!operations.length) return null;
+                return (
+                  <section key={group} className="operationGroup">
+                    <h3>{group}</h3>
+                    {operations.map((operation) => (
+                      <button
+                        type="button"
+                        key={operation.kind}
+                        className={`operationChoice${selectedKind === operation.kind ? " selected" : ""}`}
+                        aria-pressed={selectedKind === operation.kind}
+                        onClick={() => {
+                          if (operation.kind !== selectedKind) {
+                            setFormError(undefined);
+                            onOperationChange?.();
+                          }
+                          setSelectedKind(operation.kind);
+                        }}
+                      >
+                        <span className={`codicon codicon-${operation.icon}`} aria-hidden="true" />
+                        <span>
+                          <strong>{operation.title}</strong>
+                          <small>{operation.description}</small>
+                        </span>
+                      </button>
+                    ))}
+                  </section>
+                );
+              })}
+              {filteredCatalog.length === 0 && <p className="mutedText">No operations match “{search}”.</p>}
+            </fieldset>
           </nav>
-          <form className="operationForm" key={selectedKind ?? "none"} onSubmit={submit}>
-            {selectedKind ? (
-              <>
-                <div className="operationFormTitle">
-                  <span className={`codicon codicon-${operationByKind(selectedKind).icon}`} aria-hidden="true" />
-                  <div>
-                    <h2>{operationByKind(selectedKind).title}</h2>
-                    <p>{operationByKind(selectedKind).description}</p>
+          <form
+            className="operationForm"
+            key={selectedKind ?? "none"}
+            onSubmit={submit}
+            aria-label="Operation settings"
+            tabIndex={busy ? 0 : undefined}
+          >
+            <fieldset className="operationControls" disabled={busy}>
+              {selectedKind ? (
+                <>
+                  <div className="operationFormTitle">
+                    <span className={`codicon codicon-${operationByKind(selectedKind).icon}`} aria-hidden="true" />
+                    <div>
+                      <h2>{operationByKind(selectedKind).title}</h2>
+                      <p>{operationByKind(selectedKind).description}</p>
+                    </div>
                   </div>
+                  {editPreflightError ? (
+                    <p className="operationFormError" role="alert">
+                      {editPreflightError}
+                    </p>
+                  ) : (
+                    <>
+                      <OperationFields
+                        kind={selectedKind}
+                        metadata={metadata}
+                        columns={availableColumns}
+                        filterModel={filterModel}
+                        initialStep={activeInitial}
+                      />
+                      {visibleFormError && (
+                        <p className="operationFormError" role="alert">
+                          {visibleFormError}
+                        </p>
+                      )}
+                    </>
+                  )}
+                  <footer className="operationFormActions">
+                    <button type="button" className="secondaryButton" onClick={onClose}>
+                      Cancel
+                    </button>
+                    <button
+                      ref={previewButtonRef}
+                      type="submit"
+                      disabled={editPreflightError !== undefined || selectedFilterQueryIsEmpty}
+                    >
+                      Preview changes
+                    </button>
+                  </footer>
+                </>
+              ) : (
+                <div className="operationPrompt">
+                  <span className="codicon codicon-wand" aria-hidden="true" />
+                  <h2>Choose an operation</h2>
+                  <p>Search or browse the catalog. Your source dataframe remains unchanged.</p>
                 </div>
-                {editPreflightError ? (
-                  <p className="operationFormError" role="alert">
-                    {editPreflightError}
-                  </p>
-                ) : (
-                  <>
-                    <OperationFields
-                      kind={selectedKind}
-                      metadata={metadata}
-                      columns={availableColumns}
-                      filterModel={filterModel}
-                      initialStep={activeInitial}
-                    />
-                    {visibleFormError && (
-                      <p className="operationFormError" role="alert">
-                        {visibleFormError}
-                      </p>
-                    )}
-                  </>
-                )}
-                <footer className="operationFormActions">
-                  <button type="button" className="secondaryButton" onClick={onClose}>
-                    Cancel
-                  </button>
-                  <button
-                    ref={previewButtonRef}
-                    type="submit"
-                    disabled={editPreflightError !== undefined || selectedFilterQueryIsEmpty}
-                  >
-                    Preview changes
-                  </button>
-                </footer>
-              </>
-            ) : (
-              <div className="operationPrompt">
-                <span className="codicon codicon-wand" aria-hidden="true" />
-                <h2>Choose an operation</h2>
-                <p>Search or browse the catalog. Your source dataframe remains unchanged.</p>
-              </div>
-            )}
+              )}
+            </fieldset>
           </form>
-        </fieldset>
+        </div>
       </section>
     </div>
   );

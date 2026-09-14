@@ -1,6 +1,12 @@
 import { parseFormulaLiteral } from "../../shared/formulaLiteral";
 import type { FilterModel } from "../../shared/filterModel";
-import { isActiveColumnFilter } from "../../shared/filterModel";
+import {
+  createPredicate,
+  hasCompletePredicateValues,
+  isActiveColumnFilter,
+  operatorRequiresValue,
+  viewPredicateOperators
+} from "../../shared/filterModel";
 import type {
   ColumnReference,
   ColumnSchema,
@@ -8,6 +14,7 @@ import type {
   TransformFilterModel,
   TransformStep
 } from "../../shared/protocol";
+import { hasAtMostViewValueTextCodePoints } from "../../shared/viewValueLimits";
 import { buildFillMissingParams } from "./fillMissingModel";
 import { portableRegexContract, validatePortableRegexOutputName } from "../../shared/portableRegex";
 import { portablePivotLongerNameKey, validatePivotLongerOutputName } from "../../shared/pivotLonger";
@@ -109,6 +116,46 @@ export function buildParams(
         ...(value("operandMode") === "column"
           ? { rightColumn: columnReference("rightColumn") }
           : { value: parseFormulaLiteral(value("value")) })
+      };
+    }
+    case "conditionalColumn": {
+      const column = columnReference("column");
+      const input = availableColumns.find((candidate) => candidate.id === column.id);
+      if (!input || input.type !== value("columnType")) {
+        throw new Error("The condition column type changed. Choose the column again.");
+      }
+      const operator = viewPredicateOperators(input.type).find((candidate) => candidate === value("operator"));
+      if (!operator) throw new Error("Choose a compatible condition operator.");
+      if (
+        operatorRequiresValue(operator) &&
+        (!form.has("predicateValue") ||
+          (operator === "between" && !form.has("secondPredicateValue")) ||
+          (input.type !== "string" &&
+            !hasCompletePredicateValues(operator, value("predicateValue"), value("secondPredicateValue"))))
+      )
+        throw new Error("Complete the condition comparison values.");
+      const resultType = value("resultType");
+      if (resultType !== "string" && resultType !== "boolean") throw new Error("Choose Text or Boolean results.");
+      const result = (name: string): string | boolean | null => {
+        const choice = value(`${name}Choice`);
+        if (choice === "null") return null;
+        if (resultType === "boolean" && (choice === "true" || choice === "false")) return choice === "true";
+        if (resultType === "string" && choice === "string" && form.has(name)) {
+          const text = value(name);
+          if (hasAtMostViewValueTextCodePoints(text)) return text;
+          throw new Error("Conditional text results exceed the text limit.");
+        }
+        throw new Error("Choose each conditional result for the selected output type.");
+      };
+      return {
+        column,
+        columnType: input.type,
+        predicate: createPredicate(operator, value("predicateValue"), value("secondPredicateValue"), input.type),
+        newColumn: value("newColumn"),
+        resultType,
+        trueValue: result("trueValue"),
+        falseValue: result("falseValue"),
+        missingValue: result("missingValue")
       };
     }
     case "textLength":

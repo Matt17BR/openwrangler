@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type {
   ColumnSchema,
+  ConditionalColumnTransformStep,
   MarkDuplicatesTransformStep,
   DataDiff,
   GroupByTransformStep,
@@ -25,6 +26,51 @@ import {
 } from "../extension/r/rKernelMutationSchema";
 
 describe("R kernel mutation schema", () => {
+  it("declares conditional storage and relevant-arm nullability while retaining keys and rows", () => {
+    const step: ConditionalColumnTransformStep = {
+      id: "condition",
+      kind: "conditionalColumn",
+      params: {
+        column: reference(1),
+        columnType: "integer",
+        predicate: { kind: "predicate", operator: "gte", value: 2 },
+        newColumn: "flag",
+        resultType: "boolean",
+        trueValue: true,
+        falseValue: false,
+        missingValue: null
+      }
+    };
+    const output = schemaAfterRStep(schema, step, ["b"]);
+    expect(output).toEqual([
+      ...schema,
+      { id: "c:step:condition:0", name: "flag", position: 2, type: "boolean", rawType: "logical", nullable: true }
+    ]);
+    expect(keyColumnsAfterRStep(["b"], output, step)).toEqual(["b"]);
+    expect(rowNamesAfterRStep("explicit", step)).toBe("explicit");
+    const nullary = {
+      ...step,
+      params: { ...step.params, predicate: { kind: "predicate" as const, operator: "isNull" as const } }
+    };
+    expect(schemaAfterRStep(schema, nullary, ["b"])[2]?.nullable).toBe(false);
+    expect(
+      schemaAfterRStep(
+        schema,
+        { ...nullary, params: { ...nullary.params, resultType: "string", trueValue: "", falseValue: null } },
+        ["b"]
+      )[2]
+    ).toMatchObject({
+      rawType: "character",
+      type: "string",
+      nullable: true
+    });
+    expect(() => schemaAfterRStep(schema, { ...step, params: { ...step.params, newColumn: "count" } }, [])).toThrow(
+      "already exists"
+    );
+    expect(() => schemaAfterRStep(output, { ...step, params: { ...step.params, newColumn: "other" } }, [])).toThrow(
+      "identity already exists"
+    );
+  });
   it("predicts present logical duplicate flags without copying comparison-column types or changing keys", () => {
     const step: MarkDuplicatesTransformStep = {
       id: "mark",
