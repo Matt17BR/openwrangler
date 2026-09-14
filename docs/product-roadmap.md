@@ -3,11 +3,6 @@
 [Feature parity](feature-parity.md) describes what works today and its limits. [Changelog](../CHANGELOG.md)
 records delivered changes. This page links the work selected next and proposals that need further review.
 
-## Current focus
-
-The [public notebook workflow comparison](https://github.com/Matt17BR/openwrangler/issues/1419) has a separate, finite
-scope and is paused on an identified interaction problem. It does not gate a release.
-
 ## Next selected outcome
 
 The next stable target is [Open Wrangler 2.5.0](https://github.com/Matt17BR/openwrangler/milestone/15), following the [version policy](releasing.md#version-and-channel-policy).
