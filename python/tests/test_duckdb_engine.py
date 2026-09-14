@@ -64,6 +64,257 @@ def source_relation() -> Any:
     )
 
 
+def test_duckdb_view_primitives_ignore_macros_but_preserve_source_functions() -> None:
+    engine = DuckDBEngine()
+    with duckdb_runtime._connect() as connection:
+        try:
+            for definition in (
+                '"-"(x, y) AS 97',
+                "length(x) AS 17",
+                "isnan(x) AS TRUE",
+                "isfinite(x) AS FALSE",
+                "count_star() AS 97",
+                "count(x) AS 97",
+                "min(x) AS -99",
+                "max(x) AS -99",
+                "avg(x) AS -99",
+                "median(x) AS -99",
+                "stddev_samp(x) AS -99",
+                "sum(x) AS -99",
+                "contains(x, y) AS FALSE",
+                "translate(x, upper_chars, lower_chars) AS 'caller'",
+                "nextafter(x, y) AS 0.0",
+                "map_values(x) AS [97::UBIGINT]",
+                "histogram(x, boundaries) AS MAP([0.0], [97::UBIGINT])",
+            ):
+                connection.execute("CREATE MACRO " + definition)
+            source = connection.sql(
+                "SELECT *, length(text) AS from_caller FROM (VALUES "
+                "('a', 1.0::DOUBLE, 0.0::DOUBLE, TRUE), ('abc', 3.0, 10.0, FALSE), "
+                "('abc', 3.0, 10.0, FALSE), (NULL, NULL, 20.0, NULL), "
+                "('', 'NaN'::DOUBLE, 30.0, TRUE), (NULL, 5.0, 40.0, NULL)) source(text, value, finite, flag)"
+            )
+            receipt_query = "text, CAST(value AS VARCHAR), finite, flag, from_caller"
+            before = source.project(receipt_query).fetchall()
+            assert [row[-1] for row in before] == [17] * 6
+            source_identity = (source.sql_query(), source.columns, source.types)
+            catalog_query = (
+                "SELECT schema_name, function_name, macro_definition FROM duckdb_functions() "
+                "WHERE function_type = 'macro' AND NOT internal ORDER BY schema_name, function_name"
+            )
+            catalog_before = connection.sql(catalog_query).fetchall()
+            settings_before = connection.sql(
+                "SELECT current_setting('search_path'), current_setting('threads')"
+            ).fetchall()
+            frame = engine.normalize_notebook_relation(source)
+            assert engine.shape(frame) == {"rows": 6, "columns": 5}
+            identified = engine.ensure_row_ids(frame, "view_primitives")
+            identified_page = engine.page(identified, 0, 6, total_rows=6, column_projection=[(0, "text")])
+            assert [row["id"] for row in identified_page["rows"]] == [
+                f"r:{duckdb_runtime.INTERNAL_ROW_ID_PREFIX}view_primitives:{index}" for index in range(6)
+            ]
+            assert [row["rowNumber"] for row in identified_page["rows"]] == list(range(6))
+            page = engine.page(identified, 1, 2, column_projection=[(0, "text")])
+            assert page["totalRows"] == 6 and [row["values"][0]["raw"] for row in page["rows"]] == ["abc", "abc"]
+            assert [row["id"] for row in page["rows"]] == [
+                f"r:{duckdb_runtime.INTERNAL_ROW_ID_PREFIX}view_primitives:{index}" for index in (1, 2)
+            ]
+            assert [row["rowNumber"] for row in page["rows"]] == [1, 2]
+            summaries = {summary["column"]: summary for summary in engine.summaries(frame)}
+            text = summaries["text"]
+            assert (text["totalCount"], text["nullCount"], text["nanCount"], text["distinctCount"]) == (6, 2, 0, 3)
+            assert text["text"] == {"emptyCount": 1, "minLength": 0, "maxLength": 3, "meanLength": 1.75}
+            assert text["topValues"] == [
+                {"value": "abc", "count": 2},
+                {"value": "", "count": 1},
+                {"value": "a", "count": 1},
+            ]
+            numeric = summaries["value"]
+            assert (numeric["nullCount"], numeric["nanCount"], numeric["distinctCount"]) == (1, 1, 3)
+            assert numeric["numeric"]["min"] == 1 and numeric["numeric"]["max"] == 5
+            assert numeric["numeric"]["mean"] == 3 and numeric["numeric"]["median"] == 3
+            assert numeric["numeric"]["std"] == pytest.approx((8 / 3) ** 0.5)
+            assert [bin["count"] for bin in numeric["visualization"]["bins"]] == [1, 2, 1]
+            assert summaries["finite"]["numeric"]["mean"] == pytest.approx(110 / 6)
+            assert summaries["finite"]["numeric"]["median"] == 15
+            assert summaries["flag"]["visualization"] == {"kind": "boolean", "trueCount": 2, "falseCount": 2}
+            assert summaries["from_caller"]["numeric"]["exactSum"]["raw"] == 102
+            assert engine.missing_count(frame, 1) == 2
+            assert engine.header_stats(frame) == {
+                "missingCells": 6,
+                "missingRows": 3,
+                "duplicateRows": 1,
+                "missingValuesByColumn": [
+                    {"column": name, "count": count}
+                    for name, count in [("text", 2), ("value", 2), ("finite", 0), ("flag", 2), ("from_caller", 0)]
+                ],
+            }
+            choices, more = engine.column_values(frame, "text", search="A", limit=1)
+            assert more and [(choice["value"], choice["count"]) for choice in choices] == [("abc", 2)]
+            assert source.project(receipt_query).fetchall() == before
+            assert (source.sql_query(), source.columns, source.types) == source_identity
+            engine.close()
+            assert source.project(receipt_query).fetchall() == before
+            assert connection.sql(catalog_query).fetchall() == catalog_before
+            assert (
+                connection.sql("SELECT current_setting('search_path'), current_setting('threads')").fetchall()
+                == settings_before
+            )
+        finally:
+            engine.close()
+
+
+def test_duckdb_view_primitives_match_generated_filters_and_conditional_values() -> None:
+    engine = DuckDBEngine()
+    with duckdb_runtime._connect() as connection:
+        try:
+            for definition in (
+                "isnan(x) AS TRUE",
+                "contains(x, y) AS FALSE",
+                "starts_with(x, y) AS FALSE",
+                "ends_with(x, y) AS FALSE",
+                "translate(x, upper_chars, lower_chars) AS 'caller'",
+            ):
+                connection.execute("CREATE MACRO " + definition)
+            source = connection.sql(
+                "SELECT * FROM (VALUES (0, 'ALPHA', 1.0::DOUBLE), (1, 'alphabet', 'NaN'::DOUBLE), "
+                "(2, 'beta', NULL), (3, NULL, 3.0)) source(id, text, value)"
+            )
+            before = source.project("id, text, CAST(value AS VARCHAR)").fetchall()
+            frame = engine.normalize_notebook_relation(source)
+            filters = [
+                (
+                    {
+                        "filters": [
+                            {
+                                "column": "text",
+                                "type": "string",
+                                "predicates": [
+                                    {"operator": "contains", "value": "ph"},
+                                    {"operator": "startsWith", "value": "AL"},
+                                    {"operator": "endsWith", "value": "HA"},
+                                ],
+                            }
+                        ],
+                        "sort": [],
+                    },
+                    [0],
+                ),
+                (
+                    {
+                        "filters": [
+                            {
+                                "column": "value",
+                                "type": "float",
+                                "predicates": [],
+                                "valueFilter": {
+                                    "kind": "values",
+                                    "selectedValues": [typed_selection_value(1.0, "float")],
+                                    "includeNulls": False,
+                                    "includeNaN": True,
+                                },
+                            }
+                        ],
+                        "sort": [],
+                    },
+                    [0, 1],
+                ),
+                (
+                    {
+                        "filters": [{"column": "value", "type": "float", "predicates": [{"operator": "isNotNaN"}]}],
+                        "sort": [],
+                    },
+                    [0, 2, 3],
+                ),
+            ]
+            for model, expected_ids in filters:
+                view = engine.apply_filter_model(frame, model)
+                bound = {
+                    **model,
+                    "filters": [
+                        {
+                            **rule,
+                            "column": bound_ref(
+                                f"c:source:{source.columns.index(rule['column'])}",
+                                rule["column"],
+                                source.columns.index(rule["column"]),
+                            ),
+                        }
+                        for rule in model["filters"]
+                    ],
+                }
+                operation = bound_step("filterRows", filterModel=bound)
+                live = engine.apply_transform(frame, operation)
+                generated = execute_generated(engine, source, [operation])
+                assert engine._terminal_rows(view, "SELECT id FROM ow") == [(value,) for value in expected_ids]
+                assert engine._terminal_rows(live, "SELECT id FROM ow") == [(value,) for value in expected_ids]
+                assert generated.project("id").fetchall() == [(value,) for value in expected_ids]
+            operation = bound_step(
+                "conditionalColumn",
+                column=bound_ref("c:source:2", "value", 2),
+                columnType="float",
+                predicate={"kind": "predicate", "operator": "gt", "value": "0"},
+                newColumn="positive",
+                resultType="boolean",
+                trueValue=True,
+                falseValue=False,
+                missingValue=None,
+            )
+            live = engine.apply_transform(frame, operation)
+            generated = execute_generated(engine, source, [operation])
+            expected = [(0, True), (1, None), (2, None), (3, True)]
+            assert engine._terminal_rows(live, "SELECT id, positive FROM ow") == expected
+            assert generated.project("id, positive").fetchall() == expected
+            fill = bound_step(
+                "fillMissingValues",
+                column=bound_ref("c:source:2", "value", 2),
+                replacement={"kind": "float", "value": "9"},
+            )
+            live = engine.apply_transform(frame, fill)
+            generated = execute_generated(engine, source, [fill])
+            expected = [(0, 1.0), (1, 9.0), (2, 9.0), (3, 3.0)]
+            assert engine._terminal_rows(live, "SELECT id, value FROM ow") == expected
+            assert generated.project("id, value").fetchall() == expected
+            assert source.project("id, text, CAST(value AS VARCHAR)").fetchall() == before
+        finally:
+            engine.close()
+
+
+def test_duckdb_view_primitives_keep_live_and_generated_coordinate_refusal() -> None:
+    engine = DuckDBEngine()
+    operation = bound_step(
+        "fillMissingValues",
+        column=bound_ref("c:source:1", "value", 1),
+        replacement={"kind": "linearInterpolation", "coordinate": bound_ref("c:source:0", "coordinate", 0)},
+    )
+    with duckdb_runtime._connect() as connection:
+        try:
+            connection.execute("CREATE MACRO isfinite(x) AS TRUE")
+            source = connection.sql(
+                "SELECT * FROM (VALUES (0.0::DOUBLE, 0.0::DOUBLE), ('Infinity'::DOUBLE, NULL), "
+                "(2.0, 4.0)) source(coordinate, value)"
+            )
+            before = source.fetchall()
+            with pytest.raises(EngineError, match="every coordinate value to be present and finite"):
+                engine.apply_transform(engine.normalize_notebook_relation(source), operation)
+            with pytest.raises(ValueError, match="every coordinate value to be present and finite"):
+                execute_generated(engine, source, [operation])
+            assert source.fetchall() == before
+            connection.execute("CREATE OR REPLACE MACRO isfinite(x) AS FALSE")
+            source = connection.sql(
+                "SELECT * FROM (VALUES (0.0::DOUBLE, 0.0::DOUBLE), (1.0, NULL), (2.0, 4.0)) source(coordinate, value)"
+            )
+            before = source.fetchall()
+            live = engine.apply_transform(engine.normalize_notebook_relation(source), operation)
+            generated = execute_generated(engine, source, [operation])
+            expected = [(0.0, 0.0), (1.0, 2.0), (2.0, 4.0)]
+            assert engine._terminal_rows(live, "SELECT * FROM ow") == expected
+            assert generated.fetchall() == expected
+            assert source.fetchall() == before
+        finally:
+            engine.close()
+
+
 @pytest.mark.parametrize("label", ["integer", "decimal", "bool", "array", "struct", "datetime", "plain"])
 def test_duckdb_enum_labels_do_not_change_profiles_or_typed_filters(label: str) -> None:
     engine = DuckDBEngine()
@@ -2004,7 +2255,7 @@ def test_duckdb_header_stats_zero_visible_columns_use_one_count(
         "duplicateRows": 0,
         "missingValuesByColumn": [],
     }
-    assert scalar_queries == ["SELECT count(*) FROM ow"]
+    assert scalar_queries == ["SELECT system.main.count(*) FROM ow"]
 
 
 @pytest.mark.parametrize(
@@ -4173,6 +4424,11 @@ def test_duckdb_nanosecond_endpoints_and_infinities_ignore_caller_format_macros(
         )
         before = source.project("id, system.main.epoch_ns(value_count)").fetchall()
         for macro in [
+            '"-"(x, y) AS 97',
+            '"+"(x, y) AS 97',
+            '"//"(x, y) AS 97',
+            '"%"(x, y) AS 97',
+            "\"||\"(x, y) AS 'forged'",
             "epoch_ns(x) AS 0",
             "isfinite(x) AS FALSE",
             "make_timestamp(x) AS TIMESTAMP '2000-01-01'",
