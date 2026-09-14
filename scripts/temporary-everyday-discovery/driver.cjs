@@ -2,7 +2,6 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { createHash } = require("node:crypto");
 const { createRequire } = require("node:module");
 const { pathToFileURL } = require("node:url");
 const vscode = require("vscode");
@@ -14,7 +13,7 @@ exports.run = async () => {
   const { chromium } = createRequire(path.join(request.repo, "package.json"))("playwright-core");
   const owner = await import(pathToFileURL(path.join(request.repo, "scripts/editor-acceptance.mjs")).href);
   const receipt = { purpose: "public-ui-control-discovery", product: "dw", input: "polars", rows: 100000, controls: [], status: "pending" };
-  let browser, page, productFrame, screenshotCaptured = false, stage = "connect";
+  let browser, page, screenshotCaptured = false, stage = "connect";
   const save = () => {
     const json = JSON.stringify(receipt, null, 2) + "\n";
     assert(Buffer.byteLength(json) <= 32768);
@@ -49,17 +48,20 @@ exports.run = async () => {
   };
   const capture = async () => {
     // Only visible public controls on this synthetic notebook/product. No DOM dump or storage.
-    const scopes = productFrame ? [productFrame, page.mainFrame()] : frames();
+    const scopes = frames();
     const controls = [];
     for (const frame of scopes) {
       controls.push(...await frame.evaluate(() => Array.from(document.querySelectorAll(
-        'button,[role="button"],[role="menuitem"],[role="combobox"],select,[role="option"],input'
+        'button,[role="button"],[role="menuitem"],[role="treeitem"],[role="textbox"],[role="combobox"],[role="checkbox"],select,[role="option"],input'
       )).filter((e) => e.checkVisibility({ checkVisibilityCSS: true })).flatMap((e) => {
-        const label = (e.getAttribute("aria-label") || e.getAttribute("title") ||
+        const operationSearch = e.getAttribute("placeholder") === "Search for operations...";
+        const label = (operationSearch ? "Search for operations..." : e.getAttribute("aria-label") || e.getAttribute("title") ||
           (e.tagName === "INPUT" ? e.getAttribute("placeholder") : e.textContent) || "").replace(/\s+/g, " ").trim();
-        if (!/^(?:View data|More Actions|Select Another Kernel|Jupyter|Local Kernel|Python 3\.12 \(Public comparison\)|comparison_frame|Convert|Lowercase|Column|Apply|Export|Copy|Cancel|Preview|Edit|View|Search|Operation|Cleaning|text$|id$)/i.test(label)) return [];
-        return [{ role: e.getAttribute("role") || e.tagName.toLowerCase(), label: label.slice(0, 160), disabled: e.matches(":disabled") }];
-      }).slice(0, 32)));
+        if (!/^(?:View data$|Select Another Kernel|Jupyter|Local Kernel|Python 3\.12 \(Public comparison\)|comparison_frame|Convert|Lowercase|Column|Select columns?|Choose|Apply|Export|Copy|Cancel|Discard|Preview|Editing$|Viewing$|Search|Operation|Cleaning|Find and replace|Format|Formulas|Numeric|Schema|Sort and filter|Custom operation|Group by|New column by example|Load data from variable|New operation|text$|id$)/i.test(label)) return [];
+        return [{ role: e.getAttribute("role") || e.tagName.toLowerCase(), tag: e.tagName.toLowerCase(), label: label.slice(0, 160),
+          disabled: e.matches(":disabled") || e.getAttribute("aria-disabled") === "true",
+          ...(operationSearch && ["", "Lowercase"].includes(e.value) ? { value: e.value } : {}) }];
+      }).slice(0, 32)).then((items) => items.map((item) => ({ ...item, surface: frame === page.mainFrame() ? "workbench" : "webview" }))));
     }
     receipt.controls.push({ stage, controls: controls.slice(0, 32) });
     assert(Buffer.byteLength(JSON.stringify(receipt.controls)) <= 16384, "DISCOVERY_GATE:control-byte-bound");
@@ -160,44 +162,28 @@ exports.run = async () => {
     await poll(async () => { await consent(); return visible(variable); }, "exact-variable");
     await click(variable, "exact-variable");
     const original = [["0", "North"], ["1", "SOUTH"], ["2", "East"], ["3", "WEST"]];
-    productFrame = await poll(async () => { await consent(); return rendered(original); }, "initial-grid");
-    const operation = productFrame.getByRole("button", { name: "Convert text to lowercase", exact: true });
-    await poll(() => visible(operation), "editing-operation");
+    await poll(async () => { await consent(); return rendered(original); }, "initial-grid");
+    const sidebar = page.locator(".part.sidebar:visible");
+    const search = sidebar.getByPlaceholder("Search for operations...", { exact: true });
+    await poll(() => visible(search), "editing-search");
     receipt.openToEditingMs = performance.now() - openStarted;
     checkpoint("editing-controls");
     await capture();
-    const cleanStarted = performance.now();
+    checkpoint("operation-search");
+    await search.fill("Lowercase");
+    const operation = sidebar.getByRole("treeitem", { name: /lowercase/i });
+    await poll(() => visible(operation), "lowercase-result");
+    await capture();
     await click(operation, "lowercase");
-    checkpoint("column-controls");
-    await capture();
-    const column = productFrame.getByRole("combobox", { name: "Column", exact: true });
-    await poll(() => visible(column), "column");
-    await column.selectOption({ label: "text" });
-    const lower = original.map(([id, text]) => [id, text.toLowerCase()]);
-    await poll(() => rendered(lower), "preview-values");
-    const apply = productFrame.getByRole("button", { name: "Apply", exact: true });
-    await poll(async () => await visible(apply) && await apply.isEnabled(), "apply-ready");
-    checkpoint("apply-controls");
-    await capture();
-    await click(apply, "apply");
-    await poll(async () => await apply.count() === 0 && await rendered(lower), "applied-values");
-    receipt.lowercaseMs = performance.now() - cleanStarted;
-    checkpoint("export-controls");
-    await capture();
-    await click(productFrame.getByRole("button", { name: "Export", exact: true }), "export");
+    checkpoint("operation-selected");
     await capture();
     await screenshot();
-    await vscode.env.clipboard.writeText("DISCOVERY_EMPTY_CLIPBOARD");
-    await click(productFrame.getByRole("menuitem", { name: "Copy code to clipboard", exact: true }), "copy-code");
-    const code = await vscode.env.clipboard.readText();
-    assert(code !== "DISCOVERY_EMPTY_CLIPBOARD" && Buffer.byteLength(code) > 20 && Buffer.byteLength(code) <= 65536, "DISCOVERY_GATE:export-code");
-    fs.writeFileSync(path.join(request.out, "export.py"), code, { flag: "wx", mode: 0o600 });
-    receipt.export = { bytes: Buffer.byteLength(code), sha256: createHash("sha256").update(code).digest("hex"), replay: "pending review of actual public export" };
+    receipt.pending = ["column selection", "Apply", "Copy all code", "complete cleaned-output replay", "paired timings"];
     await vscode.window.showNotebookDocument(notebook);
     checkpoint("source-check");
     receipt.sourceAfter = await execute(1, "DISCOVERY_UNCHANGED:");
     assert.deepEqual(receipt.sourceAfter, { digest: receipt.source.digest, shape: [100000, 2] });
-    receipt.status = "controls-observed";
+    receipt.status = "operation-selected";
   } catch (error) {
     receipt.status = "blocked";
     receipt.failure = { stage, category: /^DISCOVERY_GATE:[a-z-]+$/.test(error.message) ? error.message : "public-control-or-assertion" };
