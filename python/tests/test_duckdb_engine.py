@@ -1823,6 +1823,151 @@ def test_duckdb_delimited_hash_records_survive_pages_and_cleaning(
     assert (after.st_ino, after.st_size, after.st_mtime_ns) == (before.st_ino, before.st_size, before.st_mtime_ns)
 
 
+@pytest.mark.parametrize(
+    ("suffix", "contents", "options", "message"),
+    [
+        (".csv", b"first,record\na,b,c\nx,y,z\np,q,r\n", {"hasHeader": True}, "could not open"),
+        (".csv", b"first,record\na,b,c\nx,y,z\np,q,r\n", {"hasHeader": False}, "could not open"),
+        (".tsv", b"first\trecord\na\tb\tc\nx\ty\tz\np\tq\tr\n", {"hasHeader": True}, "could not open"),
+        (".tsv", b"first\trecord\na\tb\tc\nx\ty\tz\np\tq\tr\n", {"hasHeader": False}, "could not open"),
+        (".csv", b"\na,b\nx,y\nz,w\n", {"hasHeader": True}, "initial line break"),
+        (".csv", b"\ra,b\rx,y\rz,w\r", {"hasHeader": False}, "initial line break"),
+        (".csv", b"\xef\xbb\xbf\na,b\nx,y\nz,w\n", {"hasHeader": True}, "initial line break"),
+        (".csv", b"\na,b\n1,2\n3,4\n", {"hasHeader": False, "delimiter": "\n"}, "initial line break"),
+        (
+            ".csv",
+            b'\xef\xbb\xbf"first\nline";value\n"left\nright";2\nlast;3\n',
+            {"delimiter": ";", "hasHeader": True},
+            "could not open",
+        ),
+    ],
+    ids=[
+        "csv-header",
+        "csv-headerless",
+        "tsv-header",
+        "tsv-headerless",
+        "lf-text",
+        "cr-text",
+        "bom-lf",
+        "lf-delimiter",
+        "bom-quoted-header",
+    ],
+)
+def test_duckdb_delimited_preambles_refuse_before_session_publication(
+    tmp_path: Path, suffix: str, contents: bytes, options: dict[str, Any], message: str
+) -> None:
+    path = tmp_path / f"preamble{suffix}"
+    path.write_bytes(contents)
+    before = path.stat()
+    engines: list[DuckDBEngine] = []
+
+    def create_engine() -> DuckDBEngine:
+        engine = DuckDBEngine()
+        engines.append(engine)
+        return engine
+
+    manager = SessionManager(EngineRegistry((("duckdb", create_engine),)))
+    try:
+        with pytest.raises(EngineError, match=message):
+            manager.open_session(
+                {"kind": "file", "label": path.name, "path": str(path), "importOptions": options},
+                backend="duckdb",
+                page_size=1,
+            )
+        assert manager.sessions == {}
+        assert engines and all(engine._closed and not engine._active_connections for engine in engines)
+    finally:
+        manager.close_all()
+    after = path.stat()
+    assert path.read_bytes() == contents
+    assert (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) == (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+    )
+
+
+@pytest.mark.parametrize(
+    ("suffix", "contents", "options", "names", "types", "expected"),
+    [
+        (
+            ".csv",
+            b" first,2\nlast,3\n",
+            {"hasHeader": False},
+            ["column0", "column1"],
+            ["VARCHAR", "BIGINT"],
+            [(" first", 2), ("last", 3)],
+        ),
+        (
+            ".tsv",
+            b"\t\nx\ty\n",
+            {"hasHeader": False},
+            ["column0", "column1"],
+            ["VARCHAR", "VARCHAR"],
+            [(None, None), ("x", "y")],
+        ),
+        (
+            ".csv",
+            b'"first\nline";value\n"left\nright";2\nlast;3\n',
+            {"delimiter": ";", "hasHeader": True},
+            ["first\nline", "value"],
+            ["VARCHAR", "BIGINT"],
+            [("left\nright", 2), ("last", 3)],
+        ),
+        (
+            ".csv",
+            b"\xef\xbb\xbflabel,value\nx,2\nlast,3\n",
+            {"hasHeader": True},
+            ["label", "value"],
+            ["VARCHAR", "BIGINT"],
+            [("x", 2), ("last", 3)],
+        ),
+    ],
+    ids=["leading-space", "null-tsv-record", "quoted-newlines", "ordinary-bom"],
+)
+def test_duckdb_delimited_first_record_values_survive_native_replay_and_cleaning(
+    tmp_path: Path,
+    suffix: str,
+    contents: bytes,
+    options: dict[str, Any],
+    names: list[str],
+    types: list[str],
+    expected: list[tuple[Any, ...]],
+) -> None:
+    path = tmp_path / f"first-record{suffix}"
+    path.write_bytes(contents)
+    before = path.stat()
+    engine = DuckDBEngine()
+    try:
+        frame = engine.read_file(str(path), options)
+        assert isinstance(frame, DuckDBSqlPlan)
+        assert not engine._active_connections
+        assert frame.columns == names and frame.types == types
+        assert rows(frame) == expected
+        operation = bound_step("renameColumn", column=bound_ref("c:source:0", names[0], 0), newName="renamed")
+        live = engine.apply_transform(frame, operation)
+        with duckdb_runtime._connect() as connection:
+            source = connection.sql(frame.sql_query())
+            generated = execute_generated(engine, source, [operation])
+            assert_same_relation(live, generated)
+            assert generated.columns == ["renamed", *names[1:]]
+            assert [str(dtype) for dtype in generated.types] == types
+            assert generated.fetchall() == expected
+            assert source.fetchall() == expected
+        assert not engine._active_connections
+    finally:
+        engine.close()
+    after = path.stat()
+    assert path.read_bytes() == contents
+    assert (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) == (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+    )
+
+
 @pytest.mark.parametrize(("suffix", "delimiter"), [(".csv", ","), (".tsv", "\t")])
 @pytest.mark.parametrize("name", ["O'Brien", "O''Brien"], ids=["single-apostrophe", "doubled-apostrophe"])
 def test_duckdb_delimited_apostrophe_headers_refuse_before_replay(

@@ -11,6 +11,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- DuckDB CSV and TSV imports no longer skip an irregular first record. Files starting with a line break are refused to prevent incorrect header or row interpretation; Pandas and Polars remain alternatives.
 - DuckDB grids, filter choices and profiles retain nanoseconds in timestamp columns. Values that cannot be selected exactly no longer select a rounded neighbor.
 - DuckDB datetime formatting preserves nanoseconds, wide dates and timezone information instead of narrowing values before formatting.
 - The cleaning dialog keeps keyboard access to its scrollable panes while a preview is pending.

@@ -563,9 +563,11 @@ wildcard characters. Unix paths combining backslashes and glob syntax, and Windo
 glob syntax, are refused. Choose another supported engine or a path without those characters. Ordinary local-drive
 paths retain native lazy reading; the full cross-platform import matrix remains incomplete.
 
-CSV and TSV imports retain literal `#` values without treating them as comments. DuckDB can still skip an irregular
-first record when inferring a preamble, even with an explicit header choice ([#1378](https://github.com/Matt17BR/openwrangler/issues/1378)).
-Correct the inconsistent record, or choose Pandas and check the resulting column names and row labels.
+CSV and TSV imports retain literal `#` values and disable automatic preamble skipping. Files beginning with CR or LF
+after an optional UTF-8 BOM are refused, including leading blank lines and an empty one-column first record. Use
+Pandas or Polars for these files. Empty/BOM-only files, leading spaces, missing first TSV fields and ordinary quoted
+multiline fields remain supported. A BOM before a quoted multiline header can cause a native refusal. Irregular
+nonempty records must parse without skipping or cause an import refusal.
 
 CSV and TSV headers containing an ASCII apostrophe (`'`) are refused because the supported DuckDB serializer can change
 their names when reopening the native query. Use Pandas or Polars for those files. Apostrophes in file paths, headerless
