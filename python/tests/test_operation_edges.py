@@ -1758,6 +1758,69 @@ def test_pandas_arrow_date_cast_checks_local_date32_capacity(unit: str) -> None:
 
 
 @pytest.mark.parametrize("lazy", [False, True], ids=["eager", "lazy"])
+@pytest.mark.parametrize("target", ["datetime", "date"])
+def test_polars_typed_datetime_cast_preserves_storage_or_local_calendar(target: str, lazy: bool) -> None:
+    cases: list[tuple[Any, list[Any], list[date | None]]] = [
+        (
+            pl.Datetime("ns"),
+            [-(2**63), -1, 1704067200000000001, 2**63 - 1, None],
+            [date(1677, 9, 21), date(1969, 12, 31), date(2024, 1, 1), date(2262, 4, 11), None],
+        ),
+        (
+            pl.Datetime("us", "America/New_York"),
+            [
+                datetime(2024, 1, 1, 0, 30, tzinfo=timezone.utc),
+                datetime(2024, 7, 1, 4, 30, tzinfo=timezone.utc),
+                None,
+            ],
+            [date(2023, 12, 31), date(2024, 7, 1), None],
+        ),
+        (
+            pl.Datetime("ms", "Asia/Tokyo"),
+            [-1, 0, None],
+            [date(1970, 1, 1), date(1970, 1, 1), None],
+        ),
+        (pl.Datetime("ns", "UTC"), [], []),
+        (pl.Datetime("us", "Europe/Berlin"), [None, None], [None, None]),
+    ]
+    engine = PolarsEngine()
+    namespace: dict[str, Any] = {}
+    for dtype, values, expected_dates in cases:
+        original = pl.DataFrame(
+            {
+                "when's value": pl.Series(values, dtype=dtype),
+                "kept": pl.Series(list(reversed(range(len(values)))), dtype=pl.Int64),
+            }
+        )
+        source = original.lazy() if lazy else original.clone()
+        schema = engine.schema(source)
+        lineage = source_lineage(schema)
+        operation = bind_step(step("castColumn", column=lineage[0], dtype=target), schema, lineage)
+        if not namespace:
+            # Reuse the first program on different current units and zones.
+            exec(engine.compile_plan([operation]), namespace, namespace)
+        expected = (
+            original
+            if target == "datetime"
+            else original.with_columns(pl.Series("when's value", expected_dates, dtype=pl.Date))
+        )
+        for result in (engine.apply_transform(source, operation), namespace["clean_data"](source)):
+            assert isinstance(result, pl.LazyFrame) is lazy
+            output = result.collect() if isinstance(result, pl.LazyFrame) else result
+            assert isinstance(output, pl.DataFrame)
+            assert_polars_frame_equal(output, expected, check_exact=True)
+            if target == "datetime":
+                assert (
+                    output["when's value"].cast(pl.Int64).to_list() == original["when's value"].cast(pl.Int64).to_list()
+                )
+            output_schema = engine.schema(result)
+            assert output_schema[0]["type"] == target
+            assert derive_lineage(lineage, output_schema, operation) == lineage
+        unchanged = source.collect() if isinstance(source, pl.LazyFrame) else source
+        assert_polars_frame_equal(unchanged, original, check_exact=True)
+
+
+@pytest.mark.parametrize("lazy", [False, True], ids=["eager", "lazy"])
 @pytest.mark.parametrize("replace", [False, True], ids=["append", "replace"])
 @pytest.mark.parametrize(
     ("values", "dtype", "format", "expected"),

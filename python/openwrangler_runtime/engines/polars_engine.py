@@ -185,6 +185,17 @@ def _polars_cast_target(dtype: str) -> tuple[str, Literal[False]]:
     }[dtype], False
 
 
+def _polars_temporal_cast_expression(expression: Any, input_dtype: Any, target_dtype: Any) -> Any:
+    import polars as pl
+
+    if input_dtype.base_type() == pl.Datetime:
+        if target_dtype == pl.Datetime:
+            return expression
+        if target_dtype == pl.Date:
+            return expression.dt.date()
+    return expression.cast(target_dtype, strict=False)
+
+
 def _polars_require_pivot_output_names(existing_names: Sequence[str], outputs: Sequence[str]) -> None:
     keys = [portable_pivot_longer_name_key(name) for name in outputs]
     if len(set(keys)) != len(keys):
@@ -1569,10 +1580,15 @@ class PolarsEngine(DataFrameEngine):
         if kind == "cloneColumn":
             return df.with_columns(pl.col(bound_column_name(params["column"], kind)).alias(params["newName"]))
         if kind == "castColumn":
+            column = bound_column_name(params["column"], kind)
             dtype_attribute, strict = _polars_cast_target(params["dtype"])
-            return df.with_columns(
-                pl.col(bound_column_name(params["column"], kind)).cast(getattr(pl, dtype_attribute), strict=strict)
-            )
+            expression = pl.col(column)
+            if params["dtype"] in {"date", "datetime"}:
+                schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
+                expression = _polars_temporal_cast_expression(expression, schema[column], getattr(pl, dtype_attribute))
+            else:
+                expression = expression.cast(getattr(pl, dtype_attribute), strict=strict)
+            return df.with_columns(expression)
         if kind == "formula":
             left_column = bound_column_name(params["leftColumn"], kind)
             left = pl.col(left_column)
@@ -1944,6 +1960,8 @@ class PolarsEngine(DataFrameEngine):
             for step in plan
         ):
             lines.extend(_generated_polars_formula_check_helpers())
+        if any(step["kind"] == "castColumn" and step["params"]["dtype"] in {"date", "datetime"} for step in plan):
+            lines.extend(["from typing import Any", getsource(_polars_temporal_cast_expression), ""])
         if any(step["kind"] == "roundNumber" for step in plan):
             lines.extend([getsource(_polars_round_helpers), ""])
         if any(step["kind"] == "minMaxScale" for step in plan):
@@ -2498,6 +2516,13 @@ class PolarsEngine(DataFrameEngine):
         if kind == "castColumn":
             column = bound_column_name(params["column"], kind)
             dtype_attribute, strict = _polars_cast_target(params["dtype"])
+            if params["dtype"] in {"date", "datetime"}:
+                schema = f"_cast_schema_{index}"
+                return [
+                    f"{prefix}{schema} = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema",
+                    f"{prefix}df = df.with_columns(_polars_temporal_cast_expression("
+                    f"pl.col({column!r}), {schema}[{column!r}], pl.{dtype_attribute}))",
+                ]
             return [f"{prefix}df = df.with_columns(pl.col({column!r}).cast(pl.{dtype_attribute}, strict={strict!r}))"]
         if kind == "formula":
             left_column = bound_column_name(params["leftColumn"], kind)
