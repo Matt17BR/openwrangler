@@ -10,8 +10,9 @@ They do not establish the performance of a current release. The complete
 remain available in Git history; the
 [original instructions](https://github.com/Matt17BR/openwrangler/blob/6b8cd775b68f31dcfa72fb41a6a1be63e03c3dc4/docs/performance-comparison.md)
 include the optional mixed-data profile and reporting rules. Those commands require that historical checkout.
-The separate [public notebook workflow comparison](https://github.com/Matt17BR/openwrangler/issues/1419) has a finite
-scope and an unresolved interaction blocker. It does not reinstate this archived benchmark program.
+The separate [Open Wrangler 2.4.0 public notebook comparison](https://github.com/Matt17BR/openwrangler/issues/1419)
+was stopped before paired cleaning, exported results and final source/kernel checks could be qualified. Its original
+failure evidence and stop decision remain in the issue; it establishes no product ranking or timing for completed paired cleaning.
 
 Current candidates retain the direct Open Wrangler installed-performance checks described in
 [Testing](testing.md#release-candidate-checks). The weekly runtime performance checks and installed Data Wrangler
