@@ -270,7 +270,8 @@ or retains the private root as unsafe. The R tracker uses native lifetime identi
 signaling. It retains observed lifetimes across exec, including signal-time reads, and refuses ambiguous historical-parent
 evidence. The former second-resolution `ps` fallback is removed.
 Discovery relies on inherited markers and observed ancestry; it cannot contain an entirely unobserved, marker-stripped
-chain. Parent SIGKILL and runner crashes remain outside the shutdown guarantee, as recorded in
+chain. Parent SIGKILL and runner crashes are an accepted source-test limitation outside the shutdown guarantee,
+recorded in
 [#955](https://github.com/Matt17BR/openwrangler/issues/955).
 
 Destination errors or cancellation stop later phases through verified cleanup. Successful phases drain output after

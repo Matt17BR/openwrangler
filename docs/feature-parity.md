@@ -508,8 +508,8 @@ Graduation requires:
    disposition of known risks. The historical [R acceptance timeout](https://github.com/Matt17BR/openwrangler/issues/1088)
    has no established cause. Its final checkpoint did not identify the failing operation. Later passes do not resolve
    that uncertainty; a recurrence in candidate qualification blocks promotion.
-   [R test-runner cleanup](https://github.com/Matt17BR/openwrangler/issues/955) concerns source-test CLI
-   containment and is not evidence of an IRkernel product failure.
+   [Abrupt R source-test runner loss](https://github.com/Matt17BR/openwrangler/issues/955) is an accepted CLI
+   limitation outside this notebook scope. It is not a generic blocker to graduation.
 4. Prepare consistent, version-scoped support text before building the candidate. Land this guide and README before
    the [release change](releasing.md#release-change), then freeze matching release notes in that change. Review the
    required candidate results and reliability assessment before publication. The proposed stable support takes effect

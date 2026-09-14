@@ -5,10 +5,11 @@ records delivered changes. This page links the work selected next and proposals 
 
 ## Current focus
 
-Fix confirmed data-integrity and reliability problems, and simplify code or checks when their maintenance cost has a
-concrete cause. [Current maintenance](https://github.com/Matt17BR/openwrangler/issues/905) tracks those findings,
-including the remaining DuckDB CSV import and R source-test containment problems. The continuous maintenance tracker
-is not a release milestone, and an open feature proposal is not an unresolved defect.
+Selected corrections address [DuckDB timestamp formatting](https://github.com/Matt17BR/openwrangler/issues/1417),
+[exact timestamp display and selection](https://github.com/Matt17BR/openwrangler/issues/1418), and
+[CSV preamble data loss](https://github.com/Matt17BR/openwrangler/issues/1378). Each issue owns its completion criteria.
+The [public notebook workflow comparison](https://github.com/Matt17BR/openwrangler/issues/1419) has a separate, finite
+scope and is paused on an identified interaction problem. It does not gate a release.
 
 ## Next selected outcome
 
@@ -16,7 +17,7 @@ The next stable target is [Open Wrangler 2.5.0](https://github.com/Matt17BR/open
 Its selected product outcome is [stable R notebook support](https://github.com/Matt17BR/openwrangler/issues/1381) for the existing ordinary base `data.frame`,
 tibble and `data.table` scope in IRkernel notebooks in desktop VS Code for Linux, macOS and Windows.
 
-R support is **Preview**. Graduation requires the [defined reliability review and candidate evidence](feature-parity.md#first-stable-r-notebook-scope).
+Published 2.4.0 labels R support **Preview**. Graduation requires the [defined reliability review and candidate evidence](feature-parity.md#first-stable-r-notebook-scope).
 Terminal, managed-document and Cursor support keep their separate labels. The milestone has no promised date;
 publication still requires the [release process](releasing.md). Other work joins this milestone only when it is
 explicitly selected and can meet its acceptance criteria.
