@@ -9,14 +9,16 @@ import {
   INSTALLED_PERFORMANCE_GRID_INTERACTION_SAMPLE_COUNT,
   INSTALLED_PERFORMANCE_PHASE_PROTOCOL,
   INSTALLED_PERFORMANCE_REPORT_PROTOCOL,
+  assertInstalledPerformanceReleaseGate,
   buildInstalledPerformanceReport,
   isInstalledPerformanceNumericGateError,
   summarizeInstalledDurationSamples
 } from "./installed-performance-report.mjs";
 import {
-  PERFORMANCE_EVIDENCE_ARTIFACT_KIND,
+  PREVIEW_RELEASE_ARTIFACT_KIND,
   STABLE_RELEASE_ARTIFACT_KIND,
-  installedPerformanceReportGateForOptions
+  acceptInstalledPerformanceCandidate,
+  parseInstalledPerformanceArguments
 } from "./run-installed-performance.mjs";
 
 const digest = (digit) => digit.repeat(64);
@@ -42,6 +44,40 @@ const productConfiguration = {
   fetchColumnBlockSize: 16
 };
 
+test("installed candidate intake refuses the retired evidence kind before reading artifacts", async () => {
+  const arguments_ = [
+    "--pinned-editors",
+    "--editors",
+    "vscode",
+    "--candidate-in",
+    "candidate.vsix",
+    "--candidate-checksum",
+    "candidate.sha256",
+    "--candidate-provenance",
+    "candidate.json"
+  ];
+  assert.equal(parseInstalledPerformanceArguments(arguments_).artifactKind, STABLE_RELEASE_ARTIFACT_KIND);
+  assert.equal(
+    parseInstalledPerformanceArguments([...arguments_, "--preview-release"]).artifactKind,
+    PREVIEW_RELEASE_ARTIFACT_KIND
+  );
+  assert.throws(
+    () => parseInstalledPerformanceArguments([...arguments_, "--performance-evidence"]),
+    /Unknown installed-performance option --performance-evidence/u
+  );
+  let sourceReads = 0;
+  await assert.rejects(
+    acceptInstalledPerformanceCandidate({
+      artifactKind: "performance-evidence",
+      readSource: () => {
+        sourceReads += 1;
+      }
+    }),
+    /artifact kind must be stable-release or preview-release/u
+  );
+  assert.equal(sourceReads, 0);
+});
+
 test("a VS Code-only gate derives its verdict from context-free report measurements", () => {
   const fixtureManifest = createFixtureManifest();
   const phases = [
@@ -51,7 +87,7 @@ test("a VS Code-only gate derives its verdict from context-free report measureme
     createFirstGridPhase(fixtureManifest, "parquet", "warm", 150),
     createInteractionPhase(fixtureManifest)
   ];
-  const report = buildInstalledPerformanceReport({
+  const input = {
     generatedAtUtc: "2026-08-29T00:00:00.000Z",
     candidate: {
       extensionId: "Matt17BR.openwrangler",
@@ -93,13 +129,9 @@ test("a VS Code-only gate derives its verdict from context-free report measureme
         phases
       }
     ]
-  });
-  const gate = installedPerformanceReportGateForOptions({
-    artifactKind: STABLE_RELEASE_ARTIFACT_KIND,
-    editors: ["vscode"]
-  });
-
-  assert.equal(gate(report), report);
+  };
+  const report = buildInstalledPerformanceReport(input);
+  assert.equal(assertInstalledPerformanceReleaseGate(report, { requiredEditors: ["vscode"] }), report);
   assert.equal(INSTALLED_PERFORMANCE_PHASE_PROTOCOL, "openwrangler-installed-performance-phase-v8");
   assert.equal(report.protocol, "openwrangler-installed-performance-report-v12");
   assert.equal(INSTALLED_PERFORMANCE_REPORT_PROTOCOL, report.protocol);
@@ -109,17 +141,11 @@ test("a VS Code-only gate derives its verdict from context-free report measureme
     "outstandingObserved",
     "rendererHeartbeatMs"
   ]);
-  const evidenceGate = installedPerformanceReportGateForOptions(
-    { artifactKind: PERFORMANCE_EVIDENCE_ARTIFACT_KIND, editors: ["vscode"] },
-    { evidenceGate: (_report, options) => options.requiredEditors }
-  );
-  assert.deepEqual(evidenceGate(report), ["vscode"]);
-
   const numericFailure = structuredClone(report);
   numericFailure.editors[0].results.gridInteraction.filter.responsiveness.rendererHeartbeatMs = 100;
   let gateError;
   assert.throws(
-    () => gate(numericFailure),
+    () => assertInstalledPerformanceReleaseGate(numericFailure, { requiredEditors: ["vscode"] }),
     (error) => {
       gateError = error;
       return /vscode filter outstanding renderer heartbeat 100ms >= 100ms/u.test(error.message);
@@ -138,7 +164,7 @@ test("a VS Code-only gate derives its verdict from context-free report measureme
     "uncached min/median/p95/max 50/50/50/50ms; " +
     "renderer heartbeat min/median/p95/max 5/5/5/5ms";
   assert.throws(
-    () => gate(cachedGridFailure),
+    () => assertInstalledPerformanceReleaseGate(cachedGridFailure, { requiredEditors: ["vscode"] }),
     (error) => {
       gateError = error;
       return error.message.includes(expectedCachedGridFailure);
@@ -146,6 +172,42 @@ test("a VS Code-only gate derives its verdict from context-free report measureme
   );
   assert.equal(isInstalledPerformanceNumericGateError(gateError), true);
   assert.deepEqual(gateError.failures, [expectedCachedGridFailure]);
+
+  assert.throws(
+    () =>
+      buildInstalledPerformanceReport({
+        ...input,
+        candidate: { ...input.candidate, buildMethod: "performance-evidence-artifact-v1" }
+      }),
+    /candidate build method must be "canonical-release-artifact-v1"/u
+  );
+  assert.throws(
+    () =>
+      assertInstalledPerformanceReleaseGate(
+        { ...report, protocol: "openwrangler-installed-performance-evidence-report-v7" },
+        { requiredEditors: ["vscode"] }
+      ),
+    /installed performance report protocol/u
+  );
+  assert.throws(
+    () =>
+      buildInstalledPerformanceReport({ ...input, candidate: { ...input.candidate, sourceCommit: "a".repeat(40) } }),
+    /does not match its guarded source commit/u
+  );
+
+  const previewInput = structuredClone(input);
+  Object.assign(previewInput.candidate, {
+    extensionVersion: "2.0.20260829",
+    preview: true,
+    channel: "preview",
+    buildMethod: "canonical-preview-release-artifact-v1",
+    releaseTag: "v2.0.20260829"
+  });
+  previewInput.editorRuns[0].provenance.runtime.openWranglerRuntimeVersion = "2.0.20260829";
+  for (const phase of previewInput.editorRuns[0].phases) phase.runtime.openWranglerRuntimeVersion = "2.0.20260829";
+  const previewReport = buildInstalledPerformanceReport(previewInput);
+  assert.equal(assertInstalledPerformanceReleaseGate(previewReport, { requiredEditors: ["vscode"] }), previewReport);
+  assert.equal(previewReport.protocol, INSTALLED_PERFORMANCE_REPORT_PROTOCOL);
 });
 
 function createFixtureManifest() {
