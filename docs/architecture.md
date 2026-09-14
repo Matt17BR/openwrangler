@@ -1570,6 +1570,11 @@ its existing process settlement and environment-validation ownership. The global
 recent missing target.
 Custom code is trusted arbitrary code in the selected environment, not a sandbox.
 
+Python dependency status inspects the selected environment without creating an absent installation journal.
+It still locks and validates an existing journal, cleans owned abandoned temporary markers, and blocks use when
+a retained mutation needs exact validation. Clean status is an observation at that time; the guard does not keep
+a lock through later runtime use.
+
 Dependency availability and post-install validation accept hard-linked regular module files when the supported
 version, distribution record and import origin agree. Checks revalidate named ancestor directory objects and the
 final module file, refusing symlink or reparse traversal. Unrelated sibling files and directories may change without
