@@ -30,7 +30,7 @@ spot empty fields, unusual values and repeated records before deciding what to c
   [latest GitHub release](https://github.com/Matt17BR/openwrangler/releases/latest).
 - **Preview:** choose **Install Pre-Release Version** in your editor, or download a
   [GitHub prerelease](https://github.com/Matt17BR/openwrangler/releases).
-- **From source:** [build and install the current main branch](https://github.com/Matt17BR/openwrangler/blob/main/CONTRIBUTING.md).
+- **From source:** [build and install the current main branch](https://github.com/Matt17BR/openwrangler/blob/main/CONTRIBUTING.md#build-and-install-from-source).
 
 For a downloaded VSIX, use **Views and More Actions > Install from VSIX...** in the Extensions view.
 See the [latest release notes](https://github.com/Matt17BR/openwrangler/releases/latest) or
