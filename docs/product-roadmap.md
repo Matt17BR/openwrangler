@@ -10,7 +10,7 @@ records delivered changes. This page records delivered release priorities and pr
 [defined ordinary-frame scope](feature-parity.md#first-stable-r-notebook-scope) in IRkernel notebooks
 in desktop VS Code on Linux, macOS and Windows.
 
-No next release outcome is selected. The seven proposals below remain open and unscheduled.
+No next release outcome is selected. The proposals below remain open and unscheduled.
 Selection requires a reviewed scope, acceptance criteria and practical cost.
 
 ## Feature proposals
@@ -18,7 +18,6 @@ Selection requires a reviewed scope, acceptance criteria and practical cost.
 These are open, unscheduled proposals. User demand is not yet established; examples and practical constraints are
 welcome in their issues. Start with useful single-source operations before taking on broader source ownership.
 
-- [Explicit date parsing and typed date parts](https://github.com/Matt17BR/openwrangler/issues/1383): choose a parsing format and create date or numeric outputs.
 - [Bounded explode and unnest](https://github.com/Matt17BR/openwrangler/issues/1384): expand one supported list or struct column with clear row and type rules.
 - [Apply a cleaning plan to another input](https://github.com/Matt17BR/openwrangler/issues/1385): review column mapping for one compatible target.
 - [Clean a DuckDB notebook relation](https://github.com/Matt17BR/openwrangler/issues/1386): extend today's viewer with native cleaning, code and export.

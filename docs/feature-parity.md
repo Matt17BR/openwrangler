@@ -160,8 +160,14 @@ editing engines and native R.
 Convert Type to Datetime can parse Text dates in a selected `DD/MM/YYYY`, `MM/DD/YYYY` or `YYYY-MM-DD` layout.
 For example, `02/03/2026` means 2 March with the first layout and 3 February with the second. Dates must match exactly;
 invalid or out-of-range values become missing, and valid dates become midnight. Native date ranges differ.
-Clone the column first to keep its text values. Format Datetime with `%Y`, `%m` or `%d`, followed by Convert Type to
-Integer, supplies year, month or day columns; a dedicated calendar-parts operation remains outside the current catalog.
+Clone the column first to keep its text values, then convert the clone.
+
+To create an integer year, month or day column, select the typed temporal column in Format Datetime, enter `%Y`,
+`%m` or `%d` and give the output a new name. Convert that output to Integer. Missing values remain missing. These
+composed workflows support Pandas, Polars, DuckDB file sessions and native R within their existing temporal limits.
+Format an already zoned column directly, without first converting it to Date or Datetime. Pandas, Polars and R use
+the column's timezone; R uses UTC when none is recorded. DuckDB file sessions use UTC, while standalone generated
+code uses the caller connection's timezone. A stored DuckDB instant does not retain its original named zone.
 
 Floor and Ceiling retain exact integer and Decimal values in the Python editing engines, with matching generated
 code. Pandas Convert Type rejects values outside its signed integer target instead of wrapping them. The operation
