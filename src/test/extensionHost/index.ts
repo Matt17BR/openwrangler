@@ -1981,7 +1981,6 @@ async function exerciseReleasedREditingJourney(
         exerciseReleasedRPersistentRowsJourney,
         exerciseReleasedRRowReductionJourney,
         openReleasedROperationPicker,
-        previewReleasedRClone,
         previewReleasedRDrop,
         previewReleasedRRename,
         previewReleasedRSelect,
