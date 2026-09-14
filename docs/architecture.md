@@ -989,6 +989,10 @@ syntax, are refused because native expansion can select another file. Existing s
 surround lazy reads; the adapter adds no dataframe scan or filesystem owner.
 
 CSV and TSV readers disable native comment inference so literal `#` values cannot remove records or truncate fields.
+Before replay, imports reject column names containing an ASCII apostrophe (`'`): the supported native CSV serializer
+can corrupt these names in its frozen schema. The check uses existing snapshot metadata and retains the same binding
+and cleanup owners. Standalone generated programs inherit this native limitation when given an externally loaded CSV
+relation with affected names; JSONL and Parquet headers are unaffected.
 DuckDB still owns dialect and type inference, including its existing leading-blank behavior. Its separate preamble
 inference can skip an irregular first record; the [file-support limitations](feature-parity.md#duckdb-experimental-file-support)
 describe that unresolved case. Generated cleaning programs receive an already-loaded relation.

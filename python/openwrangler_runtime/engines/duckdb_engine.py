@@ -412,6 +412,11 @@ class DuckDBEngine(DataFrameEngine):
                             comment="",
                         )
                     )
+                    if any("'" in name for name in frame.column_names):
+                        raise EngineError(
+                            "DuckDB CSV/TSV imports do not support column names containing apostrophes ('). "
+                            "Use the Pandas or Polars backend for this file."
+                        )
                     # Native binding above validates options even for empty input.
                     # Only zero bytes or one UTF-8 BOM need a zero-column schema.
                     with Path(path).open("rb") as source:

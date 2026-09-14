@@ -562,6 +562,11 @@ CSV and TSV imports retain literal `#` values without treating them as comments.
 first record when inferring a preamble, even with an explicit header choice ([#1378](https://github.com/Matt17BR/openwrangler/issues/1378)).
 Correct the inconsistent record, or choose Pandas and check the resulting column names and row labels.
 
+CSV and TSV headers containing an ASCII apostrophe (`'`) are refused because the supported DuckDB serializer can change
+their names when reopening the native query. Use Pandas or Polars for those files. Apostrophes in file paths, headerless
+values, JSONL keys and Parquet headers are supported. Standalone generated programs given an externally loaded DuckDB
+CSV relation with affected headers inherit the same native limitation.
+
 DuckDB file sessions use native SQL plans with request-owned connections, without converting through Pandas, Polars
 or Arrow. Extension auto-install, autoload and external-file caching remain disabled. Generated programs use the input
 relation's connection, preserving its private tables and functions. Live and generated execution check computed

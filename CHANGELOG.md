@@ -10,6 +10,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- DuckDB CSV and TSV imports refuse headers containing apostrophes before the native saved query can silently change their names. The error suggests Pandas or Polars for those files.
 - Pandas Group By avoids a scalar NaN scan when restoring ordinary NumPy-backed result keys, reducing the cost of results with many groups.
 - Pandas profiles and dataset statistics no longer count infinities as missing in ordinary NumPy-backed columns when the legacy `mode.use_inf_as_na` option is enabled. Numeric and temporal filters also avoid scalar missing-value scans.
 - Failed saves of file import settings now warn that reopening may use a different configuration, while keeping the current session available.
