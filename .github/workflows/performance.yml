@@ -1,59 +1,83 @@
-name: Performance gates
-
+# Temporary branch only: replace the already-registered .github/workflows/performance.yml.
+# Copy measure.R to .github/experiments/everyday-native-r/measure.R on that branch.
+name: One-off everyday native R timings
 on:
   workflow_dispatch:
-    inputs:
-      pyspark_profile:
-        description: Run the 1M-row PySpark profiling measurement
-        required: false
-        type: boolean
-        default: false
-  schedule:
-    - cron: "41 5 * * 2"
-
 permissions:
   contents: read
-
 jobs:
-  polars-runtime:
-    runs-on: ubuntu-latest
+  measure:
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          python-version: "3.12"
-          cache: pip
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e python
-      - run: python python/benchmarks/runtime_performance.py --strict --json-out performance.json
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - uses: r-lib/actions/setup-r@465b7d8e732ca3921382b1674c59bada9cbf3399
+        with:
+          r-version: "4.5.3"
+          use-public-rspm: false
+      - name: Prepare existing locked R dependencies
+        id: prepare
+        run: |
+          if [ -f /etc/apt/sources.list.d/google-chrome.sources ]; then
+            chrome_source_backup=$(mktemp "$RUNNER_TEMP/everyday-r-chrome-source.XXXXXX")
+            sudo mv -- /etc/apt/sources.list.d/google-chrome.sources "$chrome_source_backup"
+          fi
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libx11-dev
+          node scripts/r-dependency-lock.mjs prepare \
+            --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.5.lock.json \
+            --rscript "$(command -v Rscript)" \
+            --library "$RUNNER_TEMP/everyday-r-library" \
+            --archives "$RUNNER_TEMP/everyday-r-archives" \
+            --receipt "$RUNNER_TEMP/everyday-r-receipt.json"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        id: cache
+        with:
+          path: ${{ steps.prepare.outputs.archives }}
+          key: ${{ steps.prepare.outputs.cache-key }}
+          fail-on-cache-miss: false
+      - name: Install the existing lock
+        run: >-
+          node scripts/r-dependency-lock.mjs install
+          --lock r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.5.lock.json
+          --rscript "$(command -v Rscript)"
+          --library "${{ steps.prepare.outputs.library }}"
+          --archives "${{ steps.prepare.outputs.archives }}"
+          --receipt "${{ steps.prepare.outputs.receipt }}"
+          --cache-hit "${{ steps.cache.outputs.cache-hit == 'true' }}"
+      - name: Measure existing native R runtime
+        timeout-minutes: 8
+        env:
+          R_LIBS_USER: ${{ steps.prepare.outputs.library }}
+        run: |
+          mkdir -p everyday-r-results
+          cp .github/experiments/everyday-native-r/measure.R everyday-r-results/measure.R
+          test "$(git rev-parse HEAD:r/openwrangler_runtime)" = 9d5a03258f68dbc99e58bf8f4b284c0dd872e4dc
+          git rev-parse HEAD HEAD:r/openwrangler_runtime > everyday-r-results/source.txt
+          sha256sum .github/experiments/everyday-native-r/measure.R \
+            r/openwrangler_runtime/{frame_contract,kernel_exports,kernel_agent}.R \
+            r/dependencies/native-r-contract/ubuntu-24.04-x86_64-r-4.5.lock.json > everyday-r-results/sha256.txt
+          lscpu > everyday-r-results/cpu.txt
+          free -b > everyday-r-results/memory.txt
+          Rscript --vanilla .github/experiments/everyday-native-r/measure.R everyday-r-results/report.json \
+            > everyday-r-results/measurement.log 2>&1
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         if: always()
         with:
-          name: polars-runtime-performance
-          path: performance.json
-
-  pyspark-profile:
-    if: github.event_name == 'workflow_dispatch' && inputs.pyspark_profile
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-          cache: pip
-      - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
-        with:
-          distribution: temurin
-          java-version: "17"
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e "python[dev]"
-      - run: python -m pip install "pandas>=2.2,<3.0" "pyspark[connect]==4.2.0"
-      - run: python python/benchmarks/pyspark_profile.py --json-out pyspark-profile.json
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        if: always()
-        with:
-          name: pyspark-profile
-          path: pyspark-profile.json
+          name: everyday-native-r
+          path: |
+            everyday-r-results/measure.R
+            everyday-r-results/source.txt
+            everyday-r-results/sha256.txt
+            everyday-r-results/cpu.txt
+            everyday-r-results/memory.txt
+            everyday-r-results/report.json
+            everyday-r-results/measurement.log
+          if-no-files-found: warn
           retention-days: 14
