@@ -364,8 +364,6 @@ export function createReleasedPySparkJupyterJourney({
       }
 
       recordAcceptanceProgress(`${phase}:unsupported-variant`);
-      await showExactReleasedNotebook(notebook);
-      await vscode.commands.executeCommand("jupyter.openVariableView");
       await dispatchReleasedJupyterVariableAction(
         workbench,
         notebook,
@@ -390,8 +388,6 @@ export function createReleasedPySparkJupyterJourney({
       assert.equal(releasedJupyterSessionTabs().length, 0);
 
       recordAcceptanceProgress(`${phase}:classic-variables`);
-      await showExactReleasedNotebook(notebook);
-      await vscode.commands.executeCommand("jupyter.openVariableView");
       await dispatchReleasedJupyterVariableAction(
         workbench,
         notebook,
@@ -656,9 +652,6 @@ export function createReleasedPySparkJupyterJourney({
 
       if (screenshotOutput) {
         recordAcceptanceProgress(`${phase}:orders-variables`);
-        await showExactReleasedNotebook(notebook);
-        await vscode.commands.executeCommand("jupyter.openVariableView");
-        await showExactReleasedNotebook(notebook);
         await dispatchReleasedJupyterVariableAction(
           workbench,
           notebook,
@@ -688,8 +681,6 @@ export function createReleasedPySparkJupyterJourney({
       }
 
       recordAcceptanceProgress(`${phase}:connect-variables`);
-      await showExactReleasedNotebook(notebook);
-      await vscode.commands.executeCommand("jupyter.openVariableView");
       const connectEditor = await showExactReleasedNotebook(notebook);
       await executeReleasedNotebookCell(
         notebook,
