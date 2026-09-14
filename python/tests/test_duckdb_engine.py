@@ -26,7 +26,7 @@ from openwrangler_runtime.engines.duckdb_engine import DuckDBEngine, DuckDBNoteb
 from openwrangler_runtime.engines.registry import EngineRegistry
 from openwrangler_runtime.export_target import ExportTarget, _regular_file_identity
 from openwrangler_runtime.generated_helpers import select_generated_helpers
-from openwrangler_runtime.lineage import source_lineage
+from openwrangler_runtime.lineage import derive_lineage, source_lineage
 from openwrangler_runtime.operations import operation_catalog, validate_step
 from openwrangler_runtime.session import SessionManager
 
@@ -4103,6 +4103,103 @@ def test_duckdb_format_datetime_retains_native_values(
         assert source.project('CAST("when\'s value" AS VARCHAR), row').fetchall() == before
         assert list(source.types) == source_types
     engine.close()
+
+
+@pytest.mark.parametrize("generated", [False, True], ids=["live-owner", "generated"])
+def test_duckdb_date_cast_preserves_nanosecond_calendar_boundaries(generated: bool) -> None:
+    cases = [
+        ("make_timestamp_ns(-9223372036854775000)", "1677-09-21"),
+        ("make_timestamp_ns(-9223372036854774999)", "1677-09-21"),
+        ("make_timestamp_ns(-86400000000001)", "1969-12-30"),
+        ("make_timestamp_ns(-86400000000000)", "1969-12-31"),
+        ("make_timestamp_ns(-86399999999999)", "1969-12-31"),
+        ("make_timestamp_ns(-1000)", "1969-12-31"),
+        ("make_timestamp_ns(-999)", "1969-12-31"),
+        ("make_timestamp_ns(-1)", "1969-12-31"),
+        ("make_timestamp_ns(0)", "1970-01-01"),
+        ("make_timestamp_ns(1)", "1970-01-01"),
+        ("make_timestamp_ns(9223372036854775806)", "2262-04-11"),
+        ("'-infinity'::TIMESTAMP_NS", "-infinity"),
+        ("'infinity'::TIMESTAMP_NS", "infinity"),
+        ("NULL::TIMESTAMP_NS", None),
+    ]
+    values = ", ".join(f"({expression}, {index})" for index, (expression, _) in enumerate(cases))
+    engine = DuckDBEngine()
+    with duckdb_runtime._connect() as connection:
+        try:
+            original = connection.sql(f'SELECT * FROM (VALUES {values}) source("when\'s value", kept)')
+            source_projection = (
+                'system.main.epoch_ns("when\'s value"), '
+                "\"when's value\" = '-infinity'::TIMESTAMP_NS, "
+                "\"when's value\" = 'infinity'::TIMESTAMP_NS, kept"
+            )
+            for source in (original, original.filter('"when\'s value" IS NULL'), original.limit(0)):
+                before = source.project(source_projection).fetchall()
+                identity = (source.sql_query(), source.columns, source.types)
+                frame = engine.normalize_notebook_relation(source)
+                schema = engine.schema(frame)
+                lineage = source_lineage(schema)
+                operation = bind_step(step("castColumn", column=lineage[0], dtype="date"), schema, lineage)
+                result = (
+                    execute_generated(engine, source, [operation])
+                    if generated
+                    else engine.apply_transform(frame, operation)
+                )
+                actual = (
+                    result.project('CAST("when\'s value" AS VARCHAR), kept').fetchall()
+                    if generated
+                    else engine._terminal_rows(result, 'SELECT CAST("when\'s value" AS VARCHAR), kept FROM ow')
+                )
+                assert actual == [(cases[row[-1]][1], row[-1]) for row in before]
+                assert result.columns == source.columns
+                assert [str(dtype) for dtype in result.types] == ["DATE", "INTEGER"]
+                assert derive_lineage(lineage, engine.schema(result), operation) == lineage
+                assert source.project(source_projection).fetchall() == before
+                assert (source.sql_query(), source.columns, source.types) == identity
+        finally:
+            engine.close()
+
+
+def test_duckdb_date_cast_reuses_current_types_and_ignores_caller_epoch_macros() -> None:
+    engine = DuckDBEngine()
+    with duckdb_runtime._connect() as connection:
+        try:
+            connection.execute("SET TimeZone = 'America/New_York'")
+            column = bound_ref("c:source:0", "value", 0)
+            operation = bound_step("castColumn", column=column, dtype="date")
+            namespace: dict[str, Any] = {}
+            exec(engine.compile_plan([operation]), namespace)
+            connection.execute("CREATE MACRO epoch_ns(value) AS 0")
+            connection.execute("CREATE MACRO isfinite(value) AS FALSE")
+            cases = [
+                ("system.main.make_timestamp_ns(-1)", "1969-12-31"),
+                ("TIMESTAMP '1969-12-31 23:59:59.999999'", "1969-12-31"),
+                ("TIMESTAMPTZ '2024-01-01 00:30:00+00'", "2023-12-31"),
+                ("DATE '2500-01-01'", "2500-01-01"),
+                ("'2024-02-29'::VARCHAR", "2024-02-29"),
+                ("'invalid'::VARCHAR", None),
+            ]
+            for expression, expected in cases:
+                source = connection.sql(f"SELECT {expression} AS value, 7 AS kept")
+                before = (source.sql_query(), source.columns, source.types, source.fetchall())
+                live = engine.apply_transform(engine.normalize_notebook_relation(source), operation)
+                generated = namespace["clean_data"](source)
+                for is_generated, result in ((False, live), (True, generated)):
+                    actual = (
+                        result.project("CAST(value AS VARCHAR), kept").fetchall()
+                        if is_generated
+                        else engine._terminal_rows(result, "SELECT CAST(value AS VARCHAR), kept FROM ow")
+                    )
+                    assert actual == [(expected, 7)]
+                    assert result.columns == ["value", "kept"]
+                    assert [str(dtype) for dtype in result.types] == ["DATE", "INTEGER"]
+                assert (source.sql_query(), source.columns, source.types, source.fetchall()) == before
+                if str(source.types[0]) == "TIMESTAMP_NS":
+                    assert source.project("system.main.epoch_ns(value)").fetchall() == [(-1,)]
+            assert connection.sql("SELECT epoch_ns(NULL), isfinite(NULL)").fetchone() == (0, False)
+            assert connection.sql("SELECT current_setting('TimeZone')").fetchone() == ("America/New_York",)
+        finally:
+            engine.close()
 
 
 @pytest.mark.parametrize("zone", ["UTC", "America/New_York"])

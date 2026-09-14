@@ -1092,6 +1092,10 @@ catalog work without evaluating source rows. A failed ownership lookup prevents 
 error; without an earlier error, the cleanup failure propagates. The identity check and removal are separate native
 operations and do not promise atomicity against arbitrary concurrent caller DDL.
 
+Convert Type to Date floors native TIMESTAMP_NS values to their calendar day without first narrowing to microseconds.
+Negative nanosecond values immediately before midnight therefore retain the preceding day. Live and generated code
+select this expression from the current input type. Nulls, infinities and other source types keep their native Date cast.
+
 Format Datetime preserves native date and timestamp inputs. Nanosecond timestamps use the microsecond formatter only
 when their native epoch count is divisible by 1,000, preserving exact values that DuckDB's nanosecond formatter can
 refuse near its lower bound. Finer values use the native nanosecond formatter and retain its range refusals. Other
