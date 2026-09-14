@@ -202,20 +202,18 @@ R accepts only literals exactly representable by its existing numeric scalar typ
 retain floating-point interpretation. Previously rounded numeric plans require re-entering the original literal;
 this change cannot recover digits already lost.
 
-Polars datetime formatting preserves native time zones and nanosecond fractions in live and generated code.
-Eager and lazy frames support native temporal and text inputs, including nulls, without modifying the source.
-Convert Type to Datetime also preserves the unit and timezone of an already typed Datetime column. Converting it
-to Date uses the source's local calendar day. These conversions retain empty and null values in live and generated
-execution. String conversion accepts year-month-day dates and times separated by `T` or a space, with
-optional seconds and fractions. Invalid suffixes become null. Recognized timezone-bearing text is refused instead
-of silently losing its offset; other timezone spellings may be unrecognized and become null. Custom Code can
-specify a parsing and timezone policy.
+Polars Format Datetime uses native Polars syntax and retains time zones and nanosecond fractions. Convert Type to
+Datetime preserves an existing Datetime column's unit and timezone; converting it to Date uses its local calendar day.
+String-to-Datetime accepts year-month-day dates and `T` or space-separated times at microsecond precision.
+Recognized timezone-bearing text is refused when evaluated; other invalid or unsupported text becomes null.
+These rules apply to eager and lazy frames, including empty frames, null values and generated code. See
+[Polars temporal bounds](architecture.md#polars) for recognized spellings and evaluation limits.
 
-Pandas Convert Type and Format Datetime retain native Arrow dates outside the nanosecond range, including year 2500
-on the minimum runtime. Datetime conversion preserves timestamp storage; date conversion preserves local days or
-refuses values outside date32 capacity. Formatting uses Python strftime syntax: `%f` produces six fractional digits
-and `%S` produces seconds. Named timezones retain historical offset seconds. Unsupported native formatting ranges
-refuse instead of silently producing missing values. Live and generated code preserve the original data.
+Pandas Convert Type to Datetime preserves Arrow timestamp storage. Converting Arrow timestamps to Date preserves
+local calendar days or refuses values outside date32 capacity. Format Datetime uses Python `strftime` syntax with
+microsecond fractions and supports native Arrow dates outside the nanosecond range. Unsupported typed formatting
+ranges are refused; invalid text retains null coercion. Live and generated code follow the same rules. See
+[Pandas temporal bounds](architecture.md#pandas) for capacity, format and timezone details.
 
 Polars grouped median Fill works on the declared minimum runtime, including native integer and Decimal targets.
 Its live and generated paths preserve exact values and retain fractional-median and Decimal-scale refusals.
@@ -282,8 +280,6 @@ Pandas timestamps preserve nanosecond fractions and time-zone offsets that inclu
 Berlin offsets. Grid cells, nested values, profiles and value choices use valid datetime text. Searches recognize
 corrected labels while retaining ordinary value counts. Filter inputs retain microsecond precision and minute-resolution offsets.
 Datetime value searches also accept displayed midnight labels and a space in place of NumPy's ISO `T` separator.
-Object datetime choices retain native Pandas counting limits and refuse representations whose inferred count index
-can change temporal units or precision.
 
 Pandas object columns treat NumPy datetime and duration `NaT` as null in profiles, filters and cleaning operations,
 including generated code. Floating NaN remains separate.
@@ -600,14 +596,12 @@ remain outside this check; Union values can still lose temporal precision or mem
 selection and comparisons are unavailable; profiles and choices can still refuse values near the lower nanosecond
 endpoint. Native source values and generated transformations retain their existing behavior.
 
-Convert Type to Date preserves the calendar day of nanosecond timestamps in live and generated code, including
-values immediately before a pre-1970 midnight. Convert Type to Datetime preserves existing timestamp precision and
-TIMESTAMPTZ instant semantics. Use native Custom Code when an explicit precision or timezone conversion is intended.
-
-Format Datetime retains native nanosecond fractions and wide dates in live and generated DuckDB code. Formats use
-DuckDB syntax, including `%n` for nine fractional digits. Zoned timestamps use the execution connection's timezone.
-Native formatting can still refuse finer-than-microsecond values near the minimum nanosecond timestamp; exact
-microsecond-aligned values remain supported there.
+DuckDB Convert Type to Datetime preserves typed timestamp precision and TIMESTAMPTZ instants. Converting nanosecond
+timestamps to Date keeps their calendar day. Format Datetime uses DuckDB syntax, preserving nanosecond fractions and
+wide dates; zoned values use the execution connection's timezone. Formatting can refuse finer-than-microsecond values
+near the lower nanosecond endpoint; exact microsecond-aligned values remain supported there. These rules apply to live
+and generated code. See [DuckDB temporal bounds](architecture.md#duckdb); use Custom Code for explicit precision or
+timezone conversions.
 
 Split Column delimiters and literal Find/Replace values can contain NUL characters in live and generated DuckDB code.
 Leading, trailing and repeated delimiters preserve empty fields; missing fields and null source values stay null.
