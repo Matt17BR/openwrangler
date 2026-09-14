@@ -418,6 +418,24 @@ function form(entries: FieldEntries): FormData {
 }
 
 describe("buildParams", () => {
+  it("retains a selected input date format and refuses a non-text source", () => {
+    const fields = form([
+      ["column", city.id],
+      ["dtype", "datetime"]
+    ]);
+    expect(buildParams("castColumn", fields, emptyFilterModel, schema)).toEqual({ column: city, dtype: "datetime" });
+    fields.set("inputFormat", "DD/MM/YYYY");
+    expect(buildParams("castColumn", fields, emptyFilterModel, schema)).toEqual({
+      column: city,
+      dtype: "datetime",
+      inputFormat: "DD/MM/YYYY"
+    });
+    fields.set("column", sales.id);
+    expect(() => buildParams("castColumn", fields, emptyFilterModel, schema)).toThrow("requires a Text column");
+    fields.set("inputFormat", "");
+    expect(buildParams("castColumn", fields, emptyFilterModel, schema)).toEqual({ column: sales, dtype: "datetime" });
+  });
+
   it.each(Object.values(validCases))("builds exact generated parameters for $kind", (testCase) => {
     expect(
       buildParams(

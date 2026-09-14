@@ -529,6 +529,15 @@ function savedOperationTypeError(
       );
     case "fillMissingValues":
       return fillCompatibilityError(step, inputSchema, columnsById);
+    case "castColumn":
+      return step.params.inputFormat === undefined
+        ? undefined
+        : incompatibleReferenceType(
+            [{ label: "input date column", reference: step.params.column }],
+            columnsById,
+            textColumnTypes,
+            "an input date format requires a Text column"
+          );
     case "sortRows":
     case "filterRows":
     case "dropMissingRows":
@@ -538,7 +547,6 @@ function savedOperationTypeError(
     case "dropColumns":
     case "renameColumn":
     case "cloneColumn":
-    case "castColumn":
     case "customCode":
       return undefined;
     default:

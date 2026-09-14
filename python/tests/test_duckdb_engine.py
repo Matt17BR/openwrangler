@@ -789,6 +789,112 @@ def test_duckdb_datetime_cast_preserves_native_storage(native_type: str, generat
             engine.close()
 
 
+@pytest.mark.parametrize(
+    ("layout", "text", "day"),
+    [
+        ("DD/MM/YYYY", "02/03/2024", datetime(2024, 3, 2)),
+        ("MM/DD/YYYY", "02/03/2024", datetime(2024, 2, 3)),
+        ("YYYY-MM-DD", "2024-03-02", datetime(2024, 3, 2)),
+    ],
+)
+def test_duckdb_fixed_datetime_input_layout_matches_generated(layout, text, day) -> None:
+    engine = DuckDBEngine()
+    operation = bound_step(
+        "castColumn", column=bound_ref("c:source:1", "when's value", 1), dtype="datetime", inputFormat=layout
+    )
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([operation]), namespace)
+    invalid = "31/02/2024" if layout == "DD/MM/YYYY" else "02/31/2024" if layout == "MM/DD/YYYY" else "2024-02-31"
+    values = [text, None, invalid, "", text + "\n", " " + text, text + "Z", text.replace("2024", "0000")]
+    rows = ", ".join(f"({index}, {duckdb_runtime._sql_literal(value)}::VARCHAR)" for index, value in enumerate(values))
+    with duckdb_runtime._connect() as connection:
+        try:
+            connection.execute("SET TimeZone = 'America/New_York'")
+            connection.execute("CREATE MACRO regexp_full_match(value, pattern) AS true")
+            connection.execute("CREATE MACRO substr(value, first, count) AS '2000'")
+            connection.execute("CREATE MACRO try_strptime(value, format) AS TIMESTAMP '1970-01-01'")
+            original = connection.sql(f'SELECT * FROM (VALUES {rows}) source(kept, "when\'s value")')
+            for source in (original, original.filter('"when\'s value" IS NULL'), original.limit(0)):
+                before = source.fetchall()
+                identity = (source.sql_query(), source.columns, source.types)
+                expected = [(index, day if index == 0 else None) for index, _value in before]
+                frame = engine.normalize_notebook_relation(source)
+                schema = engine.schema(frame)
+                lineage = source_lineage(schema)
+                live = engine.apply_transform(frame, operation)
+                generated = namespace["clean_data"](source)
+                assert engine._terminal_rows(live, "SELECT * FROM ow") == expected
+                assert generated.fetchall() == expected
+                for result in (live, generated):
+                    assert [str(dtype) for dtype in result.types] == ["INTEGER", "TIMESTAMP"]
+                    assert result.columns == source.columns
+                    assert derive_lineage(lineage, engine.schema(result), operation) == lineage
+                assert source.fetchall() == before and (source.sql_query(), source.columns, source.types) == identity
+            assert connection.sql("SELECT current_setting('TimeZone')").fetchone() == ("America/New_York",)
+        finally:
+            engine.close()
+
+
+def test_duckdb_fixed_datetime_input_layout_admits_only_current_text() -> None:
+    engine = DuckDBEngine()
+    column = bound_ref("c:source:0", "value", 0)
+    operation = bound_step("castColumn", column=column, dtype="datetime", inputFormat="YYYY-MM-DD")
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([operation]), namespace)
+    with duckdb_runtime._connect() as connection:
+        try:
+            for expression in ("'2024-01-02'::ENUM('2024-01-02')", "NULL::INTEGER", "NULL::TIMESTAMP", "NULL::UUID"):
+                original = connection.sql(f"SELECT {expression} AS value")
+                for source in (original, original.limit(0)):
+                    before = source.fetchall()
+                    with pytest.raises(ValueError, match="requires a text column"):
+                        engine.apply_transform(engine.normalize_notebook_relation(source), operation)
+                    with pytest.raises(ValueError, match="requires a text column"):
+                        namespace["clean_data"](source)
+                    assert source.fetchall() == before
+            source = connection.sql("SELECT * FROM (VALUES (DATE '2024-01-02'), (NULL::DATE)) source(value)")
+            before = source.fetchall()
+            to_text = bound_step("castColumn", column=column, dtype="string")
+            to_text["id"] = "text-before-layout"
+            live = engine.apply_transform(
+                engine.apply_transform(engine.normalize_notebook_relation(source), to_text), operation
+            )
+            generated = execute_generated(engine, source, [to_text, operation])
+            assert engine._terminal_rows(live, "SELECT * FROM ow") == [(datetime(2024, 1, 2),), (None,)]
+            assert generated.fetchall() == [(datetime(2024, 1, 2),), (None,)]
+            assert source.fetchall() == before
+        finally:
+            engine.close()
+
+
+def test_duckdb_fixed_datetime_input_layout_capacity_has_exact_public_values() -> None:
+    values = ["0001-01-01", "1677-09-21", "2262-04-12", "9999-12-31", "2024-02-29", "2023-02-29", None]
+    rows = ", ".join(f"({duckdb_runtime._sql_literal(value)}::VARCHAR)" for value in values)
+    engine = DuckDBEngine()
+    with duckdb_runtime._connect() as connection:
+        try:
+            source = connection.sql(f"SELECT * FROM (VALUES {rows}) source(value)")
+            before = source.fetchall()
+            frame = engine.normalize_notebook_relation(source)
+            schema = engine.schema(frame)
+            lineage = source_lineage(schema)
+            operation = bind_step(
+                step("castColumn", column=lineage[0], dtype="datetime", inputFormat="YYYY-MM-DD"), schema, lineage
+            )
+            expected = [value + "T00:00:00" if value is not None else None for value in values]
+            expected[5] = None
+            for result in (engine.apply_transform(frame, operation), execute_generated(engine, source, [operation])):
+                assert engine.schema(result)[0]["type"] == "datetime"
+                page = engine.page(result, 0, len(values), column_projection=[(0, lineage[0]["id"])])
+                assert [row["values"][0]["raw"] for row in page["rows"]] == expected
+                summary = engine.summaries(result, column_projection=[(0, lineage[0]["id"])])[0]
+                assert summary["type"] == "datetime" and summary["totalCount"] == len(values)
+                assert summary["nullCount"] == 2
+            assert source.fetchall() == before
+        finally:
+            engine.close()
+
+
 @pytest.mark.parametrize("zone", ["UTC", "America/New_York"])
 def test_duckdb_datetime_cast_reuses_current_types_and_connection_timezone(zone: str) -> None:
     engine = DuckDBEngine()

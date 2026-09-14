@@ -1031,7 +1031,11 @@ class DuckDBEngine(DataFrameEngine):
             if params["dtype"] in {"date", "datetime"}:
                 raw_type = str(frame.types[self._columns(frame).index(column)])
                 return self._assign(
-                    frame, column, _duckdb_temporal_cast_expression(_quote_ident(column), raw_type, target_type)
+                    frame,
+                    column,
+                    _duckdb_temporal_cast_expression(
+                        _quote_ident(column), raw_type, target_type, params.get("inputFormat")
+                    ),
                 )
             return self._assign(frame, column, f"try_cast({_quote_ident(column)} AS {target_type})")
         if kind == "formula":
@@ -1570,9 +1574,10 @@ class DuckDBEngine(DataFrameEngine):
             target = _duckdb_cast_target(params["dtype"])
             column = bound_column_name(params["column"], kind)
             if params["dtype"] in {"date", "datetime"}:
+                input_format = f", {params['inputFormat']!r}" if "inputFormat" in params else ""
                 expression = (
                     f"_duckdb_temporal_cast_expression({_quote_ident(column)!r}, "
-                    f"str(df.types[_ow_columns(df).index({column!r})]), {target!r})"
+                    f"str(df.types[_ow_columns(df).index({column!r})]), {target!r}{input_format})"
                 )
                 return [f"{prefix}df = _ow_assign(df, {column!r}, {expression})"]
             return [f"{prefix}df = _ow_assign(df, {column!r}, 'try_cast(' + _ow_ident({column!r}) + ' AS {target})')"]
@@ -3120,7 +3125,21 @@ def _duckdb_datetime_is_aware(raw_type: str) -> bool:
     return "WITH TIME ZONE" in normalized or "TIMESTAMPTZ" in normalized
 
 
-def _duckdb_temporal_cast_expression(column: str, raw_type: str, target_type: str) -> str:
+def _duckdb_temporal_cast_expression(
+    column: str, raw_type: str, target_type: str, input_format: str | None = None
+) -> str:
+    if input_format is not None:
+        if raw_type != "VARCHAR":
+            raise ValueError("Datetime input format requires a text column. Convert the column to Text first.")
+        format, pattern, year_start = {
+            "DD/MM/YYYY": ("%d/%m/%Y", r"[0-9]{2}/[0-9]{2}/[0-9]{4}", 7),
+            "MM/DD/YYYY": ("%m/%d/%Y", r"[0-9]{2}/[0-9]{2}/[0-9]{4}", 7),
+            "YYYY-MM-DD": ("%Y-%m-%d", r"[0-9]{4}-[0-9]{2}-[0-9]{2}", 1),
+        }[input_format]
+        return (
+            f"system.main.try_strptime(CASE WHEN system.main.regexp_full_match({column}, '{pattern}') "
+            f"AND system.main.substr({column}, {year_start}, 4) <> '0000' THEN {column} END, '{format}')"
+        )
     if target_type == "TIMESTAMP" and _semantic_type(raw_type) == "datetime":
         return column
     native_cast = f"try_cast({column} AS {target_type})"

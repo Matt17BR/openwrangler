@@ -138,9 +138,29 @@ _JSON_CHARACTER_ESCAPES = {
 }
 
 
-def _open_wrangler_datetime_result(series: Any, target: str, datetime_format: str | None = None) -> Any:
+def _open_wrangler_datetime_result(
+    series: Any, target: str, datetime_format: str | None = None, *, input_format: str | None = None
+) -> Any:
     import numpy as np
     import pandas as pd
+
+    if input_format is not None:
+        if series.dtype == object:
+            series = series.where(series.notna(), None)
+            text = pd.api.types.infer_dtype(series, skipna=True) in {"string", "unicode", "empty"}
+        else:
+            text = pd.api.types.is_string_dtype(series.dtype) and series.dtype.kind != "S"
+        if not text:
+            raise ValueError("Datetime input format requires a text column. Convert the column to Text first.")
+        format, pattern, year_start = {
+            "DD/MM/YYYY": ("%d/%m/%Y", r"[0-9]{2}/[0-9]{2}/[0-9]{4}", 6),
+            "MM/DD/YYYY": ("%m/%d/%Y", r"[0-9]{2}/[0-9]{2}/[0-9]{4}", 6),
+            "YYYY-MM-DD": ("%Y-%m-%d", r"[0-9]{4}-[0-9]{2}-[0-9]{2}", 0),
+        }[input_format]
+        valid = series.str.fullmatch(pattern, na=False) & series.str.slice(year_start, year_start + 4).ne(
+            "0000"
+        ).fillna(False)
+        return pd.to_datetime(series.where(valid), format=format, exact=True, errors="coerce")
 
     arrow_type = getattr(series.dtype, "pyarrow_dtype", None)
     if arrow_type is not None:
@@ -1601,6 +1621,12 @@ class PandasEngine(DataFrameEngine):
         if kind == "castColumn":
             position = self._bound_frame_position(df, params["column"], kind)
             conversion, target = _pandas_cast_strategy(params["dtype"])
+            if "inputFormat" in params:
+                df.isetitem(
+                    position,
+                    _open_wrangler_datetime_result(df.iloc[:, position], target, input_format=params["inputFormat"]),
+                )
+                return df
             if target == "string":
                 df.isetitem(position, _pandas_string_values(df.iloc[:, position]))
                 return df
@@ -2153,11 +2179,12 @@ class PandasEngine(DataFrameEngine):
             in {
                 "fillMissingValues",
                 "conditionalColumn",
-                "castColumn",
                 "groupBy",
                 "oneHotEncode",
                 "pivotWider",
             }
+            or step["kind"] == "castColumn"
+            and "inputFormat" not in step["params"]
             or (step["kind"] == "byExample" and step["params"]["program"]["kind"] not in {"literal", "column"})
             for step in plan
         )
@@ -2858,7 +2885,12 @@ class PandasEngine(DataFrameEngine):
             position = bound_column_position(params["column"], kind)
             series = f"_open_wrangler_scalar_values(df.iloc[:, {position}])"
             conversion, target = _pandas_cast_strategy(params["dtype"])
-            if target == "string":
+            if "inputFormat" in params:
+                expression = (
+                    f"_open_wrangler_datetime_result(df.iloc[:, {position}], {target!r}, "
+                    f"input_format={params['inputFormat']!r})"
+                )
+            elif target == "string":
                 expression = f"_open_wrangler_string_values(df.iloc[:, {position}])"
             elif conversion == "to_datetime":
                 expression = f"_open_wrangler_datetime_result({series}, {target!r})"

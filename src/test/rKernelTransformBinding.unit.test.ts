@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type {
   ByExampleTransformStep,
+  CastColumnTransformStep,
   ColumnSchema,
   ConditionalColumnTransformStep,
   DenseRankTransformStep,
@@ -22,6 +23,34 @@ import {
 import { copyRetainedStep, copyRTransformStep } from "../extension/r/rKernelTransformState";
 
 describe("R kernel transform binding", () => {
+  it.each(["DD/MM/YYYY", "MM/DD/YYYY", "YYYY-MM-DD"] as const)(
+    "retains the %s Datetime input layout against the current character source",
+    (inputFormat) => {
+      const step: CastColumnTransformStep = {
+        id: "parse",
+        kind: "castColumn",
+        params: { column: reference(2), dtype: "datetime", inputFormat }
+      };
+      const bound = rTransformStep(step, schema);
+      expect(bound).toEqual(step);
+      expect(bound.params).not.toBe(step.params);
+      expect(Object.isFrozen(bound.params)).toBe(true);
+      expect(() => rTransformStep({ ...step, params: { ...step.params, column: reference(0) } }, schema)).toThrow(
+        "character column"
+      );
+      for (const rawType of ["factor", "ordered factor", "Date", "POSIXct"]) {
+        const changed = schema.map((column) => (column.id === reference(2).id ? { ...column, rawType } : column));
+        expect(() => rTransformStep(step, changed)).toThrow("character column");
+      }
+      expect(() =>
+        rTransformStep({ ...step, params: { ...step.params, column: { ...reference(2), name: "stale" } } }, schema)
+      ).toThrow();
+      const ordinary: CastColumnTransformStep = { ...step, params: { column: reference(2), dtype: "datetime" } };
+      expect(rTransformStep(ordinary, schema)).toEqual(ordinary);
+      expect(rTransformStep(ordinary, schema).params).not.toHaveProperty("inputFormat");
+    }
+  );
+
   it("binds and retains one exact conditional predicate and all typed arms", () => {
     const step: ConditionalColumnTransformStep = {
       id: "condition",

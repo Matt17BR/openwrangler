@@ -4504,15 +4504,20 @@ source_environment$cast_frame <- data.frame(
   datetime_text = c("2024-02-29T12:34:56.123456Z", "2024-02-29", "bad"),
   number = c(pi, NaN, Inf),
   duration = as.difftime(c(-1.5, NA_real_, 2), units = "mins"),
+  dmy = c("29/02/2024", "31/12/2026", NA_character_),
+  mdy = c("02/29/2024", "02/03/2026", "02/29/2023"),
+  iso = c("2024-02-29", "2026-12-31", "2026-12-31junk"),
   row.names = c("cast-a", "cast-b", "cast-c")
 )
 cast_source_before <- unserialize(serialize(source_environment$cast_frame, NULL, version = 3L))
-cast_step <- function(id, position, name, dtype) {
-  list(
+cast_step <- function(id, position, name, dtype, input_format = NULL) {
+  step <- list(
     id = id,
     kind = "castColumn",
     params = list(column = list(id = sprintf("r:c:%d", position - 1L), name = name), dtype = dtype)
   )
+  if (!is.null(input_format)) step$params$inputFormat <- input_format
+  step
 }
 cast_open <- dispatch(
   "openSession",
@@ -4531,6 +4536,21 @@ cast_bad_dtype <- dispatch(
 assert_identical(cast_bad_dtype$kind, "error", "R Cast accepted an unknown target type")
 assert_identical(cast_bad_dtype$code, "invalid_request", "the R Cast target diagnostic changed")
 
+for (input_format in list(NULL, list("DD/MM/YYYY"), "%d/%m/%Y")) {
+  invalid <- cast_step("bad-layout", 8L, "dmy", "datetime")
+  invalid$params["inputFormat"] <- list(input_format)
+  rejected <- dispatch("previewStep", list(
+    sessionId = cast_session_id, revision = 0L, step = invalid, page = page_window()
+  ))
+  assert_identical(rejected$kind, "error", "R Cast accepted a malformed input layout")
+  assert_identical(rejected$code, "invalid_request", "R Cast changed the input-layout diagnostic")
+}
+cast_bad_layout_target <- dispatch("previewStep", list(
+  sessionId = cast_session_id, revision = 0L,
+  step = cast_step("bad-layout-target", 8L, "dmy", "date", "DD/MM/YYYY"), page = page_window()
+))
+assert_identical(cast_bad_layout_target$code, "invalid_request", "R Cast accepted an input layout for Date")
+
 cast_cases <- list(
   list(id = "cast-integer", position = 1L, name = "integer_text", dtype = "integer"),
   list(id = "cast-float", position = 2L, name = "float_factor", dtype = "float"),
@@ -4538,6 +4558,9 @@ cast_cases <- list(
   list(id = "cast-date", position = 4L, name = "date_text", dtype = "date"),
   list(id = "cast-datetime", position = 5L, name = "datetime_text", dtype = "datetime"),
   list(id = "cast-duration", position = 7L, name = "duration", dtype = "string"),
+  list(id = "cast-dmy", position = 8L, name = "dmy", dtype = "datetime", inputFormat = "DD/MM/YYYY"),
+  list(id = "cast-mdy", position = 9L, name = "mdy", dtype = "datetime", inputFormat = "MM/DD/YYYY"),
+  list(id = "cast-iso", position = 10L, name = "iso", dtype = "datetime", inputFormat = "YYYY-MM-DD"),
   list(id = "cast-string", position = 6L, name = "number", dtype = "string")
 )
 cast_revision <- 0L
@@ -4548,7 +4571,7 @@ for (case in cast_cases) {
     list(
       sessionId = cast_session_id,
       revision = cast_revision,
-      step = cast_step(case$id, case$position, case$name, case$dtype),
+      step = cast_step(case$id, case$position, case$name, case$dtype, case$inputFormat),
       page = page_window(column_offset = case$position - 1L, column_limit = 1L)
     )
   )
@@ -4560,6 +4583,17 @@ for (case in cast_cases) {
   )
   assert_identical(cast_preview$diff$addedColumns, list(), "in-place R Cast added a column")
   assert_identical(cast_preview$diff$truncated, FALSE, "a complete R Cast diff was marked truncated")
+  if (!is.null(case$inputFormat)) {
+    expected_ticks <- c("1709164800", if (identical(case$inputFormat, "MM/DD/YYYY")) "1770076800" else "1798675200", NA_character_)
+    actual <- vapply(cast_preview$page$page$rows, function(row) {
+      cell <- row$values[[1L]]
+      if (isTRUE(cell$isNull)) NA_character_ else cell$raw
+    }, character(1L), USE.NAMES = FALSE)
+    assert_identical(actual, expected_ticks,
+      "R fixed-layout Preview disagreed with literal UTC midnights")
+    assert_identical(cast_preview$page$schema[[case$position]]$semantics$timezone, "UTC",
+      "R fixed-layout Preview lost its UTC schema")
+  }
   if (identical(case$id, "cast-integer")) {
     assert_identical(cast_preview$diff$changedCells, 2L, "R Cast returned an inexact integer diff")
     assert_identical(length(cast_preview$diff$cells), 2L, "R Cast lost its bounded integer cell diffs")
@@ -4608,6 +4642,12 @@ assert_identical(
   "generated R string Cast changed exact numeric formatting"
 )
 assert_identical(cast_generated$duration, c("-1.5 mins", NA_character_, "2 mins"), "generated duration Cast changed signs, units or missing values")
+assert_identical(as.double(cast_generated$dmy), c(1709164800, 1798675200, NA_real_), "generated DMY Cast changed native midnights")
+assert_identical(as.double(cast_generated$mdy), c(1709164800, 1770076800, NA_real_), "generated MDY Cast changed date order or accepted an impossible date")
+assert_identical(as.double(cast_generated$iso), c(1709164800, 1798675200, NA_real_), "generated ISO Cast accepted a trailing suffix")
+for (name in c("dmy", "mdy", "iso")) {
+  assert_identical(attr(cast_generated[[name]], "tzone"), "UTC", "generated fixed-layout Cast lost its UTC timezone")
+}
 assert_identical(row.names(cast_generated), row.names(cast_source_before), "generated R Cast changed row names")
 assert_identical(
   get("cast_frame", envir = .GlobalEnv, inherits = FALSE),
@@ -4622,6 +4662,8 @@ for (empty in c(TRUE, FALSE)) {
   if (!empty) {
     changed$duration <- as.difftime(rep(NA_real_, nrow(changed)), units = "mins")
     expected$duration <- rep(NA_character_, nrow(expected))
+    changed$dmy <- rep(NA_character_, nrow(changed))
+    expected$dmy <- as.POSIXct(rep(NA_real_, nrow(expected)), origin = "1970-01-01", tz = "UTC")
   }
   source_bytes <- serialize(changed, NULL, version = 3L)
   evaluation_environment <- new.env(parent = baseenv())
@@ -4630,6 +4672,31 @@ for (empty in c(TRUE, FALSE)) {
   assert_identical(typeof(evaluation_environment$open_wrangler_result$duration), "character", "generated empty or missing duration Cast lost its string type")
   assert_identical(evaluation_environment$open_wrangler_result, expected, "generated duration Cast changed the complete typed frame")
   assert_identical(serialize(evaluation_environment$cast_frame, NULL, version = 3L), source_bytes, "generated duration Cast changed source storage or metadata")
+}
+
+for (empty in c(TRUE, FALSE)) {
+  for (kind in c("integer", "factor", "Date")) {
+    changed <- if (empty) cast_source_before[FALSE, , drop = FALSE] else cast_source_before
+    changed$dmy <- switch(kind,
+      integer = rep(NA_integer_, nrow(changed)),
+      factor = factor(rep(NA_character_, nrow(changed))),
+      Date = as.Date(rep(NA_character_, nrow(changed)))
+    )
+    source_bytes <- serialize(changed, NULL, version = 3L)
+    evaluation_environment <- new.env(parent = baseenv())
+    evaluation_environment$cast_frame <- changed
+    generated_error <- tryCatch({
+      eval(parse(text = cast_apply$code), envir = evaluation_environment)
+      NULL
+    }, error = identity)
+    assert_identical(inherits(generated_error, "error") &&
+      grepl("character source", conditionMessage(generated_error), fixed = TRUE), TRUE,
+      "generated fixed-layout Cast accepted a non-character current source")
+    assert_identical(exists("open_wrangler_result", envir = evaluation_environment, inherits = FALSE), FALSE,
+      "generated fixed-layout Cast published after rejecting current input storage")
+    assert_identical(serialize(evaluation_environment$cast_frame, NULL, version = 3L), source_bytes,
+      "generated fixed-layout Cast changed the refused input")
+  }
 }
 
 cast_inspection <- inspect_step(

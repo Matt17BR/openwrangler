@@ -1258,8 +1258,14 @@
       "required": ["column", "dtype"],
       "properties": {
         "column": { "$ref": "#/definitions/ColumnReference" },
-        "dtype": { "type": "string", "enum": ["string", "integer", "float", "boolean", "date", "datetime"] }
-      }
+        "dtype": { "type": "string", "enum": ["string", "integer", "float", "boolean", "date", "datetime"] },
+        "inputFormat": {
+          "type": "string",
+          "enum": ["DD/MM/YYYY", "MM/DD/YYYY", "YYYY-MM-DD"],
+          "description": "Exact text date layout for a datetime target. Invalid or unrepresentable dates become missing; valid dates become midnight."
+        }
+      },
+      "dependencies": { "inputFormat": { "properties": { "dtype": { "const": "datetime" } } } }
     },
     "FormulaLiteral": {
       "description": "A finite legacy number or a canonical exact integer string with at most 309 digits whose numeric conversion remains finite. Native engine capacity limits still apply.",

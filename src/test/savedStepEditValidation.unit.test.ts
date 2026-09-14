@@ -146,6 +146,16 @@ function step<Kind extends OperationKind>(
 }
 
 describe("savedStepEditError", () => {
+  it("requires the recorded Text input for a saved date layout", () => {
+    const saved = step("castColumn", { column: text, dtype: "datetime", inputFormat: "DD/MM/YYYY" });
+    expect(savedStepEditError(saved, schema)).toBeUndefined();
+    const changed = schema.map((column) =>
+      column.id === text.id ? { ...column, type: "datetime" as const, rawType: "Datetime" } : column
+    );
+    expect(savedStepEditError(saved, changed)).toContain("an input date format requires a Text column");
+    expect(savedStepEditError(step("castColumn", { column: text, dtype: "datetime" }), changed)).toBeUndefined();
+  });
+
   it.each(Object.values(validSteps))("accepts a valid saved $kind operation", (savedStep) => {
     expect(savedStepEditError(savedStep, schema)).toBeUndefined();
   });

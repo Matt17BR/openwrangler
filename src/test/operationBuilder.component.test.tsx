@@ -34,6 +34,76 @@ const metadata: SessionMetadata = {
 describe("OperationBuilder", () => {
   afterEach(() => vi.restoreAllMocks());
 
+  it("keeps a date layout while editing and omits it for another target type", () => {
+    const onPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={metadata.filterModel}
+        initialKind="castColumn"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+    expect(screen.queryByRole("combobox", { name: "Input date format" })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByRole("combobox", { name: "Target type" }), { target: { value: "datetime" } });
+    const layout = screen.getByRole("combobox", { name: "Input date format" });
+    expect(layout).toHaveValue("");
+    fireEvent.change(layout, { target: { value: "DD/MM/YYYY" } });
+    expect(layout).toHaveAccessibleDescription(/Invalid or out-of-range dates become missing/);
+    fireEvent.change(screen.getByRole("combobox", { name: "Column" }), { target: { value: "c:1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).not.toHaveBeenCalled();
+    expect(screen.getByText(/An input date format requires a Text column/)).toBeVisible();
+    fireEvent.change(screen.getByRole("combobox", { name: "Column" }), { target: { value: "c:0" } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenLastCalledWith(
+      {
+        id: expect.any(String),
+        kind: "castColumn",
+        params: { column: { id: "c:0", name: "city" }, dtype: "datetime", inputFormat: "DD/MM/YYYY" }
+      },
+      undefined
+    );
+    fireEvent.change(screen.getByRole("combobox", { name: "Target type" }), { target: { value: "date" } });
+    expect(screen.queryByRole("combobox", { name: "Input date format" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenLastCalledWith(
+      { id: expect.any(String), kind: "castColumn", params: { column: { id: "c:0", name: "city" }, dtype: "date" } },
+      undefined
+    );
+    fireEvent.change(screen.getByRole("combobox", { name: "Target type" }), { target: { value: "datetime" } });
+    expect(screen.getByRole("combobox", { name: "Input date format" })).toHaveValue("DD/MM/YYYY");
+  });
+
+  it("restores a saved date layout against the step's text input schema", () => {
+    const onPreview = vi.fn();
+    const initialStep: TransformStep = {
+      id: "saved-date",
+      kind: "castColumn",
+      params: { column: { id: "c:0", name: "city" }, dtype: "datetime", inputFormat: "MM/DD/YYYY" }
+    };
+    render(
+      <OperationBuilder
+        metadata={{
+          ...metadata,
+          schema: metadata.schema.map((column) =>
+            column.id === "c:0" ? { ...column, type: "datetime", rawType: "Datetime" } : column
+          )
+        }}
+        filterModel={metadata.filterModel}
+        initialStep={initialStep}
+        editInputSchema={metadata.schema}
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+    expect(screen.getByRole("combobox", { name: "Target type" })).toHaveValue("datetime");
+    expect(screen.getByRole("combobox", { name: "Input date format" })).toHaveValue("MM/DD/YYYY");
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledWith(initialStep, "saved-date");
+  });
+
   it("exposes the complete deterministic operation catalog", () => {
     render(
       <OperationBuilder

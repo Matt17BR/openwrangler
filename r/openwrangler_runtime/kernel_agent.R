@@ -3358,7 +3358,7 @@ openwrangler_r_kernel_agent <- local({
       ))
     }
     if (identical(kind, "castColumn")) {
-      params <- exact_record(step$params, c("column", "dtype"), "request.payload.step.params")
+      params <- exact_record(step$params, c("column", "dtype"), "request.payload.step.params", optional_fields = "inputFormat")
       column <- decode_column_reference(
         params$column,
         "request.payload.step.params.column",
@@ -3368,10 +3368,18 @@ openwrangler_r_kernel_agent <- local({
       if (!dtype %in% c("string", "integer", "float", "boolean", "date", "datetime")) {
         abort("invalid_request", "request.payload.step.params.dtype is unsupported")
       }
+      retained <- list(column = column, dtype = dtype)
+      if ("inputFormat" %in% names(params)) {
+        input_format <- bounded_text(params$inputFormat, "request.payload.step.params.inputFormat", 10L)
+        if (!identical(dtype, "datetime") || !input_format %in% c("DD/MM/YYYY", "MM/DD/YYYY", "YYYY-MM-DD")) {
+          abort("invalid_request", "request.payload.step.params.inputFormat requires Datetime and a supported fixed date layout")
+        }
+        retained$inputFormat <- input_format
+      }
       return(list(
         id = step_id,
         kind = kind,
-        params = list(column = column, dtype = dtype)
+        params = retained
       ))
     }
     if (kind %in% c("dropColumns", "selectColumns")) {
@@ -4203,7 +4211,7 @@ openwrangler_r_kernel_agent <- local({
     ) {
       abort("stale_column", "The cast column reference no longer matches the active R dataframe", TRUE)
     }
-    list(
+    bound <- list(
       id = step$id,
       kind = step$kind,
       position = as.integer(matches[[1L]]),
@@ -4213,6 +4221,8 @@ openwrangler_r_kernel_agent <- local({
       outputId = step$params$column$id,
       dtype = step$params$dtype
     )
+    if ("inputFormat" %in% names(step$params)) bound$inputFormat <- step$params$inputFormat
+    bound
   }
 
   bind_drop_step <- function(capture, step) {
@@ -5740,7 +5750,7 @@ openwrangler_r_kernel_agent <- local({
     }
     if (identical(step$kind, "castColumn")) {
       bound <- bind_cast_step(capture, step)
-      result <- frame_contract$cast_column_at(source, bound$position, bound$oldName, bound$dtype)
+      result <- frame_contract$cast_column_at(source, bound$position, bound$oldName, bound$dtype, bound$inputFormat)
       return(list(
         capture = frame_contract$capture_frame(
           result,
@@ -6406,8 +6416,13 @@ openwrangler_r_kernel_agent <- local({
       "    .ow_output[.ow_datetime] <- as.POSIXct(.ow_parsed, tz = \"UTC\")",
       "    .ow_cast_canonical_datetimes(.ow_output)",
       "  }",
-      "  .ow_cast_values <- function(.ow_value, .ow_target) {",
+      "  .ow_cast_values <- function(.ow_value, .ow_target, .ow_input_format = NULL) {",
       "    .ow_kind <- .ow_cast_kind(.ow_value)",
+      "    if (!is.null(.ow_input_format)) {",
+      "      if (!identical(.ow_target, \"datetime\") || !identical(.ow_kind, \"character\")) stop(\"castColumn inputFormat requires a character source column and Datetime target\", call. = FALSE)",
+      "      .ow_dates <- .ow_cast_fixed_date_text(.ow_cast_utf8(.ow_value), .ow_input_format)",
+      "      return(.ow_cast_canonical_datetimes(as.POSIXct(.ow_dates, tz = \"UTC\")))",
+      "    }",
       "    .ow_allowed <- switch(.ow_target,",
       "      string = c(\"logical\", \"integer\", \"integer64\", \"double\", \"character\", \"factor\", \"Date\", \"POSIXct\", \"difftime\"),",
       "      integer = c(\"logical\", \"integer\", \"integer64\", \"double\", \"character\", \"factor\"),",
@@ -7976,6 +7991,9 @@ openwrangler_r_kernel_agent <- local({
     if (any(vapply(bound_plan, function(step) identical(step$kind, "castColumn"), logical(1L)))) {
       lines <- c(lines, cast_code_helper_lines())
     }
+    if (any(vapply(bound_plan, function(step) identical(step$kind, "castColumn") && !is.null(step$inputFormat), logical(1L)))) {
+      lines <- c(lines, "  .ow_cast_fixed_date_text <-", paste0("  ", deparse(frame_contract$cast_fixed_date_text, width.cutoff = 500L)))
+    }
     if (any(vapply(bound_plan, function(step) step$kind %in% c("fillMissingValues", "groupBy"), logical(1L)))) {
       lines <- c(
         lines,
@@ -9342,7 +9360,8 @@ openwrangler_r_kernel_agent <- local({
           sprintf("  .ow_cast_dtype <- %s", r_string(step$dtype)),
           "  if (ncol(.ow_result) < .ow_cast_position || !identical(names(.ow_result)[[.ow_cast_position]], .ow_cast_source_name)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
           "  if (inherits(.ow_result, \"data.table\") && !is.null(data.table::key(.ow_result)) && .ow_cast_source_name %in% data.table::key(.ow_result)) stop(\"castColumn cannot replace a data.table key column; clone the column before casting it\", call. = FALSE)",
-          "  .ow_cast_result <- .ow_cast_values(.ow_result[[.ow_cast_position]], .ow_cast_dtype)",
+          sprintf("  .ow_cast_result <- .ow_cast_values(.ow_result[[.ow_cast_position]], .ow_cast_dtype%s)",
+            if (is.null(step$inputFormat)) "" else paste0(", ", r_string(step$inputFormat))),
           "  if (inherits(.ow_result, \"data.table\")) data.table::set(.ow_result, j = .ow_cast_position, value = .ow_cast_result) else .ow_result[[.ow_cast_position]] <- .ow_cast_result"
         )
       } else if (identical(step$kind, "dropColumns")) {

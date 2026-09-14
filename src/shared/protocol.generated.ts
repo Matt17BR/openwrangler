@@ -726,6 +726,10 @@ export interface RenameColumnParams {
 export interface CastColumnParams {
   column: ColumnReference;
   dtype: "string" | "integer" | "float" | "boolean" | "date" | "datetime";
+  /**
+   * Exact text date layout for a datetime target. Invalid or unrepresentable dates become missing; valid dates become midnight.
+   */
+  inputFormat?: "DD/MM/YYYY" | "MM/DD/YYYY" | "YYYY-MM-DD";
 }
 export interface ColumnOutputParams {
   column: ColumnReference;

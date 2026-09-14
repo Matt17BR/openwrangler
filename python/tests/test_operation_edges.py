@@ -2049,6 +2049,87 @@ def test_polars_datetime_text_cast_reads_type_after_preceding_cast(lazy: bool) -
 
 
 @pytest.mark.parametrize("lazy", [False, True], ids=["eager", "lazy"])
+@pytest.mark.parametrize(
+    ("layout", "text", "day"),
+    [
+        ("DD/MM/YYYY", "02/03/2024", datetime(2024, 3, 2)),
+        ("MM/DD/YYYY", "02/03/2024", datetime(2024, 2, 3)),
+        ("YYYY-MM-DD", "2024-03-02", datetime(2024, 3, 2)),
+    ],
+)
+def test_polars_fixed_datetime_input_layout_matches_generated(lazy, layout, text, day) -> None:
+    engine = PolarsEngine()
+    operation = bound_step(
+        "castColumn", column=bound_ref("c:source:1", "when's value", 1), dtype="datetime", inputFormat=layout
+    )
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([operation]), namespace)
+    invalid = "31/02/2024" if layout == "DD/MM/YYYY" else "02/31/2024" if layout == "MM/DD/YYYY" else "2024-02-31"
+    values = [text, None, invalid, "", text + "\n", " " + text, text + "Z", text.replace("2024", "0000")]
+    for selected in (values, [None, None], []):
+        original = pl.DataFrame(
+            {
+                "kept": pl.Series(range(len(selected)), dtype=pl.Int64),
+                "when's value": pl.Series(selected, dtype=pl.String),
+            }
+        )
+        source = original.lazy() if lazy else original
+        expected = original.with_columns(
+            pl.Series(
+                "when's value",
+                [day] + [None] * 7 if selected is values else [None] * len(selected),
+                dtype=pl.Datetime("us"),
+            )
+        )
+        schema = engine.schema(source)
+        lineage = source_lineage(schema)
+        for result in (engine.apply_transform(source, operation), namespace["clean_data"](source)):
+            assert isinstance(result, pl.LazyFrame) is lazy
+            output = result.collect() if lazy else result
+            assert_polars_frame_equal(output, expected, check_exact=True)
+            assert derive_lineage(lineage, engine.schema(result), operation) == lineage
+        assert_polars_frame_equal(
+            source.collect() if isinstance(source, pl.LazyFrame) else source, original, check_exact=True
+        )
+
+
+@pytest.mark.parametrize("lazy", [False, True], ids=["eager", "lazy"])
+def test_polars_fixed_datetime_input_layout_admits_only_current_text(lazy) -> None:
+    engine = PolarsEngine()
+    column = bound_ref("c:source:0", "value", 0)
+    operation = bound_step("castColumn", column=column, dtype="datetime", inputFormat="YYYY-MM-DD")
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([operation]), namespace)
+    for values in (
+        pl.Series("value", ["2024-01-02", None], dtype=pl.Categorical),
+        pl.Series("value", [None], dtype=pl.Int64),
+        pl.Series("value", [], dtype=pl.Datetime("us")),
+        pl.Series("value", [], dtype=pl.Null),
+    ):
+        original = values.to_frame()
+        source = original.lazy() if lazy else original
+        with pytest.raises(ValueError, match="requires a text column"):
+            engine.apply_transform(source, operation)
+        with pytest.raises(ValueError, match="requires a text column"):
+            namespace["clean_data"](source)
+        assert_polars_frame_equal(
+            source.collect() if isinstance(source, pl.LazyFrame) else source, original, check_exact=True
+        )
+    original = pl.DataFrame({"value": pl.Series([date(2024, 1, 2), None], dtype=pl.Date)})
+    source = original.lazy() if lazy else original
+    to_text = bound_step("castColumn", column=column, dtype="string")
+    to_text["id"] = "text-before-layout"
+    exec(engine.compile_plan([to_text, operation]), namespace)
+    expected = pl.DataFrame({"value": pl.Series([datetime(2024, 1, 2), None], dtype=pl.Datetime("us"))})
+    for result in (
+        engine.apply_transform(engine.apply_transform(source, to_text), operation),
+        namespace["clean_data"](source),
+    ):
+        assert isinstance(result, pl.LazyFrame) is lazy
+        assert_polars_frame_equal(result.collect() if lazy else result, expected, check_exact=True)
+
+
+@pytest.mark.parametrize("lazy", [False, True], ids=["eager", "lazy"])
 @pytest.mark.parametrize("replace", [False, True], ids=["append", "replace"])
 @pytest.mark.parametrize(
     ("values", "dtype", "format", "expected"),

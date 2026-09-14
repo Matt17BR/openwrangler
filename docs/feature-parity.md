@@ -157,6 +157,12 @@ including supported missing and classed values. Select at least one comparison c
 Min-max Scale preserves ratios for finite extremes and exact numeric ranges in live and generated code for the Python
 editing engines and native R.
 
+Convert Type to Datetime can parse Text dates in a selected `DD/MM/YYYY`, `MM/DD/YYYY` or `YYYY-MM-DD` layout.
+For example, `02/03/2026` means 2 March with the first layout and 3 February with the second. Dates must match exactly;
+invalid or out-of-range values become missing, and valid dates become midnight. Native date ranges differ.
+Clone the column first to keep its text values. Format Datetime with `%Y`, `%m` or `%d`, followed by Convert Type to
+Integer, supplies year, month or day columns; a dedicated calendar-parts operation remains outside the current catalog.
+
 Floor and Ceiling retain exact integer and Decimal values in the Python editing engines, with matching generated
 code. Pandas Convert Type rejects values outside its signed integer target instead of wrapping them. The operation
 and session-transaction tests cover value boundaries, missing values and rollback.

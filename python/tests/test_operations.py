@@ -13,7 +13,7 @@ from openwrangler_runtime._column_binding import bind_step
 from openwrangler_runtime.engines import EngineError, PandasEngine, PolarsEngine
 from openwrangler_runtime.engines.base import INTERNAL_ROW_ID_PREFIX
 from openwrangler_runtime.limits import MAX_VIEW_VALUE_TEXT_CHARACTERS
-from openwrangler_runtime.lineage import source_lineage
+from openwrangler_runtime.lineage import derive_lineage, source_lineage
 from openwrangler_runtime.operations import OperationError, operation_catalog, validate_step
 from openwrangler_runtime.protocol_limits_generated import MAX_PYTHON_CUSTOM_CODE_UTF8_BYTES
 
@@ -893,6 +893,160 @@ def test_pandas_cast_targets_match_generated_dtype_and_coercion(
 
     pd.testing.assert_series_equal(live["value"], expected)
     pd.testing.assert_series_equal(generated["value"], expected)
+
+
+@pytest.mark.parametrize(
+    ("layout", "text", "day"),
+    [
+        ("DD/MM/YYYY", "02/03/2024", datetime(2024, 3, 2)),
+        ("MM/DD/YYYY", "02/03/2024", datetime(2024, 2, 3)),
+        ("YYYY-MM-DD", "2024-03-02", datetime(2024, 3, 2)),
+    ],
+)
+@pytest.mark.parametrize("storage", [object, "string"])
+def test_pandas_fixed_datetime_input_layout_matches_generated(layout, text, day, storage) -> None:
+    engine = PandasEngine()
+    column = bound_ref("c:source:1", "when's value", 1)
+    operation = bound_step("layout", "castColumn", column=column, dtype="datetime", inputFormat=layout)
+    invalid_day = "31/02/2024" if layout == "DD/MM/YYYY" else "02/31/2024" if layout == "MM/DD/YYYY" else "2024-02-31"
+    values = [text, None, "", invalid_day, " " + text, text + "\n", text + "T00:00:00", text.replace("2024", "0000")]
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([operation]), namespace)
+    for selected in (values, [None, None], []):
+        frame = pd.DataFrame({"kept": range(len(selected)), "when's value": pd.Series(selected, dtype=storage)})
+        frame.index = pd.Index([i // 2 for i in range(len(frame))], name="source_row")
+        before = frame.copy(deep=True)
+        for result in (engine.apply_transform(frame, operation), namespace["clean_data"](frame)):
+            actual = result.iloc[:, 1]
+            assert pd.api.types.is_datetime64_dtype(actual.dtype) and actual.dt.tz is None
+            assert actual.isna().tolist() == ([False] + [True] * 7 if selected is values else [True] * len(selected))
+            if selected is values:
+                assert actual.iloc[0] == day
+            pd.testing.assert_series_equal(result["kept"], frame["kept"])
+            assert result.index.equals(frame.index) and result.columns.equals(frame.columns)
+            assert engine.schema(result)[1]["type"] == "datetime"
+        pd.testing.assert_frame_equal(frame, before)
+
+
+def test_pandas_fixed_datetime_input_layout_admits_only_current_text() -> None:
+    import numpy as np
+
+    engine = PandasEngine()
+    column = bound_ref("c:source:0", "value", 0)
+    operation = bound_step("layout", "castColumn", column=column, dtype="datetime", inputFormat="YYYY-MM-DD")
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([operation]), namespace)
+    for series in (
+        pd.Series(["2024-01-02", None, float("nan"), pd.NA, pd.NaT], dtype=object),
+        pd.Series([pd.NaT, None, pd.NA], dtype=object),
+    ):
+        frame = series.to_frame("value")
+        before = frame.copy(deep=True)
+        for result in (engine.apply_transform(frame, operation), namespace["clean_data"](frame)):
+            assert result["value"].isna().tolist() == series.isna().tolist()
+            if not series.isna().all():
+                assert result["value"].iloc[0] == datetime(2024, 1, 2)
+        pd.testing.assert_frame_equal(frame, before)
+    for series in (
+        pd.Series(["2024-01-02", 42], dtype=object),
+        pd.Series(["2024-01-02", date(2024, 1, 2)], dtype=object),
+        pd.Series(["2024-01-02", None], dtype="category"),
+        pd.Series([None], dtype="Int64"),
+        pd.Series([], dtype="datetime64[ns]"),
+        pd.Series(np.array([b"2024-01-02"], dtype="S10")),
+    ):
+        frame = series.to_frame("value")
+        before = frame.copy(deep=True)
+        with pytest.raises(ValueError, match="requires a text column"):
+            engine.apply_transform(frame, operation)
+        with pytest.raises(ValueError, match="requires a text column"):
+            namespace["clean_data"](frame)
+        pd.testing.assert_frame_equal(frame, before)
+    frame = pd.DataFrame({"value": [date(2024, 1, 2), None]})
+    to_text = bound_step("text", "castColumn", column=column, dtype="string")
+    live = engine.apply_transform(engine.apply_transform(frame, to_text), operation)
+    generated = execute_generated(engine, frame, [to_text, operation])
+    assert live["value"].iloc[0] == datetime(2024, 1, 2) and pd.isna(live["value"].iloc[1])
+    pd.testing.assert_frame_equal(live, generated)
+
+
+@pytest.mark.parametrize("arrow_type", ["string", "large_string"])
+def test_pandas_fixed_datetime_input_layout_accepts_arrow_text(arrow_type: str) -> None:
+    pa = pytest.importorskip("pyarrow")
+    engine = PandasEngine()
+    operation = bound_step(
+        "layout", "castColumn", column=bound_ref("c:source:0", "value", 0), dtype="datetime", inputFormat="DD/MM/YYYY"
+    )
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([operation]), namespace)
+    for values in (["02/03/2024", None, "31/02/2024"], [None], []):
+        source = pd.DataFrame({"value": pd.Series(values, dtype=pd.ArrowDtype(getattr(pa, arrow_type)()))})
+        before = source.copy(deep=True)
+        for result in (engine.apply_transform(source, operation), namespace["clean_data"](source)):
+            assert pd.api.types.is_datetime64_dtype(result["value"].dtype) and result["value"].dt.tz is None
+            assert result["value"].isna().tolist() == (
+                [False, True, True] if len(values) == 3 else [True] * len(values)
+            )
+            if len(values) == 3:
+                assert result["value"].iloc[0] == datetime(2024, 3, 2)
+            assert result.index.equals(source.index) and result.columns.equals(source.columns)
+        pd.testing.assert_frame_equal(source, before)
+
+
+def test_fixed_datetime_input_layout_capacity_has_exact_public_values(engine_and_frame) -> None:
+    engine, _frame = engine_and_frame
+    values = [
+        "0001-01-01",
+        "1677-09-21",
+        "1677-09-22",
+        "2262-04-11",
+        "2262-04-12",
+        "9999-12-31",
+        "2024-02-29",
+        "2023-02-29",
+        None,
+    ]
+    frame = (
+        pd.DataFrame({"value": pd.Series(values, dtype=object)})
+        if isinstance(engine, PandasEngine)
+        else pl.DataFrame({"value": pl.Series(values, dtype=pl.String)})
+    )
+    schema = engine.schema(frame)
+    lineage = source_lineage(schema)
+    operation = bind_step(
+        step("layout", "castColumn", column=lineage[0], dtype="datetime", inputFormat="YYYY-MM-DD"), schema, lineage
+    )
+    for result in (engine.apply_transform(frame, operation), execute_generated(engine, frame, [operation])):
+        expected = [value + "T00:00:00" if value is not None else None for value in values]
+        expected[7] = None
+        if isinstance(result, pd.DataFrame) and str(result["value"].dtype) == "datetime64[ns]":
+            for index in (0, 1, 4, 5):
+                expected[index] = None
+        output_schema = engine.schema(result)
+        assert output_schema[0]["type"] == "datetime"
+        assert derive_lineage(lineage, output_schema, operation) == lineage
+        page = engine.page(result, 0, len(values), column_projection=[(0, lineage[0]["id"])])
+        assert [row["values"][0]["raw"] for row in page["rows"]] == expected
+        summary = engine.summaries(result, column_projection=[(0, lineage[0]["id"])])[0]
+        assert summary["type"] == "datetime" and summary["totalCount"] == len(values)
+        assert summary["nullCount"] == sum(value is None for value in expected)
+    assert (frame["value"].tolist() if isinstance(frame, pd.DataFrame) else frame["value"].to_list()) == values
+
+
+@pytest.mark.parametrize("layout", ["DD/MM/YYYY", "MM/DD/YYYY", "YYYY-MM-DD"])
+def test_fixed_datetime_input_layout_validation_preserves_explicit_option(layout) -> None:
+    operation = step(
+        "layout", "castColumn", column=public_ref("c:source:0", "value"), dtype="datetime", inputFormat=layout
+    )
+    assert operation["params"]["inputFormat"] == layout
+
+
+@pytest.mark.parametrize(
+    "dtype,layout", [("date", "YYYY-MM-DD"), ("string", "DD/MM/YYYY"), ("datetime", "%d/%m/%Y"), ("datetime", None)]
+)
+def test_fixed_datetime_input_layout_validation_rejects_invalid_options(dtype, layout) -> None:
+    with pytest.raises(OperationError, match="inputFormat"):
+        step("layout", "castColumn", column=public_ref("c:source:0", "value"), dtype=dtype, inputFormat=layout)
 
 
 @pytest.mark.parametrize(

@@ -7601,6 +7601,27 @@ openwrangler_r_frame_contract <- local({
     cast_canonical_dates(result)
   }
 
+  cast_fixed_date_text <- function(values, input_format) {
+    native_format <- switch(input_format,
+      "DD/MM/YYYY" = "%d/%m/%Y",
+      "MM/DD/YYYY" = "%m/%d/%Y",
+      "YYYY-MM-DD" = "%Y-%m-%d"
+    )
+    iso <- identical(input_format, "YYYY-MM-DD")
+    pattern <- if (iso) "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" else "^[0-9]{2}/[0-9]{2}/[0-9]{4}$"
+    positive_year <- if (iso) !startsWith(values, "0000-") else !endsWith(values, "/0000")
+    valid <- !is.na(values) & nchar(values, type = "bytes") == 10L &
+      grepl(pattern, values, perl = TRUE) & positive_year
+    result <- structure(rep(NA_real_, length(values)), class = "Date")
+    if (any(valid)) {
+      parsed <- suppressWarnings(as.Date(values[valid], format = native_format))
+      matches <- !is.na(parsed) & format(parsed, format = native_format) == values[valid]
+      parsed[!matches] <- as.Date(NA_character_)
+      result[valid] <- parsed
+    }
+    result
+  }
+
   cast_canonical_dates <- function(values) {
     result <- values
     present <- !is.na(result)
@@ -7655,7 +7676,7 @@ openwrangler_r_frame_contract <- local({
     cast_canonical_datetimes(result)
   }
 
-  cast_column_values <- function(column, semantics, raw_type, dtype, label) {
+  cast_column_values <- function(column, semantics, raw_type, dtype, label, input_format = NULL) {
     source_kind <- semantics$kind
     supported_sources <- switch(
       dtype,
@@ -7671,6 +7692,11 @@ openwrangler_r_frame_contract <- local({
         "invalid-view-query",
         sprintf("castColumn cannot convert an R %s column to %s", raw_type, dtype)
       )
+    }
+
+    if (!is.null(input_format)) {
+      dates <- cast_fixed_date_text(cast_text_source(column, source_kind, label), input_format)
+      return(cast_canonical_datetimes(as.POSIXct(dates, tz = "UTC")))
     }
 
     if (identical(dtype, "string")) return(cast_string_values(column, semantics, label))
@@ -7713,7 +7739,7 @@ openwrangler_r_frame_contract <- local({
     abort("internal-error", "castColumn encountered an unknown target dtype")
   }
 
-  cast_column_at <- function(value, position, old_name, dtype) {
+  cast_column_at <- function(value, position, old_name, dtype, input_format = NULL) {
     inspected <- inspect_frame(
       value,
       conservative_nullable = TRUE,
@@ -7742,6 +7768,16 @@ openwrangler_r_frame_contract <- local({
     ) {
       abort("invalid-view-query", "dtype must be one of: boolean, date, datetime, float, integer, string")
     }
+    if (!is.null(input_format)) {
+      if (!identical(dtype, "datetime") || !is.character(input_format) ||
+          length(input_format) != 1L || is.na(input_format) ||
+          !input_format %in% c("DD/MM/YYYY", "MM/DD/YYYY", "YYYY-MM-DD")) {
+        abort("invalid-view-query", "inputFormat requires Datetime and a supported fixed date layout")
+      }
+      if (!identical(source_column$semantics$kind, "character")) {
+        abort("invalid-view-query", "castColumn inputFormat requires a character source column")
+      }
+    }
     source_key <- if (identical(inspected$flavor, "r.data.table")) {
       data.table::key(value) %||% character()
     } else {
@@ -7760,7 +7796,8 @@ openwrangler_r_frame_contract <- local({
       source_column$semantics,
       source_column$rawType,
       dtype,
-      "castColumn"
+      "castColumn",
+      input_format
     )
     if (identical(inspected$flavor, "r.data.table")) {
       data.table::set(result, j = position, value = converted)
@@ -10139,6 +10176,7 @@ openwrangler_r_frame_contract <- local({
     fill_missing_linear_interpolation_at = fill_missing_linear_interpolation_at,
     fill_missing_grouped_statistic_at = fill_missing_grouped_statistic_at,
     cast_column_at = cast_column_at,
+    cast_fixed_date_text = cast_fixed_date_text,
     drop_columns_at = drop_columns_at,
     select_columns_at = select_columns_at,
     group_by_at = group_by_at,
