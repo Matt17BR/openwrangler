@@ -125,6 +125,14 @@ const R_ACCEPTANCE_TIMED_CHECKPOINTS = new Set([
     "text-length-preview-apply-inspect-undo"
   ].map((stage) => `jupyter-r:editing:${stage}`)
 ]);
+const VIEWING_QUERY_TIMED_CHECKPOINTS = new Set(
+  ["pandas", "polars", "duckdb"].flatMap((backend) =>
+    ["openSession", "getPage", "getSummary", "getDatasetStats", "getColumnValues", "closeSession", "idle"].flatMap(
+      (operation) =>
+        ["start", "complete"].map((boundary) => `verify:viewing-queries:${backend}:${operation}:${boundary}`)
+    )
+  )
+);
 const EDITOR_COMMAND_TERMINATION_GRACE_MS = 2_000;
 const EDITOR_COMMAND_KILL_GRACE_MS = 5_000;
 const WINDOWS_TREE_KILL_TIMEOUT_MS = 5_000;
@@ -4653,9 +4661,15 @@ export async function waitForEditorAcceptanceObservation({
     } else if (nextCheckpoint !== undefined && nextCheckpoint !== checkpoint) {
       checkpoint = nextCheckpoint;
       lastProgressAt = now();
-      if (phase === "jupyter-r" && R_ACCEPTANCE_TIMED_CHECKPOINTS.has(checkpoint)) {
+      const timingLabel =
+        phase === "jupyter-r" && R_ACCEPTANCE_TIMED_CHECKPOINTS.has(checkpoint)
+          ? "R editor"
+          : phase === "verify" && VIEWING_QUERY_TIMED_CHECKPOINTS.has(checkpoint)
+            ? "Viewing-query editor"
+            : undefined;
+      if (timingLabel) {
         console.log(
-          `R editor checkpoint observed at ${Math.max(0, Math.round(lastProgressAt - (phaseStartedAt ?? startedAt)))} ms: ${checkpoint}`
+          `${timingLabel} checkpoint observed at ${Math.max(0, Math.round(lastProgressAt - (phaseStartedAt ?? startedAt)))} ms: ${checkpoint}`
         );
       }
     }
