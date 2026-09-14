@@ -137,9 +137,16 @@ is never rebuilt. Existing private R preparation, package checks, phase deadline
 remain in the packaged-editor runner; the matrix does not repeat source suites or add another installed operation catalog.
 All three jobs must pass on the original candidate attempt.
 
-Published 2.4.0 keeps R support Preview; its qualification did not include this candidate-bound R matrix. R notebook
-support becomes stable only with qualified 2.5.0 publication, after a fresh successful matrix run and the reliability
-review in the [first stable R notebook criteria](feature-parity.md#first-stable-r-notebook-scope).
+For the [stable R notebook scope](feature-parity.md#first-stable-r-notebook-scope), also review matching native frame,
+complete operation catalog, kernel and transport results for the candidate source and supported R qualification
+cohorts. Reuse matching protected-source evidence; the installed matrix does not replace these owners.
+Review the original results, package/source/editor/R versions and reliability evidence before publication.
+Preserve original failures and resolve material failures in the selected scope before promotion. The historical
+[R acceptance timeout](https://github.com/Matt17BR/openwrangler/issues/1088) remains unexplained; a recurrence in
+candidate qualification blocks promotion. [Abrupt R source-test runner loss](https://github.com/Matt17BR/openwrangler/issues/955)
+is an accepted CLI limitation outside this notebook scope.
+Land consistent version-scoped support text before the release change and candidate build; new support takes effect
+only with publication of the qualified version.
 Terminal and managed-document support remain Preview; Cursor remains experimental. The macOS default's existing
 direct-document check is coupled coverage, not a stable document-support claim.
 Ordinary source checks permit documented limitations so maintenance can record them accurately; passing those checks

@@ -76,11 +76,11 @@ Opening data, running code, and exporting require Workspace Trust. Open Wrangler
 | Local PySpark Classic / Connect notebooks | Bounded | Unavailable                         | Unavailable                |
 | R base data.frame, tibble, data.table     | Yes     | Supported operations, native R      | CSV / Parquet, with limits |
 
-**R notebook support becomes stable only with qualified 2.5.0 publication** in desktop VS Code on Linux, macOS and Windows.
-This covers the ordinary frames above in IRkernel notebooks. R remains Preview in published 2.4.0.
+**R notebook support is stable since [Open Wrangler 2.5.0](https://github.com/Matt17BR/openwrangler/releases/tag/v2.5.0)**
+for the ordinary frames above in IRkernel notebooks in desktop VS Code on Linux, macOS and Windows.
 Terminal and managed-document support remain Preview; Cursor remains experimental. See
 [native R support and limits](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#native-r-support)
-and the [qualification criteria](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#first-stable-r-notebook-scope).
+and the [qualified scope](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#first-stable-r-notebook-scope).
 
 PySpark uses an existing local batch session. Open Wrangler does not install or configure Spark; streaming dataframes
 and remote or authenticated clusters are unsupported.

@@ -55,7 +55,7 @@ R needs its own producer, decoder, native tests and generated-code checks. The s
 numeric capacity, package behavior or platform support across engines. Source preservation, trust, bounded transport
 and exact cleanup still apply to every path.
 
-The [first stable R notebook scope](../feature-parity.md#first-stable-r-notebook-scope) defines finite graduation
-criteria; terminal and document paths are assessed separately. New claims need direct native and
+The [stable R notebook scope](../feature-parity.md#first-stable-r-notebook-scope) defines supported frames and entry paths;
+[Releasing](../releasing.md#release-candidate) owns continuing qualification. Terminal and document paths are assessed separately. New claims need direct native and
 generated-code evidence plus installed evidence for the advertised host path. [Testing](../testing.md) and [CI](../ci.md)
 own those checks.
