@@ -33,140 +33,221 @@ import {
 } from "./sessionCoordinatorTestFixtures";
 
 describe("SessionCoordinator persistence diagnostics", () => {
-  it.each(["committed", "draft", "reset"] as const)(
-    "requires a choice before replacing saved cleaning after %s replay failure",
-    async (failure) => {
-      const directory = await mkdtemp(join(tmpdir(), "openwrangler-saved-retry-"));
-      const sourcePath = join(directory, "source.csv");
-      await writeFile(sourcePath, "sales,units\n2,20\n1,10\n");
-      const opening = { ...openRequest, source: { ...openRequest.source, path: sourcePath } };
-      const initial = presentationOpenedResponse();
-      initial.metadata.source = opening.source;
-      const draft = {
-        id: "saved-draft",
-        kind: "roundNumber" as const,
-        params: { column: { id: "c:sales", name: "sales" }, decimals: 1 }
-      };
-      const saved = serializePersistedSession(
-        persistedSessionState(
-          { ...initial.metadata, steps: [inspectionStep], draftStep: draft },
-          { columnWidths: new Map(), viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
-        )
-      );
-      if (!saved) throw new Error("Expected valid saved cleaning.");
-      const key = persistenceKey(opening.source, "polars");
-      let stored: Record<string, unknown> = { [key]: saved };
-      const workspaceState = {
-        get: vi.fn(() => stored),
-        update: vi.fn(async (_key: string, value: Record<string, unknown>) => {
-          stored = value;
-        }),
-        keys: () => [SESSION_STORAGE_KEY]
-      } as unknown as Memento;
-      let fail = true;
-      let opens = 0;
-      let metadata = initial.metadata;
-      const wireValid: boolean[] = [];
-      const request = vi.fn(async (next: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
-        wireValid.push(isOpenWranglerRequest(JSON.parse(JSON.stringify(next))));
-        let response: OpenWranglerResponse;
-        if (next.kind === "openSession") {
-          metadata = { ...initial.metadata, sessionId: `retry-${++opens}` };
-          response = { ...initial, metadata };
-        } else if (next.kind === "previewStep") {
-          if (fail && (failure !== "draft" || next.step.id === draft.id)) {
-            response = {
-              kind: "error",
-              code: "engine_error",
-              message: "Temporary replay failure.",
-              recoverable: true,
-              sessionId: next.sessionId
-            };
-          } else {
-            metadata = { ...metadata, revision: metadata.revision + 1, draftStep: next.step };
-            response = {
-              ...stepPreviewResponse(metadata.revision, next.step, next.sessionId, `# ${next.step.id}`),
-              metadata,
-              page: { ...initial.page, limit: next.limit, rows: initial.page.rows.slice(0, next.limit) }
-            };
+  it.each([
+    "committed",
+    "draft",
+    "reset",
+    "viewing-committed",
+    "viewing-draft",
+    "viewing-readonly",
+    "viewing-cancelled",
+    "viewing-disposed"
+  ] as const)("preserves saved cleaning across a %s opening failure", async (failure) => {
+    const directory = await mkdtemp(join(tmpdir(), "openwrangler-saved-retry-"));
+    const sourcePath = join(directory, "source.csv");
+    await writeFile(sourcePath, "sales,units\n2,20\n1,10\n");
+    const modeConflict = failure.startsWith("viewing-");
+    const notebookSource = failure === "viewing-draft" || failure === "viewing-readonly";
+    const notebook = { uri: vscode.Uri.file(sourcePath), isClosed: false } as NotebookDocument;
+    const backend = failure === "viewing-readonly" ? "duckdb" : "polars";
+    const source: SessionSource = notebookSource
+      ? { kind: "notebookVariable", label: "frame", variableName: "frame", uri: notebook.uri.toString() }
+      : { ...openRequest.source, path: sourcePath };
+    const opening = {
+      ...openRequest,
+      source,
+      backend,
+      mode: modeConflict && failure !== "viewing-readonly" ? ("viewing" as const) : ("editing" as const)
+    };
+    const initial = presentationOpenedResponse();
+    initial.metadata.source = opening.source;
+    initial.metadata.backend = backend;
+    initial.metadata.capabilities.notebookInsert = notebookSource && backend !== "duckdb";
+    const draft = {
+      id: "saved-draft",
+      kind: "roundNumber" as const,
+      params: { column: { id: "c:sales", name: "sales" }, decimals: 1 }
+    };
+    const savedCleaning = {
+      steps: failure === "viewing-draft" ? [] : [inspectionStep],
+      ...(failure === "viewing-committed" || failure === "viewing-readonly" ? {} : { draftStep: draft })
+    };
+    const saved = serializePersistedSession(
+      persistedSessionState(
+        { ...initial.metadata, ...savedCleaning },
+        { columnWidths: new Map(), viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
+      )
+    );
+    if (!saved) throw new Error("Expected valid saved cleaning.");
+    const key = persistenceKey(opening.source, backend);
+    let stored: Record<string, unknown> = { [key]: saved };
+    const savedBytes = JSON.stringify(stored);
+    const workspaceState = {
+      get: vi.fn(() => stored),
+      update: vi.fn(async (_key: string, value: Record<string, unknown>) => {
+        stored = value;
+      }),
+      keys: () => [SESSION_STORAGE_KEY]
+    } as unknown as Memento;
+    let fail = true;
+    let opens = 0;
+    let metadata = initial.metadata;
+    const cancellation = new vscode.CancellationTokenSource();
+    const wireValid: boolean[] = [];
+    const request = vi.fn(async (next: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      wireValid.push(isOpenWranglerRequest(JSON.parse(JSON.stringify(next))));
+      let response: OpenWranglerResponse;
+      if (next.kind === "openSession") {
+        const mode = failure === "viewing-readonly" ? "viewing" : (next.mode ?? "editing");
+        metadata = {
+          ...initial.metadata,
+          sessionId: `retry-${++opens}`,
+          mode,
+          capabilities: {
+            ...initial.metadata.capabilities,
+            editable: mode === "editing",
+            exportCsv: mode === "editing",
+            exportParquet: mode === "editing"
           }
-        } else if (next.kind === "applyDraft") {
-          const { draftStep, ...confirmed } = metadata;
-          if (!draftStep) throw new Error("Expected the restored draft.");
-          metadata = {
-            ...confirmed,
-            revision: metadata.revision + 1,
-            steps: [...metadata.steps, draftStep],
-            latestStepInputSchema: metadata.schema
-          };
+        };
+        response = { ...initial, metadata };
+      } else if (next.kind === "previewStep") {
+        if (metadata.mode === "viewing" || (fail && (failure !== "draft" || next.step.id === draft.id))) {
           response = {
-            ...planUpdatedResponse(metadata.revision, metadata.steps, next.sessionId),
+            kind: "error",
+            code: "engine_error",
+            message: "Temporary replay failure.",
+            recoverable: true,
+            sessionId: next.sessionId
+          };
+        } else {
+          metadata = { ...metadata, revision: metadata.revision + 1, draftStep: next.step };
+          response = {
+            ...stepPreviewResponse(metadata.revision, next.step, next.sessionId, `# ${next.step.id}`),
             metadata,
             page: { ...initial.page, limit: next.limit, rows: initial.page.rows.slice(0, next.limit) }
           };
-        } else if (next.kind === "getPage") {
-          metadata = { ...metadata, filterModel: next.filterModel };
-          response = pageResponseForMetadata(next, metadata);
-        } else if (next.kind === "closeSession") response = { kind: "sessionClosed", sessionId: next.sessionId };
-        else throw new Error(`Unexpected retry request: ${next.kind}`);
-        wireValid.push(isOpenWranglerResponse(response));
-        return response;
-      });
-      const warning = vi
-        .spyOn(vscode.window, "showWarningMessage")
-        .mockImplementation(async (_message, _options, ...items) => (failure === "reset" ? items[0] : undefined));
-      const coordinator = new SessionCoordinator(workspaceState);
-      const bridge = coordinator.createBridge({ request });
-      try {
-        let reopened = await bridge.request(opening);
-        if (failure !== "reset") {
-          expect(reopened).toMatchObject({ kind: "error", code: "saved_plan_restore_failed", recoverable: true });
-          expect(coordinator.activeSession()).toBeUndefined();
-          expect(request.mock.calls.map(([next]) => next.kind)).toEqual([
-            "openSession",
-            "previewStep",
-            ...(failure === "draft" ? ["applyDraft", "previewStep"] : []),
-            "closeSession"
-          ]);
-          expect(stored[key]).toEqual(saved);
-          expect(workspaceState.update).not.toHaveBeenCalled();
-          fail = false;
-          reopened = await bridge.request(opening);
         }
-        if (reopened.kind !== "sessionOpened") throw new Error("Expected recovery or retry to open.");
-        const expectedCleaning = failure === "reset" ? { steps: [] } : { steps: [inspectionStep], draftStep: draft };
-        expect(reopened.metadata).toMatchObject(expectedCleaning);
-        expect(reopened.metadata.draftStep).toEqual(failure === "reset" ? undefined : draft);
-        await bridge.updateViewState?.(reopened.metadata.sessionId, {
-          columnWidths: new Map([["c:sales", 180]]),
-          viewport: { firstVisibleRow: 0, scrollLeft: 0 }
-        });
-        await expect(
-          bridge.request({
-            kind: "getPage",
-            sessionId: reopened.metadata.sessionId,
-            revision: reopened.metadata.revision,
-            viewRequestId: "retry-sort",
-            offset: 0,
-            limit: 2,
-            columnOffset: 0,
-            columnLimit: 2,
-            filterModel: { filters: [], sort: [{ column: "sales", direction: "desc", nulls: "last" }] }
-          })
-        ).resolves.toMatchObject({ kind: "page" });
-        expect(new SessionPersistenceStore(workspaceState).load(opening.source, "polars")?.cleaning).toMatchObject(
-          expectedCleaning
+      } else if (next.kind === "applyDraft") {
+        const { draftStep, ...confirmed } = metadata;
+        if (!draftStep) throw new Error("Expected the restored draft.");
+        metadata = {
+          ...confirmed,
+          revision: metadata.revision + 1,
+          steps: [...metadata.steps, draftStep],
+          latestStepInputSchema: metadata.schema
+        };
+        response = {
+          ...planUpdatedResponse(metadata.revision, metadata.steps, next.sessionId),
+          metadata,
+          page: { ...initial.page, limit: next.limit, rows: initial.page.rows.slice(0, next.limit) }
+        };
+      } else if (next.kind === "getPage") {
+        metadata = { ...metadata, filterModel: next.filterModel };
+        response = pageResponseForMetadata(next, metadata);
+      } else if (next.kind === "closeSession") {
+        if (failure === "viewing-cancelled") cancellation.cancel();
+        if (failure === "viewing-disposed") coordinator.dispose();
+        response = { kind: "sessionClosed", sessionId: next.sessionId };
+      } else throw new Error(`Unexpected retry request: ${next.kind}`);
+      wireValid.push(isOpenWranglerResponse(response));
+      return response;
+    });
+    const warning = vi
+      .spyOn(vscode.window, "showWarningMessage")
+      .mockImplementation(async (_message, _options, ...items) => (failure === "reset" ? items[0] : undefined));
+    warning.mockClear();
+    if (notebookSource) setOpenNotebookDocuments(notebook);
+    const coordinator = new SessionCoordinator(workspaceState);
+    const bridge = coordinator.createBridge({ request }, notebookSource ? notebook : undefined);
+    const published = vi.fn();
+    const subscription = coordinator.onDidChangeActiveSession(published);
+    try {
+      let reopened = await bridge.request(opening, { cancellation: cancellation.token });
+      if (failure !== "reset") {
+        expect(reopened).toMatchObject(
+          failure === "viewing-cancelled"
+            ? { kind: "cancelled" }
+            : {
+                kind: "error",
+                code:
+                  failure === "viewing-disposed"
+                    ? "coordinator_disposed"
+                    : modeConflict
+                      ? "viewing_mode_unavailable"
+                      : "saved_plan_restore_failed",
+                recoverable: failure !== "viewing-disposed"
+              }
         );
+        expect(coordinator.activeSession()).toBeUndefined();
+        expect(published).not.toHaveBeenCalled();
+        expect(request.mock.calls.map(([next]) => next.kind)).toEqual([
+          "openSession",
+          ...(modeConflict ? [] : ["previewStep", ...(failure === "draft" ? ["applyDraft", "previewStep"] : [])]),
+          "closeSession"
+        ]);
+        expect(request.mock.calls.at(-1)?.[0]).toEqual({
+          kind: "closeSession",
+          sessionId: "retry-1",
+          revision: metadata.revision
+        });
+        expect(stored[key]).toEqual(saved);
+        expect(JSON.stringify(stored)).toBe(savedBytes);
+        expect(workspaceState.update).not.toHaveBeenCalled();
         expect(wireValid.every(Boolean)).toBe(true);
-        expect(opens).toBe(2);
-        expect(warning).toHaveBeenCalledOnce();
-      } finally {
-        warning.mockRestore();
-        await coordinator.shutdown();
-        await rm(directory, { recursive: true, force: true });
+        if (modeConflict) {
+          expect(warning).not.toHaveBeenCalled();
+          if (failure === "viewing-cancelled" || failure === "viewing-disposed") return;
+          if (reopened.kind !== "error") throw new Error("Expected the saved-cleaning mode conflict.");
+          if (failure === "viewing-readonly") {
+            expect(reopened.message).toContain("supports Viewing only");
+            expect(reopened.message).not.toMatch(/StartMode|reopen.*Editing/u);
+            return;
+          }
+          expect(reopened.message).toContain(`openWrangler.${notebookSource ? "notebookStartMode" : "fileStartMode"}`);
+          expect(reopened.message).toContain("close this Open Wrangler panel");
+          expect(reopened.message).toContain("reopen the same dataframe");
+        }
+        fail = false;
+        reopened = await bridge.request({ ...opening, mode: "editing" });
       }
+      if (reopened.kind !== "sessionOpened") throw new Error("Expected recovery or retry to open.");
+      const expectedCleaning = failure === "reset" ? { steps: [] } : savedCleaning;
+      expect(reopened.metadata).toMatchObject(expectedCleaning);
+      expect(reopened.metadata.mode).toBe("editing");
+      expect(reopened.metadata.draftStep).toEqual(failure === "reset" ? undefined : savedCleaning.draftStep);
+      await bridge.updateViewState?.(reopened.metadata.sessionId, {
+        columnWidths: new Map([["c:sales", 180]]),
+        viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+      });
+      await expect(
+        bridge.request({
+          kind: "getPage",
+          sessionId: reopened.metadata.sessionId,
+          revision: reopened.metadata.revision,
+          viewRequestId: "retry-sort",
+          offset: 0,
+          limit: 2,
+          columnOffset: 0,
+          columnLimit: 2,
+          filterModel: { filters: [], sort: [{ column: "sales", direction: "desc", nulls: "last" }] }
+        })
+      ).resolves.toMatchObject({ kind: "page" });
+      expect(new SessionPersistenceStore(workspaceState).load(opening.source, backend)?.cleaning).toMatchObject(
+        expectedCleaning
+      );
+      expect(wireValid.every(Boolean)).toBe(true);
+      expect(opens).toBe(2);
+      expect(warning).toHaveBeenCalledTimes(modeConflict ? 0 : 1);
+    } finally {
+      subscription.dispose();
+      cancellation.dispose();
+      warning.mockRestore();
+      await coordinator.shutdown();
+      if (notebookSource) setOpenNotebookDocuments();
+      await rm(directory, { recursive: true, force: true });
     }
-  );
+  });
 
   it.each([false, true])("keeps the latest live presentation after failed saves (overlapping: %s)", async (overlap) => {
     const runtimeOpened = presentationOpenedResponse();

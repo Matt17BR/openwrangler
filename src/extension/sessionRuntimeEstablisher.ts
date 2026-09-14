@@ -9,6 +9,7 @@ import type {
   SessionBoundRequest,
   SessionOpenedResponse
 } from "../shared/protocol";
+import { canRequestLiveSessionMode } from "../shared/sessionMode";
 import { DetachedBridgeRequestError, type BridgeRequestOptions, type OpenWranglerBridge } from "./dataBridge";
 import type { CoordinatedSessionOrigin } from "./sessionOrigin";
 import { captureSessionSourceFiles, sessionOriginMismatch } from "./sessionOrigin";
@@ -172,6 +173,18 @@ export class SessionRuntimeEstablisher {
     let opened: SessionOpenedResponse = { ...response, summaries: [] };
     const persisted = this.persistence.load(request.source, response.metadata.backend);
     if (!persisted) return { established: true, session, response: opened };
+    if (response.metadata.mode === "viewing" && (persisted.cleaning.steps.length > 0 || persisted.cleaning.draftStep)) {
+      await this.runtimeCleanup.close(session, "invalid open runtime");
+      const afterClose = currentFailure();
+      if (afterClose) return { established: false, response: afterClose };
+      const fileSource = request.source.kind === "file" || request.source.kind === "documentVariable";
+      const setting = fileSource ? "fileStartMode" : "notebookStartMode";
+      const message =
+        fileSource || canRequestLiveSessionMode(response.metadata, "editing")
+          ? `Saved cleaning steps or a draft require Editing mode. Your saved work was kept. Set openWrangler.${setting} to "editing", close this Open Wrangler panel, and reopen the same dataframe.`
+          : "This dataframe source supports Viewing only, so its saved cleaning steps or draft cannot be restored. Your saved work was kept.";
+      return { established: false, response: protocolError("viewing_mode_unavailable", message, true) };
+    }
     const assertCurrent = (): void => {
       if (currentFailure()) throw new Error("The saved-state opening is no longer current.");
     };
