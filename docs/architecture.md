@@ -988,6 +988,14 @@ creates and closes its own hardened connection, and any `DuckDBPyRelation` is de
 closes. DuckDB never converts through Pandas, Polars, or Arrow, and extension auto-install, autoload, and external-file
 caching remain disabled.
 
+Top-level `TIMESTAMP_NS` cells use native text projection before Python can narrow their values. One SQL display
+expression serves bounded pages, grouped choices and profile extrema; counts, grouping and ordering use the original
+timestamps. Choice search uses the same display text and accepts either `T` or a space between the date and time.
+Search evaluates that expression over candidate source rows; returned choices remain bounded.
+The existing selection decoder admits exact microsecond values and refuses finer fractions and timestamp infinities.
+Choices and profile entries explicitly mark those selections unavailable; grid-cell requests refuse without changing
+the view. Source timestamps retain their native precision.
+
 SQL byte literals use native hexadecimal decoding in live and generated code. Text literals containing NUL
 additionally decode those bytes as UTF-8. Both functions resolve from DuckDB's built-in catalog so caller macros
 cannot change the values. Text encoding precedes SQL quote escaping, preserving the original text. Other text retains

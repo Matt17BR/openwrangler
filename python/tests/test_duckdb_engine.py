@@ -1292,6 +1292,51 @@ def test_duckdb_page_uses_an_explicit_terminal_projection(monkeypatch: pytest.Mo
     assert [cell["display"] for cell in page["rows"][0]["values"]] == [" alpha-one ", "2"]
     assert terminal_timezones == ["UTC"]
 
+    formatted: list[str] = []
+    native_connect = duckdb_runtime._connect
+    native_text = duckdb_runtime._duckdb_timestamp_ns_text
+
+    def observe_text(value: str) -> str:
+        formatted.append(value)
+        return value
+
+    def observing_connect() -> Any:
+        connection = native_connect()
+        connection.create_function("observe_ns_text", observe_text, ["VARCHAR"], "VARCHAR", side_effects=True)
+        return connection
+
+    monkeypatch.setattr(duckdb_runtime, "_connect", observing_connect)
+    monkeypatch.setattr(
+        duckdb_runtime, "_duckdb_timestamp_ns_text", lambda identifier: f"observe_ns_text({native_text(identifier)})"
+    )
+    try:
+        source = engine._relation_from_sql(
+            "SELECT i, make_timestamp_ns(1704161045123000000 + i * 1001) AS __ow_value_count, "
+            "make_timestamp_ns(-1) AS unselected FROM range(100) source(i)"
+        )
+        source = engine.ensure_row_ids(source, "bounded-ns")
+        bounded = engine.page(source, 20, 7, total_rows=100, column_projection=[(1, "stable:ns")])
+        assert len(formatted) == 7
+        assert bounded["columnIds"] == ["stable:ns"] and len(bounded["rows"]) == 7
+        assert all(len(row["values"]) == 1 for row in bounded["rows"])
+        assert "unselected" not in queries[-1]
+        formatted.clear()
+        identities = engine.page(source, 20, 7, total_rows=100, column_projection=[])
+        assert not formatted
+        assert [row["id"] for row in identities["rows"]] == [row["id"] for row in bounded["rows"]]
+        assert all(row["values"] == [] for row in identities["rows"])
+        values, more = engine.column_values(source, "__ow_value_count", limit=3)
+        assert len(values) == 3 and more
+        assert len(formatted) == 4  # Three choices plus the existing hasMore sentinel.
+        formatted.clear()
+        summary = engine.summaries(source, [(1, "stable:ns")])[0]
+        assert summary["totalCount"] == summary["distinctCount"] == 100
+        assert len(summary["topValues"]) == 10
+        assert len(formatted) == 12  # Two reduced extrema and ten native count representatives.
+        assert engine._terminal_scalar(source, "SELECT sum(i) FROM ow") == 4950
+    finally:
+        engine.close()
+
 
 @pytest.mark.parametrize(
     ("source_sql", "expected_counts"),
@@ -3140,6 +3185,206 @@ def test_duckdb_column_values_break_equal_counts_by_display_text() -> None:
             {"value": "Paris", "count": 1, "selectionValue": typed_selection_value("Paris", "string")},
         ]
         assert has_more is False
+    finally:
+        engine.close()
+
+
+def test_duckdb_nanosecond_session_preserves_display_and_selection_identity(tmp_path: Path) -> None:
+    path = tmp_path / "nanosecond-values.parquet"
+    column = 'when "ns"'
+    ticks = [-1, -1, 0, 1000, 1704161045123000000, 1704161045123456789, None]
+    expected = [
+        "1969-12-31T23:59:59.999999999",
+        "1969-12-31T23:59:59.999999999",
+        "1970-01-01T00:00:00",
+        "1970-01-01T00:00:00.000001",
+        "2024-01-02T02:04:05.123000",
+        "2024-01-02T02:04:05.123456789",
+        None,
+    ]
+    values = ", ".join(f"({index}, {'NULL' if tick is None else tick}::BIGINT)" for index, tick in enumerate(ticks))
+    with duckdb_runtime._connect() as connection:
+        connection.sql(
+            'SELECT make_timestamp_ns(tick) AS "when ""ns""", id FROM (VALUES ' + values + ") source(id, tick)"
+        ).write_parquet(str(path))
+    contents, before = path.read_bytes(), path.stat()
+    manager = SessionManager(EngineRegistry((("duckdb", DuckDBEngine),)))
+
+    def selected(value: Any) -> dict[str, Any]:
+        return {
+            "filters": [
+                {
+                    "column": column,
+                    "type": "datetime",
+                    "valueFilter": {
+                        "kind": "values",
+                        "selectedValues": [value],
+                        "includeNulls": False,
+                        "includeNaN": False,
+                    },
+                    "predicates": [],
+                }
+            ],
+            "sort": [],
+        }
+
+    try:
+        opened = manager.open_session(
+            {"kind": "file", "label": path.name, "path": str(path)}, backend="duckdb", mode="editing", page_size=10
+        )
+        session_id = opened["metadata"]["sessionId"]
+        session = manager.sessions[session_id]
+        original, committed = session.original, session.committed
+        epoch_filter = selected("1970-01-01T00:00:00")
+        confirmed = manager.get_page(session_id, 0, 0, 10, epoch_filter)
+        assert [row["values"][1]["raw"] for row in confirmed["page"]["rows"]] == [2]
+        # The grid builds its operand from the transported cell. A finer value
+        # must refuse, rather than silently selecting the real epoch neighbor.
+        token = {
+            "kind": "typedSelection",
+            "version": 1,
+            "columnType": "datetime",
+            "cell": opened["page"]["rows"][0]["values"][0],
+        }
+        with pytest.raises(EngineError, match="Invalid datetime view-filter value"):
+            manager.get_page(session_id, 0, 0, 10, selected(token))
+        assert manager.get_page(session_id, 0, 0, 10, epoch_filter) == confirmed
+        assert session.original is original and session.committed is committed
+        assert session.revision == 0 and session.plan == [] and session.draft_step is None
+        cells = [row["values"][0] for row in opened["page"]["rows"]]
+        assert [cell["raw"] for cell in cells] == expected
+        assert [cell["display"] for cell in cells] == [value or "" for value in expected]
+        assert [cell["kind"] for cell in cells] == ["datetime"] * 6 + ["null"]
+        assert not any(cell["isNaN"] for cell in cells)
+        empty_view = {"filters": [], "sort": []}
+        choices = manager.get_column_values(session_id, 0, column, empty_view)["values"]
+        assert [item["value"] for item in choices] == [expected[index] for index in [0, 2, 3, 4, 5]]
+        assert [item["count"] for item in choices] == [2, 1, 1, 1, 1]
+        assert [item["selectionValue"] is not None for item in choices] == [False, True, True, True, False]
+        for item, expected_id in zip(choices[1:4], [2, 3, 4], strict=True):
+            page = manager.get_page(session_id, 0, 0, 10, selected(item["selectionValue"]))
+            assert [row["values"][1]["raw"] for row in page["page"]["rows"]] == [expected_id]
+        for needle in ["1969-12-31T23:59:59.999999999", "1969-12-31 23:59:59.999999999"]:
+            assert manager.get_column_values(session_id, 0, column, empty_view, needle)["values"] == choices[:1]
+        summary = manager.get_summary(session_id, 0, empty_view, ["c:source:0"])["summaries"][0]
+        assert (summary["totalCount"], summary["nullCount"], summary["distinctCount"]) == (7, 1, 5)
+        assert summary["topValues"] == choices
+        assert summary["visualization"] == {"kind": "datetime", "min": expected[0], "max": expected[5]}
+        sorted_page = manager.get_page(
+            session_id, 0, 0, 10, {"filters": [], "sort": [{"column": column, "direction": "desc", "nulls": "last"}]}
+        )
+        assert [row["values"][1]["raw"] for row in sorted_page["page"]["rows"]] == [5, 4, 3, 2, 0, 1, 6]
+        assert {row["id"] for row in sorted_page["page"]["rows"]} == {row["id"] for row in opened["page"]["rows"]}
+        assert isinstance(session.engine, DuckDBEngine)
+        native = 'SELECT id, system.main.epoch_ns("when ""ns""") FROM ow ORDER BY id'
+        assert session.engine._terminal_rows(original, native) == list(enumerate(ticks))
+        model = selected(choices[1]["selectionValue"])
+        model["filters"][0]["column"] = {"id": "c:source:0", "name": column}
+        operation = bind_step(
+            step("filterRows", filterModel=model), session.source_schema, source_lineage(session.source_schema)
+        )
+        with duckdb_runtime._connect() as connection:
+            source = connection.read_parquet(str(path))
+            generated = execute_generated(session.engine, source, [operation])
+            assert generated.project('id, system.main.epoch_ns("when ""ns""")').fetchall() == [(2, 0)]
+            assert source.project('id, system.main.epoch_ns("when ""ns""")').fetchall() == list(enumerate(ticks))
+        json.dumps(opened, allow_nan=False)
+    finally:
+        manager.close_all()
+    assert manager.sessions == {}
+    after = path.stat()
+    assert path.read_bytes() == contents
+    assert (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) == (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+    )
+
+
+def test_duckdb_nanosecond_endpoints_and_infinities_ignore_caller_format_macros() -> None:
+    expected = [
+        "-infinity",
+        "1677-09-21T00:12:43.145225",
+        "1677-09-21T00:12:43.145225001",
+        "1969-12-31T23:59:59.999998999",
+        "1970-01-01T00:00:00",
+        "2262-04-11T23:47:16.854775806",
+        "infinity",
+        None,
+    ]
+    engine = DuckDBEngine()
+    with duckdb_runtime._connect() as connection:
+        source = connection.sql(
+            "SELECT * FROM (VALUES (0, '-infinity'::TIMESTAMP_NS), "
+            "(1, make_timestamp_ns(-9223372036854775000)), (2, make_timestamp_ns(-9223372036854774999)), "
+            "(3, make_timestamp_ns(-1001)), (4, make_timestamp_ns(0)), "
+            "(5, make_timestamp_ns(9223372036854775806)), (6, 'infinity'::TIMESTAMP_NS), "
+            "(7, NULL::TIMESTAMP_NS)) source(id, value_count)"
+        )
+        before = source.project("id, system.main.epoch_ns(value_count)").fetchall()
+        for macro in [
+            "epoch_ns(x) AS 0",
+            "isfinite(x) AS FALSE",
+            "make_timestamp(x) AS TIMESTAMP '2000-01-01'",
+            "strftime(x, f) AS 'forged'",
+            "lpad(x, n, p) AS '007'",
+            "replace(x, a, b) AS 'forged'",
+        ]:
+            connection.execute("CREATE MACRO " + macro)
+        try:
+            frame = engine.normalize_notebook_relation(source)
+            page = engine.page(frame, 0, 10)
+            assert [row["values"][1]["raw"] for row in page["rows"]] == expected
+            choices, more = engine.column_values(frame, "value_count")
+            assert not more
+            assert [item["value"] for item in choices] == expected[:-1]
+            assert [item["selectionValue"] is not None for item in choices] == [
+                False,
+                True,
+                False,
+                False,
+                True,
+                False,
+                False,
+            ]
+            assert engine.column_values(frame, "value_count", "")[0] == choices
+            assert engine.column_values(frame, "value_count", " ")[0] == choices[1:-1]
+            assert engine.column_values(frame, "value_count", "InfiniTy")[0] == [choices[0], choices[-1]]
+            for label in [expected[1], expected[2]]:
+                assert isinstance(label, str)
+                matched = [item for item in choices if label in item["value"]]
+                assert engine.column_values(frame, "value_count", label)[0] == matched
+                assert engine.column_values(frame, "value_count", label.replace("T", " "))[0] == matched
+            summary = engine.summaries(frame, [(1, "c:ns")])[0]
+            assert summary["topValues"] == choices
+            assert summary["visualization"] == {"kind": "datetime", "min": "-infinity", "max": "infinity"}
+            assert (summary["totalCount"], summary["nullCount"], summary["nanCount"], summary["distinctCount"]) == (
+                8,
+                1,
+                0,
+                7,
+            )
+            assert source.project("id, system.main.epoch_ns(value_count)").fetchall() == before
+            assert connection.sql("SELECT strftime(NULL, 'ignored')").fetchone() == ("forged",)
+        finally:
+            engine.close()
+
+
+@pytest.mark.parametrize("empty", [False, True], ids=["all-null", "empty"])
+def test_duckdb_nanosecond_empty_and_null_transport(empty: bool) -> None:
+    engine = DuckDBEngine()
+    try:
+        source = engine._relation_from_sql("SELECT NULL::TIMESTAMP_NS AS value" + (" WHERE FALSE" if empty else ""))
+        page = engine.page(source, 0, 2)
+        assert page["totalRows"] == (0 if empty else 1)
+        assert [row["values"][0]["isNull"] for row in page["rows"]] == ([] if empty else [True])
+        assert engine.column_values(source, "value") == ([], False)
+        summary = engine.summaries(source)[0]
+        assert summary["rawType"] == "TIMESTAMP_NS" and summary["topValues"] == []
+        assert summary["visualization"] == {"kind": "datetime", "min": None, "max": None}
+        assert summary["nullCount"] == summary["totalCount"] == (0 if empty else 1)
+        assert engine._terminal_rows(source, "SELECT value FROM ow") == ([] if empty else [(None,)])
     finally:
         engine.close()
 
