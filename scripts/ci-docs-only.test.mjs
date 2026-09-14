@@ -70,7 +70,8 @@ test("proves existing Markdown edits against the exact tested merge", async (con
     ["README.md", "docs/testing.md", "docs/guides/über view.md"],
     ["CHANGELOG.md"],
     ["CONTRIBUTING.md"],
-    ["README.md", "CHANGELOG.md", "CONTRIBUTING.md", "docs/testing.md"]
+    ["AGENTS.md"],
+    ["README.md", "CHANGELOG.md", "CONTRIBUTING.md", "AGENTS.md", "docs/testing.md"]
   ].entries()) {
     await context.test(files.join(", "), (child) => {
       const cwd = repository(child, files);
@@ -92,6 +93,79 @@ test("proves existing Markdown edits against the exact tested merge", async (con
           "docs_only=true\nr_omittable=true\nr_runtime_omittable=true\npython_omittable=true\nr_editor_omittable=false\nnative_spark_omittable=false\n"
         );
       }
+    });
+  }
+});
+
+test("proves documentary additions, edits and removals", async (context) => {
+  for (const { added = [], removed = [], modified = [] } of [
+    { removed: ["docs/testing.md"], modified: [] },
+    { removed: ["CONTRIBUTING.md"], modified: [] },
+    { added: ["CHANGELOG.md", "CONTRIBUTING.md", "AGENTS.md"] },
+    {
+      added: [
+        "docs/performance/everyday-tasks/method.md",
+        "docs/performance/everyday-tasks/review.md",
+        "docs/performance/everyday-tasks/duckdb.json",
+        "docs/performance/everyday-tasks/native-r.json",
+        "docs/performance/everyday-tasks/pyspark.json"
+      ]
+    },
+    { modified: ["docs/performance/everyday-tasks/duckdb.json"] },
+    { removed: ["docs/performance/everyday-tasks/duckdb.json"] },
+    {
+      removed: ["docs/performance-comparison.md"],
+      modified: [
+        "AGENTS.md",
+        "README.md",
+        "docs/feature-parity.md",
+        "docs/performance/data-wrangler-1.2.1/review.md",
+        "docs/testing.md"
+      ]
+    }
+  ]) {
+    await context.test([...added, ...removed, ...modified].join(", "), (child) => {
+      const cwd = repository(child, [...removed, ...modified]);
+      for (const file of removed) rmSync(join(cwd, file));
+      for (const file of [...added, ...modified])
+        write(cwd, file, file.endsWith(".json") ? '{"samples":[1,2,3]}\n' : "updated\n");
+      assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), {
+        docsOnly: true,
+        rOmittable: true,
+        rRuntimeOmittable: true,
+        pythonOmittable: true,
+        rEditorOmittable: false,
+        nativeSparkOmittable: false
+      });
+    });
+  }
+});
+
+test("keeps all owners for documentary additions, removals or report data mixed with otherwise omittable source", async (context) => {
+  for (const { file, added = false, document = "docs/testing.md", status = "D" } of [
+    { file: "python/openwrangler_runtime/engines/pandas_engine.py" },
+    { file: "python/tests/added.py", added: true },
+    { file: "r/tests/kernel_agent.R" },
+    { file: "r/tests/added.R", added: true },
+    { file: "src/test/webview.component.test.tsx" },
+    { file: "python/tests/existing.py", document: "docs/new.md", status: "A" },
+    { file: "r/tests/kernel_agent.R", document: "docs/performance/result.json", status: "A" },
+    { file: "src/test/webview.component.test.tsx", document: "docs/performance/result.json", status: "M" },
+    { file: "python/tests/added.py", added: true, document: "docs/performance/result.json" }
+  ]) {
+    await context.test(`${file}, added=${added}, ${status} ${document}`, (child) => {
+      const cwd = repository(child, [...(added ? [] : [file]), ...(status === "A" ? [] : [document])]);
+      if (status === "D") rmSync(join(cwd, document));
+      else write(cwd, document);
+      write(cwd, file);
+      assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), {
+        docsOnly: false,
+        rOmittable: false,
+        rRuntimeOmittable: false,
+        pythonOmittable: false,
+        rEditorOmittable: false,
+        nativeSparkOmittable: false
+      });
     });
   }
 });
@@ -636,12 +710,13 @@ test("requires full owners for added executable or symlink runtime source", asyn
   }
 });
 
-test("requires full owners for added Markdown or paths outside the runtime source scopes", async (context) => {
+test("requires full owners for additions outside the documentary and runtime source scopes", async (context) => {
   for (const file of [
     "src/webviews/progressiveProfilingLifecycle.ts",
     "src/test/progressiveProfilingLifecycle.unit.test.tsx",
-    "docs/new.md",
-    "CHANGELOG.md",
+    "docs/result.json",
+    "docs/performance-extra/result.json",
+    "docs/performance/probe.py",
     "src/new.py",
     "scripts/new.py",
     "python/pyproject.toml",
@@ -750,8 +825,11 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
     ".github/workflows/ci.yml",
     "scripts/ci-docs-only.mjs",
     "docs/example.py",
+    "docs/result.json",
+    "docs/performance-extra/result.json",
+    "docs/performance/probe.py",
     "docs/image.svg",
-    "AGENTS.md",
+    "AGENTS.md.bak",
     "CONTRIBUTING.md.bak",
     "src/shared/protocol.ts",
     "src/webviews-extra/App.tsx",
@@ -835,32 +913,39 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
   }
 });
 
-test("does not hide deletions or renames behind a Markdown destination", async (context) => {
-  for (const change of [
-    "add docs",
-    "delete docs",
-    "delete runtime",
-    "rename docs",
-    "rename runtime",
-    "add contributing",
-    "delete contributing",
-    "rename contributing"
+test("proves literal moves between allowed documentary paths", async (context) => {
+  for (const [source, destination] of [
+    ["docs/testing.md", "docs/renamed.md"],
+    ["CONTRIBUTING.md", "docs/contributing.md"],
+    ["AGENTS.md", "docs/agents.md"],
+    ["docs/performance/result.json", "docs/performance/archived/result.json"]
   ]) {
-    await context.test(change, (child) => {
-      const cwd = repository(
-        child,
-        change === "delete contributing" || change === "rename contributing" ? ["CONTRIBUTING.md"] : []
-      );
-      if (change === "add docs") write(cwd, "docs/new.md");
-      if (change === "delete docs") rmSync(join(cwd, "docs/testing.md"));
-      if (change === "delete runtime") rmSync(join(cwd, "src/runtime.py"));
-      if (change === "rename docs") renameSync(join(cwd, "docs/testing.md"), join(cwd, "docs/renamed.md"));
-      if (change === "rename runtime") renameSync(join(cwd, "src/runtime.py"), join(cwd, "docs/runtime.md"));
-      if (change === "add contributing") write(cwd, "CONTRIBUTING.md");
-      if (change === "delete contributing") rmSync(join(cwd, "CONTRIBUTING.md"));
-      if (change === "rename contributing") renameSync(join(cwd, "CONTRIBUTING.md"), join(cwd, "docs/contributing.md"));
-      const env = merge(cwd);
-      assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
+    await context.test(`${source} -> ${destination}`, (child) => {
+      const cwd = repository(child, [source]);
+      mkdirSync(dirname(join(cwd, destination)), { recursive: true });
+      renameSync(join(cwd, source), join(cwd, destination));
+      assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), {
+        docsOnly: true,
+        rOmittable: true,
+        rRuntimeOmittable: true,
+        pythonOmittable: true,
+        rEditorOmittable: false,
+        nativeSparkOmittable: false
+      });
+    });
+  }
+});
+
+test("does not hide source deletions or moves behind documentary destinations", async (context) => {
+  for (const destination of [undefined, "docs/runtime.md", "docs/performance/runtime.json"]) {
+    await context.test(destination ?? "delete runtime", (child) => {
+      const cwd = repository(child);
+      if (destination === undefined) rmSync(join(cwd, "src/runtime.py"));
+      else {
+        mkdirSync(dirname(join(cwd, destination)), { recursive: true });
+        renameSync(join(cwd, "src/runtime.py"), join(cwd, destination));
+      }
+      assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), {
         docsOnly: false,
         rOmittable: false,
         rRuntimeOmittable: false,
@@ -872,8 +957,15 @@ test("does not hide deletions or renames behind a Markdown destination", async (
   }
 });
 
-test("requires full owners for executable or symlink Markdown entries", async (context) => {
-  for (const file of ["README.md", "CHANGELOG.md", "CONTRIBUTING.md"]) {
+test("requires full owners for executable or symlink documentary entries", async (context) => {
+  for (const file of [
+    "README.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "AGENTS.md",
+    "docs/testing.md",
+    "docs/performance/result.json"
+  ]) {
     for (const mode of ["100755", "120000"]) {
       await context.test(`${file}: ${mode}`, (child) => {
         const cwd = repository(child, [file]);
@@ -891,21 +983,49 @@ test("requires full owners for executable or symlink Markdown entries", async (c
       });
     }
   }
+  for (const [file, status, mode] of [
+    ["docs/testing.md", "D", "100755"],
+    ["docs/testing.md", "D", "120000"],
+    ["docs/new.md", "A", "100755"],
+    ["docs/performance/result.json", "A", "120000"],
+    ["docs/performance/result.json", "D", "100755"]
+  ]) {
+    await context.test(`${status} ${file}: ${mode}`, (child) => {
+      const cwd = repository(child);
+      const blob = git(cwd, "rev-parse", "HEAD:README.md");
+      git(cwd, "update-index", "--add", "--cacheinfo", `${mode},${blob},${file}`);
+      if (status === "D") {
+        git(cwd, "commit", "--quiet", "-m", "existing special entry");
+        git(cwd, "branch", "--force", "main", "HEAD");
+        git(cwd, "rm", "--cached", file);
+      }
+      assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd, false) }), {
+        docsOnly: false,
+        rOmittable: false,
+        rRuntimeOmittable: false,
+        pythonOmittable: false,
+        rEditorOmittable: false,
+        nativeSparkOmittable: false
+      });
+    });
+  }
 });
 
-test("handles NUL-delimited paths without treating newline paths as documentation", (context) => {
-  const file = "docs/unusual\nname.md";
-  const cwd = repository(context, [file]);
-  write(cwd, file);
-  const env = merge(cwd);
-  assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
-    docsOnly: false,
-    rOmittable: false,
-    rRuntimeOmittable: false,
-    pythonOmittable: false,
-    rEditorOmittable: false,
-    nativeSparkOmittable: false
-  });
+test("handles NUL-delimited paths without treating newline paths as documentation", async (context) => {
+  for (const file of ["docs/unusual\nname.md", "docs/performance/unusual\nname.json"]) {
+    await context.test(file, (child) => {
+      const cwd = repository(child, [file]);
+      write(cwd, file);
+      assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), {
+        docsOnly: false,
+        rOmittable: false,
+        rRuntimeOmittable: false,
+        pythonOmittable: false,
+        rEditorOmittable: false,
+        nativeSparkOmittable: false
+      });
+    });
+  }
 });
 
 test("examines changes beyond a 300-file API or workflow filter limit", (context) => {

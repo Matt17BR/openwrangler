@@ -48,21 +48,30 @@ Source contracts, package validation, and the separate required CodeQL gate run 
 package job run the same scope proof against their own checkouts. Only `docs_only=true` omits ESLint, Node 24 type
 checking, Vitest and the minimum/stable VS Code launch step, with explicit summaries of the omitted checks. All other
 steps remain required, including the supported-Node build, Python setup, package/source verification and harness compilation.
-The allowed Markdown files are not inputs to ESLint, TypeScript checking, Vitest or the selected installed journey.
+The allowed documentary files are not inputs to ESLint, TypeScript checking, Vitest or the selected installed journey.
 README and CHANGELOG remain shipped content, so packaging still validates their exact source bytes. Formatting,
 documentation, reference and script checks retain their document validation; these checks do not establish the
-accuracy of every prose claim.
-CONTRIBUTING is excluded from the VSIX. Retained formatting and documentation checks cover it; runtime and
-installed-editor tests do not execute its contributor instructions.
+accuracy of every prose claim or reported measurement. Files under `docs/**`, including static performance-report JSON,
+are excluded from the VSIX and are not runtime inputs.
+CONTRIBUTING and AGENTS are excluded from the VSIX. Retained formatting and documentation checks cover them;
+runtime and installed-editor tests do not execute their contributor or agent instructions.
 On code changes, lint and type checking run after the direct script contracts, so their failures are reported later.
 
 The scope-only job uses Node and Git without installing npm dependencies or restoring the npm cache.
 `scripts/ci-docs-only.mjs` permits the omissions below. All admitted files must be regular and non-executable.
+The allowed Markdown paths are `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `AGENTS.md` and `docs/**/*.md`.
+Modifications to existing Markdown files qualify on their own or with the permitted source edits below.
+Markdown additions and removals, and JSON additions, modifications and removals under `docs/performance/**`, qualify
+only when the entire diff consists of these documentary files; any source or other companion change requires full checks.
+Such documentation-only changes may omit Python, R and Windows execution. Literal moves between allowed documentary
+paths qualify as removals and additions or modifications. Moving code into documentation still requires full checks:
+the proof reads both the source removal and destination change without rename detection.
+Required-document, generated-reference and release-document checks still run and reject missing required files.
 
 - Python may be omitted for additions or edits to `.R` files under `r/openwrangler_runtime/` or `r/tests/`; edits to
   existing top-level `src/test/extensionHost/*.ts`, `scripts/editor-acceptance.mjs` or
-  `scripts/editor-acceptance-artifact.test.mjs` files; and edits to existing `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md` or
-  `docs/**/*.md` files. The installed-harness edits retain all R and Windows execution. Added or nested harness files
+  `scripts/editor-acceptance-artifact.test.mjs` files; and modifications to allowed Markdown files.
+  The installed-harness edits retain all R and Windows execution. Added or nested harness files
   and other scripts are outside this permission.
 - The Python worker may also be omitted for modifications to existing files under `src/webviews/` and the existing
   `src/test/progressiveProfilingLifecycle.unit.test.tsx` owner, optionally with the allowed component-test and Markdown
@@ -73,14 +82,13 @@ The scope-only job uses Node and Git without installing npm dependencies or rest
   installed harness, scripts or runtime source. Additions, deletions, renames and mode changes retain execution.
   Both platform R jobs still run their source, cleanup, package and installed-editor checks.
 - R source and installed-editor execution may be omitted for additions or edits to `.py` files under
-  `python/openwrangler_runtime/` or `python/tests/`, and edits to existing `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md` or
-  `docs/**/*.md`.
+  `python/openwrangler_runtime/` or `python/tests/`, and modifications to allowed Markdown files.
 - Native Spark may be omitted for modifications to one or more of the existing
   `python/openwrangler_runtime/engines/_pandas_arrow_formula_helpers.py`, `pandas_engine.py` and `duckdb_engine.py`
   files, or `python/tests/test_operation_edges.py`, `test_session_transactions.py`, `test_duckdb_engine.py`,
   `test_split_text_columns.py`, `test_pandas_engine.py` and `test_filter_logic.py`, optionally with the allowed Markdown
   edits. Each owner qualifies independently.
-  Documentation-only edits do not set this omission flag. Additions,
+  Documentation-only changes do not set this omission flag. Additions,
   deletions, renames, mode changes and other inputs keep native Spark execution required.
 - Only the macOS and Windows editor steps may be omitted when at least one of the existing
   `r/tests/kernel_agent.R` or `r/tests/frame_contract.R` files is modified, optionally with the allowed Markdown edits.
@@ -94,8 +102,8 @@ The scope-only job uses Node and Git without installing npm dependencies or rest
   `scripts/capture-screenshots.mjs`, `scripts/capture-screenshots-readiness.mjs` and `scripts/ci-docs-only.test.mjs`, enumerated in
   [`ci-docs-only.mjs`](../scripts/ci-docs-only.mjs). These edits keep `docs_only=false`, so Source runs Vitest, the Node
   script owners and the Node 22 build, and packaged smoke retains both Linux VS Code launches.
-- ESLint, Node 24 type checking, Vitest and the minimum/stable VS Code launches may be omitted only for edits to
-  existing `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md` or `docs/**/*.md` files. Windows also omits those documentation-only changes.
+- ESLint, Node 24 type checking, Vitest and the minimum/stable VS Code launches may be omitted only for the allowed
+  documentation-only changes.
 
 Mixed Python/R changes require both runtimes. The Python job does not consume the allowed R or installed-harness files.
 The R checks do not execute the allowed Python files; the selected installed R journeys use Python only for Jupyter client readiness
@@ -144,7 +152,7 @@ these generators. Their required [local browser acceptance](testing.md) still ow
 interactions; retained Source and Linux package checks do not replace it. Shared browser and preflight helpers remain
 outside this permission.
 
-These omissions reduce unrelated work for documentation edits, webview edits, private component tests, isolated engine changes,
+These omissions reduce unrelated work for documentation changes, webview edits, private component tests, isolated engine changes,
 release-policy edits, CI proof test edits, local screenshot-tool edits and the allowed installed-harness edits.
 They provide no fresh or transferred test result and can delay discovery of unrelated dependency, editor installation
 or hosted-environment regressions.
@@ -171,8 +179,9 @@ owner. Parallel Linux shards repeat environment setup on separate workers, and i
 platform workers. Assess total wall time and runner cost together when changing this composition.
 
 The proof binds the checkout's merge commit and both parents to the pull-request event. It reads a bounded,
-NUL-delimited Git diff. Additions outside the permitted runtime source scopes, deletions, renames, mode changes,
-other changes outside the allowed paths, empty diffs and unavailable or unrecognized evidence select full checks.
+NUL-delimited Git diff. Additions outside the permitted documentary or runtime source scopes, deletions outside the documentation-only
+rule, code renames, mode changes, other changes outside the allowed paths, empty diffs and unavailable or unrecognized
+evidence select full checks.
 Changes to the production proof or workflow also require full execution.
 A failed proof job or malformed output fails the required result.
 Source and package jobs also fail if their local proof fails or returns a malformed omission value.
