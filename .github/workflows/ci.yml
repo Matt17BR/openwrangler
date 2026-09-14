@@ -83,7 +83,7 @@ jobs:
         run: |
           case "$DOCS_ONLY" in
             true)
-              echo "ESLint, Node 24 type checking and Vitest omitted: verified existing Markdown edits only. No fresh execution of these checks is claimed." >> "$GITHUB_STEP_SUMMARY"
+              echo "ESLint, Node 24 type checking and Vitest omitted: verified documentation-only changes. No fresh execution of these checks is claimed." >> "$GITHUB_STEP_SUMMARY"
               ;;
             false)
               npm run lint
@@ -339,7 +339,7 @@ jobs:
         run: |
           case "$DOCS_ONLY" in
             true)
-              echo "Installed VS Code smoke omitted: verified existing Markdown edits only; package validation passed. No fresh installed-editor execution is claimed." >> "$GITHUB_STEP_SUMMARY"
+              echo "Installed VS Code smoke omitted: verified documentation-only changes; package validation passed. No fresh installed-editor execution is claimed." >> "$GITHUB_STEP_SUMMARY"
               ;;
             false)
               VSCODE_TEST_VERSION=1.106.0 node scripts/run-packaged-editor-tests.mjs openwrangler.vsix

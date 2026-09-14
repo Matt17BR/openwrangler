@@ -92,6 +92,7 @@ export function proveRuntimeOmissions({ cwd = process.cwd(), env = process.env }
   const records = text.split("\0");
   if (records.pop() !== "" || records.length === 0 || records.length % 2 !== 0) return required;
   let docsOnly = true;
+  let documentationOnlyRequired = false;
   let rOmittable = true;
   let rRuntimeOmittable = true;
   let pythonOmittable = true;
@@ -99,21 +100,26 @@ export function proveRuntimeOmissions({ cwd = process.cwd(), env = process.env }
   let nativeSparkOmittable = true;
   for (let index = 0; index < records.length; index += 2) {
     const modified = /^:100644 100644 [0-9a-f]{40} [0-9a-f]{40} M$/u.test(records[index]);
+    const added = /^:000000 100644 0{40} [0-9a-f]{40} A$/u.test(records[index]);
+    const deleted = /^:100644 000000 [0-9a-f]{40} 0{40} D$/u.test(records[index]);
     const path = records[index + 1];
+    const markdown =
+      path === "README.md" ||
+      path === "CHANGELOG.md" ||
+      path === "CONTRIBUTING.md" ||
+      path === "AGENTS.md" ||
+      /^docs\/[^\p{Cc}]+\.md$/u.test(path);
+    const reportData = /^docs\/performance\/[^\p{Cc}]+\.json$/u.test(path);
+    if ((markdown || reportData) && (modified || added || deleted)) {
+      documentationOnlyRequired ||= !modified || reportData;
+      continue;
+    }
     const pythonSource = /^python\/(?:openwrangler_runtime|tests)\/[^\p{Cc}]+\.py$/u.test(path);
     const rSource = /^r\/(?:openwrangler_runtime|tests)\/[^\p{Cc}]+\.R$/u.test(path);
-    // Only regular runtime/test source additions may omit the other runtime; deletions still exclude renames.
-    if (!modified && !((pythonSource || rSource) && /^:000000 100644 0{40} [0-9a-f]{40} A$/u.test(records[index]))) {
+    // Only regular runtime/test source additions may omit the other runtime; their deletions still exclude renames.
+    if (!modified && !((pythonSource || rSource) && added)) {
       return required;
     }
-    if (
-      modified &&
-      (path === "README.md" ||
-        path === "CHANGELOG.md" ||
-        path === "CONTRIBUTING.md" ||
-        /^docs\/[^\p{Cc}]+\.md$/u.test(path))
-    )
-      continue;
     nativeSparkOmittable &&= modified && nativeSparkOmissionFiles.has(path);
     docsOnly = false;
     const webviewSource = modified && /^src\/webviews\/[^\p{Cc}]+$/u.test(path);
@@ -143,6 +149,7 @@ export function proveRuntimeOmissions({ cwd = process.cwd(), env = process.env }
     }
     return required;
   }
+  if (documentationOnlyRequired && !docsOnly) return required;
   return {
     docsOnly,
     rOmittable,
@@ -163,7 +170,7 @@ if (process.argv[1] !== undefined && pathToFileURL(resolve(process.argv[1])).hre
   );
   console.log(
     docsOnly
-      ? "Verified existing documentation edits only."
+      ? "Verified documentation-only changes."
       : rEditorOmittable
         ? "Verified R test edits permit omission of installed R editor journeys; source checks remain required."
         : rOmittable && pythonOmittable
