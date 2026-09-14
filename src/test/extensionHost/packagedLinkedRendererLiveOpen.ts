@@ -240,18 +240,27 @@ export function createPackagedLinkedRendererLiveOpen(
         sort: [{ column: "score", direction: "desc", nulls: "last" }]
       };
       recordAcceptanceProgress("verify:notebook-renderer-linked-live:page");
-      const projected = await testing.request({
-        kind: "getPage",
-        sessionId: active.sessionId,
-        revision: active.metadata.revision,
-        viewRequestId: "linked-renderer-live-page",
-        offset: 0,
-        limit: 2,
-        columnOffset: 1,
-        columnLimit: 1,
-        filterModel: filteredModel
-      });
-      assert.equal(projected.kind, "page");
+      const projected = await testing.request(
+        {
+          kind: "getPage",
+          sessionId: active.sessionId,
+          revision: active.metadata.revision,
+          viewRequestId: "linked-renderer-live-page",
+          offset: 0,
+          limit: 2,
+          columnOffset: 1,
+          columnLimit: 1,
+          filterModel: filteredModel
+        },
+        { ephemeralPage: true }
+      );
+      assert.equal(
+        projected.kind,
+        "page",
+        projected.kind === "error"
+          ? `Linked live page failed (${projected.code.slice(0, 80)}, recoverable=${projected.recoverable}).`
+          : "The linked live projected page must resolve."
+      );
       if (projected.kind !== "page") throw new Error("The linked live projected page did not resolve.");
       assert.deepEqual(projected.page.columnIds, [liveScore.id]);
       assert.deepEqual(
@@ -282,10 +291,16 @@ export function createPackagedLinkedRendererLiveOpen(
           nullCount: 0,
           nanCount: 0,
           distinctCount: 2,
-          topValues: [
-            { value: "7", count: 1 },
-            { value: "5", count: 1 }
-          ],
+          topValues: [7, 5].map((value) => ({
+            value: String(value),
+            count: 1,
+            selectionValue: {
+              kind: "typedSelection",
+              version: 1,
+              columnType: "integer",
+              cell: { kind: "integer", raw: value, display: String(value), isNull: false, isNaN: false }
+            }
+          })),
           numeric: {
             min: 5,
             max: 7,
