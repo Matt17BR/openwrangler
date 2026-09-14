@@ -100,7 +100,9 @@ export function createDependencyMutationRecoveryJourney({
       "An authorized writer must be released and status-proved before its looping parent is terminated."
     );
 
+    const fixtureBytes = readFileSync(fixture.fsPath);
     const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-dependency-recovery-"));
+    const recoverySource = vscode.Uri.file(path.join(directory, "sample.csv"));
     const recovery = createDependencyGuardRecoveryFixture(directory, python, helperPath);
     const config = vscode.workspace.getConfiguration("openWrangler");
     const originalWorkspacePythonPath = config.inspect<string>("pythonPath")?.workspaceValue;
@@ -113,6 +115,7 @@ export function createDependencyMutationRecoveryJourney({
     const cleanupFailures: unknown[] = [];
 
     try {
+      writeFileSync(recoverySource.fsPath, fixtureBytes, { flag: "wx" });
       guardParent = launchAcceptanceGuardParent(recovery);
       await waitFor(
         () => existsSync(recovery.parentState),
@@ -185,7 +188,7 @@ export function createDependencyMutationRecoveryJourney({
       const blocked = await testing.request({
         kind: "openSession",
         ...GRID_COLUMN_WINDOW,
-        source: csvSource(fixture),
+        source: csvSource(recoverySource),
         backend: "polars",
         pageSize: 20,
         mode: "viewing"
@@ -279,7 +282,7 @@ export function createDependencyMutationRecoveryJourney({
       const discovered = await testing.request({
         kind: "openSession",
         ...GRID_COLUMN_WINDOW,
-        source: csvSource(fixture),
+        source: csvSource(recoverySource),
         backend: "polars",
         pageSize: 20,
         mode: "viewing"
@@ -390,7 +393,7 @@ export function createDependencyMutationRecoveryJourney({
       const opened = await testing.request({
         kind: "openSession",
         ...GRID_COLUMN_WINDOW,
-        source: csvSource(fixture),
+        source: csvSource(recoverySource),
         backend: "polars",
         pageSize: 20,
         mode: "viewing"
@@ -404,6 +407,7 @@ export function createDependencyMutationRecoveryJourney({
         sessionId = opened.metadata.sessionId;
         sessionRevision = opened.metadata.revision;
         assert.equal(opened.metadata.backend, "polars");
+        assert.deepEqual(readFileSync(recoverySource.fsPath), fixtureBytes);
       }
     } catch (error) {
       operationFailed = true;
