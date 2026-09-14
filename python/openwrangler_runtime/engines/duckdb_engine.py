@@ -1162,10 +1162,11 @@ class DuckDBEngine(DataFrameEngine):
             return self._assign(frame, target, expression)
         if kind == "formatDatetime":
             column = bound_column_name(params["column"], kind)
+            raw_type = str(frame.types[self._columns(frame).index(column)])
             return self._assign(
                 frame,
                 params.get("newColumn", column),
-                f"strftime(try_cast({_quote_ident(column)} AS TIMESTAMP), {_sql_literal(params['format'])})",
+                _duckdb_datetime_format_expression(_quote_ident(column), raw_type, _sql_literal(params["format"])),
             )
         if kind == "groupBy":
             return self._group_by(frame, _bound_duckdb_group_params(params))
@@ -1560,9 +1561,12 @@ class DuckDBEngine(DataFrameEngine):
             ]
         if kind == "formatDatetime":
             column = bound_column_name(params["column"], kind)
-            expression = f"strftime(try_cast({_quote_ident(column)} AS TIMESTAMP), {_sql_literal(params['format'])})"
+            expression = (
+                f"_duckdb_datetime_format_expression({_quote_ident(column)!r}, "
+                f"str(df.types[_ow_columns(df).index({column!r})]), {_sql_literal(params['format'])!r})"
+            )
             return [
-                f"{prefix}df = _ow_assign(df, {output_name or repr(params.get('newColumn', column))}, {expression!r})"
+                f"{prefix}df = _ow_assign(df, {output_name or repr(params.get('newColumn', column))}, {expression})"
             ]
         if kind == "groupBy":
             return [f"{prefix}df = _ow_group_by(df, {_bound_duckdb_group_params(params)!r})"]
@@ -2909,6 +2913,19 @@ def _duckdb_datetime_is_aware(raw_type: str) -> bool:
     return "WITH TIME ZONE" in normalized or "TIMESTAMPTZ" in normalized
 
 
+def _duckdb_datetime_format_expression(column: str, raw_type: str, format_literal: str) -> str:
+    if raw_type == "TIMESTAMP_NS":
+        # The native nanosecond formatter rejects some lower endpoints that
+        # remain exactly representable by the existing microsecond formatter.
+        return (
+            f"CASE WHEN system.main.epoch_ns({column}) % 1000 = 0 "
+            f"THEN strftime(try_cast({column} AS TIMESTAMP), {format_literal}) "
+            f"ELSE strftime({column}, {format_literal}) END"
+        )
+    value = column if _semantic_type(raw_type) in {"date", "datetime"} else f"try_cast({column} AS TIMESTAMP)"
+    return f"strftime({value}, {format_literal})"
+
+
 def _timedelta_seconds_text(value: timedelta) -> str:
     total_microseconds = ((value.days * 86_400) + value.seconds) * 1_000_000 + value.microseconds
     sign = "-" if total_microseconds < 0 else ""
@@ -3727,6 +3744,7 @@ def _generated_helper_source() -> str:
             _GENERATED_HELPERS.rstrip(),
             "",
             getsource(_semantic_type),
+            getsource(_duckdb_datetime_format_expression),
             *generated_view_value_helper_lines(),
         ]
     ).rstrip()
