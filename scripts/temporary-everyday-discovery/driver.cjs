@@ -195,7 +195,7 @@ exports.run = async () => {
     await capture();
     await click(operation, "lowercase");
     checkpoint("target-columns");
-    const targetColumns = operationsFrame.getByText("Select one or more target columns...", { exact: true });
+    const targetColumns = operationsFrame.getByRole("combobox");
     await click(targetColumns, "target-columns");
     const textOption = operationsFrame.getByText("text", { exact: true });
     await poll(() => visible(textOption), "text-option");
