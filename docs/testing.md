@@ -372,6 +372,13 @@ their start and completion against the same preparation clock. Successful R inst
 records for core packages, supplemental packages and the macOS collapse source build. Each total includes downloads
 and installation; it does not separate transfer from compilation. Other successful installer output is omitted.
 These diagnostics preserve the existing inactivity and absolute phase deadlines.
+
+Generic verification also records entry and completion for each Pandas, Polars and DuckDB viewing request and session-idle
+wait. The same 100 ms progress poll logs only these fixed backend and operation labels when live progress is readable,
+including on success. Arrivals are sampled milestones, not exact durations; quick transitions may be missed. A new stage
+resets the unchanged 180-second inactivity deadline; the 300-second absolute deadline still bounds the phase. These
+diagnostics distinguish progress within the viewing-query journey and do not establish or fix the cause of a timeout.
+
 If the public R-file command ends before its picker appears, the failed assertion includes up to eight visible
 notifications from the existing bounded collector, each whitespace-normalized and capped at 1,000 characters. An
 unavailable collection yields an empty list; the failure-artifact redaction rules still apply.

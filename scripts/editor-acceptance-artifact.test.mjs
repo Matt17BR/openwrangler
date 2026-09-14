@@ -178,7 +178,7 @@ for (const platform of ["linux", "win32"]) {
   });
 }
 
-test("R checkpoint timing logs only changed fixed labels without changing phase or inactivity deadlines", async (context) => {
+test("checkpoint timing logs only changed fixed labels without changing phase or inactivity deadlines", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-progress-timing-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
   const lines = [];
@@ -267,6 +267,58 @@ test("R checkpoint timing logs only changed fixed labels without changing phase 
       collapseCheckpoints.map(
         (checkpoint, index) => `R editor checkpoint observed at ${120 + index * 20} ms: ${checkpoint}`
       )
+    );
+  }
+
+  for (const phase of ["verify", "jupyter-allow"]) {
+    lines.length = 0;
+    let clock = 1_000;
+    const viewingCheckpoints = ["pandas", "polars", "duckdb"].flatMap((backend) =>
+      ["openSession", "getPage", "getSummary", "getDatasetStats", "getColumnValues", "closeSession", "idle"].flatMap(
+        (operation) =>
+          ["start", "complete"].map((boundary) => `verify:viewing-queries:${backend}:${operation}:${boundary}`)
+      )
+    );
+    const checkpoints = [
+      "verify:viewing-queries",
+      ...viewingCheckpoints,
+      "verify:viewing-queries:private-backend:getPage:start",
+      "verify:viewing-queries:pandas:private-operation:start",
+      "verify:viewing-queries:pandas:getPage:private-boundary",
+      "verify:viewing-queries:pandas:getPage:complete:private-value",
+      "verify:viewing-queries:polars:getPage:complete\nprivate-value",
+      "private-value-must-not-be-logged",
+      "jupyter-r:editing:text-length-preview-apply-inspect-undo"
+    ];
+    const resultPath = join(directory, `${phase}-result.json`);
+    const elapsedMs = checkpoints.length * 200;
+    const observed = await waitForEditorAcceptanceObservation({
+      resultPath,
+      progressPath: join(directory, "unused-progress.json"),
+      exit: new Promise(() => {}),
+      isRunning: () => true,
+      now: () => clock,
+      wait: async (interval) => {
+        assert.equal(interval, 100);
+        clock += interval;
+        if (clock === 1_000 + elapsedMs) await writeFile(resultPath, "{}\n");
+      },
+      phase,
+      phaseStartedAt: 900,
+      phaseTimeoutMs: 20_000,
+      inactivityTimeoutMs: 350,
+      initialProgressCheckpoint: checkpoints[0],
+      progressReader: () => checkpoints[Math.min(Math.floor((clock - 1_000) / 200), checkpoints.length - 1)]
+    });
+    assert.equal(observed.kind, "result");
+    assert.equal(observed.elapsedMs, elapsedMs);
+    assert.deepEqual(
+      lines,
+      phase === "verify"
+        ? viewingCheckpoints.map(
+            (checkpoint, index) => `Viewing-query editor checkpoint observed at ${300 + index * 200} ms: ${checkpoint}`
+          )
+        : []
     );
   }
 });
