@@ -26,7 +26,8 @@ therefore do not prevent concurrent invocations from choosing the same ports.
 
 ## Direct source checks
 
-Complete [Clone and install](../CONTRIBUTING.md#clone-and-install), and use
+Complete [Clone and install](../CONTRIBUTING.md#clone-and-install) for Node dependencies. For Python checks, complete
+[Python development setup](../CONTRIBUTING.md#python-development-setup) and use
 [Python selection](../CONTRIBUTING.md#python-selection-for-repository-commands) for repository Python commands.
 While iterating, run the smallest relevant owner:
 
@@ -90,7 +91,8 @@ authority. `docs:check` permits incomplete capabilities in the stable-channel so
 canonical entries; the canonical artifact owners still refuse stable qualification with an incomplete required ledger.
 
 For rendered webview UI, interactions, styles, browser fixtures, their generated content or screenshot changes, run
-local browser acceptance. Install `python[dev]` through the setup above, then run:
+local browser acceptance. Install `python[dev]` through
+[Python development setup](../CONTRIBUTING.md#python-development-setup), then run:
 
 ```bash
 npx --no-install playwright-core install chromium

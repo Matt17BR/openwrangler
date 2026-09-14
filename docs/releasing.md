@@ -70,7 +70,8 @@ exact bytes before reusing its receipt. Final file identity, link count, source 
 metadata checks remain required. A changed output fails and only owned files are removed.
 
 `npm run package:dev` is for local development. Its output is not a release candidate and must not be committed. The
-README installation guidance is editable prose linking to the [source installation steps](../CONTRIBUTING.md).
+README installation guidance is editable prose linking to the
+[source installation steps](../CONTRIBUTING.md#build-and-install-from-source).
 Its stable badge reads GitHub's latest stable release, while registry badges link to installation without presenting a
 preview version as stable. Package verification requires the README to match its source.
 

@@ -5,15 +5,21 @@ Open Wrangler welcomes bug fixes, tests, documentation, and product improvements
 
 ## Prerequisites
 
+Building the VSIX requires:
+
 - Git.
 - Node.js `24.19.0` with its bundled npm `11.17.0` is the canonical development, CI, and packaging pair. The
   supported development engine range is `^22.17.0 || ^24.0.0`; Node 23 is intentionally unsupported.
-- VS Code 1.106 or newer for the Extension Development Host.
-- Python 3.10 through 3.14. Python 3.12 is the recommended development version and runs the packaged-editor CI
-  checks. The Python runtime contract job uses 3.10 to check the oldest supported interpreter.
 
 Use npm from the selected Node installation. The lockfile is authoritative; do not substitute another package
 manager.
+
+Additional requirements depend on the workflow:
+
+- VS Code 1.106 or newer for the Extension Development Host.
+- Python 3.10 through 3.14 for Python workflows and Python development checks. Python 3.12 is the recommended
+  development version and runs the packaged-editor CI checks. The Python runtime contract job uses 3.10 to check
+  the oldest supported interpreter.
 
 ## Clone and install
 
@@ -30,6 +36,34 @@ npm ci --ignore-scripts
 
 Dependency lifecycle scripts are disabled by `.npmrc`, and automation repeats `--ignore-scripts` explicitly. Use the
 reviewed lock and do not substitute another package manager.
+
+## Build and install from source
+
+Complete [Clone and install](#clone-and-install), then build and verify the development VSIX:
+
+```bash
+npm run package:dev
+npm run verify:vsix -- openwrangler-dev.vsix
+```
+
+`package:dev` performs a clean build and writes `openwrangler-dev.vsix`. Move any previous copy before running it
+again: packaging refuses to overwrite an existing VSIX. It does not run the source test suite or installed release
+qualification. Building and verifying the VSIX does not require the Python development environment below.
+Do not commit the development VSIX. Follow [Releasing](docs/releasing.md) to prepare a qualified release candidate.
+
+Install it with one of these commands:
+
+```bash
+code --install-extension openwrangler-dev.vsix --force
+# or
+cursor --install-extension openwrangler-dev.vsix --force
+```
+
+The VSIX bundles Open Wrangler's runtime code. Python or R workflows still need a supported interpreter and dataframe
+dependencies. Runtime execution and dependency installation require Workspace Trust; see
+[compatibility and limits](README.md#compatibility-and-limits).
+
+## Python development setup
 
 Create a checkout-local Python environment and install the runtime with its development dependencies. The `.venv`
 name matters because repository commands discover that environment without shell activation.
@@ -96,8 +130,8 @@ host needs an explicit override.
 
 ## Golden path
 
-The following path proves a fresh checkout can build, run one focused test, start Open Wrangler in an Extension
-Development Host, and produce a development VSIX.
+After [Python development setup](#python-development-setup), this contributor workflow checks the build, one focused
+test, an Extension Development Host and a development VSIX.
 
 1. Build the extension and webviews:
 
@@ -126,22 +160,8 @@ Development Host, and produce a development VSIX.
    `fixtures/sample.csv` and choose **Open in Open Wrangler**. A grid with the four sample columns confirms that the
    bundled Python runtime can start from the selected environment.
 
-4. Close the development host and create a development VSIX:
-
-   ```bash
-   npm run package:dev
-   npm run verify:vsix -- openwrangler-dev.vsix
-   ```
-
-   `package:dev` performs a clean build and writes `openwrangler-dev.vsix`. Move any previous copy before running it
-   again: packaging refuses to overwrite an existing VSIX. It does not run the source test suite or installed release
-   qualification. Install it with one of these commands when you need to test the package in your normal editor:
-
-   ```bash
-   code --install-extension openwrangler-dev.vsix --force
-   # or
-   cursor --install-extension openwrangler-dev.vsix --force
-   ```
+4. Close the development host, then follow [Build and install from source](#build-and-install-from-source) to create
+   and verify a development VSIX. Install it in your normal editor when needed.
 
 Do not commit the VSIX, `.venv`, `node_modules`, editor profiles, notebook caches, or scratch files.
 
