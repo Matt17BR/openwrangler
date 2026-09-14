@@ -17,7 +17,7 @@ Every pull request reports the same five required product checks:
   narrower source-test omission below.
 - **Packaged VS Code smoke** builds and verifies one VSIX, then opens those exact bytes with the `platform-smoke` /
   `daily-core` selector in the declared minimum VS Code 1.106.0 and current stable VS Code, subject to the
-  documentation-only launch omission below.
+  documentation-only omission below.
   The job uses the base Python dependencies for CSV editing and saved-notebook rendering.
 - **Windows filesystem and process contracts** runs Windows-specific export, dependency and shutdown cases, dependency
   journal creation races, dependency fixture cleanup, trusted-pickle source identity and descendant cleanup, and the
@@ -46,8 +46,10 @@ so reuse is limited to its later jobs, updates and reruns; the weekly R 4.4 job 
 
 Source contracts, package validation, and the separate required CodeQL gate run for every change. Source and the
 package job run the same scope proof against their own checkouts. Only `docs_only=true` omits ESLint, Node 24 type
-checking, Vitest and the minimum/stable VS Code launch step, with explicit summaries of the omitted checks. All other
-steps remain required, including the supported-Node build, Python setup, package/source verification and harness compilation.
+checking, Vitest, installed-editor harness compilation and the minimum/stable VS Code launches, with explicit summaries
+of the omitted checks. All other steps remain required, including the supported-Node build, Python setup and
+package/source verification. When editor execution is required, its harness is compiled once before both launches;
+compilation failure stops execution.
 The allowed documentary files are not inputs to ESLint, TypeScript checking, Vitest or the selected installed journey.
 README and CHANGELOG remain shipped content, so packaging still validates their exact source bytes. Formatting,
 documentation, reference and script checks retain their document validation; these checks do not establish the

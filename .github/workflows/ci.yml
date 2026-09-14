@@ -331,17 +331,16 @@ jobs:
       - run: npm run build
       - run: npm run package:prepared -- --out openwrangler.vsix
       - run: npm run verify:vsix -- openwrangler.vsix
-      - name: Compile the installed-editor harness
-        run: npm run build:test-extension
       - id: packaged_editor
-        name: Open the package in minimum and stable VS Code
+        name: Compile the harness and open the package in minimum and stable VS Code
         shell: bash
         run: |
           case "$DOCS_ONLY" in
             true)
-              echo "Installed VS Code smoke omitted: verified documentation-only changes; package validation passed. No fresh installed-editor execution is claimed." >> "$GITHUB_STEP_SUMMARY"
+              echo "Installed VS Code smoke omitted: verified documentation-only changes; package validation passed; harness compilation omitted. No fresh installed-editor execution is claimed." >> "$GITHUB_STEP_SUMMARY"
               ;;
             false)
+              npm run build:test-extension
               VSCODE_TEST_VERSION=1.106.0 node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
               VSCODE_TEST_VERSION=stable node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
               ;;

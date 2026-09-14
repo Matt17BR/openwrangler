@@ -1313,13 +1313,17 @@ test("package smoke keeps its prerequisites and scheduling before the local docu
     "npm run clean",
     "npm run build",
     "npm run package:prepared -- --out openwrangler.vsix",
-    "npm run verify:vsix -- openwrangler.vsix",
-    "npm run build:test-extension"
+    "npm run verify:vsix -- openwrangler.vsix"
   ]) {
     const index = job.steps.findIndex((step) => step.run === run);
     assert.ok(index > previous && index < guardIndex, `${run} must remain before the launch decision`);
     previous = index;
   }
+  assert.equal(
+    job.steps.some((step) => step.run === "npm run build:test-extension"),
+    false,
+    "harness compilation must be part of the guarded editor execution"
+  );
   for (const step of job.steps.slice(0, guardIndex + 1)) {
     assert.equal(step.if, undefined, "proof or prerequisite failure must stop the normal job steps");
     assert.equal(step["continue-on-error"], undefined);
@@ -1334,25 +1338,32 @@ test("package smoke keeps its prerequisites and scheduling before the local docu
   });
 });
 
-test("package smoke omits only verified documentation launches and preserves both editor failures", async (context) => {
+test("package smoke omits documentation compilation and launches while preserving failures", async (context) => {
   const guard = workflow.jobs["package-editor"].steps.find((step) => step.id === "packaged_editor");
-  for (const [docsOnly, minimumStatus, stableStatus, expectedStatus, versions] of [
-    ["true", 0, 0, 0, []],
-    ["false", 0, 0, 0, ["1.106.0", "stable"]],
-    ["false", 37, 0, 37, ["1.106.0"]],
-    ["false", 0, 41, 41, ["1.106.0", "stable"]],
-    [undefined, 0, 0, 1, []],
-    ["", 0, 0, 1, []],
-    ["TRUE", 0, 0, 1, []],
-    ["true\nfalse", 0, 0, 1, []]
+  for (const [docsOnly, compileStatus, minimumStatus, stableStatus, expectedStatus, versions] of [
+    ["true", 53, 0, 0, 0, []],
+    ["false", 0, 0, 0, 0, ["1.106.0", "stable"]],
+    ["false", 53, 0, 0, 53, []],
+    ["false", 0, 37, 0, 37, ["1.106.0"]],
+    ["false", 0, 0, 41, 41, ["1.106.0", "stable"]],
+    [undefined, 0, 0, 0, 1, []],
+    ["", 0, 0, 0, 1, []],
+    ["TRUE", 0, 0, 0, 1, []],
+    ["true\nfalse", 0, 0, 0, 1, []]
   ]) {
-    await context.test(`${JSON.stringify(docsOnly)}/editors=${minimumStatus},${stableStatus}`, (child) => {
+    const label = `${JSON.stringify(docsOnly)}/compile=${compileStatus}/editors=${minimumStatus},${stableStatus}`;
+    await context.test(label, (child) => {
       const temp = mkdtempSync(join(tmpdir(), "openwrangler-ci-package-"));
       child.after(() => rmSync(temp, { recursive: true, force: true }));
       const marker = join(temp, "invocation");
       const summary = join(temp, "summary");
       writeFileSync(marker, "");
       writeFileSync(summary, "");
+      writeFileSync(
+        join(temp, "npm"),
+        '#!/bin/sh\nprintf \'%s\\n\' npm "$@" >> "$NODE_MARKER"\nexit "$COMPILE_STATUS"\n',
+        { mode: 0o755 }
+      );
       writeFileSync(
         join(temp, "node"),
         '#!/bin/sh\nprintf \'%s\\n\' "$VSCODE_TEST_VERSION" "$@" >> "$NODE_MARKER"\nif [ "$VSCODE_TEST_VERSION" = 1.106.0 ]; then exit "$MINIMUM_STATUS"; fi\nexit "$STABLE_STATUS"\n',
@@ -1363,6 +1374,7 @@ test("package smoke omits only verified documentation launches and preserves bot
         ...guard.env,
         PATH: `${temp}:${process.env.PATH}`,
         NODE_MARKER: marker,
+        COMPILE_STATUS: String(compileStatus),
         MINIMUM_STATUS: String(minimumStatus),
         STABLE_STATUS: String(stableStatus),
         R_OMITTABLE: "true",
@@ -1381,7 +1393,8 @@ test("package smoke omits only verified documentation launches and preserves bot
       assert.equal(result.status, expectedStatus);
       assert.equal(
         readFileSync(marker, "utf8"),
-        versions.map((version) => `${version}\nscripts/run-packaged-editor-tests.mjs\nopenwrangler.vsix\n`).join("")
+        (docsOnly === "false" ? "npm\nrun\nbuild:test-extension\n" : "") +
+          versions.map((version) => `${version}\nscripts/run-packaged-editor-tests.mjs\nopenwrangler.vsix\n`).join("")
       );
       if (docsOnly === "true") {
         assert.match(
