@@ -899,6 +899,9 @@ native refusal. Export adds no numeric or temporal conversion and does not chang
 Profiles and value choices keep temporary count fields distinct from the selected source field. Supported source
 names remain valid in eager and lazy frames, independently of which columns a profile request selects.
 
+Integer Group By sums return zero groups for empty input, with Int128 output in live and generated code.
+A nonempty all-null group has sum zero; empty integer profiles also retain their exact zero sum.
+
 Pivot Longer compares exact selected-column dtypes from the schema during preflight, live execution and generated
 execution. Category mapping identity and Enum order must match. Compatibility checks use schema metadata;
 row-count bounds and result validation retain their existing execution paths.
