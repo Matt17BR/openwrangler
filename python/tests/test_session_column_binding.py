@@ -43,6 +43,66 @@ def contains_private_position(value: Any) -> bool:
     return False
 
 
+def test_polars_literal_column_names_survive_session_apply_history_and_generated_code(tmp_path: Path) -> None:
+    source = pl.DataFrame({"^a.*$": [1, 2, None], "amount": [20, 30, 40], "*": [3, 1, 2]})
+    before = source.clone()
+    path = tmp_path / "literal-columns.parquet"
+    source.write_parquet(path)
+    contents, stat = path.read_bytes(), path.stat()
+    manager = SessionManager()
+    try:
+        opened = manager.open_session({"kind": "file", "path": str(path)}, backend="polars", mode="editing")
+        sid = opened["metadata"]["sessionId"]
+        schema = opened["metadata"]["schema"]
+        assert [column["name"] for column in schema] == source.columns
+        assert [column["id"] for column in schema] == ["c:source:0", "c:source:1", "c:source:2"]
+        original_rows = opened["page"]["rows"]
+        revision = 0
+        for source_index, identifier, output in [(0, "pattern", "copy pattern"), (2, "star", "copy star")]:
+            public = step(
+                identifier,
+                "cloneColumn",
+                column=ref(schema[source_index]["id"], schema[source_index]["name"]),
+                newName=output,
+            )
+            preview = manager.preview_step(sid, revision, public, 0, 10)
+            assert preview["metadata"]["draftStep"] == public
+            assert preview["metadata"]["schema"][-1]["id"] == f"c:step:{identifier}:0"
+            assert [row["values"][-1] for row in preview["page"]["rows"]] == [
+                row["values"][source_index] for row in original_rows
+            ]
+            applied = manager.apply_draft(sid, preview["revision"], 0, 10)
+            revision = applied["revision"]
+            assert applied["metadata"]["schema"][:3] == schema
+            assert [row["id"] for row in applied["page"]["rows"]] == [row["id"] for row in original_rows]
+            assert [row["rowNumber"] for row in applied["page"]["rows"]] == [0, 1, 2]
+            assert not contains_private_position(applied["metadata"]["steps"])
+        undone = manager.undo_step(sid, revision, 0, 10)
+        assert [column["name"] for column in undone["metadata"]["schema"]] == [*source.columns, "copy pattern"]
+        assert undone["metadata"]["schema"][-1]["id"] == "c:step:pattern:0"
+        redone = manager.redo_step(sid, undone["revision"], 0, 10)
+        assert redone["page"] == applied["page"]
+        assert redone["code"] == applied["code"]
+        assert [column["id"] for column in redone["metadata"]["schema"]][-2:] == ["c:step:pattern:0", "c:step:star:0"]
+        namespace: dict[str, Any] = {}
+        exec(redone["code"], namespace)
+        generated = namespace["clean_data"](source.lazy()).collect()
+        assert generated.rows() == [(1, 20, 3, 1, 3), (2, 30, 1, 2, 1), (None, 40, 2, None, 2)]
+        assert generated.columns == [*source.columns, "copy pattern", "copy star"]
+        assert all(generated.get_column(column).equals(source.get_column(column)) for column in source.columns)
+        assert source.equals(before)
+    finally:
+        manager.close_all()
+    assert not manager.sessions and path.read_bytes() == contents
+    after = path.stat()
+    assert (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) == (
+        stat.st_dev,
+        stat.st_ino,
+        stat.st_size,
+        stat.st_mtime_ns,
+    )
+
+
 @pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
 def test_conditional_column_retains_output_identity_through_edit_and_replay(tmp_path: Path, backend: str) -> None:
     path = tmp_path / f"conditional-{backend}.csv"

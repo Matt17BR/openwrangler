@@ -1,3 +1,6 @@
+from ._polars_exact_columns import _ow_polars_col
+
+
 def _ow_polars_interpolation_coordinate_kind(dtype, error_type):
     import polars as pl
 
@@ -67,7 +70,7 @@ def _ow_polars_fill_missing_linear_interpolation(
     if not target_dtype.is_float():
         raise error_type("Linear interpolation requires a floating-point target column.")
     coordinate_kind = _ow_polars_interpolation_coordinate_kind(coordinate_dtype, error_type)
-    source_coordinate = pl.col(coordinate)
+    source_coordinate = _ow_polars_col(schema, coordinate)
     invalid_coordinate = source_coordinate.is_null()
     if coordinate_dtype.is_float():
         invalid_coordinate = invalid_coordinate | ~source_coordinate.is_finite()
@@ -131,13 +134,13 @@ def _ow_polars_fill_missing_linear_interpolation(
     right_value_name = unique("__ow_interpolation_right_value")
     left_coordinate_name = unique("__ow_interpolation_left_coordinate")
     right_coordinate_name = unique("__ow_interpolation_right_coordinate")
-    target_value = pl.col(target)
+    target_value = _ow_polars_col(schema, target)
     missing = target_value.is_null() | target_value.is_nan()
     present_target = pl.when(missing).then(None).otherwise(target_value)
     present_coordinate = pl.when(missing).then(None).otherwise(pl.col(coordinate_name))
     ordered = (
         frame.with_row_index(position_name)
-        .sort(coordinate, maintain_order=True)
+        .sort(_ow_polars_col(schema, coordinate), maintain_order=True)
         .with_columns(missing.alias(missing_name), numeric_coordinate.alias(coordinate_name))
         .with_columns(
             (pl.col(missing_name) != pl.col(missing_name).shift(1).fill_null(False)).cum_sum().alias(run_name),

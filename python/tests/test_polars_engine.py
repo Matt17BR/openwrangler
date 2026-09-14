@@ -32,6 +32,351 @@ from openwrangler_runtime.session_source import SourceChangedError
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def _literal_polars_source() -> pl.DataFrame:
+    return pl.DataFrame({"^a.*$": [1, 1, 2, None], "amount": [20, 30, 40, 50], "*": [3, 1, 2, None]})
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize("generated", [False, True])
+@pytest.mark.parametrize("name,expected", [("^a.*$", [1, 1, 2, None]), ("*", [3, 1, 2, None])])
+def test_polars_literal_column_names_clone_the_selected_values(
+    lazy: bool, generated: bool, name: str, expected: list[int | None]
+) -> None:
+    source = _literal_polars_source()
+    before = source.clone()
+    engine = PolarsEngine()
+    try:
+        schema = engine.schema(source.lazy())
+        lineage = source_lineage(schema)
+        reference = next(column for column in lineage if column["name"] == name)
+        operation = bind_step(
+            validate_step({"id": "copy", "kind": "cloneColumn", "params": {"column": reference, "newName": "copy"}}),
+            schema,
+            lineage,
+        )
+        frame = source.lazy() if lazy else source
+        namespace: dict[str, Any] = {}
+        if generated:
+            exec(engine.compile_plan([operation]), namespace)
+            result = namespace["clean_data"](frame)
+        else:
+            result = engine.apply_transform(frame, operation)
+        assert isinstance(result, pl.LazyFrame) == lazy
+        eager = result.collect() if lazy else result
+        assert eager.get_column("copy").to_list() == expected
+        assert eager.schema["copy"] == pl.Int64
+        assert eager.columns == [*source.columns, "copy"]
+        assert all(eager.get_column(column).equals(source.get_column(column)) for column in source.columns)
+        if generated:
+            reordered = pl.DataFrame({column: source.get_column(column) for column in reversed(source.columns)})
+            reused = namespace["clean_data"](reordered.lazy() if lazy else reordered)
+            reused = reused.collect() if lazy else reused
+            assert reused.get_column("copy").to_list() == expected
+            assert reused.columns == [*reordered.columns, "copy"]
+        assert source.equals(before)
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize("name", ["^a.*$", "*"])
+def test_polars_literal_column_names_refuse_missing_generated_input(lazy: bool, name: str) -> None:
+    source = _literal_polars_source()
+    engine = PolarsEngine()
+    try:
+        schema = engine.schema(source.lazy())
+        lineage = source_lineage(schema)
+        operation = bind_step(
+            validate_step(
+                {
+                    "id": "copy",
+                    "kind": "cloneColumn",
+                    "params": {
+                        "column": next(column for column in lineage if column["name"] == name),
+                        "newName": "copy",
+                    },
+                }
+            ),
+            schema,
+            lineage,
+        )
+        namespace: dict[str, Any] = {}
+        exec(engine.compile_plan([operation]), namespace)
+        missing = pl.DataFrame({column: source.get_column(column) for column in source.columns if column != name})
+        before = missing.clone()
+        with pytest.raises((ValueError, pl.exceptions.PolarsError)):
+            result = namespace["clean_data"](missing.lazy() if lazy else missing)
+            if isinstance(result, pl.LazyFrame):
+                result.collect_schema()
+        assert missing.equals(before)
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+def test_polars_literal_column_names_preserve_projected_views_and_profiles(lazy: bool) -> None:
+    source = _literal_polars_source()
+    before = source.clone()
+    engine = PolarsEngine()
+    try:
+        frame = engine.ensure_row_ids(source.lazy() if lazy else source, "literal-view")
+        schema = engine.schema(frame)
+        assert [column["name"] for column in schema] == source.columns
+        assert [column["position"] for column in schema] == [0, 1, 2]
+        page = engine.page(frame, 1, 2, total_rows=4, column_projection=[(2, "star"), (0, "pattern")])
+        assert page["columnIds"] == ["star", "pattern"]
+        assert [[cell["display"] for cell in row["values"]] for row in page["rows"]] == [["1", "1"], ["2", "2"]]
+        assert [row["rowNumber"] for row in page["rows"]] == [1, 2]
+        assert [row["id"].rsplit(":", 1)[-1] for row in page["rows"]] == ["1", "2"]
+        summaries = engine.summaries(frame, [(0, "pattern"), (2, "star")])
+        assert [summary["numeric"]["exactSum"]["display"] for summary in summaries] == ["4", "6"]
+        assert [summary["nullCount"] for summary in summaries] == [1, 1]
+        assert {item["value"]: item["count"] for item in summaries[0]["topValues"]} == {"1": 2, "2": 1}
+        choices, more = engine.column_values(frame, "^a.*$")
+        assert not more and {item["value"]: item["count"] for item in choices} == {"1": 2, "2": 1}
+        assert engine.missing_count(frame, 0) == 1
+        stats = engine.header_stats(frame)
+        assert (stats["missingCells"], stats["missingRows"], stats["duplicateRows"]) == (2, 1, 0)
+        filtered = engine.apply_filter_model(
+            frame,
+            {
+                "filters": [
+                    {
+                        "column": "^a.*$",
+                        "type": "integer",
+                        "predicates": [{"kind": "predicate", "operator": "gt", "value": "1"}],
+                    }
+                ],
+                "sort": [],
+            },
+        )
+        assert [row["id"].rsplit(":", 1)[-1] for row in engine.page(filtered, 0, 4)["rows"]] == ["2"]
+        sorted_frame = engine.apply_filter_model(
+            frame, {"filters": [], "sort": [{"column": "*", "direction": "asc", "nulls": "last"}]}
+        )
+        assert [row["id"].rsplit(":", 1)[-1] for row in engine.page(sorted_frame, 0, 4)["rows"]] == ["1", "2", "0", "3"]
+        assert source.equals(before)
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize(
+    "kind", ["selectColumns", "dropColumns", "dropDuplicates", "markDuplicates", "dropMissingRows", "oneHotEncode"]
+)
+def test_polars_literal_column_names_keep_structural_operations_exact(lazy: bool, kind: str) -> None:
+    source = _literal_polars_source()
+    before = source.clone()
+    engine = PolarsEngine()
+    try:
+        schema = engine.schema(source.lazy())
+        lineage = source_lineage(schema)
+        params: dict[str, Any] = {"columns": [lineage[0]]}
+        expected: list[tuple[Any, ...]]
+        if kind == "selectColumns":
+            params["columns"] = [lineage[2], lineage[0]]
+            expected = [(3, 1), (1, 1), (2, 2), (None, None)]
+            expected_columns = ["*", "^a.*$"]
+        elif kind == "dropColumns":
+            expected = [(20, 3), (30, 1), (40, 2), (50, None)]
+            expected_columns = ["amount", "*"]
+        elif kind == "dropDuplicates":
+            params["keep"] = "first"
+            expected = [(1, 20, 3), (2, 40, 2), (None, 50, None)]
+            expected_columns = source.columns
+        elif kind == "markDuplicates":
+            params["newColumn"] = "duplicate"
+            expected = [(1, 20, 3, True), (1, 30, 1, True), (2, 40, 2, False), (None, 50, None, False)]
+            expected_columns = [*source.columns, "duplicate"]
+        elif kind == "oneHotEncode":
+            params["dropOriginal"] = True
+            expected = [(20, 3, 1, 0), (30, 1, 1, 0), (40, 2, 0, 1), (50, None, 0, 0)]
+            expected_columns = ["amount", "*", "^a.*$_1", "^a.*$_2"]
+        else:
+            params["how"] = "any"
+            expected = [(1, 20, 3), (1, 30, 1), (2, 40, 2)]
+            expected_columns = source.columns
+        operation = bind_step(validate_step({"id": "selected", "kind": kind, "params": params}), schema, lineage)
+        namespace: dict[str, Any] = {}
+        exec(engine.compile_plan([operation]), namespace)
+        frame = source.lazy() if lazy else source
+        for result in (engine.apply_transform(frame, operation), namespace["clean_data"](frame)):
+            assert isinstance(result, pl.LazyFrame) == (lazy and kind != "oneHotEncode")
+            eager = result.collect() if isinstance(result, pl.LazyFrame) else result
+            assert eager.columns == expected_columns
+            assert eager.rows() == expected
+            if kind == "oneHotEncode":
+                assert [eager.schema[name] for name in expected_columns[-2:]] == [pl.Int8, pl.Int8]
+        assert source.equals(before)
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+def test_polars_literal_column_names_preserve_directional_fill_helpers(lazy: bool) -> None:
+    source = pl.DataFrame({"^a.*$": [2, 1, 3], "amount": [1, 2, 3], "*": [None, "seed", None]})
+    before = source.clone()
+    engine = PolarsEngine()
+    try:
+        schema = engine.schema(source.lazy())
+        lineage = source_lineage(schema)
+        operation = bind_step(
+            validate_step(
+                {
+                    "id": "fill",
+                    "kind": "fillMissingValues",
+                    "params": {
+                        "column": lineage[2],
+                        "replacement": {
+                            "kind": "directional",
+                            "direction": "forward",
+                            "orderBy": [{"column": lineage[0], "direction": "asc", "nulls": "last"}],
+                        },
+                    },
+                }
+            ),
+            schema,
+            lineage,
+        )
+        namespace: dict[str, Any] = {}
+        exec(engine.compile_plan([operation]), namespace)
+        frame = source.lazy() if lazy else source
+        for result in (engine.apply_transform(frame, operation), namespace["clean_data"](frame)):
+            assert isinstance(result, pl.LazyFrame) == lazy
+            eager = result.collect() if lazy else result
+            assert eager.rows() == [(2, 1, "seed"), (1, 2, "seed"), (3, 3, "seed")]
+            assert eager.schema == source.schema
+        assert source.equals(before)
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize("name", ["^a.*$", "*"])
+def test_polars_literal_column_names_keep_temporal_profile_values_exact(lazy: bool, name: str) -> None:
+    source = pl.DataFrame(
+        {
+            name: pl.Series([-1, 0, -1, None], dtype=pl.Int64).cast(pl.Datetime("ns")),
+            "amount": pl.Series([1000, 2000, 3000, 4000], dtype=pl.Int64).cast(pl.Datetime("ns")),
+        }
+    )
+    before = source.clone()
+    engine = PolarsEngine()
+    try:
+        frame = source.lazy() if lazy else source
+        summary = engine.summaries(frame, [(0, "selected")])[0]
+        assert summary["nullCount"] == 1 and summary["distinctCount"] == 2
+        expected = {"1969-12-31T23:59:59.999999999": 2, "1970-01-01T00:00:00.000000000": 1}
+        assert {item["value"]: item["count"] for item in summary["topValues"]} == expected
+        choices, more = engine.column_values(frame, name)
+        assert not more and {item["value"]: item["count"] for item in choices} == expected
+        assert source.equals(before) and source.schema == before.schema
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("name", ["^a.*$", "*"])
+@pytest.mark.parametrize("layout", [None, "DD/MM/YYYY"])
+def test_polars_literal_column_names_preserve_temporal_cast_metadata(name: str, layout: str | None) -> None:
+    source = pl.DataFrame(
+        {name: ["02/01/2020" if layout else "2020-01-02T00:00:00", None], "amount": ["wrong", "column"]}
+    )
+    before = source.clone()
+    engine = PolarsEngine()
+    try:
+        schema = engine.schema(source.lazy())
+        lineage = source_lineage(schema)
+        params = {"column": lineage[0], "dtype": "datetime", **({"inputFormat": layout} if layout else {})}
+        operation = bind_step(validate_step({"id": "cast", "kind": "castColumn", "params": params}), schema, lineage)
+        namespace: dict[str, Any] = {}
+        exec(engine.compile_plan([operation]), namespace)
+        for frame in (source, source.lazy()):
+            for result in (engine.apply_transform(frame, operation), namespace["clean_data"](frame)):
+                eager = result.collect() if isinstance(result, pl.LazyFrame) else result
+                assert eager.get_column(name).cast(pl.Int64).to_list() == [1577923200000000, None]
+                assert eager.schema[name] == pl.Datetime("us")
+                assert eager.columns == source.columns
+                assert eager.get_column("amount").equals(source.get_column("amount"))
+        assert source.equals(before)
+    finally:
+        engine.close()
+
+
+def test_polars_literal_column_names_bind_by_example_after_rename() -> None:
+    source = pl.DataFrame({"text": ["alpha", "beta", None], "amount": ["wrong", "column", "keep"]})
+    before = source.clone()
+    engine = PolarsEngine()
+    try:
+        schema = engine.schema(source.lazy())
+        lineage = source_lineage(schema)
+        rename = bind_step(
+            validate_step(
+                {"id": "rename", "kind": "renameColumn", "params": {"column": lineage[0], "newName": "^a.*$"}}
+            ),
+            schema,
+            lineage,
+        )
+        renamed = engine.apply_transform(source, rename)
+        renamed_schema = engine.schema(renamed.lazy())
+        renamed_lineage = source_lineage(renamed_schema)
+        operation = bind_step(
+            validate_step(
+                {
+                    "id": "example",
+                    "kind": "byExample",
+                    "params": {
+                        "sourceColumns": [renamed_lineage[0]],
+                        "newColumn": "label",
+                        "examples": [{"inputs": ["alpha"], "output": "ALPHA"}, {"inputs": ["beta"], "output": "BETA"}],
+                    },
+                }
+            ),
+            renamed_schema,
+            renamed_lineage,
+        )
+        namespace: dict[str, Any] = {}
+        exec(engine.compile_plan([rename, operation]), namespace)
+        for frame in (source, source.lazy()):
+            live = engine.apply_transform(engine.apply_transform(frame, rename), operation)
+            for result in (live, namespace["clean_data"](frame)):
+                eager = result.collect() if isinstance(result, pl.LazyFrame) else result
+                assert eager.columns == ["^a.*$", "amount", "label"]
+                assert eager.rows() == [("alpha", "wrong", "ALPHA"), ("beta", "column", "BETA"), (None, "keep", None)]
+        assert source.equals(before)
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("name", ["^a.*$", "*"])
+def test_polars_literal_column_names_refuse_unsafe_uint128_before_evaluation(
+    name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = pl.DataFrame({"value": pl.Series([1, 2], dtype=pl.UInt128), name: pl.Series([2, 3], dtype=pl.UInt128)})
+    before = source.clone()
+    engine = PolarsEngine()
+    try:
+        operation = _polars_formula_literal_operation(source.lazy(), "add", None, right_column=True)
+        namespace: dict[str, Any] = {}
+        exec(engine.compile_plan([operation]), namespace)
+        monkeypatch.setattr(pl, "__version__", "1.35.2")
+
+        def forbid_evaluation(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("Unqualified UInt128 must be refused before evaluation")
+
+        monkeypatch.setattr(pl.LazyFrame, "collect", forbid_evaluation)
+        monkeypatch.setattr(pl.DataFrame, "with_columns", forbid_evaluation)
+        for frame in (source, source.lazy()):
+            for run in (
+                lambda frame=frame: engine.apply_transform(frame, operation),
+                lambda frame=frame: namespace["clean_data"](frame),
+            ):
+                with pytest.raises((EngineError, ValueError), match="stable Polars 1.36"):
+                    run()
+        assert source.equals(before)
+    finally:
+        engine.close()
+
+
 @pytest.mark.parametrize("lazy", [False, True])
 @pytest.mark.parametrize(
     "dtype,tick,raw",

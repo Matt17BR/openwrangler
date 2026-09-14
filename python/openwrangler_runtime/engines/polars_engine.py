@@ -35,8 +35,9 @@ from ..portable_regex import (
     PORTABLE_REGEX_TEXT_LIMIT_MESSAGE,
     portable_regex_contract,
 )
-from . import _polars_interpolation_helpers, _polars_min_max_helpers, _polars_round_helpers
+from . import _polars_exact_columns, _polars_interpolation_helpers, _polars_min_max_helpers, _polars_round_helpers
 from ._polars_directional_fill_helpers import _ow_polars_fill_missing_directional
+from ._polars_exact_columns import _ow_polars_col, _ow_polars_columns
 from ._polars_interpolation_helpers import (
     _ow_polars_fill_missing_linear_interpolation as _polars_fill_missing_linear_interpolation,
 )
@@ -291,17 +292,19 @@ def _polars_validate_pivot_wider(frame: Any, params: Mapping[str, Any]) -> tuple
             )
     normalized = frame.with_columns(
         [
-            pl.col(identifier).fill_nan(None).alias(identifier)
+            _ow_polars_col(schema, identifier).fill_nan(None).alias(identifier)
             for identifier in identifiers
             if schema[identifier].is_float()
         ]
     )
-    key_expression = pl.col(names_from).cast(pl.String)
+    key_expression = _ow_polars_col(schema, names_from).cast(pl.String)
     invalid = normalized.filter(key_expression.is_null() | ~key_expression.is_in(output_values)).limit(1)
     invalid_eager = invalid.collect(engine="streaming") if isinstance(invalid, pl.LazyFrame) else invalid
     if invalid_eager.height:
         raise EngineError("Pivot wider namesFrom values must be present and match one declared typed key.")
-    duplicates = normalized.select(pl.struct([*identifiers, names_from]).is_duplicated().any())
+    duplicates = normalized.select(
+        pl.struct(_ow_polars_columns(normalized, [*identifiers, names_from])).is_duplicated().any()
+    )
     duplicate_eager = duplicates.collect(engine="streaming") if isinstance(duplicates, pl.LazyFrame) else duplicates
     if duplicate_eager.item():
         raise EngineError("Pivot wider found duplicate identifier-and-key rows; aggregation is not supported.")
@@ -370,7 +373,7 @@ def _polars_prepare_temporal_cells(frame: Any, schema: Mapping[str, Any]) -> Any
     expressions = []
     rechunked = []
     for column, dtype in schema.items():
-        projected = _polars_temporal_expression(pl.col(column), dtype)
+        projected = _polars_temporal_expression(_ow_polars_col(frame, column), dtype)
         if projected is not None:
             if isinstance(dtype, (pl.List, pl.Array, pl.Struct)):
                 # Minimum Polars evaluates fragmented sliced lists one row at a time.
@@ -681,7 +684,11 @@ class PolarsEngine(DataFrameEngine):
         visible = self._visible_columns(df)
         if not visible:
             return []
-        null_counts = df.select(visible).null_count().to_dicts()[0] if df.height else {column: 0 for column in visible}
+        null_counts = (
+            df.select(_ow_polars_columns(df, visible)).null_count().to_dicts()[0]
+            if df.height
+            else {column: 0 for column in visible}
+        )
         return [
             {
                 "id": f"c:{position}",
@@ -725,7 +732,7 @@ class PolarsEngine(DataFrameEngine):
                     coerce_typed_view_value(value, column_type) for value in value_filter.get("selectedValues", [])
                 ]
                 if column_type in {"decimal", "datetime", "duration"}:
-                    current = _polars_exact_filter(pl.col(column), schema[column], "isin", selected)
+                    current = _polars_exact_filter(_ow_polars_col(schema, column), schema[column], "isin", selected)
                 else:
                     selected_series = pl.Series(selected) if selected else None
                     if selected_series is not None:
@@ -734,18 +741,18 @@ class PolarsEngine(DataFrameEngine):
                         else:
                             selected_series = selected_series.cast(schema[column], strict=True)
                     current = (
-                        pl.col(column).is_in(selected_series.implode())
+                        _ow_polars_col(schema, column).is_in(selected_series.implode())
                         if selected_series is not None
                         else pl.lit(False)
                     )
                 if value_filter.get("includeNulls"):
-                    current = current | pl.col(column).is_null()
+                    current = current | _ow_polars_col(schema, column).is_null()
                 if value_filter.get("includeNaN") and column_type == "float":
-                    current = current | pl.col(column).is_nan()
+                    current = current | _ow_polars_col(schema, column).is_nan()
                 conditions.append(current)
 
             for predicate in column_filter.get("predicates", []):
-                conditions.append(self._predicate_expr(column, predicate, column_type, schema[column]))
+                conditions.append(self._predicate_expr(df, column, predicate, column_type, schema[column]))
 
             if conditions:
                 column_expression = conditions[0]
@@ -770,7 +777,7 @@ class PolarsEngine(DataFrameEngine):
                 if column_type not in VIEW_COMPARABLE_TYPES:
                     raise EngineError(f"Polars view sorting is unavailable for {column_type} columns.")
             df = df.sort(
-                [rule["column"] for rule in sort_rules],
+                _ow_polars_columns(df, [rule["column"] for rule in sort_rules]),
                 descending=[rule.get("direction", "asc") == "desc" for rule in sort_rules],
                 nulls_last=[rule.get("nulls", "last") == "last" for rule in sort_rules],
                 maintain_order=True,
@@ -804,13 +811,19 @@ class PolarsEngine(DataFrameEngine):
             # Projection must enter the lazy plan before its terminal slice and
             # collect so scan adapters can prune every unneeded output column.
             sliced = (
-                frame.select(terminal_columns).slice(offset, limit).collect(engine="streaming")
+                frame.select(_ow_polars_columns(frame, terminal_columns))
+                .slice(offset, limit)
+                .collect(engine="streaming")
                 if terminal_columns
                 else frame.slice(offset, limit).collect(engine="streaming")
             )
         else:
             df = self.normalize(frame)
-            sliced = df.select(terminal_columns).slice(offset, limit) if terminal_columns else df.slice(offset, limit)
+            sliced = (
+                df.select(_ow_polars_columns(df, terminal_columns)).slice(offset, limit)
+                if terminal_columns
+                else df.slice(offset, limit)
+            )
             if total_rows is None:
                 total_rows = int(df.height)
         temporal_schema = sliced.schema
@@ -850,13 +863,16 @@ class PolarsEngine(DataFrameEngine):
             return []
         null_counts = df.select(
             [
-                pl.col(column).null_count().alias(f"__open_wrangler_null_{index}")
+                _ow_polars_col(df, column).null_count().alias(f"__open_wrangler_null_{index}")
                 for index, (column, _) in enumerate(selected)
             ]
         ).to_dicts()[0]
         summaries = []
         for index, (column, column_id) in enumerate(selected):
             series = df[column]
+            if column == "*" or (column.startswith("^") and column.endswith("$")):
+                # Series expression dispatch also interprets its name as a selector.
+                series = series.rename("__ow_profile_value")
             raw_type = str(series.dtype)
             semantic_type = infer_semantic_type(raw_type)
             top_values, distinct_count, boolean_counts = self._summary_counts(series, column, semantic_type)
@@ -880,7 +896,7 @@ class PolarsEngine(DataFrameEngine):
                 numeric_sum = (
                     numeric_series.to_frame()
                     .select(
-                        _polars_profile_sum_expression(pl.col(column), numeric_series.dtype, semantic_type).alias(
+                        _polars_profile_sum_expression(pl.col(series.name), numeric_series.dtype, semantic_type).alias(
                             "__open_wrangler_sum"
                         )
                     )
@@ -908,8 +924,8 @@ class PolarsEngine(DataFrameEngine):
                     minimum, maximum = (
                         series.to_frame()
                         .select(
-                            _polars_query_text(pl.col(column).min(), series.dtype).alias("min"),
-                            _polars_query_text(pl.col(column).max(), series.dtype).alias("max"),
+                            _polars_query_text(pl.col(series.name).min(), series.dtype).alias("min"),
+                            _polars_query_text(pl.col(series.name).max(), series.dtype).alias("max"),
                         )
                         .row(0)
                     )
@@ -940,7 +956,7 @@ class PolarsEngine(DataFrameEngine):
             raw_type = str(schema[column])
             semantic_type = infer_semantic_type(raw_type)
             prefix = f"__open_wrangler_{index}_"
-            expression = pl.col(column)
+            expression = _ow_polars_col(schema, column)
             valid_expression = expression.drop_nulls()
             if semantic_type == "float":
                 valid_expression = valid_expression.drop_nans()
@@ -1008,7 +1024,11 @@ class PolarsEngine(DataFrameEngine):
                 frame.select(
                     [
                         valid_expression.n_unique().alias("distinct"),
-                        valid_expression.value_counts(sort=True, name=count_name).head(10).implode().alias("top"),
+                        valid_expression.alias("__ow_top_value")
+                        .value_counts(sort=True, name=count_name)
+                        .head(10)
+                        .implode()
+                        .alias("top"),
                     ]
                 )
             )
@@ -1043,11 +1063,11 @@ class PolarsEngine(DataFrameEngine):
                 )
                 continue
 
-            numeric_value = pl.col(column).cast(pl.Float64, strict=False)
+            numeric_value = _ow_polars_col(schema, column).cast(pl.Float64, strict=False)
             finite = (
-                pl.col(column).is_finite().fill_null(False)
+                _ow_polars_col(schema, column).is_finite().fill_null(False)
                 if semantic_type == "float"
-                else pl.col(column).is_not_null()
+                else _ow_polars_col(schema, column).is_not_null()
             )
             count_expressions = []
             for bin_index in range(bin_count):
@@ -1165,23 +1185,23 @@ class PolarsEngine(DataFrameEngine):
         for definition, result in zip(definitions, results, strict=True):
             column, _, _, semantic_type, _, count_name = definition
             dtype = schema[column]
-            projected = _polars_temporal_expression(pl.element().struct.field(column), dtype)
+            projected = _polars_temporal_expression(pl.element().struct.field("__ow_top_value"), dtype)
             if projected is not None:
                 result = result.with_columns(
-                    pl.col("top").list.eval(pl.element().struct.with_fields(projected.alias(column)))
+                    pl.col("top").list.eval(pl.element().struct.with_fields(projected.alias("__ow_top_value")))
                 )
             row = result.row(0, named=True)
             top_values = []
             for item in row["top"]:
-                if item[column] is None:
+                if item["__ow_top_value"] is None:
                     continue
-                cell = _polars_query_cell(item[column], dtype)
+                cell = _polars_query_cell(item["__ow_top_value"], dtype)
                 top_values.append(
                     {
                         "value": (
                             cell["display"]
                             if semantic_type in {"list", "struct"} or isinstance(dtype, (pl.Duration, pl.Datetime))
-                            else str(item[column])
+                            else str(item["__ow_top_value"])
                         ),
                         "count": int(item[count_name]),
                         "selectionValue": typed_cell_selection_value(cell, semantic_type),
@@ -1198,28 +1218,29 @@ class PolarsEngine(DataFrameEngine):
     ) -> tuple[list[dict[str, Any]], int, dict[str, Any] | None]:
         import polars as pl
 
+        value_name = series.name
         valid = series.drop_nulls()
         if semantic_type == "float":
             valid = valid.drop_nans()
 
         try:
-            count_name = "count_" if column == "count" else "count"
+            count_name = "count_" if value_name == "count" else "count"
             counts = valid.value_counts(sort=True, name=count_name)
             top = counts.head(10)
-            top = _polars_prepare_temporal_cells(top, {column: series.dtype})
+            top = _polars_prepare_temporal_cells(top, {value_name: series.dtype})
             rows = list(top.iter_rows(named=True))
             top_values = []
             for row in rows:
-                if row[column] is None:
+                if row[value_name] is None:
                     continue
-                cell = _polars_query_cell(row[column], series.dtype)
+                cell = _polars_query_cell(row[value_name], series.dtype)
                 top_values.append(
                     {
                         "value": (
                             cell["display"]
                             if semantic_type in {"list", "struct"}
                             or isinstance(series.dtype, (pl.Duration, pl.Datetime))
-                            else str(row[column])
+                            else str(row[value_name])
                         ),
                         "count": int(row[count_name]),
                         "selectionValue": typed_cell_selection_value(cell, semantic_type),
@@ -1229,8 +1250,8 @@ class PolarsEngine(DataFrameEngine):
             if semantic_type == "boolean":
                 boolean_counts = {
                     "kind": "boolean",
-                    "trueCount": sum(int(row[count_name]) for row in rows if row[column] is True),
-                    "falseCount": sum(int(row[count_name]) for row in rows if row[column] is False),
+                    "trueCount": sum(int(row[count_name]) for row in rows if row[value_name] is True),
+                    "falseCount": sum(int(row[count_name]) for row in rows if row[value_name] is False),
                 }
             return top_values, counts.height, boolean_counts
         except Exception as error:
@@ -1249,9 +1270,9 @@ class PolarsEngine(DataFrameEngine):
             raise EngineError("The selected column is unavailable for missing-value counting.")
         column = columns[column_position]
         schema = frame.collect_schema() if isinstance(frame, pl.LazyFrame) else frame.schema
-        missing = pl.col(column).is_null()
+        missing = _ow_polars_col(frame, column).is_null()
         if infer_semantic_type(str(schema[column])) == "float":
-            missing = missing | pl.col(column).is_nan()
+            missing = missing | _ow_polars_col(frame, column).is_nan()
         query = frame.select(missing.sum().alias("__open_wrangler_missing_count"))
         result = query.collect(engine="streaming") if isinstance(query, pl.LazyFrame) else query
         return int(result.item(0, 0) or 0)
@@ -1274,14 +1295,17 @@ class PolarsEngine(DataFrameEngine):
         missing_cells = 0
         for column in df.columns:
             series = df[column]
+            if column == "*" or (column.startswith("^") and column.endswith("$")):
+                # Series expression dispatch also interprets its name as a selector.
+                series = series.rename("__ow_profile_value")
             null_count = int(series.null_count())
             nan_count = self._nan_count(series)
             count = null_count + nan_count
             missing_cells += count
             missing_by_column.append({"column": column, "count": count})
-            current = pl.col(column).is_null()
+            current = _ow_polars_col(df, column).is_null()
             if infer_semantic_type(str(series.dtype)) == "float":
-                current = current | pl.col(column).is_nan()
+                current = current | _ow_polars_col(df, column).is_nan()
             missing_row_expression = current if missing_row_expression is None else missing_row_expression | current
 
         missing_rows = (
@@ -1309,11 +1333,11 @@ class PolarsEngine(DataFrameEngine):
         aliases: list[tuple[str, str]] = []
         for index, column in enumerate(visible):
             alias = f"__open_wrangler_missing_{index}"
-            expression = pl.col(column).is_null()
-            count = pl.col(column).null_count()
+            expression = _ow_polars_col(schema, column).is_null()
+            count = _ow_polars_col(schema, column).null_count()
             if infer_semantic_type(str(schema[column])) == "float":
-                expression = expression | pl.col(column).is_nan().fill_null(False)
-                count = count + pl.col(column).is_nan().fill_null(False).sum()
+                expression = expression | _ow_polars_col(schema, column).is_nan().fill_null(False)
+                count = count + _ow_polars_col(schema, column).is_nan().fill_null(False).sum()
             missing_expressions.append(count.alias(alias))
             missing_row_expressions.append(expression.fill_null(False))
             aliases.append((column, alias))
@@ -1329,7 +1353,9 @@ class PolarsEngine(DataFrameEngine):
         queries = [metrics_query]
         if not has_object:
             queries.append(
-                frame.select(visible).unique(maintain_order=False).select(pl.len().alias("__open_wrangler_unique_rows"))
+                frame.select(_ow_polars_columns(frame, visible))
+                .unique(maintain_order=False)
+                .select(pl.len().alias("__open_wrangler_unique_rows"))
             )
         results = pl.collect_all(queries, engine="streaming")
         metrics = results[0].row(0, named=True)
@@ -1356,7 +1382,7 @@ class PolarsEngine(DataFrameEngine):
             raise EngineError(f"Unknown Polars column: {column}")
         dtype = schema[column]
         column_type = infer_semantic_type(str(dtype))
-        expression = pl.col(column).drop_nulls()
+        expression = _ow_polars_col(df, column).drop_nulls()
         if column_type == "float":
             expression = expression.drop_nans()
         series_df = df.select(expression)
@@ -1365,15 +1391,15 @@ class PolarsEngine(DataFrameEngine):
             if isinstance(dtype, pl.Datetime):
                 needle = needle.replace(" ", "t")
             series_df = series_df.filter(
-                _polars_query_text(pl.col(column), dtype)
+                _polars_query_text(_ow_polars_col(df, column), dtype)
                 .str.replace_many(_ASCII_LOWER_REPLACEMENTS)
                 .str.contains(needle, literal=True)
             )
         count_name = "count_" if column == "count" else "count"
         counts = (
-            series_df.group_by(column)
+            series_df.group_by(_ow_polars_columns(series_df, [column]))
             .len(name=count_name)
-            .sort([pl.col(count_name), _polars_query_text(pl.col(column), dtype)], descending=[True, False])
+            .sort([pl.col(count_name), _polars_query_text(_ow_polars_col(df, column), dtype)], descending=[True, False])
             .head(limit + 1)
         )
         if isinstance(counts, pl.LazyFrame):
@@ -1393,6 +1419,7 @@ class PolarsEngine(DataFrameEngine):
 
     def _predicate_expr(
         self,
+        frame: Any,
         column: str,
         predicate: Mapping[str, Any],
         column_type: str | None = None,
@@ -1406,7 +1433,7 @@ class PolarsEngine(DataFrameEngine):
             if operator not in {"contains", "startsWith", "endsWith", "isNull", "isNotNull", "isNaN", "isNotNaN"}
             else predicate.get("value")
         )
-        expr = pl.col(column)
+        expr = _ow_polars_col(frame, column)
         if operator == "isNull":
             return expr.is_null()
         if operator == "isNotNull":
@@ -1477,7 +1504,7 @@ class PolarsEngine(DataFrameEngine):
                 raise EngineError("Conditional column input type no longer matches its declared type.")
             if params["newColumn"] in schema:
                 raise EngineError("Conditional column output collides with an existing column.")
-            mask = self._predicate_expr(column, params["predicate"], params["columnType"], schema[column])
+            mask = self._predicate_expr(df, column, params["predicate"], params["columnType"], schema[column])
             dtype = pl.String if params["resultType"] == "string" else pl.Boolean
             result = (
                 pl.when(mask)
@@ -1485,9 +1512,9 @@ class PolarsEngine(DataFrameEngine):
                 .otherwise(pl.lit(params["falseValue"], dtype=dtype))
             )
             if params["predicate"]["operator"] not in {"isNull", "isNotNull", "isNaN", "isNotNaN"}:
-                missing = pl.col(column).is_null()
+                missing = _ow_polars_col(df, column).is_null()
                 if params["columnType"] == "float":
-                    missing = missing | pl.col(column).is_nan().fill_null(False)
+                    missing = missing | _ow_polars_col(df, column).is_nan().fill_null(False)
                 result = pl.when(missing).then(pl.lit(params["missingValue"], dtype=dtype)).otherwise(result)
             return df.with_columns(result.alias(params["newColumn"]))
         if kind == "dropMissingRows":
@@ -1499,7 +1526,7 @@ class PolarsEngine(DataFrameEngine):
             )
             if not columns:
                 return df
-            valid = [_polars_valid_value(pl.col(column), schema[column]) for column in columns]
+            valid = [_polars_valid_value(_ow_polars_col(df, column), schema[column]) for column in columns]
             expression = pl.any_horizontal(valid) if params.get("how", "any") == "all" else pl.all_horizontal(valid)
             return df.filter(expression)
         if kind == "fillMissingValues":
@@ -1543,7 +1570,7 @@ class PolarsEngine(DataFrameEngine):
                 )
             schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
             dtype = schema[column]
-            expression = pl.col(column)
+            expression = _ow_polars_col(df, column)
             if dtype.is_float():
                 expression = expression.fill_nan(None)
             if replacement.get("kind") == "mean":
@@ -1607,7 +1634,9 @@ class PolarsEngine(DataFrameEngine):
             return df.with_columns(expression.fill_null(literal).alias(column))
         if kind == "markDuplicates":
             columns = [bound_column_name(column, kind) for column in params["columns"]]
-            return df.with_columns(pl.struct(columns).is_duplicated().alias(params["newColumn"]))
+            return df.with_columns(
+                pl.struct(_ow_polars_columns(df, columns)).is_duplicated().alias(params["newColumn"])
+            )
         if kind == "dropDuplicates":
             columns = (
                 [bound_column_name(column, kind) for column in params["columns"]]
@@ -1617,24 +1646,26 @@ class PolarsEngine(DataFrameEngine):
             if not columns:
                 return df
             return df.unique(
-                subset=columns,
+                subset=_ow_polars_columns(df, columns),
                 keep=params.get("keep", "first"),
                 maintain_order=True,
             )
         if kind == "selectColumns":
             row_id = self._row_id_column(df)
             columns = [bound_column_name(column, kind) for column in params["columns"]]
-            return df.select([*([row_id] if row_id else []), *columns])
+            return df.select(_ow_polars_columns(df, [*([row_id] if row_id else []), *columns]))
         if kind == "dropColumns":
-            return df.drop([bound_column_name(column, kind) for column in params["columns"]])
+            return df.drop(_ow_polars_columns(df, [bound_column_name(column, kind) for column in params["columns"]]))
         if kind == "renameColumn":
             return df.rename({bound_column_name(params["column"], kind): params["newName"]})
         if kind == "cloneColumn":
-            return df.with_columns(pl.col(bound_column_name(params["column"], kind)).alias(params["newName"]))
+            return df.with_columns(
+                _ow_polars_col(df, bound_column_name(params["column"], kind)).alias(params["newName"])
+            )
         if kind == "castColumn":
             column = bound_column_name(params["column"], kind)
             dtype_attribute, strict = _polars_cast_target(params["dtype"])
-            expression = pl.col(column)
+            expression = _ow_polars_col(df, column)
             if params["dtype"] in {"date", "datetime"}:
                 schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
                 expression = _polars_temporal_cast_expression(
@@ -1645,14 +1676,14 @@ class PolarsEngine(DataFrameEngine):
             return df.with_columns(expression)
         if kind == "formula":
             left_column = bound_column_name(params["leftColumn"], kind)
-            left = pl.col(left_column)
+            left = _ow_polars_col(df, left_column)
             if not params.get("rightColumn") and isinstance(params.get("value"), str):
                 left, right = _polars_formula_integer_operands(
                     df, left_column, formula_scalar_value(params["value"]), params["operator"]
                 )
             else:
                 right = (
-                    pl.col(bound_column_name(params["rightColumn"], kind))
+                    _ow_polars_col(df, bound_column_name(params["rightColumn"], kind))
                     if params.get("rightColumn")
                     else pl.lit(params["value"])
                 )
@@ -1665,16 +1696,22 @@ class PolarsEngine(DataFrameEngine):
                     and (df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema)[left_column] == pl.Boolean
                 )
             ):
-                _polars_check_formula(df, left, right, params["operator"], expression)
+                _polars_check_formula(
+                    df, left, right, params["operator"], expression, right_is_column=bool(params.get("rightColumn"))
+                )
             return df.with_columns(expression.alias(params["newColumn"]))
         if kind == "textLength":
             column = bound_column_name(params["column"], kind)
-            return df.with_columns(pl.col(column).cast(pl.String).str.len_chars().alias(params["newColumn"]))
+            return df.with_columns(
+                _ow_polars_col(df, column).cast(pl.String).str.len_chars().alias(params["newColumn"])
+            )
         if kind == "denseRank":
             column = bound_column_name(params["column"], kind)
             schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
             return df.with_columns(
-                _polars_dense_rank(pl.col(column), schema[column], params["direction"]).alias(params["newColumn"])
+                _polars_dense_rank(_ow_polars_col(df, column), schema[column], params["direction"]).alias(
+                    params["newColumn"]
+                )
             )
         if kind == "oneHotEncode":
             # The generated output columns depend on every observed category.
@@ -1686,17 +1723,19 @@ class PolarsEngine(DataFrameEngine):
             generated = [
                 (column, value, f"{column}{separator}{value}")
                 for column in columns
-                for value in sorted(eager.get_column(column).drop_nulls().unique().to_list(), key=str)
+                for value in sorted(
+                    eager.get_column(column).rename("__ow_encoding_value").drop_nulls().unique().to_list(), key=str
+                )
                 if str(value) and not (isinstance(value, float) and value != value)
             ]
             generated.sort(key=lambda item: item[2])
-            base = eager.drop(columns) if params.get("dropOriginal", True) else eager
+            base = eager.drop(_ow_polars_columns(eager, columns)) if params.get("dropOriginal", True) else eager
             ensure_output_columns_available(base.columns, [name for _, _, name in generated], "One-hot encoding")
             if not generated:
                 return base
             encoded = eager.select(
                 [
-                    (pl.col(column) == pl.lit(value)).fill_null(False).cast(pl.Int8).alias(name)
+                    (_ow_polars_col(df, column) == pl.lit(value)).fill_null(False).cast(pl.Int8).alias(name)
                     for column, value, name in generated
                 ]
             )
@@ -1713,13 +1752,18 @@ class PolarsEngine(DataFrameEngine):
             )
             labels = (
                 eager.select(
-                    pl.col(column).cast(pl.String).str.split(delimiter).explode(**explode_options).drop_nulls().unique()
+                    _ow_polars_col(df, column)
+                    .cast(pl.String)
+                    .str.split(delimiter)
+                    .explode(**explode_options)
+                    .drop_nulls()
+                    .unique()
                 )
                 .get_column(column)
                 .to_list()
             )
             expressions = [
-                pl.col(column)
+                _ow_polars_col(df, column)
                 .fill_null("")
                 .cast(pl.String)
                 .str.split(delimiter)
@@ -1728,7 +1772,7 @@ class PolarsEngine(DataFrameEngine):
                 .alias(f"{params.get('prefix', f'{column}_')}{label}")
                 for label in sorted(str(label) for label in labels if str(label))
             ]
-            base = eager.drop(column) if params.get("dropOriginal", False) else eager
+            base = eager.drop(_ow_polars_columns(eager, [column])) if params.get("dropOriginal", False) else eager
             generated_names = [
                 f"{params.get('prefix', f'{column}_')}{label}"
                 for label in sorted(str(label) for label in labels if str(label))
@@ -1743,7 +1787,7 @@ class PolarsEngine(DataFrameEngine):
             output_names = list(params["newColumns"])
             schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
             ensure_output_columns_available(schema.names(), output_names, "Splitting text into columns")
-            parts = pl.col(column).cast(pl.String).str.split(params["delimiter"])
+            parts = _ow_polars_col(df, column).cast(pl.String).str.split(params["delimiter"])
             return df.with_columns(
                 [parts.list.get(index, null_on_oob=True).alias(name) for index, name in enumerate(output_names)]
             )
@@ -1768,9 +1812,9 @@ class PolarsEngine(DataFrameEngine):
             fragments = [
                 df.select(
                     [
-                        *[pl.col(name) for name in unselected],
+                        *[_ow_polars_col(df, name) for name in unselected],
                         pl.lit(public_name, dtype=pl.String).alias(params["labelColumn"]),
-                        pl.col(selected_name).alias(params["valueColumn"]),
+                        _ow_polars_col(df, selected_name).alias(params["valueColumn"]),
                     ]
                 )
                 for selected_name, public_name in zip(selected, selected, strict=True)
@@ -1781,15 +1825,22 @@ class PolarsEngine(DataFrameEngine):
             names_from = bound_column_name(params["namesFrom"], kind)
             values_from = bound_column_name(params["valuesFrom"], kind)
             expressions = [
-                pl.col(values_from).filter(pl.col(names_from).cast(pl.String) == key_value).first().alias(output_name)
+                _ow_polars_col(normalized, values_from)
+                .filter(_ow_polars_col(normalized, names_from).cast(pl.String) == key_value)
+                .first()
+                .alias(output_name)
                 for key_value, output_name in zip(output_values, output_names, strict=True)
             ]
             if identifiers:
-                return normalized.group_by(identifiers, maintain_order=True).agg(expressions)
+                return normalized.group_by(_ow_polars_columns(normalized, identifiers), maintain_order=True).agg(
+                    expressions
+                )
             group_name = f"{INTERNAL_ROW_ID_PREFIX}pivot_wider_group"
             # Validation guarantees present names; a column key keeps empty input empty.
             return (
-                normalized.group_by(pl.col(names_from).is_not_null().alias(group_name), maintain_order=True)
+                normalized.group_by(
+                    _ow_polars_col(normalized, names_from).is_not_null().alias(group_name), maintain_order=True
+                )
                 .agg(expressions)
                 .drop(group_name)
             )
@@ -1798,7 +1849,7 @@ class PolarsEngine(DataFrameEngine):
             column = bound_column_name(params["column"], kind)
             schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
             ensure_output_columns_available(schema.names(), [params["newColumn"]], "Regex extraction")
-            source = pl.col(column).cast(pl.String)
+            source = _ow_polars_col(df, column).cast(pl.String)
             oversize_query = df.select(
                 (
                     (source.str.len_chars() > MAX_PORTABLE_REGEX_TEXT_CODE_POINTS)
@@ -1817,7 +1868,7 @@ class PolarsEngine(DataFrameEngine):
         if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn", column)
-            expression = pl.col(column).cast(pl.String)
+            expression = _ow_polars_col(df, column).cast(pl.String)
             if kind == "findReplace":
                 expression = expression.str.replace_all(
                     params["find"], params["replacement"], literal=not params.get("regex", False)
@@ -1836,11 +1887,11 @@ class PolarsEngine(DataFrameEngine):
         if kind == "minMaxScale":
             column = bound_column_name(params["column"], kind)
             dtype = df.collect_schema()[column] if isinstance(df, pl.LazyFrame) else df.schema[column]
-            scaled = _polars_min_max_scale(pl.col(column), dtype)
+            scaled = _polars_min_max_scale(_ow_polars_col(df, column), dtype)
             return df.with_columns(scaled.alias(params.get("newColumn", column)))
         if kind in {"roundNumber", "floorNumber", "ceilNumber"}:
             column = bound_column_name(params["column"], kind)
-            expression = pl.col(column)
+            expression = _ow_polars_col(df, column)
             if kind == "roundNumber":
                 dtype = df.collect_schema()[column] if isinstance(df, pl.LazyFrame) else df.schema[column]
                 expression = _polars_round_exact(expression, dtype, int(params.get("decimals", 0)))
@@ -1861,7 +1912,7 @@ class PolarsEngine(DataFrameEngine):
         if kind == "formatDatetime":
             column = bound_column_name(params["column"], kind)
             schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
-            expression = pl.col(column)
+            expression = _ow_polars_col(df, column)
             if schema[column].base_type() not in {pl.Datetime, pl.Date}:
                 expression = expression.cast(pl.String).str.to_datetime(strict=False)
             return df.with_columns(expression.dt.strftime(params["format"]).alias(params.get("newColumn", column)))
@@ -1869,13 +1920,18 @@ class PolarsEngine(DataFrameEngine):
             schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
             keys = [bound_column_name(reference, kind) for reference in params["keys"]]
             normalized = df.with_columns(
-                [pl.col(key).fill_nan(None).alias(key) if schema[key].is_float() else pl.col(key) for key in keys]
+                [
+                    _ow_polars_col(schema, key).fill_nan(None).alias(key)
+                    if schema[key].is_float()
+                    else _ow_polars_col(schema, key)
+                    for key in keys
+                ]
             )
             expressions = [
-                _polars_aggregation(aggregation, schema[bound_column_name(aggregation["column"], kind)])
+                _polars_aggregation(aggregation, schema[bound_column_name(aggregation["column"], kind)], schema)
                 for aggregation in params["aggregations"]
             ]
-            return normalized.group_by(keys, maintain_order=True).agg(expressions)
+            return normalized.group_by(_ow_polars_columns(normalized, keys), maintain_order=True).agg(expressions)
         if kind == "byExample":
             _polars_validate_datetime_examples(params)
             schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
@@ -1883,6 +1939,7 @@ class PolarsEngine(DataFrameEngine):
             return df.with_columns(
                 _polars_by_example_expression(
                     params["program"],
+                    schema=schema,
                     scalar_checked_integers=scalar_checked_integers,
                 ).alias(params["newColumn"])
             )
@@ -2029,7 +2086,7 @@ class PolarsEngine(DataFrameEngine):
                     "    dtype = schema[column]",
                     "    if not dtype.is_numeric():",
                     "        raise ValueError('Dense rank requires a numeric column.')",
-                    "    values = pl.col(column)",
+                    "    values = _ow_polars_col(schema, column)",
                     "    if dtype.is_float():",
                     "        values = values.fill_nan(None)",
                     "    return df.with_columns("
@@ -2058,7 +2115,10 @@ class PolarsEngine(DataFrameEngine):
                 [
                     *_generated_polars_fill_helpers(),
                     getsource(_ow_polars_fill_missing_directional),
-                    getsource(_polars_interpolation_helpers),
+                    getsource(_polars_interpolation_helpers._ow_polars_interpolation_coordinate_kind),
+                    getsource(_polars_interpolation_helpers._ow_polars_interpolation_coordinate_expression),
+                    getsource(_polars_interpolation_helpers._ow_polars_interpolation_coordinate_roundtrip),
+                    getsource(_polars_fill_missing_linear_interpolation),
                 ]
             )
             lines.extend([select_generated_helpers(fill_helpers, clean_data), ""])
@@ -2105,10 +2165,10 @@ class PolarsEngine(DataFrameEngine):
                         "portable group-key scalar family.')"
                     ),
                     (
-                        "    normalized = df.with_columns([pl.col(name).fill_nan(None).alias(name) "
+                        "    normalized = df.with_columns([_ow_polars_col(schema, name).fill_nan(None).alias(name) "
                         "for name in identifiers if schema[name].is_float()])"
                     ),
-                    "    key_expression = pl.col(names_from).cast(pl.String)",
+                    "    key_expression = _ow_polars_col(schema, names_from).cast(pl.String)",
                     (
                         "    invalid = normalized.filter(key_expression.is_null() | "
                         "~key_expression.is_in(output_values)).limit(1)"
@@ -2122,7 +2182,10 @@ class PolarsEngine(DataFrameEngine):
                         "        raise ValueError('Pivot wider namesFrom values must be present and match one "
                         "declared typed key.')"
                     ),
-                    ("    duplicates = normalized.select(pl.struct([*identifiers, names_from]).is_duplicated().any())"),
+                    (
+                        "    duplicates = normalized.select(pl.struct("
+                        "_ow_polars_columns(normalized, [*identifiers, names_from])).is_duplicated().any())"
+                    ),
                     (
                         "    duplicates = duplicates.collect(engine='streaming') "
                         "if isinstance(duplicates, pl.LazyFrame) else duplicates"
@@ -2134,16 +2197,21 @@ class PolarsEngine(DataFrameEngine):
                     ),
                     "    expressions = [",
                     (
-                        "        pl.col(values_from).filter(pl.col(names_from).cast(pl.String) == key_value)"
+                        "        _ow_polars_col(schema, values_from).filter("
+                        "_ow_polars_col(schema, names_from).cast(pl.String) == key_value)"
                         ".first().alias(output_name)"
                     ),
                     "        for key_value, output_name in zip(output_values, output_names, strict=True)",
                     "    ]",
                     "    if identifiers:",
-                    "        return normalized.group_by(identifiers, maintain_order=True).agg(expressions)",
+                    (
+                        "        return normalized.group_by(_ow_polars_columns(normalized, identifiers), "
+                        "maintain_order=True).agg(expressions)"
+                    ),
                     f"    group_name = {f'{INTERNAL_ROW_ID_PREFIX}pivot_wider_group'!r}",
                     (
-                        "    return normalized.group_by(pl.col(names_from).is_not_null().alias(group_name), "
+                        "    return normalized.group_by("
+                        "_ow_polars_col(schema, names_from).is_not_null().alias(group_name), "
                         "maintain_order=True)"
                         ".agg(expressions).drop(group_name)"
                     ),
@@ -2285,6 +2353,9 @@ class PolarsEngine(DataFrameEngine):
                     "    )",
                 ]
             )
+        exact_helpers = select_generated_helpers(getsource(_polars_exact_columns), "\n".join([clean_data, *lines]))
+        if exact_helpers:
+            lines.extend([exact_helpers, ""])
         lines = [clean_data_lines[0], indent("\n".join(lines), "    ")]
         for index, step in enumerate(plan):
             if step["kind"] == "customCode":
@@ -2300,7 +2371,7 @@ class PolarsEngine(DataFrameEngine):
             rules = params["rules"]
             columns = [bound_column_name(rule["column"], kind) for rule in rules]
             return [
-                f"{prefix}df = df.sort({columns!r},",
+                f"{prefix}df = df.sort({_compile_polars_columns(columns)},",
                 f"{prefix}    descending={[rule.get('direction', 'asc') == 'desc' for rule in rules]!r},",
                 f"{prefix}    nulls_last={[rule.get('nulls', 'last') == 'last' for rule in rules]!r},",
                 f"{prefix}    maintain_order=True)",
@@ -2312,7 +2383,7 @@ class PolarsEngine(DataFrameEngine):
             position = bound_column_position(params["column"], kind)
             schema = f"_conditional_schema_{index}"
             dtype = f"{schema}[{column!r}]"
-            source = f"pl.col({column!r})"
+            source = f"{_compile_polars_column(column)}"
             mask = _polars_predicate_expression(source, params["predicate"], params["columnType"], dtype)
             output_dtype = "pl.String" if params["resultType"] == "string" else "pl.Boolean"
             result = (
@@ -2342,13 +2413,19 @@ class PolarsEngine(DataFrameEngine):
             name = f"_columns_{index}"
             schema = f"_schema_{index}"
             horizontal = "all_horizontal" if params.get("how", "any") == "any" else "any_horizontal"
+            value = (
+                f"_ow_polars_col({schema}, column)"
+                if columns is None
+                or any(name == "*" or (name.startswith("^") and name.endswith("$")) for name in columns)
+                else "pl.col(column)"
+            )
             return [
                 f"{prefix}{schema} = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema",
                 f"{prefix}{name} = {columns!r} or {schema}.names()",
                 f"{prefix}if {name}:",
                 (
-                    f"{prefix}    _valid_{index} = [pl.col(column).is_not_null() & "
-                    f"(~pl.col(column).is_nan() if {schema}[column].is_float() else pl.lit(True)) "
+                    f"{prefix}    _valid_{index} = [{value}.is_not_null() & "
+                    f"(~{value}.is_nan() if {schema}[column].is_float() else pl.lit(True)) "
                     f"for column in {name}]"
                 ),
                 f"{prefix}    df = df.filter(pl.{horizontal}(_valid_{index}))",
@@ -2394,7 +2471,7 @@ class PolarsEngine(DataFrameEngine):
             expression = f"_fill_expression_{index}"
             lines = [
                 f"{prefix}{schema} = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema",
-                f"{prefix}{expression} = pl.col({column!r})",
+                f"{prefix}{expression} = {_compile_polars_column(column)}",
                 f"{prefix}if {schema}[{column!r}].is_float():",
                 f"{prefix}    {expression} = {expression}.fill_nan(None)",
             ]
@@ -2538,7 +2615,7 @@ class PolarsEngine(DataFrameEngine):
         if kind == "markDuplicates":
             columns = [bound_column_name(column, kind) for column in params["columns"]]
             return [
-                f"{prefix}df = df.with_columns(pl.struct({columns!r}).is_duplicated()"
+                f"{prefix}df = df.with_columns(pl.struct({_compile_polars_columns(columns)}).is_duplicated()"
                 f".alias({output_name or repr(params['newColumn'])}))"
             ]
         if kind == "dropDuplicates":
@@ -2547,27 +2624,33 @@ class PolarsEngine(DataFrameEngine):
             )
             name = f"_duplicate_columns_{index}"
             schema = f"_duplicate_schema_{index}"
+            subset = _compile_polars_columns(columns, schema) if columns else f"_ow_polars_columns({schema}, {name})"
             return [
                 f"{prefix}{schema} = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema",
                 f"{prefix}{name} = {columns!r} or {schema}.names()",
                 f"{prefix}if {name}:",
                 (
-                    f"{prefix}    df = df.unique(subset={name}, "
+                    f"{prefix}    df = df.unique(subset={subset}, "
                     f"keep={params.get('keep', 'first')!r}, maintain_order=True)"
                 ),
             ]
         if kind == "selectColumns":
             columns = [bound_column_name(column, kind) for column in params["columns"]]
-            return [f"{prefix}df = df.select({columns!r})"]
+            return [f"{prefix}df = df.select({_compile_polars_columns(columns)})"]
         if kind == "dropColumns":
             columns = [bound_column_name(column, kind) for column in params["columns"]]
-            return [f"{prefix}df = df.drop({columns!r})"]
+            return [f"{prefix}df = df.drop({_compile_polars_columns(columns)})"]
         if kind == "renameColumn":
             column = bound_column_name(params["column"], kind)
             return [f"{prefix}df = df.rename({{{column!r}: {output_name or repr(params['newName'])}}})"]
         if kind == "cloneColumn":
             column = bound_column_name(params["column"], kind)
-            return [f"{prefix}df = df.with_columns(pl.col({column!r}).alias({output_name or repr(params['newName'])}))"]
+            return [
+                (
+                    f"{prefix}df = df.with_columns({_compile_polars_column(column)}"
+                    f".alias({output_name or repr(params['newName'])}))"
+                )
+            ]
         if kind == "castColumn":
             column = bound_column_name(params["column"], kind)
             dtype_attribute, strict = _polars_cast_target(params["dtype"])
@@ -2577,13 +2660,18 @@ class PolarsEngine(DataFrameEngine):
                 return [
                     f"{prefix}{schema} = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema",
                     f"{prefix}df = df.with_columns(_polars_temporal_cast_expression("
-                    f"pl.col({column!r}), {schema}[{column!r}], pl.{dtype_attribute}{input_format}))",
+                    f"{_compile_polars_column(column)}, {schema}[{column!r}], pl.{dtype_attribute}{input_format}))",
                 ]
-            return [f"{prefix}df = df.with_columns(pl.col({column!r}).cast(pl.{dtype_attribute}, strict={strict!r}))"]
+            return [
+                (
+                    f"{prefix}df = df.with_columns({_compile_polars_column(column)}"
+                    f".cast(pl.{dtype_attribute}, strict={strict!r}))"
+                )
+            ]
         if kind == "formula":
             left_column = bound_column_name(params["leftColumn"], kind)
             right = (
-                f"pl.col({bound_column_name(params['rightColumn'], kind)!r})"
+                _compile_polars_column(bound_column_name(params["rightColumn"], kind))
                 if params.get("rightColumn")
                 else f"pl.lit({params['value']!r})"
             )
@@ -2617,13 +2705,13 @@ class PolarsEngine(DataFrameEngine):
                     f".alias({output_name or repr(params['newColumn'])}))"
                 )
                 return lines
-            expression = f"(pl.col({left_column!r}) {symbol} {right})"
+            expression = f"({_compile_polars_column(left_column)} {symbol} {right})"
             if params["operator"] == "divide":
                 return [f"{prefix}df = df.with_columns({expression}.alias({output_name or repr(params['newColumn'])}))"]
             return [
                 (
-                    f"{prefix}_ow_polars_check_formula(df, pl.col({left_column!r}), {right}, "
-                    f"{params['operator']!r}, {expression})"
+                    f"{prefix}_ow_polars_check_formula(df, {_compile_polars_column(left_column)}, {right}, "
+                    f"{params['operator']!r}, {expression}, right_is_column={bool(params.get('rightColumn'))!r})"
                 ),
                 f"{prefix}df = df.with_columns({expression}.alias({output_name or repr(params['newColumn'])}))",
             ]
@@ -2631,7 +2719,7 @@ class PolarsEngine(DataFrameEngine):
             column = bound_column_name(params["column"], kind)
             return [
                 (
-                    f"{prefix}df = df.with_columns(pl.col({column!r}).cast(pl.String)"
+                    f"{prefix}df = df.with_columns({_compile_polars_column(column)}.cast(pl.String)"
                     f".str.len_chars().alias({output_name or repr(params['newColumn'])}))"
                 )
             ]
@@ -2650,16 +2738,25 @@ class PolarsEngine(DataFrameEngine):
             names = f"_generated_names_{index}"
             collisions = f"_collisions_{index}"
             reserved = f"_reserved_{index}"
+            value = (
+                f"_ow_polars_col({eager}, column)"
+                if any(name == "*" or (name.startswith("^") and name.endswith("$")) for name in columns)
+                else "pl.col(column)"
+            )
             return [
                 f"{prefix}{eager} = df.collect(engine='streaming') if isinstance(df, pl.LazyFrame) else df",
                 (
                     f"{prefix}{generated} = [(column, value, str(column) + "
                     f"{params.get('prefixSeparator', '_')!r} + str(value)) for column in {columns!r} "
-                    f"for value in sorted({eager}.get_column(column).drop_nulls().unique().to_list(), key=str) "
+                    f"for value in sorted({eager}.get_column(column).rename('__ow_encoding_value')"
+                    ".drop_nulls().unique().to_list(), key=str) "
                     f"if str(value) and not (isinstance(value, float) and value != value)]"
                 ),
                 f"{prefix}{generated}.sort(key=lambda item: item[2])",
-                f"{prefix}{base} = {eager}.drop({columns!r}) if {params.get('dropOriginal', True)!r} else {eager}",
+                (
+                    f"{prefix}{base} = {eager}.drop({_compile_polars_columns(columns, eager)}) "
+                    f"if {params.get('dropOriginal', True)!r} else {eager}"
+                ),
                 f"{prefix}{names} = [name for _, _, name in {generated}]",
                 (
                     f"{prefix}{reserved} = [name for name in {names} "
@@ -2681,7 +2778,7 @@ class PolarsEngine(DataFrameEngine):
                 ),
                 f"{prefix}if {generated}:",
                 f"{prefix}    {encoded} = {eager}.select([",
-                f"{prefix}        (pl.col(column) == pl.lit(value)).fill_null(False).cast(pl.Int8).alias(name)",
+                (f"{prefix}        ({value} == pl.lit(value)).fill_null(False).cast(pl.Int8).alias(name)"),
                 f"{prefix}        for column, value, name in {generated}",
                 f"{prefix}    ])",
                 f"{prefix}    df = {base}.hstack({encoded}) if {base}.width else {encoded}",
@@ -2708,11 +2805,14 @@ class PolarsEngine(DataFrameEngine):
                     "if 'empty_as_null' in signature(pl.Expr.explode).parameters else {}"
                 ),
                 f"{prefix}{labels} = {eager}.select(",
-                f"{prefix}    pl.col({column!r}).cast(pl.String).str.split({delimiter!r})",
+                f"{prefix}    {_compile_polars_column(column)}.cast(pl.String).str.split({delimiter!r})",
                 f"{prefix}    .explode(**{explode_options}).drop_nulls().unique()",
                 f"{prefix}).get_column({column!r}).to_list()",
                 f"{prefix}{labels} = sorted(str(label) for label in {labels} if str(label))",
-                f"{prefix}{base} = {eager}.drop({column!r}) if {params.get('dropOriginal', False)!r} else {eager}",
+                (
+                    f"{prefix}{base} = {eager}.drop({_compile_polars_columns([column], eager)}) "
+                    f"if {params.get('dropOriginal', False)!r} else {eager}"
+                ),
                 f"{prefix}{names} = [{params.get('prefix', f'{column}_')!r} + label for label in {labels}]",
                 (
                     f"{prefix}{reserved} = [name for name in {names} "
@@ -2734,7 +2834,7 @@ class PolarsEngine(DataFrameEngine):
                 ),
                 f"{prefix}if {labels}:",
                 f"{prefix}    {encoded} = {eager}.select([",
-                f"{prefix}        pl.col({column!r}).fill_null('').cast(pl.String)",
+                f"{prefix}        {_compile_polars_column(column)}.fill_null('').cast(pl.String)",
                 f"{prefix}        .str.split({delimiter!r}).list.contains(label).cast(pl.Int8)",
                 f"{prefix}        .alias({params.get('prefix', f'{column}_')!r} + label)",
                 f"{prefix}        for label in {labels}",
@@ -2775,7 +2875,7 @@ class PolarsEngine(DataFrameEngine):
                 ),
                 f"{prefix}df = df.with_columns([",
                 (
-                    f"{prefix}    pl.col({column!r}).cast(pl.String).str.split({delimiter!r})"
+                    f"{prefix}    {_compile_polars_column(column)}.cast(pl.String).str.split({delimiter!r})"
                     f".list.get(item, null_on_oob=True).alias(name)"
                 ),
                 f"{prefix}    for item, name in enumerate({output_names!r})",
@@ -2822,9 +2922,9 @@ class PolarsEngine(DataFrameEngine):
                 f"{prefix}{unselected} = [name for name in {schema}.names() if name not in set({selected!r})]",
                 f"{prefix}{fragments} = [",
                 f"{prefix}    df.select([",
-                f"{prefix}        *[pl.col(name) for name in {unselected}],",
+                f"{prefix}        *[_ow_polars_col({schema}, name) for name in {unselected}],",
                 f"{prefix}        pl.lit(public_name, dtype=pl.String).alias({params['labelColumn']!r}),",
-                f"{prefix}        pl.col(selected_name).alias({params['valueColumn']!r}),",
+                f"{prefix}        _ow_polars_col({schema}, selected_name).alias({params['valueColumn']!r}),",
                 f"{prefix}    ])",
                 (f"{prefix}    for selected_name, public_name in zip({selected!r}, {selected!r}, strict=True)"),
                 f"{prefix}]",
@@ -2873,9 +2973,10 @@ class PolarsEngine(DataFrameEngine):
                     f"+ ', '.join({collisions}))"
                 ),
                 (
-                    f"{prefix}_regex_oversized_{index} = df.select(((pl.col({column!r}).cast(pl.String)"
+                    f"{prefix}_regex_oversized_{index} = df.select((({_compile_polars_column(column)}.cast(pl.String)"
                     f".str.len_chars() > {MAX_PORTABLE_REGEX_TEXT_CODE_POINTS}) | "
-                    f"(pl.col({column!r}).cast(pl.String).str.len_bytes() > {MAX_PORTABLE_REGEX_TEXT_UTF8_BYTES}))"
+                    f"({_compile_polars_column(column)}.cast(pl.String).str.len_bytes() "
+                    f"> {MAX_PORTABLE_REGEX_TEXT_UTF8_BYTES}))"
                     f".fill_null(False).any().alias('oversized'))"
                 ),
                 (
@@ -2884,14 +2985,14 @@ class PolarsEngine(DataFrameEngine):
                 ),
                 f"{prefix}    raise ValueError({PORTABLE_REGEX_TEXT_LIMIT_MESSAGE!r})",
                 (
-                    f"{prefix}df = df.with_columns(pl.col({column!r}).cast(pl.String)"
+                    f"{prefix}df = df.with_columns({_compile_polars_column(column)}.cast(pl.String)"
                     f".str.extract({params['pattern']!r}, {params['group']}).alias({output!r}))"
                 ),
             ]
         if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn", column)
-            base = f"pl.col({column!r}).cast(pl.String)"
+            base = f"{_compile_polars_column(column)}.cast(pl.String)"
             if kind == "findReplace":
                 expression = (
                     f"{base}.str.replace_all({params['find']!r}, {params['replacement']!r}, "
@@ -2917,7 +3018,8 @@ class PolarsEngine(DataFrameEngine):
                 f"{prefix}_scale_schema_{index} = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema",
                 (
                     f"{prefix}df = df.with_columns(_ow_polars_min_max_scale("
-                    f"pl.col({column!r}), _scale_schema_{index}[{column!r}]).alias({output_name or repr(target)}))"
+                    f"{_compile_polars_column(column)}, _scale_schema_{index}[{column!r}])"
+                    f".alias({output_name or repr(target)}))"
                 ),
             ]
         if kind in {"roundNumber", "floorNumber", "ceilNumber"}:
@@ -2925,7 +3027,10 @@ class PolarsEngine(DataFrameEngine):
             target = params.get("newColumn", column)
             if kind == "roundNumber":
                 dtype = f"_round_type_{index}"
-                expression = f"_open_wrangler_round_exact(pl.col({column!r}), {dtype}, {params.get('decimals', 0)!r})"
+                expression = (
+                    f"_open_wrangler_round_exact({_compile_polars_column(column)}, "
+                    f"{dtype}, {params.get('decimals', 0)!r})"
+                )
                 return [
                     (
                         f"{prefix}{dtype} = (df.collect_schema() if isinstance(df, pl.LazyFrame) "
@@ -2938,7 +3043,7 @@ class PolarsEngine(DataFrameEngine):
             method = "floor" if kind == "floorNumber" else "ceil"
             return [
                 f"{prefix}{dtype} = (df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema)[{column!r}]",
-                f"{prefix}{expression} = pl.col({column!r})",
+                f"{prefix}{expression} = {_compile_polars_column(column)}",
                 f"{prefix}if {dtype}.base_type() == pl.Decimal:",
                 f"{prefix}    _integral_coefficient_{index} = {expression}.to_physical()",
                 f"{prefix}    _integral_divisor_{index} = pl.lit(10**{dtype}.scale, dtype=pl.Int128)",
@@ -2964,7 +3069,7 @@ class PolarsEngine(DataFrameEngine):
             expression = f"_datetime_{index}"
             return [
                 f"{prefix}{schema} = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema",
-                f"{prefix}{expression} = pl.col({column!r})",
+                f"{prefix}{expression} = {_compile_polars_column(column)}",
                 f"{prefix}if {schema}[{column!r}].base_type() not in {{pl.Datetime, pl.Date}}:",
                 f"{prefix}    {expression} = {expression}.cast(pl.String).str.to_datetime(strict=False)",
                 (
@@ -2981,8 +3086,8 @@ class PolarsEngine(DataFrameEngine):
                 f"{prefix}df = df.with_columns([",
                 *[
                     (
-                        f"{prefix}    pl.col({key!r}).fill_nan(None).alias({key!r}) "
-                        f"if {schema}[{key!r}].is_float() else pl.col({key!r}),"
+                        f"{prefix}    {_compile_polars_column(key)}.fill_nan(None).alias({key!r}) "
+                        f"if {schema}[{key!r}].is_float() else {_compile_polars_column(key)},"
                     )
                     for key in keys
                 ],
@@ -2995,7 +3100,7 @@ class PolarsEngine(DataFrameEngine):
                 _, _, checked_integer_sum = _polars_group_aggregation_semantics(aggregation["operation"])
                 lines.extend(
                     [
-                        f"{prefix}{value} = pl.col({column!r})",
+                        f"{prefix}{value} = {_compile_polars_column(column)}",
                         f"{prefix}if {schema}[{column!r}].is_float():",
                         f"{prefix}    {value} = {value}.fill_nan(None)",
                     ]
@@ -3015,7 +3120,9 @@ class PolarsEngine(DataFrameEngine):
                     )
                 else:
                     lines.append(f"{prefix}{expressions}.append({_compile_polars_aggregation(aggregation, value)})")
-            lines.append(f"{prefix}df = df.group_by({keys!r}, maintain_order=True).agg({expressions})")
+            lines.append(
+                f"{prefix}df = df.group_by({_compile_polars_columns(keys)}, maintain_order=True).agg({expressions})"
+            )
             return lines
         if kind == "byExample":
             _polars_validate_datetime_examples(params)
@@ -3040,6 +3147,18 @@ class PolarsEngine(DataFrameEngine):
         raise EngineError(f"Polars cannot compile transformation: {kind}")
 
 
+def _compile_polars_column(name: str, frame: str = "df") -> str:
+    if name == "*" or (name.startswith("^") and name.endswith("$")):
+        return f"_ow_polars_col({frame}, {name!r})"
+    return f"pl.col({name!r})"
+
+
+def _compile_polars_columns(names: list[str], frame: str = "df") -> str:
+    if any(name == "*" or (name.startswith("^") and name.endswith("$")) for name in names):
+        return f"_ow_polars_columns({frame}, {names!r})"
+    return repr(names)
+
+
 def _polars_validate_datetime_examples(params: Mapping[str, Any]) -> None:
     program = params["program"]
     if program["kind"] != "datetimeFormat" or not any(
@@ -3060,7 +3179,12 @@ def _polars_validate_datetime_examples(params: Mapping[str, Any]) -> None:
             dtype=pl.String,
             strict=False,
         )
-        actual = pl.DataFrame([values]).select(_polars_by_example_expression(program)).to_series().to_list()
+        example_frame = pl.DataFrame([values])
+        actual = (
+            example_frame.select(_polars_by_example_expression(program, schema=example_frame.schema))
+            .to_series()
+            .to_list()
+        )
     except (pl.exceptions.PolarsError, TypeError, ValueError):
         raise EngineError(message) from None
     if actual != [example["output"] for example in examples]:
@@ -3070,16 +3194,17 @@ def _polars_validate_datetime_examples(params: Mapping[str, Any]) -> None:
 def _polars_by_example_expression(
     program: Mapping[str, Any],
     *,
+    schema: Mapping[str, Any],
     scalar_checked_integers: bool = False,
 ) -> Any:
     import polars as pl
 
     def child(value: Mapping[str, Any]) -> Any:
-        return _polars_by_example_expression(value, scalar_checked_integers=scalar_checked_integers)
+        return _polars_by_example_expression(value, schema=schema, scalar_checked_integers=scalar_checked_integers)
 
     kind = program["kind"]
     if kind == "column":
-        return pl.col(bound_column_name(program["column"], "byExample"))
+        return _ow_polars_col(schema, bound_column_name(program["column"], "byExample"))
     if kind == "literal":
         return pl.lit(program.get("value"))
     if kind == "slice":
@@ -3143,7 +3268,7 @@ def _compile_polars_by_example(
 
     kind = program["kind"]
     if kind == "column":
-        return f"pl.col({bound_column_name(program['column'], 'byExample')!r})"
+        return _compile_polars_column(bound_column_name(program["column"], "byExample"))
     if kind == "literal":
         return f"pl.lit({program.get('value')!r})"
     if kind == "slice":
@@ -3233,11 +3358,11 @@ def _polars_fill_missing_from_columns(frame: Any, target: str, fallbacks: list[s
         # Enum domains are closed.  Check only values that can actually win the
         # ordered fallback chain; an unused later fallback must not widen an
         # otherwise unchanged Enum column.
-        probe_target = pl.col(target)
+        probe_target = _ow_polars_col(schema, target)
         probe_remaining = probe_target.is_null()
         probe_widening = pl.lit(False)
         for fallback in fallbacks:
-            probe_candidate = pl.col(fallback)
+            probe_candidate = _ow_polars_col(schema, fallback)
             if schema[fallback].is_float():
                 probe_candidate = probe_candidate.fill_nan(None)
             probe_available = probe_candidate.is_not_null()
@@ -3251,7 +3376,7 @@ def _polars_fill_missing_from_columns(frame: Any, target: str, fallbacks: list[s
         probe_result = probe_query.collect(engine="streaming") if isinstance(probe_query, pl.LazyFrame) else probe_query
         if bool(probe_result.item()):
             output_dtype = pl.String
-    target_value = pl.col(target)
+    target_value = _ow_polars_col(schema, target)
     target_missing = target_value.is_null()
     if target_dtype.is_float():
         target_missing = target_missing | target_value.is_nan()
@@ -3269,7 +3394,7 @@ def _polars_fill_missing_from_columns(frame: Any, target: str, fallbacks: list[s
                 f"Fallback column {fallback!r} has Polars type {fallback_dtype}, not {target_dtype}. "
                 "Convert the columns to one exact type before filling."
             )
-        candidate = pl.col(fallback)
+        candidate = _ow_polars_col(schema, fallback)
         if fallback_dtype.is_float():
             candidate = candidate.fill_nan(None)
         available = candidate.is_not_null()
@@ -3305,7 +3430,7 @@ def _polars_fill_missing_grouped_statistic(
             "Grouped fills require native scalar Polars columns; Object columns are not supported: "
             + ", ".join(object_columns)
         )
-    target_value = pl.col(target)
+    target_value = _ow_polars_col(schema, target)
     if target_dtype.is_float():
         target_value = target_value.fill_nan(None)
 
@@ -3322,7 +3447,7 @@ def _polars_fill_missing_grouped_statistic(
     key_expressions = []
     for index, key in enumerate(keys):
         name = unique(f"__ow_grouped_key_{index}")
-        expression = pl.col(key)
+        expression = _ow_polars_col(schema, key)
         if schema[key].is_float():
             expression = expression.fill_nan(None)
         normalized_keys.append(name)
@@ -3375,14 +3500,16 @@ def _polars_fill_missing_grouped_statistic(
         ties_name = unique("__ow_grouped_ties")
         counts = (
             normalized.filter(target_value.is_not_null())
-            .group_by([*normalized_keys, target], maintain_order=True)
+            .group_by(
+                [*[pl.col(name) for name in normalized_keys], _ow_polars_col(schema, target)], maintain_order=True
+            )
             .len(name=count_name)
         )
         winners = counts.with_columns(pl.col(count_name).max().over(normalized_keys).alias(maximum_name)).filter(
             pl.col(count_name) == pl.col(maximum_name)
         )
         summary = winners.group_by(normalized_keys, maintain_order=True).agg(
-            pl.col(target).first().alias(fill_name),
+            _ow_polars_col(schema, target).first().alias(fill_name),
             pl.len().alias(ties_name),
         )
         summary = summary.with_columns(
@@ -3470,7 +3597,7 @@ def _polars_fill_missing_grouped_statistic(
             maintain_order="left",
         )
     eligible = target_value.is_null() & pl.col(fill_name).is_not_null()
-    result = pl.when(eligible).then(pl.col(fill_name)).otherwise(pl.col(target)).alias(target)
+    result = pl.when(eligible).then(pl.col(fill_name)).otherwise(_ow_polars_col(schema, target)).alias(target)
     return joined.with_columns(result).drop(*normalized_keys, fill_name)
 
 
@@ -3529,14 +3656,14 @@ def _polars_most_frequent_value(frame: Any, column: str, expression: Any) -> Any
 
     counts = (
         frame.select(expression.alias(column))
-        .filter(pl.col(column).is_not_null())
-        .group_by(column)
+        .filter(_ow_polars_col(frame, column).is_not_null())
+        .group_by(_ow_polars_col(frame, column))
         .len(name=count_name)
     )
     winners = counts.with_columns(pl.col(count_name).max().alias(maximum_name)).filter(
         pl.col(count_name) == pl.col(maximum_name)
     )
-    query = winners.select(pl.col(column).first().alias(column), pl.len().alias(ties_name))
+    query = winners.select(_ow_polars_col(frame, column).first().alias(column), pl.len().alias(ties_name))
     result = query.collect(engine="streaming") if isinstance(query, pl.LazyFrame) else query
     tie_count = int(result[ties_name][0])
     if tie_count == 0:
@@ -3602,11 +3729,11 @@ def _generated_polars_fill_helpers() -> list[str]:
             "    if target_dtype.base_type() == pl.Enum and "
             "any(schema[fallback] != target_dtype for fallback in fallbacks):"
         ),
-        "        probe_target = pl.col(target)",
+        "        probe_target = _ow_polars_col(schema, target)",
         "        probe_remaining = probe_target.is_null()",
         "        probe_widening = pl.lit(False)",
         "        for fallback in fallbacks:",
-        "            probe_candidate = pl.col(fallback)",
+        "            probe_candidate = _ow_polars_col(schema, fallback)",
         "            if schema[fallback].is_float():",
         "                probe_candidate = probe_candidate.fill_nan(None)",
         "            probe_available = probe_candidate.is_not_null()",
@@ -3622,7 +3749,7 @@ def _generated_polars_fill_helpers() -> list[str]:
         "        )",
         "        if probe_result.item():",
         "            output_dtype = pl.String",
-        "    target_value = pl.col(target)",
+        "    target_value = _ow_polars_col(schema, target)",
         "    target_missing = target_value.is_null()",
         "    if target_dtype.is_float():",
         "        target_missing = target_missing | target_value.is_nan()",
@@ -3640,7 +3767,7 @@ def _generated_polars_fill_helpers() -> list[str]:
             "            raise ValueError(f'Fallback column {fallback!r} has Polars type {fallback_dtype}, "
             "not {target_dtype}. Convert the columns to one exact type before filling.')"
         ),
-        "        candidate = pl.col(fallback)",
+        "        candidate = _ow_polars_col(schema, fallback)",
         "        if fallback_dtype.is_float():",
         "            candidate = candidate.fill_nan(None)",
         "        available = candidate.is_not_null()",
@@ -3667,7 +3794,7 @@ def _generated_polars_fill_helpers() -> list[str]:
             "        raise ValueError('Grouped fills require native scalar Polars columns; Object columns are "
             "not supported: ' + ', '.join(object_columns))"
         ),
-        "    target_value = pl.col(target)",
+        "    target_value = _ow_polars_col(schema, target)",
         "    if target_dtype.is_float():",
         "        target_value = target_value.fill_nan(None)",
         "    reserved = set(schema.names())",
@@ -3681,7 +3808,7 @@ def _generated_polars_fill_helpers() -> list[str]:
         "    key_expressions = []",
         "    for index, key in enumerate(keys):",
         "        name = unique(f'__ow_grouped_key_{index}')",
-        "        expression = pl.col(key)",
+        "        expression = _ow_polars_col(schema, key)",
         "        if schema[key].is_float():",
         "            expression = expression.fill_nan(None)",
         "        normalized_keys.append(name)",
@@ -3733,14 +3860,17 @@ def _generated_polars_fill_helpers() -> list[str]:
         "        ties_name = unique('__ow_grouped_ties')",
         "        counts = (",
         "            normalized.filter(target_value.is_not_null())",
-        "            .group_by([*normalized_keys, target], maintain_order=True)",
+        (
+            "            .group_by([*[pl.col(name) for name in normalized_keys], "
+            "_ow_polars_col(schema, target)], maintain_order=True)"
+        ),
         "            .len(name=count_name)",
         "        )",
         "        winners = counts.with_columns(",
         "            pl.col(count_name).max().over(normalized_keys).alias(maximum_name)",
         "        ).filter(pl.col(count_name) == pl.col(maximum_name))",
         "        summary = winners.group_by(normalized_keys, maintain_order=True).agg(",
-        "            pl.col(target).first().alias(fill_name),",
+        "            _ow_polars_col(schema, target).first().alias(fill_name),",
         "            pl.len().alias(ties_name),",
         "        )",
         "        summary = summary.with_columns(",
@@ -3818,7 +3948,10 @@ def _generated_polars_fill_helpers() -> list[str]:
             "nulls_equal=True, maintain_order='left')"
         ),
         "    eligible = target_value.is_null() & pl.col(fill_name).is_not_null()",
-        "    result = pl.when(eligible).then(pl.col(fill_name)).otherwise(pl.col(target)).alias(target)",
+        (
+            "    result = pl.when(eligible).then(pl.col(fill_name))"
+            ".otherwise(_ow_polars_col(schema, target)).alias(target)"
+        ),
         "    return joined.with_columns(result).drop(*normalized_keys, fill_name)",
         "",
         "",
@@ -3882,14 +4015,14 @@ def _generated_polars_fill_helpers() -> list[str]:
         "        ties_name += '_'",
         "    counts = (",
         "        frame.select(expression.alias(column))",
-        "        .filter(pl.col(column).is_not_null())",
-        "        .group_by(column)",
+        "        .filter(_ow_polars_col(frame, column).is_not_null())",
+        "        .group_by(_ow_polars_col(frame, column))",
         "        .len(name=count_name)",
         "    )",
         "    winners = counts.with_columns(pl.col(count_name).max().alias(maximum_name)).filter(",
         "        pl.col(count_name) == pl.col(maximum_name)",
         "    )",
-        "    query = winners.select(pl.col(column).first().alias(column), pl.len().alias(ties_name))",
+        "    query = winners.select(_ow_polars_col(frame, column).first().alias(column), pl.len().alias(ties_name))",
         ("    result = query.collect(engine='streaming') if isinstance(query, pl.LazyFrame) else query"),
         "    tie_count = int(result[ties_name][0])",
         "    if tie_count == 0:",
@@ -3917,7 +4050,7 @@ def _polars_formula_integer_operands(frame: Any, column: str, value: Any, operat
     if not -(2**127) <= value < 2**128:
         raise EngineError("Formula literal exceeds Polars native integer capacity.")
     dtype = (frame.collect_schema() if isinstance(frame, pl.LazyFrame) else frame.schema)[column]
-    left = pl.col(column)
+    left = _ow_polars_col(frame, column)
     if not dtype.is_integer():
         literal_type = pl.Int64 if -(2**63) <= value < 2**63 else pl.Int128 if value < 2**127 else pl.UInt128
         return left, pl.lit(str(value)).cast(literal_type, strict=True)
@@ -3964,7 +4097,7 @@ def _ow_polars_formula_integer_operands(frame, column, value, operator):
     if not -(2**127) <= value < 2**128:
         raise ValueError("Formula literal exceeds Polars native integer capacity.")
     dtype = (frame.collect_schema() if isinstance(frame, pl.LazyFrame) else frame.schema)[column]
-    left = pl.col(column)
+    left = _ow_polars_col(frame, column)
     if not dtype.is_integer():
         literal_type = pl.Int64 if -(2**63) <= value < 2**63 else pl.Int128 if value < 2**127 else pl.UInt128
         return left, pl.lit(str(value)).cast(literal_type, strict=True)
@@ -4012,7 +4145,9 @@ def _ow_polars_formula_integer_operands(frame, column, value, operator):
     return lines
 
 
-def _polars_check_formula(frame: Any, left: Any, right: Any, operator: str, result: Any) -> None:
+def _polars_check_formula(
+    frame: Any, left: Any, right: Any, operator: str, result: Any, *, right_is_column: bool = False
+) -> None:
     import polars as pl
 
     if operator == "divide":
@@ -4020,7 +4155,7 @@ def _polars_check_formula(frame: Any, left: Any, right: Any, operator: str, resu
     query = frame if isinstance(frame, pl.LazyFrame) else frame.lazy()
     schema = query.select(left.alias("left"), right.alias("right"), result.alias("result")).collect_schema()
     left_type, right_type, dtype = schema["left"], schema["right"], schema["result"]
-    if dtype == pl.UInt128 and operator in {"add", "subtract", "multiply"} and right.meta.is_column():
+    if dtype == pl.UInt128 and operator in {"add", "subtract", "multiply"} and right_is_column:
         # Earlier owned column kernels can panic even when a one-row preview succeeds.
         version_parts = pl.__version__.split(".")
         supported_release = (
@@ -4155,7 +4290,7 @@ def _polars_check_formula(frame: Any, left: Any, right: Any, operator: str, resu
 
 def _generated_polars_formula_check_helpers() -> list[str]:
     source = """
-def _ow_polars_check_formula(frame, left, right, operator, result):
+def _ow_polars_check_formula(frame, left, right, operator, result, *, right_is_column=False):
     import polars as pl
 
     if operator == "divide":
@@ -4163,7 +4298,7 @@ def _ow_polars_check_formula(frame, left, right, operator, result):
     query = frame if isinstance(frame, pl.LazyFrame) else frame.lazy()
     schema = query.select(left.alias("left"), right.alias("right"), result.alias("result")).collect_schema()
     left_type, right_type, dtype = schema["left"], schema["right"], schema["result"]
-    if dtype == pl.UInt128 and operator in {"add", "subtract", "multiply"} and right.meta.is_column():
+    if dtype == pl.UInt128 and operator in {"add", "subtract", "multiply"} and right_is_column:
         # Earlier owned column kernels can panic even when a one-row preview succeeds.
         version_parts = pl.__version__.split(".")
         supported_release = (
@@ -4486,10 +4621,8 @@ def _polars_checked_integer_formula(left: Any, right: Any, operator: str) -> Any
     )
 
 
-def _polars_aggregation(aggregation: Mapping[str, Any], dtype: Any) -> Any:
-    import polars as pl
-
-    expression = pl.col(bound_column_name(aggregation["column"], "groupBy"))
+def _polars_aggregation(aggregation: Mapping[str, Any], dtype: Any, schema: Mapping[str, Any]) -> Any:
+    expression = _ow_polars_col(schema, bound_column_name(aggregation["column"], "groupBy"))
     if dtype.is_float():
         expression = expression.fill_nan(None)
     operation = aggregation["operation"]
@@ -4511,7 +4644,7 @@ def _polars_group_aggregation_semantics(operation: str) -> tuple[str, bool, bool
 
 def _compile_polars_aggregation(aggregation: Mapping[str, Any], expression: str | None = None) -> str:
     operation = aggregation["operation"]
-    expression = expression or f"pl.col({bound_column_name(aggregation['column'], 'groupBy')!r})"
+    expression = expression or _compile_polars_column(bound_column_name(aggregation["column"], "groupBy"))
     method, drop_nulls, _ = _polars_group_aggregation_semantics(operation)
     if drop_nulls:
         expression += ".drop_nulls()"
@@ -4539,7 +4672,7 @@ def _compile_polars_filter(model: Mapping[str, Any], index: int) -> list[str]:
         prelude.append(f"    {schema} = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema")
     for filter_index, column_filter in enumerate(filters):
         column = column_filter["column"]
-        expression = f"pl.col({column!r})"
+        expression = _compile_polars_column(column)
         column_type = column_filter.get("type")
         dtype_variable = f"_filter_dtype_{index}_{filter_index}"
         prelude.extend(
@@ -4608,7 +4741,7 @@ def _compile_polars_filter(model: Mapping[str, Any], index: int) -> list[str]:
     if rules:
         lines.extend(
             [
-                f"    df = df.sort({[rule['column'] for rule in rules]!r},",
+                f"    df = df.sort({_compile_polars_columns([rule['column'] for rule in rules])},",
                 f"        descending={[rule.get('direction', 'asc') == 'desc' for rule in rules]!r},",
                 f"        nulls_last={[rule.get('nulls', 'last') == 'last' for rule in rules]!r},",
                 "        maintain_order=True)",

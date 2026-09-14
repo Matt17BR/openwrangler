@@ -147,7 +147,10 @@ Use the existing owners to choose a focused source check:
   writer opening, destination preservation, bounded conversion and lazy streaming assertions in their existing owners.
 - **Python engines and generated programs:** [Pandas](../python/tests/test_pandas_engine.py),
   [Polars](../python/tests/test_polars_engine.py) and [DuckDB](../python/tests/test_duckdb_engine.py) own native profiles,
-  queries, source preservation and engine-specific evaluation bounds. [Operation edges](../python/tests/test_operation_edges.py),
+  queries, source preservation and engine-specific evaluation bounds. The Polars owner also checks literal column
+  names across projected views, profiles, shared cleaning helpers and complete generated programs. The existing
+  [session binding owner](../python/tests/test_session_column_binding.py) covers their apply/history and source identities.
+  [Operation edges](../python/tests/test_operation_edges.py),
   [Fill Missing](../python/tests/test_fill_missing.py) and the existing operation-specific owners compare complete
   live and generated results, types and indexes. [Session transactions](../python/tests/test_session_transactions.py)
   cover public Preview/Apply, history, refusal/correction, export and replay. Keep individual numeric, dtype and
