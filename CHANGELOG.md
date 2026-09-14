@@ -13,7 +13,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 - DuckDB refuses to display top-level Maps when distinct scalar Union keys would collapse into fewer entries.
 - Pandas preserves nanosecond timestamp types inside Parquet structs through editing and export. Lossy text conversion of supported nested temporal minima is refused.
-- Nested mapping output refuses colliding text keys instead of silently dropping entries.
+- Nested mapping output, including Pandas row labels, refuses colliding text keys instead of silently dropping entries.
 - DuckDB output preserves nanosecond timestamps inside lists, arrays, structs and maps, including distinct timestamp map keys.
 - Polars grid and profile output preserves timestamp and duration precision inside lists, arrays and structs. Copied cells retain that precision.
 - New columns remain in view when Code Preview opens automatically.

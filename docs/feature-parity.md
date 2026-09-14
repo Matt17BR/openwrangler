@@ -327,8 +327,9 @@ Null containers, null children and empty containers stay distinct. Complex-value
 and native List value-choice requests can still refuse.
 
 Python engines refuse nested mapping output when distinct keys would become the same JSON key, such as `1` and `"1"`.
-The source remains unchanged, and pages omitting the affected values remain available. This check cannot restore
-entries already lost when an engine converts native values to Python.
+Pandas row-index labels use the same refusal rule. The source remains unchanged, and pages excluding the affected
+rows remain available. Projecting other data columns can omit a problematic cell but cannot omit a row-index label.
+This check cannot restore entries already lost when an engine converts native values to Python.
 
 On Pandas versions that infer temporal count keys from object columns, profiles and value choices refuse nonzero
 NumPy datetime values with unit multipliers or units finer than nanoseconds. Fixed-unit duration counts use exact
