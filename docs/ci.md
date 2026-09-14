@@ -132,6 +132,9 @@ remaining Linux checks do not establish platform equivalence.
 Source's documentation and canonical-artifact tests cover the admitted release-document validators, including their
 Git, VSIX and release-channel checks. These validators and their test owner are excluded from the VSIX and are not
 consumed by Python, native R or installed-editor execution.
+The registry source and artifact test owners also qualify: Source runs their temporary Git, synthetic VSIX and
+injected publication cases. Their packaged R/Python entries are bytes under validation, never executed; the runtime
+and editor jobs do not load these tests. Their production modules remain outside this additional permission.
 
 The CI proof test uses Node, temporary Git histories and controlled workflow guards. Source executes it for every
 change; the native and installed suites do not load it. The production proof script remains outside this permission.

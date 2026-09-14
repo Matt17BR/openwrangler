@@ -20,6 +20,8 @@ const runtimeOmissionScriptFiles = new Set([
   "scripts/push-stable-release-tag.test.mjs",
   "scripts/publish-github-stable-release.mjs",
   "scripts/publish-github-stable-release.test.mjs",
+  "scripts/registry-release-source.test.mjs",
+  "scripts/verify-registry-release-artifact.test.mjs",
   "scripts/verify-canonical-release-artifact.mjs",
   "scripts/verify-canonical-release-artifact.test.mjs"
 ]);
