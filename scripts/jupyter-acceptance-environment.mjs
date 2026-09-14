@@ -872,7 +872,6 @@ export async function createJupyterAcceptanceKernelPython(
     binaryDependencies: includePySpark ? BINARY_DEPENDENCIES : NOTEBOOK_DEPENDENCIES,
     dependencies: includePySpark ? DEPENDENCIES : NOTEBOOK_DEPENDENCIES,
     labels: Object.freeze({
-      baseProbe: "Released-Jupyter base dependency version probe",
       create: "Released-Jupyter private kernel environment creation",
       install: "Released-Jupyter private kernel binary dependency installation",
       pysparkInstall: "Released-Jupyter private kernel PySpark installation",
@@ -954,16 +953,6 @@ async function createJupyterAcceptanceKernelPythonEnvironment(
     acquirePySparkArtifact
   }
 ) {
-  if (includePySpark) {
-    await probeJupyterAcceptancePython(basePython, {
-      environment,
-      requirePySpark: false,
-      requireJupyterClient: false,
-      label: labels.baseProbe,
-      requireRuntimeAbsent: false,
-      runCommand
-    });
-  }
   mkdirSync(directory, { recursive: false, mode: 0o700 });
   const directoryReceipt = createEditorAcceptancePrivateRootReceipt(directory, { containedBy });
   const venvDirectory = resolve(directory, "v");
@@ -2954,43 +2943,6 @@ function assertSameRemoteJupyterDescriptor(expected, actual) {
   ) {
     throw new Error("Remote Jupyter acceptance descriptor identity changed.");
   }
-}
-
-export async function probeJupyterAcceptancePython(
-  python,
-  {
-    environment = createEditorAcceptanceEnvironment(),
-    label = "Released-Jupyter Python dependency probe",
-    requireOptionalEngines = true,
-    requirePySpark = true,
-    requireJupyterClient = false,
-    requireRuntimeAbsent = true,
-    runCommand = runBoundedEditorCommand
-  } = {}
-) {
-  if (
-    typeof requireOptionalEngines !== "boolean" ||
-    typeof requirePySpark !== "boolean" ||
-    typeof requireJupyterClient !== "boolean" ||
-    typeof requireRuntimeAbsent !== "boolean"
-  ) {
-    throw new Error(
-      "Released-Jupyter Python dependency probing requires explicit optional-engine, PySpark, Jupyter-client, and runtime-absence policies."
-    );
-  }
-  const dependencies = [
-    ...CORE_DEPENDENCIES.filter((dependency) => dependency !== "jupyter-client" || requireJupyterClient),
-    ...(requireOptionalEngines
-      ? DEPENDENCIES.filter((dependency) => !CORE_DEPENDENCIES.includes(dependency) && dependency !== "pyspark")
-      : []),
-    ...(requirePySpark ? ["pyspark"] : [])
-  ];
-  return probeJupyterAcceptancePythonDependencies(python, dependencies, {
-    environment,
-    label,
-    requireRuntimeAbsent,
-    runCommand
-  });
 }
 
 async function probeJupyterAcceptancePythonDependencies(
