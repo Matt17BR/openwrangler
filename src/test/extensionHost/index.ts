@@ -4971,11 +4971,112 @@ async function releasedWorkbenchDiagnostics(
     Promise.all(
       ["jupyter-variables", "openWranglerCode"].map(async (id) => {
         const container = workbench.locator(`[id="workbench.view.extension.${id}"]`);
-        return { id, present: (await container.count()) > 0, visible: await container.isVisible() };
+        const headers = container.locator(".pane-header");
+        const bodies = container.locator(".pane-body");
+        const pane =
+          id === "jupyter-variables"
+            ? await Promise.all([headers.count(), bodies.count()]).then(async ([headerCount, bodyCount]) => {
+                const expanded =
+                  headerCount === 1 ? await headers.getAttribute("aria-expanded", { timeout: 1_000 }) : null;
+                return {
+                  headers: Math.min(headerCount, frameLimit),
+                  bodies: Math.min(bodyCount, frameLimit),
+                  expanded: expanded === "true" ? true : expanded === "false" ? false : null,
+                  bodyVisible: bodyCount === 0 ? false : bodyCount === 1 ? await bodies.isVisible() : null
+                };
+              })
+            : undefined;
+        return {
+          id,
+          present: (await container.count()) > 0,
+          visible: await container.isVisible(),
+          ...(pane ? { pane } : {})
+        };
       })
     ),
     1_000,
     "the released-Jupyter failure container observations"
+  ).catch(() => null);
+  // Webview overlays attach to the workbench root, outside the owning pane.
+  // The extension ID identifies Jupyter shells, not necessarily its Variables view.
+  const jupyterWebviews = await withAcceptanceOperationDeadline(
+    (async () => {
+      const shells = workbench.locator(
+        'iframe.webview[src*="?extensionId=ms-toolsai.jupyter&"], iframe.webview[src$="?extensionId=ms-toolsai.jupyter"], ' +
+          'iframe.webview[src*="&extensionId=ms-toolsai.jupyter&"], iframe.webview[src$="&extensionId=ms-toolsai.jupyter"]'
+      );
+      const count = await shells.count();
+      return {
+        count: Math.min(count, frameLimit),
+        truncated: count > frameLimit,
+        shells: await Promise.all(
+          Array.from({ length: Math.min(count, frameLimit) }, async (_, index) => {
+            const shell = await shells
+              .nth(index)
+              .elementHandle({ timeout: 1_000 })
+              .catch(() => null);
+            if (!shell) return null;
+            try {
+              return await withAcceptanceOperationDeadline(
+                (async () => {
+                  const [visible, frame] = await Promise.all([shell.isVisible(), shell.contentFrame()]);
+                  const content = frame
+                    ? await frame
+                        .evaluate((limit) => {
+                          type ContentDocument = {
+                            querySelector(selector: string): unknown;
+                            querySelectorAll(selector: string): ArrayLike<{ contentDocument: ContentDocument | null }>;
+                          };
+                          const outer = (globalThis as unknown as { document: ContentDocument }).document;
+                          return ["active-frame", "pending-frame"].map((id) => {
+                            const children = outer.querySelectorAll(`iframe[id="${id}"]`);
+                            return {
+                              id,
+                              count: Math.min(children.length, limit),
+                              document: (() => {
+                                if (children.length !== 1) return null;
+                                try {
+                                  const document = children[0]!.contentDocument;
+                                  return document
+                                    ? {
+                                        rootPresent: Boolean(document.querySelector("#root")),
+                                        variableViewScriptPresent: Boolean(
+                                          document.querySelector('script[src$="/variableView.js"]')
+                                        ),
+                                        variablesDocumentPresent: Boolean(
+                                          document.querySelector("#variable-view-main-panel")
+                                        )
+                                      }
+                                    : null;
+                                } catch {
+                                  return null;
+                                }
+                              })()
+                            };
+                          });
+                        }, frameLimit)
+                        .catch(() => null)
+                    : null;
+                  return (await shell.evaluate(
+                    (element) => (element as unknown as { isConnected: boolean }).isConnected
+                  ))
+                    ? { visible, content }
+                    : null;
+                })(),
+                1_000,
+                "the released-Jupyter failure shell observations"
+              );
+            } catch {
+              return null;
+            } finally {
+              await shell.dispose().catch(() => undefined);
+            }
+          })
+        )
+      };
+    })(),
+    1_000,
+    "the released-Jupyter failure current-content observations"
   ).catch(() => null);
   return {
     activeNotebook:
@@ -4987,6 +5088,7 @@ async function releasedWorkbenchDiagnostics(
     frameCount: Math.min(frames.length, 999),
     framesTruncated: frames.length > frameLimit,
     containers,
+    jupyterWebviews,
     frames: await Promise.all(
       frames.slice(0, frameLimit).map(async (frame) => {
         const tables = frame.getByRole("table", { name: "Variables", exact: true, includeHidden: true });
