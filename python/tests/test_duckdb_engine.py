@@ -3341,6 +3341,287 @@ def test_duckdb_multi_label_discovery_uses_unnested_labels(
         connection.close()
 
 
+@pytest.mark.parametrize(
+    ("value", "format", "expected", "replace"),
+    [
+        ("make_timestamp_ns(1704161045123456789)", "%Y-%m-%d %H:%M:%S.%n", "2024-01-02 02:04:05.123456789", False),
+        ("make_timestamp_ns(-1)", "%Y-%m-%d", "1969-12-31", True),
+        ("TIMESTAMP_S '2024-01-02 03:04:05'", "%S.%n", "05.000000000", False),
+        ("TIMESTAMP_MS '2024-01-02 03:04:05.123'", "%S.%n", "05.123000000", False),
+        ("TIMESTAMP '2024-01-02 03:04:05.123456'", "%S.%f", "05.123456", False),
+        ("DATE '2024-01-02'", "%Y-%m-%d", "2024-01-02", False),
+        ("DATE '500000-01-02'", "%Y-%m-%d", "500000-01-02", False),
+        ("'infinity'::TIMESTAMP_NS", "%Y-%m-%d", "infinity", False),
+        ("'-infinity'::TIMESTAMP_NS", "%Y-%m-%d", "-infinity", False),
+        ("'2024-01-02 03:04:05.123456'", "%S.%f", "05.123456", False),
+        ("'invalid'", "%Y-%m-%d", None, False),
+    ],
+    ids=[
+        "nanoseconds",
+        "negative-day",
+        "seconds",
+        "milliseconds",
+        "microseconds",
+        "date",
+        "wide-date",
+        "infinity",
+        "negative-infinity",
+        "text",
+        "invalid-text",
+    ],
+)
+def test_duckdb_format_datetime_retains_native_values(
+    value: str, format: str, expected: str | None, replace: bool
+) -> None:
+    engine = DuckDBEngine()
+    with duckdb_runtime._connect() as connection:
+        source = connection.sql(f'SELECT {value} AS "when\'s value", 0 AS row UNION ALL SELECT NULL, 1')
+        before = source.project('CAST("when\'s value" AS VARCHAR), row').fetchall()
+        source_types = list(source.types)
+        target = "when's value" if replace else "formatted's value"
+        operation = bound_step(
+            "formatDatetime",
+            column=bound_ref("c:source:0", "when's value", 0),
+            format=format,
+            **({} if replace else {"newColumn": target}),
+        )
+        for result in (engine.apply_transform(source, operation), execute_generated(engine, source, [operation])):
+            assert [record[target] for record in records(result)] == [expected, None]
+            assert [record["row"] for record in records(result)] == [0, 1]
+            assert list(result.columns) == ["when's value", "row", *([] if replace else [target])]
+            assert str(result.types[0 if replace else 2]) == "VARCHAR"
+        assert source.project('CAST("when\'s value" AS VARCHAR), row').fetchall() == before
+        assert list(source.types) == source_types
+    engine.close()
+
+
+@pytest.mark.parametrize("zone", ["UTC", "America/New_York"])
+def test_duckdb_format_datetime_retains_the_native_connection_timezone(zone: str) -> None:
+    engine = DuckDBEngine()
+    sql = "SELECT TIMESTAMPTZ '2024-01-02 03:04:05.123456+01' AS value UNION ALL SELECT NULL"
+    format = "%Y-%m-%d %H:%M:%S.%f %z %Z"
+    operation = bound_step(
+        "formatDatetime", column=bound_ref("c:source:0", "value", 0), format=format, newColumn="formatted"
+    )
+    live = engine.apply_transform(engine._relation_from_sql(sql), operation)
+    assert engine._terminal_rows(live, "SELECT formatted FROM ow") == [
+        ("2024-01-02 02:04:05.123456 +00 UTC",),
+        (None,),
+    ]
+    with duckdb_runtime._connect() as connection:
+        connection.execute(f"SET TimeZone = '{zone}'")
+        source = connection.sql(sql)
+        before = source.project("epoch_us(value)").fetchall()
+        expected = source.project(f"strftime(value, '{format}')").fetchall()
+        generated = execute_generated(engine, source, [operation])
+        assert generated.project("formatted").fetchall() == expected
+        assert generated.project("epoch_us(value)").fetchall() == before
+        assert source.project("epoch_us(value)").fetchall() == before
+        assert connection.sql("SELECT current_setting('TimeZone')").fetchone() == (zone,)
+    engine.close()
+
+
+@pytest.mark.parametrize("generated", [False, True], ids=["live-owner", "generated"])
+def test_duckdb_format_datetime_precision_ignores_caller_epoch_macro(generated: bool) -> None:
+    engine = DuckDBEngine()
+    with duckdb_runtime._connect() as connection:
+        try:
+            source = connection.sql(
+                "SELECT make_timestamp_ns(tick) AS value FROM "
+                "(VALUES (1704161045123456789::BIGINT), (-1::BIGINT), (NULL::BIGINT)) input(tick)"
+            )
+            before = (source.sql_query(), source.columns, source.types)
+            ticks = [(1704161045123456789,), (-1,), (None,)]
+            connection.execute("CREATE MACRO epoch_ns(value) AS 0")
+            operation = bound_step(
+                "formatDatetime",
+                column=bound_ref("c:source:0", "value", 0),
+                format="%Y-%m-%dT%H:%M:%S.%n",
+                newColumn="formatted",
+            )
+            if generated:
+                result = execute_generated(engine, source, [operation])
+                actual = result.project("formatted").fetchall()
+            else:
+                result = engine.apply_transform(engine.normalize_notebook_relation(source), operation)
+                actual = engine._terminal_rows(result, "SELECT formatted FROM ow")
+            assert actual == [("2024-01-02T02:04:05.123456789",), ("1969-12-31T23:59:59.999999999",), (None,)]
+            assert result.columns == ["value", "formatted"]
+            assert [str(dtype) for dtype in result.types] == ["TIMESTAMP_NS", "VARCHAR"]
+            assert source.project("system.main.epoch_ns(value)").fetchall() == ticks
+            assert (source.sql_query(), source.columns, source.types) == before
+            assert connection.sql("SELECT epoch_ns(NULL)").fetchone() == (0,)
+        finally:
+            engine.close()
+
+
+@pytest.mark.parametrize("empty", [False, True], ids=["all-null", "empty"])
+def test_duckdb_format_datetime_keeps_nulls_and_native_refusals(empty: bool) -> None:
+    engine = DuckDBEngine()
+    with duckdb_runtime._connect() as connection:
+        source = connection.sql(
+            "SELECT NULL::TIMESTAMP_NS AS value, 'kept' AS kept" + (" WHERE FALSE" if empty else "")
+        )
+        before = source.fetchall()
+        operation = bound_step(
+            "formatDatetime", column=bound_ref("c:source:0", "value", 0), format="%Y-%m-%d", newColumn="formatted"
+        )
+        for result in (engine.apply_transform(source, operation), execute_generated(engine, source, [operation])):
+            assert rows(result) == ([] if empty else [(None, "kept", None)])
+            assert str(result.types[-1]) == "VARCHAR"
+        invalid = {**operation, "params": {**operation["params"], "format": "%Q"}}
+        for execute in (
+            lambda: engine.apply_transform(source, invalid),
+            lambda: execute_generated(engine, source, [invalid]),
+        ):
+            with pytest.raises((EngineError, duckdb.Error), match="Unrecognized format"):
+                execute()
+        collision = {**operation, "params": {**operation["params"], "newColumn": "kept"}}
+        schema = engine.schema(source)
+        lineage = source_lineage(schema)
+        with pytest.raises(ValueError, match="collides"):
+            bind_step(step("formatDatetime", column=lineage[0], format="%Y", newColumn="kept"), schema, lineage)
+        with pytest.raises(ValueError, match="collides"):
+            execute_generated(engine, source, [collision])
+        assert source.fetchall() == before
+    engine.close()
+
+
+def test_duckdb_format_datetime_generated_code_uses_the_current_input_type() -> None:
+    engine = DuckDBEngine()
+    with duckdb_runtime._connect() as connection:
+        source = connection.sql("SELECT make_timestamp_ns(1704161045123456789) AS value")
+        before = source.project("epoch_ns(value)").fetchall()
+        column = bound_ref("c:source:0", "value", 0)
+        cast = bound_step("castColumn", column=column, dtype="string")
+        format = bound_step("formatDatetime", column=column, format="%S.%n", newColumn="formatted")
+        generated = execute_generated(engine, source, [cast, format])
+        live = engine.apply_transform(engine.apply_transform(source, cast), format)
+        assert rows(generated) == rows(live) == [("2024-01-02 02:04:05.123456789", "05.123456000")]
+        namespace: dict[str, Any] = {}
+        exec(engine.compile_plan([format]), namespace)
+        assert namespace["clean_data"](source).project("formatted").fetchall() == [("05.123456789",)]
+        changed_caller = source.project("CAST(value AS VARCHAR) AS value")
+        assert namespace["clean_data"](changed_caller).project("formatted").fetchall() == [("05.123456000",)]
+        assert source.project("epoch_ns(value)").fetchall() == before
+    engine.close()
+
+
+def test_duckdb_format_datetime_file_session_preserves_source_and_generated_result(tmp_path: Path) -> None:
+    path = tmp_path / "timestamps.parquet"
+    with duckdb_runtime._connect() as connection:
+        source = connection.sql(
+            "SELECT make_timestamp_ns(tick) AS value, row FROM "
+            "(VALUES (1704161045123456789::BIGINT, 0), (-1::BIGINT, 1), (NULL::BIGINT, 2)) source(tick, row)"
+        )
+        source.write_parquet(str(path))
+    contents, before = path.read_bytes(), path.stat()
+    manager = SessionManager(EngineRegistry((("duckdb", DuckDBEngine),)))
+    try:
+        opened = manager.open_session(
+            {"kind": "file", "label": path.name, "path": str(path)}, backend="duckdb", mode="editing"
+        )
+        metadata = opened["metadata"]
+        session_id = metadata["sessionId"]
+        reference = {key: metadata["schema"][0][key] for key in ("id", "name")}
+        preview = manager.preview_step(
+            session_id,
+            0,
+            step("formatDatetime", column=reference, format="%Y-%m-%d %H:%M:%S.%n", newColumn="formatted"),
+            0,
+            3,
+        )
+        expected = ["2024-01-02 02:04:05.123456789", "1969-12-31 23:59:59.999999999", None]
+        assert [row["values"][-1]["raw"] for row in preview["page"]["rows"]] == expected
+        applied = manager.apply_draft(session_id, preview["revision"], 0, 3)
+        assert [row["values"][-1]["raw"] for row in applied["page"]["rows"]] == expected
+        namespace: dict[str, Any] = {}
+        exec(applied["code"], namespace)
+        with duckdb_runtime._connect() as connection:
+            source = connection.read_parquet(str(path))
+            ticks = [(1704161045123456789, 0), (-1, 1), (None, 2)]
+            generated = namespace["clean_data"](source)
+            assert generated.project("formatted").fetchall() == [(value,) for value in expected]
+            assert generated.project("epoch_ns(value), row").fetchall() == ticks
+            assert source.project("epoch_ns(value), row").fetchall() == ticks
+        session = manager.sessions[session_id]
+        assert isinstance(session.engine, DuckDBEngine)
+        assert session.engine._terminal_rows(session.original, "SELECT epoch_ns(value), row FROM ow") == ticks
+    finally:
+        manager.close_all()
+    assert manager.sessions == {}
+    after = path.stat()
+    assert path.read_bytes() == contents
+    assert (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) == (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+    )
+
+
+@pytest.mark.parametrize("aligned", [True, False], ids=["aligned", "finer-refusal"])
+def test_duckdb_format_datetime_lower_endpoint_preserves_or_refuses(tmp_path: Path, aligned: bool) -> None:
+    tick = -9223372036854775000 if aligned else -9223372036854774999
+    path = tmp_path / "endpoint.parquet"
+    with duckdb_runtime._connect() as connection:
+        connection.sql(f"SELECT make_timestamp_ns({tick}) AS value UNION ALL SELECT NULL").write_parquet(str(path))
+    contents, before = path.read_bytes(), path.stat()
+    manager = SessionManager(EngineRegistry((("duckdb", DuckDBEngine),)))
+    try:
+        opened = manager.open_session(
+            {"kind": "file", "label": path.name, "path": str(path)}, backend="duckdb", mode="editing"
+        )
+        session_id = opened["metadata"]["sessionId"]
+        session = manager.sessions[session_id]
+        original, committed = session.original, session.committed
+        operation = step(
+            "formatDatetime",
+            column={"id": "c:source:0", "name": "value"},
+            format="%Y-%m-%dT%H:%M:%S.%n",
+            newColumn="formatted",
+        )
+        if aligned:
+            preview = manager.preview_step(session_id, 0, operation, 0, 2)
+            applied = manager.apply_draft(session_id, preview["revision"], 0, 2)
+            assert [row["values"][-1]["raw"] for row in applied["page"]["rows"]] == [
+                "1677-09-21T00:12:43.145225000",
+                None,
+            ]
+        else:
+            with pytest.raises(EngineError, match="Date out of range"):
+                manager.preview_step(session_id, 0, operation, 0, 2)
+            assert session.revision == 0
+            assert session.plan == []
+            assert session.draft_step is None
+            assert session.draft_frame is None
+            assert session.committed is committed
+        assert session.original is original
+        assert isinstance(session.engine, DuckDBEngine)
+        assert session.engine._terminal_rows(original, "SELECT epoch_ns(value) FROM ow") == [(tick,), (None,)]
+        bound = bind_step(operation, session.source_schema, source_lineage(session.source_schema))
+        with duckdb_runtime._connect() as connection:
+            source = connection.read_parquet(str(path))
+            if aligned:
+                generated = execute_generated(session.engine, source, [bound])
+                assert generated.project("formatted").fetchall() == [("1677-09-21T00:12:43.145225000",), (None,)]
+            else:
+                with pytest.raises((EngineError, duckdb.Error), match="Date out of range"):
+                    execute_generated(session.engine, source, [bound]).project("formatted").fetchall()
+            assert source.project("epoch_ns(value)").fetchall() == [(tick,), (None,)]
+    finally:
+        manager.close_all()
+    assert manager.sessions == {}
+    after = path.stat()
+    assert path.read_bytes() == contents
+    assert (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) == (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+    )
+
+
 def test_duckdb_missing_modes_encoders_collisions_and_custom_failures() -> None:
     engine = DuckDBEngine()
     missing = duckdb.sql(

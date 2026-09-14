@@ -1029,6 +1029,15 @@ catalog work without evaluating source rows. A failed ownership lookup prevents 
 error; without an earlier error, the cleanup failure propagates. The identity check and removal are separate native
 operations and do not promise atomicity against arbitrary concurrent caller DDL.
 
+Format Datetime preserves native date and timestamp inputs. Nanosecond timestamps use the microsecond formatter only
+when their native epoch count is divisible by 1,000, preserving exact values that DuckDB's nanosecond formatter can
+refuse near its lower bound. Finer values use the native nanosecond formatter and retain its range refusals. Other
+non-temporal inputs keep the existing conversion to microsecond `TIMESTAMP`. A shared expression builder uses the
+current column type in live and generated execution; it adds native remainder work for nanosecond columns without
+another source scan. DuckDB format syntax applies, including nine-digit `%n`. Zoned timestamp formatting follows the
+existing connection timezone: UTC for file sessions and the caller's timezone for standalone generated code. It does
+not recover the original zone from a stored instant.
+
 DuckDB evaluates computed cleaning results across every physical output column before publication, including errors
 outside the requested page. The existing result-validation hook receives the operation kind from Session. Rename,
 Select Columns and Drop Columns only project existing fields, so they skip the additional hash aggregate while keeping

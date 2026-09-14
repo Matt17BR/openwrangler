@@ -11,6 +11,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- DuckDB datetime formatting preserves nanoseconds, wide dates and timezone information instead of narrowing values before formatting.
 - The cleaning dialog keeps keyboard access to its scrollable panes while a preview is pending.
 - DuckDB CSV and TSV imports refuse headers containing apostrophes before the native saved query can silently change their names. The error suggests Pandas or Polars for those files.
 - Pandas Group By avoids a scalar NaN scan when restoring ordinary NumPy-backed result keys, reducing the cost of results with many groups.

@@ -579,6 +579,11 @@ cleaning results beyond the displayed rows and columns before confirmation. Rena
 retain lazy input evaluation, so later reads can still reveal inherited source errors. Query ownership, cleanup and
 validation costs are described in the [DuckDB architecture](architecture.md#duckdb).
 
+Format Datetime retains native nanosecond fractions and wide dates in live and generated DuckDB code. Formats use
+DuckDB syntax, including `%n` for nine fractional digits. Zoned timestamps use the execution connection's timezone.
+Native formatting can still refuse finer-than-microsecond values near the minimum nanosecond timestamp; exact
+microsecond-aligned values remain supported there.
+
 Split Column delimiters and literal Find/Replace values can contain NUL characters in live and generated DuckDB code.
 Leading, trailing and repeated delimiters preserve empty fields; missing fields and null source values stay null.
 Generated One-hot encoding preserves binary categories even when the input connection defines a `from_hex` macro.
