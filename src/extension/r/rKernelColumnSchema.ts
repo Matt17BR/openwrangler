@@ -7,7 +7,6 @@ import type {
   DropColumnsTransformStep,
   ExtractRegexGroupTransformStep,
   FillMissingValuesTransformStep,
-  FilterModel,
   FindReplaceTransformStep,
   LowerTextTransformStep,
   SelectColumnsTransformStep,
@@ -572,59 +571,5 @@ export function schemaAfterDrop(
     inputSchema
       .filter((column) => !droppedIds.has(column.id))
       .map((column, position) => Object.freeze({ ...column, position }))
-  );
-}
-
-export function reconcileFilterModelById(
-  model: FilterModel,
-  previousSchema: readonly ColumnSchema[],
-  nextSchema: readonly ColumnSchema[]
-): FilterModel {
-  const uniquePreviousByName = uniqueColumnsByName(previousSchema);
-  const nextById = new Map(nextSchema.map((column) => [column.id, column]));
-  const uniqueNextByName = uniqueColumnsByName(nextSchema);
-  const filters = model.filters.flatMap((filter) => {
-    const previous = uniquePreviousByName.get(filter.column);
-    const next = previous ? nextById.get(previous.id) : undefined;
-    if (
-      !previous ||
-      !next ||
-      uniqueNextByName.get(next.name)?.id !== next.id ||
-      previous.type !== filter.type ||
-      next.type !== filter.type
-    ) {
-      return [];
-    }
-    return [
-      {
-        ...filter,
-        column: next.name,
-        predicates: filter.predicates.map((predicate) => ({ ...predicate })),
-        ...(filter.valueFilter
-          ? { valueFilter: { ...filter.valueFilter, selectedValues: [...filter.valueFilter.selectedValues] } }
-          : {})
-      }
-    ];
-  });
-  const sort = model.sort.flatMap((rule) => {
-    const previous = uniquePreviousByName.get(rule.column);
-    const next = previous ? nextById.get(previous.id) : undefined;
-    if (!previous || !next || uniqueNextByName.get(next.name)?.id !== next.id || previous.type !== next.type) return [];
-    return [{ ...rule, column: next.name }];
-  });
-  return {
-    ...(model.logic ? { logic: model.logic } : {}),
-    filters,
-    sort
-  };
-}
-
-function uniqueColumnsByName(schema: readonly ColumnSchema[]): Map<string, ColumnSchema> {
-  const grouped = new Map<string, ColumnSchema[]>();
-  for (const column of schema) grouped.set(column.name, [...(grouped.get(column.name) ?? []), column]);
-  return new Map(
-    [...grouped.entries()].flatMap(([name, columns]) =>
-      columns.length === 1 ? [[name, columns[0] as ColumnSchema]] : []
-    )
   );
 }

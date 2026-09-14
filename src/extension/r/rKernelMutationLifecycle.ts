@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { operationKinds } from "../../shared/operationCatalog.generated";
+import { reconcileViewFilterModel } from "../../shared/filterModel";
 import {
   type ColumnSchema,
   type ConfirmedView,
@@ -37,7 +38,6 @@ import {
   schemaFromRContract as schemaFromContract,
   validateRPageWindow as validatePageWindow
 } from "./rKernelFrameMapping";
-import { reconcileFilterModelById } from "./rKernelColumnSchema";
 import { rTransformStep, type RTransformStep } from "./rKernelTransformBinding";
 import {
   assertMutationDiff,
@@ -201,7 +201,7 @@ export class RKernelMutationLifecycle {
       nextFilterModel =
         step.kind === "customCode"
           ? copyFilterModel(currentView.filterModel)
-          : reconcileFilterModelById(currentView.filterModel, confirmed.schema, targetSchema);
+          : reconcileViewFilterModel(currentView.filterModel, confirmed.schema, targetSchema, "id");
       view = resolveViewQuery(nextFilterModel, step.kind === "customCode" ? confirmed.schema : targetSchema);
       validatePageWindow(request.offset, request.limit, request.columnOffset, request.columnLimit);
     } catch (error) {
@@ -270,7 +270,7 @@ export class RKernelMutationLifecycle {
         targetSchema = dynamicCustomCodeSchema(inputSchema, step, result.page);
         targetKeyColumnIds = Object.freeze([...result.page.frameSemantics.keyColumnIds]);
         targetRowNames = result.page.frameSemantics.rowNames;
-        nextFilterModel = reconcileFilterModelById(confirmed.filterModel, confirmed.schema, targetSchema);
+        nextFilterModel = reconcileViewFilterModel(confirmed.filterModel, confirmed.schema, targetSchema, "id");
         const resolvedView = resolveViewQuery(nextFilterModel, targetSchema);
         if (!isDeepStrictEqual(resolvedView, effectiveView)) {
           throw new Error("The R custom-code preview returned a mismatched effective view.");
@@ -504,7 +504,7 @@ export class RKernelMutationLifecycle {
       nextFilterModel =
         confirmed.draftBaseViewChangeEpoch === currentView.viewChangeEpoch && confirmed.draftBaseFilterModel
           ? copyFilterModel(confirmed.draftBaseFilterModel)
-          : reconcileFilterModelById(currentView.filterModel, confirmed.schema, targetSchema);
+          : reconcileViewFilterModel(currentView.filterModel, confirmed.schema, targetSchema, "id");
     } else {
       if (confirmed.draftStep) {
         return errorResponse(
@@ -531,7 +531,7 @@ export class RKernelMutationLifecycle {
         restore.viewChangeEpoch === currentView.viewChangeEpoch &&
         isDeepStrictEqual(restore.after, currentView.filterModel)
           ? copyFilterModel(restore.before)
-          : reconcileFilterModelById(currentView.filterModel, confirmed.schema, targetSchema);
+          : reconcileViewFilterModel(currentView.filterModel, confirmed.schema, targetSchema, "id");
     }
 
     let view: RKernelViewQuery;

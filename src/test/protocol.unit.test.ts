@@ -6,9 +6,10 @@ import {
   hasActiveSort,
   hasActiveViewQuery,
   prioritizeSortRule,
+  reconcileViewFilterModel,
   viewCellSelectionFilter
 } from "../shared/filterModel";
-import type { CellValue, ColumnSchema } from "../shared/protocol";
+import type { CellValue, ColumnSchema, FilterModel } from "../shared/protocol";
 import { dataBackendLabel } from "../shared/protocol";
 
 describe("filter model", () => {
@@ -17,6 +18,105 @@ describe("filter model", () => {
 
     expect(hasActiveFilters(model)).toBe(false);
     expect(hasActiveSort(model)).toBe(false);
+  });
+
+  it.each(["id", "name"] as const)(
+    "reconciles schema changes through the %s policy without changing valid rules",
+    (policy) => {
+      const schema: ColumnSchema[] = ["amount", "label", "replacement", "keep"].map((name, position) => ({
+        id: `c:${position}`,
+        name,
+        position,
+        rawType: "string",
+        type: "string",
+        nullable: true
+      }));
+      const nextSchema: ColumnSchema[] = [
+        { ...schema[0]!, type: "integer", rawType: "integer" },
+        { ...schema[1]!, name: "renamed" },
+        { ...schema[2]!, id: "c:new" },
+        schema[3]!
+      ];
+      const token = {
+        kind: "typedSelection",
+        version: 1,
+        columnType: "string",
+        cell: { kind: "string", raw: " exact ", display: " exact ", isNull: false, isNaN: false }
+      };
+      const model: FilterModel = {
+        logic: "or",
+        filters: schema.map(({ name }) => ({
+          column: name,
+          type: "string",
+          logic: "or",
+          predicates: [{ kind: "predicate", operator: "notEquals", value: token }],
+          valueFilter: {
+            kind: "values",
+            selectedValues: [token],
+            includeNulls: true,
+            includeNaN: false,
+            search: "retained search"
+          }
+        })),
+        sort: schema.map(({ name }) => ({ column: name, direction: "desc", nulls: "first" }))
+      };
+      const before = structuredClone(model);
+      const retainedIndex = policy === "id" ? 1 : 2;
+      const retainedName = policy === "id" ? "renamed" : "replacement";
+
+      expect(reconcileViewFilterModel(model, schema, nextSchema, policy)).toEqual({
+        logic: "or",
+        filters: [{ ...model.filters[retainedIndex]!, column: retainedName }, model.filters[3]],
+        sort: [{ ...model.sort[retainedIndex]!, column: retainedName }, model.sort[3]]
+      });
+      expect(model).toEqual(before);
+    }
+  );
+
+  it.each(["previous", "next"] as const)("retires only rules with ambiguous %s column names", (side) => {
+    const schema: ColumnSchema[] = ["duplicate", "keep"].map((name, position) => ({
+      id: `c:${position}`,
+      name,
+      position,
+      rawType: "string",
+      type: "string",
+      nullable: true
+    }));
+    const ambiguous = [...schema, { ...schema[0]!, id: "c:duplicate", position: 2 }];
+    const model: FilterModel = {
+      filters: schema.map(({ name }) => ({ column: name, type: "string", predicates: [] })),
+      sort: schema.map(({ name }) => ({ column: name, direction: "asc", nulls: "last" }))
+    };
+    for (const policy of ["id", "name"] as const) {
+      expect(
+        reconcileViewFilterModel(
+          model,
+          side === "previous" ? ambiguous : schema,
+          side === "next" ? ambiguous : schema,
+          policy
+        )
+      ).toEqual({ filters: [model.filters[1]], sort: [model.sort[1]] });
+    }
+  });
+
+  it("keeps Python null predicates on containers while dropping incomparable and unnamed sorts", () => {
+    const schema: ColumnSchema[] = [
+      { id: "c:0", name: "nested", position: 0, rawType: "List(String)", type: "list", nullable: true },
+      { id: "c:1", name: "", position: 1, rawType: "string", type: "string", nullable: true },
+      { id: "c:2", name: "keep", position: 2, rawType: "integer", type: "integer", nullable: true }
+    ];
+    const model: FilterModel = {
+      filters: schema.map(({ name, type }) => ({
+        column: name,
+        type,
+        predicates: [{ kind: "predicate", operator: "isNull" }]
+      })),
+      sort: schema.map(({ name }) => ({ column: name, direction: "asc", nulls: "last" }))
+    };
+    expect(reconcileViewFilterModel(model, schema, schema, "name")).toEqual({
+      filters: [model.filters[0], model.filters[2]],
+      sort: [model.sort[2]]
+    });
   });
 
   it("detects active value filters and sort rules", () => {

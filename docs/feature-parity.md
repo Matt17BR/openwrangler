@@ -443,6 +443,9 @@ their command order; a new committed branch clears them. History lasts only for 
 including renderer remounts, and ends on close or recovery. Custom Code can produce a different result when re-executed.
 Successful history changes close saved-step editors so reopening a step uses its current input schema. Failed
 changes and ordinary new-operation forms retain typed input.
+Earlier-step edits and deletions remove viewing filters and sorts made incompatible by the resulting schema while
+retaining unaffected rules. Applying an earlier replacement can restore its saved view on columns recreated by the
+remaining steps; viewing changes made during the draft take precedence.
 The button and registered command share the normal draft, pending-work and trusted-execution gates; no default
 keyboard shortcut overrides text-field editing.
 

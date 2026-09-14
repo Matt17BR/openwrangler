@@ -6,7 +6,14 @@ import { captureExportSourceProtection, beginAtomicFileTransaction } from "../ex
 import { describe, expect, it, vi } from "vitest";
 import type { Memento } from "vscode";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
-import type { OpenWranglerRequest, OpenWranglerResponse, SessionMetadata, TransformStep } from "../shared/protocol";
+import type {
+  ColumnSchema,
+  FilterModel,
+  OpenWranglerRequest,
+  OpenWranglerResponse,
+  SessionMetadata,
+  TransformStep
+} from "../shared/protocol";
 import {
   appliedFor,
   deferred,
@@ -140,6 +147,109 @@ describe("SessionCoordinator earlier-step plan rewrites", () => {
     expect(harness.replayedStepIds()).toEqual([first.id, third.id]);
   });
 
+  it.each([
+    { label: "type-changed predicate", amountPredicate: true, amountSort: false },
+    { label: "type-changed sort", amountPredicate: false, amountSort: true },
+    { label: "unrelated view", amountPredicate: false, amountSort: false }
+  ])("reconciles the $label before paging a rewritten plan", async ({ amountPredicate, amountSort }) => {
+    const originalSchema: ColumnSchema[] = [
+      { id: "c:amount", name: "amount", position: 0, rawType: "int64", type: "integer", nullable: false },
+      { id: "c:label", name: "label", position: 1, rawType: "str", type: "string", nullable: false }
+    ];
+    const castSchema: ColumnSchema[] = [
+      { ...originalSchema[0]!, rawType: "string", type: "string" },
+      originalSchema[1]!
+    ];
+    const cast: TransformStep = {
+      id: "amount-text",
+      kind: "castColumn",
+      params: { column: { id: "c:amount", name: "amount" }, dtype: "string" }
+    };
+    const lower: TransformStep = {
+      id: "lower-label",
+      kind: "lowerText",
+      params: { column: { id: "c:label", name: "label" } }
+    };
+    const kept: FilterModel = {
+      logic: "and",
+      filters: [
+        { column: "label", type: "string", predicates: [{ kind: "predicate", operator: "notEquals", value: "b" }] }
+      ],
+      sort: [{ column: "label", direction: "desc", nulls: "last" }]
+    };
+    const currentView: FilterModel = {
+      ...kept,
+      filters: amountPredicate
+        ? [
+            { column: "amount", type: "string", predicates: [{ kind: "predicate", operator: "contains", value: "1" }] },
+            ...kept.filters
+          ]
+        : kept.filters,
+      sort: amountSort ? [{ column: "amount", direction: "asc", nulls: "last" }, ...kept.sort] : kept.sort
+    };
+    const harness = rewriteHarness();
+    // Supply schemas for this plan; this fixture observes host dispatch, not native execution.
+    const request = async (message: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      const response = await harness.request(message);
+      if (
+        response.kind !== "sessionOpened" &&
+        response.kind !== "stepPreview" &&
+        response.kind !== "planUpdated" &&
+        response.kind !== "page"
+      )
+        return response;
+      const original = response.metadata.sessionId === "runtime-old";
+      const schema = original ? castSchema : originalSchema;
+      const totalRows = response.page.totalRows;
+      if (totalRows === null) throw new Error("Expected a finite editing fixture page.");
+      return {
+        ...response,
+        metadata: {
+          ...response.metadata,
+          backend: "pandas",
+          rowAxis: { kind: "positional", levelNames: [] },
+          schema,
+          shape: { rows: 2, columns: 2 },
+          filteredShape: { rows: 2, columns: 2 },
+          ...(original ? { steps: [cast, lower] } : {}),
+          ...(response.metadata.latestStepInputSchema ? { latestStepInputSchema: schema } : {})
+        },
+        page: { ...response.page, totalRows, columnIds: schema.map((column) => column.id) }
+      };
+    };
+    const coordinator = new SessionCoordinator();
+    try {
+      const bridge = coordinator.createBridge({ request });
+      const opened = await open(bridge, initialSource);
+      const viewed = await bridge.request({
+        kind: "getPage",
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision,
+        viewRequestId: "before-cast-deletion",
+        offset: 0,
+        limit: 100,
+        columnOffset: 0,
+        columnLimit: 16,
+        filterModel: currentView
+      });
+      expect(viewed.kind).toBe("page");
+      expect(coordinator.activeSession()?.metadata.filterModel).toEqual(currentView);
+      const response = await bridge.rewriteCleaningPlan?.(
+        opened.metadata.sessionId,
+        opened.metadata.revision,
+        cast.id,
+        "deleteStep",
+        { offset: 0, limit: 100, columnOffset: 0, columnLimit: 16 }
+      );
+      expect(response).toMatchObject({ kind: "planUpdated", metadata: { steps: [lower] } });
+      expect(harness.replayedSteps()).toEqual([lower]);
+      expect(harness.candidatePageRequests()).toEqual([expect.objectContaining({ filterModel: kept })]);
+      expect(coordinator.activeSession()?.metadata.filterModel).toEqual(kept);
+    } finally {
+      await coordinator.shutdown();
+    }
+  });
+
   it("leaves the confirmed runtime, plan, draft, view, revision, and code unchanged when a suffix rejects", async () => {
     const harness = rewriteHarness({ draft: replacement, rejectStepId: second.id });
     const coordinator = new SessionCoordinator();
@@ -246,6 +356,155 @@ describe("SessionCoordinator earlier-step plan rewrites", () => {
       await expect(rewrite).resolves.toMatchObject({ kind: "planUpdated", metadata: { filterModel: currentFilter } });
       expect(harness.candidatePageRequests()).toEqual([expect.objectContaining({ filterModel: currentFilter })]);
       expect(coordinator.activeSession()?.metadata.filterModel).toEqual(currentFilter);
+    } finally {
+      await coordinator.shutdown();
+    }
+  });
+
+  it.each([false, true])("pairs the saved draft view with its full schema, newer view: %s", async (newerView) => {
+    const inputSchema = metadataFor({ runtimeId: "runtime-old", source: initialSource }).schema;
+    const firstClone: TransformStep = {
+      id: first.id,
+      kind: "cloneColumn",
+      params: { column: { id: "c:value", name: "value" }, newName: "old_copy" }
+    };
+    const replacementClone: TransformStep = { ...firstClone, params: { ...firstClone.params, newName: "new_copy" } };
+    const copiedColumn: ColumnSchema = { ...inputSchema[0]!, id: "c:copy", name: "copy", position: 2 };
+    const draftSchema: ColumnSchema[] = [
+      ...inputSchema,
+      { ...inputSchema[0]!, id: "c:first-copy", name: "new_copy", position: 1 }
+    ];
+    const committedSchema: ColumnSchema[] = [...inputSchema, { ...draftSchema[1]!, name: "old_copy" }, copiedColumn];
+    const finalSchema = [...draftSchema, copiedColumn];
+    const baseView: FilterModel = {
+      logic: "and",
+      filters: [{ column: "copy", type: "float", predicates: [{ kind: "predicate", operator: "gte", value: 1 }] }],
+      sort: [{ column: "copy", direction: "desc", nulls: "last" }]
+    };
+    const changedView: FilterModel = {
+      logic: "and",
+      filters: [{ column: "new_copy", type: "float", predicates: [{ kind: "predicate", operator: "lt", value: 1 }] }],
+      sort: [{ column: "new_copy", direction: "asc", nulls: "last" }]
+    };
+    let originalMetadata: SessionMetadata = {
+      ...metadataFor({
+        runtimeId: "runtime-old",
+        source: initialSource,
+        revision: 7,
+        steps: [firstClone, second, third]
+      }),
+      schema: committedSchema,
+      latestStepInputSchema: committedSchema.slice(0, 2),
+      shape: { rows: 2, columns: 3 },
+      filteredShape: { rows: 2, columns: 3 }
+    };
+    const harness = rewriteHarness();
+    const request = async (message: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (message.kind === "getPage" && message.sessionId === "runtime-old") {
+        originalMetadata = { ...originalMetadata, filterModel: message.filterModel };
+        return pageFor(message, originalMetadata);
+      }
+      if (message.kind === "previewStep" && message.sessionId === "runtime-old") {
+        originalMetadata = {
+          ...originalMetadata,
+          revision: message.revision + 1,
+          draftStep: message.step,
+          draftReplacesStepId: message.replaceStepId,
+          schema: draftSchema,
+          filterModel: { filters: [], sort: [] },
+          shape: { rows: 2, columns: 2 },
+          filteredShape: { rows: 2, columns: 2 }
+        };
+        return previewFor(message, originalMetadata, "# earlier replacement draft");
+      }
+      const response = await harness.request(message);
+      if (
+        response.kind !== "sessionOpened" &&
+        response.kind !== "stepPreview" &&
+        response.kind !== "planUpdated" &&
+        response.kind !== "page"
+      )
+        return response;
+      const old = response.metadata.sessionId === "runtime-old";
+      const hasCopy =
+        response.metadata.steps.some((step) => step.id === third.id) || response.metadata.draftStep?.id === third.id;
+      const hasFirstClone =
+        response.metadata.steps.some((step) => step.id === first.id) || response.metadata.draftStep?.id === first.id;
+      const schema = hasCopy ? finalSchema : hasFirstClone ? draftSchema : inputSchema;
+      const totalRows = response.page.totalRows;
+      if (totalRows === null) throw new Error("Expected a finite editing fixture page.");
+      return {
+        ...response,
+        metadata: old
+          ? originalMetadata
+          : {
+              ...response.metadata,
+              schema,
+              shape: { rows: 2, columns: schema.length },
+              filteredShape: { rows: 2, columns: schema.length },
+              ...(response.metadata.latestStepInputSchema
+                ? { latestStepInputSchema: hasCopy ? draftSchema : inputSchema }
+                : {})
+            },
+        page: { ...response.page, totalRows, columnIds: (old ? committedSchema : schema).map((column) => column.id) }
+      };
+    };
+    const coordinator = new SessionCoordinator();
+    try {
+      const bridge = coordinator.createBridge({ request });
+      const opened = await open(bridge, initialSource);
+      const sid = opened.metadata.sessionId;
+      const viewRequest = {
+        kind: "getPage" as const,
+        sessionId: sid,
+        revision: opened.metadata.revision,
+        viewRequestId: "before-earlier-edit",
+        offset: 0,
+        limit: 100,
+        columnOffset: 0,
+        columnLimit: 16,
+        filterModel: baseView
+      };
+      expect((await bridge.request(viewRequest)).kind).toBe("page");
+      const preview = await bridge.request({
+        kind: "previewStep",
+        sessionId: sid,
+        revision: opened.metadata.revision,
+        step: replacementClone,
+        replaceStepId: first.id,
+        offset: 0,
+        limit: 100,
+        columnOffset: 0,
+        columnLimit: 16
+      });
+      expect(preview.kind).toBe("stepPreview");
+      expect(coordinator.activeSession()?.metadata.schema).toEqual(draftSchema);
+      const revision = coordinator.activeSession()!.metadata.revision;
+      if (newerView) {
+        expect(
+          (
+            await bridge.request({
+              ...viewRequest,
+              revision,
+              viewRequestId: "after-earlier-edit",
+              filterModel: changedView
+            })
+          ).kind
+        ).toBe("page");
+      }
+      const response = await bridge.rewriteCleaningPlan?.(sid, revision, first.id, "applyDraft", {
+        offset: 0,
+        limit: 100,
+        columnOffset: 0,
+        columnLimit: 16
+      });
+      expect(response).toMatchObject({
+        kind: "planUpdated",
+        metadata: { steps: [replacementClone, second, third], schema: finalSchema }
+      });
+      const expectedView = newerView ? changedView : baseView;
+      expect(harness.candidatePageRequests()).toEqual([expect.objectContaining({ filterModel: expectedView })]);
+      expect(coordinator.activeSession()?.metadata.filterModel).toEqual(expectedView);
     } finally {
       await coordinator.shutdown();
     }

@@ -32,7 +32,6 @@ export interface SessionResponseState extends RuntimeSessionState {
   stepInspection?: StepInspectionResponse;
   latestStepInspectionKey?: string;
   viewChangeEpoch?: number;
-  draftBaseViewChangeEpoch?: number;
 }
 
 export interface SessionResponseCallbacks {
@@ -71,14 +70,18 @@ export class SessionResponseCommitter {
         session.metadata.backend !== backend
       )
         return undefined;
-      return persistedSessionState(session.metadata, gridState(session.viewState), session.draftBaseFilterModel);
+      return persistedSessionState(session.metadata, gridState(session.viewState), session.draftBaseView?.filterModel);
     });
   }
 
   async stageMutation(session: SessionResponseState): Promise<SessionPersistenceStageResult> {
     if (this.stagedMutations.has(session)) throw new Error("A session persistence mutation is already staged.");
     this.retainSession(session);
-    const state = persistedSessionState(session.metadata, gridState(session.viewState), session.draftBaseFilterModel);
+    const state = persistedSessionState(
+      session.metadata,
+      gridState(session.viewState),
+      session.draftBaseView?.filterModel
+    );
     const result = await this.persistence.stageCurrent(session.openRequest.source, state);
     if (result.kind === "staged") this.stagedMutations.set(session, result.transaction);
     return result;
@@ -97,7 +100,11 @@ export class SessionResponseCommitter {
     isCurrent: () => boolean,
     commit: () => () => void
   ): Promise<SessionPersistenceCommitResult> {
-    const state = persistedSessionState(session.metadata, gridState(session.viewState), session.draftBaseFilterModel);
+    const state = persistedSessionState(
+      session.metadata,
+      gridState(session.viewState),
+      session.draftBaseView?.filterModel
+    );
     const result = await this.persistence.commitRuntimeReplacement(source, state, isCurrent, commit);
     if (result.kind === "committed") this.persistence.retainOwner(session.publicId, source, state.backend);
     return result;
@@ -304,20 +311,14 @@ export class SessionResponseCommitter {
                 : (response.metadata.latestStepInputSchema ?? session.metadata.schema)
           }
         : undefined;
-    const nextDraftBaseFilterModel =
-      response.kind === "stepPreview"
-        ? previousFilterModel
-        : response.kind === "planUpdated"
-          ? undefined
-          : session.draftBaseFilterModel;
     const currentViewChangeEpoch = session.viewChangeEpoch ?? 0;
-    const nextViewChangeEpoch = currentViewChangeEpoch + (pageRequest && filterChanged ? 1 : 0);
-    const nextDraftBaseViewChangeEpoch =
+    const nextDraftBaseView =
       response.kind === "stepPreview"
-        ? currentViewChangeEpoch
+        ? { filterModel: previousFilterModel, schema: session.metadata.schema, viewChangeEpoch: currentViewChangeEpoch }
         : response.kind === "planUpdated"
           ? undefined
-          : session.draftBaseViewChangeEpoch;
+          : session.draftBaseView;
+    const nextViewChangeEpoch = currentViewChangeEpoch + (pageRequest && filterChanged ? 1 : 0);
     const commitState = (viewState: SessionResponseState["viewState"]): void => {
       if (pageRequest) {
         session.committedPage = { viewRequestId: pageRequest.viewRequestId, page: response.page };
@@ -339,13 +340,12 @@ export class SessionResponseCommitter {
       if (response.kind === "stepPreview" || response.kind === "planUpdated") {
         session.code = response.code;
         session.draftPresentation = draftPresentation;
-        session.draftBaseFilterModel = nextDraftBaseFilterModel;
-        session.draftBaseViewChangeEpoch = nextDraftBaseViewChangeEpoch;
+        session.draftBaseView = nextDraftBaseView;
       }
     };
     if (stateChanged) {
       const state = () =>
-        persistedSessionState(response.metadata, gridState(nextViewState()), nextDraftBaseFilterModel);
+        persistedSessionState(response.metadata, gridState(nextViewState()), nextDraftBaseView?.filterModel);
       let published: SessionPublication | undefined;
       const commitPublication = (prepared: PersistedSessionState): (() => boolean) => {
         const previous = sessionPublication(session);
@@ -533,8 +533,7 @@ interface SessionPublication {
   readonly viewChangeEpoch: number | undefined;
   readonly code: string;
   readonly draftPresentation: SessionResponseState["draftPresentation"];
-  readonly draftBaseFilterModel: SessionResponseState["draftBaseFilterModel"];
-  readonly draftBaseViewChangeEpoch: number | undefined;
+  readonly draftBaseView: SessionResponseState["draftBaseView"];
   readonly recoveryRequired: boolean | undefined;
 }
 
@@ -551,8 +550,7 @@ function sessionPublication(session: SessionResponseState): SessionPublication {
     viewChangeEpoch: session.viewChangeEpoch,
     code: session.code,
     draftPresentation: session.draftPresentation,
-    draftBaseFilterModel: session.draftBaseFilterModel,
-    draftBaseViewChangeEpoch: session.draftBaseViewChangeEpoch,
+    draftBaseView: session.draftBaseView,
     recoveryRequired: session.recoveryRequired
   };
 }
@@ -570,8 +568,7 @@ function sameSessionPublication(session: SessionResponseState, publication: Sess
     session.viewChangeEpoch === publication.viewChangeEpoch &&
     session.code === publication.code &&
     session.draftPresentation === publication.draftPresentation &&
-    session.draftBaseFilterModel === publication.draftBaseFilterModel &&
-    session.draftBaseViewChangeEpoch === publication.draftBaseViewChangeEpoch &&
+    session.draftBaseView === publication.draftBaseView &&
     session.recoveryRequired === publication.recoveryRequired
   );
 }
@@ -588,7 +585,6 @@ function restoreSessionPublication(session: SessionResponseState, publication: S
   session.viewChangeEpoch = publication.viewChangeEpoch;
   session.code = publication.code;
   session.draftPresentation = publication.draftPresentation;
-  session.draftBaseFilterModel = publication.draftBaseFilterModel;
-  session.draftBaseViewChangeEpoch = publication.draftBaseViewChangeEpoch;
+  session.draftBaseView = publication.draftBaseView;
   session.recoveryRequired = publication.recoveryRequired;
 }

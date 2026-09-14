@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { reconcileViewFilterModel } from "../shared/filterModel";
 import type {
   CastColumnTransformStep,
   CloneColumnTransformStep,
@@ -10,7 +11,6 @@ import type {
   TextLengthTransformStep
 } from "../shared/protocol";
 import {
-  reconcileFilterModelById,
   schemaAfterCast,
   schemaAfterClone,
   schemaAfterDrop,
@@ -171,12 +171,12 @@ describe("R kernel column schema evolution", () => {
       sort: [{ column: "count", direction: "desc" as const, nulls: "last" as const }]
     };
     const renamed = schema.map((column) => (column.id === "r:c:1" ? { ...column, name: "category" } : column));
-    expect(reconcileFilterModelById(model, schema, renamed)).toEqual({
+    expect(reconcileViewFilterModel(model, schema, renamed, "id")).toEqual({
       filters: [{ column: "category", type: "string", predicates: [] }],
       sort: [{ column: "count", direction: "desc", nulls: "last" }]
     });
     expect(
-      reconcileFilterModelById(model, schema, [...renamed, { ...renamed[0]!, id: "duplicate", name: "category" }])
+      reconcileViewFilterModel(model, schema, [...renamed, { ...renamed[0]!, id: "duplicate", name: "category" }], "id")
     ).toEqual({ filters: [], sort: [{ column: "count", direction: "desc", nulls: "last" }] });
   });
 });

@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import type { FilterModel, PageResponse, SessionBoundRequest, SessionMetadata } from "../shared/protocol";
+import type { ColumnSchema, FilterModel, PageResponse, SessionBoundRequest, SessionMetadata } from "../shared/protocol";
 import { emptyGridViewState, type GridViewState, type PersistedViewingState } from "../shared/viewState";
 import {
   DetachedBridgeRequestError,
@@ -15,6 +15,12 @@ const PYSPARK_VIEWPORT_RESTORE_PAGE_LIMIT = 16;
 
 export class RuntimeStateRestoreError extends Error {}
 
+export interface DraftBaseView {
+  readonly filterModel: FilterModel;
+  readonly schema: readonly ColumnSchema[];
+  readonly viewChangeEpoch: number;
+}
+
 export interface RuntimeSessionState {
   sourceProtection?: SessionSourceProtection;
   publicId: string;
@@ -24,9 +30,8 @@ export interface RuntimeSessionState {
   metadata: SessionMetadata;
   code: string;
   draftPresentation?: SessionPresentation["draft"];
-  draftBaseFilterModel?: FilterModel;
+  draftBaseView?: DraftBaseView;
   viewChangeEpoch?: number;
-  draftBaseViewChangeEpoch?: number;
   viewState: PersistedViewingState;
 }
 
@@ -81,10 +86,9 @@ export class SessionRuntimeStateRestorer {
     assertCurrent?: () => void
   ): Promise<void> {
     const currentViewChangeEpoch = session.viewChangeEpoch ?? 0;
-    const draftBaseViewChangeEpoch = session.draftBaseViewChangeEpoch ?? currentViewChangeEpoch;
+    const draftBaseViewChangeEpoch = session.draftBaseView?.viewChangeEpoch ?? currentViewChangeEpoch;
     session.draftPresentation = undefined;
-    session.draftBaseFilterModel = undefined;
-    session.draftBaseViewChangeEpoch = undefined;
+    session.draftBaseView = undefined;
     for (const step of cleaning.steps) {
       assertCurrent?.();
       const previewRequest: SessionBoundRequest = {
@@ -164,8 +168,11 @@ export class SessionRuntimeStateRestorer {
       session.runtimeRevision = preview.revision;
       session.metadata = preview.metadata;
       session.code = preview.code;
-      session.draftBaseFilterModel = confirmedDraftBaseFilterModel;
-      session.draftBaseViewChangeEpoch = draftBaseViewChangeEpoch;
+      session.draftBaseView = {
+        filterModel: confirmedDraftBaseFilterModel,
+        schema: committedSchema,
+        viewChangeEpoch: draftBaseViewChangeEpoch
+      };
       session.viewChangeEpoch = currentViewChangeEpoch;
       session.draftPresentation = {
         diff: preview.diff,
@@ -302,8 +309,8 @@ export class SessionRuntimeStateRestorer {
     session.runtimeRevision = page.revision;
     session.metadata = page.metadata;
     if (
-      session.draftBaseFilterModel &&
-      session.draftBaseViewChangeEpoch === (session.viewChangeEpoch ?? 0) &&
+      session.draftBaseView &&
+      session.draftBaseView.viewChangeEpoch === (session.viewChangeEpoch ?? 0) &&
       !isDeepStrictEqual(previousFilterModel, page.metadata.filterModel)
     ) {
       session.viewChangeEpoch = (session.viewChangeEpoch ?? 0) + 1;

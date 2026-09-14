@@ -101,7 +101,12 @@ describe("SessionRuntimeStateRestorer", () => {
     });
     const session = runtimeSession(delegate);
     session.viewChangeEpoch = 9;
-    session.draftBaseViewChangeEpoch = 7;
+    const inheritedView = {
+      filterModel: draftBaseFilter,
+      schema: [{ ...schema[0]!, name: "retired" }],
+      viewChangeEpoch: 7
+    };
+    session.draftBaseView = inheritedView;
     const restorer = new SessionRuntimeStateRestorer();
 
     await restorer.restoreCleaningState(
@@ -140,11 +145,12 @@ describe("SessionRuntimeStateRestorer", () => {
     expect(session).toMatchObject({
       runtimeRevision: 5,
       metadata: { steps: [groupStep, exampleStep], draftStep, filterModel: draftBaseFilter },
-      draftBaseFilterModel: draftBaseFilter,
+      draftBaseView: { filterModel: draftBaseFilter, schema, viewChangeEpoch: 7 },
       viewChangeEpoch: 9,
-      draftBaseViewChangeEpoch: 7,
       draftPresentation: { warnings: [], beforeSchema: schema }
     });
+    expect(session.draftBaseView).not.toBe(inheritedView);
+    expect(session.draftBaseView?.schema).toBe(schema);
   });
 
   it("replays persisted Formula strings verbatim while leaving legacy numeric replay unchanged", async () => {
@@ -239,8 +245,7 @@ describe("SessionRuntimeStateRestorer", () => {
       return pageResponse(request, metadata({ filterModel: request.filterModel }));
     });
     const session = runtimeSession(delegate);
-    session.draftBaseFilterModel = emptyFilter;
-    session.draftBaseViewChangeEpoch = 0;
+    session.draftBaseView = { filterModel: emptyFilter, schema, viewChangeEpoch: 0 };
     session.viewChangeEpoch = currentEpoch;
     const restorer = new SessionRuntimeStateRestorer();
     await restorer.restoreOneViewingState(
@@ -252,7 +257,7 @@ describe("SessionRuntimeStateRestorer", () => {
       "saved"
     );
     expect(session.viewChangeEpoch).toBe(currentEpoch || 1);
-    expect(session.draftBaseViewChangeEpoch).toBe(0);
+    expect(session.draftBaseView?.viewChangeEpoch).toBe(0);
     await restorer.restoreOneViewingState(
       session,
       { ...session.viewState, filterModel: savedFilter },

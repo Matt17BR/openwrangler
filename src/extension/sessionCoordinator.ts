@@ -867,14 +867,15 @@ export class SessionCoordinator implements vscode.Disposable {
           session.publicId
         );
       }
+      const query =
+        action === "applyDraft" &&
+        session.draftBaseView &&
+        session.draftBaseView.viewChangeEpoch === session.viewChangeEpoch
+          ? session.draftBaseView
+          : session.metadata;
       const view = {
         ...session.viewState,
-        filterModel:
-          action === "applyDraft" &&
-          session.draftBaseFilterModel &&
-          session.draftBaseViewChangeEpoch === session.viewChangeEpoch
-            ? session.draftBaseFilterModel
-            : session.metadata.filterModel
+        filterModel: query.filterModel
       };
       const rewriteSettlement = new Promise<void>((resolve) => {
         resolveRewriteSettlement = resolve;
@@ -885,6 +886,7 @@ export class SessionCoordinator implements vscode.Disposable {
           session,
           steps,
           view,
+          query.schema,
           page,
           options,
           this.runtimeReconfigurationHooks(session)

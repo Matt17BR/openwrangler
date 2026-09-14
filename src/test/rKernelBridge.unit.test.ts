@@ -1227,7 +1227,7 @@ describe("canonical R kernel bridge", () => {
         code: "",
         viewState: initialViewingState(opened.metadata),
         viewChangeEpoch: laterView ? 9 : 7,
-        draftBaseViewChangeEpoch: 7
+        draftBaseView: { filterModel: baseFilter, schema: opened.metadata.schema, viewChangeEpoch: 7 }
       };
       transport.getPage
         .mockResolvedValueOnce({ ...source, page: { ...source.page, limit: 1 } })
@@ -1251,7 +1251,11 @@ describe("canonical R kernel bridge", () => {
         8
       );
       expect(candidate.viewChangeEpoch).toBe(laterView ? 9 : 7);
-      expect(candidate.draftBaseViewChangeEpoch).toBe(7);
+      expect(candidate.draftBaseView).toEqual({
+        filterModel: baseFilter,
+        schema: opened.metadata.schema,
+        viewChangeEpoch: 7
+      });
       expect(candidate.metadata.filterModel).toEqual(emptyFilter);
       transport.discardDraft.mockResolvedValueOnce({
         sessionId,

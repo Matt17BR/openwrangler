@@ -226,6 +226,8 @@ describe("SessionRuntimeRequestExecutor", () => {
         filters: [],
         sort: [{ column: "value", direction: "desc", nulls: "last" }]
       };
+      const originalSchema = metadata().schema;
+      const recoveredSchema = [...originalSchema];
       let calls = 0;
       const delegate = bridge(
         requestMock(async (request, options) => {
@@ -241,7 +243,13 @@ describe("SessionRuntimeRequestExecutor", () => {
             };
           const filterModel = options?.confirmedView?.filterModel;
           if (!filterModel) throw new Error("Expected the dispatch-owned confirmed view.");
-          const next = metadata({ sessionId: request.sessionId, revision: 1, draftStep: step, filterModel });
+          const next = metadata({
+            sessionId: request.sessionId,
+            revision: 1,
+            draftStep: step,
+            filterModel,
+            schema: [...originalSchema]
+          });
           return {
             ...stepPreviewResponse(1, step, request.sessionId),
             metadata: next,
@@ -253,13 +261,13 @@ describe("SessionRuntimeRequestExecutor", () => {
         })
       );
       const session = runtimeSession(delegate, {
-        metadata: metadata({ filterModel: originalFilter }),
+        metadata: metadata({ filterModel: originalFilter, schema: originalSchema }),
         viewChangeEpoch: 3
       });
       const requestHooks = hooks({
         replayAfterRuntimeLoss: vi.fn(async () => {
           replaceRuntime(session);
-          session.metadata = { ...session.metadata, filterModel: emptyFilter };
+          session.metadata = { ...session.metadata, filterModel: emptyFilter, schema: recoveredSchema };
           session.viewChangeEpoch = 4;
           return true;
         })
@@ -268,8 +276,13 @@ describe("SessionRuntimeRequestExecutor", () => {
       await expect(
         runtimeExecutor().execute(session, previewRequest(), undefined, requestHooks)
       ).resolves.toMatchObject({ kind: "stepPreview", metadata: { filterModel: expectedFilter } });
-      expect(session.draftBaseFilterModel).toEqual(expectedFilter);
-      expect(session.draftBaseViewChangeEpoch).toBe(recover ? 4 : 3);
+      expect(session.draftBaseView).toEqual({
+        filterModel: expectedFilter,
+        schema: recover ? recoveredSchema : originalSchema,
+        viewChangeEpoch: recover ? 4 : 3
+      });
+      expect(session.draftBaseView?.schema).toBe(recover ? recoveredSchema : originalSchema);
+      expect(session.draftBaseView?.schema).not.toBe(session.metadata.schema);
       expect(delegate.request).toHaveBeenCalledTimes(recover ? 2 : 1);
     }
   );

@@ -172,8 +172,13 @@ change does not erase that change or revive an obsolete draft restoration receip
 Earlier-step rewrites and live mode changes capture the accepted filter after admitted requests have settled, so a
 page confirmed while replacement waits is included in the new session's view. Mode changes retain the caller's
 requested grid layout.
-Durable state retains the draft's base filter, but not intervening view epochs. A persisted open uses the existing
-saved-filter restoration rules in a fresh epoch namespace.
+Before a rewritten plan's final page, the host removes filters and sorts whose columns disappeared or changed type.
+Python follows unique, non-empty column names; native R follows column IDs, retaining its rename behavior. Unaffected
+query rules keep their order and values. A draft's base filter, schema and view-change epoch share one host receipt,
+so applying an earlier replacement can restore filters on columns created by its suffix. A newer accepted view uses
+its own schema instead. Recovery rebuilds the receipt from the replayed committed schema and accepted base filter.
+Durable state still stores only the draft's base filter, without its schema or intervening view epochs. A persisted
+open uses the existing saved-filter restoration rules in a fresh epoch namespace.
 
 Python and R kernel execution is not treated as safely interruptible. Timeout or cancellation stops publication and
 triggers bounded cleanup; it does not claim that user-owned kernel work was interrupted. Idempotent summary and
