@@ -11,6 +11,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Polars grid and profile output preserves timestamp and duration precision inside lists, arrays and structs. Copied cells retain that precision.
 - New columns remain in view when Code Preview opens automatically.
 - Automatic R dataframe discovery waits for a new terminal to replace metadata left by a previous session.
 - Polars integer Group By sums return an empty typed result for empty input instead of failing, in live execution and generated code.
