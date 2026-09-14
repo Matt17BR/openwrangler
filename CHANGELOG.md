@@ -4,6 +4,10 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ## [Unreleased]
 
+### Fixed
+
+- Automatic R dataframe discovery waits for a new terminal to replace metadata left by a previous session.
+
 ## [2.5.0] - 2026-09-14
 
 ### Added
