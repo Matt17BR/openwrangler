@@ -1436,6 +1436,51 @@ def test_pandas_constant_by_example_omits_unused_helpers_and_preserves_native_re
         assert source.attrs == before.attrs
 
 
+@pytest.mark.parametrize("kind", ["column", "arithmetic", "datetime", "nested-datetime", "concat"])
+def test_pandas_by_example_emits_string_conversion_only_when_used(kind: str) -> None:
+    engine = PandasEngine()
+    values: list[Any] = ["2024-01-02", "2024-02-03"]
+    reference = public_ref("c:source:0", "value")
+    column = {"kind": "column", "column": reference}
+    program: dict[str, Any] = column
+    expected: list[Any] = values
+    if kind == "arithmetic":
+        values, expected = [1, 3], [2, 4]
+        program = {"kind": "arithmetic", "left": column, "right": {"kind": "literal", "value": 1}, "operator": "add"}
+    elif kind in {"datetime", "nested-datetime"}:
+        child = column
+        if kind == "nested-datetime":
+            values = ["prefix|" + value for value in values]
+            child = {"kind": "split", "input": column, "delimiter": "|", "index": 1}
+        program = {"kind": "datetimeFormat", "input": child, "inputFormat": "%Y-%m-%d", "outputFormat": "%m"}
+        expected = ["01", "02"]
+    elif kind == "concat":
+        program = {"kind": "concat", "parts": [column, {"kind": "literal", "value": "!"}]}
+        expected = [value + "!" for value in values]
+    frame = pd.DataFrame({"value": values}, index=pd.Index([4, 4], name="rows"))
+    before = frame.copy(deep=True)
+    schema = engine.schema(frame)
+    lineage = source_lineage(schema)
+    operation = bind_step(
+        bound_step(
+            "example",
+            "byExample",
+            sourceColumns=[reference],
+            newColumn="result",
+            program=program,
+            examples=[{"inputs": [value], "output": output} for value, output in zip(values, expected, strict=True)],
+        ),
+        schema,
+        lineage,
+    )
+    code = engine.compile_plan([operation])
+    assert ("def _open_wrangler_string_values(" in code) == (kind in {"nested-datetime", "concat"})
+    result = assert_pandas_live_matches_generated(engine, frame, operation)
+    assert result["result"].tolist() == expected
+    pd.testing.assert_frame_equal(frame, before)
+    pd.testing.assert_index_equal(result.index, before.index)
+
+
 def test_by_example_is_native_and_generated_code_matches(engine_and_frame):
     engine, frame = engine_and_frame
     public_plan = [

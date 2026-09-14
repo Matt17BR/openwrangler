@@ -577,9 +577,12 @@ def _pandas_numeric_key(series: Any) -> Any:
         import pyarrow as pa
 
         dtype = series.dtype.pyarrow_dtype
-        if not pa.types.is_integer(dtype) and _pandas_arrow_contains_integer(dtype):
-            # Arrow lacks container count/duplicate kernels. NumPy conversion rounds
-            # integer children, so box exact temporary comparison keys natively.
+        if (not pa.types.is_integer(dtype) and _pandas_arrow_contains_integer(dtype)) or (
+            pa.types.is_struct(dtype) and _pandas_arrow_contains_ns_temporal(dtype, for_import=True)
+        ):
+            # Arrow lacks container count/duplicate kernels. Keep integer and
+            # timestamp children exact in temporary comparison keys.
+            _pandas_require_nested_timestamp_boxing(series)
             return pd.Series(
                 series.array.__arrow_array__().to_pylist(), index=series.index, name=series.name, dtype=object
             )
@@ -1380,6 +1383,7 @@ class PandasEngine(DataFrameEngine):
         search_counted_labels = search_counted_labels or arrow_duration_values
         temporal_values = _pandas_arrow_temporal_array(series)
         if search and not search_counted_labels:
+            _pandas_require_nested_timestamp_boxing(series)
             labels = series.astype(str)
             if (
                 temporal_values is not None
@@ -1596,8 +1600,11 @@ class PandasEngine(DataFrameEngine):
             return pd.concat([df, df.iloc[:, position].rename(params["newName"])], axis=1)
         if kind == "castColumn":
             position = self._bound_frame_position(df, params["column"], kind)
-            series = _pandas_scalar_values(df.iloc[:, position])
             conversion, target = _pandas_cast_strategy(params["dtype"])
+            if target == "string":
+                df.isetitem(position, _pandas_string_values(df.iloc[:, position]))
+                return df
+            series = _pandas_scalar_values(df.iloc[:, position])
             if target == "Int64":
                 result = _pandas_cast_integer(series)
             elif conversion == "to_datetime":
@@ -1617,7 +1624,7 @@ class PandasEngine(DataFrameEngine):
             return pd.concat([df, result.rename(params["newColumn"])], axis=1)
         if kind == "textLength":
             position = self._bound_frame_position(df, params["column"], kind)
-            result = _pandas_scalar_values(df.iloc[:, position]).astype("string").str.len()
+            result = _pandas_string_values(df.iloc[:, position]).str.len()
             return pd.concat([df, result.rename(params["newColumn"])], axis=1)
         if kind == "denseRank":
             position = self._bound_frame_position(df, params["column"], kind)
@@ -1664,12 +1671,7 @@ class PandasEngine(DataFrameEngine):
         if kind == "multiLabelBinarize":
             position = self._bound_frame_position(df, params["column"], kind)
             column = bound_column_name(params["column"], kind)
-            encoded = (
-                _pandas_scalar_values(df.iloc[:, position])
-                .astype("string")
-                .fillna("")
-                .str.get_dummies(sep=params["delimiter"])
-            )
+            encoded = _pandas_string_values(df.iloc[:, position]).fillna("").str.get_dummies(sep=params["delimiter"])
             encoded = encoded.loc[:, [str(name) != "" for name in encoded.columns]]
             encoded = encoded.iloc[:, sorted(range(encoded.shape[1]), key=lambda item: str(encoded.columns[item]))]
             encoded = encoded.add_prefix(params.get("prefix", f"{column}_")).astype("int8")
@@ -1684,10 +1686,8 @@ class PandasEngine(DataFrameEngine):
             position = self._bound_frame_position(df, params["column"], kind)
             output_names = list(params["newColumns"])
             ensure_output_columns_available(df.columns, output_names, "Splitting text into columns")
-            parts = (
-                _pandas_scalar_values(df.iloc[:, position])
-                .astype("string")
-                .str.split(params["delimiter"], n=len(output_names), regex=False)
+            parts = _pandas_string_values(df.iloc[:, position]).str.split(
+                params["delimiter"], n=len(output_names), regex=False
             )
             generated = pd.concat(
                 [parts.str.get(index).rename(name) for index, name in enumerate(output_names)],
@@ -1734,7 +1734,7 @@ class PandasEngine(DataFrameEngine):
             portable_regex_contract(params["pattern"], params["group"])
             position = self._bound_frame_position(df, params["column"], kind)
             ensure_output_columns_available(df.columns, [params["newColumn"]], "Regex extraction")
-            source = _pandas_scalar_values(df.iloc[:, position]).astype("string")
+            source = _pandas_string_values(df.iloc[:, position])
             oversized = (
                 source.str.len().gt(MAX_PORTABLE_REGEX_TEXT_CODE_POINTS)
                 | source.str.encode("utf-8").str.len().gt(MAX_PORTABLE_REGEX_TEXT_UTF8_BYTES)
@@ -1747,7 +1747,7 @@ class PandasEngine(DataFrameEngine):
             position = self._bound_frame_position(df, params["column"], kind)
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn")
-            series = _pandas_scalar_values(df.iloc[:, position]).astype("string")
+            series = _pandas_string_values(df.iloc[:, position])
             if kind == "findReplace":
                 result = series.str.replace(params["find"], params["replacement"], regex=params.get("regex", False))
             elif kind == "stripText":
@@ -2106,23 +2106,17 @@ class PandasEngine(DataFrameEngine):
             any(step["kind"] in {"filterRows", "sortRows", "dropMissingRows", "dropDuplicates"} for step in plan)
             or "directional" in fill_strategies
         )
-        if (
+        needs_numeric_keys = (
             needs_row_queries
             or needs_nullable_result_helpers
             or "grouped" in fill_strategies
             or needs_rank_helpers
             or needs_duplicate_keys
-        ):
-            lines.extend(_generated_pandas_numeric_key_helpers())
-        needs_scalar_values = any(
+        )
+        needs_string_values = any(
             step["kind"]
             in {
-                "fillMissingValues",
-                "conditionalColumn",
-                "castColumn",
-                "groupBy",
                 "textLength",
-                "oneHotEncode",
                 "multiLabelBinarize",
                 "splitTextColumns",
                 "extractRegexGroup",
@@ -2132,6 +2126,32 @@ class PandasEngine(DataFrameEngine):
                 "capitalizeText",
                 "lowerText",
                 "upperText",
+            }
+            or step["kind"] == "castColumn"
+            and step["params"]["dtype"] == "string"
+            or step["kind"] == "byExample"
+            and _pandas_by_example_uses_string_values(step["params"]["program"])
+            for step in plan
+        )
+        if needs_numeric_keys or needs_string_values:
+            lines.extend(
+                [
+                    "from typing import Any",
+                    getsource(_pandas_arrow_contains_ns_temporal),
+                    getsource(_pandas_arrow_has_ns_minimum),
+                    getsource(_pandas_require_nested_timestamp_boxing),
+                ]
+            )
+        if needs_numeric_keys:
+            lines.extend(_generated_pandas_numeric_key_helpers())
+        needs_scalar_values = needs_string_values or any(
+            step["kind"]
+            in {
+                "fillMissingValues",
+                "conditionalColumn",
+                "castColumn",
+                "groupBy",
+                "oneHotEncode",
                 "pivotWider",
             }
             or (step["kind"] == "byExample" and step["params"]["program"]["kind"] not in {"literal", "column"})
@@ -2145,6 +2165,16 @@ class PandasEngine(DataFrameEngine):
             lines.extend(_generated_pandas_dictionary_helpers(include_rows=needs_row_queries))
         if needs_row_queries or needs_scalar_values or needs_rank_helpers or needs_duplicate_keys:
             lines.extend(_generated_pandas_scalar_helpers())
+        if needs_string_values:
+            lines.extend(
+                [
+                    "def _open_wrangler_string_values(series):",
+                    "    values = _open_wrangler_scalar_values(series)",
+                    "    _pandas_require_nested_timestamp_boxing(values)",
+                    "    return values.astype('string')",
+                    "",
+                ]
+            )
         if needs_view_value_helpers:
             if any(
                 (
@@ -2824,7 +2854,9 @@ class PandasEngine(DataFrameEngine):
             position = bound_column_position(params["column"], kind)
             series = f"_open_wrangler_scalar_values(df.iloc[:, {position}])"
             conversion, target = _pandas_cast_strategy(params["dtype"])
-            if conversion == "to_datetime":
+            if target == "string":
+                expression = f"_open_wrangler_string_values(df.iloc[:, {position}])"
+            elif conversion == "to_datetime":
                 expression = f"_open_wrangler_datetime_result({series}, {target!r})"
             elif target == "Int64":
                 expression = f"_open_wrangler_cast_integer({series})"
@@ -2850,8 +2882,8 @@ class PandasEngine(DataFrameEngine):
         if kind == "textLength":
             position = bound_column_position(params["column"], kind)
             return [
-                f"{prefix}df = pd.concat([df, _open_wrangler_scalar_values(df.iloc[:, {position}])"
-                ".astype('string').str.len()"
+                f"{prefix}df = pd.concat([df, _open_wrangler_string_values(df.iloc[:, {position}])"
+                ".str.len()"
                 f".rename({output_name or repr(params['newColumn'])})], axis=1)"
             ]
         if kind == "denseRank":
@@ -2941,8 +2973,8 @@ class PandasEngine(DataFrameEngine):
             order = f"_encoded_order_{index}"
             return [
                 (
-                    f"{prefix}{name} = _open_wrangler_scalar_values(df.iloc[:, {position}])"
-                    ".astype('string').fillna('')"
+                    f"{prefix}{name} = _open_wrangler_string_values(df.iloc[:, {position}])"
+                    ".fillna('')"
                     f".str.get_dummies(sep={params['delimiter']!r})"
                 ),
                 f"{prefix}{name} = {name}.loc[:, [str(column) != '' for column in {name}.columns]]",
@@ -3008,7 +3040,7 @@ class PandasEngine(DataFrameEngine):
                     f"+ ', '.join({collisions}))"
                 ),
                 (
-                    f"{prefix}{parts} = _open_wrangler_scalar_values(df.iloc[:, {position}]).astype('string')"
+                    f"{prefix}{parts} = _open_wrangler_string_values(df.iloc[:, {position}])"
                     f".str.split({params['delimiter']!r}, n={len(output_names)}, regex=False)"
                 ),
                 (
@@ -3046,7 +3078,7 @@ class PandasEngine(DataFrameEngine):
                     f"{prefix}    raise ValueError('Regex extraction would create a duplicate column name: ' "
                     f"+ ', '.join({collisions}))"
                 ),
-                (f"{prefix}{source} = _open_wrangler_scalar_values(df.iloc[:, {position}]).astype('string')"),
+                (f"{prefix}{source} = _open_wrangler_string_values(df.iloc[:, {position}])"),
                 (
                     f"{prefix}if (({source}.str.len() > "
                     f"{MAX_PORTABLE_REGEX_TEXT_CODE_POINTS}) | "
@@ -3065,7 +3097,7 @@ class PandasEngine(DataFrameEngine):
             position = bound_column_position(params["column"], kind)
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn")
-            base = f"_open_wrangler_scalar_values(df.iloc[:, {position}]).astype('string').str"
+            base = f"_open_wrangler_string_values(df.iloc[:, {position}]).str"
             if kind == "findReplace":
                 expression = (
                     f"{base}.replace({params['find']!r}, {params['replacement']!r}, "
@@ -3082,8 +3114,7 @@ class PandasEngine(DataFrameEngine):
             else:
                 method = {"capitalizeText": "capitalize", "lowerText": "lower", "upperText": "upper"}[kind]
                 expression = (
-                    f"_open_wrangler_scalar_values(df.iloc[:, {position}]).astype('string')"
-                    f".map(str.{method}, na_action='ignore')"
+                    f"_open_wrangler_string_values(df.iloc[:, {position}]).map(str.{method}, na_action='ignore')"
                 )
             if target is None or target == column:
                 return [f"{prefix}df.isetitem({position}, {expression})"]
@@ -4418,6 +4449,12 @@ def _pandas_dictionary_values(series: Any) -> Any:
     return result
 
 
+def _pandas_string_values(series: Any) -> Any:
+    values = _pandas_scalar_values(series)
+    _pandas_require_nested_timestamp_boxing(values)
+    return values.astype("string")
+
+
 def _pandas_scalar_values(series: Any) -> Any:
     import pandas as pd
 
@@ -4756,6 +4793,8 @@ def _pandas_scalar_export_frame(df: Any, preserve_index: bool, *, for_csv: bool 
         ):
             raise EngineError("CSV export does not support Sparse duration unit multipliers.")
         logical = _pandas_scalar_values(series)
+        if for_csv:
+            _pandas_require_nested_timestamp_boxing(logical)
         dtype = None if for_csv else negative_decimal_type(logical)
         if dtype is not None:
             import pyarrow as pa
@@ -4846,6 +4885,72 @@ def _pandas_arrow_contains_integer(dtype: Any) -> bool:
     return False
 
 
+def _pandas_arrow_contains_ns_temporal(dtype: Any, *, for_import: bool = False) -> bool:
+    import builtins
+
+    import pyarrow as pa
+
+    if pa.types.is_timestamp(dtype) or (not for_import and pa.types.is_duration(dtype)):
+        return dtype.unit == "ns"
+    if pa.types.is_struct(dtype):
+        return builtins.any(_pandas_arrow_contains_ns_temporal(field.type, for_import=for_import) for field in dtype)
+    if not for_import and pa.types.is_map(dtype):
+        return _pandas_arrow_contains_ns_temporal(dtype.field(0).type)
+    if pa.types.is_list(dtype) or pa.types.is_large_list(dtype) or pa.types.is_fixed_size_list(dtype):
+        return _pandas_arrow_contains_ns_temporal(dtype.value_type, for_import=for_import)
+    return False
+
+
+def _pandas_arrow_has_ns_minimum(array: Any) -> bool:
+    import builtins
+
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    dtype = array.type
+    if pa.types.is_timestamp(dtype) or pa.types.is_duration(dtype):
+        return dtype.unit == "ns" and pc.call_function("min", [array.cast(pa.int64())]).as_py() == -(2**63)
+    if pa.types.is_struct(dtype):
+        # Native field/flatten kernels carry parent validity into the children.
+        return builtins.any(
+            _pandas_arrow_has_ns_minimum(
+                pc.call_function("struct_field", [array], options=pc.StructFieldOptions(position))
+            )
+            for position, field in builtins.enumerate(dtype)
+            if _pandas_arrow_contains_ns_temporal(field.type)
+        )
+    if pa.types.is_map(dtype):
+        # Map-to-list preserves the entry buffers and parent validity.
+        array = array.cast(pa.list_(dtype.field(0)))
+        dtype = array.type
+    if (
+        pa.types.is_list(dtype) or pa.types.is_large_list(dtype) or pa.types.is_fixed_size_list(dtype)
+    ) and _pandas_arrow_contains_ns_temporal(dtype.value_type):
+        return _pandas_arrow_has_ns_minimum(pc.call_function("list_flatten", [array]))
+    return False
+
+
+def _pandas_require_nested_timestamp_boxing(values: Any) -> None:
+    import builtins
+
+    import pandas as pd
+
+    if not builtins.isinstance(values.dtype, pd.ArrowDtype):
+        return
+    import pyarrow as pa
+
+    dtype = values.dtype.pyarrow_dtype
+    if (
+        pa.types.is_struct(dtype)
+        and _pandas_arrow_contains_ns_temporal(dtype, for_import=True)
+        and _pandas_arrow_has_ns_minimum(builtins.getattr(values, "array", values).__arrow_array__())
+    ):
+        raise ValueError(
+            "A present minimum nanosecond timestamp or duration inside a timestamp-containing Struct "
+            "cannot be represented for this output or comparison."
+        )
+
+
 def _pandas_read_parquet(path: str) -> Any:
     import json
 
@@ -4901,7 +5006,11 @@ def _pandas_read_parquet(path: str) -> Any:
             or (
                 frame.iloc[:, position].dtype == object
                 and not pa.types.is_integer(field.type)
-                and _pandas_arrow_contains_integer(field.type)
+                and (
+                    _pandas_arrow_contains_integer(field.type)
+                    or pa.types.is_struct(field.type)
+                    and _pandas_arrow_contains_ns_temporal(field.type, for_import=True)
+                )
             )
         ]
         if (
@@ -5631,7 +5740,7 @@ def _pandas_string_expression(
 
     value = _pandas_by_example_expression(df, program, resolve_position)
     if isinstance(value, pd.Series):
-        value = _pandas_scalar_values(value)
+        return _pandas_string_values(value)
     return value.astype("string") if hasattr(value, "astype") else pd.Series(value, index=df.index, dtype="string")
 
 
@@ -5696,12 +5805,21 @@ def _compile_pandas_by_example(program: Mapping[str, Any]) -> str:
     raise EngineError(f"Unsupported Pandas by-example expression: {kind}")
 
 
+def _pandas_by_example_uses_string_values(program: Mapping[str, Any]) -> bool:
+    if program["kind"] in {"slice", "split", "concat", "regexExtract", "regexReplace", "case"}:
+        children = program["parts"] if program["kind"] == "concat" else [program["input"]]
+        return any(child["kind"] != "literal" for child in children)
+    return any(
+        _pandas_by_example_uses_string_values(program[key]) for key in ("input", "left", "right") if key in program
+    )
+
+
 def _compile_pandas_string(program: Mapping[str, Any]) -> str:
     expression = _compile_pandas_by_example(program)
     return (
         f"pd.Series({expression!s}, index=df.index, dtype='string')"
         if program["kind"] == "literal"
-        else f"_open_wrangler_scalar_values({expression}).astype('string')"
+        else f"_open_wrangler_string_values({expression})"
     )
 
 
@@ -6204,9 +6322,11 @@ def _generated_pandas_numeric_key_helpers() -> list[str]:
         "        import pyarrow as pa",
         "",
         "        dtype = series.dtype.pyarrow_dtype",
-        "        if not pa.types.is_integer(dtype) and _open_wrangler_arrow_contains_integer(dtype):",
-        "            # Arrow lacks container count/duplicate kernels. NumPy conversion rounds",
-        "            # integer children, so box exact temporary comparison keys natively.",
+        "        if (not pa.types.is_integer(dtype) and _open_wrangler_arrow_contains_integer(dtype)) or (",
+        "            pa.types.is_struct(dtype) and _pandas_arrow_contains_ns_temporal(dtype, for_import=True)",
+        "        ):",
+        "            # Exact temporary keys; stored rows keep their native Arrow dtype.",
+        "            _pandas_require_nested_timestamp_boxing(series)",
         "            return pd.Series(",
         "                series.array.__arrow_array__().to_pylist(), "
         "index=series.index, name=series.name, dtype=object",
@@ -8089,6 +8209,7 @@ def _pandas_temporal_output_values(values: Any, array: Any) -> Iterable[Any]:
     import numpy as np
     import pandas as pd
 
+    _pandas_require_nested_timestamp_boxing(values)
     categorical = isinstance(values.dtype, pd.CategoricalDtype)
     if array is None:
         dtype = values.dtype.subtype if isinstance(values.dtype, pd.SparseDtype) else values.dtype

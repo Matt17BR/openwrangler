@@ -348,6 +348,10 @@ Present extreme Arrow timestamps and durations also keep exact row labels, inclu
 instead of appearing as null. This preserves existing index and MultiIndex label conventions.
 Nullable integer data and integer children in lists, structs and maps also retain exact values and missingness through
 editing and export. Repaired columns use native Arrow storage; unrelated columns keep ordinary Pandas decoding.
+Parquet Struct columns containing nanosecond timestamps through Struct or List children also preserve their timestamp
+types through native editing, generated Clone and Parquet export. This includes large and fixed-size lists. Display,
+text conversion, comparisons and CSV export refuse present minimum nanosecond timestamps or durations in those
+children or Map siblings instead of treating them as missing. Other native endpoint and timezone limits remain.
 Profiles, value choices and single-column duplicate comparisons preserve exact nested integer values and missingness.
 Pandas can refuse to count duplicates across columns containing lists, dictionaries, sets or NumPy arrays. Dataset
 statistics retain exact missing-value counts for those native unhashable-key failures, and show the duplicate count
