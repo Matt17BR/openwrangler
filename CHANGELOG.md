@@ -10,11 +10,13 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Changed
 
+- R notebook dependency and discovery tests run in the explicit native R tier instead of detecting R during ordinary unit runs.
 - Generated Polars code includes only the integer helpers needed by its By Example and Group By steps.
 - Generated Pandas code for a constant By Example column omits unused helpers while preserving input and output checks.
 
 ### Fixed
 
+- R notebook discovery and runtime commands work when user functions share names with their implementation helpers.
 - DuckDB notebook viewing keeps correct counts, filters and timestamps when the caller defines conflicting functions.
 - Polars and DuckDB By Example refuse date transformations whose native month names disagree with the supplied examples.
 - Converting DuckDB nanosecond timestamps before 1970 to Date preserves their calendar day.

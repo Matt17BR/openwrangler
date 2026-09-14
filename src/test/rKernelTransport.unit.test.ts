@@ -44,7 +44,8 @@ const exportChunkRequestId = "12345678-1234-4234-8234-1234567890ab";
 const exportCloseRequestId = "23456789-2345-4345-8345-234567890abc";
 const exportSecondChunkRequestId = "34567890-3456-4456-8456-34567890abcd";
 const exportId = "01234567-89ab-4cde-8fab-0123456789ab";
-const R_DEPENDENCY_CHECK_AVAILABLE = spawnSync("Rscript", ["--vanilla", "-e", "quit(status = 0L)"]).status === 0;
+const rscript = process.env.RSCRIPT ?? "Rscript";
+const nativeRContracts = process.env.OPEN_WRANGLER_R_CONTRACT_TESTS === "1";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -216,7 +217,7 @@ describe("native R kernel runtime bundle", () => {
     expect(() => buildRKernelTeardownCode(testRuntimeFiles(), "")).toThrow("owner token is invalid");
   });
 
-  it.runIf(R_DEPENDENCY_CHECK_AVAILABLE)("reports a missing dependency with its environment and exact repair", () => {
+  it.runIf(nativeRContracts)("reports a missing dependency with its environment and exact repair", () => {
     const result = runRDependencyCheck({
       packageName: "jsonlite",
       minimumVersion: "1.0",
@@ -233,7 +234,7 @@ describe("native R kernel runtime bundle", () => {
     expect(result.stdout).toContain("Install it with install.packages('jsonlite')");
   });
 
-  it.runIf(R_DEPENDENCY_CHECK_AVAILABLE)("rejects an old dependency with missing public capabilities", () => {
+  it.runIf(nativeRContracts)("rejects an old dependency with missing public capabilities", () => {
     const result = runRDependencyCheck({
       packageName: "jsonlite",
       minimumVersion: "1.0",
@@ -251,7 +252,7 @@ describe("native R kernel runtime bundle", () => {
     expect(result.stdout).toContain("Install it with install.packages('jsonlite')");
   });
 
-  it.runIf(R_DEPENDENCY_CHECK_AVAILABLE)("accepts each dependency at its exact version floor", () => {
+  it.runIf(nativeRContracts)("accepts each dependency at its exact version floor", () => {
     const jsonlite = runRDependencyCheck({
       packageName: "jsonlite",
       minimumVersion: "1.0",
@@ -275,7 +276,7 @@ describe("native R kernel runtime bundle", () => {
     expect(rlang.stdout).toBe("accepted");
   });
 
-  it.runIf(R_DEPENDENCY_CHECK_AVAILABLE)("checks the loaded namespace version after an in-place upgrade", () => {
+  it.runIf(nativeRContracts)("checks the loaded namespace version after an in-place upgrade", () => {
     const result = runRLoadedNamespaceUpgradeCheck();
 
     expect(result.status, result.stderr).toBe(42);
@@ -4901,9 +4902,10 @@ base::tryCatch({
   base::quit(status = 42L)
 })
 `;
-  return spawnSync("Rscript", ["--vanilla", "-"], {
+  return spawnSync(rscript, ["--vanilla", "-"], {
     encoding: "utf8",
     input: script,
+    timeout: 30_000,
     maxBuffer: 64 * 1_024
   });
 }
@@ -4963,9 +4965,10 @@ base::tryCatch({
   base::quit(status = 42L)
 })
 `;
-  return spawnSync("Rscript", ["--vanilla", "-"], {
+  return spawnSync(rscript, ["--vanilla", "-"], {
     encoding: "utf8",
     input: script,
+    timeout: 30_000,
     maxBuffer: 64 * 1_024
   });
 }

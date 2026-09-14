@@ -195,7 +195,7 @@ export function buildRNotebookVariableDiscoveryCode(marker: string): string {
   }
 
   return `
-local({
+base::local({
 ${buildRDependencyPreflightCode("selected R kernel")}
   .ow_protocol_version <- ${R_DISCOVERY_PROTOCOL_VERSION}L
   .ow_max_variables <- ${MAX_DISCOVERY_VARIABLES}L
@@ -302,7 +302,7 @@ ${buildRDependencyPreflightCode("selected R kernel")}
   cat("__OPEN_WRANGLER_R_VARIABLES_START_${marker}__\\n", sep = "")
   cat(.ow_payload, "\\n", sep = "")
   cat("__OPEN_WRANGLER_R_VARIABLES_END_${marker}__\\n", sep = "")
-})
+}, envir = base::new.env(parent = base::baseenv()))
 `;
 }
 
@@ -312,7 +312,7 @@ function buildRNotebookVariableSelectionProbeCode(marker: string, selected: RNot
   }
 
   return `
-local({
+base::local({
 ${buildRDependencyPreflightCode("selected R kernel")}
   .ow_protocol_version <- ${R_DISCOVERY_PROTOCOL_VERSION}L
   .ow_max_payload_bytes <- ${MAX_DISCOVERY_PAYLOAD_BYTES}L
@@ -374,7 +374,7 @@ ${buildRDependencyPreflightCode("selected R kernel")}
   cat("__OPEN_WRANGLER_R_VARIABLES_START_${marker}__\\n", sep = "")
   cat(.ow_payload, "\\n", sep = "")
   cat("__OPEN_WRANGLER_R_VARIABLES_END_${marker}__\\n", sep = "")
-})
+}, envir = base::new.env(parent = base::baseenv()))
 `;
 }
 
