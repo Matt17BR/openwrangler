@@ -372,7 +372,7 @@ describe("vscode-R workspace metadata adapter", () => {
     watcher.dispose();
   });
 
-  it("rejects foreign attach state and mismatched vscode-R profile provenance", async () => {
+  it("rejects foreign attach state at the readiness deadline and mismatched vscode-R profile provenance", async () => {
     const fixture = await createFixture(803);
     roots.push(fixture.root);
     const wrongPid = officialTerminal(fixture, 804);
@@ -380,7 +380,7 @@ describe("vscode-R workspace metadata adapter", () => {
     const watcher = createRVscodeWorkspaceWatcher(wrongPid as never, {
       extensionPath: fixture.extensionPath,
       retryMs: 5,
-      attachTimeoutMs: 10_000
+      attachTimeoutMs: 200
     });
     const outcome = await Promise.race([
       watcher!.readInitial().then(
@@ -638,6 +638,53 @@ describe("vscode-R workspace metadata adapter", () => {
     });
     expect(terminal.sendText).not.toHaveBeenCalled();
     watcher.dispose();
+  });
+
+  it("waits through a previous terminal's detach record while the selected terminal starts", async () => {
+    const previous = await createFixture(824);
+    const current = await createFixture(825);
+    roots.push(previous.root, current.root);
+    await publishWorkspace(previous, 2, {
+      foreign_orders: { class: ["data.frame"], type: "list", dim: [3, 1] }
+    });
+    await writeFile(previous.requestPath, JSON.stringify({ command: "detach", pid: 824 }));
+    const fixture = { ...current, watcherRoot: previous.watcherRoot, requestPath: previous.requestPath };
+    const terminal = officialTerminal(fixture, 825);
+    mocks.terminals = [terminal];
+    const watcher = createRVscodeWorkspaceWatcher(terminal as never, {
+      extensionPath: fixture.extensionPath,
+      attachTimeoutMs: 10_000
+    })!;
+    const updates = vi.fn();
+    watcher.onDidChangeVariables(updates);
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      let outcome: unknown;
+      const initial = watcher.readInitial().then(
+        (discovery) => (outcome = discovery),
+        (error: unknown) => (outcome = error)
+      );
+      // Let the real file read finish before advancing the attach clock.
+      await vi.waitFor(() => expect(vi.getTimerCount()).toBeGreaterThan(0), { interval: 1 });
+      await vi.advanceTimersByTimeAsync(600);
+      await vi.waitFor(() => expect(outcome !== undefined || vi.getTimerCount() > 0).toBe(true), { interval: 1 });
+      expect(updates).not.toHaveBeenCalled();
+
+      await publishWorkspace(fixture, 3, {
+        current_orders: { class: ["tbl_df", "tbl", "data.frame"], type: "list", dim: [4, 2] }
+      });
+      await publishAttach(fixture, 825);
+      await vi.waitFor(() => expect(outcome).toBeDefined(), { interval: 1 });
+
+      expect(await initial).toEqual({
+        variables: [{ name: "current_orders", backend: "r", dataframeFlavor: "r.tibble" }],
+        truncated: false
+      });
+      expect(terminal.sendText).not.toHaveBeenCalled();
+    } finally {
+      watcher.dispose();
+      vi.useRealTimers();
+    }
   });
 
   it("cancels a pending late-attach wait when the watcher is disposed", async () => {

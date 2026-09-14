@@ -1326,7 +1326,9 @@ old output metadata remains valid.
 
 Notebook work stays in the selected IRkernel. An existing official R-terminal variable stays pinned to the exact
 terminal and process that exposed it. Passive discovery reads bounded vscode-R metadata as an untrusted hint and
-sends no R command. An explicit Open or Refresh action revalidates that terminal and process, then uses terminal
+sends no R command. During startup, it waits within the existing readiness deadline for the selected terminal's
+metadata, even if a previous terminal left a record behind. It never reads foreign workspace data. An explicit Open
+or Refresh action cancels pending discovery, revalidates the terminal and process, then uses terminal
 `sendText` to install or drive Open Wrangler's private dispatcher. Open Wrangler never writes vscode-R's files or
 silently moves the session to another terminal. On macOS and Linux, trusted `.R`, `.Rmd`, and `.qmd` sources may use
 an Open Wrangler-owned `Rscript` process. Windows does not claim this direct document-process path. Literate documents

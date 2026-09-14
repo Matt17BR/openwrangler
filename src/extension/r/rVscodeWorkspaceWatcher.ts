@@ -164,7 +164,7 @@ class VscodeWorkspaceWatcher implements RVscodeWorkspaceWatcher {
         lastError = error;
         this.assertUsable();
         await this.assertProcess(expectedProcessId);
-        if (error instanceof OverwrittenAttachRecordError || error instanceof ForeignAttachRecordError) {
+        if (error instanceof OverwrittenAttachRecordError) {
           if (unstableRecord?.identity !== error.recordIdentity) {
             unstableRecord = Object.freeze({ firstSeenAt: Date.now(), identity: error.recordIdentity, error });
           }
