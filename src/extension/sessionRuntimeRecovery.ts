@@ -152,7 +152,7 @@ export class SessionRuntimeRecovery {
     const persisted = persistedSessionState(
       session.metadata,
       gridState(session.viewState),
-      session.draftBaseFilterModel
+      session.draftBaseView?.filterModel
     );
     const previous: RuntimeSessionState = {
       sourceProtection: session.sourceProtection,
@@ -162,9 +162,8 @@ export class SessionRuntimeRecovery {
       delegate: session.delegate,
       metadata: session.metadata,
       code: session.code,
-      draftBaseFilterModel: session.draftBaseFilterModel,
+      draftBaseView: session.draftBaseView,
       viewChangeEpoch: session.viewChangeEpoch,
-      draftBaseViewChangeEpoch: session.draftBaseViewChangeEpoch,
       viewState: session.viewState
     };
     let candidate: RuntimeSessionState | undefined;
@@ -199,7 +198,7 @@ export class SessionRuntimeRecovery {
         metadata: response.metadata,
         code: "",
         viewChangeEpoch: session.viewChangeEpoch ?? 0,
-        draftBaseViewChangeEpoch: session.draftBaseViewChangeEpoch,
+        draftBaseView: session.draftBaseView,
         viewState: initialViewingState(response.metadata)
       };
       assertCurrent();
@@ -251,9 +250,8 @@ export class SessionRuntimeRecovery {
     session.committedPage = undefined;
     session.code = candidate.code;
     session.draftPresentation = candidate.draftPresentation;
-    session.draftBaseFilterModel = candidate.draftBaseFilterModel;
+    session.draftBaseView = candidate.draftBaseView;
     session.viewChangeEpoch = candidate.viewChangeEpoch;
-    session.draftBaseViewChangeEpoch = candidate.draftBaseViewChangeEpoch;
     session.viewState = reconcileViewingState(
       {
         ...latestGridPresentation,

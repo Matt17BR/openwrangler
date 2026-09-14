@@ -120,6 +120,66 @@ export const countViewColumnNames = (columns: readonly Pick<ColumnSchema, "name"
   return counts;
 };
 
+export function reconcileViewFilterModel(
+  model: FilterModel,
+  previousSchema: readonly ColumnSchema[],
+  nextSchema: readonly ColumnSchema[],
+  policy: "id" | "name"
+): FilterModel {
+  const uniquePreviousByName = uniqueColumnsByName(previousSchema);
+  const nextByKey = new Map(nextSchema.map((column) => [policy === "id" ? column.id : column.name, column]));
+  const uniqueNextByName = uniqueColumnsByName(nextSchema);
+  const filters = model.filters.flatMap((filter) => {
+    const previous = uniquePreviousByName.get(filter.column);
+    const next = previous ? nextByKey.get(policy === "id" ? previous.id : previous.name) : undefined;
+    if (
+      !previous ||
+      (policy === "name" && previous.name.length === 0) ||
+      !next ||
+      uniqueNextByName.get(next.name)?.id !== next.id ||
+      previous.type !== filter.type ||
+      next.type !== filter.type
+    ) {
+      return [];
+    }
+    return [
+      {
+        ...filter,
+        column: next.name,
+        predicates: filter.predicates.map((predicate) => ({ ...predicate })),
+        ...(filter.valueFilter
+          ? { valueFilter: { ...filter.valueFilter, selectedValues: [...filter.valueFilter.selectedValues] } }
+          : {})
+      }
+    ];
+  });
+  const sort = model.sort.flatMap((rule) => {
+    const previous = uniquePreviousByName.get(rule.column);
+    const next = previous ? nextByKey.get(policy === "id" ? previous.id : previous.name) : undefined;
+    if (
+      !previous ||
+      (policy === "name" && previous.name.length === 0) ||
+      !next ||
+      uniqueNextByName.get(next.name)?.id !== next.id ||
+      previous.type !== next.type ||
+      (policy === "name" && !supportsTypedViewComparison(next.type))
+    ) {
+      return [];
+    }
+    return [{ ...rule, column: next.name }];
+  });
+  return {
+    ...(model.logic ? { logic: model.logic } : {}),
+    filters,
+    sort
+  };
+}
+
+function uniqueColumnsByName(schema: readonly ColumnSchema[]): Map<string, ColumnSchema> {
+  const counts = countViewColumnNames(schema);
+  return new Map(schema.filter((column) => counts.get(column.name) === 1).map((column) => [column.name, column]));
+}
+
 export const viewColumnNameUnavailableReason = (name: string, count: number): string | undefined => {
   if (name.length === 0) return "Viewing filters and sorts require a column name. Choose another column.";
   if (count > 1) {

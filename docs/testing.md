@@ -118,7 +118,9 @@ Use the existing owners to choose a focused source check:
   [coordinator persistence](../src/test/sessionCoordinator.persistence.unit.test.ts),
   [runtime restoration](../src/test/sessionRuntimeStateRestorer.unit.test.ts) and
   [panel publication](../src/test/webviewPanel.unit.test.ts) check confirmed state, queued or stale responses,
-  failed saves, replay and exact session/renderer retirement. Initial saved-plan restoration stops further dispatch
+  failed saves, replay and exact session/renderer retirement. [Plan rewrites](../src/test/sessionCoordinator.planRewrite.unit.test.ts)
+  check schema-compatible viewing restoration and the choice between a draft's saved view and a newer accepted view.
+  Initial saved-plan restoration stops further dispatch
   and fallback when its opening owner retires. Protocol admission and source lifetime rules remain in
   [Architecture](architecture.md#protocol-and-publication) and its linked runtime owners.
 - **UI state and interactions:** [App draft state](../src/test/appDraftState.component.test.tsx),

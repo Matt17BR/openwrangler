@@ -409,51 +409,60 @@ describe("SessionResponseCommitter", () => {
     }
   );
 
-  it("preserves a reentrant newer view when a page's final persistence write fails", async () => {
-    let stored: Record<string, unknown> = {};
-    const session = responseState({
-      latestRequestedViewContextId: "current-view",
-      latestRequestedPageRequestId: "current-page"
-    });
-    const update = vi.fn(async (_key: string, value: Record<string, unknown>) => {
-      if (update.mock.calls.length === 2) {
-        session.latestRequestedPageRequestId = "newer-page";
-        session.viewState = {
-          ...session.viewState,
-          viewport: { ...session.viewState.viewport, scrollLeft: 999 }
-        };
-        throw new Error("final page persistence unavailable");
-      }
-      stored = value;
-    });
-    const committer = new SessionResponseCommitter(new SessionPersistenceStore(memento(() => stored, update)));
-    const filterModel: FilterModel = {
-      filters: [],
-      sort: [{ column: "value", direction: "desc", nulls: "last" }]
-    };
-    const request = pageRequest(session, "current-page", filterModel, 100);
+  it.each(["view", "draft receipt"] as const)(
+    "preserves a reentrant %s when final page persistence fails",
+    async (owner) => {
+      let stored: Record<string, unknown> = {};
+      const newerDraftBaseView = { filterModel: nonemptyFilter, schema: [...schema], viewChangeEpoch: 3 };
+      const session = responseState({
+        latestRequestedViewContextId: "current-view",
+        latestRequestedPageRequestId: "current-page"
+      });
+      const update = vi.fn(async (_key: string, value: Record<string, unknown>) => {
+        if (update.mock.calls.length === 2) {
+          if (owner === "view") {
+            session.latestRequestedPageRequestId = "newer-page";
+            session.viewState = {
+              ...session.viewState,
+              viewport: { ...session.viewState.viewport, scrollLeft: 999 }
+            };
+          } else {
+            session.draftBaseView = newerDraftBaseView;
+          }
+          throw new Error("final page persistence unavailable");
+        }
+        stored = value;
+      });
+      const committer = new SessionResponseCommitter(new SessionPersistenceStore(memento(() => stored, update)));
+      const filterModel: FilterModel = {
+        filters: [],
+        sort: [{ column: "value", direction: "desc", nulls: "last" }]
+      };
+      const request = pageRequest(session, "current-page", filterModel, 100);
 
-    const response = await committer.commit(
-      session,
-      request,
-      pageResponse(request, metadata({ filterModel }), 240),
-      0,
-      emptyFilter,
-      { viewContextId: "current-view" },
-      callbackSpies()
-    );
+      const response = await committer.commit(
+        session,
+        request,
+        pageResponse(request, metadata({ filterModel }), 240),
+        0,
+        emptyFilter,
+        { viewContextId: "current-view" },
+        callbackSpies()
+      );
 
-    expect(response).toMatchObject({ kind: "error", code: "persistence_unavailable" });
-    expect(response).toHaveProperty(
-      "message",
-      "The page is active, but Open Wrangler could not save its workspace recovery state. Retry after workspace storage is available."
-    );
-    expect(session.latestRequestedPageRequestId).toBe("newer-page");
-    expect(session.viewState.viewport.scrollLeft).toBe(999);
-    expect(session.metadata.filterModel).toEqual(filterModel);
-  });
+      expect(response).toMatchObject({ kind: "error", code: "persistence_unavailable" });
+      expect(response).toHaveProperty(
+        "message",
+        "The page is active, but Open Wrangler could not save its workspace recovery state. Retry after workspace storage is available."
+      );
+      expect(session.latestRequestedPageRequestId).toBe(owner === "view" ? "newer-page" : "current-page");
+      if (owner === "view") expect(session.viewState.viewport.scrollLeft).toBe(999);
+      else expect(session.draftBaseView).toBe(newerDraftBaseView);
+      expect(session.metadata.filterModel).toEqual(filterModel);
+    }
+  );
 
-  it("restores the confirmed page state when its publication callback rejects", async () => {
+  it.each(["page", "preview"] as const)("restores confirmed state when %s publication rejects", async (kind) => {
     let stored: Record<string, unknown> = {};
     const update = vi.fn(async (_key: string, value: Record<string, unknown>) => {
       stored = value;
@@ -464,8 +473,10 @@ describe("SessionResponseCommitter", () => {
       filters: [],
       sort: [{ column: "value", direction: "desc", nulls: "last" }]
     };
+    const draftBaseView = { filterModel: nonemptyFilter, schema: [...schema], viewChangeEpoch: 2 };
     const session = responseState({
       publicRevision: 4,
+      draftBaseView,
       activeViewContextId: "old-view",
       latestRequestedViewContextId: "next-view",
       latestRequestedPageRequestId: "current-page"
@@ -473,7 +484,31 @@ describe("SessionResponseCommitter", () => {
     const previousMetadata = session.metadata;
     const previousViewState = session.viewState;
     const previousViewChangeEpoch = session.viewChangeEpoch;
-    const request = pageRequest(session, "current-page", filterModel, 100);
+    const request: SessionBoundRequest =
+      kind === "page"
+        ? pageRequest(session, "current-page", filterModel, 100)
+        : {
+            kind: "previewStep",
+            sessionId: session.publicId,
+            revision: 4,
+            step,
+            offset: 0,
+            limit: 10,
+            columnOffset: 0,
+            columnLimit: 1
+          };
+    const response: OpenWranglerResponse =
+      request.kind === "getPage"
+        ? pageResponse(request, metadata({ filterModel }), 240)
+        : {
+            kind: "stepPreview",
+            revision: 1,
+            metadata: metadata({ revision: 1, draftStep: step }),
+            page: gridPage(0, 10, 10),
+            diff: emptyDiff(),
+            warnings: [],
+            code: "# preview"
+          };
     const callbackFailure = new Error("unexpected activation callback failure");
     const callbacks = callbackSpies();
     let publicationOwner = "confirmed";
@@ -482,19 +517,15 @@ describe("SessionResponseCommitter", () => {
         publicationOwner = "confirmed";
       });
       publicationOwner = "candidate";
+      if (kind === "preview") {
+        expect(session.draftBaseView).not.toBe(draftBaseView);
+        expect(session.draftBaseView?.schema).toBe(previousMetadata.schema);
+      }
       throw callbackFailure;
     });
 
     await expect(
-      committer.commit(
-        session,
-        request,
-        pageResponse(request, metadata({ filterModel }), 240),
-        0,
-        emptyFilter,
-        { viewContextId: "next-view" },
-        callbacks
-      )
+      committer.commit(session, request, response, 0, emptyFilter, { viewContextId: "next-view" }, callbacks)
     ).rejects.toBe(callbackFailure);
 
     expect(session).toMatchObject({
@@ -505,6 +536,7 @@ describe("SessionResponseCommitter", () => {
     expect(session.viewChangeEpoch).toBe(previousViewChangeEpoch);
     expect(session.metadata).toBe(previousMetadata);
     expect(session.viewState).toBe(previousViewState);
+    expect(session.draftBaseView).toBe(draftBaseView);
     expect(publicationOwner).toBe("confirmed");
     const key = persistenceKey(session.openRequest.source, "polars");
     expect(stored[key]).toBeUndefined();
@@ -620,7 +652,7 @@ describe("SessionResponseCommitter", () => {
       publicRevision: 1,
       runtimeRevision: 1,
       code: "# preview",
-      draftBaseFilterModel: nonemptyFilter,
+      draftBaseView: { filterModel: nonemptyFilter, schema, viewChangeEpoch: 0 },
       draftPresentation: { warnings: ["review"], beforeSchema: schema }
     });
     expect(persistence.load(session.openRequest.source, "polars")).toMatchObject({
@@ -655,7 +687,7 @@ describe("SessionResponseCommitter", () => {
       metadata: { steps: [step], filterModel: nonemptyFilter },
       code: "# applied"
     });
-    expect(session.draftBaseFilterModel).toBeUndefined();
+    expect(session.draftBaseView).toBeUndefined();
     expect(session.draftPresentation).toBeUndefined();
     expect(persistence.load(session.openRequest.source, "polars")?.cleaning).toMatchObject({ steps: [step] });
     expect(persistence.load(session.openRequest.source, "polars")?.cleaning.draftBaseFilterModel).toBeUndefined();
@@ -723,7 +755,7 @@ describe("SessionResponseCommitter", () => {
       metadata: { steps: [], filterModel: nonemptyFilter },
       code: "# discarded"
     });
-    expect(session.draftBaseFilterModel).toBeUndefined();
+    expect(session.draftBaseView).toBeUndefined();
     expect(persistence.load(session.openRequest.source, "polars")?.cleaning.draftBaseFilterModel).toBeUndefined();
     expect(callbacks.activate).toHaveBeenCalledTimes(5);
   });

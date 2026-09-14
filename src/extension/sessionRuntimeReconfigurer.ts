@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type {
+  ColumnSchema,
   DataBackend,
   OpenSessionRequest,
   OpenWranglerResponse,
@@ -11,6 +12,7 @@ import type {
   SessionSource,
   TransformStep
 } from "../shared/protocol";
+import { reconcileViewFilterModel } from "../shared/filterModel";
 import type { PersistedViewingState } from "../shared/viewState";
 import { isOpenWranglerRequest } from "../shared/protocolValidation";
 import type { BridgeRequestOptions } from "./dataBridge";
@@ -198,7 +200,7 @@ export class SessionRuntimeReconfigurer {
       () => {
         publishCandidate(session, publishableCandidate, candidateRequest, publicRevision);
         session.draftPresentation = undefined;
-        session.draftBaseFilterModel = undefined;
+        session.draftBaseView = undefined;
         candidateCleanupAttempted = true;
         candidate = undefined;
         return () => {
@@ -238,6 +240,7 @@ export class SessionRuntimeReconfigurer {
     session: RuntimeReconfigurationSession,
     steps: readonly TransformStep[],
     view: PersistedViewingState,
+    viewSchema: readonly ColumnSchema[],
     pageWindow: { offset: number; limit: number; columnOffset: number; columnLimit: number },
     options: BridgeRequestOptions | undefined,
     hooks: RuntimeReconfigurationHooks
@@ -355,7 +358,15 @@ export class SessionRuntimeReconfigurer {
       assertCandidatePlan();
       page = await this.runtimeStateRestorer.restoreOneViewingState(
         candidate,
-        view,
+        {
+          ...view,
+          filterModel: reconcileViewFilterModel(
+            view.filterModel,
+            viewSchema,
+            candidate.metadata.schema,
+            candidate.metadata.backend === "r" ? "id" : "name"
+          )
+        },
         pageWindow.limit,
         pageWindow.columnOffset,
         pageWindow.columnLimit,
@@ -424,7 +435,7 @@ export class SessionRuntimeReconfigurer {
       () => {
         publishCandidate(session, publishableCandidate, candidateRequest, publicRevision);
         session.draftPresentation = undefined;
-        session.draftBaseFilterModel = undefined;
+        session.draftBaseView = undefined;
         candidateCleanupAttempted = true;
         candidate = undefined;
         return () => {
@@ -437,9 +448,8 @@ export class SessionRuntimeReconfigurer {
           session.metadata = previous.metadata;
           session.code = previous.code;
           session.draftPresentation = previous.draftPresentation;
-          session.draftBaseFilterModel = previous.draftBaseFilterModel;
+          session.draftBaseView = previous.draftBaseView;
           session.viewChangeEpoch = previous.viewChangeEpoch;
-          session.draftBaseViewChangeEpoch = previous.draftBaseViewChangeEpoch;
           session.viewState = previous.viewState;
           session.recoveryRequired = previousRecoveryRequired;
           session.activeViewContextId = previousActiveViewContextId;
@@ -496,7 +506,7 @@ export class SessionRuntimeReconfigurer {
     const persisted = persistedSessionState(
       session.metadata,
       gridState(session.viewState),
-      session.draftBaseFilterModel
+      session.draftBaseView?.filterModel
     );
     const previous = replacementSnapshot(session);
     const candidateSessionId = randomUUID();
@@ -727,9 +737,8 @@ function runtimeState(session: RuntimeReconfigurationSession): RuntimeSessionSta
     metadata: session.metadata,
     code: session.code,
     draftPresentation: session.draftPresentation,
-    draftBaseFilterModel: session.draftBaseFilterModel,
+    draftBaseView: session.draftBaseView,
     viewChangeEpoch: session.viewChangeEpoch,
-    draftBaseViewChangeEpoch: session.draftBaseViewChangeEpoch,
     viewState: session.viewState
   };
 }
@@ -787,9 +796,8 @@ function restoreReplacement(session: RuntimeReconfigurationSession, snapshot: Ru
   session.metadata = snapshot.runtime.metadata;
   session.code = snapshot.runtime.code;
   session.draftPresentation = snapshot.runtime.draftPresentation;
-  session.draftBaseFilterModel = snapshot.runtime.draftBaseFilterModel;
+  session.draftBaseView = snapshot.runtime.draftBaseView;
   session.viewChangeEpoch = snapshot.runtime.viewChangeEpoch;
-  session.draftBaseViewChangeEpoch = snapshot.runtime.draftBaseViewChangeEpoch;
   session.viewState = snapshot.runtime.viewState;
   session.recoveryRequired = snapshot.recoveryRequired;
   session.activeViewContextId = snapshot.activeViewContextId;
@@ -826,7 +834,7 @@ function runtimeCandidate(
     metadata,
     code: "",
     viewChangeEpoch: session.viewChangeEpoch ?? 0,
-    draftBaseViewChangeEpoch: session.draftBaseViewChangeEpoch,
+    draftBaseView: session.draftBaseView,
     viewState: initialViewingState(metadata)
   };
 }
@@ -845,9 +853,8 @@ function publishCandidate(
   session.metadata = candidate.metadata;
   session.code = candidate.code;
   session.draftPresentation = candidate.draftPresentation;
-  session.draftBaseFilterModel = candidate.draftBaseFilterModel;
+  session.draftBaseView = candidate.draftBaseView;
   session.viewChangeEpoch = candidate.viewChangeEpoch;
-  session.draftBaseViewChangeEpoch = candidate.draftBaseViewChangeEpoch;
   session.viewState = candidate.viewState;
   session.recoveryRequired = false;
   session.activeViewContextId = undefined;
