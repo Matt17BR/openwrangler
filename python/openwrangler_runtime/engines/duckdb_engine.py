@@ -4015,7 +4015,7 @@ def _ow_assign(df, target, expression):
         if target in _ow_columns(df)
         else "*, " + expression + " AS " + _ow_ident(target)
     )
-    return _ow_query(df, "SELECT " + projection + " FROM ow")
+    return df.set_alias("ow").project(projection)
 
 
 def _ow_select(df, columns):

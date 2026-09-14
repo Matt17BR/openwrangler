@@ -481,9 +481,13 @@ def test_duckdb_integer_formula_guards_the_evaluated_volatile_pair(generated: bo
     engine = DuckDBEngine()
     with duckdb.connect() as connection:
         connection.execute("CREATE SEQUENCE formula_pair START 2")
+        connection.execute("CREATE TEMP VIEW ow AS SELECT 99 AS sentinel")
+        catalog_query = "SELECT view_name, view_oid FROM duckdb_views() WHERE NOT internal ORDER BY view_name"
+        catalog_before = connection.sql(catalog_query).fetchall()
         frame = connection.sql(
             f"SELECT ('{2**100}'::HUGEINT + (nextval('formula_pair') % 2)::HUGEINT) AS lhs, '{2**100}'::UHUGEINT AS rhs"
-        )
+        ).set_alias('caller "formula"')
+        source_before = (frame.alias, frame.sql_query(), frame.columns, frame.types)
         operation = bound_step(
             "formula",
             leftColumn=bound_ref("c:source:0", "lhs", 0),
@@ -509,6 +513,9 @@ def test_duckdb_integer_formula_guards_the_evaluated_volatile_pair(generated: bo
                 else:
                     engine._terminal_rows(result, "SELECT * FROM ow")
             assert connection.sql("SELECT currval('formula_pair')").fetchone() == (3,)
+            assert (frame.alias, frame.sql_query(), frame.columns, frame.types) == source_before
+            assert connection.sql("SELECT * FROM ow").fetchall() == [(99,)]
+            assert connection.sql(catalog_query).fetchall() == catalog_before
         finally:
             engine.close()
 
@@ -1170,7 +1177,9 @@ def test_duckdb_generated_code_emits_only_reachable_helpers() -> None:
         plain_code = engine.compile_plan(plain_plan)
         assert "def _ow_text(" in plain_code
         assert "def _ow_assign(" in plain_code
-        assert "def _ow_query(" in plain_code
+        assert "def _ow_query(" not in plain_code
+        assert "from uuid import uuid4" not in plain_code
+        assert "from contextlib import suppress" not in plain_code
         assert "def _ow_fill_missing(" not in plain_code
         assert "def _ow_group_by(" not in plain_code
         assert "def _ow_pivot_wider(" not in plain_code
@@ -1180,6 +1189,7 @@ def test_duckdb_generated_code_emits_only_reachable_helpers() -> None:
         )
         for plan in categorical_plans:
             code = engine.compile_plan(plan)
+            assert "def _ow_query(" in code
             assert "def _ow_pivot_wider(" not in code
             assert_same_relation(
                 engine.apply_transform(source_relation(), plan[0]),
