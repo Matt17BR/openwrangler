@@ -601,7 +601,8 @@ selection and comparisons are unavailable; profiles and choices can still refuse
 endpoint. Native source values and generated transformations retain their existing behavior.
 
 Convert Type to Date preserves the calendar day of nanosecond timestamps in live and generated code, including
-values immediately before a pre-1970 midnight.
+values immediately before a pre-1970 midnight. Convert Type to Datetime preserves existing timestamp precision and
+TIMESTAMPTZ instant semantics. Use native Custom Code when an explicit precision or timezone conversion is intended.
 
 Format Datetime retains native nanosecond fractions and wide dates in live and generated DuckDB code. Formats use
 DuckDB syntax, including `%n` for nine fractional digits. Zoned timestamps use the execution connection's timezone.

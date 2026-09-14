@@ -572,6 +572,126 @@ def test_duckdb_cast_targets_match_live_and_generated_code(
             duckdb.execute("DROP TYPE IF EXISTS ow_cast_source")
 
 
+@pytest.mark.parametrize(
+    "native_type", ["TIMESTAMP_NS", "TIMESTAMP_S", "TIMESTAMP_MS", "TIMESTAMP", "TIMESTAMP WITH TIME ZONE"]
+)
+@pytest.mark.parametrize("generated", [False, True], ids=["live", "generated"])
+def test_duckdb_datetime_cast_preserves_native_storage(native_type: str, generated: bool) -> None:
+    ticks = [-1001, -1, 0, 1, 1001, 1704161045123456789]
+    values = ", ".join(f"(system.main.make_timestamp_ns({tick}), {index})" for index, tick in enumerate(ticks))
+    values += ", ('-infinity'::TIMESTAMP_NS, 6), ('infinity'::TIMESTAMP_NS, 7), (NULL::TIMESTAMP_NS, 8)"
+    identifier = '"when\'s value"'
+    projection = (
+        f"system.main.epoch_ns({identifier}), {identifier} = '-infinity'::{native_type}, "
+        f"{identifier} = 'infinity'::{native_type}, kept"
+    )
+    engine = DuckDBEngine()
+    with duckdb_runtime._connect() as connection:
+        try:
+            source_value = "CAST(value AS TIMESTAMP)" if native_type in {"TIMESTAMP_S", "TIMESTAMP_MS"} else "value"
+            original = connection.sql(
+                f"SELECT CAST({source_value} AS {native_type}) AS {identifier}, kept "
+                f"FROM (VALUES {values}) source(value, kept)"
+            )
+            assert str(original.types[0]) == native_type
+            if native_type == "TIMESTAMP_NS":
+                assert original.project(f"system.main.epoch_ns({identifier})").fetchall()[:6] == [
+                    (tick,) for tick in ticks
+                ]
+            for source in (original, original.filter(f"{identifier} IS NULL"), original.limit(0)):
+                before = source.project(projection).fetchall()
+                identity = (source.sql_query(), source.columns, source.types)
+                frame = engine.normalize_notebook_relation(source)
+                schema = engine.schema(frame)
+                lineage = source_lineage(schema)
+                operation = bind_step(step("castColumn", column=lineage[0], dtype="datetime"), schema, lineage)
+                result = (
+                    execute_generated(engine, source, [operation])
+                    if generated
+                    else engine.apply_transform(frame, operation)
+                )
+                if not generated:
+                    engine.validate_transformation_result(result, operation_kind="castColumn")
+                actual = (
+                    result.project(projection).fetchall()
+                    if generated
+                    else engine._terminal_rows(result, f"SELECT {projection} FROM ow")
+                )
+                assert actual == before
+                assert result.columns == source.columns
+                assert [str(dtype) for dtype in result.types] == [native_type, "INTEGER"]
+                assert derive_lineage(lineage, engine.schema(result), operation) == lineage
+                assert source.project(projection).fetchall() == before
+                assert (source.sql_query(), source.columns, source.types) == identity
+        finally:
+            engine.close()
+
+
+@pytest.mark.parametrize("zone", ["UTC", "America/New_York"])
+def test_duckdb_datetime_cast_reuses_current_types_and_connection_timezone(zone: str) -> None:
+    engine = DuckDBEngine()
+    column = bound_ref("c:source:0", "value", 0)
+    operation = bound_step("castColumn", column=column, dtype="datetime")
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([operation]), namespace)
+    projection = "system.main.epoch_us(value), CAST(value AS VARCHAR), kept"
+    cases = [
+        ("TIMESTAMPTZ '2024-01-01 00:30:00+00'", "value", "TIMESTAMP WITH TIME ZONE"),
+        ("system.main.make_timestamp_ns(-1)", "value", "TIMESTAMP_NS"),
+        ("DATE '2500-01-01'", "TRY_CAST(value AS TIMESTAMP)", "TIMESTAMP"),
+        ("'2024-01-02T03:04:05+02:00'::VARCHAR", "TRY_CAST(value AS TIMESTAMP)", "TIMESTAMP"),
+        ("'invalid'::VARCHAR", "TRY_CAST(value AS TIMESTAMP)", "TIMESTAMP"),
+        ("42::INTEGER", "TRY_CAST(value AS TIMESTAMP)", "TIMESTAMP"),
+    ]
+    with duckdb_runtime._connect() as connection:
+        try:
+            connection.execute(f"SET TimeZone = '{zone}'")
+            for expression, expected_expression, expected_type in cases:
+                source = connection.sql(f"SELECT {expression} AS value, 7 AS kept")
+                before = (
+                    source.sql_query(),
+                    source.columns,
+                    source.types,
+                    source.project("CAST(value AS VARCHAR), kept").fetchall(),
+                )
+                expected = source.project(f"{expected_expression} AS value, kept").project(projection).fetchall()
+                if expected_type == "TIMESTAMP WITH TIME ZONE":
+                    assert expected[0][0] == 1704069000000000
+                    assert expected[0][1].startswith("2024-01-01 00:30:00" if zone == "UTC" else "2023-12-31 19:30:00")
+                live = engine.apply_transform(engine.normalize_notebook_relation(source), operation)
+                generated = namespace["clean_data"](source)
+                assert engine._terminal_rows(live, f"SELECT {projection} FROM ow") == expected
+                assert generated.project(projection).fetchall() == expected
+                for result in (live, generated):
+                    assert result.columns == ["value", "kept"]
+                    assert [str(dtype) for dtype in result.types] == [expected_type, "INTEGER"]
+                assert (
+                    source.sql_query(),
+                    source.columns,
+                    source.types,
+                    source.project("CAST(value AS VARCHAR), kept").fetchall(),
+                ) == before
+
+            source = connection.sql("SELECT system.main.make_timestamp_ns(-1) AS value, 7 AS kept")
+            to_string = bound_step("castColumn", column=column, dtype="string")
+            expected = (
+                source.project("TRY_CAST(CAST(value AS VARCHAR) AS TIMESTAMP) AS value, kept")
+                .project(projection)
+                .fetchall()
+            )
+            live = engine.apply_transform(
+                engine.apply_transform(engine.normalize_notebook_relation(source), to_string), operation
+            )
+            generated = execute_generated(engine, source, [to_string, operation])
+            assert engine._terminal_rows(live, f"SELECT {projection} FROM ow") == expected
+            assert generated.project(projection).fetchall() == expected
+            assert [str(dtype) for dtype in generated.types] == ["TIMESTAMP", "INTEGER"]
+            assert source.project("system.main.epoch_ns(value), kept").fetchall() == [(-1, 7)]
+            assert connection.sql("SELECT current_setting('TimeZone')").fetchone() == (zone,)
+        finally:
+            engine.close()
+
+
 @pytest.mark.parametrize("layout", ["ordinary", "collision", "case_suffix", "rebound_extra", "prior_rename"])
 def test_duckdb_generated_sort_preserves_current_columns_and_stable_ties(layout: str) -> None:
     engine = DuckDBEngine()
