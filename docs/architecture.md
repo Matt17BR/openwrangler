@@ -1096,6 +1096,9 @@ catalog work without evaluating source rows. A failed ownership lookup prevents 
 error; without an earlier error, the cleanup failure propagates. The identity check and removal are separate native
 operations and do not promise atomicity against arbitrary concurrent caller DDL.
 
+Convert Type to Datetime preserves an already typed timestamp's storage type, precision and instant semantics.
+TIMESTAMPTZ retains its instant, not an original named timezone. Other inputs keep the native TIMESTAMP conversion.
+The shared temporal cast expression reads current-step metadata and retains normal assignment and result validation.
 Convert Type to Date floors native TIMESTAMP_NS values to their calendar day without first narrowing to microseconds.
 Negative nanosecond values immediately before midnight therefore retain the preceding day. Live and generated code
 select this expression from the current input type. Nulls, infinities and other source types keep their native Date cast.

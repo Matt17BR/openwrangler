@@ -12,6 +12,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 ### Fixed
 
 - Converting DuckDB nanosecond timestamps before 1970 to Date preserves their calendar day.
+- DuckDB Convert Type to Datetime preserves existing timestamp precision and timezone awareness.
 - Polars Convert Type preserves precision and timezone for existing Datetime columns. Converting them to Date uses the local calendar day.
 - Polars datetime conversion accepts date-only and space-separated text, turns invalid suffixes into null and refuses recognized timezone offsets instead of silently dropping them.
 - Generated Python Filter Rows rejects changed input types instead of silently running a different query. DuckDB also refuses missing filter and sort columns.
