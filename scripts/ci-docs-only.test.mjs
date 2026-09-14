@@ -19,7 +19,8 @@ const releasedJupyter = load(
 );
 
 function git(cwd, ...args) {
-  return execFileSync("git", ["-c", "commit.gpgsign=false", ...args], {
+  // Detached maintenance must not keep writing into a fixture during cleanup.
+  return execFileSync("git", ["-c", "commit.gpgsign=false", "-c", "maintenance.auto=false", ...args], {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],

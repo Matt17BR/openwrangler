@@ -268,7 +268,7 @@ test("preview candidate verifier binds exact HEAD without requiring a tag", asyn
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-preview-candidate-head-")));
   context.after(() => rmSync(root, { force: true, recursive: true }));
   const git = (...arguments_) =>
-    execFileSync("git", arguments_, {
+    execFileSync("git", ["-c", "maintenance.auto=false", ...arguments_], {
       cwd: root,
       encoding: "utf8",
       maxBuffer: 1024 * 1024,
@@ -323,7 +323,7 @@ test("preview publication rejects a provenance replacement before creating a Git
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-preview-publisher-head-")));
   context.after(() => rmSync(root, { force: true, recursive: true }));
   const git = (...arguments_) =>
-    execFileSync("git", arguments_, {
+    execFileSync("git", ["-c", "maintenance.auto=false", ...arguments_], {
       cwd: root,
       encoding: "utf8",
       maxBuffer: 1024 * 1024,
@@ -390,7 +390,7 @@ test("historical verification keeps current automation HEAD separate from the im
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-registry-history-")));
   context.after(() => rmSync(root, { force: true, recursive: true }));
   const git = (...arguments_) =>
-    execFileSync("git", arguments_, {
+    execFileSync("git", ["-c", "maintenance.auto=false", ...arguments_], {
       cwd: root,
       encoding: "utf8",
       maxBuffer: 1024 * 1024,
@@ -456,7 +456,7 @@ test("Open Wrangler 2 release sources cannot omit the R frame contract", async (
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-registry-r-required-")));
   context.after(() => rmSync(root, { force: true, recursive: true }));
   const git = (...arguments_) =>
-    execFileSync("git", arguments_, {
+    execFileSync("git", ["-c", "maintenance.auto=false", ...arguments_], {
       cwd: root,
       encoding: "utf8",
       maxBuffer: 1024 * 1024,
@@ -492,7 +492,7 @@ test("historical 1.99 releases may contain R without the later vendored js-yaml 
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-registry-historical-r-no-vendor-")));
   context.after(() => rmSync(root, { force: true, recursive: true }));
   const git = (...arguments_) =>
-    execFileSync("git", arguments_, {
+    execFileSync("git", ["-c", "maintenance.auto=false", ...arguments_], {
       cwd: root,
       encoding: "utf8",
       maxBuffer: 1024 * 1024,
@@ -529,7 +529,7 @@ async function assertVendoredJsYamlMarkerRequired(context, version) {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-registry-vendor-required-")));
   context.after(() => rmSync(root, { force: true, recursive: true }));
   const git = (...arguments_) =>
-    execFileSync("git", arguments_, {
+    execFileSync("git", ["-c", "maintenance.auto=false", ...arguments_], {
       cwd: root,
       encoding: "utf8",
       maxBuffer: 1024 * 1024,
@@ -583,7 +583,7 @@ test("historical registry intake rejects a non-file vendored js-yaml marker", as
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-registry-invalid-vendor-marker-")));
   context.after(() => rmSync(root, { force: true, recursive: true }));
   const git = (...arguments_) =>
-    execFileSync("git", arguments_, {
+    execFileSync("git", ["-c", "maintenance.auto=false", ...arguments_], {
       cwd: root,
       encoding: "utf8",
       maxBuffer: 1024 * 1024,

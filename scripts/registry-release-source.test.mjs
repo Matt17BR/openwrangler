@@ -17,7 +17,11 @@ function manifest({ preview = false, version = "1.0.1" } = {}) {
 }
 
 function git(root, arguments_) {
-  return execFileSync("git", arguments_, { cwd: root, encoding: "utf8", windowsHide: true }).trim();
+  return execFileSync("git", ["-c", "maintenance.auto=false", ...arguments_], {
+    cwd: root,
+    encoding: "utf8",
+    windowsHide: true
+  }).trim();
 }
 
 function repository(context, packageJson = manifest()) {
