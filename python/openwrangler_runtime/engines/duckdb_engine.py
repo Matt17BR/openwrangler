@@ -565,16 +565,19 @@ class DuckDBEngine(DataFrameEngine):
         # row identity, while this literal preserves direct zero-column paging.
         select_list = _identifier_list(terminal_columns) if terminal_columns else "1 AS __ow_page_placeholder"
         query = f"SELECT {select_list} FROM ow LIMIT {int(limit)} OFFSET {int(offset)}"
-        projections = {
-            column: _duckdb_temporal_output(_quote_ident(column), types[column]) for column in selected_columns
+        projections = {column: _duckdb_query_output(_quote_ident(column), types[column]) for column in selected_columns}
+        cardinality_positions = {
+            column: len(terminal_columns) + index
+            for index, column in enumerate(column for column in selected_columns if projections[column][1])
         }
-        if any(projections.values()):
+        if any(output for output, _cardinality in projections.values()) or cardinality_positions:
             # Python fetch narrows timestamps, including nested values and map keys.
-            # Format only the selected page; source values and ordering stay native.
-            formatted = [
-                f"{projections[column]} AS {_quote_ident(column)}" if projections.get(column) else _quote_ident(column)
-                for column in terminal_columns
-            ]
+            # Prepare only the selected page; source values and ordering stay native.
+            formatted = []
+            for column in terminal_columns:
+                output = projections.get(column, (None, False))[0]
+                formatted.append(f"{output} AS {_quote_ident(column)}" if output else _quote_ident(column))
+            formatted.extend(f"system.main.cardinality({_quote_ident(column)})" for column in cardinality_positions)
             query = f"SELECT {', '.join(formatted)} FROM ({query}) AS ow_page"
         with self._terminal_connection(frame) as (connection, source_sql):
             if total_rows is None:
@@ -593,7 +596,11 @@ class DuckDBEngine(DataFrameEngine):
                     "id": f"r:{row_id}:{identity}" if row_id is not None else f"r:{row_number}",
                     "rowNumber": row_number,
                     "values": [
-                        _duckdb_query_cell(record[value_offset + index], types[column])
+                        _duckdb_query_cell(
+                            record[value_offset + index],
+                            types[column],
+                            record[cardinality_positions[column]] if column in cardinality_positions else None,
+                        )
                         for index, column in enumerate(selected_columns)
                     ],
                 }
@@ -697,10 +704,10 @@ class DuckDBEngine(DataFrameEngine):
                 null_count = int(metrics["null_count"] or 0)
                 nan_count = int(metrics["nan_count"] or 0)
                 distinct_count = int(metrics["distinct_count"] or 0)
-                output = _duckdb_temporal_output(identifier, raw_type)
+                output, map_cardinality = _duckdb_query_output(identifier, raw_type)
                 count_name = (
                     _quote_ident(_unique_internal(self._columns(frame), "__ow_value_count"))
-                    if output is not None
+                    if output is not None or map_cardinality
                     else "value_count"
                 )
                 order = identifier if raw_type == "TIMESTAMP_NS" else f"CAST({identifier} AS VARCHAR)"
@@ -709,12 +716,14 @@ class DuckDBEngine(DataFrameEngine):
                     f"WHERE {valid} GROUP BY {identifier} "
                     f"ORDER BY {count_name} DESC, {order} ASC LIMIT 10"
                 )
-                if output is not None:
-                    top_query = f"SELECT {output}, {count_name} FROM ({top_query}) AS ow_values"
+                if output is not None or map_cardinality:
+                    extra = f", system.main.cardinality({identifier})" if map_cardinality else ""
+                    top_query = f"SELECT {output or identifier}, {count_name}{extra} FROM ({top_query}) AS ow_values"
                 top_rows = _execute_rows(connection, source_sql, top_query)
                 top_values = []
-                for value, count in top_rows:
-                    cell = _duckdb_query_cell(value, raw_type)
+                for row in top_rows:
+                    value, count = row[:2]
+                    cell = _duckdb_query_cell(value, raw_type, row[2] if map_cardinality else None)
                     item = {"value": cell["display"], "count": int(count)}
                     if raw_type == "TIMESTAMP_NS":
                         item["selectionValue"] = typed_cell_selection_value(cell, semantic_type)
@@ -923,10 +932,10 @@ class DuckDBEngine(DataFrameEngine):
                 f"contains(translate({text}, {_sql_literal(_ASCII_UPPER)}, "
                 f"{_sql_literal(_ASCII_LOWER)}), {_sql_literal(str(search).translate(_ASCII_TO_LOWER))})"
             )
-        output = _duckdb_temporal_output(identifier, raw_type)
+        output, map_cardinality = _duckdb_query_output(identifier, raw_type)
         count_name = (
             _quote_ident(_unique_internal(self._columns(frame), "__ow_value_count"))
-            if output is not None
+            if output is not None or map_cardinality
             else "value_count"
         )
         order = identifier if raw_type == "TIMESTAMP_NS" else f"CAST({identifier} AS VARCHAR)"
@@ -935,12 +944,14 @@ class DuckDBEngine(DataFrameEngine):
             f"GROUP BY {identifier} ORDER BY {count_name} DESC, {order} ASC "
             f"LIMIT {int(limit) + 1}"
         )
-        if output is not None:
-            query = f"SELECT {output}, {count_name} FROM ({query}) AS ow_values"
+        if output is not None or map_cardinality:
+            extra = f", system.main.cardinality({identifier})" if map_cardinality else ""
+            query = f"SELECT {output or identifier}, {count_name}{extra} FROM ({query}) AS ow_values"
         rows = self._terminal_rows(frame, query)
         values = []
-        for value, count in rows[:limit]:
-            cell = _duckdb_query_cell(value, raw_type)
+        for row in rows[:limit]:
+            value, count = row[:2]
+            cell = _duckdb_query_cell(value, raw_type, row[2] if map_cardinality else None)
             item: dict[str, Any] = {"value": cell["display"], "count": int(count)}
             selection = typed_cell_selection_value(cell, column_type)
             item["selectionValue"] = selection
@@ -2966,7 +2977,27 @@ def _duckdb_temporal_output(expression: str, dtype: Any, depth: int = 0) -> str 
     return f"CASE WHEN {expression} IS NULL THEN NULL ELSE {result} END"
 
 
-def _duckdb_query_cell(value: Any, raw_type: str) -> dict[str, Any]:
+def _duckdb_query_output(expression: str, raw_type: str) -> tuple[str | None, bool]:
+    output = _duckdb_temporal_output(expression, raw_type)
+    if not raw_type.startswith("MAP(UNION("):
+        return output, False
+    from duckdb import sqltype
+
+    def compound_key(dtype: Any) -> bool:
+        if dtype.id == "union":
+            return any(compound_key(child) for _name, child in dtype.children)
+        return dtype.id in {"list", "array", "map", "struct", "variant"}
+
+    # DuckDB uses key/value lists if any declared Union member is compound,
+    # even when that member is inactive. Scalar members instead become dict keys.
+    if compound_key(sqltype(raw_type).children[0][1]):
+        return output, False
+    return output, True
+
+
+def _duckdb_query_cell(value: Any, raw_type: str, map_cardinality: int | None = None) -> dict[str, Any]:
+    if map_cardinality is not None and len(value) != map_cardinality:
+        raise EngineError("DuckDB Map entries cannot remain distinct when converted for display.")
     if raw_type != "TIMESTAMP_NS" or value is None:
         return normalize_cell(value)
     return {"kind": "datetime", "raw": value, "display": value, "isNull": False, "isNaN": False}

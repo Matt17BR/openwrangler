@@ -1023,8 +1023,14 @@ the view. Source timestamps retain their native precision.
 List, Array, Struct and Map output also projects TIMESTAMP_NS leaves before Python boxing. Native type metadata
 directs this projection, including for file sessions. It preserves distinct temporal Map keys and their associated
 values. Formatting follows the selected page slice or grouped, limited profile/choice result; original types, grouping
-and source data are unchanged. Work within a returned container grows with its children. Union subtrees keep their
-existing output behavior, which can lose temporal precision or merge Map entries. Complex-value selection and comparisons remain unavailable.
+and source data are unchanged. Work within a returned container grows with its children.
+
+Top-level Maps with scalar Union keys compare their native cardinality with the fetched dictionary size before
+publishing a page, profile or choice. This refuses entry loss when Python merges distinct native keys. A separate
+scalar projection reads cardinality after the existing slice or grouped limit; the Map keeps its existing carrier.
+Declared compound Union members use native key/value lists and do not need this dictionary check, even when inactive.
+Maps nested inside other containers remain outside this check. Union values can still lose temporal precision or
+selected-member distinctions during fetch. Complex-value selection and comparisons remain unavailable.
 The existing profile/choice tie-order cast can still refuse timestamps near the lower nanosecond endpoint.
 
 SQL byte literals use native hexadecimal decoding in live and generated code. Text literals containing NUL

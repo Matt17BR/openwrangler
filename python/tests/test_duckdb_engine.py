@@ -1271,8 +1271,8 @@ def test_duckdb_rejects_case_fold_ambiguous_source_columns() -> None:
         engine.validate_column_addressability(ambiguous)
 
 
-@pytest.mark.parametrize("nested", [False, True])
-def test_duckdb_page_uses_an_explicit_terminal_projection(monkeypatch: pytest.MonkeyPatch, nested: bool) -> None:
+@pytest.mark.parametrize("container", ["scalar", "list", "union-map"])
+def test_duckdb_page_uses_an_explicit_terminal_projection(monkeypatch: pytest.MonkeyPatch, container: str) -> None:
     engine = DuckDBEngine()
     frame = engine.ensure_row_ids(source_relation(), "projected-page")
     queries: list[str] = []
@@ -1322,10 +1322,14 @@ def test_duckdb_page_uses_an_explicit_terminal_projection(monkeypatch: pytest.Mo
     )
     try:
         value = "make_timestamp_ns(1704161045123000000 + i * 1001)"
-        if nested:
+        if container == "list":
             value = f"[{value}]"
+        elif container == "union-map":
+            value = f"map([union_value(text := 'key')::UNION(text VARCHAR)], [{value}])"
         source = engine._relation_from_sql(
-            f"SELECT i, {value} AS __ow_value_count, make_timestamp_ns(-1) AS unselected FROM range(100) source(i)"
+            f"SELECT i, {value} AS __ow_value_count, make_timestamp_ns(-1) AS unselected, "
+            "map([union_value(text := 'first')::UNION(text VARCHAR), "
+            "union_value(text := 'second')::UNION(text VARCHAR)], [1,2]) AS other_map FROM range(100) source(i)"
         )
         source = engine.ensure_row_ids(source, "bounded-ns")
         bounded = engine.page(source, 20, 7, total_rows=100, column_projection=[(1, "stable:ns")])
@@ -1345,8 +1349,15 @@ def test_duckdb_page_uses_an_explicit_terminal_projection(monkeypatch: pytest.Mo
         summary = engine.summaries(source, [(1, "stable:ns")])[0]
         assert summary["totalCount"] == summary["distinctCount"] == 100
         assert len(summary["topValues"]) == 10
-        assert len(formatted) == (10 if nested else 12)  # Scalar extrema add two reduced values.
+        assert len(formatted) == (12 if container == "scalar" else 10)  # Scalar extrema add two reduced values.
         assert engine._terminal_scalar(source, "SELECT sum(i) FROM ow") == 4950
+        if container == "union-map":
+            reordered = engine.page(source, 20, 7, total_rows=100, column_projection=[(3, "other"), (1, "map")])
+            assert reordered["columnIds"] == ["other", "map"]
+            assert [row["id"] for row in reordered["rows"]] == [row["id"] for row in bounded["rows"]]
+            for row, original in zip(reordered["rows"], bounded["rows"], strict=True):
+                assert row["values"][0]["raw"] == {"first": 1, "second": 2}
+                assert row["values"][1] == original["values"][0]
     finally:
         engine.close()
 
@@ -3651,6 +3662,102 @@ def test_duckdb_nested_nanosecond_projection_leaves_union_members_unchanged() ->
                     "exact": "1970-01-01T00:00:00.000000001",
                     "legacy": normalize_cell(legacy)["raw"],
                 }
+            assert source.fetchall() == original
+        finally:
+            engine.close()
+
+
+@pytest.mark.parametrize(
+    ("key_type", "members"),
+    [
+        (
+            "UNION(t TIMESTAMP_NS, text VARCHAR)",
+            ["t := make_timestamp_ns(-1)", "t := make_timestamp_ns(0)", "t := make_timestamp_ns(1)"],
+        ),
+        ("UNION(t TIMESTAMP_NS, text VARCHAR)", ["t := NULL::TIMESTAMP_NS", "text := NULL::VARCHAR"]),
+        ("UNION(number INTEGER, flag BOOLEAN)", ["number := 1", "flag := true"]),
+    ],
+    ids=["fractional-timestamps", "null-members", "integer-and-boolean"],
+)
+def test_duckdb_union_map_output_refuses_lost_entries(key_type: str, members: list[str]) -> None:
+    from openwrangler_runtime.session_result import read_live_page
+
+    engine = DuckDBEngine()
+    with duckdb_runtime._connect() as connection:
+        connection.execute("CREATE MACRO cardinality(value) AS 0")
+        try:
+            for ordered in (members, list(reversed(members))):
+                keys = ", ".join(f"union_value({member})::{key_type}" for member in ordered)
+                source = connection.sql(f"SELECT 0 AS id, map([{keys}], {[7] * len(members)}) AS value")
+                native = (
+                    "system.main.cardinality(value), list_transform(map_entries(value), item -> "
+                    "struct_pack(tag := union_tag(item.key), text := CAST(item.key AS VARCHAR), value := item.value))"
+                )
+                original = source.project(native).fetchall()
+                assert original[0][0] == len(members) > len(source.fetchone()[1])
+                frame = engine.normalize_notebook_relation(source)
+                schema, query = engine.schema(frame), frame.sql_query()
+                with pytest.raises(EngineError, match="Map.*entries.*display"):
+                    read_live_page(engine, frame, 0, 1, total_rows=1, column_projection=[(1, "map")])
+                with pytest.raises(EngineError, match="Map.*entries.*display"):
+                    engine.summaries(frame, [(1, "map")])
+                with pytest.raises(EngineError, match="Map.*entries.*display"):
+                    engine.column_values(frame, "value")
+                assert engine.page(frame, 1, 1)["rows"] == []
+                assert engine.page(frame, 0, 1, column_projection=[(0, "id")])["rows"][0]["values"][0]["raw"] == 0
+                operation = bound_step("cloneColumn", column=bound_ref("c:source:1", "value", 1), newName="copy")
+                live = engine.apply_transform(frame, operation)
+                generated = execute_generated(engine, source, [operation])
+                for result in (live, generated):
+                    assert engine._terminal_rows(
+                        result, f"SELECT {native}, {native.replace('(value)', '(copy)')} FROM ow"
+                    ) == [(*original[0], *original[0])]
+                assert source.project(native).fetchall() == original
+                assert engine.schema(frame) == schema and frame.sql_query() == query
+        finally:
+            engine.close()
+
+
+@pytest.mark.parametrize(
+    ("key_type", "members"),
+    [
+        (
+            "UNION(t TIMESTAMP_NS, text VARCHAR)",
+            ["t := make_timestamp_ns(0)", "t := make_timestamp_ns(1000)", "text := 'ordinary'"],
+        ),
+        ("UNION(text VARCHAR)", ["text := 'key'", "text := 'value'"]),
+        ("UNION(items INTEGER[], text VARCHAR)", ["items := [1]", "text := 'ordinary'"]),
+        ("UNION(items INTEGER[], text VARCHAR)", ["text := 'key'", "text := 'value'"]),
+        ("UNION(items INTEGER[], text VARCHAR)", ["items := NULL::INTEGER[]", "text := 'ordinary'"]),
+        (
+            "UNION(nested UNION(items INTEGER[], text VARCHAR), text VARCHAR)",
+            ["nested := union_value(text := 'inside')", "text := 'outside'"],
+        ),
+    ],
+    ids=["aligned", "literal-carrier-names", "compound", "inactive-compound", "null-compound", "nested-union"],
+)
+def test_duckdb_union_map_output_preserves_native_carriers(key_type: str, members: list[str]) -> None:
+    from openwrangler_runtime.engines.base import normalize_cell
+
+    engine = DuckDBEngine()
+    with duckdb_runtime._connect() as connection:
+        keys = ", ".join(f"union_value({member})::{key_type}" for member in members)
+        source = connection.sql(
+            f"SELECT map([{keys}], {[[i] for i in range(len(members))]}) AS value_count "
+            f"UNION ALL SELECT map([]::{key_type}[], []::INTEGER[][]) UNION ALL SELECT NULL"
+        )
+        original = source.fetchall()
+        expected = [normalize_cell(row[0]) for row in original]
+        try:
+            frame = engine.normalize_notebook_relation(source)
+            assert [row["values"][0] for row in engine.page(frame, 0, 3)["rows"]] == expected
+            counts = {cell["display"]: 1 for cell in expected if not cell["isNull"]}
+            summary = engine.summaries(frame)[0]
+            assert (summary["totalCount"], summary["nullCount"], summary["distinctCount"]) == (3, 1, 2)
+            assert {item["value"]: item["count"] for item in summary["topValues"]} == counts
+            choices, more = engine.column_values(frame, "value_count")
+            assert not more and all(item["selectionValue"] is None for item in choices)
+            assert {item["value"]: item["count"] for item in choices} == counts
             assert source.fetchall() == original
         finally:
             engine.close()
