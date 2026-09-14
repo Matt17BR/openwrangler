@@ -1778,6 +1778,123 @@ def test_duckdb_delimited_hash_records_survive_pages_and_cleaning(
     assert (after.st_ino, after.st_size, after.st_mtime_ns) == (before.st_ino, before.st_size, before.st_mtime_ns)
 
 
+@pytest.mark.parametrize(("suffix", "delimiter"), [(".csv", ","), (".tsv", "\t")])
+@pytest.mark.parametrize("name", ["O'Brien", "O''Brien"], ids=["single-apostrophe", "doubled-apostrophe"])
+def test_duckdb_delimited_apostrophe_headers_refuse_before_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, suffix: str, delimiter: str, name: str
+) -> None:
+    path = tmp_path / f"headers{suffix}"
+    contents = f"{name}{delimiter}value\n1{delimiter}2\n3{delimiter}4\n".encode()
+    path.write_bytes(contents)
+    before = path.stat()
+    native_replay = DuckDBEngine._relation_from_sql
+    replay_count = 0
+
+    def record_replay(engine: DuckDBEngine, sql: str) -> DuckDBSqlPlan:
+        nonlocal replay_count
+        replay_count += 1
+        return native_replay(engine, sql)
+
+    monkeypatch.setattr(DuckDBEngine, "_relation_from_sql", record_replay)
+    manager = SessionManager(EngineRegistry((("duckdb", DuckDBEngine),)))
+    try:
+        with pytest.raises(
+            EngineError, match="DuckDB CSV/TSV imports do not support column names containing apostrophes"
+        ):
+            manager.open_session(
+                {
+                    "kind": "file",
+                    "label": path.name,
+                    "path": str(path),
+                    "importOptions": {"delimiter": delimiter, "hasHeader": True},
+                },
+                backend="duckdb",
+                page_size=2,
+            )
+        assert replay_count == 0
+        assert manager.sessions == {}
+    finally:
+        manager.close_all()
+    after = path.stat()
+    assert path.read_bytes() == contents
+    assert (after.st_ino, after.st_size, after.st_mtime_ns) == (before.st_ino, before.st_size, before.st_mtime_ns)
+
+
+@pytest.mark.parametrize(("suffix", "delimiter"), [(".csv", ","), (".tsv", "\t")])
+@pytest.mark.parametrize("has_header", [True, False], ids=["header", "headerless"])
+def test_duckdb_delimited_apostrophe_paths_and_values_remain_supported(
+    tmp_path: Path, suffix: str, delimiter: str, has_header: bool
+) -> None:
+    path = tmp_path / f"O'Brien{suffix}"
+    header = delimiter.join(["ordinary", "東京", '"double""quote"', "O’Brien"]) + "\n" if has_header else ""
+    contents = (
+        header + f"O'Brien{delimiter}2{delimiter}3{delimiter}4\nplain{delimiter}5{delimiter}6{delimiter}7\n"
+    ).encode("utf-8")
+    path.write_bytes(contents)
+    before = path.stat()
+    names = ["ordinary", "東京", 'double"quote', "O’Brien"] if has_header else [f"column{i}" for i in range(4)]
+    source = {
+        "kind": "file",
+        "label": path.name,
+        "path": str(path),
+        "importOptions": {"delimiter": delimiter, "hasHeader": has_header},
+    }
+    manager = SessionManager(EngineRegistry((("duckdb", DuckDBEngine),)))
+    try:
+        opened = manager.open_session(source, backend="duckdb", page_size=2)
+        assert opened["metadata"]["source"] == source
+        assert opened["metadata"]["shape"] == {"rows": 2, "columns": 4}
+        assert [column["name"] for column in opened["metadata"]["schema"]] == names
+        assert [column["rawType"] for column in opened["metadata"]["schema"]] == [
+            "VARCHAR",
+            "BIGINT",
+            "BIGINT",
+            "BIGINT",
+        ]
+        assert [[cell["raw"] for cell in row["values"]] for row in opened["page"]["rows"]] == [
+            ["O'Brien", 2, 3, 4],
+            ["plain", 5, 6, 7],
+        ]
+    finally:
+        manager.close_all()
+    assert manager.sessions == {}
+    after = path.stat()
+    assert path.read_bytes() == contents
+    assert (after.st_ino, after.st_size, after.st_mtime_ns) == (before.st_ino, before.st_size, before.st_mtime_ns)
+
+
+@pytest.mark.parametrize("suffix", [".jsonl", ".parquet"])
+def test_duckdb_other_file_formats_preserve_apostrophe_names(tmp_path: Path, suffix: str) -> None:
+    path = tmp_path / f"O'Brien{suffix}"
+    names = ["O'Brien", "O''Brien"]
+    if suffix == ".jsonl":
+        path.write_text(
+            "".join(json.dumps(dict(zip(names, row, strict=True))) + "\n" for row in [(1, 2), (3, 4)]),
+            encoding="utf-8",
+        )
+    else:
+        with duckdb_runtime._connect() as connection:
+            relation = connection.sql('SELECT 1::BIGINT AS "O\'Brien", 2::BIGINT AS "O\'\'Brien" UNION ALL SELECT 3, 4')
+            relation.write_parquet(str(path))
+            relation = None
+    contents = path.read_bytes()
+    before = path.stat()
+    source = {"kind": "file", "label": path.name, "path": str(path)}
+    manager = SessionManager(EngineRegistry((("duckdb", DuckDBEngine),)))
+    try:
+        opened = manager.open_session(source, backend="duckdb", page_size=2)
+        assert opened["metadata"]["source"] == source
+        assert opened["metadata"]["shape"] == {"rows": 2, "columns": 2}
+        assert [column["name"] for column in opened["metadata"]["schema"]] == names
+        assert [[cell["raw"] for cell in row["values"]] for row in opened["page"]["rows"]] == [[1, 2], [3, 4]]
+    finally:
+        manager.close_all()
+    assert manager.sessions == {}
+    after = path.stat()
+    assert path.read_bytes() == contents
+    assert (after.st_ino, after.st_size, after.st_mtime_ns) == (before.st_ino, before.st_size, before.st_mtime_ns)
+
+
 @pytest.mark.parametrize(
     ("record_ending", "line_ending"),
     [("\n", None), ("\r", "cr"), ("\r\n", "lf")],
