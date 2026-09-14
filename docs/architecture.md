@@ -841,6 +841,8 @@ temporal storage. Live and generated masks keep floating NaN separate from tempo
 use the same native classifications, independent of the legacy `mode.use_inf_as_na` option. Existing object, extension
 and subclass fallbacks retain their behavior. Header counts reuse each column mask for its total and positional row
 aggregation, without retaining a full-frame Boolean matrix.
+Grouped-key restoration uses the same native primitive for its floating-NaN mask. Its separate float-only policy excludes
+Decimal NaN; live and generated code share that helper while preserving existing nonnative fallbacks.
 
 ### Polars
 
