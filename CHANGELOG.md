@@ -225,7 +225,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
   time-zone map-key changes are refused instead of silently changing values.
 - Native R CSV keeps UTF-8 under the C locale and fractional durations under comma `OutDec`. Duration NaN refuses export
   before writing. **CSV timestamps can still lose precision and omit their zone**; the export choice now states this.
-  R Parquet refuses timestamps that cannot survive exact microsecond storage. See [native R limits](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#native-r-preview).
+  R Parquet refuses timestamps that cannot survive exact microsecond storage. See [native R limits](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#native-r-support).
 - Native R private-file cleanup accepts an unchanged directory after moving a response file into it. Release verification
   retries interrupted downloads within existing bounds, sanitizes transport errors and still rejects invalid packages.
 

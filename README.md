@@ -67,18 +67,20 @@ Opening data, running code, and exporting require Workspace Trust. Open Wrangler
 
 ## Supported dataframes
 
-| Dataframe or source                             | View    | Cleaning and generated code         | Data export                |
-| ----------------------------------------------- | ------- | ----------------------------------- | -------------------------- |
-| Pandas files and live dataframes                | Yes     | Pandas Python                       | CSV / Parquet              |
-| Polars files and live dataframes                | Yes     | Polars Python                       | CSV / Parquet              |
-| DuckDB files (experimental)                     | Yes     | Supported operations, DuckDB Python | CSV / Parquet              |
-| DuckDB notebook relations                       | Yes     | Unavailable                         | Unavailable                |
-| Local PySpark Classic / Connect notebooks       | Bounded | Unavailable                         | Unavailable                |
-| R base data.frame, tibble, data.table (Preview) | Yes     | Supported operations, native R      | CSV / Parquet, with limits |
+| Dataframe or source                       | View    | Cleaning and generated code         | Data export                |
+| ----------------------------------------- | ------- | ----------------------------------- | -------------------------- |
+| Pandas files and live dataframes          | Yes     | Pandas Python                       | CSV / Parquet              |
+| Polars files and live dataframes          | Yes     | Polars Python                       | CSV / Parquet              |
+| DuckDB files (experimental)               | Yes     | Supported operations, DuckDB Python | CSV / Parquet              |
+| DuckDB notebook relations                 | Yes     | Unavailable                         | Unavailable                |
+| Local PySpark Classic / Connect notebooks | Bounded | Unavailable                         | Unavailable                |
+| R base data.frame, tibble, data.table     | Yes     | Supported operations, native R      | CSV / Parquet, with limits |
 
-**R support is Preview** for ordinary frames. See
-[native R support and limits](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#native-r-preview)
-and the [first stable R notebook scope](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#first-stable-r-notebook-scope).
+**R notebook support becomes stable only with qualified 2.5.0 publication** in desktop VS Code on Linux, macOS and Windows.
+This covers the ordinary frames above in IRkernel notebooks. R remains Preview in published 2.4.0.
+Terminal and managed-document support remain Preview; Cursor remains experimental. See
+[native R support and limits](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#native-r-support)
+and the [qualification criteria](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#first-stable-r-notebook-scope).
 
 PySpark uses an existing local batch session. Open Wrangler does not install or configure Spark; streaming dataframes
 and remote or authenticated clusters are unsupported.

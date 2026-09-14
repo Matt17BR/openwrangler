@@ -138,7 +138,7 @@ Transpose, explode, and unnest are not hidden catalog entries.
 Conditional Column adds one Text or Boolean column using an existing typed predicate. All three results are explicit
 and may be null; empty text and false remain values. Pandas, Polars, DuckDB and native R use their existing predicate
 and input limits. See the [conditional result contract](architecture.md#engine-boundaries-and-capabilities) for missing
-inputs and output bounds. This operation does not change R's Preview status.
+inputs and output bounds.
 
 Find and Replace uses the selected engine's native regex syntax. In regex replacements, `$1` inserts the first
 capture group in Polars; Pandas, DuckDB and R use `\1`. With regular expressions off, replacement text is literal.
@@ -468,31 +468,33 @@ and one exact candidate to pass the [qualification flow](releasing.md#release-ca
 Pandas/Polars table, accurate Preview, experimental, Partial, Planned and Out-of-scope labels do not themselves block
 stable publication. Explicit candidate checks, including the R notebook matrix, must still pass.
 
-## Native R preview
+## Native R support
 
-Preview describes the support and release-qualification commitment. Native R already supports paging, typed
-filters, sorts, profiles, cleaning, generated R and data export within the limits below. Published 2.4 did not qualify
-these workflows against its exact candidate package. Future candidates require the three-platform R notebook matrix,
-but that wiring alone does not graduate support. Fresh results and the selected-scope reliability review below remain
-necessary.
+Stable R notebook support begins only with the qualified publication of Open Wrangler 2.5.0. It covers the ordinary
+frame scope below in IRkernel notebooks in desktop VS Code on Linux, macOS and Windows. Published 2.4.0 keeps R
+support Preview: its candidate did not include the three-platform R notebook qualification. The 2.5.0 candidate must
+pass that matrix and the reliability review below before publication.
 
-| Entry path                                          | Current support                                                                    | Generated code and data export                         |
-| --------------------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| IRkernel notebook in desktop VS Code                | Preview on Linux, macOS and Windows; exact notebook, kernel and variable ownership | Copy, save, notebook insertion, CSV and Parquet        |
-| Active terminal managed by the official R extension | Preview on Linux; exact terminal and process ownership                             | Copy, save, CSV and Parquet; no document for insertion |
-| Managed `.R`, `.Rmd` or `.qmd` document             | Preview on Linux and macOS; exact document/version and owned R process             | Copy, save, source-document insertion, CSV and Parquet |
-| IRkernel notebook in Cursor on Linux                | Experimental editor compatibility with narrower coverage                           | Only the capabilities of its documented execution path |
+Native R already supports paging, typed filters, sorts, profiles, cleaning, generated R and data export within the
+limits below. Support labels describe the qualification commitment for each entry path.
+
+| Entry path                                          | Support                                                                                                            | Generated code and data export                         |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------ |
+| IRkernel notebook in desktop VS Code                | Stable from qualified 2.5.0 publication on Linux, macOS and Windows; exact notebook, kernel and variable ownership | Copy, save, notebook insertion, CSV and Parquet        |
+| Active terminal managed by the official R extension | Preview on Linux; exact terminal and process ownership                                                             | Copy, save, CSV and Parquet; no document for insertion |
+| Managed `.R`, `.Rmd` or `.qmd` document             | Preview on Linux and macOS; exact document/version and owned R process                                             | Copy, save, source-document insertion, CSV and Parquet |
+| IRkernel notebook in Cursor on Linux                | Experimental editor compatibility with narrower coverage                                                           | Only the capabilities of its documented execution path |
 
 The [architecture](architecture.md#native-r) defines frame, precision, source and transport guarantees.
 [Testing](testing.md#native-r-editor-dependencies) identifies the native and installed checks for each path.
 
 ### First stable R notebook scope
 
-The first stable R promise will cover ordinary base `data.frame`, tibble and `data.table` values in IRkernel notebooks
+The stable R notebook scope for 2.5.0 covers ordinary base `data.frame`, tibble and `data.table` values in IRkernel notebooks
 in desktop VS Code on Linux, macOS and Windows. It includes viewing, the supported cleaning catalog and history,
 generated R copy/save/insertion, CSV/Parquet export and kernel-restart recovery. The frame and export limitations below
-are part of that promise, including the ordinary default collapse outputs. Terminal, managed-document and Cursor paths
-can keep separate Preview or experimental status.
+are part of that promise, including the ordinary default collapse outputs. Terminal and managed-document paths
+remain Preview; Cursor remains experimental.
 
 Graduation requires:
 
@@ -516,8 +518,8 @@ Graduation requires:
    only when that qualified version is published; no later label-only source change is needed. Passing workflow or
    documentation checks alone does not establish stable R support.
 
-The immediate missing work is a fresh successful R notebook qualification on the same immutable release candidate,
-with the selected-scope reliability review above. Unsupported grouped/indexed objects, full Quarto rendering, Windows
+Publishing 2.5.0 with stable R notebook support requires fresh successful qualification on the same immutable release candidate
+and the selected-scope reliability review above. Unsupported grouped/indexed objects, full Quarto rendering, Windows
 managed-document execution and alternate dplyr/collapse code dialects do not block this narrower scope. No new full
 installed-operation matrix is required.
 
