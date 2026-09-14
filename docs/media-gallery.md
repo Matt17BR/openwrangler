@@ -7,7 +7,7 @@ a row or column limit.
 [Workbench](#grid-and-sidebar) · [Files](#file-entry-points) ·
 [Explore](#filters-profiles-sorts-and-column-search) · [Clean](#cleaning-drafts-and-history) ·
 [Export](#export-code-and-cleaned-data) · [Notebooks](#notebook-dataframes) ·
-[R preview](#r-notebooks-and-documents-preview) ·
+[R](#r-notebooks-and-documents) ·
 [Editors](#editor-and-theme-support)
 
 ## Grid and sidebar
@@ -162,10 +162,11 @@ page loads without counting or caching the entire DataFrame, and the exact row t
 ordering badge distinguishes Spark source order from an explicit sort and explains why repeatable rows need a unique
 final sort key.
 
-## R notebooks and documents (Preview)
+## R notebooks and documents
 
-Native R support is currently Preview, including in stable Open Wrangler releases.
-[Support by entry path and graduation criteria](feature-parity.md#native-r-preview) describe the remaining qualification work.
+R notebook support in desktop VS Code becomes stable only with qualified 2.5.0 publication. R remains Preview in
+published 2.4.0. Terminal and managed-document support remain Preview; Cursor remains experimental.
+[Support by entry path and graduation criteria](feature-parity.md#native-r-support) define the scope and required evidence.
 
 <a href="images/editor-acceptance/vscode-notebook-r-operations-dark.png"><img alt="Open Wrangler Operations listing base data.frame, tibble, data.table, and collapse dataframes from IRkernel" src="images/editor-acceptance/vscode-notebook-r-operations-detail-dark.png" width="960"></a>
 

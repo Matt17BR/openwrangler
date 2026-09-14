@@ -1110,8 +1110,8 @@ process.
 
 Native R sessions operate directly on R `data.frame`, tibble, and `data.table` frames. IRkernel, exact official
 R-terminal, and owned `Rscript` transports share the same native frame contract and current operation catalog,
-including generated R. The runtime never routes an R frame through Python. The public status remains Preview and
-Partial because of the row-specific limitations recorded in the feature-parity matrix.
+including generated R. The runtime never routes an R frame through Python.
+[Feature parity](feature-parity.md#native-r-support) defines support and limitations for each entry path.
 
 #### Frame and source ownership
 

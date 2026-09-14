@@ -137,11 +137,11 @@ is never rebuilt. Existing private R preparation, package checks, phase deadline
 remain in the packaged-editor runner; the matrix does not repeat source suites or add another installed operation catalog.
 All three jobs must pass on the original candidate attempt.
 
-R support is Preview. Published 2.4 qualification did not include this candidate-bound R matrix. A fresh successful run
-and the reliability review in the [first stable R notebook criteria](feature-parity.md#first-stable-r-notebook-scope)
-are still required before publishing a version that graduates notebook support. Terminal, managed-document and Cursor
-support can retain separate labels. The macOS default's existing direct-document check is coupled coverage, not a
-stable document-support claim.
+Published 2.4.0 keeps R support Preview; its qualification did not include this candidate-bound R matrix. R notebook
+support becomes stable only with qualified 2.5.0 publication, after a fresh successful matrix run and the reliability
+review in the [first stable R notebook criteria](feature-parity.md#first-stable-r-notebook-scope).
+Terminal and managed-document support remain Preview; Cursor remains experimental. The macOS default's existing
+direct-document check is coupled coverage, not a stable document-support claim.
 Ordinary source checks permit documented limitations so maintenance can record them accurately; passing those checks
 does not establish release readiness.
 
