@@ -1028,6 +1028,9 @@ class DuckDBEngine(DataFrameEngine):
         if kind == "castColumn":
             target_type = _duckdb_cast_target(params["dtype"])
             column = bound_column_name(params["column"], kind)
+            if params["dtype"] == "date":
+                raw_type = str(frame.types[self._columns(frame).index(column)])
+                return self._assign(frame, column, _duckdb_date_cast_expression(_quote_ident(column), raw_type))
             return self._assign(frame, column, f"try_cast({_quote_ident(column)} AS {target_type})")
         if kind == "formula":
             right = (
@@ -1524,6 +1527,12 @@ class DuckDBEngine(DataFrameEngine):
         if kind == "castColumn":
             target = _duckdb_cast_target(params["dtype"])
             column = bound_column_name(params["column"], kind)
+            if params["dtype"] == "date":
+                expression = (
+                    f"_duckdb_date_cast_expression({_quote_ident(column)!r}, "
+                    f"str(df.types[_ow_columns(df).index({column!r})]))"
+                )
+                return [f"{prefix}df = _ow_assign(df, {column!r}, {expression})"]
             return [f"{prefix}df = _ow_assign(df, {column!r}, 'try_cast(' + _ow_ident({column!r}) + ' AS {target})')"]
         if kind == "formula":
             right = (
@@ -3069,6 +3078,18 @@ def _duckdb_datetime_is_aware(raw_type: str) -> bool:
     return "WITH TIME ZONE" in normalized or "TIMESTAMPTZ" in normalized
 
 
+def _duckdb_date_cast_expression(column: str, raw_type: str) -> str:
+    native_cast = f"try_cast({column} AS DATE)"
+    if raw_type != "TIMESTAMP_NS":
+        return native_cast
+    ticks = f"system.main.epoch_ns({column})"
+    days = f"({ticks} // 86400000000000) - CASE WHEN {ticks} % 86400000000000 < 0 THEN 1 ELSE 0 END"
+    return (
+        f"CASE WHEN system.main.isfinite({column}) "
+        f"THEN DATE '1970-01-01' + CAST(({days}) AS INTEGER) ELSE {native_cast} END"
+    )
+
+
 def _duckdb_datetime_format_expression(column: str, raw_type: str, format_literal: str) -> str:
     if raw_type == "TIMESTAMP_NS":
         # The native nanosecond formatter rejects some lower endpoints that
@@ -3901,6 +3922,7 @@ def _generated_helper_source() -> str:
             "",
             f"_OW_VIEW_COMPARABLE_TYPES = {tuple(sorted(VIEW_COMPARABLE_TYPES))!r}",
             getsource(_semantic_type),
+            getsource(_duckdb_date_cast_expression),
             getsource(_duckdb_datetime_format_expression),
             *generated_view_value_helper_lines(),
         ]
