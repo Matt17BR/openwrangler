@@ -218,7 +218,13 @@ test(
       } else {
         assert.deepEqual(actualDistribution, distribution);
       }
-      const install = fixture.commands.find((command) => command.args.includes("install"));
+      assert.equal(fixture.commands.length, 3);
+      const [java, venv, install] = fixture.commands;
+      assert.ok(java.args.includes("-XshowSettings:properties"));
+      assert.equal(venv.executable, process.execPath);
+      assert.deepEqual(venv.args.slice(0, 3), ["-I", "-m", "venv"]);
+      assert.equal(install.executable, join(fixture.directory, "v", "bin", "python"));
+      assert.ok(install.args.includes("install"));
       for (const name of ["py4j", "pyarrow", "grpcio", "grpcio-status", "protobuf"]) {
         assert.ok(install.args.some((argument) => argument.startsWith(`${name}==`)));
       }
