@@ -120,10 +120,10 @@ Dataset statistics require exact missing-cell, missing-row and per-column missin
 is either a nonnegative integer or explicit null when unavailable; null cannot carry a duplicate sample size. Both
 the workbench and native Dataset view display that state as unavailable. Native R retains numeric duplicate counts.
 
-Python request enums require string values before membership checks. Present `backend`, `mode` and `cloneFrom`
-options must satisfy their existing schemas; explicit null is not an omitted option. Malformed values return the
-existing `invalid_request` classification. Omitted options retain their defaults. Failures raised after decoding
-keep their existing `engine_error` or `runtime_error` classifications.
+Python request enums, including nested cleaning parameters, require string values before membership checks. Present
+`backend`, `mode` and `cloneFrom` options must satisfy their existing schemas; explicit null is not an omitted option.
+Malformed values return the existing `invalid_request` classification. Omitted options retain their defaults.
+Failures raised after decoding keep their existing `engine_error` or `runtime_error` classifications.
 
 Python's standalone and notebook request handlers return a bounded, correlated `runtime_error` for a recognized
 Polars `PanicException` after the operation unwinds. Recognition requires identical public and already-loaded native

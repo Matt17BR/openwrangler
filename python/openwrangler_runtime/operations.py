@@ -4,7 +4,7 @@ import re
 from collections.abc import Mapping
 from decimal import Decimal
 from math import isfinite
-from typing import Any
+from typing import Any, TypeGuard
 
 from .by_example import SynthesisError, normalize_by_example
 from .custom_code_scope import CustomCodeScopeError, validate_custom_code_scope
@@ -202,7 +202,7 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
             raise OperationError("denseRank.direction must be asc or desc.")
     elif kind == "filterRows":
         params["filterModel"] = _normalize_transform_filter_model(params["filterModel"])
-    elif kind == "dropMissingRows" and params.get("how", "any") not in {"any", "all"}:
+    elif kind == "dropMissingRows" and not _is_string_choice(params.get("how", "any"), {"any", "all"}):
         raise OperationError("dropMissingRows.how must be any or all.")
     elif kind == "fillMissingValues":
         params["replacement"] = _normalize_fill_missing_replacement(params["replacement"])
@@ -223,12 +223,12 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
             and params["replacement"]["coordinate"]["id"] == params["column"]["id"]
         ):
             raise OperationError("A linear interpolation target cannot also be its coordinate column.")
-    elif kind == "dropDuplicates" and params.get("keep", "first") not in {"first", "last", "none"}:
+    elif kind == "dropDuplicates" and not _is_string_choice(params.get("keep", "first"), {"first", "last", "none"}):
         raise OperationError("dropDuplicates.keep must be first, last, or none.")
-    elif kind == "castColumn" and params["dtype"] not in CAST_DTYPES:
+    elif kind == "castColumn" and not _is_string_choice(params["dtype"], CAST_DTYPES):
         raise OperationError(f"castColumn.dtype must be one of: {', '.join(sorted(CAST_DTYPES))}.")
     elif kind == "formula":
-        if params["operator"] not in FORMULA_OPERATORS:
+        if not _is_string_choice(params["operator"], FORMULA_OPERATORS):
             raise OperationError("formula.operator is not supported.")
         has_column = "rightColumn" in params
         has_value = "value" in params
@@ -321,7 +321,7 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
                 )
             if not isinstance(aggregation.get("alias"), str) or not aggregation["alias"]:
                 raise OperationError("Each aggregation must contain a non-empty alias.")
-            if aggregation.get("operation") not in AGGREGATIONS:
+            if not _is_string_choice(aggregation.get("operation"), AGGREGATIONS):
                 raise OperationError(f"Unsupported aggregation: {aggregation.get('operation')!r}.")
             normalized_aggregations.append(
                 {
@@ -361,7 +361,7 @@ def _normalize_fill_missing_replacement(value: Any) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise OperationError("fillMissingValues.replacement must be an object.")
     kind = value.get("kind")
-    if kind in {"mean", "median", "mostFrequent"}:
+    if _is_string_choice(kind, {"mean", "median", "mostFrequent"}):
         if set(value) != {"kind"}:
             label = {"mean": "mean", "median": "median", "mostFrequent": "most common value"}[kind]
             raise OperationError(f"A {label} fill replacement may contain only kind.")
@@ -396,7 +396,7 @@ def _normalize_fill_missing_replacement(value: Any) -> dict[str, Any]:
                 + "."
             )
         direction = value.get("direction")
-        if direction not in {"forward", "backward"}:
+        if not _is_string_choice(direction, {"forward", "backward"}):
             raise OperationError("A directional fill direction must be forward or backward.")
         result: dict[str, Any] = {
             "kind": kind,
@@ -419,7 +419,7 @@ def _normalize_fill_missing_replacement(value: Any) -> dict[str, Any]:
         if set(value) != {"kind", "statistic", "keys"}:
             raise OperationError("A grouped-statistic replacement must contain exactly kind, statistic, and keys.")
         statistic = value.get("statistic")
-        if statistic not in {"mean", "median", "mostFrequent"}:
+        if not _is_string_choice(statistic, {"mean", "median", "mostFrequent"}):
             raise OperationError("A grouped-statistic fill must use mean, median, or mostFrequent.")
         return {
             "kind": kind,
@@ -458,7 +458,7 @@ def _normalize_fill_missing_replacement(value: Any) -> dict[str, Any]:
                 )
             result["maxGap"] = max_gap
         return result
-    if kind not in _FILL_REPLACEMENT_KINDS:
+    if not _is_string_choice(kind, _FILL_REPLACEMENT_KINDS):
         raise OperationError(f"Unsupported fill replacement type: {kind!r}.")
     if set(value) != {"kind", "value"}:
         raise OperationError("A typed fill replacement must contain exactly kind and value.")
@@ -548,7 +548,9 @@ def _normalize_transform_sort_rules(value: Any, label: str, *, allow_empty: bool
         unexpected = fields - {"column", "direction", "nulls"}
         if unexpected:
             raise OperationError(f"{rule_label} contains unknown fields: {', '.join(sorted(map(str, unexpected)))}.")
-        if rule.get("direction") not in {"asc", "desc"} or rule.get("nulls") not in {"first", "last"}:
+        if not _is_string_choice(rule.get("direction"), {"asc", "desc"}) or not _is_string_choice(
+            rule.get("nulls"), {"first", "last"}
+        ):
             raise OperationError("Sort directions and null ordering are invalid.")
         normalized.append(
             {
@@ -575,7 +577,7 @@ def _normalize_transform_filter_model(value: Any) -> dict[str, Any]:
         )
     if not isinstance(value.get("filters"), list):
         raise OperationError("filterRows.filterModel.filters must be an array.")
-    if value.get("logic", "and") not in {"and", "or"}:
+    if not _is_string_choice(value.get("logic", "and"), {"and", "or"}):
         raise OperationError("filterRows.filterModel.logic must be either 'and' or 'or'.")
     sort = _normalize_transform_sort_rules(value["sort"], "filterRows.filterModel.sort", allow_empty=True)
 
@@ -591,9 +593,9 @@ def _normalize_transform_filter_model(value: Any) -> dict[str, Any]:
         unexpected = filter_fields - {"column", "type", "logic", "valueFilter", "predicates"}
         if unexpected:
             raise OperationError(f"{label} contains unknown fields: {', '.join(sorted(map(str, unexpected)))}.")
-        if column_filter.get("type") not in COLUMN_TYPES:
+        if not _is_string_choice(column_filter.get("type"), COLUMN_TYPES):
             raise OperationError(f"{label}.type is not a supported column type.")
-        if column_filter.get("logic", "and") not in {"and", "or"}:
+        if not _is_string_choice(column_filter.get("logic", "and"), {"and", "or"}):
             raise OperationError("Column filter logic must be either 'and' or 'or'.")
         predicates = column_filter["predicates"]
         if not isinstance(predicates, list):
@@ -615,7 +617,7 @@ def _normalize_transform_filter_model(value: Any) -> dict[str, Any]:
             if predicate.get("kind") != "predicate":
                 raise OperationError(f"{predicate_label}.kind must be 'predicate'.")
             operator = predicate.get("operator") if isinstance(predicate, Mapping) else None
-            if operator not in FILTER_OPERATORS:
+            if not _is_string_choice(operator, FILTER_OPERATORS):
                 raise OperationError(f"Unsupported filter operator: {operator!r}.")
             if operator not in {"isNull", "isNotNull", "isNaN", "isNotNaN"} and "value" not in predicate:
                 raise OperationError(f"Filter operator {operator} requires a value.")
@@ -787,6 +789,10 @@ def _reject_private_column_namespace(kind: str, params: Mapping[str, Any]) -> No
     for label, name in references:
         if is_internal_row_id_label(name):
             raise OperationError(f"{kind}.{label} uses Open Wrangler's reserved private row-identity prefix.")
+
+
+def _is_string_choice(value: Any, choices: set[str]) -> TypeGuard[str]:
+    return isinstance(value, str) and value in choices
 
 
 def _is_string_list(value: Any, *, allow_empty: bool = False) -> bool:

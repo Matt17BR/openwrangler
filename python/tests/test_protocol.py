@@ -13,6 +13,7 @@ from openwrangler_runtime.protocol import (
     ProtocolError,
     decode_envelope,
     decode_request_payload,
+    response_for_error,
 )
 
 
@@ -1303,6 +1304,113 @@ def test_protocol_v4_rejects_malformed_transformation_steps() -> None:
                 },
             }
         )
+
+
+@pytest.mark.parametrize("malformed", [[], {}], ids=["array", "object"])
+@pytest.mark.parametrize(
+    ("kind", "path"),
+    [
+        ("dropMissingRows", ("how",)),
+        ("dropDuplicates", ("keep",)),
+        ("castColumn", ("dtype",)),
+        ("formula", ("operator",)),
+        ("groupBy", ("aggregations", 0, "operation")),
+        ("fillMissingValues", ("replacement", "kind")),
+        ("fillMissingValues", ("replacement", "direction")),
+        ("fillMissingValues", ("replacement", "statistic")),
+        ("sortRows", ("rules", 0, "direction")),
+        ("sortRows", ("rules", 0, "nulls")),
+        ("filterRows", ("filterModel", "logic")),
+        ("filterRows", ("filterModel", "filters", 0, "type")),
+        ("filterRows", ("filterModel", "filters", 0, "logic")),
+        ("filterRows", ("filterModel", "filters", 0, "predicates", 0, "operator")),
+    ],
+    ids=lambda value: ".".join(map(str, value)) if isinstance(value, tuple) else value,
+)
+def test_protocol_v4_classifies_nonstring_transform_enums_as_invalid_requests(
+    kind: str, path: tuple[str | int, ...], malformed: object
+) -> None:
+    column = {"id": "c:source:0", "name": "value"}
+    order = {"id": "c:source:1", "name": "order"}
+    params: dict[str, Any] = {
+        "dropMissingRows": {"how": "any"},
+        "dropDuplicates": {"keep": "first"},
+        "castColumn": {"column": column, "dtype": "float"},
+        "formula": {"leftColumn": column, "operator": "add", "value": 1, "newColumn": "plus"},
+        "groupBy": {"keys": [order], "aggregations": [{"column": column, "operation": "sum", "alias": "total"}]},
+        "fillMissingValues": {"column": column, "replacement": {"kind": "integer", "value": "1"}},
+        "sortRows": {"rules": [{"column": column, "direction": "asc", "nulls": "last"}]},
+        "filterRows": {
+            "filterModel": {
+                "logic": "and",
+                "filters": [
+                    {
+                        "column": column,
+                        "type": "integer",
+                        "logic": "and",
+                        "predicates": [{"kind": "predicate", "operator": "equals", "value": 1}],
+                    }
+                ],
+                "sort": [],
+            }
+        },
+    }[kind]
+    if kind == "fillMissingValues" and path[-1] == "direction":
+        params["replacement"] = {
+            "kind": "directional",
+            "direction": "forward",
+            "orderBy": [{"column": order, "direction": "asc", "nulls": "last"}],
+        }
+    elif kind == "fillMissingValues" and path[-1] == "statistic":
+        params["replacement"] = {"kind": "groupedStatistic", "statistic": "mean", "keys": [order]}
+    step = {"id": "enum-control", "kind": kind, "params": params}
+    envelope: dict[str, Any] = {
+        "protocolVersion": PROTOCOL_VERSION,
+        "requestId": "preview-enum",
+        "priority": "interactive",
+        "request": {
+            "kind": "previewStep",
+            "sessionId": "not-opened",
+            "revision": 0,
+            "step": step,
+            "offset": 0,
+            "limit": 1,
+            "columnOffset": 0,
+            "columnLimit": 1,
+        },
+    }
+    before = deepcopy(envelope)
+    assert decode_envelope(envelope)[2]["step"] == step
+
+    if path[-1] in {"logic", "how", "keep"}:
+        omitted = deepcopy(envelope)
+        target = omitted["request"]["step"]["params"]
+        for key in path[:-1]:
+            target = target[key]
+        del target[path[-1]]
+        assert decode_envelope(omitted)[2]["step"] == omitted["request"]["step"]
+    if kind == "fillMissingValues" and path[-1] == "kind":
+        statistic = deepcopy(envelope)
+        statistic["request"]["step"]["params"]["replacement"] = {"kind": "median"}
+        assert decode_envelope(statistic)[2]["step"] == statistic["request"]["step"]
+
+    invalid = deepcopy(envelope)
+    target = invalid["request"]["step"]["params"]
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = malformed
+    try:
+        decode_envelope(invalid)
+    except Exception as error:
+        response = response_for_error(error)
+        assert response["code"] == "invalid_request"
+        assert response["recoverable"] is False
+        assert "detail" not in response
+        assert isinstance(error, ProtocolError)
+    else:
+        pytest.fail("A nonstring transformation enum was accepted.")
+    assert envelope == before
+    assert decode_envelope(envelope)[2]["step"] == step
 
 
 def test_protocol_v4_validates_export_format() -> None:
