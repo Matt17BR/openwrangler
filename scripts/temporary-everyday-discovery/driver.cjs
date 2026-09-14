@@ -2,6 +2,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const { createHash } = require("node:crypto");
 const { createRequire } = require("node:module");
 const { pathToFileURL } = require("node:url");
 const vscode = require("vscode");
@@ -63,7 +64,7 @@ exports.run = async () => {
         const operationSearch = e.getAttribute("placeholder") === "Search for operations...";
         const label = (operationSearch ? "Search for operations..." : e.getAttribute("aria-label") || e.getAttribute("title") ||
           (e.tagName === "INPUT" ? e.getAttribute("placeholder") : e.textContent) || "").replace(/\s+/g, " ").trim();
-        if (!/^(?:View data$|Select Another Kernel|Jupyter|Local Kernel|Python 3\.12 \(Public comparison\)|comparison_frame|Convert|Lowercase|Column|Select columns?|Choose|Apply|Export|Copy|Cancel|Discard|Preview|Editing$|Viewing$|Search|Operation|Cleaning|Find and replace|Format|Formulas|Numeric|Schema|Sort and filter|Custom operation|Group by|New column by example|Load data from variable|New operation|text$|id$)/i.test(label)) return [];
+        if (!/^(?:View data$|Select|Jupyter|Local Kernel|Python 3\.12 \(Public comparison\)|comparison_frame|Convert|Lowercase|Column|Choose|Apply|Export|Copy|Cancel|Discard|Preview|Editing$|Viewing$|Search|Operation|Cleaning|Find and replace|Format|Formulas|Numeric|Schema|Sort and filter|Custom operation|Group by|New column by example|Load data from variable|New operation|text$|id$)/i.test(label)) return [];
         return [{ role: e.getAttribute("role") || e.tagName.toLowerCase(), tag: e.tagName.toLowerCase(), label: label.slice(0, 160),
           disabled: e.matches(":disabled") || e.getAttribute("aria-disabled") === "true",
           ...(operationSearch && ["", "Lowercase"].includes(e.value) ? { value: e.value } : {}) }];
@@ -169,7 +170,7 @@ exports.run = async () => {
     await poll(async () => { await consent(); return visible(variable); }, "exact-variable");
     await click(variable, "exact-variable");
     const original = [["0", "North"], ["1", "SOUTH"], ["2", "East"], ["3", "WEST"]];
-    await poll(async () => { await consent(); return rendered(original); }, "initial-grid");
+    const gridFrame = await poll(async () => { await consent(); return rendered(original); }, "initial-grid");
     let operationsFrame, search;
     await poll(async () => {
       const matches = [];
@@ -193,15 +194,40 @@ exports.run = async () => {
     await poll(() => visible(operation), "lowercase-result");
     await capture();
     await click(operation, "lowercase");
-    checkpoint("operation-selected");
+    checkpoint("target-columns");
+    const targetColumns = operationsFrame.getByText("Select one or more target columns...", { exact: true });
+    await click(targetColumns, "target-columns");
+    const textOption = operationsFrame.getByText("text", { exact: true });
+    await poll(() => visible(textOption), "text-option");
     await capture();
+    await click(textOption, "text-option");
+    await page.keyboard.press("Escape");
+    const apply = operationsFrame.getByRole("button", { name: "Apply", exact: true });
+    await poll(async () => await visible(apply) && await apply.isEnabled(), "apply-ready");
+    checkpoint("apply-ready");
+    await capture();
+    await click(apply, "apply");
+    const lower = original.map(([id, text]) => [id, text.toLowerCase()]);
+    const copyCode = gridFrame.getByRole("menuitem", { name: "Copy all code", exact: true });
+    await poll(async () => (await rendered(lower)) === gridFrame && await visible(copyCode) && await copyCode.isEnabled(), "applied-values");
+    checkpoint("code-export");
+    await capture();
+    await vscode.env.clipboard.writeText("DISCOVERY_EMPTY_CLIPBOARD");
+    await click(copyCode, "copy-all-code");
+    const code = await poll(async () => {
+      const value = await vscode.env.clipboard.readText();
+      assert(Buffer.byteLength(value) <= 65536, "DISCOVERY_GATE:export-code-bound");
+      return value !== "DISCOVERY_EMPTY_CLIPBOARD" && Buffer.byteLength(value) > 20 ? value : false;
+    }, "export-code");
+    fs.writeFileSync(path.join(request.out, "export.py"), code, { flag: "wx", mode: 0o600 });
+    receipt.export = { bytes: Buffer.byteLength(code), sha256: createHash("sha256").update(code).digest("hex"), replay: "pending review of actual public export" };
     await screenshot();
-    receipt.pending = ["column selection", "Apply", "Copy all code", "complete cleaned-output replay", "paired timings"];
+    receipt.pending = ["complete cleaned-output replay", "paired timings"];
     await vscode.window.showNotebookDocument(notebook);
     checkpoint("source-check");
     receipt.sourceAfter = await execute(1, "DISCOVERY_UNCHANGED:");
     assert.deepEqual(receipt.sourceAfter, { digest: receipt.source.digest, shape: [100000, 2] });
-    receipt.status = "operation-selected";
+    receipt.status = "code-exported";
   } catch (error) {
     receipt.status = "blocked";
     receipt.failure = { stage, category: /^DISCOVERY_GATE:[a-z-]+$/.test(error.message) ? error.message : "public-control-or-assertion" };
