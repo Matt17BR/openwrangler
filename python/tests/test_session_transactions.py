@@ -880,7 +880,7 @@ def test_polars_decimal_file_steps_preserve_public_pages_generated_results_and_u
     expected = [None if value is None else value.quantize(Decimal(1), context=reference) for value in values]
     manager = SessionManager()
     try:
-        with pl.Config(engine_affinity="streaming"):
+        with pl.Config(set_engine_affinity="streaming"):
             configuration = pl.Config.state()
             opened = manager.open_session({"kind": "file", "path": str(path)}, backend="polars", page_size=1)
             sid = opened["metadata"]["sessionId"]
