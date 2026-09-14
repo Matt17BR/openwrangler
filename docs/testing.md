@@ -583,9 +583,9 @@ All three results are required. Failure diagnostics use only the runner's exact 
 workflow still uploads exactly one canonical triple. Stable publication checks the whole first-attempt candidate run
 and uses that VSIX without rebuilding. Existing workflow and artifact owners check this wiring.
 
-These candidate checks do not by themselves graduate R support. The
-[first stable R notebook scope](feature-parity.md#first-stable-r-notebook-scope) requires fresh candidate results and
-reliability review. Keep original failures, package identity, source-preservation assertions and existing time and
+These candidate checks complement the native/source evidence and reliability review required by
+[Releasing](releasing.md#release-candidate) for the [stable R notebook scope](feature-parity.md#first-stable-r-notebook-scope).
+Keep original failures, package identity, source-preservation assertions and existing time and
 cleanup bounds; do not add an installed copy of the complete native operation catalog.
 
 The weekly [runtime performance workflow](../.github/workflows/performance.yml) checks Polars runtime performance.

@@ -470,20 +470,19 @@ stable publication. Explicit candidate checks, including the R notebook matrix, 
 
 ## Native R support
 
-Stable R notebook support begins only with the qualified publication of Open Wrangler 2.5.0. It covers the ordinary
-frame scope below in IRkernel notebooks in desktop VS Code on Linux, macOS and Windows. Published 2.4.0 keeps R
-support Preview: its candidate did not include the three-platform R notebook qualification. The 2.5.0 candidate must
-pass that matrix and the reliability review below before publication.
+R notebook support is stable since Open Wrangler 2.5.0 for the ordinary frame scope below in IRkernel notebooks
+in desktop VS Code on Linux, macOS and Windows. Published 2.4.0 keeps R support Preview; its candidate did not include
+the three-platform R notebook qualification.
 
 Native R already supports paging, typed filters, sorts, profiles, cleaning, generated R and data export within the
 limits below. Support labels describe the qualification commitment for each entry path.
 
-| Entry path                                          | Support                                                                                                            | Generated code and data export                         |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------ |
-| IRkernel notebook in desktop VS Code                | Stable from qualified 2.5.0 publication on Linux, macOS and Windows; exact notebook, kernel and variable ownership | Copy, save, notebook insertion, CSV and Parquet        |
-| Active terminal managed by the official R extension | Preview on Linux; exact terminal and process ownership                                                             | Copy, save, CSV and Parquet; no document for insertion |
-| Managed `.R`, `.Rmd` or `.qmd` document             | Preview on Linux and macOS; exact document/version and owned R process                                             | Copy, save, source-document insertion, CSV and Parquet |
-| IRkernel notebook in Cursor on Linux                | Experimental editor compatibility with narrower coverage                                                           | Only the capabilities of its documented execution path |
+| Entry path                                          | Support                                                                                       | Generated code and data export                         |
+| --------------------------------------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| IRkernel notebook in desktop VS Code                | Stable since 2.5.0 on Linux, macOS and Windows; exact notebook, kernel and variable ownership | Copy, save, notebook insertion, CSV and Parquet        |
+| Active terminal managed by the official R extension | Preview on Linux; exact terminal and process ownership                                        | Copy, save, CSV and Parquet; no document for insertion |
+| Managed `.R`, `.Rmd` or `.qmd` document             | Preview on Linux and macOS; exact document/version and owned R process                        | Copy, save, source-document insertion, CSV and Parquet |
+| IRkernel notebook in Cursor on Linux                | Experimental editor compatibility with narrower coverage                                      | Only the capabilities of its documented execution path |
 
 The [architecture](architecture.md#native-r) defines frame, precision, source and transport guarantees.
 [Testing](testing.md#native-r-editor-dependencies) identifies the native and installed checks for each path.
@@ -496,32 +495,15 @@ generated R copy/save/insertion, CSV/Parquet export and kernel-restart recovery.
 are part of that promise, including the ordinary default collapse outputs. Terminal and managed-document paths
 remain Preview; Cursor remains experimental.
 
-Graduation requires:
+The [2.5.0 candidate](https://github.com/Matt17BR/openwrangler/actions/runs/34852510128) passed the default journeys
+on all three platforms on its original attempt, using the same immutable VSIX. The
+[delivery issue](https://github.com/Matt17BR/openwrangler/issues/1381) records matching native/source evidence,
+package and runtime versions, reliability review and publication verification. Later stable releases retain the
+[native and installed qualification requirements](releasing.md#release-candidate).
 
-1. The existing native frame, complete operation catalog, kernel and transport owners pass for the candidate source
-   and the supported R qualification cohorts. Reuse matching protected-source evidence; do not repeat every operation
-   in an installed editor.
-2. One immutable candidate VSIX passes the existing default IRkernel journeys on Linux, macOS and Windows.
-   The required same-run matrix verifies the canonical triple before and after each platform's journey. Together they
-   cover base/tibble/data.table values, viewing, editing/history, source preservation, generated
-   code, export/insertion and restart ownership. Record the exact package, source, editor and R versions with the
-   original results. [Releasing](releasing.md#release-candidate) owns artifact handling.
-3. Resolve any material failure in that selected scope before promotion. Preserve original failures and explain the
-   disposition of known risks. The historical [R acceptance timeout](https://github.com/Matt17BR/openwrangler/issues/1088)
-   has no established cause. Its final checkpoint did not identify the failing operation. Later passes do not resolve
-   that uncertainty; a recurrence in candidate qualification blocks promotion.
-   [Abrupt R source-test runner loss](https://github.com/Matt17BR/openwrangler/issues/955) is an accepted CLI
-   limitation outside this notebook scope. It is not a generic blocker to graduation.
-4. Prepare consistent, version-scoped support text before building the candidate. Land this guide and README before
-   the [release change](releasing.md#release-change), then freeze matching release notes in that change. Review the
-   required candidate results and reliability assessment before publication. The proposed stable support takes effect
-   only when that qualified version is published; no later label-only source change is needed. Passing workflow or
-   documentation checks alone does not establish stable R support.
-
-Publishing 2.5.0 with stable R notebook support requires fresh successful qualification on the same immutable release candidate
-and the selected-scope reliability review above. Unsupported grouped/indexed objects, full Quarto rendering, Windows
-managed-document execution and alternate dplyr/collapse code dialects do not block this narrower scope. No new full
-installed-operation matrix is required.
+The historical [R acceptance timeout](https://github.com/Matt17BR/openwrangler/issues/1088) remains unexplained;
+later passes do not establish its cause or recurrence rate. Unsupported grouped/indexed objects, full Quarto rendering,
+Windows managed-document execution and alternate dplyr/collapse code dialects remain outside this notebook scope.
 
 Supported frames are base `data.frame`, tibble and `data.table`, including ordinary default `collapse::qDF()`,
 `qTBL()` and `qDT()` outputs. Grouped `GRP_df`, `indexed_frame`, unsupported attributes and unsupported cell classes

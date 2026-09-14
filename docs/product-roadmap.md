@@ -1,18 +1,17 @@
 # Product roadmap
 
 [Feature parity](feature-parity.md) describes what works today and its limits. [Changelog](../CHANGELOG.md)
-records delivered changes. This page links the work selected next and proposals that need further review.
+records delivered changes. This page records delivered release priorities and proposals that need further review.
 
-## Next selected outcome
+## Release priorities
 
-The next stable target is [Open Wrangler 2.5.0](https://github.com/Matt17BR/openwrangler/milestone/15), following the [version policy](releasing.md#version-and-channel-policy).
-Its selected product outcome is [stable R notebook support](https://github.com/Matt17BR/openwrangler/issues/1381) for the existing ordinary base `data.frame`,
-tibble and `data.table` scope in IRkernel notebooks in desktop VS Code for Linux, macOS and Windows.
+[Open Wrangler 2.5.0](https://github.com/Matt17BR/openwrangler/milestone/15) delivered
+[stable R notebook support](https://github.com/Matt17BR/openwrangler/issues/1381) for the
+[defined ordinary-frame scope](feature-parity.md#first-stable-r-notebook-scope) in IRkernel notebooks
+in desktop VS Code on Linux, macOS and Windows.
 
-Published 2.4.0 labels R support **Preview**. Graduation requires the [defined reliability review and candidate evidence](feature-parity.md#first-stable-r-notebook-scope).
-Terminal, managed-document and Cursor support keep their separate labels. The milestone has no promised date;
-publication still requires the [release process](releasing.md). Other work joins this milestone only when it is
-explicitly selected and can meet its acceptance criteria.
+No next release outcome is selected. The seven proposals below remain open and unscheduled.
+Selection requires a reviewed scope, acceptance criteria and practical cost.
 
 ## Feature proposals
 
