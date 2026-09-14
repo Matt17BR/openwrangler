@@ -1003,8 +1003,12 @@ Datetime formatting preserves native Date and Datetime columns, including time z
 before formatting the result as text. Live execution and generated code parse text only for non-temporal inputs.
 Convert Type retains a Datetime column's existing unit and timezone when the target is Datetime. Converting that
 column to Date takes its local calendar day. Both paths read the selected column's current dtype at each step,
-including in reused generated programs, and preserve lazy execution. Other input and target types retain their
-existing native coercion rules.
+including in reused generated programs, and preserve lazy execution.
+String-to-Datetime conversion parses whole year-month-day dates with optional `T` or space-separated time, using
+microseconds. Invalid or unsupported text becomes null. Recognized timezone-bearing text refuses conversion when
+evaluated; Custom Code can supply a timezone policy. Recognition covers numeric hour/minute offsets, `Z` and
+seconds-bearing ` UTC`, but not offset seconds, minute-only ` UTC` or named-zone suffixes. Native lazy pruning still
+applies; this adds no full-source admission scan. Other input and target types keep their existing coercion rules.
 Grouped integer and Decimal medians retain the target dtype and reject unrepresentable midpoints only when a group
 needs filling. Empty groups stay null, and constructing a grouped Fill plan does not collect a lazy frame.
 Exact By Example arithmetic returns typed native batches when unsigned operands require the checked scalar path.
