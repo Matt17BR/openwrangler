@@ -195,6 +195,8 @@ function repository(
   const initial = stable ?? source;
   writeVersionSources(root, initial);
   git(root, ["init", "--quiet"]);
+  // The production preview preparer also commits into this temporary repository.
+  git(root, ["config", "maintenance.auto", "false"]);
   git(root, ["add", "."]);
   git(root, ["commit", "--quiet", "-m", "initial"]);
   if (stable !== null) tagStable(root, stable.version, "HEAD", stableTagAnnotated);

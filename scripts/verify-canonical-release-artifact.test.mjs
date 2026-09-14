@@ -312,7 +312,8 @@ test("verified stable publication checks prospective policy only before mutation
   ]) {
     const root = mkdtempSync(join(tmpdir(), "ow-stable-admission-"));
     context.after(() => rmSync(root, { force: true, recursive: true }));
-    const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+    const git = (...args) =>
+      execFileSync("git", ["-c", "maintenance.auto=false", ...args], { cwd: root, encoding: "utf8" }).trim();
     const writeVersion = (version) => {
       writeFileSync(join(root, "package.json"), JSON.stringify({ ...sourceManifest, version }));
       writeFileSync(

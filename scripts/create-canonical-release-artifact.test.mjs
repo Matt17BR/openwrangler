@@ -86,7 +86,7 @@ test("canonical artifact CLI permits preview and stable authoring but refuses re
 });
 
 function runGit(root, arguments_) {
-  return execFileSync("git", arguments_, {
+  return execFileSync("git", ["-c", "maintenance.auto=false", ...arguments_], {
     cwd: root,
     encoding: "utf8",
     maxBuffer: 1024 * 1024,

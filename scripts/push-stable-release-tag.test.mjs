@@ -44,7 +44,7 @@ function decodeQuotedHelperPath(helper) {
 }
 
 function git(root, args) {
-  return execFileSync("git", args, {
+  return execFileSync("git", ["-c", "maintenance.auto=false", ...args], {
     cwd: root,
     encoding: "utf8",
     maxBuffer: 64 * 1024,
