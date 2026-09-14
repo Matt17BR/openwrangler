@@ -13,16 +13,8 @@ import {
 } from "../extension/r/rNotebookVariableDiscovery";
 
 const MARKER = "0123456789abcdef0123456789abcdef";
-const R_DISCOVERY_CONTRACT_AVAILABLE =
-  spawnSync(
-    "Rscript",
-    [
-      "--vanilla",
-      "-e",
-      'quit(status = if (requireNamespace("rlang", quietly = TRUE) && requireNamespace("jsonlite", quietly = TRUE)) 0L else 1L)'
-    ],
-    { encoding: "utf8" }
-  ).status === 0;
+const rscript = process.env.RSCRIPT ?? "Rscript";
+const nativeRContracts = process.env.OPEN_WRANGLER_R_CONTRACT_TESTS === "1";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -114,8 +106,12 @@ describe("R notebook variable discovery", () => {
     expect(code.toLowerCase()).not.toContain("python");
   });
 
-  it.runIf(R_DISCOVERY_CONTRACT_AVAILABLE)("does not evaluate active or delayed bindings in a real R process", () => {
-    const script = `
+  it.runIf(nativeRContracts)(
+    "ignores caller functions while discovering and rechecking without forcing bindings",
+    async () => {
+      const document = notebookDocument();
+      setWorkspaceState(true, document);
+      const setup = `
 .ow_forced <- FALSE
 ordinary_frame <- data.frame(value = 1L)
 readr_frame <- structure(
@@ -141,25 +137,61 @@ makeActiveBinding(
   },
   .GlobalEnv
 )
-${buildRNotebookVariableDiscoveryCode(MARKER)}
-cat("__OPEN_WRANGLER_FORCED__", .ow_forced, "\\n", sep = "")
+.ow_source_before <- serialize(list(ordinary_frame, readr_frame, grouped_frame), NULL, version = 3L)
+.ow_caller_functions <- list(
+  local = function(...) stop("caller local must not run", call. = FALSE),
+  get = function(...) stop("caller get must not run", call. = FALSE),
+  exists = function(...) stop("caller exists must not run", call. = FALSE)
+)
+local <- .ow_caller_functions$local
+get <- .ow_caller_functions$get
+exists <- .ow_caller_functions$exists
 `;
-    const result = spawnSync("Rscript", ["--vanilla", "-"], {
-      encoding: "utf8",
-      input: script,
-      maxBuffer: 128 * 1_024
-    });
-
-    expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain("__OPEN_WRANGLER_FORCED__FALSE");
-    expect(parseRNotebookVariableDiscoveryOutput(result.stdout, MARKER)).toEqual({
-      truncated: false,
-      variables: [
-        { name: "ordinary_frame", backend: "r", dataframeFlavor: "r.data.frame" },
-        { name: "readr_frame", backend: "r", dataframeFlavor: "r.tibble" }
-      ]
-    });
-  });
+      const executeCode = vi.fn((code: string) => {
+        const result = spawnSync(rscript, ["--vanilla", "-"], {
+          encoding: "utf8",
+          input: `${setup}
+${code}
+stopifnot(identical(serialize(list(ordinary_frame, readr_frame, grouped_frame), NULL, version = 3L), .ow_source_before))
+for (.ow_name in names(.ow_caller_functions)) {
+  stopifnot(identical(base::get(.ow_name, envir = .GlobalEnv, inherits = FALSE), .ow_caller_functions[[.ow_name]]))
+}
+cat("__OPEN_WRANGLER_FORCED__", .ow_forced, "\\n", sep = "")
+cat("__CALLER_AND_SOURCE_OK__\\n")
+`,
+          timeout: 30_000,
+          maxBuffer: 128 * 1_024
+        });
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout).toContain("__OPEN_WRANGLER_FORCED__FALSE");
+        expect(result.stdout).toContain("__CALLER_AND_SOURCE_OK__");
+        return kernelOutput(result.stdout);
+      });
+      const controlled = controlledRKernel(executeCode);
+      installJupyterMock(vi.fn(async () => controlled.kernel));
+      const discovery = await discoverRNotebookVariables(document);
+      expect(discovery).toEqual({
+        truncated: false,
+        variables: [
+          { name: "ordinary_frame", backend: "r", dataframeFlavor: "r.data.frame" },
+          { name: "readr_frame", backend: "r", dataframeFlavor: "r.tibble" }
+        ]
+      });
+      const selected = discovery.variables[0];
+      if (!selected) throw new Error("Expected the native ordinary R dataframe.");
+      const verified = await verifyRNotebookVariableSelection(document, discovery, selected);
+      const binding = claimVerifiedRNotebookVariableSelection(document, verified);
+      try {
+        expect(binding).toMatchObject({ notebook: document, kernel: controlled.kernel, variable: selected });
+        expect(binding.isInvalidated()).toBe(false);
+        expect(executeCode).toHaveBeenCalledTimes(2);
+        expect(controlled.listenerCount()).toBe(1);
+      } finally {
+        binding.dispose();
+      }
+      expect(controlled.listenerCount()).toBe(0);
+    }
+  );
 
   it("reports missing R discovery packages with an actionable message", () => {
     expect(() =>

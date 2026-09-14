@@ -40,7 +40,7 @@ export function buildRKernelBootstrapCode(
     )
     .join("\n");
   return `
-local({
+base::local({
 ${buildRDependencyPreflightCode("selected R kernel")}
   .__ow_binding <- "${R_KERNEL_RUNTIME_BINDING}"
   .__ow_existing <- if (exists(.__ow_binding, envir = .GlobalEnv, inherits = FALSE)) {
@@ -73,7 +73,7 @@ ${evaluations}
     lockEnvironment(.__ow_runtime, bindings = TRUE)
     assign(.__ow_binding, .__ow_runtime, envir = .GlobalEnv)
   }
-})
+}, envir = base::new.env(parent = base::baseenv()))
 `;
 }
 
@@ -84,7 +84,7 @@ export function buildRKernelTeardownCode(
   validateOwnerToken(ownerToken);
   const { bundleId } = runtimeBundle(files);
   return `
-local({
+base::local({
   .__ow_binding <- "${R_KERNEL_RUNTIME_BINDING}"
   if (exists(.__ow_binding, envir = .GlobalEnv, inherits = FALSE)) {
     .__ow_existing <- get(.__ow_binding, envir = .GlobalEnv, inherits = FALSE)
@@ -107,7 +107,7 @@ local({
       }
     }
   }
-})
+}, envir = base::new.env(parent = base::baseenv()))
 `;
 }
 
@@ -138,13 +138,13 @@ export function buildRKernelDispatchCode(payload: string, marker: string): strin
   if (!/^[a-f0-9]{32}$/u.test(marker)) throw new TypeError("R kernel marker must be 32 lowercase hex characters.");
   const encoded = Buffer.from(payload, "utf8").toString("base64");
   return `
-local({
+base::local({
   .__ow_runtime <- get("${R_KERNEL_RUNTIME_BINDING}", envir = .GlobalEnv, inherits = FALSE)
   .__ow_payload <- rawToChar(jsonlite::base64_dec("${encoded}"))
   .__ow_response <- .__ow_runtime$agent$dispatch_json(.__ow_payload)
   cat("__OPEN_WRANGLER_R_START_${marker}__\\n", sep = "")
   cat(.__ow_response, "\\n", sep = "")
   cat("__OPEN_WRANGLER_R_END_${marker}__\\n", sep = "")
-})
+}, envir = base::new.env(parent = base::baseenv()))
 `;
 }

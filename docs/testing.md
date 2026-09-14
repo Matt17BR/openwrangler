@@ -166,7 +166,12 @@ Use the existing owners to choose a focused source check:
   admission and emitted-byte limits. Adding an operation or helper requires live/generated agreement in every
   editing engine that supports it; a generated-text assertion alone is insufficient.
 - **Notebook and process boundaries:** kernel, bridge and transport owners check correlated bounded framing,
-  cancellation, execution settlement and cleanup of the original source owner. The
+  cancellation, execution settlement and cleanup of the original source owner. Native R
+  [discovery](../src/test/rNotebookVariableDiscovery.unit.test.ts) and
+  [kernel transport](../src/test/rKernelTransport.cross.test.ts) also execute with conflicting caller functions,
+  preserving user bindings through discovery, requests and cleanup. The existing native kernel phase runs these
+  cases and the [kernel dependency checks](../src/test/rKernelTransport.unit.test.ts) with its selected R executable.
+  Those files do not probe for R during ordinary unit runs; their native cases run only in this explicit tier. The
   [response-framing owner](../python/tests/test_response_framing.py) checks canonical bytes and size limits.
   Existing stdio and notebook error journeys also exercise unformattable Custom Code exceptions, preserving a
   correlated response, rollback, source ownership and subsequent page/close requests. Mapper controls retain

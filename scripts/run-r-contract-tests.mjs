@@ -250,7 +250,11 @@ export function createRContractPhases({
     vitestPhase(
       "kernel-transport",
       "real-R kernel transport contract",
-      ["src/test/rKernelTransport.cross.test.ts"],
+      [
+        "src/test/rKernelTransport.cross.test.ts",
+        "src/test/rKernelTransport.unit.test.ts",
+        "src/test/rNotebookVariableDiscovery.unit.test.ts"
+      ],
       TRANSPORT_VITEST_PHASE_TIMEOUT_MS,
       { environment: vitestEnvironment, node, vitest }
     ),

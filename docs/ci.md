@@ -120,6 +120,7 @@ cases, including native Spark; it gives no fresh Python execution result. The in
 and exercise real profiles, so they remain required. Local browser acceptance still applies to rendered UI changes.
 
 The Linux R phases load native R assets and the selected Node transport owners, without loading renderer source.
+The kernel-transport phase also runs native notebook discovery, selection and dependency checks with the same selected R executable.
 Their separate `r_runtime_omittable` result permits the Linux matrix to be skipped without changing platform R or
 Windows selection. Its summary reports no fresh Linux R source execution.
 

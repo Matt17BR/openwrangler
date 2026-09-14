@@ -1408,8 +1408,12 @@ old output metadata remains valid.
 
 #### Notebook, terminal and document execution
 
-Notebook work stays in the selected IRkernel. An existing official R-terminal variable stays pinned to the exact
-terminal and process that exposed it. Passive discovery reads bounded vscode-R metadata as an untrusted hint and
+Notebook work stays in the selected IRkernel. Discovery, selection checks, runtime startup, requests and cleanup
+run in fresh environments parented by `baseenv()`. Their implementation functions do not resolve through notebook
+globals; `.GlobalEnv` remains the explicit owner of source variables and the shared runtime binding. User functions
+and source values remain unchanged.
+
+An existing official R-terminal variable stays pinned to the exact terminal and process that exposed it. Passive discovery reads bounded vscode-R metadata as an untrusted hint and
 sends no R command. During startup, it waits within the existing readiness deadline for the selected terminal's
 metadata, even if a previous terminal left a record behind. It never reads foreign workspace data. An explicit Open
 or Refresh action cancels pending discovery, revalidates the terminal and process, then uses terminal

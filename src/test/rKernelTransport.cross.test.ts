@@ -3166,7 +3166,7 @@ cat("generated-ok\\n")
     expect(generated.stdout.trim()).toBe("generated-ok");
   });
 
-  it("removes only the runtime binding owned by the matching transport and bundle", () => {
+  it("ignores caller functions while dispatching and removing only the matching runtime owners", () => {
     const files = readRRuntimeFiles(resolve(root, "r"));
     const owner = "transport-owner-a";
     const bootstrap = buildRKernelBootstrapCode(files, owner);
@@ -3179,20 +3179,87 @@ cat("generated-ok\\n")
     const ownedTeardown = buildRKernelTeardownCode(files, owner);
     const secondBootstrap = buildRKernelBootstrapCode(files, secondOwner);
     const secondTeardown = buildRKernelTeardownCode(files, secondOwner);
+    const open = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: openRequestId,
+      kind: "openSession",
+      payload: { sessionId, variableName: "frame", page: pageWindow() }
+    });
+    const page = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: pageRequestId,
+      kind: "getPage",
+      payload: {
+        sessionId,
+        page: pageWindow([{ column: { id: "r:c:0", name: "value" }, direction: "desc", nulls: "last" }])
+      }
+    });
+    const close = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: closeRequestId,
+      kind: "closeSession",
+      payload: { sessionId }
+    });
     const code = `
+frame <- data.frame(value = c(1L, 3L, 2L), label = c("first", "third", "second"))
+.ow_source_before <- serialize(frame, NULL, version = 3L)
+.ow_caller_functions <- list(
+  local = function(...) stop("caller local must not run", call. = FALSE),
+  get = function(...) stop("caller get must not run", call. = FALSE),
+  exists = function(...) stop("caller exists must not run", call. = FALSE)
+)
+local <- .ow_caller_functions$local
+get <- .ow_caller_functions$get
+exists <- .ow_caller_functions$exists
+.ow_roots_before <- list.files(tempdir(), pattern = "^openwrangler-r-kernel-", full.names = TRUE)
 ${bootstrap}
+.ow_runtime <- base::get("${R_KERNEL_RUNTIME_BINDING}", envir = .GlobalEnv, inherits = FALSE)
+.ow_roots <- setdiff(list.files(tempdir(), pattern = "^openwrangler-r-kernel-", full.names = TRUE), .ow_roots_before)
+stopifnot(length(.ow_roots) == 1L, all(dir.exists(.ow_roots)))
+${open.code}
+${page.code}
+${close.code}
 ${wrongOwnerTeardown}
-cat(if (exists("${R_KERNEL_RUNTIME_BINDING}", envir = .GlobalEnv, inherits = FALSE)) "present" else "missing", "\n", sep = "")
+cat("__OWNERSHIP__", if (base::exists("${R_KERNEL_RUNTIME_BINDING}", envir = .GlobalEnv, inherits = FALSE)) "present" else "missing", "\n", sep = "")
 ${wrongBundleTeardown}
-cat(if (exists("${R_KERNEL_RUNTIME_BINDING}", envir = .GlobalEnv, inherits = FALSE)) "present" else "missing", "\n", sep = "")
+cat("__OWNERSHIP__", if (base::exists("${R_KERNEL_RUNTIME_BINDING}", envir = .GlobalEnv, inherits = FALSE)) "present" else "missing", "\n", sep = "")
 ${secondBootstrap}
+stopifnot(identical(base::get("${R_KERNEL_RUNTIME_BINDING}", envir = .GlobalEnv, inherits = FALSE), .ow_runtime))
 ${ownedTeardown}
-cat(if (exists("${R_KERNEL_RUNTIME_BINDING}", envir = .GlobalEnv, inherits = FALSE)) "present" else "missing", "\n", sep = "")
+cat("__OWNERSHIP__", if (base::exists("${R_KERNEL_RUNTIME_BINDING}", envir = .GlobalEnv, inherits = FALSE)) "present" else "missing", "\n", sep = "")
+stopifnot(all(dir.exists(.ow_roots)))
 ${secondTeardown}
-cat(if (exists("${R_KERNEL_RUNTIME_BINDING}", envir = .GlobalEnv, inherits = FALSE)) "present" else "missing", "\n", sep = "")
+cat("__OWNERSHIP__", if (base::exists("${R_KERNEL_RUNTIME_BINDING}", envir = .GlobalEnv, inherits = FALSE)) "present" else "missing", "\n", sep = "")
+stopifnot(!any(dir.exists(.ow_roots)), identical(serialize(frame, NULL, version = 3L), .ow_source_before))
+for (.ow_name in names(.ow_caller_functions)) {
+  stopifnot(identical(base::get(.ow_name, envir = .GlobalEnv, inherits = FALSE), .ow_caller_functions[[.ow_name]]))
+}
+cat("__CALLER_AND_CLEANUP_OK__\\n")
 `;
     const result = runR(code);
-    expect(result.stdout.trim().split(/\r?\n/u)).toEqual(["present", "present", "present", "missing"]);
+    expect(result.stdout.split(/\r?\n/u).filter((line) => line.startsWith("__OWNERSHIP__"))).toEqual([
+      "__OWNERSHIP__present",
+      "__OWNERSHIP__present",
+      "__OWNERSHIP__present",
+      "__OWNERSHIP__missing"
+    ]);
+    expect(result.stdout).toContain("__CALLER_AND_CLEANUP_OK__");
+    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), openRequestId, {
+      expectExportFormats: true
+    });
+    expect(opened).toMatchObject({ kind: "page", sessionId, page: { shape: { rows: 3, columns: 2 } } });
+    if (opened.kind !== "page") throw new Error("Expected the native R source page.");
+    expect(opened.page.page.rows.map((row) => row.values[0]?.raw)).toEqual(["1", "3", "2"]);
+    const paged = decodeRKernelResponseJson(marked(result.stdout, page.marker), pageRequestId);
+    if (paged.kind !== "page") throw new Error("Expected the sorted native R page.");
+    expect(paged.page.page.rows.map((row) => row.values[0]?.raw)).toEqual(["3", "2", "1"]);
+    expect(paged.page.page.rows.map((row) => row.id)).toEqual(["r:r:1", "r:r:2", "r:r:0"]);
+    expect(decodeRKernelResponseJson(marked(result.stdout, close.marker), closeRequestId)).toEqual({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: closeRequestId,
+      kind: "closed",
+      sessionId
+    });
   });
 });
 
