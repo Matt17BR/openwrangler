@@ -1046,6 +1046,12 @@ creates and closes its own hardened connection, and any `DuckDBPyRelation` is de
 closes. DuckDB never converts through Pandas, Polars, or Arrow, and extension auto-install, autoload, and external-file
 caching remain disabled.
 
+DuckDB viewing counts, profiles, value-choice search, filter predicates, row identities and timestamp display
+resolve their own calculations from the built-in catalog. Shared missing-value and interpolation finite checks use
+the same native functions in live and generated code. Expressions in the caller's source relation retain their
+declared function bindings; Open Wrangler does not change the caller's search path, macros or connection to compute
+its statistics.
+
 Top-level `TIMESTAMP_NS` cells use native text projection before Python can narrow their values. One SQL display
 expression serves bounded pages, grouped choices and profile extrema; counts, grouping and ordering use the original
 timestamps. Choice search uses the same display text and accepts either `T` or a space between the date and time.

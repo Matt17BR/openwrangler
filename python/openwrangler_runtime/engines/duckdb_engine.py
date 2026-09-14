@@ -461,7 +461,7 @@ class DuckDBEngine(DataFrameEngine):
             raise EngineError(f"DuckDB could not open {path}: {error}") from error
 
     def shape(self, frame: Any) -> SessionDataShape:
-        row_count = int(self._terminal_scalar(frame, "SELECT count(*) FROM ow") or 0)
+        row_count = int(self._terminal_scalar(frame, "SELECT system.main.count(*) FROM ow") or 0)
         return {"rows": row_count, "columns": len(self._visible_columns(frame))}
 
     def validate_transformation_result(self, frame: Any, *, operation_kind: str | None = None) -> None:
@@ -498,7 +498,9 @@ class DuckDBEngine(DataFrameEngine):
         if self._row_id_column(frame) is not None:
             return frame
         row_id = f"{INTERNAL_ROW_ID_PREFIX}{token}"
-        return self._relation(frame, f"SELECT *, row_number() OVER () - 1 AS {_quote_ident(row_id)} FROM ow")
+        return self._relation(
+            frame, f'SELECT *, system.main."-"(row_number() OVER (), 1) AS {_quote_ident(row_id)} FROM ow'
+        )
 
     def schema(self, frame: Any) -> list[dict[str, Any]]:
         frame = self.normalize(frame)
@@ -581,7 +583,7 @@ class DuckDBEngine(DataFrameEngine):
             query = f"SELECT {', '.join(formatted)} FROM ({query}) AS ow_page"
         with self._terminal_connection(frame) as (connection, source_sql):
             if total_rows is None:
-                total_rows = int(_execute_scalar(connection, source_sql, "SELECT count(*) FROM ow") or 0)
+                total_rows = int(_execute_scalar(connection, source_sql, "SELECT system.main.count(*) FROM ow") or 0)
             records = _execute_rows(
                 connection,
                 source_sql,
@@ -636,52 +638,52 @@ class DuckDBEngine(DataFrameEngine):
                 nan = _nan_predicate(identifier, raw_type)
                 valid = _valid_predicate(identifier, raw_type)
                 metric_fields = [
-                    ("total_count", "count(*)"),
-                    ("null_count", f"count(*) FILTER (WHERE {identifier} IS NULL)"),
-                    ("nan_count", f"count(*) FILTER (WHERE {nan})"),
-                    ("distinct_count", f"count(DISTINCT {identifier}) FILTER (WHERE {valid})"),
+                    ("total_count", "system.main.count(*)"),
+                    ("null_count", f"system.main.count(*) FILTER (WHERE {identifier} IS NULL)"),
+                    ("nan_count", f"system.main.count(*) FILTER (WHERE {nan})"),
+                    ("distinct_count", f"system.main.count(DISTINCT {identifier}) FILTER (WHERE {valid})"),
                 ]
                 if semantic_type == "string":
-                    text_length = f"length(CAST({identifier} AS VARCHAR))"
+                    text_length = f"system.main.length(CAST({identifier} AS VARCHAR))"
                     metric_fields.extend(
                         [
-                            ("empty_count", f"count(*) FILTER (WHERE {valid} AND {text_length} = 0)"),
-                            ("minimum_length", f"min({text_length}) FILTER (WHERE {valid})"),
-                            ("maximum_length", f"max({text_length}) FILTER (WHERE {valid})"),
-                            ("mean_length", f"avg({text_length}) FILTER (WHERE {valid})"),
+                            ("empty_count", f"system.main.count(*) FILTER (WHERE {valid} AND {text_length} = 0)"),
+                            ("minimum_length", f"system.main.min({text_length}) FILTER (WHERE {valid})"),
+                            ("maximum_length", f"system.main.max({text_length}) FILTER (WHERE {valid})"),
+                            ("mean_length", f"system.main.avg({text_length}) FILTER (WHERE {valid})"),
                         ]
                     )
                 elif semantic_type in {"integer", "float", "decimal"}:
                     finite = _finite_predicate(identifier, raw_type)
                     metric_fields.extend(
                         [
-                            ("minimum", f"min({identifier}) FILTER (WHERE {valid})"),
-                            ("maximum", f"max({identifier}) FILTER (WHERE {valid})"),
-                            ("mean", f"avg({identifier}) FILTER (WHERE {valid})"),
-                            ("median", f"median({identifier}) FILTER (WHERE {valid})"),
-                            ("std", f"stddev_samp({identifier}) FILTER (WHERE {valid})"),
-                            ("sum", f"sum({identifier}) FILTER (WHERE {valid})"),
-                            ("finite_minimum", f"min({identifier}) FILTER (WHERE {finite})"),
-                            ("finite_maximum", f"max({identifier}) FILTER (WHERE {finite})"),
-                            ("finite_count", f"count(*) FILTER (WHERE {finite})"),
+                            ("minimum", f"system.main.min({identifier}) FILTER (WHERE {valid})"),
+                            ("maximum", f"system.main.max({identifier}) FILTER (WHERE {valid})"),
+                            ("mean", f"system.main.avg({identifier}) FILTER (WHERE {valid})"),
+                            ("median", f"system.main.median({identifier}) FILTER (WHERE {valid})"),
+                            ("std", f"system.main.stddev_samp({identifier}) FILTER (WHERE {valid})"),
+                            ("sum", f"system.main.sum({identifier}) FILTER (WHERE {valid})"),
+                            ("finite_minimum", f"system.main.min({identifier}) FILTER (WHERE {finite})"),
+                            ("finite_maximum", f"system.main.max({identifier}) FILTER (WHERE {finite})"),
+                            ("finite_count", f"system.main.count(*) FILTER (WHERE {finite})"),
                             (
                                 "finite_distinct_count",
-                                f"count(DISTINCT CAST({identifier} AS DOUBLE)) FILTER (WHERE {finite})",
+                                f"system.main.count(DISTINCT CAST({identifier} AS DOUBLE)) FILTER (WHERE {finite})",
                             ),
                         ]
                     )
                 elif semantic_type == "boolean":
                     metric_fields.extend(
                         [
-                            ("true_count", f"count(*) FILTER (WHERE {identifier} IS TRUE)"),
-                            ("false_count", f"count(*) FILTER (WHERE {identifier} IS FALSE)"),
+                            ("true_count", f"system.main.count(*) FILTER (WHERE {identifier} IS TRUE)"),
+                            ("false_count", f"system.main.count(*) FILTER (WHERE {identifier} IS FALSE)"),
                         ]
                     )
                 elif semantic_type in {"datetime", "date"}:
                     metric_fields.extend(
                         [
-                            ("minimum", f"min({identifier}) FILTER (WHERE {identifier} IS NOT NULL)"),
-                            ("maximum", f"max({identifier}) FILTER (WHERE {identifier} IS NOT NULL)"),
+                            ("minimum", f"system.main.min({identifier}) FILTER (WHERE {identifier} IS NOT NULL)"),
+                            ("maximum", f"system.main.max({identifier}) FILTER (WHERE {identifier} IS NOT NULL)"),
                         ]
                     )
                 metric_query = f"SELECT {', '.join(expression for _name, expression in metric_fields)} FROM ow"
@@ -712,7 +714,7 @@ class DuckDBEngine(DataFrameEngine):
                 )
                 order = identifier if raw_type == "TIMESTAMP_NS" else f"CAST({identifier} AS VARCHAR)"
                 top_query = (
-                    f"SELECT {identifier}, count(*) AS {count_name} FROM ow "
+                    f"SELECT {identifier}, system.main.count(*) AS {count_name} FROM ow "
                     f"WHERE {valid} GROUP BY {identifier} "
                     f"ORDER BY {count_name} DESC, {order} ASC LIMIT 10"
                 )
@@ -833,7 +835,7 @@ class DuckDBEngine(DataFrameEngine):
         raw_types = dict(zip(self._columns(frame), (str(item) for item in frame.types), strict=True))
         identifier = _quote_ident(column)
         valid = _valid_predicate(identifier, raw_types[column])
-        result = self._terminal_scalar(frame, f"SELECT count(*) FILTER (WHERE NOT ({valid})) FROM ow")
+        result = self._terminal_scalar(frame, f"SELECT system.main.count(*) FILTER (WHERE NOT ({valid})) FROM ow")
         return int(result or 0)
 
     def header_stats(self, frame: Any) -> dict[str, Any]:
@@ -841,7 +843,7 @@ class DuckDBEngine(DataFrameEngine):
         visible = self._visible_columns(frame)
         types = dict(zip(self._columns(frame), (str(item) for item in frame.types), strict=True))
         if not visible:
-            rows = int(self._terminal_scalar(frame, "SELECT count(*) FROM ow") or 0)
+            rows = int(self._terminal_scalar(frame, "SELECT system.main.count(*) FROM ow") or 0)
             return {
                 "missingCells": 0,
                 "missingRows": 0,
@@ -858,9 +860,12 @@ class DuckDBEngine(DataFrameEngine):
         # Exact duplicate detection already groups every visible value. Reuse
         # each group's multiplicity for the missing counts so the source is
         # executed once and only the final fixed-size aggregate reaches Python.
-        grouped_source = f"SELECT {group_columns}, count(*) AS {group_count_column} FROM ow GROUP BY {group_columns}"
+        grouped_source = (
+            f"SELECT {group_columns}, system.main.count(*) AS {group_count_column} FROM ow GROUP BY {group_columns}"
+        )
         projections = ", ".join(
-            f"coalesce(sum({group_count_column}) FILTER (WHERE {expression}), 0)" for expression in missing_expressions
+            f"coalesce(system.main.sum({group_count_column}) FILTER (WHERE {expression}), 0)"
+            for expression in missing_expressions
         )
         with self._terminal_connection(frame) as (connection, source_sql):
             if isinstance(frame, DuckDBSqlPlan):
@@ -873,27 +878,28 @@ class DuckDBEngine(DataFrameEngine):
                     connection,
                     source_sql,
                     f"SELECT {projections}, "
-                    f"coalesce(sum({group_count_column}) FILTER (WHERE {missing_row_expression}), 0), "
-                    f"coalesce(sum({group_count_column} - 1), 0) "
+                    f"coalesce(system.main.sum({group_count_column}) FILTER (WHERE {missing_row_expression}), 0), "
+                    f'coalesce(system.main.sum(system.main."-"({group_count_column}, 1)), 0) '
                     f"FROM ({grouped_source}) AS groups",
                 )[0]
             else:
                 # Live notebook relations execute on the user's connection.
                 # Retain the two-query shape instead of changing its settings.
                 missing_projections = ", ".join(
-                    f"count(*) FILTER (WHERE {expression})" for expression in missing_expressions
+                    f"system.main.count(*) FILTER (WHERE {expression})" for expression in missing_expressions
                 )
                 missing_counts = _execute_rows(
                     connection,
                     source_sql,
-                    f"SELECT {missing_projections}, count(*) FILTER (WHERE {missing_row_expression}) FROM ow",
+                    f"SELECT {missing_projections}, "
+                    f"system.main.count(*) FILTER (WHERE {missing_row_expression}) FROM ow",
                 )[0]
                 duplicate_rows = int(
                     _execute_scalar(
                         connection,
                         source_sql,
-                        "SELECT coalesce(sum(group_count - 1), 0) FROM "
-                        f"(SELECT count(*) AS group_count FROM ow GROUP BY {group_columns}) AS groups",
+                        'SELECT coalesce(system.main.sum(system.main."-"(group_count, 1)), 0) FROM '
+                        f"(SELECT system.main.count(*) AS group_count FROM ow GROUP BY {group_columns}) AS groups",
                     )
                     or 0
                 )
@@ -929,7 +935,7 @@ class DuckDBEngine(DataFrameEngine):
             if raw_type == "TIMESTAMP_NS" and " " in str(search):
                 text = f"system.main.replace({text}, 'T', ' ')"
             conditions.append(
-                f"contains(translate({text}, {_sql_literal(_ASCII_UPPER)}, "
+                f"system.main.contains(system.main.translate({text}, {_sql_literal(_ASCII_UPPER)}, "
                 f"{_sql_literal(_ASCII_LOWER)}), {_sql_literal(str(search).translate(_ASCII_TO_LOWER))})"
             )
         output, map_cardinality = _duckdb_query_output(identifier, raw_type)
@@ -940,7 +946,7 @@ class DuckDBEngine(DataFrameEngine):
         )
         order = identifier if raw_type == "TIMESTAMP_NS" else f"CAST({identifier} AS VARCHAR)"
         query = (
-            f"SELECT {identifier}, count(*) AS {count_name} FROM ow WHERE {' AND '.join(conditions)} "
+            f"SELECT {identifier}, system.main.count(*) AS {count_name} FROM ow WHERE {' AND '.join(conditions)} "
             f"GROUP BY {identifier} ORDER BY {count_name} DESC, {order} ASC "
             f"LIMIT {int(limit) + 1}"
         )
@@ -2189,7 +2195,7 @@ class DuckDBEngine(DataFrameEngine):
                     f"count(*) FILTER (WHERE NOT ({coordinate_finite})), "
                     f"count(DISTINCT {coordinate_identifier}), "
                     f"count(DISTINCT {validation_identifier}), "
-                    f"coalesce(bool_and(isfinite({validation_identifier})), TRUE), "
+                    f"coalesce(bool_and(system.main.isfinite({validation_identifier})), TRUE), "
                     f"coalesce(bool_and({validation_exact}), TRUE) FROM projected"
                 ),
             )[0]
@@ -2280,11 +2286,11 @@ class DuckDBEngine(DataFrameEngine):
         scaled_weight = (
             f"(({numeric} / 2.0 - {left_coordinate} / 2.0) / ({right_coordinate} / 2.0 - {left_coordinate} / 2.0))"
         )
-        weight_expression = f"CASE WHEN isfinite({span}) THEN {direct_weight} ELSE {scaled_weight} END"
+        weight_expression = f"CASE WHEN system.main.isfinite({span}) THEN {direct_weight} ELSE {scaled_weight} END"
         gap_size = f"{following} - {previous} - 1"
         eligible = (
-            f"{target_missing} AND isfinite({left_value}) AND isfinite({right_value}) "
-            f"AND isfinite({weight}) AND {weight} BETWEEN 0.0 AND 1.0"
+            f"{target_missing} AND system.main.isfinite({left_value}) AND system.main.isfinite({right_value}) "
+            f"AND system.main.isfinite({weight}) AND {weight} BETWEEN 0.0 AND 1.0"
         )
         if max_gap is not None:
             eligible += f" AND {gap_size} <= {int(max_gap)}"
@@ -2979,13 +2985,19 @@ def _duckdb_timestamp_ns_text(identifier: str) -> str:
     # Floor to microseconds before formatting and append the exact remainder;
     # neither Python datetime boxing nor a native narrowing cast can do this.
     ticks = f"system.main.epoch_ns({identifier})"
-    micros = f"system.main.make_timestamp(({ticks} // 1000) - CASE WHEN {ticks} % 1000 < 0 THEN 1 ELSE 0 END)"
-    remainder = f"(({ticks} % 1000 + 1000) % 1000)"
+    micros = (
+        f'system.main.make_timestamp(system.main."-"(system.main."//"({ticks}, 1000), '
+        f'CASE WHEN system.main."%"({ticks}, 1000) < 0 THEN 1 ELSE 0 END))'
+    )
+    remainder = f'system.main."%"(system.main."+"(system.main."%"({ticks}, 1000), 1000), 1000)'
     return (
         f"CASE WHEN system.main.isfinite({identifier}) THEN "
-        f"CASE WHEN {ticks} % 1000000000 = 0 THEN system.main.strftime({micros}, '%Y-%m-%dT%H:%M:%S') "
-        f"ELSE system.main.strftime({micros}, '%Y-%m-%dT%H:%M:%S.%f') || "
-        f"CASE WHEN {ticks} % 1000 = 0 THEN '' ELSE system.main.lpad(CAST({remainder} AS VARCHAR), 3, '0') END END "
+        f'CASE WHEN system.main."%"({ticks}, 1000000000) = 0 '
+        f"THEN system.main.strftime({micros}, '%Y-%m-%dT%H:%M:%S') "
+        'ELSE system.main."||"('
+        f"system.main.strftime({micros}, '%Y-%m-%dT%H:%M:%S.%f'), "
+        f'CASE WHEN system.main."%"({ticks}, 1000) = 0 '
+        f"THEN '' ELSE system.main.lpad(CAST({remainder} AS VARCHAR), 3, '0') END) END "
         f"ELSE CAST({identifier} AS VARCHAR) END"
     )
 
@@ -3256,18 +3268,18 @@ def _case_sensitive_group_value(identifier: str, raw_type: str) -> str:
 
 
 def _nan_predicate(identifier: str, raw_type: str) -> str:
-    return f"({identifier} IS NOT NULL AND isnan({identifier}))" if _is_float_type(raw_type) else "FALSE"
+    return f"({identifier} IS NOT NULL AND system.main.isnan({identifier}))" if _is_float_type(raw_type) else "FALSE"
 
 
 def _valid_predicate(identifier: str, raw_type: str) -> str:
     if _is_float_type(raw_type):
-        return f"({identifier} IS NOT NULL AND NOT isnan({identifier}))"
+        return f"({identifier} IS NOT NULL AND NOT system.main.isnan({identifier}))"
     return f"{identifier} IS NOT NULL"
 
 
 def _finite_predicate(identifier: str, raw_type: str) -> str:
     if _is_float_type(raw_type):
-        return f"({identifier} IS NOT NULL AND isfinite({identifier}))"
+        return f"({identifier} IS NOT NULL AND system.main.isfinite({identifier}))"
     return f"{identifier} IS NOT NULL"
 
 
@@ -3335,14 +3347,20 @@ def _numeric_histogram_plan(
     boundaries = tuple([nextafter(edge, -inf) for edge in edges[1:-1]] + [maximum_float])
     if all(left < right for left, right in zip(boundaries, boundaries[1:], strict=False)):
         boundary_sql = ", ".join(
-            [f"nextafter(CAST({_sql_literal(edge)} AS DOUBLE), CAST('-Infinity' AS DOUBLE))" for edge in edges[1:-1]]
+            [
+                f"system.main.nextafter(CAST({_sql_literal(edge)} AS DOUBLE), CAST('-Infinity' AS DOUBLE))"
+                for edge in edges[1:-1]
+            ]
             + [f"CAST({_sql_literal(maximum_float)} AS DOUBLE)"]
         )
         return (
             None,
             minimum_float,
             maximum_float,
-            [f"map_values(histogram({numeric_value}, [{boundary_sql}]) FILTER (WHERE {finite}))"],
+            [
+                f"system.main.map_values(system.main.histogram({numeric_value}, [{boundary_sql}]) "
+                f"FILTER (WHERE {finite}))"
+            ],
             len(boundaries),
         )
 
@@ -3357,7 +3375,7 @@ def _numeric_histogram_plan(
                 f"{numeric_value} >= {_sql_literal(edges[bin_index])} "
                 f"AND {numeric_value} < {_sql_literal(edges[bin_index + 1])}"
             )
-        count_expressions.append(f"count(*) FILTER (WHERE {finite} AND ({interval}))")
+        count_expressions.append(f"system.main.count(*) FILTER (WHERE {finite} AND ({interval}))")
     return None, minimum_float, maximum_float, count_expressions, None
 
 
@@ -3475,7 +3493,7 @@ def _filter_query(columns: Iterable[str], model: Mapping[str, Any]) -> str:
             if value_filter.get("includeNulls"):
                 alternatives.append(f"{identifier} IS NULL")
             if value_filter.get("includeNaN") and column_filter.get("type") == "float":
-                alternatives.append(f"coalesce(isnan({identifier}), FALSE)")
+                alternatives.append(f"coalesce(system.main.isnan({identifier}), FALSE)")
             if not alternatives:
                 alternatives.append("FALSE")
             conditions.append("(" + " OR ".join(alternatives) + ")")
@@ -3520,22 +3538,22 @@ def _predicate_expression(identifier: str, predicate: Mapping[str, Any], column_
     if operator == "isNotNull":
         return f"{identifier} IS NOT NULL"
     if operator == "isNaN":
-        return f"coalesce(isnan({identifier}), FALSE)" if column_type == "float" else "FALSE"
+        return f"coalesce(system.main.isnan({identifier}), FALSE)" if column_type == "float" else "FALSE"
     if operator == "isNotNaN":
-        return f"coalesce(NOT isnan({identifier}), TRUE)" if column_type == "float" else "TRUE"
+        return f"coalesce(NOT system.main.isnan({identifier}), TRUE)" if column_type == "float" else "TRUE"
     if operator == "equals":
         result = f"{identifier} = {_sql_literal(value)}"
     elif operator == "notEquals":
         result = f"{identifier} <> {_sql_literal(value)}"
     elif operator == "contains":
         result = (
-            f"contains(translate(CAST({identifier} AS VARCHAR), {_sql_literal(_ASCII_UPPER)}, "
+            f"system.main.contains(system.main.translate(CAST({identifier} AS VARCHAR), {_sql_literal(_ASCII_UPPER)}, "
             f"{_sql_literal(_ASCII_LOWER)}), {_sql_literal(str(value).translate(_ASCII_TO_LOWER))})"
         )
     elif operator == "startsWith":
-        result = f"starts_with(CAST({identifier} AS VARCHAR), {_sql_literal(str(value))})"
+        result = f"system.main.starts_with(CAST({identifier} AS VARCHAR), {_sql_literal(str(value))})"
     elif operator == "endsWith":
-        result = f"ends_with(CAST({identifier} AS VARCHAR), {_sql_literal(str(value))})"
+        result = f"system.main.ends_with(CAST({identifier} AS VARCHAR), {_sql_literal(str(value))})"
     elif operator in {"gt", "gte", "lt", "lte"}:
         symbol = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[operator]
         result = f"{identifier} {symbol} {_sql_literal(value)}"
@@ -3544,7 +3562,7 @@ def _predicate_expression(identifier: str, predicate: Mapping[str, Any], column_
         result = f"({identifier} >= {_sql_literal(value)} AND {identifier} <= {second})"
     valid = f"{identifier} IS NOT NULL"
     if column_type == "float":
-        valid += f" AND coalesce(NOT isnan({identifier}), FALSE)"
+        valid += f" AND coalesce(NOT system.main.isnan({identifier}), FALSE)"
     return f"(({result}) AND {valid})"
 
 
@@ -4325,7 +4343,7 @@ def _ow_checked_integer_result(expression):
 
 def _ow_valid(identifier, raw_type):
     if _ow_is_float(raw_type):
-        return "(" + identifier + " IS NOT NULL AND NOT isnan(" + identifier + "))"
+        return "(" + identifier + " IS NOT NULL AND NOT system.main.isnan(" + identifier + "))"
     return identifier + " IS NOT NULL"
 
 
@@ -4363,7 +4381,7 @@ def _ow_conditional_column(
     if predicate["operator"] not in {"isNull", "isNotNull", "isNaN", "isNotNaN"}:
         valid = identifier + " IS NOT NULL"
         if column_type == "float":
-            valid += " AND coalesce(NOT isnan(" + identifier + "), FALSE)"
+            valid += " AND coalesce(NOT system.main.isnan(" + identifier + "), FALSE)"
         expression = "CASE WHEN " + valid + " THEN " + expression + " ELSE " + missing_sql + " END"
     return _ow_assign(df, target, expression)
 
@@ -4389,7 +4407,7 @@ def _ow_filter(df, model):
             if values.get("includeNulls"):
                 alternatives.append(identifier + " IS NULL")
             if values.get("includeNaN") and column_filter.get("type") == "float":
-                alternatives.append("coalesce(isnan(" + identifier + "), FALSE)")
+                alternatives.append("coalesce(system.main.isnan(" + identifier + "), FALSE)")
             if not alternatives:
                 alternatives.append("FALSE")
             conditions.append("(" + " OR ".join(alternatives) + ")")
@@ -4435,9 +4453,9 @@ def _ow_predicate(identifier, predicate, column_type):
     if operator == "isNotNull":
         return identifier + " IS NOT NULL"
     if operator == "isNaN":
-        return "coalesce(isnan(" + identifier + "), FALSE)" if column_type == "float" else "FALSE"
+        return "coalesce(system.main.isnan(" + identifier + "), FALSE)" if column_type == "float" else "FALSE"
     if operator == "isNotNaN":
-        return "coalesce(NOT isnan(" + identifier + "), TRUE)" if column_type == "float" else "TRUE"
+        return "coalesce(NOT system.main.isnan(" + identifier + "), TRUE)" if column_type == "float" else "TRUE"
     if operator == "equals":
         result = identifier + " = " + _ow_literal(value)
     elif operator == "notEquals":
@@ -4445,13 +4463,14 @@ def _ow_predicate(identifier, predicate, column_type):
     elif operator == "contains":
         folded = str(value).translate(str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"))
         result = (
-            "contains(translate(CAST(" + identifier + " AS VARCHAR), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
+            "system.main.contains(system.main.translate(CAST(" + identifier
+            + " AS VARCHAR), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
             "'abcdefghijklmnopqrstuvwxyz'), " + _ow_literal(folded) + ")"
         )
     elif operator == "startsWith":
-        result = "starts_with(CAST(" + identifier + " AS VARCHAR), " + _ow_literal(str(value)) + ")"
+        result = "system.main.starts_with(CAST(" + identifier + " AS VARCHAR), " + _ow_literal(str(value)) + ")"
     elif operator == "endsWith":
-        result = "ends_with(CAST(" + identifier + " AS VARCHAR), " + _ow_literal(str(value)) + ")"
+        result = "system.main.ends_with(CAST(" + identifier + " AS VARCHAR), " + _ow_literal(str(value)) + ")"
     elif operator in {"gt", "gte", "lt", "lte"}:
         symbol = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[operator]
         result = identifier + " " + symbol + " " + _ow_literal(value)
@@ -4462,7 +4481,7 @@ def _ow_predicate(identifier, predicate, column_type):
         )
     valid = identifier + " IS NOT NULL"
     if column_type == "float":
-        valid += " AND coalesce(NOT isnan(" + identifier + "), FALSE)"
+        valid += " AND coalesce(NOT system.main.isnan(" + identifier + "), FALSE)"
     return "((" + result + ") AND " + valid + ")"
 
 
@@ -4641,7 +4660,7 @@ def _ow_fill_missing_linear_interpolation(df, target, coordinate, max_gap):
         coordinate_identifier, coordinate_type, minimum_coordinate
     )
     coordinate_finite = (
-        "(" + coordinate_identifier + " IS NOT NULL AND isfinite(" + coordinate_identifier + "))"
+        "(" + coordinate_identifier + " IS NOT NULL AND system.main.isfinite(" + coordinate_identifier + "))"
         if _ow_is_float(coordinate_type)
         else coordinate_identifier + " IS NOT NULL"
     )
@@ -4658,7 +4677,7 @@ def _ow_fill_missing_linear_interpolation(df, target, coordinate, max_gap):
             + ", " + coordinate_roundtrip + " AS " + validation_exact + " FROM ow) "
             + "SELECT count(*), count(*) FILTER (WHERE NOT (" + coordinate_finite
             + ")), count(DISTINCT " + coordinate_identifier + "), count(DISTINCT "
-            + validation_identifier + "), coalesce(bool_and(isfinite(" + validation_identifier
+            + validation_identifier + "), coalesce(bool_and(system.main.isfinite(" + validation_identifier
             + ")), TRUE), coalesce(bool_and(" + validation_exact + "), TRUE) FROM projected",
         ).fetchone()
     except Exception as error:
@@ -4740,10 +4759,13 @@ def _ow_fill_missing_linear_interpolation(df, target, coordinate, max_gap):
         "((" + numeric + " / 2.0 - " + left_coordinate + " / 2.0) / ("
         + right_coordinate + " / 2.0 - " + left_coordinate + " / 2.0))"
     )
-    weight_expression = "CASE WHEN isfinite(" + span + ") THEN " + direct_weight + " ELSE " + scaled_weight + " END"
+    weight_expression = (
+        "CASE WHEN system.main.isfinite(" + span + ") THEN "
+        + direct_weight + " ELSE " + scaled_weight + " END"
+    )
     eligible = (
-        target_missing + " AND isfinite(" + left_value + ") AND isfinite(" + right_value
-        + ") AND isfinite(" + weight + ") AND " + weight + " BETWEEN 0.0 AND 1.0"
+        target_missing + " AND system.main.isfinite(" + left_value + ") AND system.main.isfinite(" + right_value
+        + ") AND system.main.isfinite(" + weight + ") AND " + weight + " BETWEEN 0.0 AND 1.0"
     )
     if max_gap is not None:
         eligible += " AND " + following + " - " + previous + " - 1 <= " + str(int(max_gap))

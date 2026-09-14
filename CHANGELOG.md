@@ -15,6 +15,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- DuckDB notebook viewing keeps correct counts, filters and timestamps when the caller defines conflicting functions.
 - Polars and DuckDB By Example refuse date transformations whose native month names disagree with the supplied examples.
 - Converting DuckDB nanosecond timestamps before 1970 to Date preserves their calendar day.
 - DuckDB Convert Type to Datetime preserves existing timestamp precision and timezone awareness.

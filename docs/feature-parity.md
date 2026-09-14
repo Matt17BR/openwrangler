@@ -595,6 +595,9 @@ cleaning results beyond the displayed rows and columns before confirmation. Rena
 retain lazy input evaluation, so later reads can still reveal inherited source errors. Query ownership, cleanup and
 validation costs are described in the [DuckDB architecture](architecture.md#duckdb).
 
+Caller-defined DuckDB functions do not replace Open Wrangler's viewing statistics, value searches or filter tests.
+Functions used by the source relation keep their original behavior.
+
 For top-level `TIMESTAMP_NS` columns, the grid, filter choices and profiles display timestamps without rounding.
 Exact microsecond values remain selectable. Finer fractions and timestamp infinities can be displayed but cannot be
 selected with the current filter format; choices are disabled and cell-filter requests refuse without changing the view.
