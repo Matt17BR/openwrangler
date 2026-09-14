@@ -10,7 +10,8 @@ They do not establish the performance of a current release. The complete
 remain available in Git history; the
 [original instructions](https://github.com/Matt17BR/openwrangler/blob/6b8cd775b68f31dcfa72fb41a6a1be63e03c3dc4/docs/performance-comparison.md)
 include the optional mixed-data profile and reporting rules. Those commands require that historical checkout.
-A new comparison would need a fresh decision about its scope, third-party dependencies and maintenance cost.
+The separate [public notebook workflow comparison](https://github.com/Matt17BR/openwrangler/issues/1419) has a finite
+scope and an unresolved interaction blocker. It does not reinstate this archived benchmark program.
 
 Current candidates retain the direct Open Wrangler installed-performance checks described in
 [Testing](testing.md#release-candidate-checks). The weekly runtime performance checks and installed Data Wrangler
