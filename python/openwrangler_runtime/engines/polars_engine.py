@@ -193,6 +193,36 @@ def _polars_temporal_cast_expression(expression: Any, input_dtype: Any, target_d
             return expression
         if target_dtype == pl.Date:
             return expression.dt.date()
+    if input_dtype == pl.String and target_dtype == pl.Datetime:
+
+        def parse(format: str, *, aware: bool = False) -> Any:
+            return expression.str.to_datetime(
+                format=format, time_unit="us", time_zone="UTC" if aware else None, strict=False, exact=True
+            )
+
+        naive_formats = (
+            "%Y-%m-%dT%H:%M:%S%.f",
+            "%Y-%m-%dT%H:%M",
+            "%Y-%m-%d %H:%M:%S%.f",
+            "%Y-%m-%d %H:%M",
+            "%Y-%m-%d",
+        )
+        aware_formats = (
+            "%+",
+            "%Y-%m-%dT%H:%M:%S%.f%#z",
+            "%Y-%m-%dT%H:%M%#z",
+            "%Y-%m-%d %H:%M:%S%.f%#z",
+            "%Y-%m-%d %H:%M%#z",
+        )
+        naive = pl.coalesce([parse(format) for format in naive_formats])
+        aware = pl.coalesce([parse(format, aware=True) for format in aware_formats]).is_not_null()
+        checked_null = (
+            pl.when(aware)
+            .then(pl.lit("Timezone-aware text requires an explicit timezone conversion policy."))
+            .otherwise(pl.lit(None, dtype=pl.String))
+            .str.to_datetime(format="%Y-%m-%d", time_unit="us", strict=True, exact=True)
+        )
+        return pl.coalesce(checked_null, naive).alias(expression.meta.output_name())
     return expression.cast(target_dtype, strict=False)
 
 

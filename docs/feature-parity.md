@@ -206,7 +206,10 @@ Polars datetime formatting preserves native time zones and nanosecond fractions 
 Eager and lazy frames support native temporal and text inputs, including nulls, without modifying the source.
 Convert Type to Datetime also preserves the unit and timezone of an already typed Datetime column. Converting it
 to Date uses the source's local calendar day. These conversions retain empty and null values in live and generated
-execution.
+execution. String conversion accepts year-month-day dates and times separated by `T` or a space, with
+optional seconds and fractions. Invalid suffixes become null. Recognized timezone-bearing text is refused instead
+of silently losing its offset; other timezone spellings may be unrecognized and become null. Custom Code can
+specify a parsing and timezone policy.
 
 Pandas Convert Type and Format Datetime retain native Arrow dates outside the nanosecond range, including year 2500
 on the minimum runtime. Datetime conversion preserves timestamp storage; date conversion preserves local days or

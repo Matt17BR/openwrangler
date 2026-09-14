@@ -1821,6 +1821,129 @@ def test_polars_typed_datetime_cast_preserves_storage_or_local_calendar(target: 
 
 
 @pytest.mark.parametrize("lazy", [False, True], ids=["eager", "lazy"])
+def test_polars_datetime_text_cast_matches_complete_input(lazy: bool) -> None:
+    cases: list[tuple[str | None, int | None]] = [
+        ("2024-01-02T03:04:05.123456", 1704164645123456),
+        ("2024-01-02T03:04", 1704164640000000),
+        ("2024-01-02 03:04:05.123456", 1704164645123456),
+        ("2024-01-02 03:04", 1704164640000000),
+        ("2024-01-02", 1704153600000000),
+        ("1969-12-31T23:59:59.999999", -1),
+        (None, None),
+        ("", None),
+        ("invalid", None),
+        ("2024-02-30", None),
+        ("prefix2024-01-02T03:04:05", None),
+        ("2024-01-02T03:04:05junk", None),
+        ("2024-01-02T03:04:05Zjunk", None),
+        ("2024-01-02T03:04+99:99", None),
+        ("2024-01-02T03:04:05+02:99", None),
+        # These timezone spellings are outside the recognized refusal domain.
+        ("2024-01-02T03:04 UTC", None),
+        ("2024-01-02 03:04 UTC", None),
+        ("2024-01-02T03:04:05+00:00:30", None),
+    ]
+    text_inputs = [cases, [], [(None, None), (None, None)]]
+    inputs = [
+        (
+            pl.Series("when's value", [value for value, _ in values], dtype=pl.String),
+            pl.Series("when's value", [tick for _, tick in values], dtype=pl.Datetime("us")),
+        )
+        for values in text_inputs
+    ]
+    typed = pl.Series("when's value", [-1, 1704164645123456789, None], dtype=pl.Datetime("ns", "America/New_York"))
+    inputs.append((typed, typed))
+    engine = PolarsEngine()
+    namespace: dict[str, Any] = {}
+    for values, expected_values in inputs:
+        original = pl.DataFrame(
+            {"when's value": values, "kept": pl.Series(list(reversed(range(len(values)))), dtype=pl.Int64)}
+        )
+        source = original.lazy() if lazy else original.clone()
+        schema = engine.schema(source)
+        lineage = source_lineage(schema)
+        operation = bind_step(step("castColumn", column=lineage[0], dtype="datetime"), schema, lineage)
+        if not namespace:
+            # A program compiled from text must also inspect a reused input's current dtype.
+            exec(engine.compile_plan([operation]), namespace, namespace)
+        expected = original.with_columns(expected_values)
+        for result in (engine.apply_transform(source, operation), namespace["clean_data"](source)):
+            assert isinstance(result, pl.LazyFrame) is lazy
+            output = result.collect() if isinstance(result, pl.LazyFrame) else result
+            assert_polars_frame_equal(output, expected, check_exact=True)
+            assert output["when's value"].cast(pl.Int64).to_list() == expected_values.cast(pl.Int64).to_list()
+            assert derive_lineage(lineage, engine.schema(result), operation) == lineage
+        unchanged = source.collect() if isinstance(source, pl.LazyFrame) else source
+        assert_polars_frame_equal(unchanged, original, check_exact=True)
+
+
+@pytest.mark.parametrize("lazy", [False, True], ids=["eager", "lazy"])
+def test_polars_datetime_text_cast_refuses_recognized_timezones(lazy: bool) -> None:
+    aware_values = [
+        "2024-01-02T03:04:05Z",
+        "2024-01-02T03:04z",
+        "2024-01-02T03:04:05.123456+02",
+        "2024-01-02T03:04+0200",
+        "2024-01-02T03:04:05-05:30",
+        "2024-01-02 03:04:05Z",
+        "2024-01-02 03:04+02:00",
+        "2024-01-02T03:04:05 UTC",
+        "2024-01-02 03:04:05 UTC",
+    ]
+    engine = PolarsEngine()
+    namespace: dict[str, Any] = {}
+    for aware in aware_values:
+        values = ["2024-01-02T03:04:05", None, "invalid", aware]
+        original = pl.DataFrame({"when's value": values, "kept": [7, 4, 4, 1]})
+        source = original.lazy() if lazy else original.clone()
+        schema = engine.schema(source)
+        lineage = source_lineage(schema)
+        operation = bind_step(step("castColumn", column=lineage[0], dtype="datetime"), schema, lineage)
+        if not namespace:
+            exec(engine.compile_plan([operation]), namespace, namespace)
+        for generated in (False, True):
+            with pytest.raises(
+                pl.exceptions.InvalidOperationError,
+                match=r"Timezone-aware text requires an explicit timezone conversion policy\.",
+            ):
+                result = namespace["clean_data"](source) if generated else engine.apply_transform(source, operation)
+                if isinstance(result, pl.LazyFrame):
+                    result.collect()
+            unchanged = source.collect() if isinstance(source, pl.LazyFrame) else source
+            assert_polars_frame_equal(unchanged, original, check_exact=True)
+            assert engine.schema(source) == schema
+
+
+@pytest.mark.parametrize("lazy", [False, True], ids=["eager", "lazy"])
+def test_polars_datetime_text_cast_reads_type_after_preceding_cast(lazy: bool) -> None:
+    engine = PolarsEngine()
+    original = pl.DataFrame(
+        {
+            "when's value": pl.Series([-1, 1704164645123456, None], dtype=pl.Datetime("us")),
+            "kept": [7, 4, 4],
+        }
+    )
+    source = original.lazy() if lazy else original.clone()
+    schema = engine.schema(source)
+    lineage = source_lineage(schema)
+    to_text = bind_step(step("castColumn", column=lineage[0], dtype="string"), schema, lineage)
+    text_frame = engine.apply_transform(source, to_text)
+    text_schema = engine.schema(text_frame)
+    text_lineage = derive_lineage(lineage, text_schema, to_text)
+    to_datetime = bind_step(step("castColumn", column=text_lineage[0], dtype="datetime"), text_schema, text_lineage)
+    to_datetime["id"] = "edge-datetime-after-text"
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([to_text, to_datetime]), namespace, namespace)
+    for result in (engine.apply_transform(text_frame, to_datetime), namespace["clean_data"](source)):
+        assert isinstance(result, pl.LazyFrame) is lazy
+        output = result.collect() if isinstance(result, pl.LazyFrame) else result
+        assert_polars_frame_equal(output, original, check_exact=True)
+        assert derive_lineage(text_lineage, engine.schema(result), to_datetime) == lineage
+    unchanged = source.collect() if isinstance(source, pl.LazyFrame) else source
+    assert_polars_frame_equal(unchanged, original, check_exact=True)
+
+
+@pytest.mark.parametrize("lazy", [False, True], ids=["eager", "lazy"])
 @pytest.mark.parametrize("replace", [False, True], ids=["append", "replace"])
 @pytest.mark.parametrize(
     ("values", "dtype", "format", "expected"),
