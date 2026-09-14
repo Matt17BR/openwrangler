@@ -51,7 +51,13 @@ exports.run = async () => {
     const scopes = frames();
     const controls = [];
     for (const frame of scopes) {
-      controls.push(...await frame.evaluate(() => Array.from(document.querySelectorAll(
+      controls.push(...await frame.evaluate(() => {
+        const roots = [document];
+        for (let i = 0; i < roots.length; i++) {
+          if (roots.length > 128) throw new Error("Control shadow-root bound");
+          for (const element of roots[i].querySelectorAll("*")) if (element.shadowRoot) roots.push(element.shadowRoot);
+        }
+        return roots.flatMap((root) => Array.from(root.querySelectorAll(
         'button,[role="button"],[role="menuitem"],[role="treeitem"],[role="textbox"],[role="combobox"],[role="checkbox"],select,[role="option"],input'
       )).filter((e) => e.checkVisibility({ checkVisibilityCSS: true })).flatMap((e) => {
         const operationSearch = e.getAttribute("placeholder") === "Search for operations...";
@@ -61,7 +67,8 @@ exports.run = async () => {
         return [{ role: e.getAttribute("role") || e.tagName.toLowerCase(), tag: e.tagName.toLowerCase(), label: label.slice(0, 160),
           disabled: e.matches(":disabled") || e.getAttribute("aria-disabled") === "true",
           ...(operationSearch && ["", "Lowercase"].includes(e.value) ? { value: e.value } : {}) }];
-      }).slice(0, 32)).then((items) => items.map((item) => ({ ...item, surface: frame === page.mainFrame() ? "workbench" : "webview" }))));
+      }).slice(0, 32)).slice(0, 32);
+      }).then((items) => items.map((item) => ({ ...item, surface: frame === page.mainFrame() ? "workbench" : "webview" }))));
     }
     receipt.controls.push({ stage, controls: controls.slice(0, 32) });
     assert(Buffer.byteLength(JSON.stringify(receipt.controls)) <= 16384, "DISCOVERY_GATE:control-byte-bound");
@@ -163,15 +170,26 @@ exports.run = async () => {
     await click(variable, "exact-variable");
     const original = [["0", "North"], ["1", "SOUTH"], ["2", "East"], ["3", "WEST"]];
     await poll(async () => { await consent(); return rendered(original); }, "initial-grid");
-    const sidebar = page.locator(".part.sidebar:visible");
-    const search = sidebar.getByPlaceholder("Search for operations...", { exact: true });
-    await poll(() => visible(search), "editing-search");
+    let operationsFrame, search;
+    await poll(async () => {
+      const matches = [];
+      for (const frame of frames()) {
+        const input = frame.locator('input[placeholder^="Search for operations"]:visible');
+        assert(await input.count() <= 1, "DISCOVERY_GATE:ambiguous-operation-search");
+        if (await visible(input)) matches.push({ frame, input });
+      }
+      assert(matches.length <= 1, "DISCOVERY_GATE:ambiguous-operation-search");
+      if (!matches.length) return false;
+      operationsFrame = matches[0].frame;
+      search = matches[0].input;
+      return true;
+    }, "editing-search");
     receipt.openToEditingMs = performance.now() - openStarted;
     checkpoint("editing-controls");
     await capture();
     checkpoint("operation-search");
     await search.fill("Lowercase");
-    const operation = sidebar.getByRole("treeitem", { name: /lowercase/i });
+    const operation = operationsFrame.getByText(/^(?:Convert text to )?Lowercase$/i);
     await poll(() => visible(operation), "lowercase-result");
     await capture();
     await click(operation, "lowercase");
