@@ -11,6 +11,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Nested mapping output refuses colliding text keys instead of silently dropping entries.
 - DuckDB output preserves nanosecond timestamps inside lists, arrays, structs and maps, including distinct timestamp map keys.
 - Polars grid and profile output preserves timestamp and duration precision inside lists, arrays and structs. Copied cells retain that precision.
 - New columns remain in view when Code Preview opens automatically.

@@ -2462,6 +2462,91 @@ def test_nested_typed_cells_are_strict_json_safe() -> None:
     json.dumps(cell, allow_nan=False)
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        {1: "first", "1": "second"},
+        {"1": "first", 1: "second"},
+        {datetime(1970, 1, 1): "first", "1970-01-01 00:00:00": "second"},
+        {"1970-01-01 00:00:00": "same", datetime(1970, 1, 1): "same"},
+        {"nested": [{1: None, "1": None}]},
+        {"nested": {"1970-01-01 00:00:00": None, datetime(1970, 1, 1): None}},
+    ],
+)
+def test_nested_typed_cells_refuse_colliding_mapping_keys(value: Any) -> None:
+    from copy import deepcopy
+
+    before = deepcopy(value)
+    with pytest.raises(EngineError, match=r"^Nested mapping keys must remain distinct when converted to text\.$"):
+        normalize_cell(value)
+    assert value == before
+
+
+def test_nested_typed_cells_preserve_noncolliding_mapping_keys_and_order() -> None:
+    from collections import UserDict
+
+    value = UserDict({2: "integer", 1.5: "float", None: "null-key", (1, 2): "tuple", "__proto__": "text"})
+    expected = {"2": "integer", "1.5": "float", "None": "null-key", "(1, 2)": "tuple", "__proto__": "text"}
+    cell = normalize_cell({"nested": [value]})
+    assert cell["raw"] == {"nested": [expected]}
+    assert list(cell["raw"]["nested"][0]) == list(expected)
+    assert cell["display"] == json.dumps({"nested": [expected]}, ensure_ascii=False, separators=(",", ":"))
+    assert list(value.items()) == [
+        (2, "integer"),
+        (1.5, "float"),
+        (None, "null-key"),
+        ((1, 2), "tuple"),
+        ("__proto__", "text"),
+    ]
+
+
+@pytest.mark.parametrize("backend", ["pandas", "duckdb"])
+def test_page_refuses_colliding_mapping_keys_without_mutating_source(backend: str) -> None:
+    from contextlib import nullcontext
+
+    from openwrangler_runtime.engines import DuckDBEngine
+    from openwrangler_runtime.engines.duckdb_engine import _connect
+    from openwrangler_runtime.session_result import read_live_page
+
+    mapping = {datetime(1970, 1, 1): "native", "1970-01-01 00:00:00": "text"}
+    with _connect() if backend == "duckdb" else nullcontext() as connection:
+        if backend == "duckdb":
+            assert connection is not None
+            engine = DuckDBEngine()
+            source = connection.sql(
+                "SELECT 0 AS id, map([union_value(t := make_timestamp_ns(0))::UNION(t TIMESTAMP_NS, s VARCHAR), "
+                "union_value(s := '1970-01-01 00:00:00')::UNION(t TIMESTAMP_NS, s VARCHAR)], "
+                "['native', 'text']) AS payload"
+            )
+            before = source.fetchall()
+            assert before == [(0, mapping)] and source.project("cardinality(payload)").fetchone() == (2,)
+            frame = engine.normalize_notebook_relation(source)
+        else:
+            engine = PandasEngine()
+            source = pd.DataFrame({"id": [0], "payload": [mapping]})
+            before = source.copy(deep=True)
+            frame = source
+        try:
+            with pytest.raises(
+                EngineError, match=r"^Nested mapping keys must remain distinct when converted to text\.$"
+            ):
+                read_live_page(engine, frame, 0, 1, total_rows=1, column_projection=[(1, "payload")])
+            # An omitted problematic column and an empty slice still publish normally.
+            page, _size = read_live_page(engine, frame, 0, 1, total_rows=1, column_projection=[(0, "id")])
+            assert page["rows"][0]["values"][0]["raw"] == 0
+            assert (
+                read_live_page(engine, frame, 1, 1, total_rows=1, column_projection=[(1, "payload")])[0]["rows"] == []
+            )
+            if backend == "duckdb":
+                assert source.fetchall() == before
+                assert source.project("cardinality(payload)").fetchone() == (2,)
+            else:
+                pd.testing.assert_frame_equal(source, before)
+            assert list(mapping.items()) == [(datetime(1970, 1, 1), "native"), ("1970-01-01 00:00:00", "text")]
+        finally:
+            engine.close()
+
+
 def test_projected_page_retains_typed_cell_encodings_and_strict_json() -> None:
     engine = PandasEngine()
     frame = engine.ensure_row_ids(
