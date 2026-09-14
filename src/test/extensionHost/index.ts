@@ -2563,14 +2563,6 @@ async function exerciseReleasedJupyterExtension(
       variableNotebookEditor,
       "immediately before opening the real Jupyter Variables view"
     );
-    await vscode.commands.executeCommand("jupyter.openVariableView");
-    assertExactOpenNotebookDocument(notebook, "after opening the real Jupyter Variables view");
-    assertExactVisibleReleasedNotebookEditor(
-      notebook,
-      variableNotebookEditor,
-      "after opening the real Jupyter Variables view"
-    );
-
     assertExactOpenNotebookDocument(
       notebook,
       `before resolving the ${RELEASED_JUPYTER_VARIABLES_PANDAS.name} action from Jupyter Variables`
@@ -3763,7 +3755,10 @@ async function dispatchReleasedJupyterVariableAction(
   variableName: string,
   checkpoint: string
 ): Promise<void> {
-  await restoreCursorRemoteReleasedJupyterNotebook(notebook, checkpoint);
+  const exactEditor = await showExactReleasedNotebook(notebook);
+  await vscode.commands.executeCommand("jupyter.openVariableView");
+  assertExactOpenNotebookDocument(notebook, "after opening the real Jupyter Variables view");
+  assertExactVisibleReleasedNotebookEditor(notebook, exactEditor, "after opening the real Jupyter Variables view");
   const viewerAction = await waitForReleasedJupyterVariableAction(workbench, notebook, variableName, checkpoint);
   assert.equal(
     releasedJupyterSessionTabs().length,
@@ -3792,26 +3787,6 @@ async function dispatchReleasedJupyterVariableAction(
     authoritativeReceiptAfterActivationFailure: () => waitForReleasedJupyterVariableActionReceipt(variableName)
   });
   recordAcceptanceProgress(`${checkpoint}:receipt`);
-}
-
-async function restoreCursorRemoteReleasedJupyterNotebook(
-  notebook: vscode.NotebookDocument,
-  checkpoint: string
-): Promise<void> {
-  if (process.env.OPEN_WRANGLER_TEST_EDITOR !== "cursor" || process.env.OPEN_WRANGLER_TEST_PHASE !== "jupyter-remote") {
-    return;
-  }
-  assertExactOpenNotebookDocument(notebook, "before checking Cursor's remote Jupyter Variables notebook");
-  if (vscode.window.activeNotebookEditor?.notebook === notebook) return;
-
-  recordAcceptanceProgress(`${checkpoint}:focus-drift`);
-  const exactEditor = await showExactReleasedNotebook(notebook);
-  assertExactVisibleReleasedNotebookEditor(
-    notebook,
-    exactEditor,
-    "after restoring Cursor's remote Jupyter Variables notebook"
-  );
-  recordAcceptanceProgress(`${checkpoint}:refocused`);
 }
 
 async function waitForReleasedJupyterVariableActionReceipt(variableName: string): Promise<void> {

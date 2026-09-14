@@ -298,6 +298,10 @@ setup retain their explicit synchronization. A missing production publication mu
 the ordinary assertion path. Page assertions use the existing read-only request option so inspecting returned rows
 does not replace the visible page or retire the renderer's view context. Requests that deliberately change the view
 or exercise recovery keep their own mutation path.
+The released-Jupyter Variables action shows its exact notebook and opens Jupyter's Variables view once before each
+bounded action acquisition, including after code insertion or session disposal changes focus. The shared dispatcher
+owns this preparation for Pandas, DuckDB and PySpark; it still requires one trusted keyboard activation and the exact
+session receipt. Preparation does not retry a failed activation or extend acquisition deadlines.
 The released-Jupyter DuckDB journey waits for the exact panel's committed renderer after inline open and toolbar
 reopen before changing filters. Far-row inspection is read-only; filter persistence and recovery still use committed
 view requests. These page assertions report bounded error codes and recoverability when a request fails.
