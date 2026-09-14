@@ -5243,7 +5243,10 @@ class _PandasRowAxisFormatter:
             normalized_items: dict[str, Any] = {}
             for key, item in dict.items(value):
                 self._charge_node(depth + 1)
-                normalized_items[self._mapping_key(key)] = item
+                normalized_key = self._mapping_key(key)
+                if normalized_key in normalized_items:
+                    raise EngineError(f"{self._purpose} mapping keys must remain distinct when converted to text.")
+                normalized_items[normalized_key] = item
             self._add("{")
             for index, (key, item) in enumerate(normalized_items.items()):
                 if index:

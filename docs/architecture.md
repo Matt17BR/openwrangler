@@ -1424,8 +1424,9 @@ retained. The existing filter decoder owns admission; this does not expand its p
 
 Typed cells are strict-JSON-safe and preserve the distinctions needed by filtering, rendering, saved notebook output,
 and engine-normalized transformations. Nested and scalar values pass bounded depth, node, text, and byte validation.
-Python mapping output refuses distinct keys with the same text representation before publishing a cell; otherwise,
-key spelling and insertion order are preserved. This cannot recover entries lost earlier by native engine boxing.
+Python mapping output, including bounded Pandas row-index labels, refuses distinct keys with the same text
+representation before publication; otherwise, key spelling and insertion order are preserved. This cannot recover
+entries lost earlier by native engine boxing.
 User-derived keys in extension and webview state are held in `Map` or `Set`, not dynamic object properties.
 
 Python duration scalars use exact seconds at this boundary. Ordinary numeric seconds remain numeric when their

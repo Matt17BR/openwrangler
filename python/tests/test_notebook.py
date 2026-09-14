@@ -375,21 +375,38 @@ def test_pandas_row_axis_formatter_bounds_decimal_text_before_canonical_allocati
     assert pandas_engine._pandas_row_axis_value(Decimal("NaN" + ("1" * 10_000)), "Pandas row-index label") == "null"
 
 
-def test_pandas_row_axis_formatter_collapses_normalized_mapping_keys_with_last_value_wins():
-    value = {
-        1: "integer-first",
-        "middle": 0,
-        "1": "string-last",
-        Decimal("2"): "decimal-first",
-        "2": "string-last",
-    }
-    expected = normalize_cell(value)["display"]
-    actual = pandas_engine._pandas_row_axis_value(value, "Pandas row-index label")
+@pytest.mark.parametrize("key", [1, Decimal("2")])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_pandas_row_axis_formatter_refuses_colliding_mapping_keys(key, reverse):
+    entries = [(key, "same"), (str(key), "same")]
+    if reverse:
+        entries.reverse()
+    value = dict(entries)
+    with pytest.raises(EngineError, match="mapping keys.*distinct"):
+        pandas_engine._pandas_row_axis_value([value], "Pandas row-index label")
+    assert list(value.items()) == entries
 
-    assert actual == expected == '{"1":"string-last","middle":0,"2":"string-last"}'
-    assert actual.count('"1":') == 1
-    assert actual.count('"2":') == 1
-    assert list(json.loads(actual)) == ["1", "middle", "2"]
+
+def test_pandas_notebook_and_page_refuse_colliding_index_mapping_before_publication(monkeypatch):
+    value = {1: "integer-first", "1": "string-last"}
+    safe = {1: "first", "middle": 0, Decimal("2"): "last"}
+    frame = pd.DataFrame({"value": [1, 2]}, index=pd.Index(pd.Series([value, safe], dtype="object"), name="key"))
+    published = []
+    monkeypatch.setattr(notebook, "display", lambda *args, **kwargs: published.append((args, kwargs)))
+    engine = PandasEngine()
+    with pytest.raises(EngineError, match="mapping keys.*distinct"):
+        notebook.show(frame, backend="pandas", page_size=1)
+    assert published == []
+    with pytest.raises(EngineError, match="mapping keys.*distinct"):
+        engine.page(frame, 0, 1)
+    assert engine.page(frame, 0, 0)["rows"] == []
+    unaffected = engine.page(frame, 1, 1)["rows"][0]
+    assert unaffected["rowLabel"] == '{"1":"first","middle":0,"2":"last"}'
+    assert unaffected["values"][0]["raw"] == 2
+    assert frame.index[0] is value and frame.index[1] is safe
+    assert list(value.items()) == [(1, "integer-first"), ("1", "string-last")]
+    assert list(safe.items()) == [(1, "first"), ("middle", 0), (Decimal("2"), "last")]
+    assert frame["value"].tolist() == [1, 2]
 
 
 def test_pandas_snapshot_rejects_an_oversized_binary_index_before_base64_allocation(monkeypatch):
