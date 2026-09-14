@@ -129,12 +129,13 @@ def test_delimited_records_preserve_empty_fields_and_whitespace_values(
 
 @pytest.mark.parametrize("backend", ["polars", "duckdb"])
 @pytest.mark.parametrize("value", [" ", "\t", ""], ids=["space", "tab", "newline"])
-def test_native_blank_records_keep_their_rows(backend: str, value: str, tmp_path: Path) -> None:
+def test_native_blank_records_follow_backend_import_policy(backend: str, value: str, tmp_path: Path) -> None:
     path = tmp_path / "records.csv"
     raw = f"{value}\n{value}\n".encode()
     path.write_bytes(raw)
     # Minimum Polars retains two zero-column rows for newline-only input;
-    # newer Polars and DuckDB retain one null column instead.
+    # newer Polars and native DuckDB retain one null column instead.
+    # DuckDB file imports deliberately refuse an initial line break.
     native_rows = (
         [list(row) for row in pl.scan_csv(path, has_header=False, raise_if_empty=False).collect().rows()]
         if backend == "polars"
@@ -146,13 +147,16 @@ def test_native_blank_records_keep_their_rows(backend: str, value: str, tmp_path
     else:
         assert native_rows in ([[None], [None]], [[], []])
     manager = SessionManager()
+    source = {"kind": "file", "label": path.name, "path": str(path), "importOptions": {"hasHeader": False}}
     try:
-        opened = manager.open_session(
-            {"kind": "file", "label": path.name, "path": str(path), "importOptions": {"hasHeader": False}},
-            backend=backend,
-        )
-        assert opened["metadata"]["shape"] == {"rows": 2, "columns": len(native_rows[0])}
-        assert [[cell["raw"] for cell in row["values"]] for row in opened["page"]["rows"]] == native_rows
+        if backend == "duckdb" and not value:
+            with pytest.raises(EngineError, match="initial line break"):
+                manager.open_session(source, backend=backend)
+            assert manager.sessions == {}
+        else:
+            opened = manager.open_session(source, backend=backend)
+            assert opened["metadata"]["shape"] == {"rows": 2, "columns": len(native_rows[0])}
+            assert [[cell["raw"] for cell in row["values"]] for row in opened["page"]["rows"]] == native_rows
     finally:
         manager.close_all()
     assert path.read_bytes() == raw

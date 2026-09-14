@@ -404,6 +404,15 @@ class DuckDBEngine(DataFrameEngine):
                             f"DuckDB supports UTF-8 CSV input, not {encoding}. "
                             "Use the Pandas backend for this encoding."
                         )
+                    # Zero-skip can still treat an initial line break as a header or null row.
+                    # Reuse the empty/BOM probe to refuse that prefix before native binding.
+                    with Path(path).open("rb") as source:
+                        first_bytes = source.read(4).removeprefix(b"\xef\xbb\xbf")
+                    if first_bytes[:1] in {b"\r", b"\n"}:
+                        raise EngineError(
+                            "DuckDB CSV/TSV imports do not support an initial line break. "
+                            "Use the Pandas or Polars backend for this file."
+                        )
                     frame = _snapshot_relation_factory(
                         lambda: connection.read_csv(
                             _literal_file_path(path),
@@ -412,6 +421,7 @@ class DuckDBEngine(DataFrameEngine):
                             quotechar=options.get("quoteChar", '"'),
                             header=options.get("hasHeader", True),
                             comment="",
+                            skiprows=0,
                         )
                     )
                     if any("'" in name for name in frame.column_names):
@@ -421,9 +431,7 @@ class DuckDBEngine(DataFrameEngine):
                         )
                     # Native binding above validates options even for empty input.
                     # Only zero bytes or one UTF-8 BOM need a zero-column schema.
-                    with Path(path).open("rb") as source:
-                        empty = source.read(4) in {b"", b"\xef\xbb\xbf"}
-                    if empty:
+                    if not first_bytes:
                         row_id = f"{INTERNAL_ROW_ID_PREFIX}empty_source"
                         frame = _snapshot_relation_factory(
                             lambda: connection.sql(f"SELECT CAST(NULL AS BIGINT) AS {_quote_ident(row_id)} WHERE FALSE")

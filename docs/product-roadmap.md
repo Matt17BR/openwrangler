@@ -5,9 +5,6 @@ records delivered changes. This page links the work selected next and proposals 
 
 ## Current focus
 
-Selected corrections address [DuckDB timestamp formatting](https://github.com/Matt17BR/openwrangler/issues/1417),
-[exact timestamp display and selection](https://github.com/Matt17BR/openwrangler/issues/1418), and
-[CSV preamble data loss](https://github.com/Matt17BR/openwrangler/issues/1378). Each issue owns its completion criteria.
 The [public notebook workflow comparison](https://github.com/Matt17BR/openwrangler/issues/1419) has a separate, finite
 scope and is paused on an identified interaction problem. It does not gate a release.
 

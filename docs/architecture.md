@@ -1009,13 +1009,17 @@ syntax, are refused because native expansion can select another file. Existing s
 surround lazy reads; the adapter adds no dataframe scan or filesystem owner.
 
 CSV and TSV readers disable native comment inference so literal `#` values cannot remove records or truncate fields.
+They also set zero skipped records so preamble inference cannot discard nonempty input. The existing four-byte
+empty/BOM read rejects an initial CR or LF after an optional UTF-8 BOM, for either header setting. This deliberately
+excludes leading blank lines and an empty one-column first record: native zero-skip parsing can otherwise duplicate
+the header or add a null row. Empty/BOM-only files retain their zero-column representation. Leading spaces, missing
+first TSV fields and quoted embedded newlines remain supported. No additional parser or source scan is introduced.
 Before replay, imports reject column names containing an ASCII apostrophe (`'`): the supported native CSV serializer
 can corrupt these names in its frozen schema. The check uses existing snapshot metadata and retains the same binding
 and cleanup owners. Standalone generated programs inherit this native limitation when given an externally loaded CSV
 relation with affected names; JSONL and Parquet headers are unaffected.
-DuckDB still owns dialect and type inference, including its existing leading-blank behavior. Its separate preamble
-inference can skip an irregular first record; the [file-support limitations](feature-parity.md#duckdb-experimental-file-support)
-describe that unresolved case. Generated cleaning programs receive an already-loaded relation.
+DuckDB still owns the remaining dialect and type inference. The [file-support limitations](feature-parity.md#duckdb-experimental-file-support)
+describe the supported input policy. Generated cleaning programs receive an already-loaded relation.
 
 Generated Sort Rows, Drop Duplicates and Mark Duplicates reserve current input names and requested keys when choosing
 temporary row ordinals. Missing requested keys are rejected; an internal ordinal cannot supply them. Native
