@@ -14,7 +14,7 @@ from polars.testing import assert_frame_equal
 from openwrangler_runtime._column_binding import bind_step
 from openwrangler_runtime.engines import DuckDBEngine, PandasEngine, PolarsEngine
 from openwrangler_runtime.engines.duckdb_engine import DuckDBSqlPlan
-from openwrangler_runtime.lineage import source_lineage
+from openwrangler_runtime.lineage import derive_lineage, source_lineage
 from openwrangler_runtime.operations import validate_step
 
 
@@ -101,6 +101,15 @@ def test_integer_group_sum_widens_before_overflow_in_live_and_generated_code(eng
         }
     )
     operation = bind_step(public, schema, lineage)
+
+    if isinstance(engine, PolarsEngine):
+        function = ast.parse(engine.compile_plan([operation])).body[0]
+        assert isinstance(function, ast.FunctionDef)
+        assert [node.name for node in function.body if isinstance(node, ast.FunctionDef)] == [
+            "_ow_checked_integer_sum_parts",
+            "_ow_checked_integer_sum_result",
+            "_ow_checked_integer_sum",
+        ]
 
     live = engine.apply_transform(frame, operation)
     compiled = generated(engine, frame, [operation])
@@ -288,6 +297,18 @@ def test_by_example_integer_arithmetic_widens_before_overflow_in_live_and_genera
     )
     operation = bind_step(public, schema, lineage)
     assert operation["params"]["program"]["_owResultType"] == "integer"
+    arithmetic_helpers = [
+        "_ow_checked_integer_value",
+        "_ow_checked_integer_formula_scalar",
+        "_ow_checked_integer_formula",
+    ]
+
+    if isinstance(engine, PolarsEngine):
+        code = engine.compile_plan([operation])
+        function = ast.parse(code).body[0]
+        assert isinstance(function, ast.FunctionDef)
+        assert [node.name for node in function.body if isinstance(node, ast.FunctionDef)] == arithmetic_helpers
+        assert "_OW_INTEGER_LIMB" not in code
 
     live = engine.apply_transform(frame, operation)
     compiled = generated(engine, frame, [operation])
@@ -297,6 +318,45 @@ def test_by_example_integer_arithmetic_widens_before_overflow_in_live_and_genera
     assert column_values(compiled, "next_value") == expected
     assert_integer_surface(engine, live, "next_value")
     assert_integer_surface(engine, compiled, "next_value")
+
+    if isinstance(engine, PolarsEngine):
+        before = frame.clone()
+        result_schema = engine.schema(live)
+        result_lineage = derive_lineage(lineage, result_schema, operation)
+        group = bind_step(
+            validate_step(
+                {
+                    "id": "sum-after-example",
+                    "kind": "groupBy",
+                    "params": {
+                        "keys": [result_lineage[0]],
+                        "aggregations": [{"column": result_lineage[1], "operation": "sum", "alias": "total"}],
+                    },
+                }
+            ),
+            result_schema,
+            result_lineage,
+        )
+        code = engine.compile_plan([operation, group])
+        module = ast.parse(code)
+        assert [node.name for node in module.body if isinstance(node, ast.FunctionDef)] == ["clean_data"]
+        function = module.body[0]
+        assert isinstance(function, ast.FunctionDef)
+        assert [node.name for node in function.body if isinstance(node, ast.FunctionDef)] == [
+            "_ow_checked_integer_sum_parts",
+            "_ow_checked_integer_sum_result",
+            "_ow_checked_integer_sum",
+            *arithmetic_helpers,
+        ]
+        assert code.count("_OW_INTEGER_MAX = ") == 1
+        assert code.count("_OW_INTEGER_MIN = ") == 1
+        grouped = generated(engine, frame.lazy(), [operation, group])
+        assert isinstance(grouped, pl.LazyFrame)
+        expected_grouped = engine.apply_transform(live, group)
+        collected = grouped.collect()
+        assert_frame_equal(collected, expected_grouped)
+        assert collected.get_column("total").to_list() == expected
+        assert_frame_equal(frame, before)
 
 
 def division_frame_for(engine: Any) -> Any:
