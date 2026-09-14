@@ -45,7 +45,6 @@ def test_performance_harness_smoke(tmp_path: Path) -> None:
     assert payload["smoke"] is True
     assert payload["csv"]["shape"] == {"rows": 2_000, "columns": 8}
     assert payload["parquet"]["shape"] == {"rows": 5_000, "columns": 8}
-    assert payload["sliceTargetsAreReleaseBlocking"] is False
     assert payload["releaseGateMetrics"] == {
         "coldSourceCacheDropProof": "*.stdioTransport.coldSourceCacheDrop.applied (must be true)",
         "csvColdSourceFirstGridMs": "csv.stdioTransport.coldSourceOpenRoundTripMs",
@@ -153,12 +152,6 @@ def test_performance_harness_smoke(tmp_path: Path) -> None:
             assert transport["sameSessionContentionObserved"] is not transport["interactivePageOverlappedProfile"]
         assert transport["responseOrder"] in (["stats", "page"], ["page", "stats"])
         assert transport["closedCleanly"] is True
-        assert set(fixture["sliceTargetStatus"]) == {
-            "warmSourceReopenMedian",
-            "directRuntimeCachedPageP95",
-            "directRuntimeCacheMissPageP95",
-            "stdioTransportCacheMissPageP95",
-        }
     assert '"warmSourceReopenMedianMs"' in result.stdout
 
 

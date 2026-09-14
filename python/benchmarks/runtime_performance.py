@@ -86,13 +86,6 @@ RELEASE_LIMITS = {
     "stdioTransportCacheMissPageP95Ms": 500.0,
     "stdioSameSessionStatsContendedPageLatencyMs": 500.0,
 }
-SLICE_TARGETS = {
-    "csvWarmSourceReopenMedianMs": 200.0,
-    "parquetWarmSourceReopenMedianMs": 250.0,
-    "directRuntimeCachedPageP95Ms": 5.0,
-    "directRuntimeCacheMissPageP95Ms": 60.0,
-    "stdioTransportCacheMissPageP95Ms": 100.0,
-}
 RELEASE_GATE_METRICS = {
     "csvColdSourceFirstGridMs": "csv.stdioTransport.coldSourceOpenRoundTripMs",
     "parquetColdSourceFirstGridMs": "parquet.stdioTransport.coldSourceOpenRoundTripMs",
@@ -676,7 +669,6 @@ def measure_fixture(
     warm_reopen_median_ms = median(warm_reopen_samples)
     cached_p95_ms = _percentile(cached_samples, 0.95)
     uncached_p95_ms = _percentile(uncached_samples, 0.95)
-    warm_reopen_target = SLICE_TARGETS[f"{spec.kind}WarmSourceReopenMedianMs"]
 
     return {
         "backend": backend,
@@ -738,16 +730,6 @@ def measure_fixture(
             "maxEntries": max_cache_entries,
             "byteLimit": PAGE_CACHE_BYTE_LIMIT,
             "maxBytes": max_cache_bytes,
-        },
-        "sliceTargetStatus": {
-            "warmSourceReopenMedian": _target_status(warm_reopen_median_ms, warm_reopen_target),
-            "directRuntimeCachedPageP95": _target_status(cached_p95_ms, SLICE_TARGETS["directRuntimeCachedPageP95Ms"]),
-            "directRuntimeCacheMissPageP95": _target_status(
-                uncached_p95_ms, SLICE_TARGETS["directRuntimeCacheMissPageP95Ms"]
-            ),
-            "stdioTransportCacheMissPageP95": _target_status(
-                stdio_transport["cacheMissPageP95Ms"], SLICE_TARGETS["stdioTransportCacheMissPageP95Ms"]
-            ),
         },
         "stdioTransport": stdio_transport,
         "retainedSessions": retained_sessions,
@@ -961,8 +943,6 @@ def run_benchmark(directory: Path, smoke: bool = False, backend: Backend = "pola
     return {
         "limits": RELEASE_LIMITS,
         "releaseGateMetrics": RELEASE_GATE_METRICS,
-        "sliceTargets": SLICE_TARGETS,
-        "sliceTargetsAreReleaseBlocking": False,
         "smoke": smoke,
         "backend": backend,
         "benchmarkMetadata": {
@@ -1237,14 +1217,6 @@ def _observable_cache_size(session: Any) -> int | None:
 def _observable_cache_bytes(session: Any) -> int | None:
     retained = getattr(session, "page_cache_bytes", None)
     return int(retained) if retained is not None else None
-
-
-def _target_status(actual_ms: float, target_ms: float) -> dict[str, Any]:
-    return {
-        "actualMs": round(actual_ms, 3),
-        "targetMs": target_ms,
-        "met": actual_ms < target_ms,
-    }
 
 
 def _percentile(values: list[float], percentile: float) -> float:
