@@ -164,9 +164,9 @@ final sort key.
 
 ## R notebooks and documents
 
-R notebook support in desktop VS Code becomes stable only with qualified 2.5.0 publication. R remains Preview in
-published 2.4.0. Terminal and managed-document support remain Preview; Cursor remains experimental.
-[Support by entry path and graduation criteria](feature-parity.md#native-r-support) define the scope and required evidence.
+R notebook support is stable since 2.5.0 for ordinary base `data.frame`, tibble and `data.table` objects in IRkernel
+notebooks in desktop VS Code on Linux, macOS and Windows. Terminal and managed-document support remain Preview;
+Cursor remains experimental. [Support by entry path](feature-parity.md#native-r-support) defines the qualified scope.
 
 <a href="images/editor-acceptance/vscode-notebook-r-operations-dark.png"><img alt="Open Wrangler Operations listing base data.frame, tibble, data.table, and collapse dataframes from IRkernel" src="images/editor-acceptance/vscode-notebook-r-operations-detail-dark.png" width="960"></a>
 
