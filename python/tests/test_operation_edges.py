@@ -1264,6 +1264,43 @@ def test_grouping_emits_typed_nulls_without_erasing_a_computed_nan(engine) -> No
             assert cell["kind"] == "null"
 
 
+def test_pandas_group_fill_plan_preserves_native_keys_and_shared_helper_scope() -> None:
+    source = pd.DataFrame({"key": [2.0, None, 1.0, 2.0, None, 1.0], "value": [10.0, 2.0, 4.0, 6.0, None, 8.0]})
+    source.index = pd.Index(["same"] * len(source), name="source")
+    source.attrs["origin"] = "retained"
+    original_index = source.index
+    before = source.copy(deep=True)
+    runtime = PandasEngine()
+    lineage = source_lineage(runtime.schema(source))
+    live = source
+    plan = []
+    for kind in ("groupBy", "fillMissingValues"):
+        if kind == "groupBy":
+            params = {
+                "keys": [lineage[0]],
+                "aggregations": [{"column": lineage[1], "operation": "count", "alias": "count"}],
+            }
+        else:
+            params = {"column": lineage[0], "replacement": {"kind": "float", "value": "-1"}}
+        operation = bind_step(step(kind, **params), runtime.schema(live), lineage)
+        live = runtime.apply_transform(live, operation)
+        lineage = derive_lineage(lineage, runtime.schema(live), operation)
+        plan.append(operation)
+    code = runtime.compile_plan(plan)
+    assert code.count("def _pandas_numpy_missing_mask(") == 1
+    assert code.count("def _pandas_float_nan_mask(") == 1
+    namespace: dict[str, Any] = {"Any": source, "_pandas_float_nan_mask": source}
+    exec(code, namespace)
+    generated = namespace["clean_data"](source)
+    assert namespace["Any"] is namespace["_pandas_float_nan_mask"] is source
+    expected = pd.DataFrame({"key": pd.Series([2.0, -1.0, 1.0], dtype="Float64"), "count": [2, 1, 2]})
+    for result in (live, generated):
+        pd.testing.assert_frame_equal(result, expected)
+    pd.testing.assert_frame_equal(source, before)
+    assert source.attrs == before.attrs
+    assert source.index is original_index
+
+
 @pytest.mark.parametrize(
     ("program", "expected_kinds"),
     [

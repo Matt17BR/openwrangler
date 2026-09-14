@@ -1707,6 +1707,64 @@ def test_pandas_group_by_integral_object_keys_keep_exact_nullable_storage_in_gen
         assert frame.attrs == before.attrs
 
 
+@pytest.mark.parametrize("dtype", ["float32", "float64"])
+def test_pandas_float_nan_mask_uses_native_arrays_without_scalar_classification(
+    monkeypatch: pytest.MonkeyPatch, dtype: str
+) -> None:
+    source = pd.Series([float("nan"), float("inf"), -0.0, 2.0], dtype=dtype)
+    source.index = pd.Index(["same"] * len(source), name="source")
+    before = source.copy(deep=True)
+    expected = pd.Series([True, False, False, False], index=source.index)
+    native_isnan = np.isnan
+
+    def array_isnan(values: Any) -> Any:
+        assert isinstance(values, np.ndarray), "Group-key NaN classification must not box native floats."
+        return native_isnan(values)
+
+    with monkeypatch.context() as context:
+        context.setattr(np, "isnan", array_isnan)
+        actual = pandas_engine_module._pandas_float_nan_mask(source)
+        empty = pandas_engine_module._pandas_float_nan_mask(source.iloc[:0])
+    pd.testing.assert_series_equal(actual, expected)
+    pd.testing.assert_series_equal(empty, expected.iloc[:0])
+    assert actual.index is source.index
+    pd.testing.assert_series_equal(source, before)
+
+
+def test_pandas_float_nan_mask_preserves_float_only_fallback_semantics() -> None:
+    pa = pytest.importorskip("pyarrow")
+
+    class CustomSeries(pd.Series):
+        @property
+        def _constructor(self):
+            return CustomSeries
+
+        def to_numpy(self, *args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("Custom Series must retain scalar classification.")
+
+    cases = [
+        (pd.Series([Decimal("NaN"), float("nan"), None], dtype=object), [False, True, False]),
+        (
+            pd.Series(pd.arrays.FloatingArray(np.array([np.nan, 1.0]), np.array([False, True]))),
+            [True, False],
+        ),
+        (pd.Series(pd.arrays.ArrowExtensionArray(pa.array([float("nan"), None]))), [True, False]),
+        (pd.Series(pd.arrays.SparseArray([0.0, float("nan")])), [False, True]),
+        (pd.Series(pd.Categorical([1.0, None])), [False, True]),
+        (CustomSeries([0.0, float("nan"), float("inf")]), [False, True, False]),
+        (pd.Series([0, 1], dtype="int64"), [False, False]),
+        (pd.Series([True, False]), [False, False]),
+        (pd.Series([pd.Timestamp("2026-01-01"), pd.NaT]), [False, False]),
+    ]
+    for source, values in cases:
+        source.index = pd.Index(["same"] * len(source), name="source")
+        before = source.copy(deep=True)
+        actual = pandas_engine_module._pandas_float_nan_mask(source)
+        pd.testing.assert_series_equal(actual, pd.Series(values, index=source.index))
+        assert actual.index is source.index
+        pd.testing.assert_series_equal(source, before)
+
+
 def _bound_pandas_group(frame: pd.DataFrame, operations: tuple[str, ...]) -> tuple[PandasEngine, dict[str, Any]]:
     engine = PandasEngine()
     schema = engine.schema(frame)

@@ -2219,8 +2219,9 @@ class PandasEngine(DataFrameEngine):
             )
         if needs_pivot_wider_helpers:
             lines.extend(_generated_pandas_pivot_wider_helpers())
-        if needs_missing_helpers:
+        if needs_missing_helpers or needs_nullable_result_helpers:
             lines.extend(["from typing import Any", "", getsource(_pandas_numpy_missing_mask), ""])
+        if needs_missing_helpers:
             if needs_view_value_helpers:
                 lines.extend(generated_view_value_helper_lines())
             lines.extend(
@@ -2296,11 +2297,7 @@ class PandasEngine(DataFrameEngine):
         if needs_nullable_result_helpers:
             lines.extend(
                 [
-                    "def _open_wrangler_float_nan_mask(series):",
-                    "    return pd.Series(",
-                    "        [isinstance(value, (float, np.floating)) and np.isnan(value) for value in series.array],",
-                    "        index=series.index, dtype=bool)",
-                    "",
+                    getsource(_pandas_float_nan_mask),
                     "",
                     "def _open_wrangler_nullable_string_copy(series):",
                     "    if isinstance(series.dtype, pd.StringDtype):",
@@ -2309,7 +2306,7 @@ class PandasEngine(DataFrameEngine):
                     "        series.dtype == object",
                     "        or isinstance(series.dtype, pd.CategoricalDtype)",
                     "    ):",
-                    "        null_mask = _open_wrangler_float_nan_mask(series)",
+                    "        null_mask = _pandas_float_nan_mask(series)",
                     "        if null_mask.any():",
                     "            result = series.astype(object)",
                     "            result.loc[null_mask] = pd.NA",
@@ -2350,7 +2347,7 @@ class PandasEngine(DataFrameEngine):
                     "",
                     "",
                     "def _open_wrangler_group_key(series):",
-                    "    nan_mask = _open_wrangler_float_nan_mask(series)",
+                    "    nan_mask = _pandas_float_nan_mask(series)",
                     "    if not nan_mask.any():",
                     "        return _open_wrangler_nullable_string_copy(series)",
                     "    return _open_wrangler_group_nulls(series, series.isna() | nan_mask)",
@@ -5233,6 +5230,9 @@ def _pandas_float_nan_mask(series: Any) -> Any:
     import numpy as np
     import pandas as pd
 
+    missing = _pandas_numpy_missing_mask(series, nan=True)
+    if missing is not None:
+        return pd.Series(missing, index=series.index, dtype=bool)
     return pd.Series(
         [isinstance(value, (float, np.floating)) and np.isnan(value) for value in series.array],
         index=series.index,
