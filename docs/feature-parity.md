@@ -326,6 +326,10 @@ inside Polars lists, fixed arrays and structs retain their precision in grid tex
 Null containers, null children and empty containers stay distinct. Complex-value selection and comparisons remain unavailable,
 and native List value-choice requests can still refuse.
 
+Python engines refuse nested mapping output when distinct keys would become the same JSON key, such as `1` and `"1"`.
+The source remains unchanged, and pages omitting the affected values remain available. This check cannot restore
+entries already lost when an engine converts native values to Python.
+
 On Pandas versions that infer temporal count keys from object columns, profiles and value choices refuse nonzero
 NumPy datetime values with unit multipliers or units finer than nanoseconds. Fixed-unit duration counts use exact
 comparison keys instead. This conservative datetime restriction includes some exactly representable values, such as `datetime64[1000ps]`,

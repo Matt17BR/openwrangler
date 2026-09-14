@@ -1450,7 +1450,13 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, bytes):
         return b64encode(value).decode("ascii")
     if isinstance(value, Mapping):
-        return {str(key): _json_safe(item) for key, item in value.items()}
+        result = {}
+        for key, item in value.items():
+            text_key = str(key)
+            if text_key in result:
+                raise EngineError("Nested mapping keys must remain distinct when converted to text.")
+            result[text_key] = _json_safe(item)
+        return result
     if isinstance(value, (list, tuple)):
         return [_json_safe(item) for item in value]
     return str(value)
