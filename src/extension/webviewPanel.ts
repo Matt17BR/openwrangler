@@ -1959,7 +1959,7 @@ export class OpenWranglerPanel {
       if (!this.disposed && this.codePreviewReveal === reveal) this.scheduleRendererSynchronization(false);
     };
     void vscode.commands
-      .executeCommand("openWrangler.codePreview.focus", { preserveFocus: true })
+      .executeCommand("openWrangler.codePreview.open", { preserveFocus: true })
       .then(settleLayout, (error: unknown) => {
         this.bridge.reportDiagnostic?.(
           `Open Wrangler could not reveal Code Preview: ${error instanceof Error ? error.message : String(error)}`

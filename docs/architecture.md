@@ -37,9 +37,11 @@ Canceled resolution leaves existing view ownership intact and does not start pan
 Activation installs its lightweight gates before the first yield. Elapsed setup time does not invalidate successful
 registration; lifecycle cancellation and actual initialization errors still shut down initialized owners.
 
-Automatic Code Preview focus keeps renderer synchronization marked as layout-pending until the focus command
-settles. Acknowledging another synchronization during that command does not repeat focus or report a settled layout.
-Discarding the draft, changing the reveal setting, or deactivating the panel does not settle an in-flight command.
+Automatic Code Preview opening uses the exact view's `.open` command with focus preserved. Renderer synchronization
+stays layout-pending while that command awaits the workbench container opening. Completion or failure publishes a
+fresh marker for pending generated-column reveals. This boundary does not wait for Code Preview's editor to hydrate
+or for later layout changes. Further renderer acknowledgements do not repeat the open action. Discarding the draft,
+changing the reveal setting, or deactivating the panel does not settle an in-flight command.
 
 The extension host is the authority at every boundary. A webview cannot select a different source, session, kernel,
 terminal, or export destination by supplying an identifier the host did not issue and retain.
