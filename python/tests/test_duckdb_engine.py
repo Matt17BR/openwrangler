@@ -1271,7 +1271,8 @@ def test_duckdb_rejects_case_fold_ambiguous_source_columns() -> None:
         engine.validate_column_addressability(ambiguous)
 
 
-def test_duckdb_page_uses_an_explicit_terminal_projection(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("nested", [False, True])
+def test_duckdb_page_uses_an_explicit_terminal_projection(monkeypatch: pytest.MonkeyPatch, nested: bool) -> None:
     engine = DuckDBEngine()
     frame = engine.ensure_row_ids(source_relation(), "projected-page")
     queries: list[str] = []
@@ -1320,9 +1321,11 @@ def test_duckdb_page_uses_an_explicit_terminal_projection(monkeypatch: pytest.Mo
         duckdb_runtime, "_duckdb_timestamp_ns_text", lambda identifier: f"observe_ns_text({native_text(identifier)})"
     )
     try:
+        value = "make_timestamp_ns(1704161045123000000 + i * 1001)"
+        if nested:
+            value = f"[{value}]"
         source = engine._relation_from_sql(
-            "SELECT i, make_timestamp_ns(1704161045123000000 + i * 1001) AS __ow_value_count, "
-            "make_timestamp_ns(-1) AS unselected FROM range(100) source(i)"
+            f"SELECT i, {value} AS __ow_value_count, make_timestamp_ns(-1) AS unselected FROM range(100) source(i)"
         )
         source = engine.ensure_row_ids(source, "bounded-ns")
         bounded = engine.page(source, 20, 7, total_rows=100, column_projection=[(1, "stable:ns")])
@@ -1342,7 +1345,7 @@ def test_duckdb_page_uses_an_explicit_terminal_projection(monkeypatch: pytest.Mo
         summary = engine.summaries(source, [(1, "stable:ns")])[0]
         assert summary["totalCount"] == summary["distinctCount"] == 100
         assert len(summary["topValues"]) == 10
-        assert len(formatted) == 12  # Two reduced extrema and ten native count representatives.
+        assert len(formatted) == (10 if nested else 12)  # Scalar extrema add two reduced values.
         assert engine._terminal_scalar(source, "SELECT sum(i) FROM ow") == 4950
     finally:
         engine.close()
@@ -3457,6 +3460,202 @@ def test_duckdb_nanosecond_session_preserves_display_and_selection_identity(tmp_
     )
 
 
+@pytest.mark.parametrize(
+    "container", ["list", "array", "struct", "nested", "map", "map-keys", "map-list-keys", "map-struct-keys"]
+)
+def test_duckdb_nested_nanosecond_transport_preserves_containers(container: str) -> None:
+    epoch = "1970-01-01T00:00:00"
+    texts = ["1969-12-31T23:59:59.999999999", epoch, "1970-01-01T00:00:00.000000001", None]
+    expressions = {
+        "list": "[v]",
+        "array": "[v]",
+        "struct": 'struct_pack("when ""ns""" := v, ticks := \'ordinary\', text := \'TIMESTAMP_NS\')',
+        "nested": "[struct_pack(items := [v], text := 'ordinary')]",
+        "map": "map(['when'], [v])",
+        "map-keys": "map([coalesce(v, make_timestamp_ns(0))], ['kept'])",
+        "map-list-keys": "map([[v]], ['kept'])",
+        "map-struct-keys": "map([struct_pack(\"when\" := v)], ['kept'])",
+    }
+    expected: list[Any] = []
+    for value in texts:
+        if container in {"list", "array"}:
+            expected.append([value])
+        elif container == "struct":
+            expected.append({'when "ns"': value, "ticks": "ordinary", "text": "TIMESTAMP_NS"})
+        elif container == "nested":
+            expected.append([{"items": [value], "text": "ordinary"}])
+        elif container == "map":
+            expected.append({"when": value})
+        elif container == "map-keys":
+            expected.append({value or epoch: "kept"})
+        elif container == "map-list-keys":
+            expected.append({"key": [[value]], "value": ["kept"]})
+        else:
+            expected.append({"key": [{"when": value}], "value": ["kept"]})
+    empty_sql = {"list": "[]", "array": "[NULL]", "nested": "[]"}.get(container, "NULL")
+    empty_value: Any = {"list": [], "array": [None], "nested": []}.get(container)
+    if container.startswith("map"):
+        empty_sql = "map()"
+        empty_value = {"key": [], "value": []} if container in {"map-list-keys", "map-struct-keys"} else {}
+    expected.extend([empty_value, None])
+    # The count alias must not shadow the selected column when its result is wrapped.
+    value_sql = f"CASE k WHEN 4 THEN {empty_sql} WHEN 5 THEN NULL ELSE {expressions[container]} END"
+    if container == "array":
+        value_sql = f"({value_sql})::TIMESTAMP_NS[1]"
+    query = (
+        f"SELECT k, {value_sql} "
+        "AS value_count, 41 AS __ow_value_count FROM "
+        "(SELECT k, make_timestamp_ns(t) AS v FROM (VALUES (0,-1::BIGINT), (1,0::BIGINT), "
+        "(2,1::BIGINT), (3,NULL::BIGINT), (4,NULL::BIGINT), (5,NULL::BIGINT)) source(k,t))"
+    )
+    engine = DuckDBEngine()
+    try:
+        frame = engine._relation_from_sql(query)
+        schema, original_query = engine.schema(frame), frame.sql_query()
+        page = engine.page(frame, 0, 10)
+        assert [row["values"][1]["raw"] for row in page["rows"]] == expected
+        assert [row["values"][2]["raw"] for row in page["rows"]] == [41] * 6
+        assert page["columnIds"] == [column["id"] for column in schema]
+        expected_counts = {
+            json.dumps(value, ensure_ascii=False, separators=(",", ":")): expected.count(value)
+            for value in expected
+            if value is not None
+        }
+        summary = engine.summaries(frame, [(1, "nested")])[0]
+        assert (summary["totalCount"], summary["nullCount"], summary["distinctCount"]) == (
+            6,
+            expected.count(None),
+            len(expected_counts),
+        )
+        assert {item["value"]: item["count"] for item in summary["topValues"]} == expected_counts
+        choices, more = engine.column_values(frame, "value_count")
+        assert not more and all(item["selectionValue"] is None for item in choices)
+        assert {item["value"]: item["count"] for item in choices} == expected_counts
+        assert engine.schema(frame) == schema and frame.sql_query() == original_query
+        json.dumps(page, allow_nan=False)
+    finally:
+        engine.close()
+
+
+def test_duckdb_nested_nanosecond_file_session_preserves_map_entries_and_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install_conversion_guards(monkeypatch)
+    path, output = tmp_path / "nested-ns.parquet", tmp_path / "cleaned.parquet"
+    ticks = [-1, 0, 1, None]
+    with duckdb_runtime._connect() as connection:
+        connection.sql(
+            'SELECT id, struct_pack("when" := make_timestamp_ns(t), items := [make_timestamp_ns(t)], '
+            "clocks := map([make_timestamp_ns(-1), make_timestamp_ns(0), make_timestamp_ns(1)], "
+            "['before', 'at', 'after']), "
+            "list_clocks := map([[make_timestamp_ns(-1)], [make_timestamp_ns(0)], [make_timestamp_ns(1)]], "
+            "['before', 'at', 'after']), "
+            'struct_clocks := map([struct_pack("when" := make_timestamp_ns(-1)), '
+            'struct_pack("when" := make_timestamp_ns(0)), struct_pack("when" := make_timestamp_ns(1))], '
+            "['before', 'at', 'after'])) AS payload FROM "
+            "(VALUES (0,-1::BIGINT), (1,0::BIGINT), (2,1::BIGINT), (3,NULL::BIGINT)) source(id,t)"
+        ).write_parquet(str(path))
+    before, stat = path.read_bytes(), path.stat()
+    manager = SessionManager(EngineRegistry((("duckdb", DuckDBEngine),)))
+    try:
+        opened = manager.open_session(
+            {"kind": "file", "path": str(path), "label": path.name}, backend="duckdb", mode="editing", page_size=4
+        )
+        sid = opened["metadata"]["sessionId"]
+        clocks = {
+            "1969-12-31T23:59:59.999999999": "before",
+            "1970-01-01T00:00:00": "at",
+            "1970-01-01T00:00:00.000000001": "after",
+        }
+        for row in opened["page"]["rows"]:
+            payload = row["values"][1]["raw"]
+            assert payload["clocks"] == clocks
+            assert payload["list_clocks"] == {"key": [[value] for value in clocks], "value": list(clocks.values())}
+            assert payload["struct_clocks"] == {
+                "key": [{"when": value} for value in clocks],
+                "value": list(clocks.values()),
+            }
+        preview = manager.preview_step(
+            sid,
+            0,
+            {
+                "id": "copy-payload",
+                "kind": "cloneColumn",
+                "params": {"column": {"id": "c:source:1", "name": "payload"}, "newName": "copy"},
+            },
+            0,
+            4,
+        )
+        applied = manager.apply_draft(sid, preview["revision"], 0, 4)
+        assert [row["id"] for row in applied["page"]["rows"]] == [row["id"] for row in opened["page"]["rows"]]
+        assert [row["values"][:2] for row in applied["page"]["rows"]] == [
+            row["values"] for row in opened["page"]["rows"]
+        ]
+        assert all(row["values"][1] == row["values"][2] for row in applied["page"]["rows"])
+        exported = manager.export_data(
+            sid, applied["revision"], str(output), {"format": "parquet"}, reserve_export_target(output)
+        )
+        assert exported["kind"] == "dataExported"
+        scope: dict[str, Any] = {}
+        exec(applied["code"], scope)
+        with duckdb_runtime._connect() as connection:
+            source = connection.read_parquet(str(path))
+            query = (
+                "id, epoch_ns(payload.when), list_transform(payload.items, x -> epoch_ns(x)), "
+                "list_transform(map_keys(payload.clocks), x -> epoch_ns(x)), map_values(payload.clocks), "
+                "list_transform(map_keys(payload.list_clocks), x -> list_transform(x, t -> epoch_ns(t))), "
+                "map_values(payload.list_clocks), "
+                "list_transform(map_keys(payload.struct_clocks), x -> epoch_ns(x.when)), "
+                "map_values(payload.struct_clocks)"
+            )
+            labels = ["before", "at", "after"]
+            expected = [
+                (index, value, [value], [-1, 0, 1], labels, [[-1], [0], [1]], labels, [-1, 0, 1], labels)
+                for index, value in enumerate(ticks)
+            ]
+            for result in (scope["clean_data"](source), connection.read_parquet(str(output))):
+                assert result.project(query).fetchall() == expected
+                assert result.project("epoch_ns(copy.when)").fetchall() == [(value,) for value in ticks]
+                assert result.types == [*source.types, source.types[1]]
+            assert source.project(query).fetchall() == expected
+    finally:
+        manager.close_all()
+    after = path.stat()
+    assert path.read_bytes() == before and manager.sessions == {}
+    assert (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) == (
+        stat.st_dev,
+        stat.st_ino,
+        stat.st_size,
+        stat.st_mtime_ns,
+    )
+
+
+def test_duckdb_nested_nanosecond_projection_leaves_union_members_unchanged() -> None:
+    from openwrangler_runtime.engines.base import normalize_cell
+
+    engine = DuckDBEngine()
+    with duckdb_runtime._connect() as connection:
+        source = connection.sql(
+            "SELECT legacy, struct_pack(exact := make_timestamp_ns(1), legacy := legacy) AS mixed "
+            "FROM (SELECT union_value(t := make_timestamp_ns(1))::UNION(t TIMESTAMP_NS, text VARCHAR) AS legacy "
+            "UNION ALL SELECT union_value(text := 'ordinary')::UNION(t TIMESTAMP_NS, text VARCHAR) "
+            "UNION ALL SELECT NULL::UNION(t TIMESTAMP_NS, text VARCHAR))"
+        )
+        original = source.fetchall()
+        try:
+            frame = engine.normalize_notebook_relation(source)
+            page = engine.page(frame, 0, 3)
+            for row, (legacy, _mixed) in zip(page["rows"], original, strict=True):
+                assert row["values"][0] == normalize_cell(legacy)
+                assert row["values"][1]["raw"] == {
+                    "exact": "1970-01-01T00:00:00.000000001",
+                    "legacy": normalize_cell(legacy)["raw"],
+                }
+            assert source.fetchall() == original
+        finally:
+            engine.close()
+
+
 def test_duckdb_nanosecond_endpoints_and_infinities_ignore_caller_format_macros() -> None:
     expected = [
         "-infinity",
@@ -3491,6 +3690,10 @@ def test_duckdb_nanosecond_endpoints_and_infinities_ignore_caller_format_macros(
             frame = engine.normalize_notebook_relation(source)
             page = engine.page(frame, 0, 10)
             assert [row["values"][1]["raw"] for row in page["rows"]] == expected
+            nested = engine.normalize_notebook_relation(source.project("[value_count] AS nested"))
+            assert [row["values"][0]["raw"] for row in engine.page(nested, 0, 10)["rows"]] == [
+                [value] for value in expected
+            ]
             choices, more = engine.column_values(frame, "value_count")
             assert not more
             assert [item["value"] for item in choices] == expected[:-1]

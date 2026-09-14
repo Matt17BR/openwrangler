@@ -565,13 +565,14 @@ class DuckDBEngine(DataFrameEngine):
         # row identity, while this literal preserves direct zero-column paging.
         select_list = _identifier_list(terminal_columns) if terminal_columns else "1 AS __ow_page_placeholder"
         query = f"SELECT {select_list} FROM ow LIMIT {int(limit)} OFFSET {int(offset)}"
-        if any(types[column] == "TIMESTAMP_NS" for column in selected_columns):
-            # Python fetch narrows timestamps. Format only the selected page,
-            # retaining native values in the source and its ordering/filtering.
+        projections = {
+            column: _duckdb_temporal_output(_quote_ident(column), types[column]) for column in selected_columns
+        }
+        if any(projections.values()):
+            # Python fetch narrows timestamps, including nested values and map keys.
+            # Format only the selected page; source values and ordering stay native.
             formatted = [
-                f"{_duckdb_timestamp_ns_text(_quote_ident(column))} AS {_quote_ident(column)}"
-                if types[column] == "TIMESTAMP_NS"
-                else _quote_ident(column)
+                f"{projections[column]} AS {_quote_ident(column)}" if projections.get(column) else _quote_ident(column)
                 for column in terminal_columns
             ]
             query = f"SELECT {', '.join(formatted)} FROM ({query}) AS ow_page"
@@ -696,9 +697,10 @@ class DuckDBEngine(DataFrameEngine):
                 null_count = int(metrics["null_count"] or 0)
                 nan_count = int(metrics["nan_count"] or 0)
                 distinct_count = int(metrics["distinct_count"] or 0)
+                output = _duckdb_temporal_output(identifier, raw_type)
                 count_name = (
                     _quote_ident(_unique_internal(self._columns(frame), "__ow_value_count"))
-                    if raw_type == "TIMESTAMP_NS"
+                    if output is not None
                     else "value_count"
                 )
                 order = identifier if raw_type == "TIMESTAMP_NS" else f"CAST({identifier} AS VARCHAR)"
@@ -707,10 +709,8 @@ class DuckDBEngine(DataFrameEngine):
                     f"WHERE {valid} GROUP BY {identifier} "
                     f"ORDER BY {count_name} DESC, {order} ASC LIMIT 10"
                 )
-                if raw_type == "TIMESTAMP_NS":
-                    top_query = (
-                        f"SELECT {_duckdb_timestamp_ns_text(identifier)}, {count_name} FROM ({top_query}) AS ow_values"
-                    )
+                if output is not None:
+                    top_query = f"SELECT {output}, {count_name} FROM ({top_query}) AS ow_values"
                 top_rows = _execute_rows(connection, source_sql, top_query)
                 top_values = []
                 for value, count in top_rows:
@@ -923,9 +923,10 @@ class DuckDBEngine(DataFrameEngine):
                 f"contains(translate({text}, {_sql_literal(_ASCII_UPPER)}, "
                 f"{_sql_literal(_ASCII_LOWER)}), {_sql_literal(str(search).translate(_ASCII_TO_LOWER))})"
             )
+        output = _duckdb_temporal_output(identifier, raw_type)
         count_name = (
             _quote_ident(_unique_internal(self._columns(frame), "__ow_value_count"))
-            if raw_type == "TIMESTAMP_NS"
+            if output is not None
             else "value_count"
         )
         order = identifier if raw_type == "TIMESTAMP_NS" else f"CAST({identifier} AS VARCHAR)"
@@ -934,8 +935,8 @@ class DuckDBEngine(DataFrameEngine):
             f"GROUP BY {identifier} ORDER BY {count_name} DESC, {order} ASC "
             f"LIMIT {int(limit) + 1}"
         )
-        if raw_type == "TIMESTAMP_NS":
-            query = f"SELECT {_duckdb_timestamp_ns_text(identifier)}, {count_name} FROM ({query}) AS ow_values"
+        if output is not None:
+            query = f"SELECT {output}, {count_name} FROM ({query}) AS ow_values"
         rows = self._terminal_rows(frame, query)
         values = []
         for value, count in rows[:limit]:
@@ -2922,6 +2923,47 @@ def _duckdb_timestamp_ns_text(identifier: str) -> str:
         f"CASE WHEN {ticks} % 1000 = 0 THEN '' ELSE system.main.lpad(CAST({remainder} AS VARCHAR), 3, '0') END END "
         f"ELSE CAST({identifier} AS VARCHAR) END"
     )
+
+
+def _duckdb_temporal_output(expression: str, dtype: Any, depth: int = 0) -> str | None:
+    """Format affected output leaves before Python fetch, without changing stored types."""
+    if "TIMESTAMP_NS" not in str(dtype):
+        return None
+    from duckdb import sqltype
+    from duckdb.sqltypes import DuckDBPyType
+
+    if isinstance(dtype, str):
+        dtype = sqltype(dtype)
+    if dtype.id == "timestamp_ns":
+        return _duckdb_timestamp_ns_text(expression)
+    # Union fetch discards its member tag. Keep that existing boundary unchanged.
+    if dtype.id not in {"list", "array", "struct", "map"}:
+        return None
+    children = [(name, child) for name, child in dtype.children if isinstance(child, DuckDBPyType)]
+    item = _quote_ident(f"_ow_temporal_{depth}")
+    if dtype.id in {"list", "array"}:
+        child = _duckdb_temporal_output(item, children[0][1], depth + 1)
+        return f"system.main.list_transform({expression}, {item} -> ({child}))" if child else None
+    fields = []
+    changed = False
+    for name, child_type in children:
+        source = (
+            f"{item}.{_quote_ident(name)}"
+            if dtype.id == "map"
+            else f"system.main.struct_extract({expression}, {_sql_literal(name)})"
+        )
+        child = _duckdb_temporal_output(source, child_type, depth + 1)
+        changed |= child is not None
+        fields.append(f"{_quote_ident(name)} := ({child or source})")
+    if not changed:
+        return None
+    result = f"system.main.struct_pack({', '.join(fields)})"
+    if dtype.id == "map":
+        result = (
+            f"system.main.map_from_entries(system.main.list_transform(system.main.map_entries({expression}), "
+            f"{item} -> ({result})))"
+        )
+    return f"CASE WHEN {expression} IS NULL THEN NULL ELSE {result} END"
 
 
 def _duckdb_query_cell(value: Any, raw_type: str) -> dict[str, Any]:

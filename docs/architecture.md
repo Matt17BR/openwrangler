@@ -1009,6 +1009,13 @@ The existing selection decoder admits exact microsecond values and refuses finer
 Choices and profile entries explicitly mark those selections unavailable; grid-cell requests refuse without changing
 the view. Source timestamps retain their native precision.
 
+List, Array, Struct and Map output also projects TIMESTAMP_NS leaves before Python boxing. Native type metadata
+directs this projection, including for file sessions. It preserves distinct temporal Map keys and their associated
+values. Formatting follows the selected page slice or grouped, limited profile/choice result; original types, grouping
+and source data are unchanged. Work within a returned container grows with its children. Union subtrees keep their
+existing output behavior, which can lose temporal precision or merge Map entries. Complex-value selection and comparisons remain unavailable.
+The existing profile/choice tie-order cast can still refuse timestamps near the lower nanosecond endpoint.
+
 SQL byte literals use native hexadecimal decoding in live and generated code. Text literals containing NUL
 additionally decode those bytes as UTF-8. Both functions resolve from DuckDB's built-in catalog so caller macros
 cannot change the values. Text encoding precedes SQL quote escaping, preserving the original text. Other text retains
