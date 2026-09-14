@@ -71,7 +71,7 @@ from .base import (
     numeric_histogram_edges,
     numeric_visualization_from_bin_counts,
     require_datetime_fill_awareness,
-    typed_selection_value,
+    typed_cell_selection_value,
     validate_view_predicate_operator,
 )
 
@@ -549,19 +549,31 @@ class DuckDBEngine(DataFrameEngine):
         visible = self._visible_columns(frame)
         projection = normalize_page_projection(len(visible), column_projection)
         selected_columns = [visible[position] for position, _identifier in projection]
+        types = dict(zip(self._columns(frame), (str(item) for item in frame.types), strict=True))
         column_ids = [identifier for _position, identifier in projection]
         row_id = self._row_id_column(frame)
         terminal_columns = [*([row_id] if row_id is not None else []), *selected_columns]
         # DuckDB has no empty SELECT list. Session frames always have a private
         # row identity, while this literal preserves direct zero-column paging.
         select_list = _identifier_list(terminal_columns) if terminal_columns else "1 AS __ow_page_placeholder"
+        query = f"SELECT {select_list} FROM ow LIMIT {int(limit)} OFFSET {int(offset)}"
+        if any(types[column] == "TIMESTAMP_NS" for column in selected_columns):
+            # Python fetch narrows timestamps. Format only the selected page,
+            # retaining native values in the source and its ordering/filtering.
+            formatted = [
+                f"{_duckdb_timestamp_ns_text(_quote_ident(column))} AS {_quote_ident(column)}"
+                if types[column] == "TIMESTAMP_NS"
+                else _quote_ident(column)
+                for column in terminal_columns
+            ]
+            query = f"SELECT {', '.join(formatted)} FROM ({query}) AS ow_page"
         with self._terminal_connection(frame) as (connection, source_sql):
             if total_rows is None:
                 total_rows = int(_execute_scalar(connection, source_sql, "SELECT count(*) FROM ow") or 0)
             records = _execute_rows(
                 connection,
                 source_sql,
-                f"SELECT {select_list} FROM ow LIMIT {int(limit)} OFFSET {int(offset)}",
+                query,
             )
         rows = []
         for row_number, record in enumerate(records, start=offset):
@@ -571,7 +583,10 @@ class DuckDBEngine(DataFrameEngine):
                 {
                     "id": f"r:{row_id}:{identity}" if row_id is not None else f"r:{row_number}",
                     "rowNumber": row_number,
-                    "values": [normalize_cell(record[value_offset + index]) for index in range(len(selected_columns))],
+                    "values": [
+                        _duckdb_query_cell(record[value_offset + index], types[column])
+                        for index, column in enumerate(selected_columns)
+                    ],
                 }
             )
         return {
@@ -653,26 +668,49 @@ class DuckDBEngine(DataFrameEngine):
                             ("maximum", f"max({identifier}) FILTER (WHERE {identifier} IS NOT NULL)"),
                         ]
                     )
-                metric_row = _execute_rows(
-                    connection,
-                    source_sql,
-                    f"SELECT {', '.join(expression for _name, expression in metric_fields)} FROM ow",
-                )[0]
+                metric_query = f"SELECT {', '.join(expression for _name, expression in metric_fields)} FROM ow"
+                if raw_type == "TIMESTAMP_NS":
+                    metric_query = (
+                        "SELECT "
+                        + ", ".join(f"{expression} AS {_quote_ident(name)}" for name, expression in metric_fields)
+                        + " FROM ow"
+                    )
+                    formatted_metrics = [
+                        _duckdb_timestamp_ns_text(_quote_ident(name))
+                        if name in {"minimum", "maximum"}
+                        else _quote_ident(name)
+                        for name, _expression in metric_fields
+                    ]
+                    metric_query = f"SELECT {', '.join(formatted_metrics)} FROM ({metric_query}) AS ow_metrics"
+                metric_row = _execute_rows(connection, source_sql, metric_query)[0]
                 metrics = dict(zip((name for name, _expression in metric_fields), metric_row, strict=True))
                 total_count = int(metrics["total_count"] or 0)
                 null_count = int(metrics["null_count"] or 0)
                 nan_count = int(metrics["nan_count"] or 0)
                 distinct_count = int(metrics["distinct_count"] or 0)
-                top_rows = _execute_rows(
-                    connection,
-                    source_sql,
-                    f"SELECT {identifier}, count(*) AS value_count FROM ow "
-                    f"WHERE {valid} GROUP BY {identifier} "
-                    f"ORDER BY value_count DESC, CAST({identifier} AS VARCHAR) ASC LIMIT 10",
+                count_name = (
+                    _quote_ident(_unique_internal(self._columns(frame), "__ow_value_count"))
+                    if raw_type == "TIMESTAMP_NS"
+                    else "value_count"
                 )
-                top_values = [
-                    {"value": normalize_cell(value)["display"], "count": int(count)} for value, count in top_rows
-                ]
+                order = identifier if raw_type == "TIMESTAMP_NS" else f"CAST({identifier} AS VARCHAR)"
+                top_query = (
+                    f"SELECT {identifier}, count(*) AS {count_name} FROM ow "
+                    f"WHERE {valid} GROUP BY {identifier} "
+                    f"ORDER BY {count_name} DESC, {order} ASC LIMIT 10"
+                )
+                if raw_type == "TIMESTAMP_NS":
+                    top_query = (
+                        f"SELECT {_duckdb_timestamp_ns_text(identifier)}, {count_name} FROM ({top_query}) AS ow_values"
+                    )
+                top_rows = _execute_rows(connection, source_sql, top_query)
+                top_values = []
+                for value, count in top_rows:
+                    cell = _duckdb_query_cell(value, raw_type)
+                    item = {"value": cell["display"], "count": int(count)}
+                    if raw_type == "TIMESTAMP_NS":
+                        item["selectionValue"] = typed_cell_selection_value(cell, semantic_type)
+                    top_values.append(item)
                 summary: dict[str, Any] = {
                     "columnId": column_id,
                     "column": column,
@@ -862,23 +900,40 @@ class DuckDBEngine(DataFrameEngine):
             raise EngineError(f"Unknown DuckDB column: {column}")
         types = dict(zip(self._columns(frame), (str(item) for item in frame.types), strict=True))
         column_type = _semantic_type(types[column])
+        raw_type = types[column]
         identifier = _quote_ident(column)
         conditions = [_valid_predicate(identifier, types[column])]
         if search:
+            text = (
+                _duckdb_timestamp_ns_text(identifier)
+                if raw_type == "TIMESTAMP_NS"
+                else f"CAST({identifier} AS VARCHAR)"
+            )
+            if raw_type == "TIMESTAMP_NS" and " " in str(search):
+                text = f"system.main.replace({text}, 'T', ' ')"
             conditions.append(
-                f"contains(translate(CAST({identifier} AS VARCHAR), {_sql_literal(_ASCII_UPPER)}, "
+                f"contains(translate({text}, {_sql_literal(_ASCII_UPPER)}, "
                 f"{_sql_literal(_ASCII_LOWER)}), {_sql_literal(str(search).translate(_ASCII_TO_LOWER))})"
             )
+        count_name = (
+            _quote_ident(_unique_internal(self._columns(frame), "__ow_value_count"))
+            if raw_type == "TIMESTAMP_NS"
+            else "value_count"
+        )
+        order = identifier if raw_type == "TIMESTAMP_NS" else f"CAST({identifier} AS VARCHAR)"
         query = (
-            f"SELECT {identifier}, count(*) AS value_count FROM ow WHERE {' AND '.join(conditions)} "
-            f"GROUP BY {identifier} ORDER BY value_count DESC, CAST({identifier} AS VARCHAR) ASC "
+            f"SELECT {identifier}, count(*) AS {count_name} FROM ow WHERE {' AND '.join(conditions)} "
+            f"GROUP BY {identifier} ORDER BY {count_name} DESC, {order} ASC "
             f"LIMIT {int(limit) + 1}"
         )
+        if raw_type == "TIMESTAMP_NS":
+            query = f"SELECT {_duckdb_timestamp_ns_text(identifier)}, {count_name} FROM ({query}) AS ow_values"
         rows = self._terminal_rows(frame, query)
         values = []
         for value, count in rows[:limit]:
-            item: dict[str, Any] = {"value": normalize_cell(value)["display"], "count": int(count)}
-            selection = typed_selection_value(value, column_type)
+            cell = _duckdb_query_cell(value, raw_type)
+            item: dict[str, Any] = {"value": cell["display"], "count": int(count)}
+            selection = typed_cell_selection_value(cell, column_type)
             item["selectionValue"] = selection
             values.append(item)
         return values, len(rows) > limit
@@ -2843,6 +2898,28 @@ def _write_relation_export(
 
 def _execute_rows(connection: Any, source_sql: str, query: str) -> list[tuple[Any, ...]]:
     return list(connection.execute(_compose_sql(source_sql, query)).fetchall())
+
+
+def _duckdb_timestamp_ns_text(identifier: str) -> str:
+    # A direct TIMESTAMP_NS text cast fails at some valid lower endpoints.
+    # Floor to microseconds before formatting and append the exact remainder;
+    # neither Python datetime boxing nor a native narrowing cast can do this.
+    ticks = f"system.main.epoch_ns({identifier})"
+    micros = f"system.main.make_timestamp(({ticks} // 1000) - CASE WHEN {ticks} % 1000 < 0 THEN 1 ELSE 0 END)"
+    remainder = f"(({ticks} % 1000 + 1000) % 1000)"
+    return (
+        f"CASE WHEN system.main.isfinite({identifier}) THEN "
+        f"CASE WHEN {ticks} % 1000000000 = 0 THEN system.main.strftime({micros}, '%Y-%m-%dT%H:%M:%S') "
+        f"ELSE system.main.strftime({micros}, '%Y-%m-%dT%H:%M:%S.%f') || "
+        f"CASE WHEN {ticks} % 1000 = 0 THEN '' ELSE system.main.lpad(CAST({remainder} AS VARCHAR), 3, '0') END END "
+        f"ELSE CAST({identifier} AS VARCHAR) END"
+    )
+
+
+def _duckdb_query_cell(value: Any, raw_type: str) -> dict[str, Any]:
+    if raw_type != "TIMESTAMP_NS" or value is None:
+        return normalize_cell(value)
+    return {"kind": "datetime", "raw": value, "display": value, "isNull": False, "isNaN": False}
 
 
 def _execute_scalar(connection: Any, source_sql: str, query: str) -> Any:
