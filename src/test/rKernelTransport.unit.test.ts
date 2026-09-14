@@ -2702,6 +2702,27 @@ describe("native R kernel protocol", () => {
     };
     expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
 
+    const withFormat = (inputFormat: unknown, dtype = "datetime") =>
+      ({
+        ...request,
+        payload: {
+          ...request.payload,
+          step: {
+            id: "cast-date",
+            kind: "castColumn",
+            params: { column: { id: "r:c:0", name: "value" }, dtype, inputFormat }
+          }
+        }
+      }) as RKernelRequest;
+    for (const inputFormat of ["DD/MM/YYYY", "MM/DD/YYYY", "YYYY-MM-DD"]) {
+      const formatted = withFormat(inputFormat);
+      expect(JSON.parse(encodeRKernelRequest(formatted))).toEqual(formatted);
+      expect(() => encodeRKernelRequest(withFormat(inputFormat, "date"))).toThrow("input date format");
+    }
+    for (const inputFormat of [undefined, null, "", "%d/%m/%Y", 1, {}, []]) {
+      expect(() => encodeRKernelRequest(withFormat(inputFormat))).toThrow("input date format");
+    }
+
     const response = JSON.stringify({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: previewRequestId,

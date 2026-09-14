@@ -11,6 +11,38 @@ import {
 import { otherReference, requests, validateTransportSchema, valueReference } from "./protocolValidation.fixtures";
 
 describe("protocol-v4 operation request validation", () => {
+  it("accepts fixed input date formats only for Datetime conversion", () => {
+    const admission = (params: unknown) => {
+      const step = { id: "cast", kind: "castColumn", params };
+      const envelope = {
+        protocolVersion: 4,
+        requestId: "date-preview",
+        priority: "interactive",
+        request: {
+          kind: "previewStep",
+          sessionId: "session",
+          revision: 0,
+          offset: 0,
+          limit: 1,
+          columnOffset: 0,
+          columnLimit: 1,
+          step
+        }
+      };
+      return [isRuntimeRequestEnvelope(envelope), validateTransportSchema(envelope)];
+    };
+    const params = { column: valueReference, dtype: "datetime" };
+    expect(admission(params)).toEqual([true, true]);
+    for (const inputFormat of ["DD/MM/YYYY", "MM/DD/YYYY", "YYYY-MM-DD"]) {
+      expect(admission({ ...params, inputFormat })).toEqual([true, true]);
+      expect(admission({ ...params, dtype: "date", inputFormat })).toEqual([false, false]);
+      expect(admission({ ...params, dtype: "string", inputFormat })).toEqual([false, false]);
+    }
+    for (const inputFormat of ["", "%d/%m/%Y", "DD/MM/YYYY ", null, 1, [], {}]) {
+      expect(admission({ ...params, inputFormat })).toEqual([false, false]);
+    }
+  });
+
   it("preserves explicit conditional results and rejects incompatible or omitted arms", () => {
     const params = {
       column: valueReference,

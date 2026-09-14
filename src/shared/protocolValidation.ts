@@ -1020,7 +1020,15 @@ export function isTransformStep(value: unknown): value is TransformStep {
     case "cloneColumn":
       return isColumnReference(params.column) && isNonEmptyString(params.newName);
     case "castColumn":
-      return isColumnReference(params.column) && isEnumMember(params.dtype, CAST_DTYPES);
+      return (
+        isColumnReference(params.column) &&
+        isEnumMember(params.dtype, CAST_DTYPES) &&
+        optional(
+          params,
+          "inputFormat",
+          (format) => params.dtype === "datetime" && isOneOf(format, ["DD/MM/YYYY", "MM/DD/YYYY", "YYYY-MM-DD"])
+        )
+      );
     case "formula": {
       if (
         !isColumnReference(params.leftColumn) ||

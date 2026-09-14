@@ -215,7 +215,11 @@ export function copyRTransformStep(step: RTransformStep): RTransformStep {
     return {
       id: step.id,
       kind: "castColumn",
-      params: { column: { ...step.params.column }, dtype: step.params.dtype }
+      params: {
+        column: { ...step.params.column },
+        dtype: step.params.dtype,
+        ...(step.params.inputFormat === undefined ? {} : { inputFormat: step.params.inputFormat })
+      }
     };
   }
   if (step.kind === "formula") {

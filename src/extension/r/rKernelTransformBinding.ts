@@ -624,10 +624,23 @@ export function rTransformStep(
     });
   }
   if (step.kind === "castColumn") {
+    if (step.params.inputFormat !== undefined) {
+      if (!isTransformStep(step)) throw new TypeError("Convert Type parameters are malformed.");
+      const source = requireTransformColumn(step.params.column, inputSchema, "Convert Type");
+      if (source.rawType !== "character") {
+        throw new TypeError(
+          "Convert Type inputFormat requires an R character column. Convert the column to Text first."
+        );
+      }
+    }
     return Object.freeze({
       id: step.id,
       kind: "castColumn" as const,
-      params: Object.freeze({ column: Object.freeze({ ...step.params.column }), dtype: step.params.dtype })
+      params: Object.freeze({
+        column: Object.freeze({ ...step.params.column }),
+        dtype: step.params.dtype,
+        ...(step.params.inputFormat === undefined ? {} : { inputFormat: step.params.inputFormat })
+      })
     });
   }
   if (step.kind === "formula") {

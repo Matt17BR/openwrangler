@@ -89,7 +89,7 @@ OPERATION_DEFINITIONS: tuple[OperationDefinition, ...] = (
         title="Convert type",
         group="Columns / types",
         required=("column", "dtype"),
-        optional=(),
+        optional=("inputFormat",),
     ),
     OperationDefinition(
         kind="formula",

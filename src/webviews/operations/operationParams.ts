@@ -106,8 +106,15 @@ export function buildParams(
     case "renameColumn":
     case "cloneColumn":
       return { column: columnReference("column"), newName: value("newName") };
-    case "castColumn":
-      return { column: columnReference("column"), dtype: value("dtype") };
+    case "castColumn": {
+      const column = columnReference("column");
+      const dtype = value("dtype");
+      const inputFormat = value("inputFormat");
+      if (inputFormat && availableColumns.find((candidate) => candidate.id === column.id)?.type !== "string") {
+        throw new Error("An input date format requires a Text column. Convert the column to Text first.");
+      }
+      return { column, dtype, ...(inputFormat ? { inputFormat } : {}) };
+    }
     case "formula": {
       return {
         leftColumn: columnReference("leftColumn"),

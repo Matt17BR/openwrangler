@@ -142,6 +142,7 @@ export interface RKernelCastColumnStep {
   readonly params: Readonly<{
     column: RKernelColumnReference;
     dtype: RKernelCastDtype;
+    inputFormat?: "DD/MM/YYYY" | "MM/DD/YYYY" | "YYYY-MM-DD";
   }>;
 }
 
@@ -1847,7 +1848,7 @@ function validateTransformStep(value: unknown): void {
     return;
   }
   if (step.kind === "castColumn") {
-    const params = exactRecord(step.params, ["column", "dtype"], "R kernel cast parameters");
+    const params = exactRecord(step.params, ["column", "dtype"], ["inputFormat"], "R kernel cast parameters");
     validateColumnReference(params.column, "request.payload.step.params.column");
     if (
       params.dtype !== "string" &&
@@ -1858,6 +1859,15 @@ function validateTransformStep(value: unknown): void {
       params.dtype !== "datetime"
     ) {
       fail("R kernel cast parameters contain an unsupported target type.");
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(params, "inputFormat") &&
+      (params.dtype !== "datetime" ||
+        (params.inputFormat !== "DD/MM/YYYY" &&
+          params.inputFormat !== "MM/DD/YYYY" &&
+          params.inputFormat !== "YYYY-MM-DD"))
+    ) {
+      fail("R kernel cast parameters require a supported input date format and a datetime target.");
     }
     return;
   }

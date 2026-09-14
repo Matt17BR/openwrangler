@@ -5414,6 +5414,29 @@ cast_cases <- list(
       c("2026-01-02 00:00:00", "2026-01-02 03:04:05.125", NA, NA),
       tz = "UTC"
     )
+  ),
+  list(
+    dtype = "datetime", inputFormat = "DD/MM/YYYY",
+    input = c("29/02/2024", "31/12/2026", "02/03/2026", "29/02/2023", "31/04/2026", "01/13/2026", "2/03/2026", "02/03/0000", "02/03/2026\n", "", NA_character_, "０2/03/2026"),
+    expected = as.POSIXct(c(1709164800, 1798675200, 1772409600, rep(NA_real_, 9L)), origin = "1970-01-01", tz = "UTC")
+  ),
+  list(
+    dtype = "datetime", inputFormat = "MM/DD/YYYY",
+    input = c("02/29/2024", "12/31/2026", "02/03/2026", "02/29/2023", "04/31/2026", "13/01/2026", "2/03/2026", "02/03/0000", "02/03/2026\n", "", NA_character_, "０2/03/2026"),
+    expected = as.POSIXct(c(1709164800, 1798675200, 1770076800, rep(NA_real_, 9L)), origin = "1970-01-01", tz = "UTC")
+  ),
+  list(
+    dtype = "datetime", inputFormat = "YYYY-MM-DD",
+    input = c("2024-02-29", "2026-12-31", "2026-03-02", "2023-02-29", "2026-04-31", "2026-13-01", "2026-3-02", "0000-03-02", "2026-03-02\n", "", NA_character_, "2026-03-０2"),
+    expected = as.POSIXct(c(1709164800, 1798675200, 1772409600, rep(NA_real_, 9L)), origin = "1970-01-01", tz = "UTC")
+  ),
+  list(
+    dtype = "datetime", inputFormat = "DD/MM/YYYY", input = character(),
+    expected = as.POSIXct(numeric(), origin = "1970-01-01", tz = "UTC")
+  ),
+  list(
+    dtype = "datetime", inputFormat = "DD/MM/YYYY", input = c(NA_character_, NA_character_),
+    expected = as.POSIXct(c(NA_real_, NA_real_), origin = "1970-01-01", tz = "UTC")
   )
 )
 
@@ -5425,7 +5448,8 @@ for (case in cast_cases) {
     source,
     1L,
     "value",
-    case$dtype
+    case$dtype,
+    case$inputFormat
   )
   result_capture <- openwrangler_r_frame_contract$capture_frame(
     result,
@@ -5447,6 +5471,38 @@ for (case in cast_cases) {
   )
   assert_identical(source, source_before, sprintf("castColumn mutated its %s source", case$dtype))
 }
+
+for (input in list(integer(), c(NA_integer_, NA_integer_), factor(character()), factor(c(NA, NA)),
+  as.Date(character()), as.POSIXct(c(NA_real_, NA_real_), origin = "1970-01-01", tz = "UTC"))) {
+  assert_error(openwrangler_r_frame_contract$cast_column_at(
+    data.frame(value = input), 1L, "value", "datetime", "DD/MM/YYYY"
+  ), "character source")
+}
+for (bad_format in list("%d/%m/%Y", "", NA_character_, c("DD/MM/YYYY", "MM/DD/YYYY"))) {
+  assert_error(openwrangler_r_frame_contract$cast_column_at(
+    data.frame(value = "29/02/2024"), 1L, "value", "datetime", bad_format
+  ), "inputFormat")
+}
+assert_error(openwrangler_r_frame_contract$cast_column_at(
+  data.frame(value = "29/02/2024"), 1L, "value", "date", "DD/MM/YYYY"
+), "inputFormat")
+assert_error(openwrangler_r_frame_contract$cast_column_at(
+  data.frame(value = paste(rep("x", 8193L), collapse = "")), 1L, "value", "datetime", "DD/MM/YYYY"
+), "exceeds")
+
+fixed_table <- data.table::data.table(primary_key = c(2L, 1L), value = c("31/12/2026", "29/02/2024"))
+data.table::setkey(fixed_table, primary_key)
+fixed_before <- data.table::copy(fixed_table)
+fixed_result <- openwrangler_r_frame_contract$cast_column_at(fixed_table, 2L, "value", "datetime", "DD/MM/YYYY")
+assert_identical(data.table::key(fixed_result), "primary_key", "fixed-layout Cast lost the retained key")
+assert_identical(fixed_result$primary_key, fixed_before$primary_key, "fixed-layout Cast changed row order")
+assert_identical(as.double(fixed_result$value), c(1709164800, 1798675200), "fixed-layout Cast changed keyed-frame values")
+assert_identical(fixed_table, fixed_before, "fixed-layout Cast mutated its source")
+fixed_keyed <- data.table::copy(fixed_table)
+data.table::setkey(fixed_keyed, value)
+fixed_keyed_before <- data.table::copy(fixed_keyed)
+assert_error(openwrangler_r_frame_contract$cast_column_at(fixed_keyed, 2L, "value", "datetime", "DD/MM/YYYY"), "key column")
+assert_identical(fixed_keyed, fixed_keyed_before, "refused fixed-layout Cast mutated its keyed source")
 
 cast_nonnullable_source <- data.frame(value = c("1", "2"), check.names = FALSE)
 cast_nonnullable_capture <- openwrangler_r_frame_contract$capture_frame(cast_nonnullable_source)
@@ -5526,6 +5582,17 @@ assert_identical(
 )
 invisible(openwrangler_r_frame_contract$capture_frame(cast_ancient_date))
 invisible(openwrangler_r_frame_contract$capture_frame(cast_ancient_datetime))
+
+cast_fixed_ancient <- openwrangler_r_frame_contract$cast_column_at(
+  cast_ancient_text, 1L, "date", "datetime", "YYYY-MM-DD"
+)
+cast_fixed_ancient_expected <- as.POSIXct(cast_ancient_date_expected, tz = "UTC")
+if (!identical(format(cast_fixed_ancient_expected[2L], "%Y-%m-%dT%H:%M:%OS6", tz = "UTC"),
+  "0001-01-01T00:00:00.000000")) {
+  cast_fixed_ancient_expected[2L] <- as.POSIXct(NA_real_, origin = "1970-01-01", tz = "UTC")
+}
+assert_identical(cast_fixed_ancient$date, cast_fixed_ancient_expected, "fixed-layout Cast bypassed native temporal capacity")
+invisible(openwrangler_r_frame_contract$capture_frame(cast_fixed_ancient))
 
 cast_ancient_posix <- data.frame(
   instant = as.POSIXct(c("2024-02-29 12:00:00", "0001-01-01 00:00:00"), tz = "UTC"),

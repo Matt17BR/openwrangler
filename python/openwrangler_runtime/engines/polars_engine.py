@@ -185,9 +185,31 @@ def _polars_cast_target(dtype: str) -> tuple[str, Literal[False]]:
     }[dtype], False
 
 
-def _polars_temporal_cast_expression(expression: Any, input_dtype: Any, target_dtype: Any) -> Any:
+def _polars_temporal_cast_expression(
+    expression: Any, input_dtype: Any, target_dtype: Any, input_format: str | None = None
+) -> Any:
     import polars as pl
 
+    if input_format is not None:
+        if input_dtype != pl.String:
+            raise ValueError("Datetime input format requires a text column. Convert the column to Text first.")
+        format, pattern, year_start = {
+            "DD/MM/YYYY": ("%d/%m/%Y", r"[0-9]{2}/[0-9]{2}/[0-9]{4}", 6),
+            "MM/DD/YYYY": ("%m/%d/%Y", r"[0-9]{2}/[0-9]{2}/[0-9]{4}", 6),
+            "YYYY-MM-DD": ("%Y-%m-%d", r"[0-9]{4}-[0-9]{2}-[0-9]{2}", 0),
+        }[input_format]
+        valid = (
+            (expression.str.len_bytes() == 10)
+            & expression.str.contains("^" + pattern + "$")
+            & (expression.str.slice(year_start, 4) != "0000")
+        )
+        return (
+            pl.when(valid)
+            .then(expression)
+            .otherwise(None)
+            .str.to_datetime(format=format, time_unit="us", strict=False, exact=True, cache=False)
+            .alias(expression.meta.output_name())
+        )
     if input_dtype.base_type() == pl.Datetime:
         if target_dtype == pl.Datetime:
             return expression
@@ -1615,7 +1637,9 @@ class PolarsEngine(DataFrameEngine):
             expression = pl.col(column)
             if params["dtype"] in {"date", "datetime"}:
                 schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
-                expression = _polars_temporal_cast_expression(expression, schema[column], getattr(pl, dtype_attribute))
+                expression = _polars_temporal_cast_expression(
+                    expression, schema[column], getattr(pl, dtype_attribute), params.get("inputFormat")
+                )
             else:
                 expression = expression.cast(getattr(pl, dtype_attribute), strict=strict)
             return df.with_columns(expression)
@@ -2549,10 +2573,11 @@ class PolarsEngine(DataFrameEngine):
             dtype_attribute, strict = _polars_cast_target(params["dtype"])
             if params["dtype"] in {"date", "datetime"}:
                 schema = f"_cast_schema_{index}"
+                input_format = f", {params['inputFormat']!r}" if "inputFormat" in params else ""
                 return [
                     f"{prefix}{schema} = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema",
                     f"{prefix}df = df.with_columns(_polars_temporal_cast_expression("
-                    f"pl.col({column!r}), {schema}[{column!r}], pl.{dtype_attribute}))",
+                    f"pl.col({column!r}), {schema}[{column!r}], pl.{dtype_attribute}{input_format}))",
                 ]
             return [f"{prefix}df = df.with_columns(pl.col({column!r}).cast(pl.{dtype_attribute}, strict={strict!r}))"]
         if kind == "formula":

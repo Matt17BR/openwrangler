@@ -4,6 +4,10 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ## [Unreleased]
 
+### Added
+
+- Convert Type to Datetime accepts day-first, month-first and ISO text dates through an optional input layout.
+
 ### Changed
 
 - Generated Polars code includes only the integer helpers needed by its By Example and Group By steps.

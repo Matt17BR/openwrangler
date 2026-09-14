@@ -1,5 +1,5 @@
 import { formatFormulaLiteral, isFormulaLiteral } from "../../shared/formulaLiteral";
-import { useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 import type { FilterModel } from "../../shared/filterModel";
 import { hasActiveViewQuery, isActiveColumnFilter } from "../../shared/filterModel";
 import type { ColumnSchema, OperationKind, SessionMetadata, TransformStep } from "../../shared/protocol";
@@ -287,22 +287,7 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
     );
   }
   if (kind === "castColumn") {
-    return (
-      <>
-        <ColumnReferenceSelect
-          name="column"
-          label="Column"
-          columns={columns}
-          defaultValue={initialColumnReference("column")}
-        />
-        <SelectField
-          name="dtype"
-          label="Target type"
-          defaultValue={param("dtype", "string")}
-          options={["string", "integer", "float", "boolean", "date", "datetime"].map((value) => [value, value])}
-        />
-      </>
-    );
+    return <CastColumnFields columns={columns} initial={initialStep?.kind === kind ? initialStep.params : undefined} />;
   }
   if (kind === "formula") {
     const numericColumns = compatibleColumns(columns, operationColumnTypes(kind));
@@ -984,6 +969,63 @@ function AggregationRow({
         onMoveDown={onMoveDown}
       />
     </div>
+  );
+}
+
+function CastColumnFields({
+  columns,
+  initial
+}: {
+  columns: ColumnSchema[];
+  initial?: Extract<TransformStep, { kind: "castColumn" }>["params"];
+}) {
+  const [dtype, setDtype] = useState<string>(initial?.dtype ?? "string");
+  const [inputFormat, setInputFormat] = useState<string>(initial?.inputFormat ?? "");
+  const helpId = useId();
+  return (
+    <>
+      <ColumnReferenceSelect
+        name="column"
+        label="Column"
+        columns={columns}
+        defaultValue={columnReferenceId(initial?.column) ?? columns[0]?.id}
+      />
+      <label className="formField">
+        <span>Target type</span>
+        <select name="dtype" value={dtype} onChange={(event) => setDtype(event.target.value)}>
+          {["string", "integer", "float", "boolean", "date", "datetime"].map((value) => (
+            <option key={value} value={value}>
+              {value}
+            </option>
+          ))}
+        </select>
+      </label>
+      {dtype === "datetime" && (
+        <label className="formField">
+          <span>Input date format</span>
+          <select
+            name="inputFormat"
+            aria-label="Input date format"
+            value={inputFormat}
+            onChange={(event) => setInputFormat(event.target.value)}
+            aria-describedby={inputFormat ? helpId : undefined}
+          >
+            <option value="">Default conversion</option>
+            {["DD/MM/YYYY", "MM/DD/YYYY", "YYYY-MM-DD"].map((format) => (
+              <option key={format} value={format}>
+                {format}
+              </option>
+            ))}
+          </select>
+          {inputFormat && (
+            <small id={helpId}>
+              Text dates must match this layout exactly. Invalid or out-of-range dates become missing. Valid dates
+              become midnight.
+            </small>
+          )}
+        </label>
+      )}
+    </>
   );
 }
 

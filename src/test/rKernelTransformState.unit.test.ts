@@ -15,6 +15,25 @@ import {
 } from "../extension/r/rKernelTransformState";
 
 describe("R kernel transform state", () => {
+  it.each([undefined, "DD/MM/YYYY", "MM/DD/YYYY", "YYYY-MM-DD"] as const)(
+    "preserves the optional %s Datetime input layout in retained copies",
+    (inputFormat) => {
+      const step: RTransformStep = {
+        id: "parse",
+        kind: "castColumn",
+        params: { column: reference(0), dtype: "datetime", ...(inputFormat === undefined ? {} : { inputFormat }) }
+      };
+      for (const copy of [copyRTransformStep(step), copyRetainedStep(step)]) {
+        expect(copy).toEqual(step);
+        expect(copy.params).not.toBe(step.params);
+        if (copy.kind !== "castColumn") throw new Error("Expected the copied Cast step.");
+        expect(copy.params.column).not.toBe(step.params.column);
+        if (inputFormat === undefined) expect(copy.params).not.toHaveProperty("inputFormat");
+        else expect(JSON.parse(JSON.stringify(copy)).params.inputFormat).toBe(inputFormat);
+      }
+    }
+  );
+
   it("deep-copies every nested by-example program branch", () => {
     const program: ByExampleProgram = {
       kind: "arithmetic",

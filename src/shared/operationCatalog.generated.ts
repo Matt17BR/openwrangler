@@ -130,7 +130,7 @@ export const operationCatalog: readonly OperationCatalogItem[] = Object.freeze([
     group: "Columns / types",
     icon: "symbol-field",
     required: Object.freeze(["column", "dtype"]),
-    optional: Object.freeze([])
+    optional: Object.freeze(["inputFormat"])
   }),
   Object.freeze({
     kind: "formula",

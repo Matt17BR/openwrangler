@@ -243,8 +243,14 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
             raise OperationError("A linear interpolation target cannot also be its coordinate column.")
     elif kind == "dropDuplicates" and not _is_string_choice(params.get("keep", "first"), {"first", "last", "none"}):
         raise OperationError("dropDuplicates.keep must be first, last, or none.")
-    elif kind == "castColumn" and not _is_string_choice(params["dtype"], CAST_DTYPES):
-        raise OperationError(f"castColumn.dtype must be one of: {', '.join(sorted(CAST_DTYPES))}.")
+    elif kind == "castColumn":
+        if not _is_string_choice(params["dtype"], CAST_DTYPES):
+            raise OperationError(f"castColumn.dtype must be one of: {', '.join(sorted(CAST_DTYPES))}.")
+        if "inputFormat" in params and (
+            params["dtype"] != "datetime"
+            or not _is_string_choice(params["inputFormat"], {"DD/MM/YYYY", "MM/DD/YYYY", "YYYY-MM-DD"})
+        ):
+            raise OperationError("castColumn.inputFormat requires datetime and a supported fixed date layout.")
     elif kind == "formula":
         if not _is_string_choice(params["operator"], FORMULA_OPERATORS):
             raise OperationError("formula.operator is not supported.")

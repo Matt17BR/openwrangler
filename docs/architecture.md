@@ -551,6 +551,15 @@ including missing-value distinctions. Original values, order and identities rema
 Boolean type while preserving the engine's conservative schema nullability policy. An empty input retains its
 schema and gains an empty Boolean column. Live and generated code apply the same rules and output-name checks.
 
+Convert Type accepts an optional `inputFormat` for a Datetime target: `DD/MM/YYYY`, `MM/DD/YYYY` or `YYYY-MM-DD`.
+Across the editing engines, the option requires native text input and exact ten-character ASCII dates with positive
+four-digit years. Invalid dates, extra text and values beyond native capacity become missing. Valid dates become
+timezone-naive midnight in Python engines and UTC midnight in R. Historical range can differ by engine, version and
+platform. Categorical/factor columns require conversion to Text first. Pandas admits StringDtype, Arrow string and
+large-string storage, and object columns containing only text and missing values. Other physical types, including
+fixed-width bytes and Arrow string-view storage, are refused. Live and generated code check the current input type,
+including empty or all-missing columns. Omitting the option retains the engine's default conversion rules.
+
 ### Pandas
 
 Pandas executes viewing, all catalog operations, profiling, generated code, and supported exports in Pandas.
