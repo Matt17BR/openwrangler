@@ -571,6 +571,10 @@ validation costs are described in the [DuckDB architecture](architecture.md#duck
 For top-level `TIMESTAMP_NS` columns, the grid, filter choices and profiles display timestamps without rounding.
 Exact microsecond values remain selectable. Finer fractions and timestamp infinities can be displayed but cannot be
 selected with the current filter format; choices are disabled and cell-filter requests refuse without changing the view.
+TIMESTAMP_NS values inside DuckDB lists, arrays, structs and maps also retain their precision in grid text, copied
+cells and successful profile/choice output. Distinct timestamp Map keys keep their associated values. Union-contained
+values are outside this correction and can still lose temporal precision or merge Map entries. Complex-value selection and comparisons are unavailable; profiles and
+choices can still refuse values near the lower nanosecond endpoint.
 
 Format Datetime retains native nanosecond fractions and wide dates in live and generated DuckDB code. Formats use
 DuckDB syntax, including `%n` for nine fractional digits. Zoned timestamps use the execution connection's timezone.
