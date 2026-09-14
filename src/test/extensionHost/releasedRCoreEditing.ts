@@ -74,14 +74,6 @@ export interface ReleasedRCoreEditingDependencies {
     workbench: Page,
     sessionId: string
   ) => Promise<Readonly<{ app: Locator; dialog: Locator }>>;
-  readonly previewReleasedRClone: (
-    testing: TestApi,
-    workbench: Page,
-    app: Locator,
-    sessionId: string,
-    sourceName: string,
-    newName: string
-  ) => Promise<ReleasedRPreview>;
   readonly previewReleasedRDrop: (
     testing: TestApi,
     workbench: Page,
@@ -172,7 +164,6 @@ export async function exerciseReleasedRCoreEditingCatalog(
     exerciseReleasedRPersistentRowsJourney,
     exerciseReleasedRRowReductionJourney,
     openReleasedROperationPicker,
-    previewReleasedRClone,
     previewReleasedRDrop,
     previewReleasedRRename,
     previewReleasedRSelect,
@@ -1058,31 +1049,6 @@ export async function exerciseReleasedRCoreEditingCatalog(
   assert.equal(final.code, restored.code);
   assert.deepEqual((await readRenamePage(final, `${phase}-editing-final-undo-page`)).page, restoredPage.page);
 
-  recordAcceptanceProgress(`${phase}:editing:drop-preview-discard`);
-  const discardedDrop = await previewReleasedRDrop(
-    testing,
-    workbench,
-    sessionId,
-    "label",
-    "orders_frame",
-    `${phase}:editing:drop-code-preview`
-  );
-  app = discardedDrop.app;
-  await app.getByRole("region", { name: "Draft review" }).getByRole("button", { name: "Discard", exact: true }).click();
-  await waitFor(
-    () => {
-      const active = testing.activeSession();
-      return (
-        active?.sessionId === sessionId &&
-        active.metadata.steps.length === 0 &&
-        active.metadata.draftStep === undefined &&
-        active.metadata.schema.some((column) => column.name === "label")
-      );
-    },
-    30_000,
-    "discarding the native R Drop Columns preview"
-  );
-
   recordAcceptanceProgress(`${phase}:editing:drop-preview-apply-inspect-undo`);
   const dropped = await previewReleasedRDrop(
     testing,
@@ -1162,27 +1128,6 @@ export async function exerciseReleasedRCoreEditingCatalog(
     "undoing the native R Drop Columns step"
   );
 
-  recordAcceptanceProgress(`${phase}:editing:select-preview-discard`);
-  const selected = await previewReleasedRSelect(testing, workbench, sessionId, ["score", "row_id", "label"]);
-  app = selected.app;
-  await app.getByRole("region", { name: "Draft review" }).getByRole("button", { name: "Discard", exact: true }).click();
-  await waitFor(
-    () => {
-      const active = testing.activeSession();
-      return (
-        active?.sessionId === sessionId &&
-        active.metadata.steps.length === 0 &&
-        active.metadata.draftStep === undefined &&
-        active.metadata.schema
-          .slice(0, 4)
-          .map((column) => column.name)
-          .join("\u0000") === "row_id\u0000group\u0000score\u0000label"
-      );
-    },
-    30_000,
-    "discarding the native R Select Columns preview"
-  );
-
   recordAcceptanceProgress(`${phase}:editing:select-preview-apply-inspect-undo`);
   const appliedSelection = await previewReleasedRSelect(testing, workbench, sessionId, ["score", "row_id", "label"]);
   app = appliedSelection.app;
@@ -1258,53 +1203,7 @@ export async function exerciseReleasedRCoreEditingCatalog(
     "undoing the native R Select Columns step"
   );
 
-  recordAcceptanceProgress(`${phase}:editing:clone-preview-discard`);
-  const discardedClone = await previewReleasedRClone(testing, workbench, app, sessionId, "score", "score_discarded");
-  app = discardedClone.app;
-  await app.getByRole("region", { name: "Draft review" }).getByRole("button", { name: "Discard", exact: true }).click();
-  await waitFor(
-    () => {
-      const active = testing.activeSession();
-      return (
-        active?.sessionId === sessionId &&
-        active.metadata.steps.length === 0 &&
-        active.metadata.draftStep === undefined &&
-        !active.metadata.schema.some((column) => column.name === "score_discarded") &&
-        active.metadata.schema
-          .slice(0, 4)
-          .map((column) => column.name)
-          .join("\u0000") === "row_id\u0000group\u0000score\u0000label"
-      );
-    },
-    30_000,
-    "discarding the native R Clone Column preview"
-  );
-
   await exerciseReleasedRCloneEditingLifecycle(testing, workbench, sessionId, phase);
-  recordAcceptanceProgress(`${phase}:editing:text-length-preview-discard`);
-  const discardedLength = await previewReleasedRTextLength(
-    testing,
-    workbench,
-    sessionId,
-    "label",
-    "discarded_label_length"
-  );
-  app = discardedLength.app;
-  await app.getByRole("region", { name: "Draft review" }).getByRole("button", { name: "Discard", exact: true }).click();
-  await waitFor(
-    () => {
-      const active = testing.activeSession();
-      return (
-        active?.sessionId === sessionId &&
-        active.metadata.steps.length === 0 &&
-        active.metadata.draftStep === undefined &&
-        !active.metadata.schema.some((column) => column.name === "discarded_label_length")
-      );
-    },
-    30_000,
-    "discarding the native R Text Length preview"
-  );
-
   recordAcceptanceProgress(`${phase}:editing:text-length-preview-apply-inspect-undo`);
   const measured = await previewReleasedRTextLength(testing, workbench, sessionId, "label", "label_length");
   app = measured.app;

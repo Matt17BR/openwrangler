@@ -526,7 +526,9 @@ input delivery, not host admission. The original click and 30-second wait remain
 cleanup have separate two-second limits.
 
 The Linux comprehensive journey retains the broader operation catalog, final-page/last-column assertion, separate
-native Viewing opens and both native-flavor operations. macOS omits the additional tibble Rename and keyed-data.table
+native Viewing opens and both native-flavor operations. Rename owns the shared Preview/Discard check; Drop, Select,
+Clone and Text Length proceed from Preview to Apply, inspection and Undo. Clone also retains Edit.
+macOS omits the additional tibble Rename and keyed-data.table
 Drop editing round; those class-specific semantics remain in the native R contracts, Linux comprehensive and Windows
 representative journeys. The Windows desktop VS Code default also opens the three existing ordinary collapse
 fixtures and checks their pages and source binding. Cursor, remote and focused profiles keep their existing scope.
