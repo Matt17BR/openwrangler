@@ -506,8 +506,12 @@ their existing behavior.
 
 A locally staged sort order binds each rule to its unique column ID, name and semantic type. Schema changes
 permanently retire rules whose owner disappeared, changed or became ineligible, preserving unaffected rule order.
-The panel uses the confirmed model directly when no local difference is staged. An authoritative sort-model
+The panel uses the current requested sort order directly when no local difference is staged. An authoritative sort-model
 replacement resets local edits; the existing Clear-column action preserves its explicitly staged sibling rules.
+The App identifies the current failed viewing request when restoring confirmed sorts. Only that failure preserves
+newer staged rules, sort direction and null placement bound to the failed sort. Their bases move back to the confirmed
+model; an explicit sort replacement, including a header action selecting those same confirmed sorts, still retires them.
+This local reconciliation does not submit a query or change page rollback, Retry or filter history.
 Confirmed viewing sorts retain their name/type reconciliation policy.
 
 The Python decoder validates viewing record shapes, list fields and scalar enums before engine dispatch. Native R

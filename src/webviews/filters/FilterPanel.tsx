@@ -39,6 +39,8 @@ interface SortDraft {
 interface FilterPanelProps {
   metadata: SessionMetadata | undefined;
   model: FilterModel;
+  /** Sort from the current correlated failure of a viewing-model request. */
+  failedSort?: FilterModel["sort"];
   values: ReadonlyMap<string, ValuesResponse>;
   /** A new object requests column selection without resetting form drafts. */
   columnRequest?: Readonly<{ column: string }>;
@@ -54,6 +56,7 @@ interface FilterPanelProps {
 export function FilterPanel({
   metadata,
   model,
+  failedSort,
   values,
   columnRequest,
   defaultAdvanced = false,
@@ -85,9 +88,19 @@ export function FilterPanel({
   const [advanced, setAdvanced] = useState(defaultAdvanced);
   const optionLabels = useMemo(() => columnOptionLabels(metadata?.schema ?? []), [metadata?.schema]);
   const viewColumnNameCounts = useMemo(() => countViewColumnNames(metadata?.schema ?? []), [metadata?.schema]);
+  // Only a correlated failure can rebase newer edits onto the restored confirmed sort.
+  // An explicit header replacement may select that same sort without preserving drafts.
+  const sortModelRolledBack =
+    failedSort !== undefined &&
+    sortEditor.modelKey !== modelSortKey &&
+    sortEditor.modelKey === sortRulesKey(failedSort) &&
+    metadata !== undefined &&
+    modelSortKey === sortRulesKey(metadata.filterModel.sort);
   const reconciledSortDraft = useMemo(() => {
     const draft = sortEditor.draft;
-    if (!draft || (sortEditor.modelKey !== modelSortKey && draft.modelKey !== modelSortKey)) return undefined;
+    if (!draft || (!sortModelRolledBack && sortEditor.modelKey !== modelSortKey && draft.modelKey !== modelSortKey))
+      return undefined;
+    const modelKey = sortModelRolledBack && draft.modelKey === sortEditor.modelKey ? modelSortKey : draft.modelKey;
     const rules = draft.rules.filter(
       (rule) =>
         viewColumnNameCounts.get(rule.column) === 1 &&
@@ -100,9 +113,14 @@ export function FilterPanel({
             supportsTypedViewComparison(column.type)
         )
     );
-    if (sortRulesKey(rules) === draft.modelKey) return undefined;
-    return rules.length === draft.rules.length ? draft : { ...draft, rules };
-  }, [sortEditor, modelSortKey, metadata?.schema, viewColumnNameCounts]);
+    if (sortRulesKey(rules) === modelKey) return undefined;
+    return rules.length === draft.rules.length && modelKey === draft.modelKey ? draft : { ...draft, modelKey, rules };
+  }, [sortEditor, modelSortKey, sortModelRolledBack, metadata?.schema, viewColumnNameCounts]);
+  if (sortModelRolledBack && sortInput.modelKey === sortEditor.modelKey) {
+    setSortInput({ ...sortInput, modelKey: modelSortKey });
+  } else if (sortEditor.modelKey !== modelSortKey && sortInput.modelKey !== modelSortKey) {
+    setSortInput({ modelKey: modelSortKey, columnId: "", direction: "asc", nulls: "last" });
+  }
   if (sortEditor.modelKey !== modelSortKey || sortEditor.draft !== reconciledSortDraft) {
     setSortEditor({ modelKey: modelSortKey, draft: reconciledSortDraft });
   }
