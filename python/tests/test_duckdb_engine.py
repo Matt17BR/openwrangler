@@ -4163,23 +4163,19 @@ def test_duckdb_all_operations_and_generated_code_stay_native(monkeypatch: pytes
             live = engine.apply_transform(live, operation)
         generated = execute_generated(engine, source, plan)
         assert_same_relation(live, generated)
-
-    transformed = source
-    for operation in text_numeric_plan:
-        transformed = engine.apply_transform(transformed, operation)
-    output = records(transformed)
-    assert output[0]["clean"] == "alpha-one"
-    assert output[1]["suffix"] == "two"
-    assert output[0]["group_a"] == 1
-    assert output[2]["group_b"] == 1
-    assert output[0]["tag_blue"] == 1
-    assert output[1]["tag_red"] == 0
-    assert output[0]["scaled"] == 0.0
-    assert output[1]["scaled"] == 1.0
-    assert output[0]["month"] == "2024/01"
-
-    grouped = engine.apply_transform(source, group_plan[0])
-    assert records(grouped)[0] == {"group": "a", "total": 4.0, "average": 2.5, "texts": 2, "tag_sets": 2}
+        if plan is text_numeric_plan:
+            output = records(live)
+            assert output[0]["clean"] == "alpha-one"
+            assert output[1]["suffix"] == "two"
+            assert output[0]["group_a"] == 1
+            assert output[2]["group_b"] == 1
+            assert output[0]["tag_blue"] == 1
+            assert output[1]["tag_red"] == 0
+            assert output[0]["scaled"] == 0.0
+            assert output[1]["scaled"] == 1.0
+            assert output[0]["month"] == "2024/01"
+        elif plan is group_plan:
+            assert records(live)[0] == {"group": "a", "total": 4.0, "average": 2.5, "texts": 2, "tag_sets": 2}
     engine.close()
 
 
