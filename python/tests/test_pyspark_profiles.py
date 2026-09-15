@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from decimal import Decimal
 from importlib import import_module
 from typing import Any
 
@@ -211,7 +210,10 @@ def test_column_values_use_one_guarded_terminal_action(
         engine.close()
 
 
-def test_fused_summaries_match_per_column_objects_and_canonical_utf8_bytes(spark_session: Any) -> None:
+def test_fused_summaries_match_per_column_objects_and_canonical_utf8_bytes(
+    spark_session: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     frame = spark_session.sql(
         """
         SELECT * FROM VALUES
@@ -242,6 +244,15 @@ def test_fused_summaries_match_per_column_objects_and_canonical_utf8_bytes(spark
         """
     )
     engine, indexed = _open_engine(frame, "fused-summary-equality")
+    dataframe_type = type(indexed)
+
+    def forbidden(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("PySpark summaries must never convert through Pandas or Arrow.")
+
+    for method_name in ("toPandas", "toArrow", "mapInPandas", "mapInArrow"):
+        if hasattr(dataframe_type, method_name):
+            monkeypatch.setattr(dataframe_type, method_name, forbidden)
+
     try:
         schema = engine.schema(indexed)
         projection = [(int(column["position"]), f"fixture:{column['name']}") for column in schema]
@@ -259,8 +270,33 @@ def test_fused_summaries_match_per_column_objects_and_canonical_utf8_bytes(spark
 
         assert fused == per_column
         assert encode(fused) == encode(per_column)
-        assert fused[0]["numeric"]["exactMin"]["display"] == "-9007199254740993"
+        assert fused[0]["numeric"]["exactMin"] == {
+            "kind": "integer",
+            "raw": "-9007199254740993",
+            "display": "-9007199254740993",
+            "isNull": False,
+            "isNaN": False,
+        }
+        assert fused[0]["numeric"]["exactMax"] == {
+            "kind": "integer",
+            "raw": "9007199254740995",
+            "display": "9007199254740995",
+            "isNull": False,
+            "isNaN": False,
+        }
+        assert fused[0]["numeric"]["sum"] == 17.0
+        assert fused[0]["numeric"]["exactSum"] == {
+            "kind": "integer",
+            "raw": 17,
+            "display": "17",
+            "isNull": False,
+            "isNaN": False,
+        }
+        assert fused[1]["numeric"]["exactMin"]["display"] == "-123456789012345.123456789012345678"
         assert fused[1]["numeric"]["exactMax"]["display"] == "987654321098765.987654321098765432"
+        assert fused[1]["numeric"]["exactMin"]["kind"] == "decimal"
+        assert fused[1]["numeric"]["exactMax"]["kind"] == "decimal"
+        assert fused[1]["numeric"]["exactSum"]["display"] == "864197532086435.864197532086419754"
         assert fused[0]["distinctCount"] == 8
         assert fused[1]["distinctCount"] == 8
         assert {item["value"] for item in fused[0]["topValues"]} >= {
@@ -378,61 +414,6 @@ def test_numeric_histogram_is_exact_for_a_large_filtered_view(spark_session: Any
         assert [bin_["max"] - bin_["min"] for bin_ in bins] == pytest.approx(
             [bins[0]["max"] - bins[0]["min"]] * len(bins)
         )
-    finally:
-        engine.close()
-
-
-def test_numeric_summaries_publish_lossless_wide_integer_and_decimal_extrema(
-    spark_session: Any,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    frame = spark_session.createDataFrame(
-        [
-            (-9_007_199_254_740_993, Decimal("-123456789012345.123456789012345678")),
-            (9_007_199_254_740_995, Decimal("987654321098765.987654321098765432")),
-        ],
-        "wide long, amount decimal(38,18)",
-    )
-    engine, indexed = _open_engine(frame, "exact-extrema")
-    dataframe_type = type(indexed)
-
-    def forbidden(*_args: Any, **_kwargs: Any) -> Any:
-        raise AssertionError("PySpark summaries must never convert through Pandas or Arrow.")
-
-    for method_name in ("toPandas", "toArrow", "mapInPandas", "mapInArrow"):
-        if hasattr(dataframe_type, method_name):
-            monkeypatch.setattr(dataframe_type, method_name, forbidden)
-
-    try:
-        summaries = engine.summaries(indexed, [(0, "wide-id"), (1, "amount-id")])
-
-        assert summaries[0]["numeric"]["exactMin"] == {
-            "kind": "integer",
-            "raw": "-9007199254740993",
-            "display": "-9007199254740993",
-            "isNull": False,
-            "isNaN": False,
-        }
-        assert summaries[0]["numeric"]["exactMax"] == {
-            "kind": "integer",
-            "raw": "9007199254740995",
-            "display": "9007199254740995",
-            "isNull": False,
-            "isNaN": False,
-        }
-        assert summaries[0]["numeric"]["sum"] == 2.0
-        assert summaries[0]["numeric"]["exactSum"] == {
-            "kind": "integer",
-            "raw": 2,
-            "display": "2",
-            "isNull": False,
-            "isNaN": False,
-        }
-        assert summaries[1]["numeric"]["exactMin"]["display"] == "-123456789012345.123456789012345678"
-        assert summaries[1]["numeric"]["exactMax"]["display"] == "987654321098765.987654321098765432"
-        assert summaries[1]["numeric"]["exactMin"]["kind"] == "decimal"
-        assert summaries[1]["numeric"]["exactMax"]["kind"] == "decimal"
-        assert summaries[1]["numeric"]["exactSum"]["display"] == "864197532086420.864197532086419754"
     finally:
         engine.close()
 

@@ -20,25 +20,6 @@ sample_frame = _shared_sample_frame
 spark_session = _shared_spark_session
 
 
-def test_first_page_does_not_cache_the_complete_relation_or_stop_spark(
-    spark_session: Any,
-    sample_frame: Any,
-) -> None:
-    storage_level = import_module("pyspark").StorageLevel
-    engine, indexed = _open_engine(sample_frame, "bounded-open")
-    assert indexed.storageLevel == storage_level.NONE
-
-    page = engine.page(indexed, 0, 2, total_rows=None, column_projection=[(0, "name-id")])
-    assert len(page["rows"]) == 2
-    assert page["totalRows"] is None
-    assert page["hasMore"] is True
-    assert indexed.storageLevel == storage_level.NONE
-
-    engine.close()
-    assert indexed.storageLevel == storage_level.NONE
-    assert spark_session.range(1).count() == 1
-
-
 def test_classic_first_page_schedules_only_bounded_partition_work(spark_session: Any) -> None:
     if ".connect." in type(spark_session).__module__:
         pytest.skip("Spark Connect uses the same local server plan, but does not expose its status tracker.")
@@ -189,7 +170,9 @@ def test_projected_progressive_paging_filters_sorts_and_profiles_are_native_and_
     sample_frame: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    storage_level = import_module("pyspark").StorageLevel
     engine, indexed = _open_engine(sample_frame, "native")
+    assert indexed.storageLevel == storage_level.NONE
     dataframe_type = type(indexed)
     original_collect = dataframe_type.collect
     collected_projections: list[tuple[str, ...]] = []
@@ -232,6 +215,9 @@ def test_projected_progressive_paging_filters_sorts_and_profiles_are_native_and_
             total_rows=shape["rows"],
             column_projection=[(1, "amount-id"), (0, "name-id")],
         )
+        assert first_page["totalRows"] is None
+        assert first_page["hasMore"] is True
+        assert indexed.storageLevel == storage_level.NONE
         page = engine.page(
             indexed,
             2,
@@ -403,7 +389,8 @@ def test_projected_progressive_paging_filters_sorts_and_profiles_are_native_and_
     finally:
         engine.close()
 
-    # The adapter owns only its indexed cached child, never the user's session.
+    assert indexed.storageLevel == storage_level.NONE
+    # The adapter owns its derived frame, never the caller's Spark session.
     assert spark_session.range(1).count() == 1
 
 
