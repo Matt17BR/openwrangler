@@ -25,10 +25,11 @@ interface ReleasedRKernelLifecycleDependencies {
   readonly RELEASED_JUPYTER_R_KERNEL_CELL: number;
   readonly RELEASED_JUPYTER_R_SETUP_CELL: number;
   readonly assertReleasedRPrivateLibrary: (result: Readonly<Record<string, unknown>>, description: string) => void;
-  readonly assertReleasedRVersion: (
+  readonly assertReleasedRSetupVersions: (
     result: Readonly<Record<string, unknown>>,
     target: ReleasedJupyterKernelTarget,
-    description: string
+    description: string,
+    requireCollapse: boolean
   ) => void;
   readonly assertReleasedSessionPage: (
     testing: TestApi,
@@ -79,7 +80,7 @@ export function createReleasedRKernelLifecycle({
   RELEASED_JUPYTER_R_KERNEL_CELL,
   RELEASED_JUPYTER_R_SETUP_CELL,
   assertReleasedRPrivateLibrary,
-  assertReleasedRVersion,
+  assertReleasedRSetupVersions,
   assertReleasedSessionPage,
   disposePackagedSessionPanel,
   executeReleasedNotebookCell,
@@ -209,9 +210,8 @@ export function createReleasedRKernelLifecycle({
       "replacement R setup"
     );
     assert.notEqual(Number(replacementSetup.pid), Number(setup.pid));
-    assertReleasedRVersion(replacementSetup, kernelTarget, "replacement R setup");
+    assertReleasedRSetupVersions(replacementSetup, kernelTarget, "replacement R setup", true);
     if (!kernelTarget.remote) assertReleasedRPrivateLibrary(replacementSetup, "replacement R setup");
-    assert.equal(replacementSetup.collapseVersion, "2.1.7");
     if (kernelTarget.remote) {
       assert.equal(replacementSetup.remoteRunId, kernelTarget.remote.runId);
       assert.equal(replacementSetup.hostname, kernelTarget.remote.hostname);

@@ -3,6 +3,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { it } from "vitest";
+import { createReleasedRRuntimeBinding } from "./extensionHost/releasedRRuntimeBinding";
 import { assertExactBytes } from "./extensionHost/acceptanceSourceFixture";
 import { cleanupAcceptanceTemporaryDirectory } from "./extensionHost/acceptanceTemporaryDirectory";
 
@@ -103,3 +104,33 @@ it.each(["linux", "win32"] as const)(
     }
   }
 );
+
+it("checks the prepared R package version across local, focused and remote setup", () => {
+  const unused = (): never => assert.fail("Version checks must not execute notebook work.");
+  const { assertReleasedRSetupVersions: check } = createReleasedRRuntimeBinding({
+    RELEASED_JUPYTER_R_BINDING_CELL: 0,
+    executeReleasedNotebookCell: unused,
+    recordAcceptanceProgress: unused,
+    releasedNotebookJsonResult: unused
+  });
+  const previous = process.env.OPEN_WRANGLER_TEST_COLLAPSE_VERSION;
+  try {
+    for (const version of ["2.1.7", "2.1.8"]) {
+      process.env.OPEN_WRANGLER_TEST_COLLAPSE_VERSION = version;
+      check({ rVersion: "4.5.2", collapseVersion: version }, {}, "local setup", true);
+      for (const wrong of [undefined, "2.1.9"]) {
+        assert.throws(() => check({ rVersion: "4.5.2", collapseVersion: wrong }, {}, "local setup", true));
+      }
+    }
+    const remote = { remote: { runId: "remote-fixture", hostname: "remote-fixture" } };
+    check({ rVersion: "4.5.2", collapseVersion: "2.1.7" }, remote, "remote setup", true);
+    assert.throws(() => check({ rVersion: "4.5.2", collapseVersion: "2.1.8" }, remote, "remote setup", true));
+    delete process.env.OPEN_WRANGLER_TEST_COLLAPSE_VERSION;
+    assert.throws(() => check({ rVersion: "4.5.2", collapseVersion: "2.1.7" }, {}, "local setup", true));
+    check({ rVersion: "4.5.2" }, {}, "focused setup", false);
+    assert.throws(() => check({ rVersion: "4.6.0" }, {}, "unsupported setup", false));
+  } finally {
+    if (previous === undefined) delete process.env.OPEN_WRANGLER_TEST_COLLAPSE_VERSION;
+    else process.env.OPEN_WRANGLER_TEST_COLLAPSE_VERSION = previous;
+  }
+});

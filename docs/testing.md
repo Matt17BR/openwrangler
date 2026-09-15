@@ -513,7 +513,9 @@ source snapshot built with two make jobs. Profiles that omit collapse acquire ne
 Package pins remain in `scripts/jupyter-acceptance-environment.mjs`. Each selected root must resolve from the private
 library at its reviewed version and load successfully before editor launch. Notebook and literate journeys also
 require the exact private IRkernel readiness probe; terminal preparation creates no kernel or bootstrap receipt.
-All editor purposes retain the exact native R executable and private library environment.
+All editor purposes retain the exact native R executable and private library environment. Notebook setup, restart
+and replacement checks compare the reported collapse version with the version selected by preparation. The remote
+container retains its separate pinned package version.
 
 On Ubuntu 24.04 and 26.04, preparation selects the matching Noble or Resolute snapshot and sends the selected R
 version and architecture in its HTTP user agent. This lets the package server supply compatible binaries while
