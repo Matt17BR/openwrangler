@@ -2810,7 +2810,8 @@ async function exerciseReleasedJupyterExtension(
         cancel: false,
         exportCsv: false,
         exportParquet: false,
-        notebookInsert: false
+        notebookInsert: false,
+        supportedOperations: []
       });
       await assertReleasedSessionPage(testing, duckdbRelation, "3400001", "released-jupyter-duckdb-native-page");
       await synchronizedSessionApp(
@@ -6801,7 +6802,8 @@ async function exerciseReleasedJupyterRestartReplay(
     cancel: false,
     exportCsv: false,
     exportParquet: false,
-    notebookInsert: false
+    notebookInsert: false,
+    supportedOperations: []
   });
   assert.deepEqual(duckdbReplayed.metadata.filterModel, duckdb.filterModel);
   assert.deepEqual(duckdbReplayed.metadata.filteredShape, { rows: 25_000, columns: 4 });
@@ -9626,7 +9628,8 @@ async function captureReleasedJupyterDuckDbRelation(
       cancel: false,
       exportCsv: false,
       exportParquet: false,
-      notebookInsert: false
+      notebookInsert: false,
+      supportedOperations: []
     });
     // Cursor can reload the webview when the screenshot theme changes. Require
     // the exact session grid and a current host handshake before publishing

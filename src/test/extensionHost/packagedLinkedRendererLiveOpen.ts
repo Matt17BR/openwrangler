@@ -5,6 +5,7 @@ import * as vscode from "vscode";
 import type { Page } from "playwright-core";
 import { OPEN_WRANGLER_MIME_V2, type NotebookOutputPayload } from "../../shared/notebookOutput";
 import type { ColumnReference, FilterModel, GridPage, SessionMetadata } from "../../shared/protocol";
+import { operationKinds } from "../../shared/operationCatalog.generated";
 import type { TestApi } from "./extensionHostTestApi";
 import { notebookTab } from "./rendererProvenance";
 
@@ -205,7 +206,8 @@ export function createPackagedLinkedRendererLiveOpen(
         cancel: false,
         exportCsv: true,
         exportParquet: true,
-        notebookInsert: true
+        notebookInsert: true,
+        supportedOperations: operationKinds
       });
       assert.deepEqual(active.metadata.filterModel, { logic: "and", filters: [], sort: [] });
       assert.deepEqual(active.metadata.steps, []);
