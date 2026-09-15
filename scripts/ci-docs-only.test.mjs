@@ -1756,6 +1756,7 @@ test("released Jupyter investigation targets preserve installed R calls and actu
   assert.deepEqual(releasedJupyter.on.workflow_dispatch.inputs.target.options, [
     "linux-all",
     "linux-python",
+    "linux-r",
     "macos-r",
     "windows-r"
   ]);
@@ -1763,14 +1764,15 @@ test("released Jupyter investigation targets preserve installed R calls and actu
   const linux = releasedJupyter.jobs.vscode;
   assert.equal(
     linux.if,
-    "${{ inputs.target == 'linux-all' || (github.event_name == 'workflow_dispatch' && inputs.target == 'linux-python') }}"
+    "${{ inputs.target == 'linux-all' || (github.event_name == 'workflow_dispatch' && (inputs.target == 'linux-python' || inputs.target == 'linux-r')) }}"
   );
   assert.equal(
     linux.name,
-    "${{ inputs.target == 'linux-python' && 'Python/file-input investigation in VS Code; R omitted' || 'Released Jupyter in VS Code and Cursor' }}"
+    "${{ inputs.target == 'linux-python' && 'Python/file-input investigation in VS Code; R omitted' || inputs.target == 'linux-r' && 'R investigation in VS Code and Cursor; Python/file-input checks omitted' || 'Released Jupyter in VS Code and Cursor' }}"
   );
   assert.equal(linux["timeout-minutes"], 90);
-  const rOnly = "${{ inputs.target == 'linux-all' }}";
+  const rOnly =
+    "${{ inputs.target == 'linux-all' || (github.event_name == 'workflow_dispatch' && inputs.target == 'linux-r') }}";
   assert.deepEqual(
     linux.steps.filter((step) => step.if === rOnly).map((step) => step.id ?? step.uses.split("@")[0]),
     [
@@ -1787,10 +1789,17 @@ test("released Jupyter investigation targets preserve installed R calls and actu
     ]
   );
   for (const step of linux.steps) {
-    if (step.if === rOnly || step.uses?.startsWith("actions/upload-artifact@") || step.run === "exit 1") continue;
+    if (
+      step.if === rOnly ||
+      step.id === "packaged_editor" ||
+      step.uses?.startsWith("actions/upload-artifact@") ||
+      step.run === "exit 1"
+    )
+      continue;
     assert.equal(step.if, undefined, step.name ?? step.run ?? step.uses);
   }
   const python = linux.steps.find((step) => step.id === "packaged_editor");
+  assert.equal(python.if, "${{ inputs.target != 'linux-r' }}");
   assert.equal(python.run, "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix");
   assert.equal(python["continue-on-error"], undefined);
   assert.deepEqual(python.env, {

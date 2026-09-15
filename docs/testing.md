@@ -538,6 +538,10 @@ see [CI](ci.md#scheduled-and-release-workflows) for selection and qualification 
 
 ## Native R editor dependencies
 
+For a hosted R investigation, manually select `linux-r` in the released-Jupyter workflow. It retains all four R
+invocations and skips the generic Python/file-input editor invocation. See [CI](ci.md#scheduled-and-release-workflows)
+for the unchanged setup and qualification requirements.
+
 The `r-jupyter` notebook journeys prepare their reviewed package subset in a fresh private R library. They omit
 `languageserver`, `rmarkdown`, and `knitr`; literate-documents journeys retain all three. The terminal journey disables
 `r.lsp.enabled` in its private profile and omits `languageserver` and `knitr`. It retains the official R extension's
