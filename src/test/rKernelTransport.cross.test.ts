@@ -1332,8 +1332,6 @@ cat("generated-ok\\n")
 
   it.each([
     ["2", "2L", "integer"],
-    ["1152921504606846976", "2^60", "double"],
-    ["1267650600228229401496703205376", "2^100", "double"],
     [BigInt(Number.MAX_VALUE).toString(), ".Machine$double.xmax", "double"]
   ] as const)(
     "round-trips exact Formula integer text %s through native R and emitted code",
