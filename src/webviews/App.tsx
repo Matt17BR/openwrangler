@@ -2544,8 +2544,14 @@ export function App() {
                 viewControlsDisabledReason={
                   importOptionsPending ? "View controls are unavailable while import options are changing." : undefined
                 }
-                filterControlsDisabled={!filterSupported}
-                sortControlsDisabled={!sortSupported}
+                filterControlsDisabled={mutationPending || !filterSupported}
+                filterControlsDisabledReason={
+                  mutationPending ? "Wait for the cleaning step to finish before filtering or sorting." : undefined
+                }
+                sortControlsDisabled={mutationPending || !sortSupported}
+                sortControlsDisabledReason={
+                  mutationPending ? "Wait for the cleaning step to finish before filtering or sorting." : undefined
+                }
                 profilesDisabled={!profileSupported}
                 sortRules={inspectionMode ? [] : filterModel.sort}
                 onSortColumn={(column, direction) =>

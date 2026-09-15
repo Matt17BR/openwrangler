@@ -86,7 +86,11 @@ export function GridColumnHeader({
   }, []);
   const disabledDescriptionId = `column-view-controls-disabled-${column.position}`;
   const filterDisabledDescriptionId = `column-filter-disabled-${column.position}`;
-  const sortDisabledDescriptionId = `column-sort-disabled-${column.position}`;
+  const sharedFilterSortReason =
+    filterControlsDisabled && sortControlsDisabled && filterControlsDisabledReason === sortControlsDisabledReason;
+  const sortDisabledDescriptionId = sharedFilterSortReason
+    ? filterDisabledDescriptionId
+    : `column-sort-disabled-${column.position}`;
   const nameDisabledDescriptionId = `column-name-disabled-${column.position}`;
   const comparisonUnavailable = !supportsTypedViewComparison(column.type);
   const columnNameUnavailableReason = viewColumnNameUnavailableReason(column.name, viewColumnNameCount);
@@ -286,7 +290,7 @@ export function GridColumnHeader({
                     {filterControlsDisabledReason}
                   </span>
                 )}
-                {!viewControlsDisabled && sortControlsDisabled && (
+                {!viewControlsDisabled && sortControlsDisabled && !sharedFilterSortReason && (
                   <span id={sortDisabledDescriptionId} className="columnMenuNotice">
                     {sortControlsDisabledReason}
                   </span>
