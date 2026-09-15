@@ -11,6 +11,7 @@ on:
         options:
           - linux-all
           - linux-python
+          - linux-r
           - macos-r
           - windows-r
   workflow_call:
@@ -44,8 +45,8 @@ concurrency:
 
 jobs:
   vscode:
-    name: ${{ inputs.target == 'linux-python' && 'Python/file-input investigation in VS Code; R omitted' || 'Released Jupyter in VS Code and Cursor' }}
-    if: ${{ inputs.target == 'linux-all' || (github.event_name == 'workflow_dispatch' && inputs.target == 'linux-python') }}
+    name: ${{ inputs.target == 'linux-python' && 'Python/file-input investigation in VS Code; R omitted' || inputs.target == 'linux-r' && 'R investigation in VS Code and Cursor; Python/file-input checks omitted' || 'Released Jupyter in VS Code and Cursor' }}
+    if: ${{ inputs.target == 'linux-all' || (github.event_name == 'workflow_dispatch' && (inputs.target == 'linux-python' || inputs.target == 'linux-r')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -63,13 +64,13 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: r-lib/actions/setup-r@465b7d8e732ca3921382b1674c59bada9cbf3399 # v2.13.0
-        if: ${{ inputs.target == 'linux-all' }}
+        if: ${{ inputs.target == 'linux-all' || (github.event_name == 'workflow_dispatch' && inputs.target == 'linux-r') }}
         with:
           r-version: "4.5.2"
           use-public-rspm: true
       - id: rscript
         name: Locate hosted Rscript
-        if: ${{ inputs.target == 'linux-all' }}
+        if: ${{ inputs.target == 'linux-all' || (github.event_name == 'workflow_dispatch' && inputs.target == 'linux-r') }}
         shell: bash
         run: |
           set -euo pipefail
@@ -122,6 +123,7 @@ jobs:
           appendFileSync(process.env.GITHUB_OUTPUT, `executable=${executable}\n`, "utf8");
       - id: packaged_editor
         name: Test remote Python Jupyter in packaged VS Code
+        if: ${{ inputs.target != 'linux-r' }}
         run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
         env:
           OPEN_WRANGLER_PACKAGED_EDITORS: vscode
@@ -142,11 +144,11 @@ jobs:
           include-hidden-files: false
       - id: canonical_r_jupyter
         name: Reverify the VSIX for core R operations
-        if: ${{ inputs.target == 'linux-all' }}
+        if: ${{ inputs.target == 'linux-all' || (github.event_name == 'workflow_dispatch' && inputs.target == 'linux-r') }}
         run: npm run verify:vsix -- openwrangler.vsix
       - id: packaged_editor_r
         name: Test released R Jupyter in packaged VS Code and Cursor
-        if: ${{ inputs.target == 'linux-all' }}
+        if: ${{ inputs.target == 'linux-all' || (github.event_name == 'workflow_dispatch' && inputs.target == 'linux-r') }}
         continue-on-error: true
         run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
         env:
@@ -170,11 +172,11 @@ jobs:
           include-hidden-files: false
       - id: canonical_r_values
         name: Reverify the VSIX for value R operations
-        if: ${{ inputs.target == 'linux-all' }}
+        if: ${{ inputs.target == 'linux-all' || (github.event_name == 'workflow_dispatch' && inputs.target == 'linux-r') }}
         run: npm run verify:vsix -- openwrangler.vsix
       - id: packaged_editor_r_values
         name: Test value R operations in fresh packaged VS Code and Cursor phases
-        if: ${{ inputs.target == 'linux-all' }}
+        if: ${{ inputs.target == 'linux-all' || (github.event_name == 'workflow_dispatch' && inputs.target == 'linux-r') }}
         continue-on-error: true
         run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
         env:
@@ -199,11 +201,11 @@ jobs:
           include-hidden-files: false
       - id: canonical_r_categorical
         name: Reverify the VSIX for categorical R operations
-        if: ${{ inputs.target == 'linux-all' }}
+        if: ${{ inputs.target == 'linux-all' || (github.event_name == 'workflow_dispatch' && inputs.target == 'linux-r') }}
         run: npm run verify:vsix -- openwrangler.vsix
       - id: packaged_editor_r_categorical
         name: Test categorical R operations in fresh packaged VS Code and Cursor phases
-        if: ${{ inputs.target == 'linux-all' }}
+        if: ${{ inputs.target == 'linux-all' || (github.event_name == 'workflow_dispatch' && inputs.target == 'linux-r') }}
         continue-on-error: true
         run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
         env:
@@ -228,11 +230,11 @@ jobs:
           include-hidden-files: false
       - id: canonical_r_interactive
         name: Reverify the VSIX for the active R terminal
-        if: ${{ inputs.target == 'linux-all' }}
+        if: ${{ inputs.target == 'linux-all' || (github.event_name == 'workflow_dispatch' && inputs.target == 'linux-r') }}
         run: npm run verify:vsix -- openwrangler.vsix
       - id: packaged_editor_r_interactive
         name: Test the active R terminal in fresh packaged VS Code and Cursor phases
-        if: ${{ inputs.target == 'linux-all' }}
+        if: ${{ inputs.target == 'linux-all' || (github.event_name == 'workflow_dispatch' && inputs.target == 'linux-r') }}
         continue-on-error: true
         run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
         env:

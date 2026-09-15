@@ -257,6 +257,12 @@ while omitting R setup and the four separate R invocations. Its job is named “
 R omitted”. The default `linux-all` target retains those R checks. The investigation target provides no full Python
 source-suite or R qualification; pull-request callers and release qualification remain unchanged.
 
+For manual R investigations, `linux-r` runs the existing core/remote, value, categorical and active-terminal
+invocations in VS Code and Cursor. It skips only the generic Python/file-input editor invocation, and its job name
+states that omission. All environment setup, builds, package checks and R failure reporting remain in place.
+This selection provides no Python/file-input editor result and does not replace full source suites, platform checks
+or broader R qualification. The default `linux-all` target and release requirements remain unchanged.
+
 The weekly/manual macOS and Windows runtime jobs build and verify one VSIX, then run the existing packaged VS Code
 full mode. This replaces their development-extension seed/verify run, retaining those phases and adding package
 installation and restricted-trust checks. Scheduled and default manual runs retain the full Python and native Windows
