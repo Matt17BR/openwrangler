@@ -4913,28 +4913,66 @@ describe("App file import options", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Add cleaning step" })).toBeNull());
   });
 
-  it("preserves an open operation form across duplicate hydration but resets it for a new revision", async () => {
+  it("preserves form identity across hydration while exposing revision and replacement boundaries", async () => {
     const limitedMetadata: SessionMetadata = {
       ...metadata,
       capabilities: { ...metadata.capabilities, supportedOperations: ["renameColumn"] }
     };
+    const synchronize = (revision: number, syncId: string) =>
+      dispatchAppMessage({
+        kind: "rendererSynchronization",
+        syncId,
+        sessionId: limitedMetadata.sessionId,
+        revision,
+        layoutTransitionPending: false
+      });
     render(<App />);
     dispatchAppMessage({ kind: "sessionOpened", metadata: limitedMetadata, page, summaries: [] });
+    synchronize(0, "a".repeat(32));
     dispatchAppMessage({ kind: "editorAction", action: "openOperation", operationKind: "renameColumn" });
 
     const dialog = await screen.findByRole("dialog", { name: "Add cleaning step" });
-    fireEvent.change(within(dialog).getByLabelText("Column"), { target: { value: "c:1" } });
-    fireEvent.change(within(dialog).getByLabelText("New name"), { target: { value: "net_sales" } });
+    const column = within(dialog).getByLabelText("Column");
+    const newName = within(dialog).getByLabelText("New name");
+    fireEvent.change(column, { target: { value: "c:1" } });
+    fireEvent.change(newName, { target: { value: "net_sales" } });
+    dialog.setAttribute("data-open-wrangler-acceptance-dialog", "original");
+    const boundSelector = `main.app[data-session-id="${metadata.sessionId}"][data-session-revision="0"][data-renderer-sync-id] [data-open-wrangler-acceptance-dialog="original"]`;
+    expect(document.querySelector(boundSelector)).toBe(dialog);
 
     dispatchAppMessage({ kind: "sessionOpened", metadata: { ...limitedMetadata }, page, summaries: [] });
+    expect(document.querySelector(boundSelector)).toBeNull();
+    synchronize(0, "b".repeat(32));
+    expect(document.querySelector(boundSelector)).toBe(dialog);
+    expect(screen.getByRole("dialog", { name: "Add cleaning step" })).toBe(dialog);
+    expect(within(dialog).getByLabelText("Column")).toBe(column);
+    expect(within(dialog).getByLabelText("New name")).toBe(newName);
+    expect(column).toHaveValue("c:1");
+    expect(newName).toHaveValue("net_sales");
 
-    const hydratedDialog = screen.getByRole("dialog", { name: "Add cleaning step" });
-    expect(within(hydratedDialog).getByLabelText("Column")).toHaveValue("c:1");
-    expect(within(hydratedDialog).getByLabelText("New name")).toHaveValue("net_sales");
+    dispatchAppMessage({
+      kind: "planUpdated",
+      action: "undo",
+      revision: 1,
+      metadata: { ...limitedMetadata, revision: 1 },
+      page,
+      code: ""
+    });
+    synchronize(1, "c".repeat(32));
+    expect(screen.getByRole("dialog", { name: "Add cleaning step" })).toBe(dialog);
+    expect(dialog.closest("main")).toHaveAttribute("data-session-revision", "1");
+    expect(document.querySelector(boundSelector)).toBeNull();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close operation picker" }));
+    dispatchAppMessage({ kind: "editorAction", action: "openOperation", operationKind: "renameColumn" });
+    const replacement = await screen.findByRole("dialog", { name: "Add cleaning step" });
+    expect(replacement).not.toBe(dialog);
+    expect(replacement).not.toHaveAttribute("data-open-wrangler-acceptance-dialog");
+    expect(document.querySelector('[data-open-wrangler-acceptance-dialog="original"]')).toBeNull();
 
     dispatchAppMessage({
       kind: "sessionOpened",
-      metadata: { ...limitedMetadata, revision: 1 },
+      metadata: { ...limitedMetadata, revision: 2 },
       page,
       summaries: []
     });

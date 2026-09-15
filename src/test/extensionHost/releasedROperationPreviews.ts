@@ -18,6 +18,7 @@ import {
   assertReleasedRSelectGeneratedCode,
   assertReleasedRTextLengthGeneratedCode
 } from "./releasedRGeneratedCode";
+import { bindReleasedROperationDialog } from "./releasedROperationPicker";
 
 interface ReleasedROperationPickerResult {
   readonly app: Locator;
@@ -432,7 +433,11 @@ export function createReleasedROperationPreviews(dependencies: ReleasedROperatio
       dialog = opened.dialog;
       await dialog.getByRole("button", { name: /^Rename column/u }).click();
     }
+    const dialogDeadline = Date.now() + 10_000;
     await dialog.waitFor({ state: "visible", timeout: 10_000 });
+    if (replacement) {
+      dialog = await bindReleasedROperationDialog(testing, dialog, sessionId, Math.max(1, dialogDeadline - Date.now()));
+    }
     const column = dialog.getByLabel("Column", { exact: true });
     await column.waitFor({ state: "visible", timeout: 10_000 });
     if (replacement) {

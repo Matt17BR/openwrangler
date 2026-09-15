@@ -1,4 +1,5 @@
 import * as assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import type { Frame, Locator, Page } from "playwright-core";
 import {
   consumeLayoutCommittedRendererValue,
@@ -26,6 +27,77 @@ export interface ReleasedROperationPickerDependencies {
     expectedSessionId: string,
     expectedRendererSynchronizationReceipt?: RendererSynchronizationReceipt
   ) => Promise<OpenWranglerGridTarget>;
+}
+
+export async function bindReleasedROperationDialog(
+  testing: TestApi,
+  dialog: Locator,
+  sessionId: string,
+  timeoutMs = 10_000
+): Promise<Locator> {
+  const receipt = testing.panelSynchronizationReceipt(sessionId);
+  assert.ok(receipt, "The native R dialog requires an acknowledged renderer receipt.");
+  const revision = receipt.revision;
+  const deadline = Date.now() + timeoutMs;
+  const assertCurrentOwner = (): void => {
+    const currentReceipt = testing.panelSynchronizationReceipt(sessionId);
+    assert.equal(testing.activeSession()?.sessionId, sessionId, "The native R dialog session changed.");
+    assert.equal(testing.activeSession()?.metadata.revision, revision, "The native R dialog revision changed.");
+    assert.equal(testing.panelHydrated(sessionId), true, "The native R dialog renderer is not acknowledged.");
+    assert.equal(
+      sameRendererSynchronizationReceipt(receipt, currentReceipt),
+      true,
+      "The native R dialog renderer changed during acquisition."
+    );
+    assert.equal(currentReceipt?.layoutTransitionPending, false, "The native R dialog requires committed layout.");
+    assert.ok(Date.now() < deadline, "The native R dialog acquisition deadline elapsed.");
+  };
+  const acquire = async (): Promise<Locator> => {
+    assertCurrentOwner();
+    const element = await dialog.elementHandle({ timeout: Math.max(1, deadline - Date.now()) });
+    assert.ok(element, "The native R dialog must resolve to one physical element.");
+    let bound: Locator | undefined;
+    const errors: unknown[] = [];
+    try {
+      assertCurrentOwner();
+      const frame = await element.ownerFrame();
+      assert.ok(frame, "The native R dialog must retain its original frame.");
+      assertCurrentOwner();
+      const marker = randomUUID();
+      const appSelector = `main.app[data-session-id="${sessionId}"][data-session-revision="${revision}"]`;
+      await element.evaluate(
+        (node, identity) => {
+          if (
+            !node.isConnected ||
+            node.getAttribute("role") !== "dialog" ||
+            !node.closest(`${identity.appSelector}[data-renderer-sync-id="${identity.syncId}"]`)
+          ) {
+            throw new Error("The native R dialog no longer belongs to its acquired renderer.");
+          }
+          node.setAttribute("data-open-wrangler-acceptance-dialog", identity.marker);
+        },
+        { appSelector, syncId: receipt.syncId, marker }
+      );
+      assertCurrentOwner();
+      bound = frame.locator(
+        `${appSelector}[data-renderer-sync-id] [role="dialog"][data-open-wrangler-acceptance-dialog="${marker}"]`
+      );
+    } catch (error) {
+      errors.push(error);
+    } finally {
+      try {
+        await element.dispose();
+      } catch (cleanupError) {
+        errors.push(cleanupError);
+      }
+    }
+    if (errors.length > 1) throw new AggregateError(errors, "The native R dialog acquisition and cleanup failed.");
+    if (errors.length === 1) throw errors[0];
+    assertCurrentOwner();
+    assert.ok(bound, "The native R dialog acquisition must return its bound locator.");
+    return bound;
+  };
+  return withAcceptanceOperationDeadline(acquire(), timeoutMs, "the native R dialog acquisition");
 }
 
 export function createReleasedROperationPicker(dependencies: ReleasedROperationPickerDependencies) {
@@ -129,7 +201,15 @@ export function createReleasedROperationPicker(dependencies: ReleasedROperationP
         ) {
           const confirmed = testing.panelSynchronizationReceipt(sessionId);
           if (sameRendererSynchronizationReceipt(target.receipt, confirmed)) {
-            return { app: target.app, dialog: target.dialog };
+            return {
+              app: target.app,
+              dialog: await bindReleasedROperationDialog(
+                testing,
+                target.dialog,
+                sessionId,
+                Math.max(1, deadline - Date.now())
+              )
+            };
           }
           if (confirmed) return confirmed;
         }
