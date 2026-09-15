@@ -257,10 +257,11 @@ Windows runtime contracts for this small dependency set. Its package installatio
 ## Scheduled and release workflows
 
 The released-Jupyter workflow also offers `linux-python` for manually triggered Python and file-input investigations.
-It runs the existing complete Python invocation in VS Code, including remote Jupyter and generic file verification,
-while omitting R setup and the four separate R invocations. Its job is named “Python/file-input investigation in VS Code;
-R omitted”. The default `linux-all` target retains those R checks. The investigation target provides no full Python
-source-suite or R qualification; pull-request callers and release qualification remain unchanged.
+It runs the existing local Python notebook and generic file checks in two sequential VS Code invocations against the
+same VSIX. Its job name states that Spark, remote Jupyter and R are omitted. A failure stops the sequence and uses
+the existing failure-diagnostic handling. This target provides no full Python source-suite, Spark, remote Jupyter or R
+qualification. The default `linux-all` target, pull-request callers and release qualification remain unchanged.
+See [Testing](testing.md#focused-python-notebook-checks) for the selected phases and repeated setup cost.
 
 For manual R investigations, `linux-r` runs the existing core/remote, value, categorical and active-terminal
 invocations in VS Code and Cursor. It skips only the generic Python/file-input editor invocation, and its job name

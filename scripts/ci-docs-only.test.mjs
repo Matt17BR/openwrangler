@@ -1875,7 +1875,7 @@ test("released Jupyter investigation targets preserve installed R calls and actu
   );
   assert.equal(
     linux.name,
-    "${{ inputs.target == 'linux-python' && 'Python/file-input investigation in VS Code; R omitted' || inputs.target == 'linux-r' && 'R investigation in VS Code and Cursor; Python/file-input checks omitted' || 'Released Jupyter in VS Code and Cursor' }}"
+    "${{ inputs.target == 'linux-python' && 'Local Python notebooks and files in VS Code; Spark, remote and R omitted' || inputs.target == 'linux-r' && 'R investigation in VS Code and Cursor; Python/file-input checks omitted' || 'Released Jupyter in VS Code and Cursor' }}"
   );
   assert.equal(linux["timeout-minutes"], 90);
   const rOnly =
@@ -1907,9 +1907,30 @@ test("released Jupyter investigation targets preserve installed R calls and actu
   }
   const python = linux.steps.find((step) => step.id === "packaged_editor");
   assert.equal(python.if, "${{ inputs.target != 'linux-r' }}");
-  assert.equal(python.run, "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix");
+  assert.equal(
+    python.name,
+    "${{ inputs.target == 'linux-python' && 'Test local Python notebooks and files in packaged VS Code' || 'Test remote Python Jupyter in packaged VS Code' }}"
+  );
+  assert.equal(python.shell, "bash");
+  assert.equal(
+    python.run,
+    [
+      "set -euo pipefail",
+      'if [[ "$ACCEPTANCE_TARGET" == "linux-python" ]]; then',
+      "  export OPEN_WRANGLER_PACKAGED_MODE=full",
+      "  export OPEN_WRANGLER_REAL_REMOTE_JUPYTER=0",
+      "  OPEN_WRANGLER_PACKAGED_PYTHON_JUPYTER_PROFILE=python-notebooks \\",
+      "    /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix",
+      "  unset OPEN_WRANGLER_PACKAGED_PYTHON_JUPYTER_PROFILE",
+      "  export OPEN_WRANGLER_REAL_JUPYTER_EXTENSION=0",
+      "fi",
+      "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix",
+      ""
+    ].join("\n")
+  );
   assert.equal(python["continue-on-error"], undefined);
   assert.deepEqual(python.env, {
+    ACCEPTANCE_TARGET: "${{ inputs.target }}",
     OPEN_WRANGLER_PACKAGED_EDITORS: "vscode",
     OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
     OPEN_WRANGLER_XVFB_EXECUTABLE: "${{ steps.prepare_xvfb.outputs.executable }}",
@@ -1917,6 +1938,12 @@ test("released Jupyter investigation targets preserve installed R calls and actu
     OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1",
     VSCODE_TEST_VERSION: "stable"
   });
+  const pythonDiagnostics = linux.steps[linux.steps.indexOf(python) + 1];
+  assert.equal(
+    pythonDiagnostics.if,
+    "${{ always() && steps.packaged_editor.outcome == 'failure' && steps.packaged_editor.outputs.evidence_ready == 'true' }}"
+  );
+  assert.equal(pythonDiagnostics.with.path, "${{ steps.packaged_editor.outputs.evidence_path }}");
   assert.equal(releasedJupyter.on.workflow_call.inputs.target.type, "string");
   assert.equal(releasedJupyter.on.workflow_call.inputs.target.required, true);
   assert.equal(releasedJupyter.on.workflow_call.inputs.omit_editor.type, "boolean");
