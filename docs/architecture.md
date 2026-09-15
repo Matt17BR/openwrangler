@@ -1658,6 +1658,8 @@ again. A recoverable session error does not itself imply that repeating the requ
 inspection is also bounded, read-only, and ephemeral; it replays only the selected prefix and never changes the live
 plan or revision.
 
+Saved notebook capture rejects source columns in the private row-identity namespace before constructing its schema
+and page, using the same admission check as live sessions.
 Saved notebook MIME v2 is one bounded static inline capture. Its caps are 10,000 rows, 2,048 columns, 100,000 cells,
 16 MiB, 64 graph levels, and 1,000,000 graph nodes, with separate field-text limits. It is full-width and carries exact
 `columnIds`. The inline renderer pages only captured rows and never treats them as a live session, cleaning source,

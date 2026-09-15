@@ -19,7 +19,7 @@ from dateutil.zoneinfo import get_zonefile_instance
 import openwrangler_runtime.engines.pandas_engine as pandas_engine
 import openwrangler_runtime.notebook as notebook
 from openwrangler_runtime.engines import EngineError, EngineRegistry
-from openwrangler_runtime.engines.base import RowAxis, normalize_cell
+from openwrangler_runtime.engines.base import INTERNAL_ROW_ID_PREFIX, RowAxis, normalize_cell
 from openwrangler_runtime.engines.pandas_engine import PandasEngine
 from openwrangler_runtime.engines.polars_engine import PolarsEngine
 
@@ -84,6 +84,53 @@ def test_show_emits_complete_mime_v2_snapshot(value, backend, monkeypatch):
     assert "stats" not in snapshot["metadata"]
     assert snapshot["summaries"] == []
     assert snapshot["page"]["rows"][1]["values"][0]["display"] == "2"
+
+
+@pytest.mark.parametrize(
+    ("backend", "lazy"),
+    [("pandas", False), ("polars", False), ("polars", True), ("duckdb", False)],
+)
+def test_snapshot_rejects_source_columns_in_the_private_row_namespace(backend, lazy):
+    reserved = f"{INTERNAL_ROW_ID_PREFIX}user"
+    data = {reserved: [101, 202], "value": [7, 11]}
+    connection = None
+    try:
+        if backend == "pandas":
+            frame = pd.DataFrame(data)
+        elif backend == "polars":
+            frame = pl.DataFrame(data)
+            if lazy:
+                frame = frame.lazy()
+        else:
+            connection = duckdb.connect()
+            connection.execute(
+                f'CREATE TABLE source AS SELECT * FROM (VALUES (101, 7), (202, 11)) AS rows("{reserved}", value)'
+            )
+            frame = connection.sql("SELECT * FROM source ORDER BY value")
+
+        with pytest.raises(EngineError, match="private row-identity prefix are reserved"):
+            notebook.build_payload(frame, backend=backend, page_size=2)
+
+        if isinstance(frame, pd.DataFrame):
+            pd.testing.assert_frame_equal(frame, pd.DataFrame(data))
+        elif isinstance(frame, (pl.DataFrame, pl.LazyFrame)):
+            captured = frame.collect() if isinstance(frame, pl.LazyFrame) else frame
+            assert captured.columns == list(data)
+            assert captured.to_dict(as_series=False) == data
+        else:
+            assert frame.columns == list(data)
+            assert frame.fetchall() == [(101, 7), (202, 11)]
+            assert connection is not None
+            assert (
+                connection.execute(
+                    "SELECT view_name FROM duckdb_views() "
+                    "WHERE starts_with(view_name, '__open_wrangler_notebook_source_')"
+                ).fetchall()
+                == []
+            )
+    finally:
+        if connection is not None:
+            connection.close()
 
 
 def test_pandas_snapshot_matches_the_shared_row_axis_contract():
