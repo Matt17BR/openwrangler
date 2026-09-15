@@ -156,6 +156,10 @@ This file-only option stays in protocol v4 because file commands use the owned P
 extension. Non-file and non-delimited sources reject it, so it cannot reach a retained notebook runtime. A manually
 mixed older decoder rejects the new key; this is not a compatibility promise for every historical v4 binary.
 
+Import prompts belong to one host-owned request. An accepted native Quick Input stays visible until its successor
+replaces it, avoiding editor-focus restoration between questions. Cancellation remains effective through the final
+answer; completion, cancellation and failure dispose the request's inputs and listeners.
+
 Changing import options is a host-owned session swap. The coordinator quiesces accepted work, opens a private
 candidate against the same immutable source, replays the confirmed plan, draft, and view, publishes the replacement
 once, and then retires the prior runtime. Failure before publication leaves the prior confirmed session unchanged.

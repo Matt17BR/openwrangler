@@ -156,6 +156,8 @@ Use the existing owners to choose a focused source check:
   [probe caching](../src/test/pythonDependencyState.unit.test.ts) check timeout termination, settlement and stale results.
 - **Import and export boundaries:** [import detection](../src/test/importDetection.unit.test.ts) and
   [import options](../src/test/importOptions.unit.test.ts) own the bounded sample, decoding and dialect intent.
+  Import options also check native prompt handoff, accepted values, validation, cancellation and disposal. The
+  installed file-reconfiguration journey checks actual keyboard focus through the same public prompts.
   [Native reader adaptation](../python/tests/test_empty_delimited_files.py) and the engine owners below check actual
   file rows, types, options and source bytes. [Pinned native exports](../python/tests/test_configurable_export.py) and
   [safe file export](../src/test/safeFileExport.unit.test.ts) use real files to check separate destinations, identity

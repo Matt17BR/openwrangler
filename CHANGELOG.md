@@ -25,6 +25,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Import options keep keyboard focus while moving between questions opened from a dataframe view.
 - Code Preview and code commands explain cleaning availability when a Viewing session has no generated code.
 - Code Preview keeps multiline filenames inside placeholder comments.
 - Variable names ending in `.tsv` no longer select a tab delimiter for CSV export.
