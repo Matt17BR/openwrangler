@@ -107,6 +107,9 @@ Run the cell that creates your dataframe, choose **Open in Open Wrangler** from 
 its variable. Supported dataframe outputs also offer an inline preview with an action to open the full workbench.
 Pandas and Polars notebook sessions support the same viewing and cleaning workflow as files.
 
+Jupyter's separate Variables view can intermittently remain blank. The toolbar entry above does not use that view.
+See the [known limitation](docs/feature-parity.md#sessions-and-generated-code).
+
 Copy the generated code, save a Python script, or insert it into the notebook that opened the dataframe. The code
 uses the selected engine: Pandas stays Pandas and Polars stays Polars. You can review and reuse the cleaning function
 in the rest of your analysis.
