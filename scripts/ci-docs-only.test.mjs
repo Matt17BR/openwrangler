@@ -624,15 +624,12 @@ test("requires full owners for deleted or renamed source, including alongside ad
     "src/webviews/progressiveProfilingLifecycle.ts",
     "src/test/progressiveProfilingLifecycle.unit.test.tsx",
     arrowFormulaHelper,
-    arrowFormulaTests[1],
-    ...pandasFilterTests,
     "python/openwrangler_runtime/session.py",
     "r/openwrangler_runtime/kernel_agent.R",
     "r/tests/kernel_agent.R",
     "src/test/extensionHost/releasedRCoreEditing.ts",
     "scripts/editor-acceptance.mjs",
     "scripts/release-metadata.mjs",
-    "scripts/ci-docs-only.test.mjs",
     "src/test/webview.component.test.tsx"
   ]) {
     for (const change of ["add and delete", "delete", "rename", "rename into runtime"]) {
@@ -666,12 +663,10 @@ test("requires full owners for source mode changes and existing executable or sy
     "src/test/progressiveProfilingLifecycle.unit.test.tsx",
     arrowFormulaHelper,
     "python/tests/helper.py",
-    ...pandasFilterTests,
     "r/tests/kernel_agent.R",
     "src/test/extensionHost/releasedRCoreEditing.ts",
     "scripts/editor-acceptance-artifact.test.mjs",
     "scripts/release-metadata.mjs",
-    "scripts/ci-docs-only.test.mjs",
     "src/test/webview.component.test.tsx"
   ]) {
     for (const mode of ["100755", "120000"]) {
