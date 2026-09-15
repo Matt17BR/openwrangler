@@ -251,6 +251,12 @@ Windows runtime contracts for this small dependency set. Its package installatio
 
 ## Scheduled and release workflows
 
+The released-Jupyter workflow also offers `linux-python` for manually triggered Python and file-input investigations.
+It runs the existing complete Python invocation in VS Code, including remote Jupyter and generic file verification,
+while omitting R setup and the four separate R invocations. Its job is named “Python/file-input investigation in VS Code;
+R omitted”. The default `linux-all` target retains those R checks. The investigation target provides no full Python
+source-suite or R qualification; pull-request callers and release qualification remain unchanged.
+
 The weekly/manual macOS and Windows runtime jobs build and verify one VSIX, then run the existing packaged VS Code
 full mode. This replaces their development-extension seed/verify run, retaining those phases and adding package
 installation and restricted-trust checks. Scheduled and default manual runs retain the full Python and native Windows
