@@ -296,7 +296,8 @@ def test_duckdb_database_read_only_wal_recovery_preserves_both_files(database_fi
             text=True,
             timeout=15,
         )
-        assert blocked.returncode != 0 and "lock" in blocked.stderr.lower()
+        lock_refusal = "already open in" if os.name == "nt" else "lock"
+        assert blocked.returncode != 0 and lock_refusal in blocked.stderr.lower()
     finally:
         engine.close()
     assert (database_file.read_bytes(), wal.read_bytes()) == before
