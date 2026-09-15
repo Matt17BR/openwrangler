@@ -23,6 +23,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Notebook helpers preserve existing user variables during discovery, opening and live requests.
 - The standalone Python runtime releases completed request handles so discarded failure data can be garbage-collected while idle.
 - Operation settings keep keyboard-focused fields visible above the persistent Cancel and Preview controls in narrow panes.
 - Polars live notebook LazyFrames and lazy Custom Code results retain stable rows across pages and column projections. Opening or accepting these results now retains their complete native output in memory.

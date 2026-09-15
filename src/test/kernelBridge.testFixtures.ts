@@ -197,10 +197,20 @@ function controllableKernel(
   };
 }
 
+export function kernelPythonSource(code: string): string {
+  const prefix = "__ow_builtin_module.compile(";
+  const start = code.indexOf(prefix);
+  if (start < 0) return code;
+  const end = code.indexOf(', "<open-wrangler-notebook>", "exec")', start);
+  if (end < 0) throw new Error("Kernel test private execution source was not delimited.");
+  return JSON.parse(code.slice(start + prefix.length, end)) as string;
+}
+
 async function* kernelExecution(
   code: string,
   respond: (request: OpenWranglerRequest, requestId: string) => unknown | Promise<unknown>
 ): AsyncIterable<unknown> {
+  code = kernelPythonSource(code);
   if (code.includes("__OPEN_WRANGLER_BOOTSTRAP_START_")) {
     yield* bootstrapKernelExecution(code);
     return;
@@ -228,6 +238,7 @@ async function* kernelExecution(
 }
 
 async function* bootstrapKernelExecution(code: string, status = "ready"): AsyncIterable<unknown> {
+  code = kernelPythonSource(code);
   const nonce = code.match(/__OPEN_WRANGLER_BOOTSTRAP_START_([a-f0-9]{32})__/u)?.[1];
   const bundleId = code.match(/expected_id = "([a-f0-9]{64})"/u)?.[1];
   if (!nonce || !bundleId) throw new Error("Kernel test bootstrap must contain its exact nonce and bundle digest.");

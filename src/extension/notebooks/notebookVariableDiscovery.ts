@@ -3,6 +3,7 @@ import type { Jupyter, Kernel } from "@vscode/jupyter-extension";
 import * as vscode from "vscode";
 import type { DataBackend } from "../../shared/protocol";
 import { DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS } from "../configuration";
+import { buildNotebookExecutionCode } from "./notebookExecutionScope";
 import { KernelGenerationBinding, withKernelTimeout } from "./kernelLifecycle";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
 import { captureSessionSourceFiles } from "../sessionOrigin";
@@ -403,7 +404,7 @@ export function buildNotebookVariableDiscoveryCode(marker: string): string {
     throw new Error("Notebook variable discovery marker must be 32 lowercase hexadecimal characters.");
   }
   const policySource = indentPythonSource(PYSPARK_VERSION_POLICY_PYTHON_SOURCE, 4);
-  return `
+  return buildNotebookExecutionCode(`
 def __ow_discover_variables_v1():
     import json as __ow_json
     import sys as __ow_sys
@@ -438,7 +439,7 @@ ${policySource}
     __ow_variables = []
     __ow_truncated = False
     __ow_scanned = 0
-    for __ow_name, __ow_value in globals().items():
+    for __ow_name, __ow_value in __ow_user_ns.items():
         __ow_scanned += 1
         if __ow_scanned > ${MAX_DISCOVERY_SCANNED_VARIABLES}:
             __ow_truncated = True
@@ -490,7 +491,7 @@ print(__ow_discovery_result_v1)
 print("__OPEN_WRANGLER_VARIABLES_END_${marker}__")
 del __ow_discovery_result_v1
 del __ow_discover_variables_v1
-`;
+`);
 }
 
 export function buildPySparkNotebookPreflightCode(
@@ -586,8 +587,7 @@ print(__ow_json.dumps(
 ))
 print("__OPEN_WRANGLER_PYSPARK_VERSION_END_${marker}__")
 `;
-  const sourceLiteral = JSON.stringify(isolatedSource);
-  return `(lambda __ow_builtin_module, __ow_user_namespace: (lambda __ow_scope: __ow_builtin_module.exec(__ow_builtin_module.compile(${sourceLiteral}, "<open-wrangler-pyspark-preflight>", "exec"), __ow_scope, __ow_scope))({"__builtins__": __ow_builtin_module, "__ow_builtins": __ow_builtin_module, "__ow_user_ns": __ow_user_namespace}))((__builtins__["__import__"] if __builtins__.__class__.__name__ == "dict" else __builtins__.__import__)("builtins"), (__builtins__["globals"] if __builtins__.__class__.__name__ == "dict" else __builtins__.globals)())\n`;
+  return buildNotebookExecutionCode(isolatedSource);
 }
 
 function indentPythonSource(source: string, spaces: number): string {

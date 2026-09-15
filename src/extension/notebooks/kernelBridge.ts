@@ -25,6 +25,7 @@ import {
   invalidatesKernelLifecycle,
   type KernelGenerationBinding
 } from "./kernelLifecycle";
+import { buildNotebookExecutionCode } from "./notebookExecutionScope";
 import { buildKernelRuntimeBundle, readRuntimeFiles } from "./kernelRuntimeBundle";
 import { getSetting, runtimeRequestTimeoutMs } from "../configuration";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
@@ -833,14 +834,14 @@ export class KernelBridge implements OpenWranglerBridge {
     try {
       output = await this.executePython(
         kernel,
-        `${this.runtimeBundle.code}
+        buildNotebookExecutionCode(`${this.runtimeBundle.code}
 import json as __ow_bootstrap_json
 __ow_bootstrap_status = __ow_bootstrap_runtime(${registerNotebookFormatters ? "True" : "False"})
 print("${start}")
 print(__ow_bootstrap_json.dumps({"bundleId": "${this.runtimeBundle.bundleId}", "status": __ow_bootstrap_status}))
 print("${end}")
 del __ow_bootstrap_runtime, __ow_bootstrap_status, __ow_bootstrap_json
-`,
+`),
         { kind: "text", maximumBytes: KERNEL_BOOTSTRAP_OUTPUT_LIMIT_BYTES }
       );
     } catch (error) {
@@ -1340,7 +1341,7 @@ function frameKernelRequest(
   return {
     requestId,
     marker,
-    code: `
+    code: buildNotebookExecutionCode(`
 import base64 as __ow_base64
 import openwrangler_runtime.kernel_agent as __ow_kernel_agent
 __ow_payload = __ow_base64.b64decode("${payload}").decode("utf-8")
@@ -1348,7 +1349,7 @@ __ow_response = __ow_kernel_agent.dispatch_json(__ow_payload)
 print("__OPEN_WRANGLER_START_${marker}__")
 print(__ow_response)
 print("__OPEN_WRANGLER_END_${marker}__")
-`
+`)
   };
 }
 
@@ -1678,7 +1679,7 @@ export function buildNotebookCellResultCode(marker: string, executionOrder: numb
   if (!/^[a-f0-9]{64}$/.test(sourceFingerprint)) {
     throw new Error("Notebook cell result source fingerprint must be 64 lowercase hexadecimal characters.");
   }
-  return `
+  return buildNotebookExecutionCode(`
 import hashlib as __ow_cell_hashlib
 import json as __ow_cell_json
 import openwrangler_runtime.notebook as __ow_cell_notebook
@@ -1726,7 +1727,7 @@ print("__OPEN_WRANGLER_CELL_RESULT_START_${marker}__")
 print(__ow_cell_json.dumps(__ow_cell_result, ensure_ascii=True, allow_nan=False, separators=(",", ":"), sort_keys=True))
 print("__OPEN_WRANGLER_CELL_RESULT_END_${marker}__")
 del __ow_cell_result
-`;
+`);
 }
 
 export function parseNotebookCellResult(output: string, marker: string): CapturedNotebookCellResult {
