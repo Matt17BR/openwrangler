@@ -180,7 +180,6 @@ import { createPackagedFileLaunchSurfaces } from "./packagedFileLaunchSurfaces";
 import { createLiveImportReconfiguration } from "./liveImportReconfiguration";
 import { exerciseReleasedRCategoricalEditingJourney } from "./releasedRCategoricalEditing";
 import { exerciseReleasedRLowercaseOperation } from "./releasedRLowercaseOperation";
-import { exerciseReleasedRCastOperation } from "./releasedRCastOperation";
 import { exerciseReleasedRGroupByOperation } from "./releasedRGroupByOperation";
 import { createReleasedRFormulaDatetimeOperations } from "./releasedRFormulaDatetimeOperations";
 import { createReleasedRRepresentativeEditingJourney } from "./releasedRRepresentativeEditing";
@@ -422,7 +421,6 @@ const { openReleasedROperationPicker, reacquireAcknowledgedSessionApp, releasedR
   });
 
 const {
-  previewReleasedRCast,
   previewReleasedRDrop,
   previewReleasedRDropDuplicates,
   previewReleasedRDropMissingRows,
@@ -2001,18 +1999,6 @@ async function exerciseReleasedREditingJourney(
     await exerciseReleasedRValueOperations(
       { testing, workbench, sessionId, phase, initialApp: app },
       releasedRValueOperationDependencies
-    );
-  }
-
-  if (editingCatalog === "core-catalog") {
-    await exerciseReleasedRCastOperation(
-      { testing, workbench, sessionId, phase, initialApp: app },
-      {
-        previewReleasedRCast,
-        recordAcceptanceProgress,
-        releasedRSessionApp,
-        waitFor
-      }
     );
   }
 

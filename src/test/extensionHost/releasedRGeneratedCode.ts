@@ -254,20 +254,6 @@ export function assertReleasedRFindReplaceCodeSurface(
   assertReleasedROnly(code);
 }
 
-export function assertReleasedRCastGeneratedCode(
-  code: string,
-  sourceName: string,
-  dtype: string,
-  variableName = "orders_frame"
-): void {
-  assertReleasedRGeneratedSourceBoundary(code, variableName);
-  assert.ok(code.includes(".ow_cast_position"));
-  assert.ok(code.includes(".ow_cast_values"));
-  assert.ok(code.includes(JSON.stringify(sourceName)));
-  assert.ok(code.includes(JSON.stringify(dtype)));
-  assertReleasedROnly(code);
-}
-
 export function assertReleasedRCloneGeneratedCode(
   code: string,
   sourceName: string,
