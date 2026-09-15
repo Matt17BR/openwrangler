@@ -643,6 +643,16 @@ class PolarsEngine(DataFrameEngine):
             return value.to_frame()
         return value
 
+    def capture_notebook_source(self, frame: Any) -> Any:
+        import polars as pl
+
+        if isinstance(frame, pl.LazyFrame):
+            captured = pl.collect_all([frame], engine="in-memory")[0]
+            self.validate_internal_row_id_namespace(captured)
+            self.validate_column_addressability(captured)
+            return captured.lazy()
+        return frame
+
     def is_lazy(self, frame: Any, source: Mapping[str, Any]) -> bool:
         import polars as pl
 
@@ -2087,7 +2097,7 @@ class PolarsEngine(DataFrameEngine):
                     )
                 result = result.to_frame() if isinstance(result, pl.Series) else result
             if isinstance(result, pl.LazyFrame):
-                pl.collect_all([result.select(pl.all().count())], engine="in-memory")
+                result = pl.collect_all([result], engine="in-memory")[0].lazy()
             return result
         raise EngineError(f"Polars does not implement transformation: {kind}")
 
@@ -2137,7 +2147,7 @@ class PolarsEngine(DataFrameEngine):
                 clean_data_lines.extend(
                     [
                         "    if isinstance(df, pl.LazyFrame):",
-                        "        pl.collect_all([df.select(pl.all().count())], engine='in-memory')",
+                        "        df = pl.collect_all([df], engine='in-memory')[0].lazy()",
                     ]
                 )
         clean_data_lines.append("    return df")

@@ -121,13 +121,18 @@ The released Jupyter Variables view can become blank with a
 [React update-limit error](https://github.com/Matt17BR/openwrangler/issues/1498). When this happens, open the value
 from the Open Wrangler notebook toolbar or an available inline output action.
 
-Unordered Polars notebook LazyFrames and DuckDB notebook queries can assign the same row ID to different logical
-rows between reads, or repeat or omit rows across pages, even with unchanged input data. Keep values stable and
-give the source a deterministic order with unique tie-breakers before opening it. For example, use
-`grouped.sort("grp")` when `grp` uniquely identifies each Polars result row, or a DuckDB `ORDER BY` over a unique key.
+Polars live notebook LazyFrames are evaluated once at opening and retain their complete native result. Lazy Custom Code
+results are retained in the same way, including in generated code. Subsequent pages and column projections keep row
+identities stable even when the original query had no unique order. These full results must fit memory; page limits do
+not bound capture, and a mutation can retain old and new results together. The native LazyFrame type is preserved, but
+later projections cannot avoid that initial work. Python Object values retain their caller-owned references.
+
+Unordered DuckDB notebook queries and file Custom Code results can assign the same row ID to different logical rows
+between reads, or repeat or omit rows across pages and column projections, even with unchanged input data. Keep values
+stable and use a deterministic `ORDER BY` over a unique key in the notebook query or Custom Code result.
 Sorting the grid afterward does not repair identities assigned before that sort. Whole-column copy also reads
 pages in sequence and is exposed to this limitation. The [pagination bug](https://github.com/Matt17BR/openwrangler/issues/1487)
-remains open; sorting the source is a workaround.
+remains open; explicit query ordering is a workaround.
 
 Generated Python keeps import and helper bindings local. Pandas and Polars notebook inputs named like those bindings
 remain available after executing the program; an input named `clean_data` uses the generated function `clean_data_1`.
@@ -300,9 +305,9 @@ results, before later expressions can read the wrong column. Case-only Rename re
 Generated Pandas and Polars Custom Code refuses a zero-column result at the same step as live Preview.
 Typed zero-row results, Series and Custom Code that creates a source's first column remain supported.
 Custom Code checks lazy output expressions beyond the displayed columns before confirmation, with the same
-check in generated code. Other operations keep their native lazy evaluation and operation-specific guards. These checks
-do not generally snapshot inputs or guarantee all later queries will succeed. One-hot encoding, multi-label encoding
-and Custom Code may materialize their results. Explode List retains its current input for the growth check and keeps
+check in generated code. Polars retains the complete lazy Custom result as described above; replay executes the code
+again. Other operations keep their native lazy evaluation and operation-specific guards, without a guarantee that all
+later queries will succeed. One-hot encoding and multi-label encoding materialize their results. Explode List retains its current input for the growth check and keeps
 lazy expansion over that retained input.
 
 Pandas mixed object columns keep distinct large numeric values in filters, counts, sorting, duplicate removal,
