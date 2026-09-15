@@ -1746,6 +1746,71 @@ test("CI schedules every existing native R phase on two workers and cancellation
   assert.deepEqual(scheduled.sort(), phases.map((phase) => phase.id).sort());
 });
 
+test("cross-platform installed investigation omits only independent source qualification", () => {
+  const crossPlatform = load(
+    readFileSync(resolve(import.meta.dirname, "../.github/workflows/cross-platform.yml"), "utf8")
+  );
+  const full = "${{ github.event_name != 'workflow_dispatch' || inputs.installed_only != true }}";
+  assert.equal(
+    crossPlatform.jobs["r-4-4-scheduled-qualification"].if,
+    "${{ !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.installed_only != true) }}"
+  );
+  for (const id of ["dependency-guard-windows", "python-runtime-dependency-cohorts"])
+    assert.equal(crossPlatform.jobs[id].if, full);
+  assert.deepEqual(Object.keys(crossPlatform.on).sort(), ["schedule", "workflow_dispatch"]);
+  const inputs = crossPlatform.on.workflow_dispatch.inputs;
+  assert.deepEqual(Object.keys(inputs), ["installed_only"]);
+  assert.equal(inputs.installed_only.type, "boolean");
+  assert.equal(inputs.installed_only.default, false);
+  assert.equal(
+    crossPlatform["run-name"],
+    "${{ github.event_name == 'workflow_dispatch' && inputs.installed_only == true && 'Installed macOS/Windows investigation; full qualification omitted' || 'Cross-platform runtime' }}"
+  );
+  assert.deepEqual(Object.keys(crossPlatform.jobs), [
+    "runtime",
+    "dependency-guard-windows",
+    "python-runtime-dependency-cohorts",
+    "r-4-4-scheduled-qualification"
+  ]);
+  const runtime = crossPlatform.jobs.runtime;
+  assert.equal(runtime.if, undefined);
+  assert.deepEqual(runtime.strategy.matrix.include, [
+    { os: "macos-latest", python: "3.12" },
+    { os: "windows-latest", python: "3.14" }
+  ]);
+  assert.deepEqual(
+    runtime.steps.filter((step) => step.run).map((step) => step.run),
+    [
+      "npm ci --ignore-scripts",
+      'python -m pip install -e "python[dev]"',
+      "npm run test:python-environment-smoke",
+      "python -m pytest python/tests -q",
+      "npm run build",
+      "npm run package:prepared -- --out openwrangler.vsix",
+      "npm run verify:vsix -- openwrangler.vsix",
+      "npm run build:test-extension",
+      "node scripts/run-packaged-editor-tests.mjs openwrangler.vsix",
+      "npm run test:scripts:native"
+    ]
+  );
+  assert.deepEqual(
+    runtime.steps.filter((step) => step.if).map((step) => [step.run ?? step.name, step.if]),
+    [
+      ["python -m pytest python/tests -q", full],
+      [
+        "Upload packaged-editor failure diagnostics",
+        "${{ !cancelled() && steps.packaged_editor.outcome == 'failure' && steps.packaged_editor.outputs.evidence_ready == 'true' }}"
+      ],
+      ["npm run test:scripts:native", "${{ runner.os == 'Windows' }}"]
+    ]
+  );
+  assert.deepEqual(runtime.steps.find((step) => step.id === "packaged_editor").env, {
+    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode",
+    OPEN_WRANGLER_PACKAGED_MODE: "full",
+    VSCODE_TEST_VERSION: "stable"
+  });
+});
+
 test("released Jupyter investigation targets preserve installed R calls and actual platform results", () => {
   assert.deepEqual(Object.keys(releasedJupyter.on).sort(), ["workflow_call", "workflow_dispatch"]);
   assert.deepEqual(releasedJupyter.on.workflow_dispatch.inputs.target.options, [
