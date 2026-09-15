@@ -35,6 +35,56 @@ const metadata: SessionMetadata = {
 describe("OperationBuilder", () => {
   afterEach(() => vi.restoreAllMocks());
 
+  it.each(["new", "saved"] as const)("focuses settings only on opening a %s operation", (entry) => {
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const initialStep: TransformStep = {
+      id: "rename-city",
+      kind: "renameColumn",
+      params: { column: { id: "c:0", name: "city" }, newName: "location" }
+    };
+    const props = {
+      metadata,
+      filterModel: metadata.filterModel,
+      ...(entry === "saved"
+        ? { initialStep, editInputSchema: metadata.schema }
+        : { initialKind: "renameColumn" as const }),
+      onClose: vi.fn(),
+      onPreview: vi.fn()
+    };
+    const { rerender } = render(<OperationBuilder {...props} />);
+
+    expect(screen.getByRole("combobox", { name: "Column" })).toHaveFocus();
+    const name = screen.getByRole("textbox", { name: "New name" });
+    name.focus();
+    fireEvent.change(name, { target: { value: "retained name" } });
+    rerender(<OperationBuilder {...props} previewError={{ kind: "renameColumn", message: "Preview failed" }} />);
+    expect(name).toHaveFocus();
+    expect(name).toHaveValue("retained name");
+
+    const sort = screen.getByRole("button", { name: /Sort rows/ });
+    sort.focus();
+    fireEvent.click(sort);
+    expect(sort).toHaveFocus();
+    expect(props.onPreview).not.toHaveBeenCalled();
+  });
+
+  it("does not claim host focus when a preselected operation mounts or later becomes active", () => {
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
+    const props = {
+      metadata,
+      filterModel: metadata.filterModel,
+      initialKind: "renameColumn" as const,
+      onClose: vi.fn(),
+      onPreview: vi.fn()
+    };
+    const { rerender } = render(<OperationBuilder {...props} />);
+    expect(focus).not.toHaveBeenCalled();
+    hasFocus.mockReturnValue(true);
+    rerender(<OperationBuilder {...props} previewError={{ kind: "renameColumn", message: "Preview failed" }} />);
+    expect(focus).not.toHaveBeenCalled();
+  });
+
   it("extracts ordered literal fields with the existing add, move and remove controls", () => {
     const onPreview = vi.fn();
     const struct = {
@@ -187,7 +237,7 @@ describe("OperationBuilder", () => {
     }
 
     const search = screen.getByRole("textbox", { name: "Search operations" });
-    search.focus();
+    expect(search).toHaveFocus();
     fireEvent.change(search, { target: { value: "formula" } });
     expect(screen.getByRole("textbox", { name: "Search operations" })).toHaveValue("formula");
     expect(search).toHaveFocus();
@@ -768,6 +818,7 @@ describe("OperationBuilder", () => {
   });
 
   it("exposes preview progress and disables every dialog control while busy", () => {
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
     const onClose = vi.fn();
     const onPreview = vi.fn();
     render(
@@ -782,6 +833,7 @@ describe("OperationBuilder", () => {
     );
 
     expect(screen.getByRole("dialog", { name: "Add cleaning step" })).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("dialog", { name: "Add cleaning step" })).toHaveFocus();
     expect(screen.getByRole("status")).toHaveTextContent("Previewing changes…");
     expect(screen.getByRole("navigation", { name: "Operation catalog" })).toHaveAttribute("tabindex", "0");
     expect(screen.getByRole("form", { name: "Operation settings" })).toHaveAttribute("tabindex", "0");
@@ -847,6 +899,7 @@ describe("OperationBuilder", () => {
   });
 
   it("copies viewing filters only through an explicit filter step", () => {
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
     const onPreview = vi.fn();
     const filterModel = {
       logic: "and" as const,
@@ -869,6 +922,7 @@ describe("OperationBuilder", () => {
       />
     );
 
+    expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus();
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
     expect(onPreview).toHaveBeenCalledOnce();
   });
@@ -1646,6 +1700,7 @@ describe("OperationBuilder", () => {
   });
 
   it("fails closed when a saved step has no recorded input schema while leaving cancel usable", () => {
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
     const onClose = vi.fn();
     const onPreview = vi.fn();
     const initialStep: TransformStep = {
@@ -1670,7 +1725,6 @@ describe("OperationBuilder", () => {
     fireEvent.submit(preview.closest("form") as HTMLFormElement);
     expect(onPreview).not.toHaveBeenCalled();
     const cancel = screen.getByRole("button", { name: "Cancel" });
-    cancel.focus();
     expect(cancel).toHaveFocus();
     fireEvent.click(cancel);
     expect(onClose).toHaveBeenCalledOnce();
