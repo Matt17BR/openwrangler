@@ -306,6 +306,7 @@ describe("file launch command", () => {
     expect(fileMocks.bridgeRequest).not.toHaveBeenCalled();
     fileMocks.bridgeRequest.mockImplementationOnce(async (_request, options) => {
       expect(options?.cancellation?.isCancellationRequested).toBe(false);
+      expect(options?.requiredSourceProtection).toBe(await fileMocks.captureSource.mock.results[0]!.value);
       current = false;
       expect(options?.cancellation?.isCancellationRequested).toBe(true);
       return { kind: "cancelled", targetRequestId: "not-started" };

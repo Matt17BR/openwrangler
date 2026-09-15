@@ -700,7 +700,9 @@ export class SessionCoordinator implements vscode.Disposable {
       if (invalidOrigin) {
         return protocolError("invalid_source_origin", invalidOrigin, true);
       }
-      const retainedSource = await (sourceProtection ?? captureSessionSourceFiles(request.source));
+      const retainedSource = await (options?.requiredSourceProtection ??
+        sourceProtection ??
+        captureSessionSourceFiles(request.source));
       return await this.serializeSessionEstablishment(delegate, () =>
         this.openTracked(delegate, request, options, origin, retainedSource, initialFilePlan)
       );

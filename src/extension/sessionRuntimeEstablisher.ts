@@ -115,6 +115,16 @@ export class SessionRuntimeEstablisher {
     };
     const beforeOpen = currentFailure();
     if (beforeOpen) return { established: false, response: beforeOpen };
+    if (options?.requiredSourceProtection) {
+      sourceProtection = await confirmSessionSourceProtection(sourceProtection);
+      const afterSourceCheck = currentFailure();
+      if (afterSourceCheck) return { established: false, response: afterSourceCheck };
+      if (!sourceProtection.available)
+        return {
+          established: false,
+          response: protocolError("source_changed", "The selected file changed. Choose the file again.", true)
+        };
+    }
     if (initialFilePlan) {
       if (
         request.source.kind !== "file" ||
@@ -250,6 +260,13 @@ export class SessionRuntimeEstablisher {
           "The selected file changed while its plan was being saved. The copied plan may be saved; reopen the file to inspect it.",
           true
         )
+      };
+    }
+    if (options?.requiredSourceProtection && !session.sourceProtection?.available) {
+      await this.runtimeCleanup.close(session, "late-open runtime");
+      return {
+        established: false,
+        response: protocolError("source_changed", "The selected file changed. Choose the file again.", true)
       };
     }
     const beforePublication = currentFailure();

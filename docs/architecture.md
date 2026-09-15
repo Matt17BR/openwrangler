@@ -93,7 +93,10 @@ retains only the exact `duckdbSchema` and `duckdbTable` import options, with bot
 excluded. Each name contains 1 to 1024 Unicode scalar values without NUL; names are not trimmed. A real file path and
 the DuckDB backend are required regardless of filename suffix. The picker admits at most 4096 entries and 65536 UTF-8
 name bytes within a 256 KiB response. Trust, source identity, cancellation and the captured interpreter are rechecked
-before dispatch. Ordinary import reconfiguration, backend switching and plan reuse exclude this viewing-only subtype.
+before dispatch. The original file identity is retained through queued preparation and confirmed before session
+publication. A changed canonical path or device/inode identity refuses the selected table and closes only its
+unpublished runtime; this check does not establish a content snapshot. Ordinary import reconfiguration, backend
+switching and plan reuse exclude this viewing-only subtype.
 The existing persistence key includes both names; runtime recovery reopens the exact selected table.
 Discovery bounds each native name projection before transferring it to Python and disables disk spill, so a killed
 metadata helper owns no temporary directory. Native catalog work can still exceed the accepted response size.

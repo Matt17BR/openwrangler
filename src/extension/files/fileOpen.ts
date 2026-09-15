@@ -171,6 +171,7 @@ export const registerFileCommands = (context: vscode.ExtensionContext, bridge: O
               };
             const response = await bridge.request(request, {
               ...options,
+              requiredSourceProtection: protection,
               cancellation: {
                 get isCancellationRequested() {
                   return !discovered.isCurrent() || Boolean(options?.cancellation?.isCancellationRequested);
