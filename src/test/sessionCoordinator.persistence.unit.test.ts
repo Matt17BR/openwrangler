@@ -1439,6 +1439,8 @@ describe("SessionCoordinator file-plan reuse", () => {
     "incomplete plan",
     "page source drift",
     "unsupported operation",
+    "target runtime unavailable",
+    "target runtime replacement",
     "runtime refusal",
     "cancellation",
     "detached cancellation",
@@ -1453,7 +1455,9 @@ describe("SessionCoordinator file-plan reuse", () => {
       if (failure === "incomplete plan") fixture.targetIncompletePlan = true;
       if (failure === "page source drift") fixture.targetPageSourceDrift = true;
       if (failure === "unsupported operation") fixture.targetUnsupported = true;
+      if (failure === "target runtime unavailable") fixture.targetRuntimeOwnerCurrent = false;
       fixture.beforeTargetPreview = async () => {
+        if (failure === "target runtime replacement") fixture.targetRuntimeOwnerCurrent = false;
         if (failure === "runtime refusal")
           return { kind: "error", code: "engine_error", message: "Cannot replay this value.", recoverable: true };
         if (failure === "cancellation") cancellation.cancel();
@@ -1496,7 +1500,7 @@ describe("SessionCoordinator file-plan reuse", () => {
     }
   });
 
-  it.each(["cancellation", "file replacement"] as const)(
+  it.each(["cancellation", "file replacement", "target runtime replacement"] as const)(
     "keeps a durable copied plan after late %s without publishing its runtime",
     async (failure) => {
       const fixture = await filePlanFixture();
@@ -1506,6 +1510,7 @@ describe("SessionCoordinator file-plan reuse", () => {
         fixture.beforeSave = async (value) => {
           if ((value[fixture.targetKey] as { cleaning?: unknown } | undefined)?.cleaning) {
             if (failure === "cancellation") cancellation.cancel();
+            else if (failure === "target runtime replacement") fixture.targetRuntimeOwnerCurrent = false;
             else {
               await rename(fixture.targetPath, join(fixture.directory, "retired-target.csv"));
               await writeFile(fixture.targetPath, "value\n9\n");
@@ -1515,10 +1520,20 @@ describe("SessionCoordinator file-plan reuse", () => {
         await expect(
           selected.bridge.request(fixture.targetRequest, { cancellation: cancellation.token })
         ).resolves.toMatchObject(
-          failure === "cancellation" ? { kind: "cancelled" } : { kind: "error", code: "file_plan_target_changed" }
+          failure === "cancellation"
+            ? { kind: "cancelled" }
+            : {
+                kind: "error",
+                code:
+                  failure === "target runtime replacement"
+                    ? "file_plan_target_runtime_changed"
+                    : "file_plan_target_changed"
+              }
         );
         expect(fixture.stored[fixture.targetKey]).toMatchObject({ cleaning: { steps: fixture.steps } });
         expect(fixture.coordinator.activeSession()?.sessionId).toBe(fixture.originId);
+        expect(fixture.coordinator.diagnostics().sessionCount).toBe(1);
+        expect(fixture.coordinator.sessionSnapshot(fixture.originId)).toEqual(fixture.originSnapshot);
         expect(fixture.targetRequests.filter((request) => request.kind === "closeSession")).toHaveLength(1);
       } finally {
         cancellation.dispose();
@@ -1558,6 +1573,7 @@ async function filePlanFixture() {
     beforeSave?: (value: Record<string, unknown>) => Promise<void>;
     beforeTargetPreview?: () => Promise<OpenWranglerResponse | undefined>;
     runtimeOwnerCurrent: boolean;
+    targetRuntimeOwnerCurrent: boolean;
     targetSchemaMismatch: boolean;
     targetIncompletePlan: boolean;
     targetPageSourceDrift: boolean;
@@ -1565,6 +1581,7 @@ async function filePlanFixture() {
   } = {
     stored: { [originKey]: savedOrigin },
     runtimeOwnerCurrent: true,
+    targetRuntimeOwnerCurrent: true,
     targetSchemaMismatch: false,
     targetIncompletePlan: false,
     targetPageSourceDrift: false,
@@ -1585,7 +1602,12 @@ async function filePlanFixture() {
   const bridge = coordinator.createBridge({
     captureFileSessionOwner: (sessionId) => {
       const owner = sessions.get(sessionId);
-      return owner ? () => controls.runtimeOwnerCurrent && sessions.get(sessionId) === owner : undefined;
+      const available = () =>
+        Boolean(owner) &&
+        controls.runtimeOwnerCurrent &&
+        sessions.get(sessionId) === owner &&
+        (owner?.source.path === originPath || controls.targetRuntimeOwnerCurrent);
+      return available() ? available : undefined;
     },
     request: async (request: OpenWranglerRequest, _options?: BridgeRequestOptions): Promise<OpenWranglerResponse> => {
       if (request.kind === "openSession") {
