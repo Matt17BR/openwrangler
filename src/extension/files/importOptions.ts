@@ -66,110 +66,106 @@ export async function promptImportOptions(
   const extension = path.extname(uri.fsPath).toLowerCase();
   await focusActiveEditorGroupBeforeImportPrompt();
   ensureNotCancelled(cancellation);
-  if (extension === ".xlsx" || extension === ".xls") {
-    return promptExcelImportOptions(currentImportOptions, cancellation, sheetNames);
-  }
+  const prompts = new ImportPrompts(cancellation);
+  try {
+    if (extension === ".xlsx" || extension === ".xls") {
+      const result = await promptExcelImportOptions(prompts, currentImportOptions, cancellation, sheetNames);
+      prompts.ensureNotCancelled();
+      return result;
+    }
 
-  const currentDelimiter = validCharacter(currentImportOptions?.delimiter) ?? defaults.delimiter ?? ",";
-  const delimiterChoice = await showImportQuickPick(
-    delimiterChoices(currentDelimiter),
-    {
+    const currentDelimiter = validCharacter(currentImportOptions?.delimiter) ?? defaults.delimiter ?? ",";
+    const delimiterChoice = await prompts.pick(delimiterChoices(currentDelimiter), {
       title: "Delimiter",
       placeHolder: "Choose the field delimiter",
       ignoreFocusOut: true
-    },
-    cancellation
-  );
-  ensureNotCancelled(cancellation);
-  if (!delimiterChoice) throw new ImportCancelledError();
-  const delimiter =
-    delimiterChoice.custom === true
-      ? await showImportInputBox(
-          {
+    });
+    ensureNotCancelled(cancellation);
+    if (!delimiterChoice) throw new ImportCancelledError();
+    const delimiter =
+      delimiterChoice.custom === true
+        ? await prompts.input({
             title: "Custom delimiter",
             prompt: "Enter exactly one character.",
             value: currentDelimiter,
             validateInput: validateCharacter,
             ignoreFocusOut: true
-          },
-          cancellation
-        )
-      : delimiterChoice.value;
-  ensureNotCancelled(cancellation);
-  if (delimiter === undefined) throw new ImportCancelledError();
-  if (validateCharacter(delimiter)) throw new Error("Expected a one-character delimiter.");
+          })
+        : delimiterChoice.value;
+    ensureNotCancelled(cancellation);
+    if (delimiter === undefined) throw new ImportCancelledError();
+    if (validateCharacter(delimiter)) throw new Error("Expected a one-character delimiter.");
 
-  const currentEncoding = nonBlank(currentImportOptions?.encoding) ?? nonBlank(defaults.encoding) ?? "utf-8";
-  const encodingChoice = await showImportQuickPick(
-    valueChoices(
-      ["utf-8", "utf8-lossy", "utf-16le", "utf-16be", "iso-8859-1", "windows-1252"],
-      currentEncoding,
-      (value) => value
-    ),
-    {
-      title: "Text encoding",
-      placeHolder: "Choose the source encoding",
-      ignoreFocusOut: true
-    },
-    cancellation
-  );
-  ensureNotCancelled(cancellation);
-  if (!encodingChoice) throw new ImportCancelledError();
+    const currentEncoding = nonBlank(currentImportOptions?.encoding) ?? nonBlank(defaults.encoding) ?? "utf-8";
+    const encodingChoice = await prompts.pick(
+      valueChoices(
+        ["utf-8", "utf8-lossy", "utf-16le", "utf-16be", "iso-8859-1", "windows-1252"],
+        currentEncoding,
+        (value) => value
+      ),
+      {
+        title: "Text encoding",
+        placeHolder: "Choose the source encoding",
+        ignoreFocusOut: true
+      }
+    );
+    ensureNotCancelled(cancellation);
+    if (!encodingChoice) throw new ImportCancelledError();
 
-  const currentHasHeader = currentImportOptions?.hasHeader ?? defaults.hasHeader ?? true;
-  const header = await showImportQuickPick(
-    valueChoices(
-      [
-        { label: "First row contains column names", value: true },
-        { label: "Generate column names", value: false }
-      ],
-      currentHasHeader
-    ),
-    { title: "Header row", ignoreFocusOut: true },
-    cancellation
-  );
-  ensureNotCancelled(cancellation);
-  if (!header) throw new ImportCancelledError();
+    const currentHasHeader = currentImportOptions?.hasHeader ?? defaults.hasHeader ?? true;
+    const header = await prompts.pick(
+      valueChoices(
+        [
+          { label: "First row contains column names", value: true },
+          { label: "Generate column names", value: false }
+        ],
+        currentHasHeader
+      ),
+      { title: "Header row", ignoreFocusOut: true }
+    );
+    ensureNotCancelled(cancellation);
+    if (!header) throw new ImportCancelledError();
 
-  const currentQuoteChar = validCharacter(currentImportOptions?.quoteChar) ?? defaults.quoteChar ?? '"';
-  const quoteChar = await showImportInputBox(
-    {
+    const currentQuoteChar = validCharacter(currentImportOptions?.quoteChar) ?? defaults.quoteChar ?? '"';
+    const quoteChar = await prompts.input({
       title: "Quote character",
       value: currentQuoteChar,
       validateInput: validateCharacter,
       ignoreFocusOut: true
-    },
-    cancellation
-  );
-  ensureNotCancelled(cancellation);
-  if (quoteChar === undefined) throw new ImportCancelledError();
-  if (validateCharacter(quoteChar)) throw new Error("Expected a one-character quote character.");
-  const currentLineEnding = currentImportOptions?.lineEnding;
-  const lineEnding = await showImportQuickPick(
-    valueChoices(
-      [
-        { label: "LF or CRLF", value: "lf" as const },
-        { label: "CR", value: "cr" as const }
-      ],
-      currentLineEnding ?? "lf"
-    ),
-    { title: "Line ending", ignoreFocusOut: true },
-    cancellation
-  );
-  ensureNotCancelled(cancellation);
-  if (!lineEnding) throw new ImportCancelledError();
-  return {
-    delimiter,
-    encoding: encodingChoice.value,
-    quoteChar,
-    hasHeader: header.value,
-    ...(currentLineEnding !== undefined || lineEnding.value === "cr" ? { lineEnding: lineEnding.value } : {})
-  };
+    });
+    ensureNotCancelled(cancellation);
+    if (quoteChar === undefined) throw new ImportCancelledError();
+    if (validateCharacter(quoteChar)) throw new Error("Expected a one-character quote character.");
+    const currentLineEnding = currentImportOptions?.lineEnding;
+    const lineEnding = await prompts.pick(
+      valueChoices(
+        [
+          { label: "LF or CRLF", value: "lf" as const },
+          { label: "CR", value: "cr" as const }
+        ],
+        currentLineEnding ?? "lf"
+      ),
+      { title: "Line ending", ignoreFocusOut: true }
+    );
+    ensureNotCancelled(cancellation);
+    if (!lineEnding) throw new ImportCancelledError();
+    prompts.ensureNotCancelled();
+    return {
+      delimiter,
+      encoding: encodingChoice.value,
+      quoteChar,
+      hasHeader: header.value,
+      ...(currentLineEnding !== undefined || lineEnding.value === "cr" ? { lineEnding: lineEnding.value } : {})
+    };
+  } finally {
+    prompts.dispose();
+  }
 }
 
 export class ImportCancelledError extends Error {}
 
 async function promptExcelImportOptions(
+  prompts: ImportPrompts,
   currentImportOptions?: ImportOptions,
   cancellation?: vscode.CancellationToken,
   sheetNames?: readonly string[]
@@ -182,15 +178,11 @@ async function promptExcelImportOptions(
       (currentSheetName !== undefined && availableSheets.includes(currentSheetName)
         ? currentSheetName
         : availableSheets[currentIndex]) ?? availableSheets[0]!;
-    const sheet = await showImportQuickPick(
-      excelSheetChoices(availableSheets, current),
-      {
-        title: "Excel sheet",
-        placeHolder: "Choose a worksheet. Search shown names (special names use JSON escapes).",
-        ignoreFocusOut: true
-      },
-      cancellation
-    );
+    const sheet = await prompts.pick(excelSheetChoices(availableSheets, current), {
+      title: "Excel sheet",
+      placeHolder: "Choose a worksheet. Search shown names (special names use JSON escapes).",
+      ignoreFocusOut: true
+    });
     ensureNotCancelled(cancellation);
     if (!sheet) throw new ImportCancelledError();
     return { sheetName: sheet.value };
@@ -199,76 +191,146 @@ async function promptExcelImportOptions(
   const currentSheetName = currentImportOptions?.sheetName || undefined;
   const currentSheetIndex = validSheetIndex(currentImportOptions?.sheetIndex) ? currentImportOptions.sheetIndex : 0;
   const currentMode: ExcelSheetMode = currentSheetName === undefined ? "index" : "name";
-  const mode = await showImportQuickPick(
-    excelSheetModeChoices(currentMode, currentSheetName, currentSheetIndex),
-    {
-      title: "Excel sheet",
-      placeHolder: "Choose how to identify the worksheet (special names use JSON escapes).",
-      ignoreFocusOut: true
-    },
-    cancellation
-  );
+  const mode = await prompts.pick(excelSheetModeChoices(currentMode, currentSheetName, currentSheetIndex), {
+    title: "Excel sheet",
+    placeHolder: "Choose how to identify the worksheet (special names use JSON escapes).",
+    ignoreFocusOut: true
+  });
   ensureNotCancelled(cancellation);
   if (!mode) throw new ImportCancelledError();
 
   if (mode.value === "name") {
-    const sheetName = await showImportInputBox(
-      {
-        title: "Excel sheet name",
-        prompt: "Enter the exact worksheet name. Numeric names remain names.",
-        value: currentMode === "name" ? currentSheetName : "",
-        validateInput: validateSheetName,
-        ignoreFocusOut: true
-      },
-      cancellation
-    );
+    const sheetName = await prompts.input({
+      title: "Excel sheet name",
+      prompt: "Enter the exact worksheet name. Numeric names remain names.",
+      value: currentMode === "name" ? currentSheetName : "",
+      validateInput: validateSheetName,
+      ignoreFocusOut: true
+    });
     ensureNotCancelled(cancellation);
     if (sheetName === undefined) throw new ImportCancelledError();
     if (validateSheetName(sheetName)) throw new Error("Expected a non-empty Excel sheet name.");
     return { sheetName };
   }
 
-  const sheetIndex = await showImportInputBox(
-    {
-      title: "Excel sheet index",
-      prompt: "Enter a zero-based worksheet index.",
-      value: currentMode === "index" ? String(currentSheetIndex) : "0",
-      validateInput: validateSheetIndex,
-      ignoreFocusOut: true
-    },
-    cancellation
-  );
+  const sheetIndex = await prompts.input({
+    title: "Excel sheet index",
+    prompt: "Enter a zero-based worksheet index.",
+    value: currentMode === "index" ? String(currentSheetIndex) : "0",
+    validateInput: validateSheetIndex,
+    ignoreFocusOut: true
+  });
   ensureNotCancelled(cancellation);
   if (sheetIndex === undefined) throw new ImportCancelledError();
   if (validateSheetIndex(sheetIndex)) throw new Error("Expected a non-negative, zero-based Excel sheet index.");
   return { sheetIndex: Number(sheetIndex) };
 }
 
-async function showImportQuickPick<T extends vscode.QuickPickItem>(
-  items: readonly T[],
-  options: vscode.QuickPickOptions,
-  cancellation?: vscode.CancellationToken
-): Promise<T | undefined> {
-  const selection = vscode.window.showQuickPick(items, options, cancellation);
-  await focusImportQuickInput();
-  return selection;
-}
+class ImportPrompts {
+  private current: vscode.Disposable | undefined;
+  private cancelled = false;
 
-async function showImportInputBox(
-  options: vscode.InputBoxOptions,
-  cancellation?: vscode.CancellationToken
-): Promise<string | undefined> {
-  const value = vscode.window.showInputBox(options, cancellation);
-  await focusImportQuickInput();
-  return value;
-}
+  constructor(private readonly cancellation?: vscode.CancellationToken) {}
 
-async function focusImportQuickInput(): Promise<void> {
-  try {
-    await vscode.commands.executeCommand("workbench.action.focusQuickOpen");
-  } catch {
-    // Experimental forks may not expose this workbench command. Their native
-    // Quick Input focus behavior remains the fallback.
+  ensureNotCancelled(): void {
+    ensureNotCancelled(this.cancellation);
+    if (this.cancelled) throw new ImportCancelledError();
+  }
+
+  pick<T extends vscode.QuickPickItem>(items: readonly T[], options: vscode.QuickPickOptions): Promise<T> {
+    this.ensureNotCancelled();
+    const input = vscode.window.createQuickPick<T>();
+    return this.show<T>(input, (accept) => {
+      input.items = items;
+      input.title = options.title;
+      input.placeholder = options.placeHolder;
+      input.ignoreFocusOut = options.ignoreFocusOut ?? false;
+      return [
+        input.onDidAccept(() => {
+          const selected = input.selectedItems[0];
+          if (selected) accept(selected);
+        }),
+        input.onDidChangeSelection((items) => {
+          const selected = items[0];
+          if (selected) accept(selected);
+        })
+      ];
+    });
+  }
+
+  input(
+    options: Omit<vscode.InputBoxOptions, "validateInput"> & { validateInput: (value: string) => string | undefined }
+  ): Promise<string> {
+    this.ensureNotCancelled();
+    const input = vscode.window.createInputBox();
+    const validate = (value: string) => {
+      input.validationMessage = options.validateInput(value);
+      return input.validationMessage === undefined;
+    };
+    return this.show<string>(input, (accept) => {
+      input.title = options.title;
+      input.prompt = options.prompt;
+      input.value = options.value ?? "";
+      input.ignoreFocusOut = options.ignoreFocusOut ?? false;
+      return [
+        input.onDidChangeValue(validate),
+        input.onDidAccept(() => {
+          const value = input.value;
+          if (validate(value)) accept(value);
+        })
+      ];
+    });
+  }
+
+  dispose(): void {
+    const current = this.current;
+    this.current = undefined;
+    current?.dispose();
+  }
+
+  private show<T>(
+    input: vscode.QuickInput,
+    subscribe: (accept: (value: T) => void) => vscode.Disposable[]
+  ): Promise<T> {
+    const previous = this.current;
+    const listeners: vscode.Disposable[] = [];
+    const current = {
+      dispose: () => {
+        for (const listener of listeners) listener.dispose();
+        input.dispose();
+      }
+    };
+    this.current = current;
+    return new Promise<T>((resolve, reject) => {
+      let settled = false;
+      const cancel = () => {
+        if (this.current !== current) return;
+        this.cancelled = true;
+        if (!settled) {
+          settled = true;
+          reject(new ImportCancelledError());
+        }
+      };
+      try {
+        listeners.push(input.onDidHide(cancel));
+        if (this.cancellation) listeners.push(this.cancellation.onCancellationRequested(cancel));
+        listeners.push(
+          ...subscribe((value) => {
+            if (settled || this.current !== current) return;
+            settled = true;
+            resolve(value);
+          })
+        );
+        this.ensureNotCancelled();
+        // Switching the native controller keeps Quick Input visible. Disposing
+        // the previous input first would restore focus to its launching editor.
+        input.show();
+      } catch (error) {
+        reject(error);
+      } finally {
+        previous?.dispose();
+      }
+    });
   }
 }
 
