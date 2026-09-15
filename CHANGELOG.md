@@ -24,6 +24,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Polars refuses missing Excel files instead of opening similarly named workbooks.
 - Excel imports preserve whitespace-only worksheet names in pickers, native reads and remembered file settings.
 - File reconfiguration, cleaning-plan rewrites and live mode changes respect host cancellation during pending persistence writes, before publishing a replacement.
 - DuckDB table help explains that all database viewers must close before writing, while allowing multiple tables to stay open.

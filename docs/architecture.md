@@ -1138,6 +1138,11 @@ above. These operations do not convert through another dataframe engine. Viewing
 supported exports stay in Polars. PyArrow is optional and limited to native dependency preparation where the Polars
 Excel reader requires it; it is not a transport conversion path.
 
+Excel opens the literal selected path through a binary stream, preventing a missing filename from expanding to
+other workbooks. The reader refuses a fallback that would buffer the whole workbook in Python and closes its stream
+on success or failure. Calamine still reopens the stream's filename natively; this does not capture an immutable
+inode or workbook snapshot.
+
 CSV and Parquet readers disable native glob expansion. On Unix, JSONL/NDJSON opens the selected path through a
 builtin stream and gives Polars ownership of a duplicated native descriptor. If duplication falls back to a Python
 buffer read, the reader returns no source bytes and refuses the temporary plan. The session still checks its source
