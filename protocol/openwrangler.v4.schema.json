@@ -408,8 +408,7 @@
             },
             "sheetName": {
               "type": "string",
-              "minLength": 1,
-              "pattern": "[^\\u0009-\\u000D \\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF]"
+              "minLength": 1
             },
             "sheetIndex": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
             "duckdbSchema": {

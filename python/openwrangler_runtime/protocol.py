@@ -715,7 +715,7 @@ def _validate_import_options(value: Any, source: Mapping[str, Any]) -> dict[str,
         not isinstance(options["lineEnding"], str) or options["lineEnding"] not in {"lf", "cr"}
     ):
         raise ProtocolError("source.importOptions.lineEnding must be lf or cr.")
-    if "sheetName" in options and not _is_non_empty_trimmed_string(options["sheetName"]):
+    if "sheetName" in options and (not isinstance(options["sheetName"], str) or not options["sheetName"]):
         raise ProtocolError("source.importOptions.sheetName must be a non-empty string.")
     if "sheetIndex" in options and not _is_safe_non_negative_integer(options["sheetIndex"]):
         raise ProtocolError("source.importOptions.sheetIndex must be a non-negative safe integer.")

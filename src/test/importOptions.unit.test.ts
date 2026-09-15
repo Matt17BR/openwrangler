@@ -239,20 +239,28 @@ describe("Excel import prompts", () => {
     expect(importOptionMocks.showInputBox).not.toHaveBeenCalled();
   });
 
-  it("shows literal worksheet names while retaining their selected and current values", async () => {
-    const name = "$(add)\n";
+  it.each([
+    ["$(add)\n", String.raw`"\u0024(add)\n"`],
+    [" ", '" "']
+  ])("retains literal worksheet name %j in selection and current values", async (name, label) => {
     importOptionMocks.showQuickPick.mockImplementationOnce(async (items) => items[0]);
     await expect(
-      promptImportOptions(vscode.Uri.file("/tmp/data.xlsx"), { sheetName: name }, undefined, [name, "Overview"])
+      promptImportOptions(vscode.Uri.file("/tmp/data.xlsx"), { sheetName: name }, undefined, [
+        "Overview",
+        name,
+        "Sales"
+      ])
     ).resolves.toEqual({ sheetName: name });
-    expect(picksAt(0)[0]).toMatchObject({ label: String.raw`"\u0024(add)\n"`, value: name, description: "Current" });
+    expect(picksAt(0)[0]).toMatchObject({ label, value: name, description: "Current" });
+    expect(picksAt(0).map(({ value }) => value)).toEqual([name, "Overview", "Sales"]);
+    expect(importOptionMocks.showInputBox).not.toHaveBeenCalled();
 
     importOptionMocks.showQuickPick.mockImplementationOnce(async (items) => items[0]);
     importOptionMocks.showInputBox.mockResolvedValueOnce(name);
     await expect(promptImportOptions(vscode.Uri.file("/tmp/data.xlsx"), { sheetName: name })).resolves.toEqual({
       sheetName: name
     });
-    expect(picksAt(1)[0]).toMatchObject({ detail: String.raw`Current: "\u0024(add)\n"`, value: "name" });
+    expect(picksAt(1)[0]).toMatchObject({ detail: `Current: ${label}`, value: "name" });
     expect(inputOptionsAt(0).value).toBe(name);
   });
 
@@ -337,8 +345,8 @@ describe("Excel import prompts", () => {
 
     const nameValidator = inputOptionsAt(0).validateInput;
     const indexValidator = inputOptionsAt(1).validateInput;
-    expect(nameValidator?.("")).toBe("Enter a non-blank sheet name.");
-    expect(nameValidator?.("   ")).toBe("Enter a non-blank sheet name.");
+    expect(nameValidator?.("")).toBe("Enter a non-empty sheet name.");
+    expect(nameValidator?.("   ")).toBeUndefined();
     expect(nameValidator?.("0")).toBeUndefined();
     expect(indexValidator?.("")).toBe("Enter a non-negative whole number.");
     expect(indexValidator?.("true")).toBe("Enter a non-negative whole number.");

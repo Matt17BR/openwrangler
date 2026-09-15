@@ -819,7 +819,23 @@ describe("protocol-v4 operation request validation", () => {
       )
     ).toBe(true);
     expect(isOpenWranglerRequest(requestWithOptions({}))).toBe(true);
-    expect(isOpenWranglerRequest(requestWithOptions({ sheetName: " résumé " }, "fixture.xlsx"))).toBe(true);
+    for (const [sheetName, expected] of [
+      [" résumé ", true],
+      [" ", true],
+      [" \n ", true],
+      ["\uFEFF", true],
+      ["", false],
+      [1, false]
+    ] as const) {
+      const request = requestWithOptions({ sheetName }, "fixture.xlsx");
+      expect(
+        [
+          isOpenWranglerRequest(request),
+          validateTransportSchema({ protocolVersion: 4, requestId: "sheet", priority: "interactive", request })
+        ],
+        JSON.stringify(sheetName)
+      ).toEqual([expected, expected]);
+    }
     expect(isOpenWranglerRequest(requestWithOptions({ sheetIndex: 0 }, "fixture.xls"))).toBe(true);
   });
 
@@ -1028,7 +1044,7 @@ describe("protocol-v4 operation request validation", () => {
     ["non-object options", null],
     ["array options", []],
     ["an unknown option", { delimiter: ",", extra: true }],
-    ["the legacy ambiguous sheet option", { sheet: 0 }],
+    ["the legacy ambiguous sheet option", { sheet: 0 }, "fixture.xlsx"],
     ["a non-string delimiter", { delimiter: 1 }],
     ["an empty delimiter", { delimiter: "" }],
     ["a multi-code-point delimiter", { delimiter: "||" }],
@@ -1043,26 +1059,25 @@ describe("protocol-v4 operation request validation", () => {
     ["a blank encoding", { encoding: " \t " }],
     ["a byte-order-mark-only encoding", { encoding: "\uFEFF" }],
     ["a non-boolean header flag", { hasHeader: "yes" }],
-    ["a non-string sheet name", { sheetName: 1 }],
-    ["a blank sheet name", { sheetName: " \n " }],
-    ["a byte-order-mark-only sheet name", { sheetName: "\uFEFF" }],
-    ["a negative sheet index", { sheetIndex: -1 }],
-    ["a fractional sheet index", { sheetIndex: 1.5 }],
-    ["a boolean sheet index", { sheetIndex: true }],
-    ["an unsafe sheet index", { sheetIndex: Number.MAX_SAFE_INTEGER + 1 }],
-    ["both Excel selectors", { sheetName: "Sheet1", sheetIndex: 0 }],
-    ["a sheet name mixed with a delimiter", { sheetName: "Sheet1", delimiter: "," }],
-    ["a sheet index mixed with an encoding", { sheetIndex: 0, encoding: "utf-8" }],
-    ["a sheet name mixed with a quote character", { sheetName: "Sheet1", quoteChar: '"' }],
-    ["a sheet index mixed with a header flag", { sheetIndex: 0, hasHeader: true }]
-  ])("rejects import options containing %s", (_description, importOptions) => {
+    ["a non-string sheet name", { sheetName: 1 }, "fixture.xlsx"],
+    ["an empty sheet name", { sheetName: "" }, "fixture.xlsx"],
+    ["a negative sheet index", { sheetIndex: -1 }, "fixture.xlsx"],
+    ["a fractional sheet index", { sheetIndex: 1.5 }, "fixture.xlsx"],
+    ["a boolean sheet index", { sheetIndex: true }, "fixture.xlsx"],
+    ["an unsafe sheet index", { sheetIndex: Number.MAX_SAFE_INTEGER + 1 }, "fixture.xlsx"],
+    ["both Excel selectors", { sheetName: "Sheet1", sheetIndex: 0 }, "fixture.xlsx"],
+    ["a sheet name mixed with a delimiter", { sheetName: "Sheet1", delimiter: "," }, "fixture.xlsx"],
+    ["a sheet index mixed with an encoding", { sheetIndex: 0, encoding: "utf-8" }, "fixture.xlsx"],
+    ["a sheet name mixed with a quote character", { sheetName: "Sheet1", quoteChar: '"' }, "fixture.xlsx"],
+    ["a sheet index mixed with a header flag", { sheetIndex: 0, hasHeader: true }, "fixture.xlsx"]
+  ])("rejects import options containing %s", (_description, importOptions, fileName = "fixture.csv") => {
     expect(
       isOpenWranglerRequest({
         kind: "openSession",
         source: {
           kind: "file",
-          label: "fixture.csv",
-          path: "/tmp/fixture.csv",
+          label: fileName,
+          path: `/tmp/${fileName}`,
           importOptions
         },
         pageSize: 200,

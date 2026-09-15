@@ -250,15 +250,15 @@ describe("confirmed file configurations", () => {
     expect(confirmedFileConfiguration(workspaceState, uri)).toBeUndefined();
   });
 
-  it("updates the resolved backend and retains whether the latest preference was automatic or explicit", async () => {
+  it.each(["Archive", " "])("retains exact sheet %j and the resolved backend preference", async (sheetName) => {
     const workspaceState = new MemoryMemento();
     const uri = vscode.Uri.file("/workspace/data.xlsx");
 
-    await rememberConfirmedFileConfiguration(workspaceState, uri, { sheetName: "Archive" }, "polars", "auto");
+    await rememberConfirmedFileConfiguration(workspaceState, uri, { sheetName }, "polars", "auto");
     expect(confirmedFileConfiguration(workspaceState, uri)).toEqual({
       backend: "polars",
       backendPreference: "auto",
-      importOptions: { sheetName: "Archive" }
+      importOptions: { sheetName }
     });
 
     await rememberConfirmedFileConfiguration(workspaceState, uri, { sheetIndex: 0 }, "pandas", "pandas");
