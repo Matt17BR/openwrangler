@@ -2,6 +2,7 @@ import { open } from "node:fs/promises";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import type { SessionSource } from "../../shared/protocol";
+import { formatQuickPickName } from "../quickPickName";
 import { detectedImportOptionsFromSample, IMPORT_DETECTION_READ_BYTES } from "./importDetection";
 
 type ImportOptions = NonNullable<SessionSource["importOptions"]>;
@@ -185,7 +186,7 @@ async function promptExcelImportOptions(
       excelSheetChoices(availableSheets, current),
       {
         title: "Excel sheet",
-        placeHolder: "Choose a worksheet",
+        placeHolder: "Choose a worksheet. Search shown names (special names use JSON escapes).",
         ignoreFocusOut: true
       },
       cancellation
@@ -202,7 +203,7 @@ async function promptExcelImportOptions(
     excelSheetModeChoices(currentMode, currentSheetName, currentSheetIndex),
     {
       title: "Excel sheet",
-      placeHolder: "Choose how to identify the worksheet",
+      placeHolder: "Choose how to identify the worksheet (special names use JSON escapes).",
       ignoreFocusOut: true
     },
     cancellation
@@ -282,7 +283,7 @@ async function focusActiveEditorGroupBeforeImportPrompt(): Promise<void> {
 
 function excelSheetChoices(sheetNames: readonly string[], current: string): ExcelSheetPick[] {
   const choices = sheetNames.map((sheetName, index): ExcelSheetPick => ({
-    label: sheetName,
+    label: formatQuickPickName(sheetName),
     description: sheetName === current ? "Current" : undefined,
     detail: `Worksheet ${index + 1} of ${sheetNames.length}`,
     value: sheetName
@@ -299,7 +300,10 @@ function excelSheetModeChoices(
     {
       label: "Sheet name",
       description: "Exact worksheet name",
-      detail: currentMode === "name" ? `Current: ${currentSheetName}` : undefined,
+      detail:
+        currentMode === "name" && currentSheetName !== undefined
+          ? `Current: ${formatQuickPickName(currentSheetName)}`
+          : undefined,
       value: "name"
     },
     {

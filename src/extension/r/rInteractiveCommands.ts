@@ -3,6 +3,7 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import type { SessionSource } from "../../shared/protocol";
 import { runtimeRequestTimeoutMs } from "../configuration";
+import { formatQuickPickName } from "../quickPickName";
 import { DetachedBridgeRequestError } from "../dataBridge";
 import { SessionCoordinator } from "../sessionCoordinator";
 import { OpenWranglerPanel, restoreEditorGroupAfterQuickPick } from "../webviewPanel";
@@ -440,8 +441,8 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
       picked = await vscode.window.showQuickPick(items, {
         title: "Open Wrangler: Choose a dataframe from the active R session",
         placeHolder: discovery.truncated
-          ? "Select a dataframe (the variable list was truncated)"
-          : "Select a data.frame, tibble, or data.table",
+          ? "List truncated. Search shown names (special names use JSON escapes)."
+          : "Select a dataframe. Search shown names (special names use JSON escapes).",
         matchOnDescription: true,
         matchOnDetail: true,
         ignoreFocusOut: true
@@ -491,7 +492,14 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
     }
     const items = this.currentSnapshot.variables.map((item) => {
       const cached = this.variablesByHandle.get(item.handle);
-      return cached ? Object.freeze({ ...cached.item, handle: item.handle, variable: cached.variable }) : undefined;
+      return cached
+        ? Object.freeze({
+            ...cached.item,
+            label: formatQuickPickName(cached.variable.name),
+            handle: item.handle,
+            variable: cached.variable
+          })
+        : undefined;
     });
     if (items.some((item) => item === undefined)) return undefined;
     return Object.freeze({
@@ -513,8 +521,8 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
       picked = await vscode.window.showQuickPick(state.items, {
         title: "Open Wrangler: Choose a dataframe from the active R session",
         placeHolder: state.truncated
-          ? "Select a dataframe (the variable list was truncated)"
-          : "Select a data.frame, tibble, or data.table",
+          ? "List truncated. Search shown names (special names use JSON escapes)."
+          : "Select a dataframe. Search shown names (special names use JSON escapes).",
         matchOnDescription: true,
         matchOnDetail: true,
         ignoreFocusOut: true

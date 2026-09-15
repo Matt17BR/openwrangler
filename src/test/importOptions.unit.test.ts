@@ -57,6 +57,38 @@ import {
   promptImportOptions
 } from "../extension/files/importOptions";
 import { IMPORT_DETECTION_SAMPLE_BYTES } from "../extension/files/importDetection";
+import { formatQuickPickName } from "../extension/quickPickName";
+
+describe("literal Quick Pick names", () => {
+  it("keeps ordinary names and uses distinct JSON notation for special spellings", () => {
+    const cases = [
+      ["orders", "orders"],
+      ["销售 total $", "销售 total $"],
+      ["$(add)", String.raw`"\u0024(add)"`],
+      [String.raw`\$(add)`, String.raw`"\\\u0024(add)"`],
+      [String.raw`\u0024(add)`, String.raw`"\\u0024(add)"`],
+      ["$(bad_name)", String.raw`"\u0024(bad_name)"`],
+      ['"orders"', String.raw`"\"orders\""`],
+      [" orders ", '" orders "'],
+      ["\u00a0orders", '"\u00a0orders"'],
+      ["a\nb", String.raw`"a\nb"`],
+      ["a\rb", String.raw`"a\rb"`],
+      ["a\r\nb", String.raw`"a\r\nb"`],
+      [String.raw`a\nb`, String.raw`"a\\nb"`],
+      ["a⏎b", "a⏎b"],
+      ["a\tb", String.raw`"a\tb"`],
+      ["a\u001bb", String.raw`"a\u001bb"`]
+    ] as const;
+    const displayed = cases.map(([name, expected]) => {
+      const label = formatQuickPickName(name);
+      expect(label).toBe(expected);
+      expect(label).not.toContain("$(");
+      expect(label.startsWith('"') ? JSON.parse(label) : label).toBe(name);
+      return label;
+    });
+    expect(new Set(displayed).size).toBe(cases.length);
+  });
+});
 
 describe("import option defaults", () => {
   it.each(["workbook.xlsx", "legacy.xls", "UPPER.XLS"])("uses the public zero-based sheet index for %s", (name) => {
@@ -190,7 +222,7 @@ describe("Excel import prompts", () => {
     });
     expect(importOptionMocks.showQuickPick.mock.calls[0]?.[1]).toMatchObject({
       title: "Excel sheet",
-      placeHolder: "Choose a worksheet",
+      placeHolder: "Choose a worksheet. Search shown names (special names use JSON escapes).",
       ignoreFocusOut: true
     });
     expect(importOptionMocks.showInputBox).not.toHaveBeenCalled();
@@ -205,6 +237,23 @@ describe("Excel import prompts", () => {
       promptImportOptions(vscode.Uri.file("/tmp/data.xls"), { sheetName: "Overview" }, undefined, ["Overview", "2024"])
     ).resolves.toEqual({ sheetName: "2024" });
     expect(importOptionMocks.showInputBox).not.toHaveBeenCalled();
+  });
+
+  it("shows literal worksheet names while retaining their selected and current values", async () => {
+    const name = "$(add)\n";
+    importOptionMocks.showQuickPick.mockImplementationOnce(async (items) => items[0]);
+    await expect(
+      promptImportOptions(vscode.Uri.file("/tmp/data.xlsx"), { sheetName: name }, undefined, [name, "Overview"])
+    ).resolves.toEqual({ sheetName: name });
+    expect(picksAt(0)[0]).toMatchObject({ label: String.raw`"\u0024(add)\n"`, value: name, description: "Current" });
+
+    importOptionMocks.showQuickPick.mockImplementationOnce(async (items) => items[0]);
+    importOptionMocks.showInputBox.mockResolvedValueOnce(name);
+    await expect(promptImportOptions(vscode.Uri.file("/tmp/data.xlsx"), { sheetName: name })).resolves.toEqual({
+      sheetName: name
+    });
+    expect(picksAt(1)[0]).toMatchObject({ detail: String.raw`Current: "\u0024(add)\n"`, value: "name" });
+    expect(inputOptionsAt(0).value).toBe(name);
   });
 
   it("keeps a numeric worksheet name unambiguously name-addressed and prefills the current name", async () => {

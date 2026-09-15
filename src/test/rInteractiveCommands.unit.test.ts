@@ -258,22 +258,27 @@ describe("active R session commands", () => {
   ])("picks a live dataframe with global configured deadline %s", async (configured, expected) => {
     mocks.openingTimeout = configured;
     const transport = transportMock();
-    transport.discoverVariables.mockResolvedValueOnce(discovery(tibble));
+    const variable = { ...tibble, name: "$(add)" };
+    transport.discoverVariables.mockResolvedValueOnce(discovery(variable));
     mocks.showQuickPick.mockImplementation(async (items) => items[0]);
     const { factory, coordinator } = registerWith([transport]);
 
     await expect(command(OPEN_R_INTERACTIVE_VARIABLE_COMMAND)()).resolves.toBe(true);
+
+    expect(mocks.showQuickPick.mock.calls[0]?.[0]).toEqual([
+      expect.objectContaining({ label: String.raw`"\u0024(add)"`, variable })
+    ]);
 
     expect(transport.discoverVariables).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: expected }));
     expect(mocks.configurationReads).toEqual([["openWrangler", undefined]]);
     expect(factory.create).toHaveBeenCalledWith(expect.anything(), { terminalMode: "activeOrCreate" });
     expect(transport.discoverVariables).toHaveBeenCalledOnce();
     expect(coordinator.createBridge).toHaveBeenCalledWith(expect.anything());
-    expect(mocks.bridgeArguments[0]?.[4]).toEqual(tibble);
+    expect(mocks.bridgeArguments[0]?.[4]).toBe(variable);
     expect(mocks.panelCreate).toHaveBeenCalledWith(
       expect.objectContaining({ extensionPath: "/extension" }),
       expect.anything(),
-      { kind: "rInteractiveVariable", label: "orders", variableName: "orders" },
+      { kind: "rInteractiveVariable", label: variable.name, variableName: variable.name },
       "r"
     );
     expect(mocks.restoreEditorGroupAfterQuickPick).toHaveBeenCalledOnce();
@@ -790,18 +795,24 @@ describe("active R session commands", () => {
     const terminal = rTerminal("R");
     setActiveTerminal(terminal);
     const transport = transportMock();
-    transport.discoverVariables.mockResolvedValueOnce(discovery(tibble));
+    const variable = { ...tibble, name: "$(add)" };
+    transport.discoverVariables.mockResolvedValueOnce(discovery(variable));
     mocks.showQuickPick.mockImplementation(async (items) => items[0]);
     const { factory, provider } = registerWith([transport]);
 
     await expect(command(REFRESH_R_INTERACTIVE_VARIABLES_COMMAND)()).resolves.toBe(true);
+    expect(provider.snapshot()).toMatchObject({ variables: [{ label: variable.name }] });
     await expect(command(OPEN_R_DATAFRAME_COMMAND)()).resolves.toBe(true);
+
+    expect(mocks.showQuickPick.mock.calls[0]?.[0]).toEqual([
+      expect.objectContaining({ label: String.raw`"\u0024(add)"`, variable })
+    ]);
 
     expect(factory.create).toHaveBeenCalledOnce();
     expect(factory.create).toHaveBeenCalledWith(expect.anything(), { terminalMode: "active", terminal });
     expect(transport.discoverVariables).toHaveBeenCalledOnce();
     expect(mocks.bridgeArguments[0]?.[1]).toBe(transport);
-    expect(mocks.bridgeArguments[0]?.[4]).toEqual(tibble);
+    expect(mocks.bridgeArguments[0]?.[4]).toBe(variable);
     expect(provider.snapshot().state).toBe("idle");
     expect(transport.dispose).not.toHaveBeenCalled();
   });

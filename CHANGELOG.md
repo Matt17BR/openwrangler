@@ -22,6 +22,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 ### Fixed
 
 - Open DuckDB Table refuses a file replaced after table selection while the viewer is opening, preserving other open sessions.
+- DuckDB table, Excel worksheet and R dataframe pickers display icon-like names as text while retaining exact selections.
 - A page that extends beyond its reported row total now returns a recoverable error and keeps the previous view. This can occur when filtering DuckDB computed columns whose values change between queries.
 - Using a focused Apply or Discard button restores keyboard focus to Add step, and step deletion confirmation keeps focus on its Cancel control. Delayed restoration respects newer sessions and focus choices.
 - Opening a specific cleaning operation or editing a saved step places keyboard focus in its settings, avoiding a trip through the operation catalog.

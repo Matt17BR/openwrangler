@@ -28,6 +28,14 @@ describe("R interactive variable model", () => {
     });
   });
 
+  it("formats literal picker names without changing the descriptor or live tree label", () => {
+    const variable = { name: String.raw`\$(add)`, backend: "r" as const, dataframeFlavor: "r.tibble" as const };
+    const pick = rInteractiveQuickPickItem(variable);
+    expect(pick.label).toBe(String.raw`"\\\u0024(add)"`);
+    expect(pick.variable).toBe(variable);
+    expect(rLiveVariableItem(variable, "handle-1", "R").label).toBe(variable.name);
+  });
+
   it("describes idle official and non-R terminals without retaining variables", () => {
     expect(idleRLiveVariableSnapshot({ name: "R" }, true)).toEqual({
       state: "idle",

@@ -4,6 +4,7 @@ import type { DataBackend, SessionSource } from "../../shared/protocol";
 import type { OpenWranglerBridge } from "../dataBridge";
 import { OpenWranglerPanel } from "../webviewPanel";
 import { getSetting } from "../configuration";
+import { formatQuickPickName } from "../quickPickName";
 import { confirmedFileConfiguration } from "./confirmedFileConfigurations";
 import { detectImportOptions } from "./importOptions";
 import { captureSessionSourceProtection, confirmSessionSourceProtection } from "./safeFileExport";
@@ -126,15 +127,15 @@ export const registerFileCommands = (context: vscode.ExtensionContext, bridge: O
           return;
         }
         const choices = discovered.tables.map((table) => ({
-          label: table.name,
-          description: `Schema: ${JSON.stringify(table.schema)}`,
+          label: formatQuickPickName(table.name),
+          description: `Schema: ${formatQuickPickName(table.schema)}`,
           table
         }));
         const choice = await vscode.window.showQuickPick(
           choices,
           {
             title: "Open DuckDB Table",
-            placeHolder: "Choose a table. Database writers are blocked until the viewer closes.",
+            placeHolder: "Search shown names (JSON escapes). Database writers are blocked until the viewer closes.",
             matchOnDescription: true
           },
           token

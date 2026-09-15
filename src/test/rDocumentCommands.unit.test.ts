@@ -195,14 +195,20 @@ describe("R document command", () => {
     "runs the exact R file with configured deadline %s and binds its document origin",
     async (configured, expected) => {
       mocks.openingTimeout = configured;
-      const document = rDocument("/workspace/analysis/orders.R", "orders <- data.frame(id = 1:3)\n");
+      const document = rDocument("/workspace/analysis/orders.R", 'assign("$(add)", data.frame(id = 1:3))\n');
       mocks.textDocuments.push(document);
       mocks.openTextDocument.mockResolvedValue(document);
+      const variable = { name: "$(add)", backend: "r" as const, dataframeFlavor: "r.data.frame" as const };
+      mocks.discovery.mockResolvedValueOnce({ variables: [variable], truncated: false });
       mocks.showQuickPick.mockImplementation(async (items) => items[0]);
       const coordinator = coordinatorMock();
       register(coordinator);
 
       await expect(command()(vscode.Uri.file("/workspace/analysis/orders.R"))).resolves.toBe(true);
+
+      expect(mocks.showQuickPick.mock.calls[0]?.[0]).toEqual([
+        expect.objectContaining({ label: String.raw`"\u0024(add)"`, variable })
+      ]);
 
       expect(mocks.discovery).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: expected }));
       expect(mocks.configurationReads).toContainEqual(["openWrangler", document.uri]);
@@ -214,7 +220,7 @@ describe("R document command", () => {
       expect(mocks.transportOptions).toEqual([
         {
           runtimeRoot: "/extension/r/openwrangler_runtime",
-          documentText: ["orders <- data.frame(id = 1:3)\n"],
+          documentText: ['assign("$(add)", data.frame(id = 1:3))\n'],
           rscriptPath: "/usr/bin/Rscript",
           workingDirectory: "/workspace/analysis"
         }
@@ -230,8 +236,8 @@ describe("R document command", () => {
         expect.anything(),
         {
           kind: "documentVariable",
-          label: "orders",
-          variableName: "orders",
+          label: variable.name,
+          variableName: variable.name,
           uri: "file:///workspace/analysis/orders.R"
         },
         "r"
