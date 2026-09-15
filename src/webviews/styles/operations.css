@@ -172,6 +172,8 @@
 }
 
 .operationForm {
+  container-name: operation-form;
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
   min-height: 0;

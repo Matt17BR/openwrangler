@@ -157,7 +157,9 @@
   .operationForm {
     flex: 1;
   }
+}
 
+@container operation-form (max-width: 620px) {
   .compoundRow,
   .aggregationRow {
     grid-template-columns: 1fr;

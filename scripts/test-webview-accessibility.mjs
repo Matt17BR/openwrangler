@@ -173,7 +173,7 @@ async function verifyOperationForms(browser) {
       await page.close();
     }
   }
-  for (const width of [800, 620]) {
+  for (const width of [1280, 800, 620]) {
     const page = await browser.newPage();
     try {
       await page.setViewportSize({ width, height: 600 });
@@ -190,21 +190,28 @@ async function verifyOperationForms(browser) {
         const state = await page.locator(":focus").evaluate((element) => {
           const form = element.closest("form");
           if (!form) return undefined;
+          const content = form.querySelector(".operationFormContent");
           const bounds = element.getBoundingClientRect();
-          const viewport = form.getBoundingClientRect();
-          const left = Math.max(bounds.left, viewport.left, 0);
-          const right = Math.min(bounds.right, viewport.right, innerWidth);
+          const scroller = element.closest(".operationFormContent") ?? form;
+          const viewport = scroller.getBoundingClientRect();
           return {
             name: element.getAttribute("aria-label") ?? element.textContent.trim(),
+            horizontalOverflow: content.scrollWidth - content.clientWidth,
+            scrollLeft: content.scrollLeft,
             exposed:
               bounds.top >= Math.max(viewport.top, 0) - 1 &&
               bounds.bottom <= Math.min(viewport.bottom, innerHeight) + 1 &&
-              right > left &&
-              element.contains(document.elementFromPoint((left + right) / 2, bounds.top + bounds.height / 2))
+              bounds.left >= Math.max(viewport.left + scroller.clientLeft, 0) - 1 &&
+              bounds.right <= Math.min(viewport.left + scroller.clientLeft + scroller.clientWidth, innerWidth) + 1 &&
+              element.contains(
+                document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2)
+              )
           };
         });
-        if (!state?.exposed) {
-          throw new Error(`Group By at ${width}px obscured its focused control: ${JSON.stringify(state)}.`);
+        if (!state?.exposed || state.horizontalOverflow > 1 || Math.abs(state.scrollLeft) > 1) {
+          throw new Error(
+            `Group By at ${width}px clipped or horizontally scrolled its settings: ${JSON.stringify(state)}.`
+          );
         }
         focused.push(state.name);
         if (state.name === "Preview changes") break;
