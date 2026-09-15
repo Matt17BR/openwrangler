@@ -260,6 +260,7 @@ jobs:
     with:
       target: macos-r
       omit_editor: ${{ needs.docs-proof.outputs.r_editor_omittable == 'true' }}
+      omit_source: ${{ needs.docs-proof.outputs.r_runtime_omittable == 'true' }}
 
   r-windows:
     needs: docs-proof
@@ -268,6 +269,7 @@ jobs:
     with:
       target: windows-r
       omit_editor: ${{ needs.docs-proof.outputs.r_editor_omittable == 'true' }}
+      omit_source: ${{ needs.docs-proof.outputs.r_runtime_omittable == 'true' }}
 
   r:
     name: Native R frame, kernel, and transport contracts
@@ -294,7 +296,7 @@ jobs:
               echo 'Native R checks omitted: the tested merge contains only paths proven independent of R. No fresh R execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
               ;;
             false:true:skipped:success:success:success:success)
-              echo 'Linux R source checks omitted for proven renderer edits. Both platform R jobs passed; no fresh Linux R source execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
+              echo 'Native R source checks omitted for proven renderer edits. Both platform R jobs passed; no fresh native R source execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
               ;;
             false:false:success:success:success:success:success) ;;
             *) exit 1 ;;
