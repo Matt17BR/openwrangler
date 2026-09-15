@@ -176,7 +176,7 @@ async function promptExcelImportOptions(
 ): Promise<ImportOptions> {
   const availableSheets = validExcelSheetNames(sheetNames);
   if (availableSheets) {
-    const currentSheetName = nonBlank(currentImportOptions?.sheetName);
+    const currentSheetName = currentImportOptions?.sheetName || undefined;
     const currentIndex = validSheetIndex(currentImportOptions?.sheetIndex) ? currentImportOptions.sheetIndex : 0;
     const current =
       (currentSheetName !== undefined && availableSheets.includes(currentSheetName)
@@ -196,7 +196,7 @@ async function promptExcelImportOptions(
     return { sheetName: sheet.value };
   }
 
-  const currentSheetName = nonBlank(currentImportOptions?.sheetName);
+  const currentSheetName = currentImportOptions?.sheetName || undefined;
   const currentSheetIndex = validSheetIndex(currentImportOptions?.sheetIndex) ? currentImportOptions.sheetIndex : 0;
   const currentMode: ExcelSheetMode = currentSheetName === undefined ? "index" : "name";
   const mode = await showImportQuickPick(
@@ -224,7 +224,7 @@ async function promptExcelImportOptions(
     );
     ensureNotCancelled(cancellation);
     if (sheetName === undefined) throw new ImportCancelledError();
-    if (validateSheetName(sheetName)) throw new Error("Expected a non-blank Excel sheet name.");
+    if (validateSheetName(sheetName)) throw new Error("Expected a non-empty Excel sheet name.");
     return { sheetName };
   }
 
@@ -362,7 +362,7 @@ function promoteCurrent<T>(choices: readonly ValuePick<T>[], current: T): ValueP
 }
 
 function validateSheetName(value: string): string | undefined {
-  return value.trim().length > 0 ? undefined : "Enter a non-blank sheet name.";
+  return value.length > 0 ? undefined : "Enter a non-empty sheet name.";
 }
 
 function validateSheetIndex(value: string): string | undefined {
@@ -386,7 +386,7 @@ function validExcelSheetNames(values: readonly string[] | undefined): readonly s
   if (!values || values.length < 1 || values.length > 4_096) return undefined;
   const seen = new Set<string>();
   for (const value of values) {
-    if (!nonBlank(value) || seen.has(value)) return undefined;
+    if (value.length === 0 || seen.has(value)) return undefined;
     seen.add(value);
   }
   return values;

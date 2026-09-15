@@ -267,6 +267,9 @@ def _open_session_envelope_with_import_options(
         ({"lineEnding": "lf"}, "sample.tsv"),
         ({"delimiter": "💠", "encoding": " utf-8 ", "quoteChar": "“", "hasHeader": True}, "sample.csv"),
         ({"sheetName": " résumé "}, "sample.xlsx"),
+        ({"sheetName": " "}, "sample.xlsx"),
+        ({"sheetName": " \n "}, "sample.xlsx"),
+        ({"sheetName": "\ufeff"}, "sample.xlsx"),
         ({"sheetIndex": 0}, "sample.xls"),
     ],
 )
@@ -473,8 +476,7 @@ def test_open_session_allows_empty_import_options_only_on_non_file_sources(kind:
             for value in [None, True, 1, {}, [], "", "CR", "crlf", "\r", "lf "]
         ],
         ({"sheetName": 1}, "sheetName must be a non-empty string"),
-        ({"sheetName": " \n "}, "sheetName must be a non-empty string"),
-        ({"sheetName": "\ufeff"}, "sheetName must be a non-empty string"),
+        ({"sheetName": ""}, "sheetName must be a non-empty string"),
         ({"sheetIndex": -1}, "sheetIndex must be a non-negative safe integer"),
         ({"sheetIndex": 1.5}, "sheetIndex must be a non-negative safe integer"),
         ({"sheetIndex": True}, "sheetIndex must be a non-negative safe integer"),

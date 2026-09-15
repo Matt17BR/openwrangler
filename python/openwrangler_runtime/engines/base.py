@@ -731,7 +731,7 @@ def resolve_excel_sheet_selector(options: Mapping[str, Any]) -> ExcelSheetSelect
         raise EngineError("Excel import options must contain only one of sheetName or sheetIndex.")
     if "sheetName" in options:
         sheet_name = options["sheetName"]
-        if not isinstance(sheet_name, str) or not sheet_name.strip(_IMPORT_OPTION_TRIM_CHARACTERS):
+        if not isinstance(sheet_name, str) or not sheet_name:
             raise EngineError("Excel import option sheetName must be a non-empty string.")
         return ("sheetName", sheet_name)
     if "sheetIndex" in options:

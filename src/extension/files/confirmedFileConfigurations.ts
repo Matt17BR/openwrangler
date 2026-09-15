@@ -170,11 +170,7 @@ function decodeFormatImportOptions(uri: vscode.Uri, value: unknown): ImportOptio
     };
   }
   if (extension === ".xlsx" || extension === ".xls") {
-    if (
-      hasExactKeys(value, ["sheetName"]) &&
-      typeof value.sheetName === "string" &&
-      value.sheetName.trim().length > 0
-    ) {
+    if (hasExactKeys(value, ["sheetName"]) && typeof value.sheetName === "string" && value.sheetName.length > 0) {
       return { sheetName: value.sheetName };
     }
     if (

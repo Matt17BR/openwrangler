@@ -107,6 +107,10 @@ picker, with `$(` encoded as `\u0024(`. Ordinary names remain unchanged. Native 
 the notation does not escape every Unicode control or guarantee screen-reader pronunciation. Live-variable tree
 labels remain raw. One host formatter owns this presentation, without changing source names or picker lifetimes.
 
+Excel imports accept exactly one nonempty worksheet name or zero-based sheet index. Names are not trimmed, including
+whitespace-only names. Discovery, picker selections, manual input and remembered file settings retain that exact
+identity through runtime validation and native reading. Empty names and conflicting selectors remain invalid.
+
 **Open Another File with This Plan** captures one confirmed, draft-free Pandas, Polars or DuckDB file plan before
 the picker opens. It excludes Custom Code and requires unique, non-empty original column names. The host retains
 the validated original file schema through ordinary edits, refreshing it on source/runtime replacement. This receipt

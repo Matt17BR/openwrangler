@@ -656,7 +656,7 @@ function isImportOptions(value: unknown): boolean {
     optional(candidate, "quoteChar", isSingleCharacter) &&
     optional(candidate, "hasHeader", isBoolean) &&
     optional(candidate, "lineEnding", (value) => isOneOf(value, ["lf", "cr"])) &&
-    optional(candidate, "sheetName", isNonEmptyTrimmedString) &&
+    optional(candidate, "sheetName", isNonEmptyString) &&
     optional(candidate, "sheetIndex", isNonNegativeSafeInteger) &&
     !(hasSheetName && hasSheetIndex) &&
     !(hasExcelSelector && hasDelimitedOption)

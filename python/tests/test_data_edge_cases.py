@@ -62,13 +62,18 @@ def test_delimited_jsonl_and_parquet_imports(backend: str, tmp_path) -> None:
 
 @pytest.mark.parametrize("backend", ["pandas", "polars"])
 @pytest.mark.parametrize(
-    "import_options",
-    [{"sheetName": "second"}, {"sheetIndex": 1}],
-    ids=["sheet-name", "zero-based-sheet-index"],
+    ("extension", "import_options", "expected"),
+    [
+        ("xlsx", {"sheetName": "second"}, ["second"]),
+        ("xlsx", {"sheetIndex": 1}, ["second"]),
+        ("xlsx", {"sheetName": " "}, ["space"]),
+        ("xlsx", {"sheetIndex": 2}, ["space"]),
+        ("xls", {"sheetName": "second"}, ["second", "résumé"]),
+        ("xls", {"sheetIndex": 1}, ["second", "résumé"]),
+    ],
 )
-@pytest.mark.parametrize("extension", ["xlsx", "xls"])
 def test_excel_sheet_name_and_zero_based_index(
-    backend: str, import_options: dict[str, str | int], extension: str, tmp_path: Path
+    backend: str, import_options: dict[str, str | int], extension: str, expected: list[str], tmp_path: Path
 ) -> None:
     path = tmp_path / f"sheets.{extension}"
     if extension == "xls":
@@ -77,27 +82,30 @@ def test_excel_sheet_name_and_zero_based_index(
         with pd.ExcelWriter(path) as writer:
             pd.DataFrame({"name": ["first"]}).to_excel(writer, sheet_name="first", index=False)
             pd.DataFrame({"name": ["second"]}).to_excel(writer, sheet_name="second", index=False)
+            pd.DataFrame({"name": ["space"]}).to_excel(writer, sheet_name=" ", index=False)
 
+    source_bytes = path.read_bytes()
     manager = SessionManager()
-    opened = manager.open_session(
-        {
+    try:
+        source = {
             "kind": "file",
             "label": path.name,
             "path": str(path),
             "importOptions": import_options,
-        },
-        backend=backend,
-    )
+        }
+        opened = manager.open_session(source, backend=backend)
+        assert opened["metadata"]["source"] == source
+        assert [row["values"][0]["display"] for row in opened["page"]["rows"]] == expected
+        manager.close_session(opened["metadata"]["sessionId"], 0)
+        assert manager.sessions == {}
+    finally:
+        manager.close_all()
+        assert path.read_bytes() == source_bytes
 
-    assert [row["values"][0]["display"] for row in opened["page"]["rows"]] == (
-        ["second", "résumé"] if extension == "xls" else ["second"]
-    )
-    manager.close_session(opened["metadata"]["sessionId"], 0)
-    assert manager.sessions == {}
 
-
-def test_excel_sheet_name_is_not_trimmed() -> None:
-    assert resolve_excel_sheet_selector({"sheetName": " résumé "}) == ("sheetName", " résumé ")
+@pytest.mark.parametrize("name", [" résumé ", " ", " \n\ufeff"])
+def test_excel_sheet_name_is_not_trimmed(name: str) -> None:
+    assert resolve_excel_sheet_selector({"sheetName": name}) == ("sheetName", name)
 
 
 @pytest.mark.parametrize(
@@ -107,7 +115,8 @@ def test_excel_sheet_name_is_not_trimmed() -> None:
         ({"sheetIndex": True}, "non-negative safe integer"),
         ({"sheetIndex": -1}, "non-negative safe integer"),
         ({"sheetIndex": 9_007_199_254_740_992}, "non-negative safe integer"),
-        ({"sheetName": " \n\ufeff"}, "non-empty string"),
+        ({"sheetName": ""}, "non-empty string"),
+        ({"sheetName": 1}, "non-empty string"),
         ({"sheetName": "Sheet1", "sheetIndex": 0}, "only one"),
     ],
 )
