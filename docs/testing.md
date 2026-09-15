@@ -355,9 +355,12 @@ the ordinary assertion path. Page assertions use the existing read-only request 
 does not replace the visible page or retire the renderer's view context. Requests that deliberately change the view
 or exercise recovery keep their own mutation path.
 The released-Jupyter Variables action shows its exact notebook and opens Jupyter's Variables view once before each
-bounded action acquisition, including after code insertion or session disposal changes focus. The shared dispatcher
+bounded action acquisition, including after session disposal changes focus. The shared dispatcher
 owns this preparation for Pandas, DuckDB and PySpark; it still requires one trusted keyboard activation and the exact
 session receipt. Preparation does not retry a failed activation or extend acquisition deadlines.
+The local journey checks both DuckDB and Pandas Variables actions before testing code insertion with another notebook
+active. It does not qualify Jupyter Variables reuse after insertion. The
+[Variables React update-limit failure](https://github.com/Matt17BR/openwrangler/issues/1498) remains open.
 If acquisition fails, the existing diagnostic distinguishes hidden Variables tables from absent ones and records
 fixed Variables-document and panel-container presence/visibility. It also records capped pane header/body counts,
 expansion and body visibility, then inspects up to twelve Jupyter webview shells attached to the workbench root.

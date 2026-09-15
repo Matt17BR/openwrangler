@@ -2559,50 +2559,7 @@ async function exerciseReleasedJupyterExtension(
       variableNotebookEditor,
       "immediately before opening the real Jupyter Variables view"
     );
-    assertExactOpenNotebookDocument(
-      notebook,
-      `before resolving the ${RELEASED_JUPYTER_VARIABLES_PANDAS.name} action from Jupyter Variables`
-    );
-
-    recordAcceptanceProgress(`${phase}:variables-action`);
     await configuration.update("notebookStartMode", "editing", vscode.ConfigurationTarget.Workspace);
-    await dispatchReleasedJupyterVariableAction(
-      workbench,
-      notebook,
-      RELEASED_JUPYTER_VARIABLES_PANDAS.name,
-      `${phase}:variables`
-    );
-    recordAcceptanceProgress(`${phase}:variables-delegation-dispatched`);
-    recordAcceptanceProgress(`${phase}:variables-panel-created`);
-    const pandasFrame = await waitForReleasedVariableSession(
-      workbench,
-      testing,
-      notebook,
-      RELEASED_JUPYTER_VARIABLES_PANDAS,
-      "the complete canonical orders_df opened from the real Jupyter Variables view"
-    );
-    assert.equal(pandasFrame.metadata.mode, "editing");
-
-    recordAcceptanceProgress(`${phase}:pandas-dataframe`);
-    await assertReleasedSessionPage(
-      testing,
-      pandasFrame,
-      RELEASED_JUPYTER_VARIABLES_PANDAS.firstValue,
-      "released-jupyter-pandas-dataframe"
-    );
-    if (kernelTarget.remote) {
-      await assertReleasedRemoteRuntimeTransfer(notebook, kernelTarget, extension.extensionPath, phase);
-    }
-    await assertReleasedNotebookCodeInsertion(
-      testing,
-      notebook,
-      pandasFrame,
-      RELEASED_JUPYTER_VARIABLES_PANDAS.name,
-      RELEASED_JUPYTER_VARIABLES_PANDAS.insertionInputColumn,
-      RELEASED_JUPYTER_VARIABLES_PANDAS.insertionOutputColumn,
-      phase
-    );
-    await disposePackagedSessionPanel(testing, pandasFrame.sessionId, "the released-Jupyter Pandas DataFrame session");
 
     // Cursor may retire Jupyter's Variables frame after its first remote activation. The local
     // phase proves DuckDB's Variables action; the remote journey exercises the relation below.
@@ -2640,6 +2597,50 @@ async function exerciseReleasedJupyterExtension(
         "the released-Jupyter DuckDB relation opened from Jupyter Variables"
       );
     }
+
+    assertExactOpenNotebookDocument(
+      notebook,
+      `before resolving the ${RELEASED_JUPYTER_VARIABLES_PANDAS.name} action from Jupyter Variables`
+    );
+
+    recordAcceptanceProgress(`${phase}:variables-action`);
+    await dispatchReleasedJupyterVariableAction(
+      workbench,
+      notebook,
+      RELEASED_JUPYTER_VARIABLES_PANDAS.name,
+      `${phase}:variables`
+    );
+    recordAcceptanceProgress(`${phase}:variables-delegation-dispatched`);
+    recordAcceptanceProgress(`${phase}:variables-panel-created`);
+    const pandasFrame = await waitForReleasedVariableSession(
+      workbench,
+      testing,
+      notebook,
+      RELEASED_JUPYTER_VARIABLES_PANDAS,
+      "the complete canonical orders_df opened from the real Jupyter Variables view"
+    );
+    assert.equal(pandasFrame.metadata.mode, "editing");
+
+    recordAcceptanceProgress(`${phase}:pandas-dataframe`);
+    await assertReleasedSessionPage(
+      testing,
+      pandasFrame,
+      RELEASED_JUPYTER_VARIABLES_PANDAS.firstValue,
+      "released-jupyter-pandas-dataframe"
+    );
+    if (kernelTarget.remote) {
+      await assertReleasedRemoteRuntimeTransfer(notebook, kernelTarget, extension.extensionPath, phase);
+    }
+    await assertReleasedNotebookCodeInsertion(
+      testing,
+      notebook,
+      pandasFrame,
+      RELEASED_JUPYTER_VARIABLES_PANDAS.name,
+      RELEASED_JUPYTER_VARIABLES_PANDAS.insertionInputColumn,
+      RELEASED_JUPYTER_VARIABLES_PANDAS.insertionOutputColumn,
+      phase
+    );
+    await disposePackagedSessionPanel(testing, pandasFrame.sessionId, "the released-Jupyter Pandas DataFrame session");
     await configuration.update("notebookStartMode", originalNotebookStartMode, vscode.ConfigurationTarget.Workspace);
 
     recordAcceptanceProgress(`${phase}:polars-series-toolbar`);
