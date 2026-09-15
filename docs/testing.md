@@ -550,8 +550,9 @@ including those three focused notebook selectors; omitting the purpose retains t
 Artifact acquisition refuses an existing destination and verifies the file it created. Failed partial archives remain
 under the caller's existing private-root cleanup owner. A replaced file or directory withholds cleanup.
 
-The macOS and Windows R jobs first run `kernel:numeric-portability`, the same case included in the canonical
-Linux kernel suite. It owns the platform-sensitive mean, decimal parsing, selection and generated-literal assertions
+The macOS and Windows R jobs first run `kernel:numeric-portability`, subject to the
+[renderer source omission](ci.md#pull-requests). It is the same case included in the canonical Linux kernel suite
+and owns the platform-sensitive mean, decimal parsing, selection and generated-literal assertions
 in `r/tests/kernel_agent_numeric_portability.R`. Broad operation, export, cold-process and dataframe-class matrices
 remain in their existing source cases.
 

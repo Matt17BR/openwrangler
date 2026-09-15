@@ -12,8 +12,8 @@ Every pull request reports the same five required product checks:
   checks follow the narrow local-engine omission below.
 - **Native R frame, kernel, and transport contracts** installs the R 4.5 lock on two Linux workers: one runs frame,
   catalog and transport checks, and the other runs the kernel-agent checks, subject to the renderer omission below.
-  It also requires the existing macOS and Windows source and package jobs unless the change is proved independent of R.
-  Their installed notebook journeys follow the
+  It also requires the existing macOS and Windows jobs unless the change is proved independent of R.
+  Their numeric source checks follow the renderer omission; their installed notebook journeys follow the
   narrower source-test omission below.
 - **Packaged VS Code smoke** builds and verifies one VSIX, then opens those exact bytes with the `platform-smoke` /
   `daily-core` selector in the declared minimum VS Code 1.106.0 and current stable VS Code, subject to the
@@ -77,13 +77,13 @@ Required-document, generated-reference and release-document checks still run and
   and other scripts are outside this permission.
 - The Python worker may also be omitted for modifications to existing files under `src/webviews/` and the existing
   `src/test/progressiveProfilingLifecycle.unit.test.tsx` owner, optionally with the allowed component-test and Markdown
-  edits. Platform R source and installed-editor checks, Source and packaged smoke remain required.
+  edits. Platform R jobs, Source and packaged smoke remain required; their numeric source step follows the next scope.
   Additions, deletions, renames and mode changes remain outside this permission.
-- The Linux R workers and Windows filesystem and process job may also be omitted for modifications to existing
+- The Linux R workers, platform R numeric source step and Windows filesystem and process job may also be omitted for modifications to existing
   `src/webviews/` files, optionally with the allowed component-test and Markdown edits. This additional omission does
   not extend to the lifecycle unit test, installed harness, scripts or runtime source. Additions, deletions, renames
   and mode changes retain execution.
-  Both platform R jobs still run their source, cleanup, package and installed-editor checks.
+  Both platform R jobs still run their cleanup, package and installed-editor checks.
 - R source and installed-editor execution may be omitted for additions or edits to `.py` files under
   `python/openwrangler_runtime/` or `python/tests/`, and modifications to allowed Markdown files.
 - Native Spark may be omitted for modifications to one or more of the existing
@@ -122,9 +122,13 @@ and exercise real profiles, so they remain required. Local browser acceptance st
 
 The Linux R phases load native R assets and the selected Node transport owners, without loading renderer source.
 The kernel-transport phase also runs native notebook discovery, selection and dependency checks with the same selected R executable.
-Their separate `r_runtime_omittable` result permits the Linux matrix to be skipped without changing platform R or
-installed-editor selection. Together with `python_omittable`, it also permits omission of the Windows filesystem and
-process job, whose selected Python and Node owners do not load renderer source. Its bootstrap tests do load the
+Their separate `r_runtime_omittable` result permits the Linux matrix and each platform's numeric-portability step to be
+skipped. The platform step loads native R assets and its source-test helpers, without loading renderer source.
+Its `omit_source` Boolean workflow input defaults to false, so manual dispatch retains this execution. Skipping it
+also omits its separate private source-library preparation. Platform setup, artifact cleanup, macOS process
+cancellation, packaging and installed-editor checks remain required. Together with `python_omittable`, the proof
+also permits omission of the Windows filesystem and process job, whose selected Python and Node owners do not load
+renderer source. Its bootstrap tests do load the
 installed-notebook fixtures, which remain outside this additional omission. R runtime and source-test changes retain
 Windows source execution. Omission summaries report no fresh source execution for the skipped jobs.
 
@@ -170,7 +174,7 @@ execution or a proved omission with actually skipped execution. Windows source o
 `r_runtime_omittable` and `python_omittable` and a skipped worker; otherwise both flags must be valid and its execution
 must succeed. The R result also checks both installed workflow calls and their selected platform job results.
 A proved whole-R omission requires the source matrix and both installed workflow
-calls to be skipped, with empty reusable outputs. A proved Linux-only omission requires a skipped source matrix and
+calls to be skipped, with empty reusable outputs. A proved renderer source omission requires a skipped source matrix and
 successful calls and selected results for both platform jobs. Without either omission, all results must succeed.
 Missing, contradictory, failed or cancelled results cannot satisfy the check, even if a misconfigured workflow call
 otherwise reports success.
@@ -233,8 +237,9 @@ The `macos-r` and `windows-r` jobs run the existing private R artifact filesyste
 R dependencies or editor preparation. These exercise real file cleanup and refusal of replaced files and directories
 on each platform without launching R or an editor. The macOS job also runs the existing native process cancellation
 owner through default helper preparation, before private R dependency installation or editor preparation.
-The released-Jupyter jobs then run the canonical `kernel:numeric-portability` source case with private jsonlite and
-bit64 dependencies before opening the editor. Parquet dependencies remain with the separate export and editor owners.
+Unless the renderer omission applies, the released-Jupyter jobs then run the canonical `kernel:numeric-portability`
+source case with private jsonlite and bit64 dependencies before opening the editor.
+Parquet dependencies remain with the separate export and editor owners.
 It checks the platform-sensitive arithmetic, selections and generated programs without
 repeating the broad Linux operation and export suites. macOS uses the bounded `platform-lifecycle` journey; Windows
 keeps its representative journey and opens the three ordinary collapse fixtures. Cursor, remote and focused profiles

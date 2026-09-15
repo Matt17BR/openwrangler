@@ -565,7 +565,7 @@ test("proves Python omissions while retaining Linux R source checks for non-rend
         if (runtimeOmittable) {
           assert.match(
             message,
-            /Windows filesystem and process checks; platform R source and installed-editor checks remain required\./u
+            /native R source and Windows filesystem and process checks; platform artifact, package and installed-editor checks remain required\./u
           );
         }
         assert.equal(
@@ -1695,7 +1695,7 @@ test("required R result checks installed caller and selected platform outcomes i
     assert.equal(result.error, undefined);
     assert.equal(result.status, status, JSON.stringify(environment));
     if (environment === runtimeOmitted) {
-      assert.match(readFileSync(summary, "utf8"), /Linux R source checks omitted.*Both platform R jobs passed/u);
+      assert.match(readFileSync(summary, "utf8"), /Native R source checks omitted.*Both platform R jobs passed/u);
     }
   }
 });
@@ -1751,6 +1751,9 @@ test("installed R calls use the tested workflow and expose each actual platform 
   assert.equal(releasedJupyter.on.workflow_call.inputs.omit_editor.type, "boolean");
   assert.equal(releasedJupyter.on.workflow_call.inputs.omit_editor.default, false);
   assert.equal(releasedJupyter.on.workflow_dispatch.inputs.omit_editor, undefined);
+  assert.equal(releasedJupyter.on.workflow_call.inputs.omit_source?.type, "boolean");
+  assert.equal(releasedJupyter.on.workflow_call.inputs.omit_source.default, false);
+  assert.equal(releasedJupyter.on.workflow_dispatch.inputs.omit_source, undefined);
   assert.deepEqual(releasedJupyter.permissions, { contents: "read" });
   const guard = workflow.jobs.r.steps[0];
   for (const [id, target, prefix] of [
@@ -1767,7 +1770,8 @@ test("installed R calls use the tested workflow and expose each actual platform 
     assert.equal(caller.uses, "./.github/workflows/released-jupyter.yml");
     assert.deepEqual(caller.with, {
       target,
-      omit_editor: "${{ needs.docs-proof.outputs.r_editor_omittable == 'true' }}"
+      omit_editor: "${{ needs.docs-proof.outputs.r_editor_omittable == 'true' }}",
+      omit_source: "${{ needs.docs-proof.outputs.r_runtime_omittable == 'true' }}"
     });
     assert.equal(guard.env[`${prefix}_CALL_RESULT`], `\${{ needs.${id}.result }}`);
     assert.equal(guard.env[`${prefix}_RESULT`], `\${{ needs.${id}.outputs.${output} }}`);
@@ -1778,15 +1782,28 @@ test("installed R calls use the tested workflow and expose each actual platform 
     assert.equal(platform.steps[0].with["persist-credentials"], false);
     const editor = platform.steps.find((step) => step.id === "packaged_editor_r");
     const omission = platform.steps.find((step) => step.name === "Record omitted R editor journey");
+    const source = platform.steps.find((step) => step.name === "Check native R numeric portability");
+    const sourceOmission = platform.steps.find((step) => step.name === "Record omitted R source check");
     assert.equal(editor.if, "${{ !inputs.omit_editor }}");
     assert.equal(editor.run, "node scripts/run-packaged-editor-tests.mjs openwrangler.vsix");
     assert.equal(editor["continue-on-error"], undefined);
     assert.equal(omission.if, "${{ inputs.omit_editor }}");
     assert.match(omission.run, /no fresh editor execution is claimed/u);
+    assert.equal(source.if, "${{ !inputs.omit_source }}");
+    assert.match(source.run, /id: "kernel:numeric-portability"/u);
+    assert.equal(sourceOmission.if, "${{ inputs.omit_source }}");
+    assert.match(sourceOmission.run, /no fresh numeric-portability execution is claimed/u);
     for (const step of platform.steps) {
-      if (step === editor || step === omission || step.uses?.startsWith("actions/upload-artifact@")) continue;
-      assert.equal(step.if, undefined, `${target}: ${step.name ?? step.run ?? step.uses}`);
       assert.equal(step["continue-on-error"], undefined);
+      if (
+        step === editor ||
+        step === omission ||
+        step === source ||
+        step === sourceOmission ||
+        step.uses?.startsWith("actions/upload-artifact@")
+      )
+        continue;
+      assert.equal(step.if, undefined, `${target}: ${step.name ?? step.run ?? step.uses}`);
     }
   }
   const concurrencyGroups = ["workflow_dispatch", "pull_request"].flatMap((event) =>

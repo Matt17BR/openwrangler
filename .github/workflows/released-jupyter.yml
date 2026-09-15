@@ -22,12 +22,16 @@ on:
         description: Omit platform editor journeys for proven R source-test edits
         type: boolean
         default: false
+      omit_source:
+        description: Omit native numeric portability for proven renderer edits
+        type: boolean
+        default: false
     outputs:
       macos_result:
-        description: Result of macOS R source, package and selected editor checks
+        description: Result of selected macOS R source, package and editor checks
         value: ${{ jobs.macos-r.result }}
       windows_result:
-        description: Result of Windows R source, package and selected editor checks
+        description: Result of selected Windows R source, package and editor checks
         value: ${{ jobs.windows-r.result }}
 
 permissions:
@@ -289,6 +293,7 @@ jobs:
         run: npx --no-install vitest run --environment node src/test/rPrivateArtifactBoundary.unit.test.ts
       - &r_source_contracts
         name: Check native R numeric portability
+        if: ${{ !inputs.omit_source }}
         shell: node {0}
         env:
           OPEN_WRANGLER_TEST_RSCRIPT: ${{ steps.rscript.outputs.executable }}
@@ -351,6 +356,11 @@ jobs:
             console.error(error);
             process.exitCode = 1;
           });
+      - &r_source_omission
+        name: Record omitted R source check
+        if: ${{ inputs.omit_source }}
+        shell: bash
+        run: echo 'Native R numeric portability and its private source preparation omitted for proven renderer edits; no fresh numeric-portability execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
       - run: python -m pip install --upgrade pip
       - run: python -m pip install jupyter-client
       - run: npm run clean && npm run build && npm run package:prepared -- --out openwrangler.vsix
@@ -370,7 +380,7 @@ jobs:
       - name: Record omitted R editor journey
         if: ${{ inputs.omit_editor }}
         shell: bash
-        run: echo 'Installed R editor journey omitted for proven source-test edits. Source and package checks ran; no fresh editor execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
+        run: echo 'Installed R editor journey omitted for proven source-test edits. Package checks ran; no fresh editor execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
       - name: Upload macOS R-Jupyter failure diagnostics
         if: ${{ always() && steps.packaged_editor_r.outcome == 'failure' && steps.packaged_editor_r.outputs.evidence_ready == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -417,6 +427,7 @@ jobs:
       - run: npm ci --ignore-scripts
       - *r_private_artifact_contracts
       - *r_source_contracts
+      - *r_source_omission
       - run: python -m pip install --upgrade pip
       - run: python -m pip install jupyter-client
       - run: npm run clean && npm run build && npm run package:prepared -- --out openwrangler.vsix
@@ -436,7 +447,7 @@ jobs:
       - name: Record omitted R editor journey
         if: ${{ inputs.omit_editor }}
         shell: bash
-        run: echo 'Installed R editor journey omitted for proven source-test edits. Source and package checks ran; no fresh editor execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
+        run: echo 'Installed R editor journey omitted for proven source-test edits. Package checks ran; no fresh editor execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
       - name: Upload Windows R-Jupyter failure diagnostics
         if: ${{ always() && steps.packaged_editor_r.outcome == 'failure' && steps.packaged_editor_r.outputs.evidence_ready == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
