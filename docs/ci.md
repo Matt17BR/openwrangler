@@ -260,7 +260,9 @@ The released-Jupyter workflow also offers `linux-python` for manually triggered 
 It runs the existing local Python notebook and generic file checks in two sequential VS Code invocations against the
 same VSIX. Its job name states that Spark, remote Jupyter and R are omitted. A failure stops the sequence and uses
 the existing failure-diagnostic handling. This target provides no full Python source-suite, Spark, remote Jupyter or R
-qualification. The default `linux-all` target, pull-request callers and release qualification remain unchanged.
+qualification. It omits Java setup, UV installation and lock regeneration/audit for the unused remote-server
+environments. The local notebook environment keeps its separate pinned dependencies and version checks.
+The default `linux-all` target, pull-request callers and release qualification remain unchanged.
 See [Testing](testing.md#focused-python-notebook-checks) for the selected phases and repeated setup cost.
 
 For manual R investigations, `linux-r` runs the existing core/remote, value, categorical and active-terminal
