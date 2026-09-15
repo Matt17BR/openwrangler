@@ -21,6 +21,7 @@ from openwrangler_runtime.engines import (
     SessionDataShape,
 )
 from openwrangler_runtime.engines.base import SummaryColumnProjection
+from openwrangler_runtime.operations import operation_catalog
 from openwrangler_runtime.session import SessionCleanupError, SessionManager, UnknownSessionError
 
 
@@ -621,18 +622,24 @@ def test_capabilities_remain_exact_for_current_engines(tmp_path, monkeypatch) ->
         backend="pandas",
     )
 
+    all_operations = [item["kind"] for item in operation_catalog()]
+    pandas_operations = [kind for kind in all_operations if kind != "extractStructFields"]
     assert pandas["metadata"]["capabilities"] == {
         "editable": True,
+        "supportedOperations": pandas_operations,
         "lazy": False,
         "cancel": False,
         "exportCsv": True,
         "exportParquet": True,
         "notebookInsert": False,
     }
+    assert polars["metadata"]["capabilities"]["supportedOperations"] == all_operations
+    assert polars_excel["metadata"]["capabilities"]["supportedOperations"] == all_operations
     assert polars["metadata"]["capabilities"]["lazy"] is True
     assert polars_excel["metadata"]["capabilities"]["lazy"] is False
     assert viewing["metadata"]["capabilities"] == {
         "editable": False,
+        "supportedOperations": pandas_operations,
         "lazy": False,
         "cancel": False,
         "exportCsv": False,
@@ -641,6 +648,7 @@ def test_capabilities_remain_exact_for_current_engines(tmp_path, monkeypatch) ->
     }
     assert notebook_variable["metadata"]["capabilities"] == {
         "editable": False,
+        "supportedOperations": pandas_operations,
         "lazy": False,
         "cancel": False,
         "exportCsv": False,

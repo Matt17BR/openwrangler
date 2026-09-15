@@ -1,4 +1,5 @@
 import { parseFormulaLiteral } from "../../shared/formulaLiteral";
+import { isTransformStep } from "../../shared/protocolValidation";
 import type { FilterModel } from "../../shared/filterModel";
 import {
   createPredicate,
@@ -106,6 +107,19 @@ export function buildParams(
     case "renameColumn":
     case "cloneColumn":
       return { column: columnReference("column"), newName: value("newName") };
+    case "extractStructFields": {
+      const column = columnReference("column");
+      if (availableColumns.find((candidate) => candidate.id === column.id)?.type !== "struct")
+        throw new Error("Choose a Struct column to extract fields.");
+      const fields = form.getAll("structField").map(String);
+      const outputs = form.getAll("structOutput").map(String);
+      const params = { column, fields: fields.map((field, index) => ({ field, newColumn: outputs[index] })) };
+      if (fields.length !== outputs.length || !isTransformStep({ id: "fields", kind, params }))
+        throw new Error(
+          "Choose 1 to 64 unique fields and unique output names. Each name must be nonempty, single-line Unicode of at most 1,024 UTF-8 bytes."
+        );
+      return params;
+    }
     case "castColumn": {
       const column = columnReference("column");
       const dtype = value("dtype");

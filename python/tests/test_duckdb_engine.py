@@ -31,6 +31,299 @@ from openwrangler_runtime.operations import operation_catalog, validate_step
 from openwrangler_runtime.session import SessionManager
 
 
+def test_duckdb_extract_struct_fields_preserves_literal_names_and_current_input(tmp_path: Path) -> None:
+    path = tmp_path / "struct.parquet"
+    engine = DuckDBEngine()
+    with duckdb.connect() as connection:
+        source = connection.sql(
+            "SELECT i AS id, CASE WHEN i = 1 THEN NULL "
+            "ELSE {'*': 7, 'a.b': i, 'A': 90, 'a_1': 91} END AS \"parent\" FROM range(3) t(i)"
+        )
+        source.write_parquet(str(path))
+        before = path.read_bytes()
+        frame = engine.read_file(str(path))
+        operation = bound_step(
+            "extractStructFields",
+            column=bound_ref("c:source:1", "parent", 1),
+            fields=[{"field": "a.b", "newColumn": 'selected"value'}, {"field": "*", "newColumn": "*"}],
+        )
+        try:
+            namespace: dict[str, Any] = {}
+            exec(engine.compile_plan([operation]), namespace)
+            result = engine.apply_transform(frame, operation)
+            assert result.columns == ["id", "parent", 'selected"value', "*"]
+            assert engine._terminal_rows(result, 'SELECT id, "selected""value", "*" FROM ow') == [
+                (0, 0, 7),
+                (1, None, None),
+                (2, 2, 7),
+            ]
+            for native in (
+                connection.read_parquet(str(path)),
+                connection.read_parquet(str(path)).project("parent, id"),
+                connection.read_parquet(str(path)).limit(0),
+            ):
+                generated = namespace["clean_data"](native)
+                assert generated.columns == [*native.columns, 'selected"value', "*"]
+                count = native.count("*").fetchone()
+                assert count is not None
+                assert (
+                    generated.project('id, "selected""value", "*"').fetchall()
+                    == [(0, 0, 7), (1, None, None), (2, 2, 7)][: count[0]]
+                )
+                assert generated.project("id, parent").fetchall() == native.project("id, parent").fetchall()
+            assert path.read_bytes() == before
+        finally:
+            engine.close()
+
+
+def test_duckdb_extract_struct_fields_retains_native_scalar_storage() -> None:
+    values = {
+        "text": "'é'::VARCHAR",
+        "enum": "'one'::ENUM('one', 'two')",
+        "uuid": "'123e4567-e89b-12d3-a456-426614174000'::UUID",
+        "signed": "'-170141183460469231731687303715884105728'::HUGEINT",
+        "unsigned": "'340282366920938463463374607431768211455'::UHUGEINT",
+        "float": "'Infinity'::DOUBLE",
+        "decimal": "'12345678901234567890123456.7890'::DECIMAL(30,4)",
+        "boolean": "true",
+        "date": "DATE '1969-12-31'",
+        "zoned": "TIMESTAMPTZ '1969-12-31 23:59:59.999999+00'",
+        "duration": "INTERVAL '2 months 3 days 4 microseconds'",
+        "binary": "'\\x00\\xFF'::BLOB",
+        "bits": "'10101'::BIT",
+        **{
+            f"timestamp_{unit}": f"CAST('1969-12-31 23:59:59.999999999' AS {unit})"
+            for unit in ("TIMESTAMP_NS", "TIMESTAMP", "TIMESTAMP_MS", "TIMESTAMP_S")
+        },
+    }
+    entries = ", ".join(f"{name!r}: {value}" for name, value in values.items())
+    engine = DuckDBEngine()
+    with duckdb.connect() as connection:
+        source = connection.sql(
+            f"SELECT i AS id, CASE WHEN i = 1 THEN NULL ELSE {{{entries}}} END AS record FROM range(3) t(i)"
+        )
+        native = source
+        source_sql = source.sql_query()
+        frame = engine._relation_from_sql(source_sql)
+        fields = [{"field": name, "newColumn": f"out_{index}"} for index, name in enumerate(values)]
+        operation = bound_step("extractStructFields", column=bound_ref("c:source:1", "record", 1), fields=fields)
+        try:
+            namespace: dict[str, Any] = {}
+            exec(engine.compile_plan([operation]), namespace)
+            current_types = dict(native.types[1].children)
+            expected_sql = ", ".join(
+                f"CASE WHEN i = 1 THEN NULL ELSE {values[field['field']]} END AS {field['newColumn']}"
+                for field in fields
+            )
+            for condition in ("true", "false", "id = 1"):
+                current = native.filter(condition)
+                live = engine.apply_transform(engine._relation(frame, f"SELECT * FROM ow WHERE {condition}"), operation)
+                generated = namespace["clean_data"](current)
+                expected = f"SELECT i AS id, {expected_sql} FROM range(3) t(i) WHERE {condition.replace('id', 'i')}"
+                selection = "id, " + ", ".join(field["newColumn"] for field in fields)
+                for actual_sql in (live.sql, generated.sql_query()):
+                    comparison = (
+                        f"(SELECT {selection} FROM ({actual_sql}) EXCEPT ALL {expected}) "
+                        f"UNION ALL ({expected} EXCEPT ALL SELECT {selection} FROM ({actual_sql}))"
+                    )
+                    assert connection.sql(comparison).fetchall() == []
+                    assert (
+                        connection.sql(
+                            f"(SELECT id, record FROM ({actual_sql}) EXCEPT ALL "
+                            f"SELECT * FROM ({current.sql_query()})) UNION ALL "
+                            f"(SELECT * FROM ({current.sql_query()}) EXCEPT ALL SELECT id, record FROM ({actual_sql}))"
+                        ).fetchall()
+                        == []
+                    )
+                assert live.columns == [*frame.columns, *[field["newColumn"] for field in fields]]
+                assert live.types[2:] == [str(current_types[field["field"]]) for field in fields]
+                assert generated.types[2:] == [current_types[field["field"]] for field in fields]
+            assert source.sql_query() == source_sql
+        finally:
+            engine.close()
+
+
+def test_duckdb_extract_struct_fields_revalidates_current_fields_and_outputs() -> None:
+    engine = DuckDBEngine()
+    operation = bound_step(
+        "extractStructFields",
+        column=bound_ref("c:source:0", "record", 0),
+        fields=[{"field": "value", "newColumn": "selected"}],
+    )
+    with duckdb.connect() as connection:
+        namespace: dict[str, Any] = {}
+        try:
+            exec(engine.compile_plan([operation]), namespace)
+            invalid = [
+                "SELECT 1 AS other",
+                "SELECT 1 AS record",
+                "SELECT {'other': 1} AS record",
+                "SELECT {'value': 1} AS record, 2 AS SELECTED",
+                *[
+                    f"SELECT CAST(NULL AS STRUCT(value {dtype})) AS record"
+                    for dtype in (
+                        "BIGINT[]",
+                        "BIGINT[2]",
+                        "STRUCT(child BIGINT)",
+                        "MAP(VARCHAR, BIGINT)",
+                        "UNION(a BIGINT, b VARCHAR)",
+                        "TIME",
+                        "TIME WITH TIME ZONE",
+                        "BIGNUM",
+                    )
+                ],
+                "SELECT MAP(['value'], [1]) AS record",
+                "SELECT union_value(value := 1) AS record",
+            ]
+            for sql in invalid:
+                with pytest.raises(EngineError, match="Extract Struct Fields"):
+                    engine.apply_transform(engine._relation_from_sql(sql), operation)
+                with pytest.raises(ValueError, match="Extract Struct Fields"):
+                    namespace["clean_data"](connection.sql(sql))
+            for changed in ("SELECT {'value': 'new'} AS record", "SELECT {'later': 4, 'value': 'new'} AS record"):
+                result = namespace["clean_data"](connection.sql(changed))
+                assert result.project("selected").fetchall() == [("new",)]
+                assert str(result.types[1]) == "VARCHAR"
+            for requested in ("a", "VALUE"):
+                mismatch = bound_step(
+                    "extractStructFields",
+                    column=bound_ref("c:source:0", "record", 0),
+                    fields=[{"field": requested, "newColumn": "selected"}],
+                )
+                source = connection.sql("SELECT {'A': 1, 'a_1': 2, 'value': 3} AS record")
+                with pytest.raises(EngineError, match="exact current"):
+                    engine.apply_transform(engine._relation_from_sql(source.sql_query()), mismatch)
+                exec(engine.compile_plan([mismatch]), namespace)
+                with pytest.raises(ValueError, match="exact current"):
+                    namespace["clean_data"](source)
+        finally:
+            engine.close()
+
+
+def test_duckdb_extract_struct_fields_masks_hidden_parquet_children_and_owns_catalog(tmp_path: Path) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    name = "__open_wrangler_internal_row_id_child"
+    parent = pa.StructArray.from_arrays(
+        [pa.array([-1, 123, None], type=pa.int64()).cast(pa.timestamp("ns"))],
+        names=[name],
+        mask=pa.array([False, True, False]),
+    )
+    assert parent.field(0).cast(pa.int64()).to_pylist() == [-1, 123, None]
+    assert parent[1].as_py() is None
+    path = tmp_path / "hidden.parquet"
+    pq.write_table(pa.table({"record": parent}), path)
+    before = path.read_bytes()
+    operation = bound_step(
+        "extractStructFields",
+        column=bound_ref("c:source:0", "record", 0),
+        fields=[{"field": name, "newColumn": "selected"}],
+    )
+    engine = DuckDBEngine()
+    with duckdb.connect() as connection:
+        connection.execute("CREATE MACRO struct_extract(value, key) AS 99")
+        connection.execute("CREATE TABLE ow(value INTEGER)")
+        connection.execute("INSERT INTO ow VALUES (123)")
+        source = connection.read_parquet(str(path))
+        catalog_sql = (
+            "SELECT function_name, function_oid FROM duckdb_functions() "
+            "WHERE function_name = 'struct_extract' ORDER BY function_oid"
+        )
+        catalog = connection.sql(catalog_sql).fetchall()
+        try:
+            namespace: dict[str, Any] = {}
+            exec(engine.compile_plan([operation]), namespace)
+            generated = namespace["clean_data"](source)
+            live = engine.apply_transform(engine.read_file(str(path)), operation)
+            assert generated.project("system.main.epoch_ns(selected)").fetchall() == [(-1,), (None,), (None,)]
+            assert engine._terminal_rows(live, "SELECT system.main.epoch_ns(selected) FROM ow") == [
+                (-1,),
+                (None,),
+                (None,),
+            ]
+            assert generated.project("record").fetchall() == source.fetchall()
+            assert connection.sql(catalog_sql).fetchall() == catalog
+            assert connection.sql("SELECT * FROM ow").fetchall() == [(123,)]
+            assert path.read_bytes() == before
+        finally:
+            engine.close()
+
+
+def test_duckdb_extract_struct_fields_enforces_output_bounds_before_append() -> None:
+    entries = ", ".join(f"'field_{index}': {index}" for index in range(65))
+    sql = f"SELECT {{{entries}}} AS record, 123 AS __open_wrangler_internal_row_id_test"
+    fields = [{"field": f"field_{index}", "newColumn": f"selected_{index}"} for index in range(65)]
+    engine = DuckDBEngine()
+    with duckdb.connect() as connection:
+        source = connection.sql(sql)
+        frame = engine._relation_from_sql(sql)
+        try:
+            for selected in (
+                fields[:64],
+                [fields[0], {"field": "field_1", "newColumn": "SELECTED_0"}],
+                [{"field": "field_0", "newColumn": "RECORD"}],
+            ):
+                operation = bound_step(
+                    "extractStructFields", column=bound_ref("c:source:0", "record", 0), fields=selected
+                )
+                namespace: dict[str, Any] = {}
+                exec(engine.compile_plan([operation]), namespace)
+                if len(selected) == 64:
+                    live = engine.apply_transform(frame, operation)
+                    generated = namespace["clean_data"](source)
+                    assert live.columns == [*frame.columns, *[field["newColumn"] for field in selected]]
+                    assert generated.columns == live.columns
+                    expected = (123, *range(64))
+                    assert generated.project("* EXCLUDE (record)").fetchall() == [expected]
+                    assert engine._terminal_rows(live, "SELECT * EXCLUDE (record) FROM ow") == [expected]
+                else:
+                    with pytest.raises(EngineError, match="Extract Struct Fields"):
+                        engine.apply_transform(frame, operation)
+                    with pytest.raises(ValueError, match="Extract Struct Fields"):
+                        namespace["clean_data"](source)
+            assert source.columns == ["record", "__open_wrangler_internal_row_id_test"]
+        finally:
+            engine.close()
+
+
+def test_duckdb_extract_struct_fields_refuses_metadata_before_source_evaluation() -> None:
+    calls = []
+
+    def observed(value):
+        calls.append(value)
+        return value
+
+    engine = DuckDBEngine()
+    with duckdb.connect() as connection:
+        connection.create_function("ow_observed_struct_value", observed, [BIGINT], BIGINT, side_effects=True)
+        source = connection.sql("SELECT {'value': ow_observed_struct_value(i)} AS record FROM range(3) t(i)")
+        try:
+            invalid = bound_step(
+                "extractStructFields",
+                column=bound_ref("c:source:0", "record", 0),
+                fields=[{"field": "absent", "newColumn": "selected"}],
+            )
+            namespace: dict[str, Any] = {}
+            exec(engine.compile_plan([invalid]), namespace)
+            with pytest.raises(ValueError, match="exact current"):
+                namespace["clean_data"](source)
+            assert calls == []
+            valid = bound_step(
+                "extractStructFields",
+                column=bound_ref("c:source:0", "record", 0),
+                fields=[{"field": "value", "newColumn": "selected"}],
+            )
+            exec(engine.compile_plan([valid]), namespace)
+            result = namespace["clean_data"](source)
+            # Existing generated result validation consumes the plan once, before the caller's fetch.
+            assert calls == [0, 1, 2]
+            assert result.project("selected").fetchall() == [(0,), (1,), (2,)]
+            assert calls == [0, 1, 2, 0, 1, 2]
+        finally:
+            engine.close()
+
+
 def step(kind: str, **params: Any) -> dict[str, Any]:
     return validate_step({"id": f"duckdb-{kind}", "kind": kind, "params": params})
 
@@ -3843,7 +4136,16 @@ def test_duckdb_all_operations_and_generated_code_stay_native(monkeypatch: pytes
     ]
     custom_plan = [step("customCode", code='result = df.filter("other > 2")')]
 
+    extraction_plan = [
+        step("customCode", code="result = df.project(\"*, {'value': other} AS record\")"),
+        bound_step(
+            "extractStructFields",
+            column=bound_ref("c:record", "record", 6),
+            fields=[{"field": "value", "newColumn": "selected"}],
+        ),
+    ]
     plans = [
+        extraction_plan,
         row_plan,
         column_plan,
         text_numeric_plan,
@@ -5489,9 +5791,11 @@ def test_duckdb_temporal_export_matches_generated_code_and_refuses_hidden_loss(t
         manager.close_all()
 
 
+@pytest.mark.parametrize("source_kind", ["notebookVariable", "notebookOutput"])
 def test_duckdb_live_notebook_session_owns_the_exact_relation_without_conversion_or_sql_replay(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    source_kind: str,
 ) -> None:
     install_conversion_guards(monkeypatch)
     connection = duckdb.connect()
@@ -5510,7 +5814,7 @@ def test_duckdb_live_notebook_session_owns_the_exact_relation_without_conversion
     owner = None
     try:
         opened = manager.open_session(
-            {"kind": "notebookVariable", "label": "duck_orders", "variableName": "duck_orders"},
+            {"kind": source_kind, "label": "duck_orders", "variableName": "duck_orders"},
             backend="duckdb",
             mode="editing",
             page_size=2,
@@ -5525,6 +5829,7 @@ def test_duckdb_live_notebook_session_owns_the_exact_relation_without_conversion
             "exportCsv": False,
             "exportParquet": False,
             "notebookInsert": False,
+            "supportedOperations": [],
         }
         assert opened["metadata"]["shape"] == {"rows": 3, "columns": 2}
         assert [row["values"][0]["display"] for row in opened["page"]["rows"]] == ["7", "11"]

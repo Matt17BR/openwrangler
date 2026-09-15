@@ -15,15 +15,13 @@ export function operationByKind(kind: OperationKind): OperationCatalogItem {
 }
 
 export function supportsOperation(capabilities: SourceCapabilities | undefined, kind: OperationKind): boolean {
-  return capabilities?.supportedOperations?.includes(kind) ?? true;
+  return capabilities?.supportedOperations?.includes(kind) ?? kind !== "extractStructFields";
 }
 
 export function supportedOperationCatalog(
   capabilities: SourceCapabilities | undefined
 ): readonly OperationCatalogItem[] {
-  return capabilities?.supportedOperations === undefined
-    ? operationCatalog
-    : operationCatalog.filter((operation) => supportsOperation(capabilities, operation.kind));
+  return operationCatalog.filter((operation) => supportsOperation(capabilities, operation.kind));
 }
 
 type OperationEntryMetadata = {

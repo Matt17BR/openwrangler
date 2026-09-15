@@ -82,6 +82,13 @@
       "icon": "files"
     },
     {
+      "kind": "extractStructFields",
+      "title": "Extract Struct Fields",
+      "description": "Append selected scalar fields as new columns while retaining the Struct column and rows.",
+      "group": "Columns / types",
+      "icon": "symbol-field"
+    },
+    {
       "kind": "castColumn",
       "title": "Convert type",
       "description": "Convert values to a supported deterministic type.",
@@ -982,6 +989,7 @@
         "dropColumns",
         "renameColumn",
         "cloneColumn",
+        "extractStructFields",
         "castColumn",
         "formula",
         "conditionalColumn",
@@ -1250,6 +1258,38 @@
       "properties": {
         "column": { "$ref": "#/definitions/ColumnReference" },
         "newName": { "type": "string", "minLength": 1 }
+      }
+    },
+    "ExtractStructFieldName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "x-openwrangler-utf8MaxBytes": 1024,
+      "pattern": "^[^\\u0000\\r\\n]+(?![\\s\\S])",
+      "description": "An exact nonempty Unicode name of at most 1024 UTF-8 bytes, without NUL, CR or LF. Whitespace, punctuation and case are literal."
+    },
+    "ExtractStructField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["field", "newColumn"],
+      "properties": {
+        "field": { "$ref": "#/definitions/ExtractStructFieldName" },
+        "newColumn": { "$ref": "#/definitions/ExtractStructFieldName" }
+      }
+    },
+    "ExtractStructFieldsParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column", "fields"],
+      "properties": {
+        "column": { "$ref": "#/definitions/ColumnReference" },
+        "fields": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": { "$ref": "#/definitions/ExtractStructField" },
+          "description": "Ordered direct scalar fields with unique field names and unique output names. Native output collision rules also apply."
+        }
       }
     },
     "CastColumnParams": {
@@ -1750,6 +1790,7 @@
         { "$ref": "#/definitions/DropColumnsTransformStep" },
         { "$ref": "#/definitions/RenameColumnTransformStep" },
         { "$ref": "#/definitions/CloneColumnTransformStep" },
+        { "$ref": "#/definitions/ExtractStructFieldsTransformStep" },
         { "$ref": "#/definitions/CastColumnTransformStep" },
         { "$ref": "#/definitions/FormulaTransformStep" },
         { "$ref": "#/definitions/ConditionalColumnTransformStep" },
@@ -1888,6 +1929,18 @@
         {
           "required": ["kind", "params"],
           "properties": { "kind": { "const": "cloneColumn" }, "params": { "$ref": "#/definitions/RenameColumnParams" } }
+        }
+      ]
+    },
+    "ExtractStructFieldsTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": {
+            "kind": { "const": "extractStructFields" },
+            "params": { "$ref": "#/definitions/ExtractStructFieldsParams" }
+          }
         }
       ]
     },

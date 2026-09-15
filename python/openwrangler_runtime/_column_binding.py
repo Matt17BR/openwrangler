@@ -510,6 +510,9 @@ def step_output_collision_checks(
     elif kind == "splitTextColumns":
         for index, output_name in enumerate(params.get("newColumns", [])):
             yield output_name, f"splitTextColumns.newColumns[{index}]", None
+    elif kind == "extractStructFields":
+        for index, field in enumerate(params["fields"]):
+            yield field["newColumn"], f"extractStructFields.fields[{index}].newColumn", None
     elif (
         kind
         in {
@@ -533,7 +536,7 @@ def step_output_collision_checks(
 
 def compile_output_collision_guards(step: Mapping[str, Any], columns: str, index: int) -> tuple[list[str], str | None]:
     """Share one scalar destination literal between its guard and native operation."""
-    if step["kind"] in {"splitTextColumns", "extractRegexGroup"}:
+    if step["kind"] in {"splitTextColumns", "extractStructFields", "extractRegexGroup"}:
         # These compilers already validate bounded destinations before native work.
         return [], None
     checks = list(step_output_collision_checks(step))
@@ -586,6 +589,7 @@ def bind_step(
         "stripText",
         "splitText",
         "splitTextColumns",
+        "extractStructFields",
         "extractRegexGroup",
         "capitalizeText",
         "lowerText",
@@ -733,6 +737,7 @@ def bind_step(
         "stripText",
         "splitText",
         "splitTextColumns",
+        "extractStructFields",
         "extractRegexGroup",
         "capitalizeText",
         "lowerText",
@@ -810,6 +815,8 @@ def bind_step(
             params["rightColumn"] = context.bind(params.get("rightColumn"), "formula.rightColumn")
     elif kind == "conditionalColumn":
         context.require_type(params["column"], params.get("columnType"), "conditionalColumn.columnType")
+    elif kind == "extractStructFields":
+        context.require_type(params["column"], "struct", "extractStructFields.column")
     elif kind == "denseRank":
         context.require_numeric_source(params["column"], "denseRank.column")
     elif kind == "extractRegexGroup":

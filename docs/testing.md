@@ -155,6 +155,9 @@ Use the existing owners to choose a focused source check:
   queries, source preservation and engine-specific evaluation bounds. The Polars owner also checks literal column
   names across projected views, profiles, shared cleaning helpers and complete generated programs. The existing
   [session binding owner](../python/tests/test_session_column_binding.py) covers their apply/history and source identities.
+  Extract Struct Fields uses the Polars and DuckDB owners for native types, exact names, current-input refusals and
+  full generated programs. The session binding owner checks appended identities, history and native Parquet export;
+  shared operation/form tests check request bounds and engine availability.
   [Operation edges](../python/tests/test_operation_edges.py),
   [Fill Missing](../python/tests/test_fill_missing.py) and the existing operation-specific owners compare complete
   live and generated results, types and indexes. [Session transactions](../python/tests/test_session_transactions.py)

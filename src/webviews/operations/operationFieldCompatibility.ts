@@ -3,6 +3,7 @@ import type { Aggregation, ColumnSchema, ColumnType, OperationKind } from "../..
 export const numericColumnTypes: ReadonlySet<ColumnType> = new Set(["integer", "float", "decimal"]);
 export const textColumnTypes: ReadonlySet<ColumnType> = new Set(["string"]);
 export const datetimeColumnTypes: ReadonlySet<ColumnType> = new Set(["date", "datetime"]);
+const structColumnTypes: ReadonlySet<ColumnType> = new Set(["struct"]);
 export const portableScalarColumnTypes: ReadonlySet<ColumnType> = new Set([
   "string",
   "integer",
@@ -39,6 +40,7 @@ export const orderedColumnTypes: ReadonlySet<ColumnType> = new Set([
 export type TypeRestrictedOperationKind = Extract<
   OperationKind,
   | "formula"
+  | "extractStructFields"
   | "textLength"
   | "oneHotEncode"
   | "multiLabelBinarize"
@@ -87,6 +89,8 @@ export function compatibleColumns(
 
 export function operationColumnTypes(kind: TypeRestrictedOperationKind): ReadonlySet<ColumnType> {
   switch (kind) {
+    case "extractStructFields":
+      return structColumnTypes;
     case "formula":
     case "denseRank":
     case "minMaxScale":

@@ -323,6 +323,21 @@ binds public references against the exact input schema and lineage to private po
 disallowed, type/name-mismatched, colliding, or private row-identity references fail closed. The current catalog and
 parameters are listed in the generated [transformation reference](reference.md#transformation-operations).
 
+Session capabilities explicitly list supported operations. Polars editing sources and DuckDB file editing support
+Extract Struct Fields; Pandas, native R and viewing-only engines do not. Older capability responses without this
+list retain the existing operations but cannot enable Extract Struct Fields.
+
+Extract Struct Fields appends 1 to 64 named direct scalar fields from one genuine native Struct. It preserves the
+parent, row order, row identities and native child types, including nulls inherited from a missing parent. Field and
+output names are exact, unique within their lists, nonempty single-line Unicode of at most 1,024 UTF-8 bytes; dots,
+wildcards and regular-expression-shaped names have no special meaning. Outputs must be fresh under the engine's
+existing collision rules. Private row-identity prefixes remain forbidden for the source and outputs; a nested child
+with a similar name cannot address the hidden top-level identity. Live and generated execution resolve current native
+field names and scalar types, including on empty or all-null inputs. Text, integer, float, Decimal, Boolean, Date,
+Datetime, Duration and Binary fields are supported. Child containers, Polars Object, Time and Null fields, and
+unrecognized native types are refused. The append uses native expressions and adds no row-growth policy or input scan
+for field admission. Ordinary result validation and transport bounds still apply.
+
 By Example date synthesis uses Python's current locale. Before live execution or code generation, Polars and DuckDB
 check programs containing full or abbreviated month names (`%B` or `%b`) against every retained example using their
 native date expression. A mismatch refuses the operation before draft publication. The check evaluates only the
@@ -562,7 +577,7 @@ including empty or all-missing columns. Omitting the option retains the engine's
 
 ### Pandas
 
-Pandas executes viewing, all catalog operations, profiling, generated code, and supported exports in Pandas.
+Pandas executes viewing, its supported cleaning operations, profiling, generated code and exports in Pandas.
 Viewing filters and sorts compose row positions, selecting the full result once after ordering the native sort columns.
 Duplicate and non-string labels are addressed positionally after binding. Object-dtype cells are recursively isolated
 before trusted custom code, preview, rollback, or generated-code execution so nested user objects cannot mutate the
@@ -1181,6 +1196,7 @@ CSV, TSV, JSONL, and Parquet file sessions support native viewing and all catalo
 generated code. DuckDB file editing remains experimental. Excel and database browsing are not supported. A live
 notebook `DuckDBPyRelation` is the sole relation-retention exception. Its exact user-owned relation is serialized on
 its originating connection, is viewing-only, and is released without closing or mutating the user's relation.
+The runtime keeps both notebook source kinds in viewing mode even when a caller requests editing.
 Each terminal request removes its temporary query view after consuming the results, including when the query fails,
 under the catalog ownership rules above. The notebook lock serializes Open Wrangler requests.
 
@@ -1202,8 +1218,8 @@ process.
 ### Native R
 
 Native R sessions operate directly on R `data.frame`, tibble, and `data.table` frames. IRkernel, exact official
-R-terminal, and owned `Rscript` transports share the same native frame contract and current operation catalog,
-including generated R. The runtime never routes an R frame through Python.
+R-terminal, and owned `Rscript` transports share the same native frame contract and supported cleaning operations,
+including generated R. Extract Struct Fields is unavailable for R. The runtime never routes an R frame through Python.
 [Feature parity](feature-parity.md#native-r-support) defines support and limitations for each entry path.
 
 #### Frame and source ownership

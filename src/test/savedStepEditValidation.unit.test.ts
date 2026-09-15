@@ -11,6 +11,7 @@ const date = { id: "c:date", name: "date" } as const;
 const nested = { id: "c:nested", name: "nested" } as const;
 const mystery = { id: "c:mystery", name: "mystery" } as const;
 const missing = { id: "c:missing", name: "missing" } as const;
+const record = { id: "c:record", name: "record" } as const;
 
 const schema = [
   column(text, 0, "string", "String"),
@@ -20,7 +21,8 @@ const schema = [
   column(order, 4, "integer", "Int64"),
   column(date, 5, "date", "Date"),
   column(nested, 6, "list", "List(String)"),
-  column(mystery, 7, "unknown", "Null")
+  column(mystery, 7, "unknown", "Null"),
+  column(record, 8, "struct", "Struct")
 ] satisfies ColumnSchema[];
 
 function column(
@@ -50,6 +52,10 @@ const validSteps = {
   dropColumns: step("dropColumns", { columns: [text] }),
   renameColumn: step("renameColumn", { column: text, newName: "renamed" }),
   cloneColumn: step("cloneColumn", { column: text, newName: "copy" }),
+  extractStructFields: step("extractStructFields", {
+    column: record,
+    fields: [{ field: " city ", newColumn: " address.city " }]
+  }),
   castColumn: step("castColumn", { column: text, dtype: "string" }),
   formula: step("formula", {
     leftColumn: value,
@@ -146,6 +152,14 @@ function step<Kind extends OperationKind>(
 }
 
 describe("savedStepEditError", () => {
+  it("requires the recorded Struct parent without inferring children from raw type text", () => {
+    const saved = validSteps.extractStructFields;
+    const changed = schema.map((column) =>
+      column.id === record.id ? { ...column, type: "unknown" as const } : column
+    );
+    expect(savedStepEditError(saved, changed)).toContain("field extraction requires a Struct column");
+    expect(savedStepEditError(saved, schema)).toBeUndefined();
+  });
   it("requires the recorded Text input for a saved date layout", () => {
     const saved = step("castColumn", { column: text, dtype: "datetime", inputFormat: "DD/MM/YYYY" });
     expect(savedStepEditError(saved, schema)).toBeUndefined();

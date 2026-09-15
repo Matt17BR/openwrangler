@@ -249,6 +249,55 @@ def _polars_temporal_cast_expression(
     return expression.cast(target_dtype, strict=False)
 
 
+def _polars_extract_struct_fields(df: Any, column: str, fields: list[dict[str, str]]) -> Any:
+    import polars as pl
+
+    schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
+    parent_dtype = schema.get(column)
+    if not isinstance(parent_dtype, pl.Struct):
+        raise ValueError("Extract Struct Fields requires a current native Struct column.")
+    outputs = [field["newColumn"] for field in fields]
+    selected = [field["field"] for field in fields]
+    if not 1 <= len(fields) <= 64 or len(set(selected)) != len(selected):
+        raise ValueError("Extract Struct Fields requires 1 to 64 distinct direct fields.")
+    if len(set(outputs)) != len(outputs) or any(name in schema for name in outputs):
+        raise ValueError("Extract Struct Fields would create duplicate column names.")
+    if any(name.casefold().startswith(INTERNAL_ROW_ID_PREFIX.casefold()) for name in [column, *outputs]):
+        raise ValueError("Extract Struct Fields cannot address private row-identity columns.")
+    children = {field.name: field.dtype for field in parent_dtype.fields}
+    for name in selected:
+        if name not in children:
+            raise ValueError("Extract Struct Fields requires exact current direct field names.")
+        dtype = children[name]
+        if not (
+            dtype.is_integer()
+            or dtype.is_float()
+            or dtype.base_type()
+            in {
+                pl.String,
+                pl.Categorical,
+                pl.Enum,
+                pl.Decimal,
+                pl.Boolean,
+                pl.Date,
+                pl.Datetime,
+                pl.Duration,
+                pl.Binary,
+            }
+        ):
+            raise ValueError("Extract Struct Fields supports only native scalar fields.")
+    expression = _ow_polars_col(schema, column)
+    names = selected
+    if any(name == "*" or (name.startswith("^") and name.endswith("$")) for name in selected):
+        # Native Struct field access expands selectors, including positional access.
+        safe_names = {name: f"__ow_field_{index}" for index, name in enumerate(children)}
+        expression = expression.struct.rename_fields(list(safe_names.values()))
+        names = [safe_names[name] for name in selected]
+    return df.with_columns(
+        [expression.struct.field(name).alias(output) for name, output in zip(names, outputs, strict=True)]
+    )
+
+
 def _polars_require_pivot_output_names(existing_names: Sequence[str], outputs: Sequence[str]) -> None:
     keys = [portable_pivot_longer_name_key(name) for name in outputs]
     if len(set(keys)) != len(keys):
@@ -1676,6 +1725,11 @@ class PolarsEngine(DataFrameEngine):
             return df.with_columns(
                 _ow_polars_col(df, bound_column_name(params["column"], kind)).alias(params["newName"])
             )
+        if kind == "extractStructFields":
+            try:
+                return _polars_extract_struct_fields(df, bound_column_name(params["column"], kind), params["fields"])
+            except ValueError as error:
+                raise EngineError(str(error)) from error
         if kind == "castColumn":
             column = bound_column_name(params["column"], kind)
             dtype_attribute, strict = _polars_cast_target(params["dtype"])
@@ -2088,6 +2142,15 @@ class PolarsEngine(DataFrameEngine):
             lines.extend(_generated_polars_formula_check_helpers())
         if any(step["kind"] == "castColumn" and step["params"]["dtype"] in {"date", "datetime"} for step in plan):
             lines.extend(["from typing import Any", getsource(_polars_temporal_cast_expression), ""])
+        if any(step["kind"] == "extractStructFields" for step in plan):
+            lines.extend(
+                [
+                    "from typing import Any",
+                    f"INTERNAL_ROW_ID_PREFIX = {INTERNAL_ROW_ID_PREFIX!r}",
+                    getsource(_polars_extract_struct_fields),
+                    "",
+                ]
+            )
         if any(step["kind"] == "roundNumber" for step in plan):
             lines.extend([getsource(_polars_round_helpers), ""])
         if any(step["kind"] == "minMaxScale" for step in plan):
@@ -2665,6 +2728,9 @@ class PolarsEngine(DataFrameEngine):
                     f".alias({output_name or repr(params['newName'])}))"
                 )
             ]
+        if kind == "extractStructFields":
+            column = bound_column_name(params["column"], kind)
+            return [f"{prefix}df = _polars_extract_struct_fields(df, {column!r}, {params['fields']!r})"]
         if kind == "castColumn":
             column = bound_column_name(params["column"], kind)
             dtype_attribute, strict = _polars_cast_target(params["dtype"])

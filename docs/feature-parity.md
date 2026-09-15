@@ -19,7 +19,7 @@ The Pandas and Polars rows below are required for stable releases.
 | Dataset summary and quick insights                          |    Yes |    Yes | Done   | Native profiles, exact sums, typed extrema and accessible charts; test:src/test/numericSummary.component.test.tsx; test:python/tests/test_polars_engine.py                                     |
 | Basic and advanced viewing filters                          |    Yes |    Yes | Done   | Typed filters and value-preserving history; test:python/tests/test_filter_logic.py; test:src/test/filterPanel.component.test.tsx; test:src/test/filterHistory.unit.test.ts                     |
 | Multi-column viewing sorts                                  |    Yes |    Yes | Done   | Ordered priorities and stable native execution; test:python/tests/test_pandas_engine.py; test:python/tests/test_polars_engine.py                                                               |
-| Editing mode and operation catalog                          |    Yes |    Yes | Done   | All generated catalog operations and the installed picker; test:python/tests/test_operations.py; test:src/test/operations.unit.test.ts; record:docs/testing.md                                 |
+| Editing mode and operation catalog                          |    Yes |    Yes | Done   | Supported catalog operations and the installed picker; test:python/tests/test_operations.py; test:src/test/operations.unit.test.ts; record:docs/testing.md                                     |
 | Draft preview and data diff                                 |    Yes |    Yes | Done   | Typed identity diff plus preview/apply rollback; test:src/test/dataGridDiff.component.test.tsx; record:docs/testing.md                                                                         |
 | Cleaning-step history, edit, discard, undo                  |    Yes |    Yes | Done   | Latest and earlier step edit/delete, suffix replay, discard, and undo; test:src/test/sessionCoordinator.planRewrite.unit.test.ts; record:docs/testing.md                                       |
 | Generated code preview and editing                          |    Yes |    Yes | Done   | Editable native code and runtime-equivalent execution; test:src/test/codePreviewSynchronization.unit.test.ts; record:docs/testing.md                                                           |
@@ -135,7 +135,12 @@ during loading or file preflight.
 ## Cleaning operations
 
 The complete operation list and parameters are in the [generated catalog](reference.md#transformation-operations).
-Transpose, explode, and unnest are not hidden catalog entries.
+Extract Struct Fields copies known scalar fields from a Struct column into new columns in Polars editing sessions
+and DuckDB file sessions. Enter each exact field name and its output name; the parent column and rows stay intact.
+For example, extract `city` from an `address` Struct as `customer_city`. Missing parents produce missing outputs.
+Choose up to 64 fields, with the [native type and naming limits](architecture.md#engine-boundaries-and-capabilities).
+Pandas and R do not support this operation. Automatic field discovery, recursive flattening, transpose and explode
+remain unavailable.
 
 Conditional Column adds one Text or Boolean column using an existing typed predicate. All three results are explicit
 and may be null; empty text and false remain values. Pandas, Polars, DuckDB and native R use their existing predicate
@@ -451,7 +456,7 @@ When a Python dataset shrinks, paging can return the valid empty end and the gri
 If the recovered grid cannot be read, Open Wrangler reports the failure and keeps any existing complete view.
 
 The operation catalog search exposes its accessible name before and after entering a query.
-Removing a focused form row or clearing unavailable selections keeps keyboard focus inside the operation dialog.
+Moving or removing a focused form row, or clearing unavailable selections, keeps keyboard focus inside the operation dialog.
 Column search keeps arrow and page-key navigation aligned with the displayed results when cleaning changes the schema.
 Small editor panes preserve room for the grid header and a row while the workbench scrolls around wrapped controls.
 Column search reveals and focuses its target within both the table and editor viewport, including when the same column
@@ -704,7 +709,7 @@ These dispositions do not block stable publication unless a release starts adver
 | Surface                                                                                   | Current disposition                                                                                   |
 | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
 | Cleaning-step reorder                                                                     | Deferred; edit and delete earlier steps are supported, but no move primitive exists                   |
-| Transpose, explode, and unnest                                                            | Unavailable as built-in operations; Split Column and pivots are available                             |
+| Transpose, explode, and recursive flattening                                              | Unavailable; Extract Struct Fields supports named scalar children in Polars and DuckDB file editing   |
 | General windows, partitioned ranking, and data-quality assertions                         | Unavailable as built-in operations; Dense Rank is available                                           |
 | Joins and merge                                                                           | Deferred until multi-source identity, lifecycle, persistence, and source-immutability have one design |
 | Portable cleaning recipes and batch apply                                                 | No public recipe format or batch runner; exported native scripts can be reused                        |

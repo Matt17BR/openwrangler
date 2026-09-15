@@ -1031,6 +1031,16 @@ class DuckDBEngine(DataFrameEngine):
         if kind == "cloneColumn":
             column = bound_column_name(params["column"], kind)
             return self._assign(frame, params["newName"], _quote_ident(column))
+        if kind == "extractStructFields":
+            if isinstance(frame, DuckDBNotebookPlan):
+                raise EngineError("DuckDB notebook relations are viewing-only.")
+            try:
+                projection = _duckdb_struct_field_projection(
+                    self._columns(frame), frame.types, bound_column_name(params["column"], kind), params["fields"]
+                )
+            except ValueError as error:
+                raise EngineError(str(error)) from error
+            return self._relation(frame, f"SELECT {projection} FROM ow")
         if kind == "castColumn":
             target_type = _duckdb_cast_target(params["dtype"])
             column = bound_column_name(params["column"], kind)
@@ -1576,6 +1586,12 @@ class DuckDBEngine(DataFrameEngine):
         if kind == "cloneColumn":
             column = bound_column_name(params["column"], kind)
             return [f"{prefix}df = _ow_assign(df, {output_name or repr(params['newName'])}, _ow_ident({column!r}))"]
+        if kind == "extractStructFields":
+            column = bound_column_name(params["column"], kind)
+            return [
+                f"{prefix}df = df.set_alias('ow').project(_duckdb_struct_field_projection("
+                f"df.columns, df.types, {column!r}, {params['fields']!r}))"
+            ]
         if kind == "castColumn":
             target = _duckdb_cast_target(params["dtype"])
             column = bound_column_name(params["column"], kind)
@@ -3074,6 +3090,66 @@ def _execute_scalar(connection: Any, source_sql: str, query: str) -> Any:
     return None if row is None else row[0]
 
 
+def _duckdb_struct_field_projection(columns: list[str], types: Any, column: str, fields: list[dict[str, str]]) -> str:
+    from typing import cast
+
+    from duckdb import sqltype
+    from duckdb.sqltypes import DuckDBPyType
+
+    if column not in columns:
+        raise ValueError("Extract Struct Fields requires a current native Struct column.")
+    dtype = sqltype(str(types[columns.index(column)]))
+    if dtype.id != "struct":
+        raise ValueError("Extract Struct Fields requires a current native Struct column.")
+    selected = [field["field"] for field in fields]
+    outputs = [field["newColumn"] for field in fields]
+    if not 1 <= len(fields) <= 64 or len(set(selected)) != len(selected):
+        raise ValueError("Extract Struct Fields requires 1 to 64 distinct direct fields.")
+    keys = [name.casefold() for name in outputs]
+    if len(set(keys)) != len(keys) or set(keys).intersection(name.casefold() for name in columns):
+        raise ValueError("Extract Struct Fields would create duplicate DuckDB column names.")
+    if any(name.casefold().startswith(INTERNAL_ROW_ID_PREFIX.casefold()) for name in [column, *outputs]):
+        raise ValueError("Extract Struct Fields cannot address private row-identity columns.")
+    children = cast(dict[str, DuckDBPyType], dict(dtype.children))
+    for name in selected:
+        if name not in children:
+            raise ValueError("Extract Struct Fields requires exact current direct field names.")
+        if children[name].id not in {
+            "tinyint",
+            "smallint",
+            "integer",
+            "bigint",
+            "hugeint",
+            "utinyint",
+            "usmallint",
+            "uinteger",
+            "ubigint",
+            "uhugeint",
+            "float",
+            "double",
+            "decimal",
+            "varchar",
+            "enum",
+            "uuid",
+            "boolean",
+            "date",
+            "timestamp",
+            "timestamp_s",
+            "timestamp_ms",
+            "timestamp_ns",
+            "timestamp with time zone",
+            "interval",
+            "blob",
+            "bit",
+        }:
+            raise ValueError("Extract Struct Fields supports only native scalar fields.")
+    projections = ["*"]
+    for name, output in zip(selected, outputs, strict=True):
+        literal = "'" + name.replace("'", "''") + "'"
+        projections.append(f"system.main.struct_extract({_quote_ident(column)}, {literal}) AS {_quote_ident(output)}")
+    return ", ".join(projections)
+
+
 def _quote_ident(value: Any) -> str:
     return '"' + str(value).replace('"', '""') + '"'
 
@@ -4005,6 +4081,10 @@ def _generated_helper_source() -> str:
             getsource(_semantic_type),
             getsource(_duckdb_temporal_cast_expression),
             getsource(_duckdb_datetime_format_expression),
+            "from typing import Any",
+            f"INTERNAL_ROW_ID_PREFIX = {INTERNAL_ROW_ID_PREFIX!r}",
+            getsource(_quote_ident),
+            getsource(_duckdb_struct_field_projection),
             *generated_view_value_helper_lines(),
         ]
     ).rstrip()

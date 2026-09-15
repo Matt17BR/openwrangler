@@ -20,7 +20,7 @@ export function moveItem<T>(items: readonly T[], from: number, to: number): T[] 
   return result;
 }
 
-function focusRemovalGroup(button: HTMLButtonElement): void {
+function focusRowGroup(button: HTMLButtonElement): void {
   if (document.activeElement === button && document.hasFocus()) {
     button.closest("fieldset")?.focus();
   }
@@ -51,7 +51,10 @@ export function RowActions({
         aria-label={`Move ${label} up`}
         title="Move up"
         disabled={!canMoveUp}
-        onClick={onMoveUp}
+        onClick={(event) => {
+          focusRowGroup(event.currentTarget);
+          onMoveUp();
+        }}
       />
       <button
         type="button"
@@ -59,7 +62,10 @@ export function RowActions({
         aria-label={`Move ${label} down`}
         title="Move down"
         disabled={!canMoveDown}
-        onClick={onMoveDown}
+        onClick={(event) => {
+          focusRowGroup(event.currentTarget);
+          onMoveDown();
+        }}
       />
       <button
         type="button"
@@ -68,7 +74,7 @@ export function RowActions({
         disabled={!canRemove}
         title={canRemove ? `Remove ${label}` : "At least one row is required"}
         onClick={(event) => {
-          focusRemovalGroup(event.currentTarget);
+          focusRowGroup(event.currentTarget);
           onRemove();
         }}
       >
@@ -256,7 +262,7 @@ export function ColumnReferencesSelect({
           <button
             type="button"
             onClick={(event) => {
-              focusRemovalGroup(event.currentTarget);
+              focusRowGroup(event.currentTarget);
               updateSelectedIds(selectedIds.filter((id) => validColumnIds.has(id)));
             }}
           >
@@ -386,7 +392,7 @@ export function TextField({
         <small id={helpId}>
           {description ??
             (maxCodePoints === undefined
-              ? `R text replacements can use up to ${maxUtf8Bytes?.toLocaleString()} UTF-8 bytes.`
+              ? `Use up to ${maxUtf8Bytes?.toLocaleString()} UTF-8 bytes.`
               : `Use at most ${maxCodePoints.toLocaleString()} Unicode scalar values${
                   maxUtf8Bytes === undefined ? "." : ` and ${maxUtf8Bytes.toLocaleString()} UTF-8 bytes.`
                 }`)}

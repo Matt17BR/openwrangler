@@ -112,6 +112,67 @@ const compatibleSavedSteps = [
 ] satisfies TransformStep[];
 
 describe("OperationBuilder saved-step forms", () => {
+  it("round-trips exact Struct field rows and refuses unrepresentable saved names", () => {
+    const struct = {
+      id: "c:struct",
+      name: " address ",
+      position: 0,
+      rawType: "Struct",
+      type: "struct",
+      nullable: true
+    } as const;
+    const initialStep: TransformStep = {
+      id: "saved-fields",
+      kind: "extractStructFields",
+      params: {
+        column: { id: struct.id, name: struct.name },
+        fields: [
+          { field: " ^a.*$ ", newColumn: " 城市 " },
+          { field: "*", newColumn: "literal.name" }
+        ]
+      }
+    };
+    const source = {
+      ...metadata,
+      capabilities: {
+        ...metadata.capabilities,
+        supportedOperations: ["extractStructFields"] as ["extractStructFields"]
+      }
+    };
+    const onPreview = vi.fn();
+    const view = render(
+      <OperationBuilder
+        metadata={source}
+        filterModel={source.filterModel}
+        initialStep={initialStep}
+        editInputSchema={[struct]}
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+    expect(screen.getByRole("textbox", { name: "Field 1" })).toHaveValue(" ^a.*$ ");
+    expect(screen.getByRole("textbox", { name: "New column 1" })).toHaveValue(" 城市 ");
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledWith(initialStep, initialStep.id);
+    onPreview.mockClear();
+    view.rerender(
+      <OperationBuilder
+        metadata={source}
+        filterModel={source.filterModel}
+        initialStep={{
+          ...initialStep,
+          params: { ...initialStep.params, fields: [{ field: "a\nb", newColumn: "out" }] }
+        }}
+        editInputSchema={[struct]}
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+    expect(screen.getByText(/cannot preserve the saved field and output names/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Preview changes" })).toBeDisabled();
+    expect(onPreview).not.toHaveBeenCalled();
+  });
+
   it.each([
     {
       savedStep: {

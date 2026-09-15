@@ -1,12 +1,13 @@
 import * as assert from "node:assert/strict";
 import type * as vscode from "vscode";
 import type { Locator, Page } from "playwright-core";
-import { operationKinds as RELEASED_R_SUPPORTED_OPERATIONS } from "../../shared/operationCatalog.generated";
+import { R_BRIDGE_CAPABILITIES } from "../../extension/r/rKernelBridgeContract";
 import type { OpenWranglerResponse } from "../../shared/protocol";
 import type { TestApi } from "./extensionHostTestApi";
 import type { ReleasedRAcceptanceCoverageProfile } from "./releasedRAcceptanceCoverage";
 
 type ReleasedRActiveSession = NonNullable<ReturnType<TestApi["activeSession"]>>;
+const RELEASED_R_SUPPORTED_OPERATIONS = R_BRIDGE_CAPABILITIES.supportedOperations!;
 type ReleasedRPage = Extract<OpenWranglerResponse, { kind: "page" }>;
 
 interface ReleasedRVariableExpectation {

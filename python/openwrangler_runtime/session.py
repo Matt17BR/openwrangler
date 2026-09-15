@@ -17,6 +17,7 @@ from .engines.base import (
 )
 from .export_target import ExportTarget, ExportTargetError
 from .lineage import derive_lineage, schema_with_lineage, source_lineage
+from .operation_catalog_generated import OPERATION_DEFINITIONS
 from .operations import OperationError, validate_step
 from .pivot_longer import PivotLongerContractError, checked_pivot_longer_row_count
 from .pivot_wider import PivotWiderContractError, checked_pivot_wider_column_count
@@ -502,10 +503,7 @@ class SessionManager:
                 revision=0,
                 mode=(
                     "viewing"
-                    if (
-                        not engine.capabilities.supports_editing
-                        or (engine.name == "duckdb" and source_kind == "notebookVariable")
-                    )
+                    if (not engine.capabilities.supports_editing or (engine.name == "duckdb" and source_kind != "file"))
                     else mode or ("editing" if source.get("kind") == "file" else "viewing")
                 ),
                 access=SessionRequestAdmission(),
@@ -1865,13 +1863,20 @@ class SessionManager:
                 raise UnknownSessionError(session_id)
             return session
 
-    def _capabilities(self, session: Session) -> dict[str, bool]:
+    def _capabilities(self, session: Session) -> dict[str, bool | list[str]]:
         source_kind = session.source.kind
         engine_capabilities = session.engine.capabilities
-        source_supports_editing = not (session.backend == "duckdb" and source_kind == "notebookVariable")
+        source_supports_editing = not (session.backend == "duckdb" and source_kind != "file")
         editable = session.mode == "editing" and engine_capabilities.supports_editing and source_supports_editing
         return {
             "editable": editable,
+            "supportedOperations": [
+                definition.kind
+                for definition in OPERATION_DEFINITIONS
+                if engine_capabilities.supports_editing
+                and source_supports_editing
+                and (definition.kind != "extractStructFields" or session.backend in {"polars", "duckdb"})
+            ],
             "lazy": session.engine.is_lazy(session.display_frame, session.source.metadata),
             "cancel": engine_capabilities.supports_request_cancellation,
             "exportCsv": editable and "csv" in engine_capabilities.export_formats,

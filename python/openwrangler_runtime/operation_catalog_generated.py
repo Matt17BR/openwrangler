@@ -85,6 +85,13 @@ OPERATION_DEFINITIONS: tuple[OperationDefinition, ...] = (
         optional=(),
     ),
     OperationDefinition(
+        kind="extractStructFields",
+        title="Extract Struct Fields",
+        group="Columns / types",
+        required=("column", "fields"),
+        optional=(),
+    ),
+    OperationDefinition(
         kind="castColumn",
         title="Convert type",
         group="Columns / types",

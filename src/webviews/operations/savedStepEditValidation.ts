@@ -7,6 +7,7 @@ import type {
   TransformStep
 } from "../../shared/protocol";
 import { createPredicate } from "../../shared/filterModel";
+import { isTransformStep } from "../../shared/protocolValidation";
 import {
   directionalOrderColumnsForTarget,
   explicitFillValueKind,
@@ -222,6 +223,7 @@ function savedReferencePolicy(step: TransformStep): SavedReferencePolicy {
     }
     case "renameColumn":
     case "cloneColumn":
+    case "extractStructFields":
     case "castColumn":
     case "textLength":
     case "multiLabelBinarize":
@@ -424,6 +426,15 @@ function savedOperationTypeError(
         return "This form cannot preserve the saved condition operand exactly. Recreate the condition with text or Boolean comparison values.";
       return undefined;
     }
+    case "extractStructFields":
+      return !isTransformStep(step)
+        ? "This form cannot preserve the saved field and output names. Use 1 to 64 unique, nonempty single-line names within the UTF-8 limit."
+        : incompatibleReferenceType(
+            [{ label: "Struct column", reference: step.params.column }],
+            columnsById,
+            operationColumnTypes(step.kind),
+            "field extraction requires a Struct column"
+          );
     case "formula":
       return incompatibleReferenceType(
         [

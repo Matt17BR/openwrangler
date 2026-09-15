@@ -9,13 +9,15 @@ const sales = { id: "c:sales", name: "sales" } as const;
 const when = { id: "c:when", name: "when" } as const;
 const units = { id: "c:units", name: "units" } as const;
 const profit = { id: "c:profit", name: "profit" } as const;
+const address = { id: "c:address", name: "address" } as const;
 
 const schema = [
   column(city, 0, "string", "String"),
   column(sales, 1, "float", "Float64"),
   column(when, 2, "datetime", "Datetime"),
   column(units, 3, "integer", "Int64"),
-  column(profit, 4, "float", "Float64")
+  column(profit, 4, "float", "Float64"),
+  column(address, 5, "struct", "Struct")
 ] satisfies ColumnSchema[];
 
 const emptyFilterModel: FilterModel = { filters: [], sort: [] };
@@ -131,6 +133,23 @@ const validCases: ParamsCases = {
       ["newName", "city_copy"]
     ],
     expected: { column: city, newName: "city_copy" }
+  },
+  extractStructFields: {
+    kind: "extractStructFields",
+    fields: [
+      ["column", address.id],
+      ["structField", " street "],
+      ["structOutput", " Street "],
+      ["structField", "^a.*$"],
+      ["structOutput", "城市"]
+    ],
+    expected: {
+      column: address,
+      fields: [
+        { field: " street ", newColumn: " Street " },
+        { field: "^a.*$", newColumn: "城市" }
+      ]
+    }
   },
   castColumn: {
     kind: "castColumn",
@@ -446,6 +465,17 @@ describe("buildParams", () => {
         testCase.savedFilterModel
       )
     ).toEqual(testCase.expected);
+  });
+
+  it("refuses incomplete field pairs and a non-Struct parent before preview", () => {
+    const fields = form(validCases.extractStructFields.fields);
+    fields.set("column", city.id);
+    expect(() => buildParams("extractStructFields", fields, emptyFilterModel, schema)).toThrow(
+      "Choose a Struct column"
+    );
+    fields.set("column", address.id);
+    fields.delete("structOutput");
+    expect(() => buildParams("extractStructFields", fields, emptyFilterModel, schema)).toThrow("unique output names");
   });
 
   it("keeps nullary conditional results explicit and ignores inactive text inputs", () => {

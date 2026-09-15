@@ -193,6 +193,7 @@ def test_session_manager_detects_live_variable_and_disables_mutation_capabilitie
     assert metadata["mode"] == "viewing"
     assert metadata["capabilities"] == {
         "editable": False,
+        "supportedOperations": [],
         "lazy": False,
         "cancel": False,
         "exportCsv": False,

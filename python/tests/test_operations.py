@@ -58,7 +58,7 @@ def bound_step(step_id: str, kind: str, **params):
 
 def test_operation_registry_is_complete_and_validation_is_strict():
     catalog = operation_catalog()
-    assert len(catalog) == 35
+    assert len(catalog) == 36
     assert {item["kind"] for item in catalog} >= {
         "sortRows",
         "fillMissingValues",
@@ -67,6 +67,7 @@ def test_operation_registry_is_complete_and_validation_is_strict():
         "denseRank",
         "markDuplicates",
         "conditionalColumn",
+        "extractStructFields",
         "byExample",
         "customCode",
     }
@@ -89,6 +90,39 @@ def test_operation_registry_is_complete_and_validation_is_strict():
             value=True,
             newColumn="result",
         )
+
+
+def test_extract_struct_fields_preserves_exact_names_and_bounds_the_ordered_outputs() -> None:
+    fields = [
+        {"field": "*", "newColumn": "literal star"},
+        {"field": "^a.*$", "newColumn": " pattern "},
+        {"field": "a.b", "newColumn": "😀" * 256},
+        {"field": PRIVATE_COLUMN, "newColumn": "nested private-looking name"},
+    ]
+    params = {"column": public_ref("c:source:0", "record"), "fields": fields}
+    assert step("extract", "extractStructFields", **params)["params"] == params
+    maximum = [{"field": str(index), "newColumn": f"out {index}"} for index in range(64)]
+    assert step("maximum", "extractStructFields", **{**params, "fields": maximum})["params"]["fields"] == maximum
+    for invalid in ([], maximum + [{"field": "65", "newColumn": "out 65"}], {}, None):
+        with pytest.raises(OperationError, match="between 1 and 64"):
+            step("bad-fields", "extractStructFields", **{**params, "fields": invalid})
+    for invalid in ({"field": "a"}, {"field": "a", "newColumn": "b", "path": True}, "a"):
+        with pytest.raises(OperationError, match="field and newColumn"):
+            step("bad-pair", "extractStructFields", **{**params, "fields": [invalid]})
+    for key in ("field", "newColumn"):
+        for invalid in ("", None, 1, "a\x00b", "a\rb", "a\nb", "\ud800", "😀" * 256 + "x"):
+            with pytest.raises(OperationError, match=key):
+                step("bad-name", "extractStructFields", **{**params, "fields": [{**fields[0], key: invalid}]})
+        duplicate = [{"field": "a", "newColumn": "one"}, {"field": "b", "newColumn": "two"}]
+        duplicate[1][key] = duplicate[0][key]
+        with pytest.raises(OperationError, match=f"unique {key}"):
+            step("duplicate", "extractStructFields", **{**params, "fields": duplicate})
+    for override in (
+        {"column": public_ref("c:source:0", PRIVATE_COLUMN)},
+        {"fields": [{"field": "a", "newColumn": PRIVATE_COLUMN}]},
+    ):
+        with pytest.raises(OperationError, match="private row-identity prefix"):
+            step("private", "extractStructFields", **{**params, **override})
 
 
 @pytest.mark.parametrize("result_type,values", [("string", ("", "  ", None)), ("boolean", (False, True, None))])
