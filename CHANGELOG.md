@@ -25,6 +25,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Value Search is unavailable while a new view is loading, so enabled clicks are no longer silently ignored.
 - Adding a filter while filter Undo is pending applies the new query instead of discarding the entered predicate.
 - A failed viewing query preserves newer unsubmitted sort rules, sort direction and null placement.
 - Column profiles and filters no longer cover keyboard-selected grid cells in narrow editor panes.

@@ -208,6 +208,14 @@ describe("App progressive profiling and view correlation", () => {
     expect(screen.queryByText("Retired candidate")).toBeNull();
     expect(screen.queryByText("Distinct 500")).toBeNull();
     expect(setViewContextMessages().at(-1)?.viewContextId).toBe("recovery:test");
+    expect(screen.getByRole("button", { name: "Search values in city" })).toBeEnabled();
+    const recoveredSearch = screen.getByPlaceholderText("Search values");
+    fireEvent.change(recoveredSearch, { target: { value: "tok" } });
+    fireEvent.keyDown(recoveredSearch, { key: "Enter" });
+    expect(onlyRuntimeEnvelope("getColumnValues")).toMatchObject({
+      viewContextId: "recovery:test",
+      request: { search: "tok" }
+    });
     expect(cancellationMessages().flatMap((message) => message.viewRequestIds)).toContain(viewId(oldSummary));
     await waitFor(() => expect(runtimeEnvelopes("getSummary")).toHaveLength(2));
     expect(runtimeEnvelopes("getSummary").every((envelope) => envelope.viewContextId === "recovery:test")).toBe(true);
@@ -2034,6 +2042,7 @@ describe("App progressive profiling and view correlation", () => {
     expect(viewB.viewContextId).toBe(viewId(viewB.request));
     expect(viewAAgain.viewContextId).toBe(viewId(viewAAgain.request));
     expect(viewAAgain.viewContextId).not.toBe(viewB.viewContextId);
+    expect(screen.getByRole("button", { name: "Search values in city" })).toBeDisabled();
   });
 
   it("keeps value candidates available for multi-select filters and facets values outside their own filter", async () => {
@@ -2078,7 +2087,7 @@ describe("App progressive profiling and view correlation", () => {
     expect((onlyRequest("getColumnValues").filterModel as FilterModel).filters).toEqual([]);
   });
 
-  it("removes stale cross-column value choices until an explicit search refreshes them", () => {
+  it.each(["success", "rollback"] as const)("refreshes cross-column value choices explicitly after %s", (outcome) => {
     const sourceMetadata: SessionMetadata = {
       ...metadata,
       shape: { rows: 3, columns: 2 },
@@ -2129,30 +2138,53 @@ describe("App progressive profiling and view correlation", () => {
     fireEvent.change(screen.getByLabelText("Filter column"), { target: { value: "c:0" } });
     expect(screen.queryByRole("checkbox", { name: /^Berlin\s*2$/u })).toBeNull();
     expect(screen.queryByRole("checkbox", { name: /^Milan\s*1$/u })).toBeNull();
-    dispatch({
-      kind: "page",
-      revision: metadata.revision,
-      viewRequestId: viewId(pageRequest),
-      metadata: { ...sourceMetadata, filterModel: salesFilter, filteredShape: { rows: 1, columns: 2 } },
-      page: { ...sourcePage, totalRows: 1, rows: sourcePage.rows.slice(0, 1) }
-    });
-    expect(screen.queryByRole("checkbox", { name: /^Berlin\s*2$/u })).toBeNull();
-    expect(screen.queryByRole("checkbox", { name: /^Milan\s*1$/u })).toBeNull();
+    const searchInput = screen.getByPlaceholderText("Search values");
+    const searchButton = screen.getByRole("button", { name: "Search values in city" });
+    expect(searchInput).toBeEnabled();
+    fireEvent.change(searchInput, { target: { value: "ber" } });
+    expect(searchButton).toBeDisabled();
+    fireEvent.keyDown(searchInput, { key: "Enter" });
     expect(requestsOfKind("getColumnValues")).toHaveLength(1);
 
-    fireEvent.click(screen.getByRole("button", { name: "Search values in city" }));
+    if (outcome === "success") {
+      dispatch({
+        kind: "page",
+        revision: metadata.revision,
+        viewRequestId: viewId(pageRequest),
+        metadata: { ...sourceMetadata, filterModel: salesFilter, filteredShape: { rows: 1, columns: 2 } },
+        page: { ...sourcePage, totalRows: 1, rows: sourcePage.rows.slice(0, 1) }
+      });
+      expect(screen.queryByRole("checkbox", { name: /^Berlin\s*2$/u })).toBeNull();
+      expect(screen.queryByRole("checkbox", { name: /^Milan\s*1$/u })).toBeNull();
+    } else {
+      dispatch({
+        kind: "error",
+        code: "page_failed",
+        message: "The sales filter failed.",
+        recoverable: true,
+        sessionId: metadata.sessionId,
+        viewRequestId: viewId(pageRequest)
+      });
+      expect(screen.getByRole("checkbox", { name: /^Berlin\s*2$/u })).not.toBeChecked();
+      expect(screen.getByRole("checkbox", { name: /^Milan\s*1$/u })).not.toBeChecked();
+    }
+    expect(searchInput).toHaveValue("ber");
+    expect(searchButton).toBeEnabled();
+    expect(requestsOfKind("getColumnValues")).toHaveLength(1);
+    fireEvent.click(searchButton);
     const refresh = requestsOfKind("getColumnValues").at(-1)!;
-    expect(filterModelOf(refresh)).toEqual(salesFilter);
-    expect(refresh.search).toBe("");
+    expect(filterModelOf(refresh)).toEqual(outcome === "success" ? salesFilter : sourceMetadata.filterModel);
+    expect(refresh.search).toBe("ber");
+    const count = outcome === "success" ? 1 : 2;
     dispatch({
       kind: "columnValues",
       revision: metadata.revision,
       viewRequestId: viewId(refresh),
       column: "city",
-      values: [{ value: "Berlin", count: 1 }],
+      values: [{ value: "Berlin", count }],
       hasMore: false
     });
-    expect(screen.getByRole("checkbox", { name: /^Berlin\s*1$/u })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: new RegExp(`^Berlin\\s*${count}$`, "u") })).not.toBeChecked();
     expect(screen.queryByRole("checkbox", { name: /^Milan\s*1$/u })).toBeNull();
   });
 
