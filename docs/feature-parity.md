@@ -689,6 +689,12 @@ before runtime startup. CSV export is UTF-8 with single-byte delimiter and quote
 identifiers differ only by case. Notebook `DuckDBPyRelation` values retain the user's relation for serialized viewing
 only; closing releases Open Wrangler's reference and never closes the user's connection.
 
+DuckDB notebook queries can repeat or omit rows across pages even when their input and values are unchanged.
+For repeatable paging, keep values stable and give the source relation a deterministic order with unique tie-breakers
+before opening it, for example an `ORDER BY` over a unique key. Whole-column copy requests pages in sequence, so it
+is also at risk of repeated or omitted values. Sorting the grid afterward does not repair row identities assigned
+before that sort. This remains an open [pagination bug](https://github.com/Matt17BR/openwrangler/issues/1487).
+
 **Open Wrangler: Open DuckDB Table** chooses a local database and one base table without SQL. It supports viewing,
 filters, sorts and profiles through a retained read-only connection. Close the viewer before opening another table
 from that database in the same Python runtime or using a writer. Views, SQL editing, cleaning, code generation and

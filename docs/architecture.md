@@ -1284,6 +1284,15 @@ The runtime keeps both notebook source kinds in viewing mode even when a caller 
 Each terminal request removes its temporary query view after consuming the results, including when the query fails,
 under the catalog ownership rules above. The notebook lock serializes Open Wrangler requests.
 
+Notebook row identity is `row_number() OVER () - 1` in a lazy derived plan, before viewing filters and sorts.
+Each uncached `LIMIT`/`OFFSET` page evaluates it again. The session cache key includes view generation, revision,
+row window and projected column IDs; cache hits do not establish consistent identities across other windows or
+projections. An unordered relation can therefore map the same ID to different logical rows across reads, even with
+stable values. The runtime neither snapshots the relation nor enforces deterministic source ordering. Reliable
+paging requires stable values and a deterministic source order with unique tie-breakers before row numbering;
+a later grid sort does not repair the earlier identity assignment. The open
+[pagination bug](https://github.com/Matt17BR/openwrangler/issues/1487) tracks the correction.
+
 Drop Duplicates materializes its numbered input once, computes membership by row ordinal, and returns values from
 the selected original rows. Native partitioning cannot replace those values with a normalized key or another
 representative's payload. Scalar and nested floating values retain the sign of zero; null and NaN remain distinct
