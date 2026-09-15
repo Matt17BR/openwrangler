@@ -118,11 +118,11 @@ const R_ACCEPTANCE_TIMED_CHECKPOINTS = new Set([
     "drop-preview-discard",
     "drop-preview-apply-inspect-undo",
     "select-preview-discard",
-    "select-preview-apply-inspect-undo",
+    "select-preview-apply-undo",
     "clone-preview-discard",
     "clone-preview-apply-inspect-edit-undo",
     "text-length-preview-discard",
-    "text-length-preview-apply-inspect-undo"
+    "text-length-preview-apply-undo"
   ].map((stage) => `jupyter-r:editing:${stage}`)
 ]);
 const VIEWING_QUERY_TIMED_CHECKPOINTS = new Set(

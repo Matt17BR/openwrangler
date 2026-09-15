@@ -210,7 +210,8 @@ test("checkpoint timing logs only changed fixed labels without changing phase or
         if (clock >= 1_050) return "jupyter-r:coverage:platform-lifecycle:document:start";
         if (clock >= 1_040) return "1:2:0:1740000000000:1740000000000";
         if (clock >= 1_030) return "jupyter-r:editing:private-value-must-not-be-logged";
-        if (clock >= 1_010) return "jupyter-r:editing:text-length-preview-apply-inspect-undo";
+        if (clock >= 1_020) return "jupyter-r:editing:select-preview-apply-undo";
+        if (clock >= 1_010) return "jupyter-r:editing:text-length-preview-apply-undo";
         return initial;
       }
     });
@@ -219,7 +220,8 @@ test("checkpoint timing logs only changed fixed labels without changing phase or
       lines,
       scenario.phase === "jupyter-r"
         ? [
-            "R editor checkpoint observed at 110 ms: jupyter-r:editing:text-length-preview-apply-inspect-undo",
+            "R editor checkpoint observed at 110 ms: jupyter-r:editing:text-length-preview-apply-undo",
+            "R editor checkpoint observed at 120 ms: jupyter-r:editing:select-preview-apply-undo",
             "R editor checkpoint observed at 150 ms: jupyter-r:coverage:platform-lifecycle:document:start"
           ]
         : []
@@ -288,7 +290,7 @@ test("checkpoint timing logs only changed fixed labels without changing phase or
       "verify:viewing-queries:pandas:getPage:complete:private-value",
       "verify:viewing-queries:polars:getPage:complete\nprivate-value",
       "private-value-must-not-be-logged",
-      "jupyter-r:editing:text-length-preview-apply-inspect-undo"
+      "jupyter-r:editing:text-length-preview-apply-undo"
     ];
     const resultPath = join(directory, `${phase}-result.json`);
     const elapsedMs = checkpoints.length * 200;
