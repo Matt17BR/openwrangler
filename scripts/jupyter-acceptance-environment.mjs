@@ -32,6 +32,7 @@ import {
   VALUE_R_JUPYTER_SELECTOR,
   PIVOT_WIDER_R_JUPYTER_SELECTOR
 } from "./packaged-r-journey.mjs";
+import { acquireExactArtifact } from "./r-editor-acceptance-tooling.mjs";
 import { parseOsRelease } from "./prepare-xvfb.mjs";
 
 const CORE_DEPENDENCIES = Object.freeze(["ipykernel", "jupyter-client", "pandas"]);
@@ -454,6 +455,13 @@ export const R_ACCEPTANCE_PACKAGE_VERSIONS = Object.freeze({
   nanoparquet: "0.5.1",
   bit64: "4.6.0.1" // packageVersion() renders the archive's 4.6.0-1 with dots.
 });
+const R_ACCEPTANCE_MACOS_COLLAPSE_BINARY = Object.freeze({
+  version: "2.1.8",
+  fileName: "collapse_2.1.8.tgz",
+  url: "https://cran.r-project.org/bin/macosx/big-sur-arm64/contrib/4.5/collapse_2.1.8.tgz",
+  bytes: 7_829_041,
+  sha256: "2a1faf4790fe6a8d0686d12eadc1ce4749ea3661722364b14cad5ab7d10ca8de"
+});
 const R_ACCEPTANCE_KERNEL_ID = "openwrangler-r-acceptance";
 const R_ACCEPTANCE_KERNEL_DISPLAY_NAME = "R (Open Wrangler)";
 const QUARTO_PYTHON_ACCEPTANCE_KERNEL_ID = "python3";
@@ -630,7 +638,7 @@ function rAcceptanceKernelBootstrap(libraryDir, stagePath) {
 }
 const R_ACCEPTANCE_EXECUTABLE_PROBE = [
   '.ow_r <- file.path(R.home("bin"), if (.Platform$OS.type == "windows") "R.exe" else "R")',
-  'cat(normalizePath(.ow_r, winslash = "/", mustWork = TRUE), sep = "")'
+  'cat(paste(c(normalizePath(.ow_r, winslash = "/", mustWork = TRUE), as.character(getRversion()), R.version$platform), collapse = "\\n"), sep = "")'
 ].join("\n");
 const R_ACCEPTANCE_PROBE = [
   ".ow_packages <- names(.ow_expected)",
@@ -739,7 +747,7 @@ export function rAcceptanceRepositories(platform = process.platform, osReleaseTe
   throw new Error(`Released-Jupyter R acceptance does not support ${JSON.stringify(platform)}.`);
 }
 
-function rAcceptanceInstall({ repository, supplementalRepository }, platform, packages) {
+function rAcceptanceInstall({ repository, supplementalRepository }, platform, packages, collapseBinaryPath) {
   const supplementalPackages = ["collapse", "nanoparquet"].filter((packageName) => packages.includes(packageName));
   const binarySupplementalPackages = supplementalPackages.filter(
     (packageName) => platform !== "darwin" || packageName !== "collapse"
@@ -748,16 +756,29 @@ function rAcceptanceInstall({ repository, supplementalRepository }, platform, pa
     platform === "darwin" && packages.includes("collapse")
       ? [
           '.ow_install_started <- proc.time()[["elapsed"]]',
-          'Sys.setenv(MAKEFLAGS = "-s -j2")',
-          "utils::install.packages(",
-          '  "collapse",',
-          "  lib = .ow_library,",
-          `  repos = ${JSON.stringify(supplementalRepository)},`,
-          '  type = "source",',
-          "  dependencies = NA,",
-          "  quiet = TRUE",
-          ")",
-          'cat(sprintf("OPEN_WRANGLER_R_INSTALL:macos-collapse-source:%d\\n", as.integer(round(1000 * (proc.time()[["elapsed"]] - .ow_install_started)))))'
+          ...(collapseBinaryPath
+            ? [
+                "utils::install.packages(",
+                `  ${JSON.stringify(collapseBinaryPath)},`,
+                "  lib = .ow_library,",
+                "  repos = NULL,",
+                '  type = "mac.binary",',
+                "  dependencies = FALSE,",
+                "  quiet = TRUE",
+                ")"
+              ]
+            : [
+                'Sys.setenv(MAKEFLAGS = "-s -j2")',
+                "utils::install.packages(",
+                '  "collapse",',
+                "  lib = .ow_library,",
+                `  repos = ${JSON.stringify(supplementalRepository)},`,
+                '  type = "source",',
+                "  dependencies = NA,",
+                "  quiet = TRUE",
+                ")"
+              ]),
+          `cat(sprintf("OPEN_WRANGLER_R_INSTALL:macos-collapse-${collapseBinaryPath ? "binary" : "source"}:%d\\n", as.integer(round(1000 * (proc.time()[["elapsed"]] - .ow_install_started)))))`
         ]
       : [];
   return [
@@ -1965,7 +1986,10 @@ export function rAcceptanceInstallTimings(stdout) {
   }
   const timings = new Map();
   for (const line of stdout.split(/\r?\n/u)) {
-    const match = /^OPEN_WRANGLER_R_INSTALL:(core|supplemental|macos-collapse-source):(0|[1-9][0-9]{0,6})$/u.exec(line);
+    const match =
+      /^OPEN_WRANGLER_R_INSTALL:(core|supplemental|macos-collapse-source|macos-collapse-binary):(0|[1-9][0-9]{0,6})$/u.exec(
+        line
+      );
     if (!match || Number(match[2]) > 1_200_000) continue;
     timings.set(match[1], timings.has(match[1]) ? undefined : Number(match[2]));
   }
@@ -1983,7 +2007,8 @@ export async function prepareJupyterAcceptanceREnvironment(
     platform = process.platform,
     osReleaseText,
     purpose = "literate-documents",
-    runCommand = runBoundedEditorCommand
+    runCommand = runBoundedEditorCommand,
+    acquireArtifact = acquireExactArtifact
   } = {}
 ) {
   const focusedNotebook =
@@ -2011,7 +2036,8 @@ export async function prepareJupyterAcceptanceREnvironment(
     !environment ||
     typeof environment !== "object" ||
     Array.isArray(environment) ||
-    typeof runCommand !== "function"
+    typeof runCommand !== "function" ||
+    typeof acquireArtifact !== "function"
   ) {
     throw new Error(
       "Released-Jupyter R acceptance requires a new contained private environment and an existing absolute Rscript executable."
@@ -2032,18 +2058,28 @@ export async function prepareJupyterAcceptanceREnvironment(
     );
   });
   const packages = Object.freeze(packageEntries.map(([packageName]) => packageName));
-  const packageVersions = Object.freeze(Object.fromEntries(packageEntries));
-  const packageRecord = packageEntries.map(([packageName, version]) => `${packageName}=${version}`).join("\n");
-  const expectedVersions = packageEntries
-    .map(([packageName, version]) => `${JSON.stringify(packageName)} = ${JSON.stringify(version)}`)
-    .join(", ");
   const repositories = rAcceptanceRepositories(platform, osReleaseText);
   const canonicalRscript = validateRExecutable(rscript, "Rscript");
   const root = validateNewContainedRDirectory(directory, containedBy);
-  const rExecutable = await resolveJupyterAcceptanceRExecutable(canonicalRscript, {
+  const selectedR = await resolveJupyterAcceptanceRExecutable(canonicalRscript, {
     environment: Object.freeze(rIndependentCommandEnvironment(environment)),
     runCommand
   });
+  const rExecutable = selectedR.executable;
+  const useCollapseBinary =
+    platform === "darwin" &&
+    packages.includes("collapse") &&
+    selectedR.version === "4.5.2" &&
+    selectedR.platform === "aarch64-apple-darwin20";
+  const selectedEntries = packageEntries.map(([name, version]) => [
+    name,
+    useCollapseBinary && name === "collapse" ? R_ACCEPTANCE_MACOS_COLLAPSE_BINARY.version : version
+  ]);
+  const packageVersions = Object.freeze(Object.fromEntries(selectedEntries));
+  const packageRecord = selectedEntries.map(([name, version]) => `${name}=${version}`).join("\n");
+  const expectedVersions = selectedEntries
+    .map(([name, version]) => `${JSON.stringify(name)} = ${JSON.stringify(version)}`)
+    .join(", ");
   mkdirSync(root, { recursive: false, mode: 0o700 });
   const directoryReceipt = createEditorAcceptancePrivateRootReceipt(root, { containedBy });
   const libraryDir = resolve(root, "l");
@@ -2051,6 +2087,28 @@ export async function prepareJupyterAcceptanceREnvironment(
   const tempDir = resolve(root, "t");
   for (const path of [libraryDir, homeDir, tempDir]) mkdirSync(path, { recursive: true, mode: 0o700 });
   assertEditorAcceptancePrivateRootReceipt(directoryReceipt);
+  let collapseBinaryPath;
+  if (useCollapseBinary) {
+    try {
+      collapseBinaryPath = await acquireArtifact(root, "collapseBinary", R_ACCEPTANCE_MACOS_COLLAPSE_BINARY, {
+        timeoutMs: 120_000
+      });
+    } catch (error) {
+      try {
+        assertEditorAcceptancePrivateRootReceipt(directoryReceipt);
+      } catch (identityError) {
+        throw new AggregateError([error, identityError], "R acceptance acquisition lost its private root.");
+      }
+      throw error;
+    }
+    assertEditorAcceptancePrivateRootReceipt(directoryReceipt);
+    if (
+      collapseBinaryPath !== resolve(root, R_ACCEPTANCE_MACOS_COLLAPSE_BINARY.fileName) ||
+      !lstatSync(collapseBinaryPath).isFile()
+    ) {
+      throw new Error("Released-Jupyter R acceptance lost its exact acquired collapse archive path.");
+    }
+  }
 
   const commandEnvironment = privateRCommandEnvironment(environment, {
     homeDir,
@@ -2078,7 +2136,7 @@ export async function prepareJupyterAcceptanceREnvironment(
   const dependencyInstall = freezeRCommandInvocation(
     {
       executable: canonicalRscript,
-      args: ["--vanilla", "-e", rAcceptanceInstall(repositories, platform, packages)],
+      args: ["--vanilla", "-e", rAcceptanceInstall(repositories, platform, packages, collapseBinaryPath)],
       environment: commandEnvironment,
       label: "Released-Jupyter private R dependency installation"
     },
@@ -2381,20 +2439,32 @@ async function resolveJupyterAcceptanceRExecutable(rscript, { environment, runCo
     });
   }
   const stdout = result?.stdout;
-  if (
-    typeof stdout !== "string" ||
-    Buffer.byteLength(stdout, "utf8") > 4_096 ||
-    stdout.length === 0 ||
-    /[\0\r\n]/u.test(stdout) ||
-    !isAbsolute(stdout)
-  ) {
-    throw new Error("Released-Jupyter R acceptance received an invalid matching R executable path.");
+  if (typeof stdout !== "string" || Buffer.byteLength(stdout, "utf8") > 4_352) {
+    throw new Error("Released-Jupyter R acceptance received invalid matching R executable metadata.");
   }
-  const resolved = validateRExecutable(stdout, "R");
+  const metadata = stdout.replaceAll("\r\n", "\n");
+  const fields = metadata.split("\n");
+  const [executable, version, platform] = fields;
+  if (
+    /[\0\r]/u.test(metadata) ||
+    fields.length !== 3 ||
+    !executable ||
+    Buffer.byteLength(executable, "utf8") > 4_096 ||
+    !isAbsolute(executable) ||
+    !version ||
+    version.length > 64 ||
+    !/^[0-9]+(?:\.[0-9]+)+$/u.test(version) ||
+    !platform ||
+    platform.length > 128 ||
+    !/^[A-Za-z0-9_.-]+$/u.test(platform)
+  ) {
+    throw new Error("Released-Jupyter R acceptance received invalid matching R executable metadata.");
+  }
+  const resolved = validateRExecutable(executable, "R");
   if (resolved === rscript) {
     throw new Error("Released-Jupyter R acceptance resolved Rscript instead of the matching R executable.");
   }
-  return resolved;
+  return { executable: resolved, version, platform };
 }
 
 function validateRExecutable(executable, name) {

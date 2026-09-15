@@ -375,8 +375,10 @@ quick transitions; these observations are not a complete trace or exact operatio
 metadata-only live progress reader. Fixed preparation, editor completion or failure, and profile-cleanup messages
 distinguish setup and cleanup cost from editor execution. When needed, VS Code acquisition and private R dependency installation also report
 their start and completion against the same preparation clock. Successful R installer processes also report bounded elapsed
-records for core packages, supplemental packages and the macOS collapse source build. Each total includes downloads
-and installation; it does not separate transfer from compilation. Other successful installer output is omitted.
+records for core packages, supplemental packages and the macOS collapse installation. Source-build totals include
+download and compilation; the binary-install total covers only installation of the already acquired local archive.
+Binary acquisition precedes the dependency installation milestone and is included in overall preparation elapsed time.
+Other successful installer output is omitted.
 These diagnostics preserve the existing inactivity and absolute phase deadlines.
 
 Generic viewing-query verification and dependency recovery each use a private copy of the sample CSV, so neither
@@ -503,7 +505,11 @@ selectors also omit the collapse and Rcpp roots, collapse residents and their di
 tibble/data.table residents and source-integrity checks. Default/core and other notebook profiles retain collapse,
 including native flavor labels and unsupported grouped/indexed exclusions; literate preparation retains its structural
 probe. Focused operation runs therefore do not repeat collapse coexistence coverage.
-On macOS, selected collapse fixtures use the pinned source snapshot built with two make jobs.
+On macOS, selected collapse fixtures use the exact CRAN 2.1.8 binary when the selected R executable reports R 4.5.2
+and `aarch64-apple-darwin20`. Preparation verifies the archive's pinned size and SHA-256 before local installation,
+with a two-minute aggregate download deadline. An unavailable or changed archive fails preparation.
+Other macOS R versions and platforms retain the pinned 2.1.7
+source snapshot built with two make jobs. Profiles that omit collapse acquire neither artifact.
 Package pins remain in `scripts/jupyter-acceptance-environment.mjs`. Each selected root must resolve from the private
 library at its reviewed version and load successfully before editor launch. Notebook and literate journeys also
 require the exact private IRkernel readiness probe; terminal preparation creates no kernel or bootstrap receipt.

@@ -51,7 +51,7 @@ const artifactPin = Object.freeze({
   sha256: createHash("sha256").update(artifactPayload).digest("hex")
 });
 
-function provisioning(t) {
+function provisioning(t, { version = "4.5.2", platform = "x86_64-pc-linux-gnu", separator = "\n" } = {}) {
   const root = mkdtempSync(join(tmpdir(), "openwrangler-r-dependencies-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const rscript = join(root, "Rscript");
@@ -69,7 +69,10 @@ function provisioning(t) {
       environment: { PATH: "", R_LIBS: "foreign-library", R_PROFILE: "foreign-profile", RETAINED: "value" },
       async runCommand(input) {
         commands.push(input);
-        return { stdout: rExecutable, stderr: "" };
+        return { stdout: [rExecutable, version, platform].join(separator), stderr: "" };
+      },
+      async acquireArtifact() {
+        assert.fail("This R preparation must not acquire a collapse binary.");
       }
     }
   };
@@ -373,6 +376,194 @@ test("R preparation selects matching Ubuntu binaries and source for other hosts"
   }
 });
 
+test("qualified selected R installs the exact acquired macOS collapse binary and records its version", async (t) => {
+  const fixture = provisioning(t, { platform: "aarch64-apple-darwin20", separator: "\r\n" });
+  const acquisitions = [];
+  const prepared = await prepareJupyterAcceptanceREnvironment(fixture.directory, fixture.rscript, {
+    ...fixture.options,
+    purpose: "notebook",
+    platform: "darwin",
+    async acquireArtifact(root, key, pin, options) {
+      acquisitions.push({ root, key, pin, options });
+      assert.ok(Object.isFrozen(pin));
+      const archive = join(root, pin.fileName);
+      writeFileSync(archive, "acquirer-verified archive fixture");
+      return archive;
+    }
+  });
+  assert.deepEqual(acquisitions, [
+    {
+      root: fixture.directory,
+      key: "collapseBinary",
+      pin: {
+        version: "2.1.8",
+        fileName: "collapse_2.1.8.tgz",
+        url: "https://cran.r-project.org/bin/macosx/big-sur-arm64/contrib/4.5/collapse_2.1.8.tgz",
+        bytes: 7_829_041,
+        sha256: "2a1faf4790fe6a8d0686d12eadc1ce4749ea3661722364b14cad5ab7d10ca8de"
+      },
+      options: { timeoutMs: 120_000 }
+    }
+  ]);
+  const versions = {
+    ...Object.fromEntries(notebookPackages.map((name) => [name, R_ACCEPTANCE_PACKAGE_VERSIONS[name]])),
+    collapse: "2.1.8"
+  };
+  assert.deepEqual(preparedPackageInputs(prepared), { packages: notebookPackages, versions });
+  assert.deepEqual(prepared.packageVersions, versions);
+  assert.equal(prepared.packageRecord, notebookPackages.map((name) => `${name}=${versions[name]}`).join("\n"));
+  assert.equal(R_ACCEPTANCE_PACKAGE_VERSIONS.collapse, "2.1.7");
+  assert.equal(fixture.commands.length, 1);
+  assert.equal(fixture.commands[0].executable, fixture.rscript);
+  assert.equal(prepared.rExecutable, fixture.rExecutable);
+  assert.deepEqual(readdirSync(prepared.libraryDir), []);
+  const install = commandCode(prepared.dependencyInstall);
+  assert.ok(
+    install.includes(
+      [
+        "utils::install.packages(",
+        `  ${JSON.stringify(join(fixture.directory, "collapse_2.1.8.tgz"))},`,
+        "  lib = .ow_library,",
+        "  repos = NULL,",
+        '  type = "mac.binary",',
+        "  dependencies = FALSE,"
+      ].join("\n")
+    )
+  );
+  assert.equal(install.includes('type = "source"'), false);
+  assert.equal(install.includes('MAKEFLAGS = "-s -j2"'), false);
+  assert.ok(install.includes("OPEN_WRANGLER_R_INSTALL:macos-collapse-binary:"));
+  assert.ok(commandCode(prepared.dependencyProbe).includes("collapse::findex_by("));
+});
+
+test("macOS collapse binary eligibility follows the selected R tuple and package purpose", async (t) => {
+  for (const [host, version, platform] of [
+    ["darwin", "4.5.3", "aarch64-apple-darwin20"],
+    ["darwin", "4.5.2", "x86_64-apple-darwin20"],
+    ["darwin", "4.5.2", "aarch64-unknown-linux-gnu"],
+    ["linux", "4.5.2", "aarch64-apple-darwin20"],
+    ["win32", "4.5.2", "aarch64-apple-darwin20"]
+  ]) {
+    const fixture = provisioning(t, { version, platform });
+    const prepared = await prepareJupyterAcceptanceREnvironment(fixture.directory, fixture.rscript, {
+      ...fixture.options,
+      purpose: "notebook",
+      platform: host,
+      osReleaseText: ""
+    });
+    assert.equal(prepared.packageVersions.collapse, "2.1.7");
+    assert.equal(commandCode(prepared.dependencyInstall).includes('type = "source"'), host === "darwin");
+    assert.equal(fixture.commands.length, 1);
+  }
+  for (const purpose of [
+    "source-contracts",
+    "value-operations",
+    "categorical-operations",
+    "pivot-wider",
+    "interactive-terminal"
+  ]) {
+    const fixture = provisioning(t, { platform: "aarch64-apple-darwin20" });
+    const prepared = await prepareJupyterAcceptanceREnvironment(fixture.directory, fixture.rscript, {
+      ...fixture.options,
+      purpose,
+      platform: "darwin"
+    });
+    assert.equal(prepared.packages.includes("collapse"), false);
+    assert.equal(prepared.packageRecord.includes("collapse="), false);
+    assert.equal(commandCode(prepared.dependencyInstall).includes('type = "mac.binary"'), false);
+    assert.equal(fixture.commands.length, 1);
+  }
+});
+
+test("malformed matching R metadata fails before private preparation or acquisition", async (t) => {
+  const fixture = provisioning(t);
+  const valid = [fixture.rExecutable, "4.5.2", "aarch64-apple-darwin20"].join("\n");
+  for (const stdout of [
+    fixture.rExecutable,
+    `${valid}\n`,
+    valid.replace("4.5.2", "4.5.2 patched"),
+    valid.replace("4.5.2", "1." + "2".repeat(63)),
+    valid.replace("aarch64-apple-darwin20", "a".repeat(129)),
+    valid.replace("aarch64-apple-darwin20", "aarch64 apple darwin20"),
+    valid.replace("4.5.2", "4.5\r2"),
+    `${fixture.rExecutable}\0\n4.5.2\naarch64-apple-darwin20`,
+    `${"/" + "x".repeat(4096)}\n4.5.2\naarch64-apple-darwin20`
+  ]) {
+    await assert.rejects(
+      prepareJupyterAcceptanceREnvironment(fixture.directory, fixture.rscript, {
+        ...fixture.options,
+        platform: "darwin",
+        async runCommand() {
+          return { stdout, stderr: "" };
+        }
+      }),
+      /invalid matching R executable metadata/u
+    );
+    assert.equal(existsSync(fixture.directory), false);
+  }
+});
+
+test("qualified binary preparation refuses acquisition and archive ownership failures without fallback", async (t) => {
+  for (const failure of [
+    "acquisition",
+    "missing",
+    "wrong-path",
+    "directory",
+    "replaced-root",
+    "replaced-root-then-reject"
+  ]) {
+    const fixture = provisioning(t, { platform: "aarch64-apple-darwin20" });
+    const acquisitionError = new Error("acquisition fixture failed");
+    const replacedRoot = failure.startsWith("replaced-root");
+    const sentinel = join(fixture.root, "caller-owned");
+    writeFileSync(sentinel, "preserve caller file");
+    let acquisitions = 0;
+    await assert.rejects(
+      prepareJupyterAcceptanceREnvironment(fixture.directory, fixture.rscript, {
+        ...fixture.options,
+        purpose: "notebook",
+        platform: "darwin",
+        async acquireArtifact(root, key, pin) {
+          acquisitions += 1;
+          if (failure === "acquisition") throw acquisitionError;
+          const archive = join(root, pin.fileName);
+          if (failure === "missing") return archive;
+          if (failure === "wrong-path") return sentinel;
+          if (failure === "directory") {
+            mkdirSync(archive);
+            return archive;
+          }
+          renameSync(root, `${root}-original`);
+          mkdirSync(root, { mode: 0o700 });
+          writeFileSync(archive, "replacement archive");
+          if (failure === "replaced-root-then-reject") throw acquisitionError;
+          return archive;
+        }
+      }),
+      (error) => {
+        assert.equal(editorAcceptancePrivateRootIdentityLost(error), replacedRoot, failure);
+        if (failure === "replaced-root-then-reject") {
+          assert.ok(error instanceof AggregateError);
+          assert.ok(error.errors.includes(acquisitionError));
+          assert.ok(error.errors.some((nested) => editorAcceptancePrivateRootIdentityLost(nested)));
+        } else if (failure === "acquisition") {
+          assert.equal(error, acquisitionError);
+        } else {
+          assert.match(error.message, /archive path|ENOENT|captured filesystem identity was lost/u);
+        }
+        return true;
+      }
+    );
+    assert.equal(acquisitions, 1);
+    assert.equal(fixture.commands.length, 1);
+    assert.equal(readFileSync(sentinel, "utf8"), "preserve caller file");
+    if (replacedRoot) {
+      assert.ok(existsSync(join(`${fixture.directory}-original`, "l")));
+      assert.equal(readFileSync(join(fixture.directory, "collapse_2.1.8.tgz"), "utf8"), "replacement archive");
+    }
+  }
+});
+
 for (const [scope, selection, packages] of [
   ["default", {}, editorPackages],
   ["literate", { purpose: "literate-documents" }, editorPackages],
@@ -464,12 +655,14 @@ test("R install timings expose only bounded fixed stages and omit ambiguous reco
   assert.deepEqual(
     rAcceptanceInstallTimings(
       "private package output\nOPEN_WRANGLER_R_INSTALL:core:0\r\n" +
-        "OPEN_WRANGLER_R_INSTALL:supplemental:123\nOPEN_WRANGLER_R_INSTALL:macos-collapse-source:1200000\n"
+        "OPEN_WRANGLER_R_INSTALL:supplemental:123\nOPEN_WRANGLER_R_INSTALL:macos-collapse-source:1200000\n" +
+        "OPEN_WRANGLER_R_INSTALL:macos-collapse-binary:54\n"
     ),
     [
       "R acceptance core installation completed in 0 ms.",
       "R acceptance supplemental installation completed in 123 ms.",
-      "R acceptance macos-collapse-source installation completed in 1200000 ms."
+      "R acceptance macos-collapse-source installation completed in 1200000 ms.",
+      "R acceptance macos-collapse-binary installation completed in 54 ms."
     ]
   );
   for (const value of ["-1", "+1", "01", "1.5", "1e3", "NaN", "Inf", "1200001", "12345678", "7 private"]) {
