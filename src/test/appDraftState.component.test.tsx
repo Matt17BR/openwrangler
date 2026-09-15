@@ -354,6 +354,7 @@ describe("App draft state boundaries", () => {
       expect(dialog).toHaveAttribute("aria-busy", "false");
       if (recovered) expect(dataGridProps.mock.calls.at(-1)?.[0]).toMatchObject(confirmed);
 
+      fireEvent.click(within(dialog).getByRole("button", { name: "Choose operation" }));
       fireEvent.click(within(dialog).getByRole("button", { name: /^Uppercase/ }));
       expect(within(dialog).queryByRole("alert")).toBeNull();
       fireEvent.click(within(dialog).getByRole("button", { name: /^Formula column/ }));

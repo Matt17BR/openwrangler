@@ -35,7 +35,7 @@ const metadata: SessionMetadata = {
 describe("OperationBuilder", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it.each(["new", "saved"] as const)("focuses settings only on opening a %s operation", (entry) => {
+  it.each(["new", "saved"] as const)("retains settings and catalog state while disclosing a %s operation", (entry) => {
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
     const initialStep: TransformStep = {
       id: "rename-city",
@@ -49,7 +49,8 @@ describe("OperationBuilder", () => {
         ? { initialStep, editInputSchema: metadata.schema }
         : { initialKind: "renameColumn" as const }),
       onClose: vi.fn(),
-      onPreview: vi.fn()
+      onPreview: vi.fn(),
+      onOperationChange: vi.fn()
     };
     const { rerender } = render(<OperationBuilder {...props} />);
 
@@ -61,10 +62,48 @@ describe("OperationBuilder", () => {
     expect(name).toHaveFocus();
     expect(name).toHaveValue("retained name");
 
+    const form = screen.getByRole("form", { name: "Operation settings" });
+    const toggle = screen.getByRole("button", { name: "Choose operation" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    const catalog = document.getElementById(toggle.getAttribute("aria-controls") ?? "")!;
+    expect(catalog).not.toBeVisible();
+    toggle.focus();
+    fireEvent.click(toggle);
+    expect(toggle).toHaveFocus();
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(catalog).toBeVisible();
+    const search = screen.getByRole("textbox", { name: "Search operations" });
+    fireEvent.change(search, { target: { value: "column" } });
+    catalog.scrollTop = 80;
+    fireEvent.click(toggle);
+    expect(catalog).not.toBeVisible();
+    expect(search).toBeDisabled();
+    expect(screen.getByRole("form", { name: "Operation settings" })).toBe(form);
+    expect(name).toHaveValue("retained name");
+    expect(screen.getByRole("alert")).toHaveTextContent("Preview failed");
+    rerender(<OperationBuilder {...props} busy={true} />);
+    expect(toggle).toBeDisabled();
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(catalog).not.toHaveAttribute("tabindex");
+    rerender(<OperationBuilder {...props} previewError={{ kind: "renameColumn", message: "Preview failed" }} />);
+    expect(toggle).toBeEnabled();
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    toggle.focus();
+    fireEvent.click(toggle);
+    expect(toggle).toHaveFocus();
+    expect(search).toHaveValue("column");
+    expect(catalog.scrollTop).toBe(80);
+    expect(screen.getByRole("textbox", { name: "New name" })).toBe(name);
+    expect(props.onOperationChange).not.toHaveBeenCalled();
+    expect(props.onPreview).not.toHaveBeenCalled();
+    fireEvent.change(search, { target: { value: "" } });
+
     const sort = screen.getByRole("button", { name: /Sort rows/ });
     sort.focus();
     fireEvent.click(sort);
     expect(sort).toHaveFocus();
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(props.onOperationChange).toHaveBeenCalledTimes(1);
     expect(props.onPreview).not.toHaveBeenCalled();
   });
 
@@ -236,6 +275,7 @@ describe("OperationBuilder", () => {
       expect(screen.getByText(operation.title, { selector: "strong" })).toBeInTheDocument();
     }
 
+    expect(screen.getByRole("button", { name: "Choose operation" })).toHaveAttribute("aria-expanded", "true");
     const search = screen.getByRole("textbox", { name: "Search operations" });
     expect(search).toHaveFocus();
     fireEvent.change(search, { target: { value: "formula" } });
@@ -698,6 +738,7 @@ describe("OperationBuilder", () => {
     expect(screen.queryByText("Custom code", { selector: "strong" })).toBeNull();
     expect(screen.queryByText("Sort rows", { selector: "strong" })).toBeNull();
     expect(screen.getByRole("heading", { name: "Choose an operation" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Choose operation" })).toHaveAttribute("aria-expanded", "true");
   });
 
   it("uses native R syntax and labeling for R custom code", () => {
@@ -821,16 +862,16 @@ describe("OperationBuilder", () => {
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
     const onClose = vi.fn();
     const onPreview = vi.fn();
-    render(
-      <OperationBuilder
-        metadata={metadata}
-        filterModel={{ filters: [], sort: [] }}
-        initialKind="selectColumns"
-        busy={true}
-        onClose={onClose}
-        onPreview={onPreview}
-      />
-    );
+    const props = {
+      metadata,
+      filterModel: { filters: [], sort: [] },
+      initialKind: "selectColumns" as const,
+      onClose,
+      onPreview
+    };
+    const { rerender } = render(<OperationBuilder {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "Choose operation" }));
+    rerender(<OperationBuilder {...props} busy={true} />);
 
     expect(screen.getByRole("dialog", { name: "Add cleaning step" })).toHaveAttribute("aria-busy", "true");
     expect(screen.getByRole("dialog", { name: "Add cleaning step" })).toHaveFocus();
@@ -839,6 +880,8 @@ describe("OperationBuilder", () => {
     expect(screen.getByRole("form", { name: "Operation settings" })).not.toHaveAttribute("tabindex");
     expect(screen.getByRole("group", { name: "Operation settings content" })).toHaveAttribute("tabindex", "0");
     expect(screen.getByRole("button", { name: "Close operation picker" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Choose operation" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Choose operation" })).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("textbox", { name: "Search operations" })).toBeDisabled();
     expect(screen.getByText("Select columns", { selector: "strong" }).closest("button")).toBeDisabled();
     expect(screen.getByRole("searchbox", { name: "Search columns to keep" })).toBeDisabled();
@@ -875,7 +918,7 @@ describe("OperationBuilder", () => {
     focus.mockRestore();
     hasFocus.mockRestore();
     rerender(<OperationBuilder {...props} />);
-    expect(screen.getByRole("navigation", { name: "Operation catalog" })).not.toHaveAttribute("tabindex");
+    expect(document.getElementById("operation-catalog")).not.toHaveAttribute("tabindex");
     expect(screen.getByRole("form", { name: "Operation settings" })).not.toHaveAttribute("tabindex");
     expect(screen.getByRole("group", { name: "Operation settings content" })).not.toHaveAttribute("tabindex");
   });
@@ -891,13 +934,13 @@ describe("OperationBuilder", () => {
       />
     );
 
-    const close = screen.getByRole("button", { name: "Close operation picker" });
+    const toggle = screen.getByRole("button", { name: "Choose operation" });
     const preview = screen.getByRole("button", { name: "Preview changes" });
-    close.focus();
-    fireEvent.keyDown(close, { key: "Tab", shiftKey: true });
+    toggle.focus();
+    fireEvent.keyDown(toggle, { key: "Tab", shiftKey: true });
     expect(preview).toHaveFocus();
     fireEvent.keyDown(preview, { key: "Tab" });
-    expect(close).toHaveFocus();
+    expect(toggle).toHaveFocus();
   });
 
   it("copies viewing filters only through an explicit filter step", () => {
@@ -1094,6 +1137,7 @@ describe("OperationBuilder", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Mark duplicates requires at least one compatible column.");
     expect(onPreview).not.toHaveBeenCalled();
 
+    fireEvent.click(screen.getByRole("button", { name: "Choose operation" }));
     fireEvent.click(screen.getByRole("button", { name: /^Rename column/ }));
     expect(screen.getByRole("heading", { name: "Rename column" })).toBeVisible();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
@@ -1131,6 +1175,7 @@ describe("OperationBuilder", () => {
 
     fireEvent.change(screen.getByRole("textbox", { name: "New column" }), { target: { value: "duplicate_flag" } });
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Choose operation" }));
     const search = screen.getByRole("textbox", { name: "Search operations" });
     fireEvent.change(search, { target: { value: "rename" } });
     expect(screen.queryByRole("button", { name: /^Mark duplicates/ })).not.toBeInTheDocument();

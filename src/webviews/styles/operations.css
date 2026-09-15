@@ -67,6 +67,7 @@
   background: var(--vscode-editorGroupHeader-tabsBackground);
   border-bottom: 1px solid var(--vscode-panel-border);
   display: flex;
+  gap: 8px;
   justify-content: space-between;
   min-height: 48px;
   padding: 7px 10px 7px 16px;
@@ -74,7 +75,14 @@
 
 .operationDialogHeader > div {
   display: grid;
+  flex: 1;
   gap: 2px;
+  min-width: 0;
+}
+
+.operationCatalogToggle {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .operationDialogHeader span {
@@ -91,6 +99,10 @@
   min-inline-size: 0;
   min-height: 0;
   padding: 0;
+}
+
+.operationDialogBody.operationCatalogCollapsed {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .operationCatalog {

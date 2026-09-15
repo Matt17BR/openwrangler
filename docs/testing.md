@@ -115,7 +115,9 @@ capture deadline. A virtual-time advance alone does not establish that asynchron
 Screenshot verification reports all visual mismatches after capturing the remaining images. Browser, readiness and
 invalid-image errors still stop the run immediately; any mismatch fails verification before accessibility checks run.
 The existing operation-form browser owner checks that Group By controls fit without sideways scrolling and remain
-fully visible during Tab navigation at 1280px, 800px and 620px. Busy forms retain keyboard scrolling through their content.
+fully visible during Tab navigation at 1280px, 800px and 620px with the catalog expanded or collapsed. It also checks
+header controls at 360px, retained catalog search and scroll, physical form inputs, and keyboard navigation through
+disclosure and failed preview. Busy forms retain keyboard scrolling without focusing a hidden catalog.
 
 Use the existing owners to choose a focused source check:
 

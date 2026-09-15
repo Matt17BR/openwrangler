@@ -100,6 +100,7 @@ async function verifyOperationForms(browser) {
       await page.setViewportSize({ width, height: 600 });
       page.setDefaultTimeout(15_000);
       await page.goto(pathToFileURL(resolve(harnessDir, "operation-dialog.html")).href, { waitUntil: "load" });
+      await page.getByRole("button", { name: "Choose operation", exact: true }).click();
       await page.getByRole("button", { name: /^Conditional column/u }).click();
       const form = page.getByRole("dialog");
       await form.getByRole("textbox", { name: "New column name", exact: true }).fill("decision");
@@ -179,50 +180,151 @@ async function verifyOperationForms(browser) {
       await page.setViewportSize({ width, height: 600 });
       await page.goto(pathToFileURL(resolve(harnessDir, "operation-dialog.html")).href, { waitUntil: "load" });
       const dialog = page.getByRole("dialog");
-      await dialog.getByRole("button", { name: /^Group and aggregate/u }).click();
+      const toggle = dialog.getByRole("button", { name: "Choose operation", exact: true });
+      if ((await toggle.getAttribute("aria-expanded")) !== "false") {
+        throw new Error("A preselected operation did not start with its catalog collapsed.");
+      }
+      for (const headerWidth of width === 1280 ? [1280, 360, 1280] : [width]) {
+        await page.setViewportSize({ width: headerWidth, height: 600 });
+        const fits = await page.locator(".operationDialogHeader").evaluate((header) => {
+          const bounds = header.getBoundingClientRect();
+          return (
+            header.scrollWidth <= header.clientWidth + 1 &&
+            [...header.children].every((child) => {
+              const box = child.getBoundingClientRect();
+              return (
+                box.left >= bounds.left &&
+                box.right <= bounds.right &&
+                box.top >= bounds.top &&
+                box.bottom <= bounds.bottom
+              );
+            })
+          );
+        });
+        if (!fits || (await toggle.getAttribute("aria-expanded")) !== "false") {
+          throw new Error(`Operation header clipped or changed disclosure during resize at ${headerWidth}px.`);
+        }
+      }
+      await toggle.focus();
+      await page.keyboard.press("Enter");
+      if (!(await toggle.evaluate((element) => element === document.activeElement))) {
+        throw new Error("Opening the catalog moved focus away from its toggle.");
+      }
+      await page.keyboard.press("Tab");
+      if (
+        !(await dialog
+          .getByRole("button", { name: "Close operation picker" })
+          .evaluate((element) => element === document.activeElement))
+      ) {
+        throw new Error("Catalog toggle did not lead to Close in keyboard order.");
+      }
+      await page.keyboard.press("Tab");
+      const search = dialog.getByRole("textbox", { name: "Search operations" });
+      if (!(await search.evaluate((element) => element === document.activeElement))) {
+        throw new Error("Expanded catalog search was not keyboard reachable.");
+      }
+      await search.fill("Group and aggregate");
+      await page.keyboard.press("Tab");
+      await page.keyboard.press("Enter");
+      if ((await toggle.getAttribute("aria-expanded")) !== "true") {
+        throw new Error("Selecting an operation unexpectedly collapsed its catalog.");
+      }
       const form = dialog.getByRole("form", { name: "Operation settings" });
       await form.getByRole("checkbox").first().check();
       await form.getByRole("button", { name: "Add aggregation", exact: true }).click();
       await form.getByRole("combobox", { name: "Value 2", exact: true }).waitFor();
-      await form.getByRole("combobox", { name: "Value 1", exact: true }).focus();
-      const focused = [];
-      for (let index = 0; index < 15; index += 1) {
-        const state = await page.locator(":focus").evaluate((element) => {
-          const form = element.closest("form");
-          if (!form) return undefined;
-          const content = form.querySelector(".operationFormContent");
-          const bounds = element.getBoundingClientRect();
-          const scroller = element.closest(".operationFormContent") ?? form;
-          const viewport = scroller.getBoundingClientRect();
-          return {
-            name: element.getAttribute("aria-label") ?? element.textContent.trim(),
-            horizontalOverflow: content.scrollWidth - content.clientWidth,
-            scrollLeft: content.scrollLeft,
-            exposed:
-              bounds.top >= Math.max(viewport.top, 0) - 1 &&
-              bounds.bottom <= Math.min(viewport.bottom, innerHeight) + 1 &&
-              bounds.left >= Math.max(viewport.left + scroller.clientLeft, 0) - 1 &&
-              bounds.right <= Math.min(viewport.left + scroller.clientLeft + scroller.clientWidth, innerWidth) + 1 &&
-              element.contains(
-                document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2)
-              )
-          };
-        });
-        if (!state?.exposed || state.horizontalOverflow > 1 || Math.abs(state.scrollLeft) > 1) {
-          throw new Error(
-            `Group By at ${width}px clipped or horizontally scrolled its settings: ${JSON.stringify(state)}.`
-          );
-        }
-        focused.push(state.name);
-        if (state.name === "Preview changes") break;
-        await page.keyboard.press("Tab");
+      const retainedForm = await form.elementHandle();
+      const output = form.getByRole("textbox", { name: "Output name", exact: true }).first();
+      await output.fill("unfinished_total");
+      const retainedOutput = await output.elementHandle();
+      await search.fill("column");
+      const catalog = dialog.getByRole("navigation", { name: "Operation catalog" });
+      const scrollTop = await catalog.evaluate((element) => {
+        element.scrollTop = 80;
+        return element.scrollTop;
+      });
+      if (scrollTop <= 0) throw new Error("Catalog retention control did not establish nonzero scrolling.");
+      await toggle.focus();
+      await page.keyboard.press("Enter");
+      await catalog.waitFor({ state: "hidden" });
+      if (!(await toggle.evaluate((element) => element === document.activeElement))) {
+        throw new Error("Closing the catalog moved focus away from its toggle.");
       }
+      await page.keyboard.press("Enter");
+      await catalog.waitFor({ state: "visible" });
       if (
-        !["Calculation 2", "Remove aggregation 2", "Add aggregation", "Preview changes"].every((name) =>
-          focused.includes(name)
-        )
+        (await search.inputValue()) !== "column" ||
+        (await catalog.evaluate((element) => element.scrollTop)) !== scrollTop ||
+        !(await retainedForm.evaluate((element) => element.isConnected)) ||
+        !(await retainedOutput.evaluate((element) => element.isConnected && element.value === "unfinished_total")) ||
+        (await page.evaluate(
+          () =>
+            window.openWranglerMessages.filter(
+              (message) => message.kind === "runtimeRequest" && message.request.kind === "previewStep"
+            ).length
+        )) !== 0
       ) {
-        throw new Error(`Group By at ${width}px did not preserve its form tab order: ${JSON.stringify(focused)}.`);
+        throw new Error("Catalog disclosure lost search, scroll, physical inputs or dispatched a preview.");
+      }
+      await search.fill("");
+      for (const expanded of [true, false]) {
+        if (!expanded) {
+          await toggle.focus();
+          await page.keyboard.press("Enter");
+          await catalog.waitFor({ state: "hidden" });
+        }
+        await form.getByRole("combobox", { name: "Value 1", exact: true }).focus();
+        const focused = [];
+        for (let index = 0; index < 15; index += 1) {
+          const state = await page.locator(":focus").evaluate((element) => {
+            const form = element.closest("form");
+            if (!form) return undefined;
+            const content = form.querySelector(".operationFormContent");
+            const bounds = element.getBoundingClientRect();
+            const scroller = element.closest(".operationFormContent") ?? form;
+            const viewport = scroller.getBoundingClientRect();
+            return {
+              name: element.getAttribute("aria-label") ?? element.textContent.trim(),
+              horizontalOverflow: content.scrollWidth - content.clientWidth,
+              scrollLeft: content.scrollLeft,
+              exposed:
+                bounds.top >= Math.max(viewport.top, 0) - 1 &&
+                bounds.bottom <= Math.min(viewport.bottom, innerHeight) + 1 &&
+                bounds.left >= Math.max(viewport.left + scroller.clientLeft, 0) - 1 &&
+                bounds.right <= Math.min(viewport.left + scroller.clientLeft + scroller.clientWidth, innerWidth) + 1 &&
+                element.contains(
+                  document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2)
+                )
+            };
+          });
+          if (!state?.exposed || state.horizontalOverflow > 1 || Math.abs(state.scrollLeft) > 1) {
+            throw new Error(
+              `Group By at ${width}px clipped or horizontally scrolled its settings: ${JSON.stringify(state)}.`
+            );
+          }
+          focused.push(state.name);
+          if (state.name === "Preview changes") break;
+          await page.keyboard.press("Tab");
+        }
+        if (
+          !["Calculation 2", "Remove aggregation 2", "Add aggregation", "Preview changes"].every((name) =>
+            focused.includes(name)
+          )
+        ) {
+          throw new Error(`Group By at ${width}px did not preserve its form tab order: ${JSON.stringify(focused)}.`);
+        }
+      }
+      await page.keyboard.press("Tab");
+      if (!(await toggle.evaluate((element) => element === document.activeElement))) {
+        throw new Error("Collapsed catalog trapped Tab in hidden controls.");
+      }
+      await page.keyboard.press("Shift+Tab");
+      if (
+        !(await form
+          .getByRole("button", { name: "Preview changes" })
+          .evaluate((element) => element === document.activeElement))
+      ) {
+        throw new Error("Collapsed catalog broke reverse keyboard wrapping.");
       }
       await form.getByRole("button", { name: "Remove aggregation 2", exact: true }).click();
       await form.getByRole("combobox", { name: "Value 2", exact: true }).waitFor({ state: "detached" });
@@ -237,9 +339,42 @@ async function verifyOperationForms(browser) {
         requests.length !== 1 ||
         requests[0].request.step.kind !== "groupBy" ||
         requests[0].request.step.params.keys.length !== 1 ||
-        requests[0].request.step.params.aggregations.length !== 1
+        requests[0].request.step.params.aggregations.length !== 1 ||
+        requests[0].request.step.params.aggregations[0].alias !== "unfinished_total"
       ) {
         throw new Error(`Group By at ${width}px changed its submitted fields.`);
+      }
+      const settings = form.getByRole("group", { name: "Operation settings content" });
+      if (!(await toggle.isDisabled()) || (await toggle.getAttribute("aria-expanded")) !== "false") {
+        throw new Error("Pending preview changed catalog visibility or enabled its toggle.");
+      }
+      for (const key of ["Tab", "Shift+Tab"]) {
+        await page.keyboard.press(key);
+        if (!(await settings.evaluate((element) => element === document.activeElement))) {
+          throw new Error("Pending collapsed catalog trapped focus in its hidden subtree.");
+        }
+      }
+      await page.evaluate(() =>
+        window.dispatchEvent(
+          new MessageEvent("message", {
+            origin: window.location.origin,
+            data: { kind: "error", code: "engine_error", message: "Fixture preview refused", recoverable: true }
+          })
+        )
+      );
+      await dialog.getByRole("alert").waitFor();
+      if (
+        !(await toggle.isEnabled()) ||
+        (await toggle.getAttribute("aria-expanded")) !== "false" ||
+        !(await retainedForm.evaluate((element) => element.isConnected)) ||
+        !(await retainedOutput.evaluate((element) => element.isConnected && element.value === "unfinished_total"))
+      ) {
+        throw new Error("Failed preview did not preserve collapsed catalog and unfinished fields.");
+      }
+      await toggle.focus();
+      await page.keyboard.press("Enter");
+      if ((await dialog.getByRole("alert").textContent()) !== "Fixture preview refused") {
+        throw new Error("Reopening the catalog cleared the current form's preview error.");
       }
     } finally {
       await page.close();

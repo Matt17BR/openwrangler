@@ -84,6 +84,7 @@ export function OperationBuilder({
       ? requestedInitialKind
       : undefined
   );
+  const [catalogVisible, setCatalogVisible] = useState(() => selectedKind === undefined);
   const [search, setSearch] = useState("");
   const [formError, setFormError] = useState<string>();
   const visibleFormError =
@@ -223,15 +224,31 @@ export function OperationBuilder({
           </div>
           <button
             type="button"
+            className="secondaryButton operationCatalogToggle"
+            aria-expanded={catalogVisible}
+            aria-controls="operation-catalog"
+            disabled={busy}
+            onClick={() => setCatalogVisible((visible) => !visible)}
+          >
+            Choose operation
+          </button>
+          <button
+            type="button"
             className="iconButton codicon codicon-close"
             aria-label="Close operation picker"
             disabled={busy}
             onClick={onClose}
           />
         </header>
-        <div className="operationDialogBody">
-          <nav className="operationCatalog" aria-label="Operation catalog" tabIndex={busy ? 0 : undefined}>
-            <fieldset className="operationControls" disabled={busy}>
+        <div className={`operationDialogBody${catalogVisible ? "" : " operationCatalogCollapsed"}`}>
+          <nav
+            id="operation-catalog"
+            className="operationCatalog"
+            aria-label="Operation catalog"
+            hidden={!catalogVisible}
+            tabIndex={busy && catalogVisible ? 0 : undefined}
+          >
+            <fieldset className="operationControls" disabled={busy || !catalogVisible}>
               <label className="operationSearch">
                 <span className="codicon codicon-search" aria-hidden="true" />
                 <input
