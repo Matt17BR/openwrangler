@@ -10,7 +10,8 @@ import {
 } from "./packaged-python-jupyter.mjs";
 import {
   acceptancePythonProfileModulesForTesting,
-  packagedEditorPythonPreflightProfile
+  packagedEditorPythonPreflightProfile,
+  preflightAcceptancePython
 } from "./packaged-python-preflight.mjs";
 import {
   createJupyterAcceptanceCoreKernelPython,
@@ -88,6 +89,53 @@ test("focused Python notebooks retains both real journeys and needs only a boots
   const host = packagedEditorPythonPreflightProfile({ ...focusedInput, pythonJupyterProfile: profile });
   assert.equal(host, "jupyter-bootstrap");
   assert.deepEqual(acceptancePythonProfileModulesForTesting(host), ["venv", "ensurepip"]);
+});
+
+test("Python preflight distinguishes prerequisites from probe failures without exposing private details", () => {
+  const privateDetail = "PRIVATE_PREFLIGHT_PATH_OUTPUT_AND_CAUSE";
+  const failures = [
+    [{ status: 10 }, "OW_ACCEPTANCE_PYTHON_INTERPRETER"],
+    [{ status: 20 }, "OW_ACCEPTANCE_PYTHON_DEPENDENCIES"],
+    [{ code: "ETIMEDOUT", status: null, signal: "SIGTERM" }, "OW_ACCEPTANCE_PYTHON_TIMEOUT"],
+    [{ code: "ETIMEDOUT", status: 10 }, "OW_ACCEPTANCE_PYTHON_TIMEOUT"],
+    [{ code: "ETIMEDOUT", status: 20 }, "OW_ACCEPTANCE_PYTHON_TIMEOUT"],
+    [{ status: null, signal: "SIGTERM" }, "OW_ACCEPTANCE_PYTHON_PROBE"],
+    [{ code: "ENOENT" }, "OW_ACCEPTANCE_PYTHON_PROBE"],
+    [{ status: 1 }, "OW_ACCEPTANCE_PYTHON_PROBE"],
+    [{ code: privateDetail }, "OW_ACCEPTANCE_PYTHON_PROBE"]
+  ];
+  let calls = 0;
+  const execute = (failure) => (python, args, options) => {
+    calls++;
+    assert.equal(python, process.execPath);
+    assert.deepEqual(args.slice(0, 2), ["-I", "-c"]);
+    assert.equal(args.at(-1), "jupyter_client");
+    assert.deepEqual(options, { stdio: "ignore", timeout: 15_000, windowsHide: true });
+    if (failure) {
+      throw Object.assign(new Error(privateDetail), failure, {
+        path: privateDetail,
+        spawnargs: [privateDetail],
+        stdout: privateDetail,
+        stderr: privateDetail,
+        cause: new Error(privateDetail)
+      });
+    }
+  };
+  assert.equal(preflightAcceptancePython(process.execPath, "jupyter-host", execute()), process.execPath);
+  for (const [failure, code] of failures) {
+    assert.throws(
+      () => preflightAcceptancePython(process.execPath, "jupyter-host", execute(failure)),
+      (error) => {
+        assert.equal(error.code, code);
+        assert.ok(error.message.startsWith(`${code}: `));
+        assert.doesNotMatch(error.message, new RegExp(privateDetail, "u"));
+        assert.doesNotMatch(JSON.stringify(error), new RegExp(privateDetail, "u"));
+        assert.equal(Object.hasOwn(error, "cause"), false);
+        return true;
+      }
+    );
+  }
+  assert.equal(calls, failures.length + 1);
 });
 
 test("focused Python notebooks rejects requests for coverage it cannot run", () => {
