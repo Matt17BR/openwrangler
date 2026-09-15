@@ -729,7 +729,7 @@ def test_notebook_snapshot_rejects_real_excessively_nested_cells(depth):
 
 
 def test_notebook_snapshot_keeps_polars_lazyframe_native_and_collects_only_bounded_results(monkeypatch):
-    lazy = pl.DataFrame({"value": list(range(20)), "unused": ["x"] * 20}).lazy()
+    lazy = pl.DataFrame({"value": list(range(20)), "unused": [99] * 20}).lazy()
     collected_heights = []
     original_collect = pl.LazyFrame.collect
 
