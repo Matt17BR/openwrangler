@@ -14,6 +14,7 @@ import type {
 } from "../shared/protocol";
 import { isFileDataBackend } from "./pythonEnvironmentModel";
 import { supportsOperation } from "../shared/operations";
+import { remapStepColumnReferences } from "../shared/transformStepReferences";
 import { canRequestLiveSessionMode } from "../shared/sessionMode";
 import { DetachedBridgeRequestError, type BridgeRequestOptions, type OpenWranglerBridge } from "./dataBridge";
 import type { CoordinatedSessionOrigin } from "./sessionOrigin";
@@ -66,6 +67,50 @@ export interface InitialFilePlan {
   readonly steps: readonly TransformStep[];
   isCurrent(): boolean;
   assertTargetAvailable(source: SessionSource, protection: SessionSourceProtection): Promise<void>;
+}
+
+function initialFilePlanSteps(plan: InitialFilePlan, schema: readonly ColumnSchema[]): TransformStep[] {
+  if (
+    schema.length === plan.sourceSchema.length &&
+    schema.every((column, index) => {
+      const original = plan.sourceSchema[index];
+      return (
+        column.id === original.id &&
+        column.name === original.name &&
+        column.position === original.position &&
+        column.type === original.type &&
+        column.rawType === original.rawType
+      );
+    })
+  )
+    return structuredClone([...plan.steps]);
+
+  const targets = new Map(schema.map((column) => [column.name, column]));
+  const names = new Set(plan.sourceSchema.map((column) => column.name));
+  const columnIds = new Map<string, string>();
+  if (
+    schema.length !== plan.sourceSchema.length ||
+    targets.size !== schema.length ||
+    names.size !== plan.sourceSchema.length ||
+    targets.has("") ||
+    names.has("") ||
+    plan.sourceSchema.some((original) => {
+      const target = targets.get(original.name);
+      if (!target || target.type !== original.type || target.rawType !== original.rawType) return true;
+      columnIds.set(original.id, target.id);
+      return false;
+    })
+  )
+    throw new RuntimeStateRestoreError(
+      "The selected file must have the same unique column names and types as the plan's original input."
+    );
+
+  return plan.steps.map((step) => {
+    const mapped = remapStepColumnReferences(step, columnIds);
+    if (typeof mapped === "string")
+      throw new RuntimeStateRestoreError("The copied plan contains an unsupported column-reference variant.");
+    return mapped;
+  });
 }
 
 export class SessionRuntimeEstablisher {
@@ -292,36 +337,22 @@ export class SessionRuntimeEstablisher {
       if (currentFailure()) throw new RuntimeStateRestoreError("The originating plan is no longer current.");
     };
     const source = structuredClone(session.metadata.source);
-    const assertCompletePlan = (): void => {
-      if (
-        session.metadata.backend !== plan.backend ||
-        session.metadata.mode !== "editing" ||
-        !session.metadata.capabilities.editable ||
-        !isDeepStrictEqual(session.metadata.source, source) ||
-        !isDeepStrictEqual(session.metadata.steps, plan.steps) ||
-        session.metadata.draftStep ||
-        !session.code.trim()
-      )
-        throw new RuntimeStateRestoreError("The runtime did not confirm the complete copied plan and generated code.");
-    };
     try {
-      const schema = session.sourceSchema!;
-      if (
-        schema.length !== plan.sourceSchema.length ||
-        schema.some((column, index) => {
-          const original = plan.sourceSchema[index];
-          return (
-            column.id !== original.id ||
-            column.name !== original.name ||
-            column.position !== original.position ||
-            column.type !== original.type ||
-            column.rawType !== original.rawType
+      const steps = initialFilePlanSteps(plan, session.sourceSchema!);
+      const assertCompletePlan = (): void => {
+        if (
+          session.metadata.backend !== plan.backend ||
+          session.metadata.mode !== "editing" ||
+          !session.metadata.capabilities.editable ||
+          !isDeepStrictEqual(session.metadata.source, source) ||
+          !isDeepStrictEqual(session.metadata.steps, steps) ||
+          session.metadata.draftStep ||
+          !session.code.trim()
+        )
+          throw new RuntimeStateRestoreError(
+            "The runtime did not confirm the complete copied plan and generated code."
           );
-        })
-      )
-        throw new RuntimeStateRestoreError(
-          "The selected file must have the same column names, order, and types as the plan's original input."
-        );
+      };
       if (
         !session.metadata.capabilities.editable ||
         plan.steps.some((step) => !supportsOperation(session.metadata.capabilities, step.kind))
@@ -329,7 +360,7 @@ export class SessionRuntimeEstablisher {
         throw new RuntimeStateRestoreError("The selected file does not support every operation in this plan.");
       await this.runtimeStateRestorer.restoreCleaningState(
         session,
-        { steps: structuredClone([...plan.steps]) },
+        { steps },
         request.columnOffset,
         request.columnLimit,
         options,

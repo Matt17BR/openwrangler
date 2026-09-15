@@ -110,9 +110,14 @@ labels remain raw. One host formatter owns this presentation, without changing s
 **Open Another File with This Plan** captures one confirmed, draft-free Pandas, Polars or DuckDB file plan before
 the picker opens. It excludes Custom Code and requires unique, non-empty original column names. The host retains
 the validated original file schema through ordinary edits, refreshing it on source/runtime replacement. This receipt
-is private and is not persisted. Target admission compares original column IDs, names, positions, semantic types and
-raw types; observed nullability, row counts and row labels may differ. Both files use the same concrete backend and
-import options. Column mapping and notebook inputs are outside this command's scope.
+is private and is not persisted. Target columns must have the same names, semantic types and raw types; observed
+nullability, row counts and row labels may differ. An exact positional match keeps the captured steps unchanged.
+Reordered input requires a bijection of unique, non-empty names. The host copies the plan and translates declared
+source-column references to the target IDs, preserving names, derived IDs, literal values and parameter order.
+The shared reference enumeration also serves saved-step editing; native replay still binds each step against its
+current input schema. Target column order is preserved unless a cleaning step changes it. Generated code retains the
+target's input-order requirements. Both files use the same concrete backend and
+import options. Renamed, extra or missing columns and notebook inputs remain outside this command's scope.
 
 The captured session, Python process, environment selection and revision must remain current through replay and
 persistence staging; switching active editors cannot retarget the action. The target's exact Python process and

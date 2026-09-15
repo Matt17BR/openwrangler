@@ -744,13 +744,14 @@ the contract.
 ## Reuse a file cleaning plan
 
 **Open Wrangler: Open Another File with This Plan** opens a separate Editing session with a confirmed built-in
-plan from a Pandas, Polars or DuckDB file session. The selected file must have matching original column names,
-order and types, and uses the same engine and import options. An unfinished draft, Custom Code, ambiguous column
-names, a target already open in Open Wrangler, or saved target work prevents reuse. Full replay must succeed before the new session
-is shown. Viewing filters and sorts are not copied, and both source files remain unchanged.
+plan from a Pandas, Polars or DuckDB file session. The selected file must have matching original column names and
+types, in any order, and uses the same engine and import options. The target keeps its column order unless a cleaning
+step changes it. An unfinished draft, Custom Code, ambiguous column names, a target already open in Open Wrangler,
+or saved target work prevents reuse. Full replay must succeed before the new session is shown. Viewing filters and
+sorts are not copied, and both source files remain unchanged.
 
-Column mapping, notebook inputs, recipe files and batch execution remain unavailable. DuckDB keeps its experimental
-file-editing status. Source evidence: test:src/test/fileOpen.unit.test.ts;
+Mapping renamed columns, notebook inputs, recipe files and batch execution remain unavailable. DuckDB keeps its
+experimental file-editing status. Source evidence: test:src/test/fileOpen.unit.test.ts;
 test:src/test/sessionCoordinator.persistence.unit.test.ts; test:src/test/sessionPersistenceStore.unit.test.ts.
 The [architecture contract](architecture.md#sources-sessions-and-data-flow) records source identity and late-cancellation
 semantics. The existing daily-core journey owns the installed command, file picker and rendered target interaction.

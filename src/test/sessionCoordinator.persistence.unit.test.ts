@@ -1339,11 +1339,11 @@ function presentationOpenedResponse(): ReturnType<typeof openedResponse> {
 }
 
 describe("SessionCoordinator file-plan reuse", () => {
-  it("keeps the complete copied plan private until saved and then routes an independent target session", async () => {
-    const fixture = await filePlanFixture();
+  it.each([false, true])("keeps a copied plan private until saved with reordered input %s", async (reordered) => {
+    const fixture = await filePlanFixture(reordered);
+    const finalWrite = deferred<void>();
     try {
       const selected = fixture.capture();
-      const finalWrite = deferred<void>();
       const writing = deferred<void>();
       fixture.beforeSave = async (value) => {
         const target = value[fixture.targetKey] as { cleaning?: { steps?: unknown[] } } | undefined;
@@ -1353,7 +1353,8 @@ describe("SessionCoordinator file-plan reuse", () => {
         }
       };
       const opening = selected.bridge.request(fixture.targetRequest);
-      await writing.promise;
+      const outcome = await Promise.race([writing.promise.then(() => "saving"), opening]);
+      expect(outcome).toBe("saving");
       expect(fixture.coordinator.activeSession()?.sessionId).toBe(fixture.originId);
       expect(fixture.coordinator.diagnostics().sessionCount).toBe(1);
       expect(fixture.targetRequests.map((request) => request.kind)).toEqual([
@@ -1362,18 +1363,49 @@ describe("SessionCoordinator file-plan reuse", () => {
         "applyDraft",
         "previewStep",
         "applyDraft",
+        "previewStep",
+        "applyDraft",
         "getPage"
       ]);
+      const copiedSteps: TransformStep[] = [
+        {
+          id: "rename-value",
+          kind: "renameColumn",
+          params: { column: { id: `c:source:${reordered ? 1 : 0}`, name: "value" }, newName: "amount" }
+        },
+        {
+          id: "total",
+          kind: "formula",
+          params: {
+            leftColumn: { id: `c:source:${reordered ? 1 : 0}`, name: "amount" },
+            rightColumn: { id: `c:source:${reordered ? 0 : 1}`, name: "other" },
+            operator: "add",
+            newColumn: "total"
+          }
+        },
+        { id: "floor-total", kind: "floorNumber", params: { column: { id: "c:step:total:0", name: "total" } } }
+      ];
+      expect(
+        fixture.targetRequests.filter((request) => request.kind === "previewStep").map((request) => request.step)
+      ).toEqual(copiedSteps);
       finalWrite.resolve();
       const result = await opening;
       expect(result.kind).toBe("sessionOpened");
       if (result.kind !== "sessionOpened") throw new Error("Expected copied plan.");
       expect(result.metadata.source).toEqual(fixture.targetRequest.source);
-      expect(result.metadata.steps).toEqual(fixture.steps);
+      expect(result.metadata.steps).toEqual(copiedSteps);
+      expect(result.metadata.schema.map((column) => [column.id, column.name])).toEqual([
+        ["c:source:0", reordered ? "other" : "amount"],
+        ["c:source:1", reordered ? "amount" : "other"],
+        ["c:step:total:0", "total"]
+      ]);
+      expect(
+        fixture.coordinator["sessions"].get(result.metadata.sessionId)?.sourceSchema?.map((column) => column.name)
+      ).toEqual(reordered ? ["other", "value"] : ["value", "other"]);
       expect(result.metadata.sessionId).not.toBe(fixture.originId);
       expect(fixture.coordinator.sessionSnapshot(fixture.originId)).toEqual(fixture.originSnapshot);
       expect(fixture.stored[fixture.originKey]).toEqual(fixture.savedOrigin);
-      expect(fixture.stored[fixture.targetKey]).toMatchObject({ cleaning: { steps: fixture.steps } });
+      expect(fixture.stored[fixture.targetKey]).toMatchObject({ cleaning: { steps: copiedSteps } });
       expect(fixture.coordinator.activeSession()?.code).toBe("# target.csv");
       await fixture.bridge.request({
         kind: "closeSession",
@@ -1393,9 +1425,12 @@ describe("SessionCoordinator file-plan reuse", () => {
           filterModel: { filters: [], sort: [] }
         })
       ).resolves.toMatchObject({ kind: "page" });
-      expect(await readFile(fixture.originPath, "utf8")).toBe("value\n1.2\n2.3\n");
-      expect(await readFile(fixture.targetPath, "utf8")).toBe("value\n4.5\n6.7\n");
+      expect(await readFile(fixture.originPath, "utf8")).toBe("value,other\n1.2,10\n2.3,20\n");
+      expect(await readFile(fixture.targetPath, "utf8")).toBe(
+        reordered ? "other,value\n30,4.5\n40,6.7\n" : "value,other\n4.5,30\n6.7,40\n"
+      );
     } finally {
+      finalWrite.resolve();
       await fixture.close();
     }
   });
@@ -1436,6 +1471,8 @@ describe("SessionCoordinator file-plan reuse", () => {
 
   it.each([
     "schema",
+    "ambiguous schema",
+    "missing column",
     "incomplete plan",
     "page source drift",
     "unsupported operation",
@@ -1446,12 +1483,14 @@ describe("SessionCoordinator file-plan reuse", () => {
     "detached cancellation",
     "retired origin"
   ] as const)("abandons a private target on %s without replacing saved work", async (failure) => {
-    const fixture = await filePlanFixture();
+    const fixture = await filePlanFixture(failure === "schema");
     const cancellation = new vscode.CancellationTokenSource();
     const settlement = deferred<void>();
     try {
       const selected = fixture.capture();
       if (failure === "schema") fixture.targetSchemaMismatch = true;
+      if (failure === "ambiguous schema") fixture.targetColumnNames = ["value", "value"];
+      if (failure === "missing column") fixture.targetColumnNames = ["value", "absent"];
       if (failure === "incomplete plan") fixture.targetIncompletePlan = true;
       if (failure === "page source drift") fixture.targetPageSourceDrift = true;
       if (failure === "unsupported operation") fixture.targetUnsupported = true;
@@ -1484,7 +1523,7 @@ describe("SessionCoordinator file-plan reuse", () => {
         );
       } else expect(fixture.targetRequests.filter((request) => request.kind === "closeSession")).toHaveLength(1);
       expect(fixture.targetRequests.filter((request) => request.kind === "applyDraft")).toHaveLength(
-        failure === "incomplete plan" || failure === "page source drift" ? 2 : 0
+        failure === "incomplete plan" || failure === "page source drift" ? 3 : 0
       );
       if (failure === "runtime refusal") {
         fixture.beforeTargetPreview = undefined;
@@ -1543,12 +1582,12 @@ describe("SessionCoordinator file-plan reuse", () => {
   );
 });
 
-async function filePlanFixture() {
+async function filePlanFixture(reordered = false) {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-file-plan-"));
   const originPath = join(directory, "origin.csv");
   const targetPath = join(directory, "target.csv");
-  await writeFile(originPath, "value\n1.2\n2.3\n");
-  await writeFile(targetPath, "value\n4.5\n6.7\n");
+  await writeFile(originPath, "value,other\n1.2,10\n2.3,20\n");
+  await writeFile(targetPath, reordered ? "other,value\n30,4.5\n40,6.7\n" : "value,other\n4.5,30\n6.7,40\n");
   const source = (path: string, label: string): SessionSource => ({
     kind: "file",
     label,
@@ -1558,8 +1597,22 @@ async function filePlanFixture() {
   const originSource = source(originPath, "origin.csv");
   const targetSource = source(targetPath, "target.csv");
   const steps: TransformStep[] = [
-    { id: "round-value", kind: "roundNumber", params: { column: { id: "c:value", name: "value" }, decimals: 1 } },
-    { id: "floor-value", kind: "floorNumber", params: { column: { id: "c:value", name: "value" } } }
+    {
+      id: "rename-value",
+      kind: "renameColumn",
+      params: { column: { id: "c:source:0", name: "value" }, newName: "amount" }
+    },
+    {
+      id: "total",
+      kind: "formula",
+      params: {
+        leftColumn: { id: "c:source:0", name: "amount" },
+        rightColumn: { id: "c:source:1", name: "other" },
+        operator: "add",
+        newColumn: "total"
+      }
+    },
+    { id: "floor-total", kind: "floorNumber", params: { column: { id: "c:step:total:0", name: "total" } } }
   ];
   const originKey = persistenceKey(originSource, "polars");
   const targetKey = persistenceKey(targetSource, "polars");
@@ -1575,6 +1628,7 @@ async function filePlanFixture() {
     runtimeOwnerCurrent: boolean;
     targetRuntimeOwnerCurrent: boolean;
     targetSchemaMismatch: boolean;
+    targetColumnNames?: string[];
     targetIncompletePlan: boolean;
     targetPageSourceDrift: boolean;
     targetUnsupported: boolean;
@@ -1612,14 +1666,21 @@ async function filePlanFixture() {
     request: async (request: OpenWranglerRequest, _options?: BridgeRequestOptions): Promise<OpenWranglerResponse> => {
       if (request.kind === "openSession") {
         const metadata = metadataFor({ runtimeId: `runtime-${++ordinal}`, source: request.source });
-        metadata.schema = structuredClone(metadata.schema);
+        metadata.schema = (
+          request.source.path !== originPath
+            ? (controls.targetColumnNames ?? (reordered ? ["other", "value"] : ["value", "other"]))
+            : ["value", "other"]
+        ).map((name, position) => ({ ...metadata.schema[0], id: `c:source:${position}`, name, position }));
+        metadata.shape.columns = metadata.filteredShape.columns = metadata.schema.length;
         if (request.source.path !== originPath) {
           targetRequests.push(request);
           if (controls.targetSchemaMismatch) metadata.schema[0].rawType = "Int64";
           if (controls.targetUnsupported) metadata.capabilities.supportedOperations = [];
         }
         sessions.set(metadata.sessionId, metadata);
-        return openedFor(request, metadata);
+        const opened = openedFor(request, metadata);
+        opened.page.columnIds = metadata.schema.map((column) => column.id);
+        return opened;
       }
       if (!("sessionId" in request)) throw new Error(`Unexpected request ${request.kind}`);
       const metadata = sessions.get(request.sessionId);
@@ -1650,8 +1711,20 @@ async function filePlanFixture() {
         if (!metadata.draftStep) throw new Error("Expected fixture draft.");
         metadata.revision++;
         metadata.steps.push(metadata.draftStep);
-        if (target && controls.targetIncompletePlan && metadata.steps.length === 2) metadata.steps.pop();
         metadata.latestStepInputSchema = structuredClone(metadata.schema);
+        if (metadata.draftStep.kind === "renameColumn") {
+          const { column, newName } = metadata.draftStep.params;
+          metadata.schema = metadata.schema.map((item) => (item.id === column.id ? { ...item, name: newName } : item));
+        } else if (metadata.draftStep.kind === "formula") {
+          metadata.schema.push({
+            ...metadata.schema[0],
+            id: `c:step:${metadata.draftStep.id}:0`,
+            name: metadata.draftStep.params.newColumn,
+            position: metadata.schema.length
+          });
+        }
+        metadata.shape.columns = metadata.filteredShape.columns = metadata.schema.length;
+        if (target && controls.targetIncompletePlan && metadata.steps.length === steps.length) metadata.steps.pop();
         delete metadata.draftStep;
         return appliedFor(request, structuredClone(metadata), `# ${metadata.source.label}`);
       }
