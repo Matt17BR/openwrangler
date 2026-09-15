@@ -85,7 +85,8 @@ Choose an applied step in **Cleaning Steps** to inspect its changes, then return
 or delete earlier steps, or use **Undo** and **Redo**. Changing an earlier step replays the later steps so the result
 and generated code follow the updated plan.
 
-Use **Open Wrangler: Open Another File with This Plan** to repeat confirmed steps on a file matching the plan's original
+In [source builds](https://github.com/Matt17BR/openwrangler/blob/main/CONTRIBUTING.md#build-and-install-from-source),
+use **Open Wrangler: Open Another File with This Plan** to repeat confirmed steps on a file matching the plan's original
 column names, order, and types. It opens a separate Editing session using the same engine and import options. This supports
 Pandas, Polars, and DuckDB file plans without Custom Code or an unfinished draft. Choose a file that is not already
 open in Open Wrangler and has no saved work for those import options. Both source files remain unchanged.
@@ -134,19 +135,20 @@ describes supported frame classes, operations and export limits.
 
 ## Supported dataframes
 
-Use **Open Wrangler: Open DuckDB Table** to choose a local database and explore one base table with the grid,
+In [source builds](https://github.com/Matt17BR/openwrangler/blob/main/CONTRIBUTING.md#build-and-install-from-source),
+use **Open Wrangler: Open DuckDB Table** to choose a local database and explore one base table with the grid,
 filters and profiles. Close its viewer before opening another table from that database or writing to the database.
 Views, SQL editing, cleaning and exports are unavailable for this entry point. Computed columns can change between queries.
 
-| Dataframe or source                               | View    | Cleaning and generated code         | Data export                |
-| ------------------------------------------------- | ------- | ----------------------------------- | -------------------------- |
-| Pandas files and live dataframes                  | Yes     | Pandas Python                       | CSV / Parquet              |
-| Polars files and live dataframes                  | Yes     | Polars Python                       | CSV / Parquet              |
-| DuckDB CSV / TSV / Parquet / JSONL (experimental) | Yes     | Supported operations, DuckDB Python | CSV / Parquet              |
-| DuckDB database tables (experimental)             | Yes     | Unavailable                         | Unavailable                |
-| DuckDB notebook relations                         | Yes     | Unavailable                         | Unavailable                |
-| Local PySpark Classic / Connect notebooks         | Bounded | Unavailable                         | Unavailable                |
-| R base data.frame, tibble, data.table             | Yes     | Supported operations, native R      | CSV / Parquet, with limits |
+| Dataframe or source                                  | View    | Cleaning and generated code         | Data export                |
+| ---------------------------------------------------- | ------- | ----------------------------------- | -------------------------- |
+| Pandas files and live dataframes                     | Yes     | Pandas Python                       | CSV / Parquet              |
+| Polars files and live dataframes                     | Yes     | Polars Python                       | CSV / Parquet              |
+| DuckDB CSV / TSV / Parquet / JSONL (experimental)    | Yes     | Supported operations, DuckDB Python | CSV / Parquet              |
+| DuckDB database tables (experimental, source builds) | Yes     | Unavailable                         | Unavailable                |
+| DuckDB notebook relations                            | Yes     | Unavailable                         | Unavailable                |
+| Local PySpark Classic / Connect notebooks            | Bounded | Unavailable                         | Unavailable                |
+| R base data.frame, tibble, data.table                | Yes     | Supported operations, native R      | CSV / Parquet, with limits |
 
 PySpark uses an existing local batch session. Open Wrangler does not install or configure Spark; streaming dataframes
 and remote or authenticated clusters are unsupported.
