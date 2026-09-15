@@ -38,9 +38,27 @@ jobs:
       - run: python -m pip install -e "python[dev]"
       - run: npm run test:python-environment-smoke
       - run: python -m pytest python/tests -q
-      - run: npm run test:extension-host
+      - run: npm run build
+      - run: npm run package:prepared -- --out openwrangler.vsix
+      - run: npm run verify:vsix -- openwrangler.vsix
+      - run: npm run build:test-extension
+      - id: packaged_editor
+        name: Verify the installed VSIX in VS Code
+        run: node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
         env:
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode
+          OPEN_WRANGLER_PACKAGED_MODE: full
           VSCODE_TEST_VERSION: stable
+      - name: Upload packaged-editor failure diagnostics
+        if: ${{ !cancelled() && steps.packaged_editor.outcome == 'failure' && steps.packaged_editor.outputs.evidence_ready == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cross-platform-editor-diagnostics-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ steps.packaged_editor.outputs.evidence_path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
+          include-hidden-files: false
       - run: npm run test:scripts:native
         if: ${{ runner.os == 'Windows' }}
 
