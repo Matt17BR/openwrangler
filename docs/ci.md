@@ -251,6 +251,12 @@ Windows runtime contracts for this small dependency set. Its package installatio
 
 ## Scheduled and release workflows
 
+The weekly/manual macOS and Windows runtime jobs build and verify one VSIX, then run the existing packaged VS Code
+full mode. This replaces their development-extension seed/verify run, retaining those phases and adding package
+installation and restricted-trust checks. Python and native Windows source suites remain unchanged. These jobs do not
+opt into released Jupyter, R or other optional editor integrations. Failed editor runs retain only the existing
+sealed diagnostic artifact when its safety checks permit publication.
+
 The weekly cross-platform workflow groups the dependency authority's exact qualification cases by Python version
 and ordinal within each dependency. Each declared tuple appears once, including intermediate versions and the
 Python 3.10 IPython compatibility case. The current groups install ten and five exact requirements on Python 3.12,

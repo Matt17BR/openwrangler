@@ -16803,6 +16803,7 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
   const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-file-inputs-"));
   const config = vscode.workspace.getConfiguration("openWrangler");
   const originalBackend = config.get<"auto" | "polars" | "duckdb" | "pandas">("defaultBackend", "auto");
+  let databaseCleanupSafe = true;
   try {
     writeFileSync(
       path.join(directory, "sample.csv"),
@@ -16868,6 +16869,14 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
           "    connection.execute(\"COPY rich TO ? (FORMAT PARQUET)\", [str(root / 'sample-duckdb-rich.parquet')])",
           "finally:",
           "    connection.close()",
+          "connection = duckdb.connect(str(root / 'sample.duckdb'), config={'autoinstall_known_extensions': False, 'autoload_known_extensions': False})",
+          "try:",
+          "    connection.execute('CREATE SCHEMA \"decoy schema\"')",
+          "    connection.execute('CREATE SCHEMA \"selected schema\"')",
+          '    connection.execute("CREATE TABLE \\"decoy schema\\".records AS SELECT \'decoy\' AS label, 99 AS value")',
+          "    connection.execute(\"CREATE TABLE \\\"selected schema\\\".records AS SELECT * FROM (VALUES ('selected-one', 7), ('selected-two', 11), ('selected-three', 9)) source(label, value)\")",
+          "finally:",
+          "    connection.close()",
           "workbook = Workbook()",
           "sheet = workbook.active",
           "sheet.title = 'Overview'",
@@ -16923,6 +16932,144 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
       "the editor-menu file session to dispose"
     );
     recordAcceptanceProgress("verify:file-inputs:canonical:polars:parquet:closed");
+
+    {
+      const database = vscode.Uri.file(path.join(directory, "sample.duckdb"));
+      const databaseBytes = readFileSync(database.fsPath);
+      const workbench = await connectToEditorWorkbench();
+      const previousTabs = new Set(vscode.window.tabGroups.all.flatMap((group) => group.tabs));
+      const databaseTabs = () =>
+        vscode.window.tabGroups.all
+          .flatMap((group) => group.tabs)
+          .filter(
+            (tab) =>
+              !previousTabs.has(tab) && isOpenWranglerSessionTab(tab) && tab.label === "Open Wrangler: sample.duckdb"
+          );
+      const picker = workbench.locator(".quick-input-widget:visible").filter({ hasText: "Open DuckDB Table" }).last();
+      const failures: unknown[] = [];
+      let databaseSessionId: string | undefined;
+      recordAcceptanceProgress("verify:file-inputs:duckdb:database:pick");
+      databaseCleanupSafe = false;
+      const opening = Promise.resolve(vscode.commands.executeCommand("openWrangler.openDuckDBTable")).catch(
+        (error: unknown) => {
+          failures.push(error);
+        }
+      );
+      try {
+        await picker.waitFor({ state: "visible", timeout: 10_000 });
+        const fileInput = picker.locator(".quick-input-box input").first();
+        await fileInput.fill(path.resolve(database.fsPath), { timeout: 10_000 });
+        await fileInput.press("Enter", { timeout: 10_000 });
+        // VS Code can reuse this widget for the table picker without hiding its title.
+        await picker
+          .getByPlaceholder("Choose a table. Database writers are blocked until the viewer closes.", { exact: true })
+          .waitFor({ state: "visible", timeout: 10_000 });
+        const choices = picker.locator(".quick-input-list [role='option']");
+        const selectedTable = choices
+          .filter({ has: workbench.locator(".label-name").filter({ hasText: /^records$/u }) })
+          .filter({ hasText: 'Schema: "selected schema"' });
+        await selectedTable.waitFor({ state: "visible", timeout: 10_000 });
+        assert.equal(
+          await choices
+            .locator(".label-name")
+            .filter({ hasText: /^records$/u })
+            .count(),
+          2
+        );
+        await selectedTable.click({ timeout: 10_000 });
+        await withBoundedAcceptancePromise(opening, 10_000, "the DuckDB table command to finish");
+        if (failures.length > 0) throw failures[0];
+        await waitFor(
+          () => testing.activeSession()?.metadata.source.path === database.fsPath,
+          SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+          "the selected database table to publish its session"
+        );
+        const active = testing.activeSession();
+        assert.ok(active, "The database command must publish its selected table.");
+        databaseSessionId = active.sessionId;
+        assert.equal(databaseTabs().length, 1, "The database command must create exactly one owned panel.");
+        assert.equal(active.metadata.source.kind, "file");
+        assert.equal(active.metadata.source.uri, database.toString());
+        assert.equal(active.metadata.source.path, database.fsPath);
+        assert.deepEqual(active.metadata.source.importOptions, {
+          duckdbSchema: "selected schema",
+          duckdbTable: "records"
+        });
+        assert.equal(active.metadata.backend, "duckdb");
+        assert.equal(active.metadata.mode, "viewing");
+        assert.equal(active.metadata.capabilities.editable, false);
+        assert.deepEqual(active.metadata.steps, []);
+        assert.equal(active.metadata.draftStep, undefined);
+        assert.deepEqual(active.metadata.shape, { rows: 3, columns: 2 });
+        assert.deepEqual(active.viewState.filterModel, { logic: "and", filters: [], sort: [] });
+        const target = await waitForOpenWranglerGridTarget(workbench, testing, active.sessionId);
+        const app = await exactSessionApp(target.frame, active.sessionId);
+        assert.ok(app, "The selected database session must own the rendered grid.");
+        const loadedRows = app.getByRole("status", { name: "Loaded rows" });
+        await loadedRows.filter({ hasText: /^Rows 1 to 3 of 3$/u }).waitFor({ state: "visible", timeout: 10_000 });
+        assert.deepEqual(await app.locator('td[data-grid-column="0"]').allInnerTexts(), [
+          "selected-one",
+          "selected-two",
+          "selected-three"
+        ]);
+        assert.deepEqual(await app.locator('td[data-grid-column="1"]').allInnerTexts(), ["7", "11", "9"]);
+        recordAcceptanceProgress("verify:file-inputs:duckdb:database:filter");
+        const toggle = app.getByRole("button", { name: "Column profiles and filters" });
+        if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click({ timeout: 10_000 });
+        const drawer = app.getByRole("complementary", { name: "Column profiles and filters" });
+        await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click({ timeout: 10_000 });
+        const filter = drawer.locator(".filterSortPanel").first();
+        await filter.getByLabel("Filter column", { exact: true }).selectOption({ label: "value" }, { timeout: 10_000 });
+        await filter.getByLabel("Predicate operator", { exact: true }).selectOption("gt", { timeout: 10_000 });
+        await filter.getByLabel("gt predicate value", { exact: true }).fill("8", { timeout: 10_000 });
+        await filter.getByRole("button", { name: "Add predicate", exact: true }).click({ timeout: 10_000 });
+        await waitFor(
+          () => testing.sessionSnapshot(active.sessionId)?.metadata.filteredShape.rows === 2,
+          30_000,
+          "the native database filter to confirm two rows"
+        );
+        await loadedRows.filter({ hasText: /^Rows 1 to 2 of 2$/u }).waitFor({ state: "visible", timeout: 10_000 });
+        assert.deepEqual(await app.locator('td[data-grid-column="0"]').allInnerTexts(), [
+          "selected-two",
+          "selected-three"
+        ]);
+        assert.deepEqual(await app.locator('td[data-grid-column="1"]').allInnerTexts(), ["11", "9"]);
+        const filtered = testing.sessionSnapshot(active.sessionId);
+        assert.ok(filtered, "Filtering must retain the selected database session.");
+        assert.deepEqual(filtered.metadata.steps, []);
+        assert.equal(filtered.metadata.draftStep, undefined);
+        assert.equal(filtered.metadata.mode, "viewing");
+        assert.deepEqual(filtered.metadata.shape, { rows: 3, columns: 2 });
+      } catch (error) {
+        if (!failures.includes(error)) failures.push(error);
+      }
+      try {
+        if (await picker.isVisible()) {
+          await picker.locator(".quick-input-box input").first().press("Escape", { timeout: 10_000 });
+        }
+        await withBoundedAcceptancePromise(opening, 10_000, "the owned database picker to settle before cleanup");
+        const tabs = databaseTabs();
+        if (tabs.length > 0) assert.equal(await vscode.window.tabGroups.close(tabs, true), true);
+        await waitFor(
+          () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+          10_000,
+          "the database panel and retained reader to close"
+        );
+        if (databaseSessionId) assert.equal(testing.sessionSnapshot(databaseSessionId), undefined);
+        assert.equal(databaseTabs().length, 0);
+        databaseCleanupSafe = true;
+        assertExactBytes(
+          readFileSync(database.fsPath),
+          databaseBytes,
+          "Database filtering and close must preserve source bytes."
+        );
+      } catch (error) {
+        failures.push(error);
+      }
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new AggregateError(failures, "The database picker check or its cleanup failed.");
+      recordAcceptanceProgress("verify:file-inputs:duckdb:database:closed");
+    }
 
     recordAcceptanceProgress("verify:file-inputs:configured");
     await exerciseConfiguredFileImportOptions(testing, directory);
@@ -17026,7 +17173,7 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
     }
   } finally {
     await config.update("defaultBackend", originalBackend, vscode.ConfigurationTarget.Global);
-    cleanupAcceptanceTemporaryDirectory(directory);
+    if (databaseCleanupSafe) cleanupAcceptanceTemporaryDirectory(directory);
   }
 }
 
