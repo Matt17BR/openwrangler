@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { ColumnReference, ColumnSchema, OperationKind, TransformStep } from "../shared/protocol";
 import { savedStepEditError } from "../webviews/operations/savedStepEditValidation";
+import { remapStepColumnReferences } from "../shared/transformStepReferences";
+import { isTransformStep } from "../shared/protocolValidation";
 
 const text = { id: "c:text", name: "text" } as const;
 const otherText = { id: "c:other-text", name: "other_text" } as const;
@@ -195,6 +197,18 @@ describe("savedStepEditError", () => {
 
   it.each(Object.values(validSteps))("accepts a valid saved $kind operation", (savedStep) => {
     expect(savedStepEditError(savedStep, schema)).toBeUndefined();
+    const original = structuredClone(savedStep);
+    const ids = new Map(schema.map((item, index) => [item.id, schema[(index + 1) % schema.length].id]));
+    const mapped = remapStepColumnReferences(savedStep, ids);
+    expect(typeof mapped).not.toBe("string");
+    if (typeof mapped === "string") throw new Error(mapped);
+    expect(
+      savedStepEditError(
+        mapped,
+        schema.map((item) => ({ ...item, id: ids.get(item.id)! }))
+      )
+    ).toBeUndefined();
+    expect(savedStep).toEqual(original);
   });
 
   it("requires exact conditional input identity/type and lossless form operands", () => {
@@ -368,6 +382,9 @@ describe("savedStepEditError", () => {
     "checks missing references in %s",
     (_caseName, savedStep, message) => {
       expect(savedStepEditError(savedStep, schema)).toContain(`saved ${message} refers to column ID “c:missing”`);
+      const mapped = remapStepColumnReferences(savedStep, new Map([["c:missing", "c:remapped-missing"]]));
+      if (typeof mapped === "string") throw new Error(mapped);
+      expect(savedStepEditError(mapped, schema)).toContain(`saved ${message} refers to column ID “c:remapped-missing”`);
     }
   );
 
@@ -455,6 +472,24 @@ describe("savedStepEditError", () => {
   );
 
   it("permits repeated formula operands and aggregation inputs where repetition is meaningful", () => {
+    const repeated = step("formula", { leftColumn: value, rightColumn: value, operator: "add", newColumn: "doubled" });
+    expect(
+      remapStepColumnReferences(
+        repeated,
+        new Map([
+          [value.id, otherValue.id],
+          [otherValue.id, value.id]
+        ])
+      )
+    ).toEqual({
+      ...repeated,
+      params: {
+        ...repeated.params,
+        leftColumn: { ...value, id: otherValue.id },
+        rightColumn: { ...value, id: otherValue.id }
+      }
+    });
+    expect(repeated.params.leftColumn).toEqual(value);
     expect(
       savedStepEditError(
         step("formula", { leftColumn: value, rightColumn: value, operator: "add", newColumn: "doubled" }),
@@ -778,5 +813,51 @@ describe("savedStepEditError", () => {
     expect(savedStepEditError(validSteps.customCode, schema)).toBeUndefined();
     const unknownStep = { id: "future", kind: "futureOperation", params: {} } as unknown as TransformStep;
     expect(savedStepEditError(unknownStep, schema)).toContain("operation kind “futureOperation” is unsupported");
+    expect(remapStepColumnReferences(unknownStep, new Map())).toContain(
+      "operation kind “futureOperation” is unsupported"
+    );
+    expect(
+      remapStepColumnReferences(
+        {
+          ...validSteps.fillMissingValues,
+          params: { ...validSteps.fillMissingValues.params, replacement: { kind: "futureFill" } }
+        } as unknown as TransformStep,
+        new Map()
+      )
+    ).toContain("unsupported replacement kind");
+    expect(
+      remapStepColumnReferences(
+        {
+          ...validSteps.byExample,
+          params: { ...validSteps.byExample.params, program: { kind: "futureExpression" } }
+        } as unknown as TransformStep,
+        new Map()
+      )
+    ).toContain("unsupported program kind");
+  });
+
+  it("remaps declared references without changing derived identities, names or reference-shaped predicate values", () => {
+    const literal = { id: value.id, name: value.name };
+    const saved = step("filterRows", {
+      filterModel: {
+        filters: [
+          { column: value, type: "float", predicates: [{ kind: "predicate", operator: "equals", value: literal }] }
+        ],
+        sort: [{ column: { id: "c:step:derived:0", name: "result" }, direction: "asc", nulls: "last" }]
+      }
+    });
+    const mapped = remapStepColumnReferences(saved, new Map([[value.id, otherValue.id]]));
+    expect(isTransformStep(saved)).toBe(true);
+    expect(mapped).toEqual({
+      ...saved,
+      params: {
+        filterModel: {
+          ...saved.params.filterModel,
+          filters: [{ ...saved.params.filterModel.filters[0], column: { ...value, id: otherValue.id } }]
+        }
+      }
+    });
+    expect(literal).toEqual(value);
+    expect(saved.params.filterModel.filters[0].column).toEqual(value);
   });
 });
