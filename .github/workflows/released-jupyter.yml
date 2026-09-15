@@ -25,7 +25,7 @@ on:
         type: boolean
         default: false
       omit_source:
-        description: Omit native numeric portability for proven renderer or native view edits
+        description: Omit native numeric portability for proven selected host and renderer edits
         type: boolean
         default: false
     outputs:
@@ -389,7 +389,7 @@ jobs:
         name: Record omitted R source check
         if: ${{ inputs.omit_source }}
         shell: bash
-        run: echo 'Native R numeric portability and its private source preparation omitted for proven renderer or native view edits; no fresh numeric-portability execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
+        run: echo 'Native R numeric portability and its private source preparation omitted for proven selected host and renderer edits; no fresh numeric-portability execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
       - run: python -m pip install --upgrade pip
       - run: python -m pip install jupyter-client
       - run: npm run clean && npm run build && npm run package:prepared -- --out openwrangler.vsix

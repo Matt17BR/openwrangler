@@ -27,11 +27,14 @@ const runtimeOmissionScriptFiles = new Set([
 ]);
 
 const rEditorOmissionTestFiles = new Set(["r/tests/kernel_agent.R", "r/tests/frame_contract.R"]);
-const nativeViewSourceOmissionFiles = new Set([
+const hostSourceOmissionFiles = new Set([
   "src/extension/nativeViews.ts",
   "src/extension/nativeViewsExportOptions.ts",
   "src/test/nativeViewStateCommands.unit.test.ts",
-  "src/test/nativeViewExportCommands.unit.test.ts"
+  "src/test/nativeViewExportCommands.unit.test.ts",
+  "src/extension/files/importOptions.ts",
+  "src/test/importOptions.unit.test.ts",
+  "src/test/webviewPanel.unit.test.ts"
 ]);
 const nativeSparkOmissionFiles = new Set([
   "python/openwrangler_runtime/engines/_pandas_arrow_formula_helpers.py",
@@ -131,8 +134,8 @@ export function proveRuntimeOmissions({ cwd = process.cwd(), env = process.env }
     docsOnly = false;
     const webviewSource = modified && /^src\/webviews\/[^\p{Cc}]+$/u.test(path);
     const componentTest = modified && /^src\/test\/[^/\p{Cc}]+\.component\.test\.tsx$/u.test(path);
-    const nativeViewSource = modified && nativeViewSourceOmissionFiles.has(path);
-    rRuntimeOmittable &&= webviewSource || componentTest || nativeViewSource;
+    const hostSource = modified && hostSourceOmissionFiles.has(path);
+    rRuntimeOmittable &&= webviewSource || componentTest || hostSource;
     if (modified && rEditorOmissionTestFiles.has(path)) {
       rOmittable = false;
       continue;
@@ -146,7 +149,7 @@ export function proveRuntimeOmissions({ cwd = process.cwd(), env = process.env }
     if (
       rSource ||
       webviewSource ||
-      nativeViewSource ||
+      hostSource ||
       (modified && /^docs\/images\/[^\p{Cc}]+\.png$/u.test(path)) ||
       (modified &&
         (path === "src/test/progressiveProfilingLifecycle.unit.test.tsx" ||
@@ -188,7 +191,7 @@ if (process.argv[1] !== undefined && pathToFileURL(resolve(process.argv[1])).hre
           : rOmittable
             ? "Verified changes independent of native R."
             : rRuntimeOmittable
-              ? "Verified renderer or native view edits permit omission of Python, native R source and Windows filesystem and process checks; platform artifact, package and installed-editor checks remain required."
+              ? "Verified selected host and renderer edits permit omission of Python, native R source and Windows filesystem and process checks; platform artifact, package and installed-editor checks remain required."
               : pythonOmittable
                 ? "Verified edits permit omission of the Python worker; R, editor and Windows checks remain required."
                 : "Full runtime checks required."

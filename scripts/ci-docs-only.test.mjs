@@ -14,11 +14,15 @@ const arrowFormulaHelper = "python/openwrangler_runtime/engines/_pandas_arrow_fo
 const arrowFormulaTests = ["python/tests/test_operation_edges.py", "python/tests/test_session_transactions.py"];
 const pandasFilterTests = ["python/tests/test_pandas_engine.py", "python/tests/test_filter_logic.py"];
 const screenshot = "docs/images/acceptance/operation-dialog-dark-1280.png";
-const nativeViewFiles = [
+const importPromptFile = "src/extension/files/importOptions.ts";
+const hostSourceFiles = [
   "src/extension/nativeViews.ts",
   "src/extension/nativeViewsExportOptions.ts",
   "src/test/nativeViewStateCommands.unit.test.ts",
-  "src/test/nativeViewExportCommands.unit.test.ts"
+  "src/test/nativeViewExportCommands.unit.test.ts",
+  importPromptFile,
+  "src/test/importOptions.unit.test.ts",
+  "src/test/webviewPanel.unit.test.ts"
 ];
 const workflow = load(readFileSync(resolve(import.meta.dirname, "../.github/workflows/ci.yml"), "utf8"));
 const releasedJupyter = load(
@@ -168,6 +172,9 @@ test("keeps all owners for documentary additions, removals or report data mixed 
     { file: "r/tests/added.R", added: true },
     { file: "src/test/webview.component.test.tsx" },
     { file: screenshot },
+    { file: importPromptFile },
+    { file: importPromptFile, document: "docs/new.md", status: "A" },
+    { file: importPromptFile, document: "docs/performance/result.json", status: "M" },
     { file: "python/tests/existing.py", document: "docs/new.md", status: "A" },
     { file: "r/tests/kernel_agent.R", document: "docs/performance/result.json", status: "A" },
     { file: "src/test/webview.component.test.tsx", document: "docs/performance/result.json", status: "M" },
@@ -549,17 +556,23 @@ test("proves Python omissions with selective native R source checks", async (con
     { added: [], modified: ["src/webviews/grid/rowScrollModel.ts"], runtimeOmittable: true },
     { added: [], modified: ["src/webviews/grid/DataGrid.tsx"], runtimeOmittable: true },
     { added: [], modified: ["src/webviews/styles/grid.css"], runtimeOmittable: true },
-    ...nativeViewFiles.map((file) => ({ added: [], modified: [file], runtimeOmittable: true })),
+    ...hostSourceFiles.map((file) => ({ added: [], modified: [file], runtimeOmittable: true })),
     {
       added: [],
-      modified: [...nativeViewFiles, "docs/architecture.md", "CHANGELOG.md"],
+      modified: [...hostSourceFiles, "docs/architecture.md", "docs/testing.md", "CHANGELOG.md"],
       runtimeOmittable: true,
       checkCli: true
     },
-    { added: [], modified: [nativeViewFiles[0], "r/openwrangler_runtime/kernel_agent.R"] },
+    { added: [], modified: [hostSourceFiles[0], "r/openwrangler_runtime/kernel_agent.R"] },
+    { added: [], modified: [importPromptFile, "r/openwrangler_runtime/kernel_agent.R"] },
     {
       added: [],
-      modified: [nativeViewFiles[0], "python/openwrangler_runtime/session.py"],
+      modified: [importPromptFile, "python/openwrangler_runtime/session.py"],
+      pythonOmittable: false
+    },
+    {
+      added: [],
+      modified: [hostSourceFiles[0], "python/openwrangler_runtime/session.py"],
       pythonOmittable: false
     },
     ...[
@@ -627,7 +640,7 @@ test("proves Python omissions with selective native R source checks", async (con
         if (runtimeOmittable) {
           assert.match(
             message,
-            /native R source and Windows filesystem and process checks; platform artifact, package and installed-editor checks remain required\./u
+            /^Verified selected host and renderer edits permit omission of Python, native R source and Windows filesystem and process checks; platform artifact, package and installed-editor checks remain required\./u
           );
         } else if (pythonOmittable) {
           assert.match(message, /Python worker; R, editor and Windows checks remain required\./u);
@@ -677,7 +690,8 @@ test("keeps both runtimes required for R and CHANGELOG changes with Python sourc
 test("requires full owners for deleted or renamed source, including alongside additions", async (context) => {
   for (const file of [
     screenshot,
-    nativeViewFiles[0],
+    hostSourceFiles[0],
+    importPromptFile,
     "src/webviews/progressiveProfilingLifecycle.ts",
     "src/test/progressiveProfilingLifecycle.unit.test.tsx",
     arrowFormulaHelper,
@@ -717,7 +731,8 @@ test("requires full owners for deleted or renamed source, including alongside ad
 test("requires full owners for source mode changes and existing executable or symlink entries", async (context) => {
   for (const file of [
     screenshot,
-    nativeViewFiles[0],
+    hostSourceFiles[0],
+    importPromptFile,
     "src/webviews/styles/grid.css",
     "src/test/progressiveProfilingLifecycle.unit.test.tsx",
     arrowFormulaHelper,
@@ -786,7 +801,7 @@ test("requires full owners for added executable or symlink runtime source", asyn
 test("requires full owners for additions outside the documentary and runtime source scopes", async (context) => {
   for (const file of [
     screenshot,
-    ...nativeViewFiles,
+    ...hostSourceFiles,
     "src/webviews/progressiveProfilingLifecycle.ts",
     "src/test/progressiveProfilingLifecycle.unit.test.tsx",
     "docs/result.json",
@@ -927,6 +942,11 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
     "tsconfig.extension-test.json",
     "src/extension/r/rKernelBridge.ts",
     "src/extension/nativeViewsDataExport.ts",
+    "src/extension/files/importDetection.ts",
+    "src/extension/files/fileOpen.ts",
+    "src/extension/files/importOptions.ts.bak",
+    "src/extension/webviewPanel.ts",
+    "src/test/nested/importOptions.unit.test.ts",
     "src/extension/nativeViews.ts.bak",
     "src/extension/nested/nativeViews.ts",
     "src/test/nativeViews.testFixtures.ts",
@@ -978,9 +998,9 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
         proofTest,
         webview,
         screenshot,
-        ...nativeViewFiles
+        ...hostSourceFiles
       ]);
-      for (const nativeView of nativeViewFiles) write(cwd, nativeView);
+      for (const hostSource of hostSourceFiles) write(cwd, hostSource);
       write(cwd, component);
       write(cwd, releasePolicy);
       write(cwd, proofTest);
