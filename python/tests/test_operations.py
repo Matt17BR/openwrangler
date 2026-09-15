@@ -1627,11 +1627,13 @@ def test_pandas_constant_by_example_omits_unused_helpers_and_preserves_native_re
     assert operation["params"]["program"] == {"kind": "literal", "value": value}
     code = engine.compile_plan([operation])
     assert "    def " not in code
+    namespace: dict[str, Any] = {}
+    exec(code, namespace, namespace)
     for source in (frame, frame.iloc[:0]):
         before = source.copy(deep=True)
         original_index = source.index
         live = engine.apply_transform(source, operation)
-        generated = execute_generated(engine, source, [operation])
+        generated = namespace["clean_data"](source)
         pd.testing.assert_frame_equal(live, generated)
         pd.testing.assert_frame_equal(generated.iloc[:, :2], source)
         pd.testing.assert_series_equal(generated["label"], pd.Series(value, index=source.index, name="label"))
@@ -1679,7 +1681,10 @@ def test_pandas_by_example_emits_string_conversion_only_when_used(kind: str) -> 
     )
     code = engine.compile_plan([operation])
     assert ("def _open_wrangler_string_values(" in code) == (kind in {"nested-datetime", "concat"})
-    result = assert_pandas_live_matches_generated(engine, frame, operation)
+    namespace: dict[str, Any] = {}
+    exec(code, namespace, namespace)
+    result = engine.apply_transform(frame, operation)
+    pd.testing.assert_frame_equal(result, namespace["clean_data"](frame))
     assert result["result"].tolist() == expected
     pd.testing.assert_frame_equal(frame, before)
     pd.testing.assert_index_equal(result.index, before.index)
