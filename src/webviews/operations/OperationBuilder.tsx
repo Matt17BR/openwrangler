@@ -36,14 +36,18 @@ const dialogFocusableSelector = [
   "[tabindex]:not([tabindex='-1'])"
 ].join(",");
 
-function trapDialogFocus(event: ReactKeyboardEvent<HTMLElement>): void {
-  if (event.key !== "Tab") return;
-  const dialog = event.currentTarget;
-  const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(dialogFocusableSelector))
+function dialogFocusableElements(container: Element): HTMLElement[] {
+  return Array.from(container.querySelectorAll<HTMLElement>(dialogFocusableSelector))
     .filter((element) => element.getAttribute("aria-hidden") !== "true")
     .sort((left, right) =>
       left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : left === right ? 0 : 1
     );
+}
+
+function trapDialogFocus(event: ReactKeyboardEvent<HTMLElement>): void {
+  if (event.key !== "Tab") return;
+  const dialog = event.currentTarget;
+  const focusable = dialogFocusableElements(dialog);
   if (focusable.length === 0) {
     event.preventDefault();
     dialog.focus();
@@ -86,6 +90,7 @@ export function OperationBuilder({
     formError ?? (previewError && previewError.kind === selectedKind ? previewError.message : undefined);
   const dialogRef = useRef<HTMLElement | null>(null);
   const previewButtonRef = useRef<HTMLButtonElement | null>(null);
+  const initialFocusHandled = useRef(false);
   const availableCatalog = useMemo(() => supportedOperationCatalog(metadata.capabilities), [metadata.capabilities]);
   const filteredCatalog = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -108,6 +113,22 @@ export function OperationBuilder({
   const selectedFilterQueryIsEmpty =
     selectedKind === "filterRows" &&
     (savedFilterModel ? !hasActiveViewQuery(savedFilterModel) : !hasActiveViewQuery(filterModel));
+
+  useLayoutEffect(() => {
+    if (initialFocusHandled.current) return;
+    initialFocusHandled.current = true;
+    if (!requestedInitialKind || !document.hasFocus()) return;
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const settings = dialog.querySelector(".operationForm");
+    const control =
+      !busy && selectedKind && settings
+        ? dialogFocusableElements(settings).find(
+            (element) => !(element instanceof HTMLButtonElement && element.type === "submit")
+          )
+        : undefined;
+    (control ?? dialog).focus();
+  }, [busy, requestedInitialKind, selectedKind]);
 
   useEffect(() => {
     if (!busy) return;
@@ -218,7 +239,7 @@ export function OperationBuilder({
                   onChange={(event) => setSearch(event.target.value)}
                   aria-label="Search operations"
                   placeholder="Search operations"
-                  autoFocus
+                  autoFocus={!requestedInitialKind}
                 />
               </label>
               {operationGroups.map((group) => {

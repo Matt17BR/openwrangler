@@ -1811,6 +1811,8 @@ high-contrast behavior. Virtualization changes what is rendered, not the accessi
 Editable-field undo remains owned by the field; state-scoped workbench shortcuts are mirrored in the webview and
 documented in the generated reference. An open column-actions popup consumes Escape and restores focus to its labelled
 summary before another Escape can reach the outer workbench shortcut.
+The operation picker initially focuses search when browsing, or settings when an operation is already selected.
+Subsequent form changes retain the user's focus choice; opening a preview does not reclaim focus from the host.
 Code Preview keeps its labelled content in the tab order in both editable and read-only modes. Read-only buffers
 support keyboard navigation and selection while the editor's mutation guards remain active.
 
