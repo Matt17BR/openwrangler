@@ -12101,7 +12101,7 @@ async function capturePackagedOperationDialogScenes(
 
 async function assertPackagedOperationDialogGeometry(
   dialog: Locator,
-  scene: "catalog" | "configuration"
+  scene: "catalog" | "configuration" | "saved-step"
 ): Promise<void> {
   const geometry = await dialog.evaluate((element) => {
     type DialogElement = {
@@ -12151,10 +12151,12 @@ async function assertPackagedOperationDialogGeometry(
   );
   assert.ok(geometry.bodyOverflow <= 1, `${scene} operation dialog must not overflow horizontally.`);
   assert.ok(geometry.headerOverflow <= 1, `${scene} operation dialog header must not clip.`);
-  assert.equal(geometry.catalogVisible, true);
+  assert.equal(geometry.catalogVisible, scene !== "saved-step");
   assert.equal(geometry.formVisible, true);
-  assert.equal(geometry.searchIconContained, true, `${scene} search icon must stay inside its input.`);
-  assert.ok(geometry.searchIconCenterDelta <= 1, `${scene} search icon must be vertically centered in its input.`);
+  if (scene !== "saved-step") {
+    assert.equal(geometry.searchIconContained, true, `${scene} search icon must stay inside its input.`);
+    assert.ok(geometry.searchIconCenterDelta <= 1, `${scene} search icon must be vertically centered in its input.`);
+  }
 }
 
 async function capturePackagedImportOptionsScene(
@@ -12455,7 +12457,7 @@ async function capturePackagedEditAndUndoScenes(
   );
   assert.equal(await dialog.getByLabel("Numeric value", { exact: true }).inputValue(), "500");
   assert.equal(await dialog.getByLabel("New column", { exact: true }).inputValue(), "projected_revenue");
-  await assertPackagedOperationDialogGeometry(dialog, "configuration");
+  await assertPackagedOperationDialogGeometry(dialog, "saved-step");
   await dialog.getByLabel("Numeric value", { exact: true }).fill("750");
   await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
   await waitFor(

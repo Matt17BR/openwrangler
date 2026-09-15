@@ -164,7 +164,7 @@ const assets = [
     height: 760
   }),
   browserCrop("gallery/by-example-setup-detail.png", "by-example-dialog.png", 1_280, 960, {
-    x: 520,
+    x: 100,
     y: 100,
     width: 660,
     height: 760
