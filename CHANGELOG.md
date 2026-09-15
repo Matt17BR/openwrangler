@@ -25,6 +25,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Code Preview and code commands explain cleaning availability when a Viewing session has no generated code.
 - Code Preview keeps multiline filenames inside placeholder comments.
 - Variable names ending in `.tsv` no longer select a tab delimiter for CSV export.
 - Value Search is unavailable while a new view is loading, so enabled clicks are no longer silently ignored.

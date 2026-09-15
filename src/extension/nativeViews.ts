@@ -261,7 +261,8 @@ function isOwnRecord(value: unknown): value is Record<string, unknown> {
 
 type CodePreviewActionCode =
   | { readonly kind: "available"; readonly snapshot: ActiveSessionSnapshot; readonly code: string }
-  | { readonly kind: "missing" | "invalid" | "unavailable" };
+  | { readonly kind: "missing"; readonly reason?: string }
+  | { readonly kind: "invalid" | "unavailable" };
 
 interface PendingCodePreviewRequest {
   readonly view: vscode.WebviewView;
@@ -406,7 +407,13 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   async acquireCodeForAction(): Promise<CodePreviewActionCode> {
     const snapshot = this.snapshot;
-    if (!snapshot?.code) return { kind: this.sourceInvalid || this.bufferInvalid ? "invalid" : "missing" };
+    if (!snapshot?.code) {
+      if (this.sourceInvalid || this.bufferInvalid) return { kind: "invalid" };
+      return {
+        kind: "missing",
+        reason: snapshot?.metadata.mode === "viewing" ? cleaningUnavailableReason(snapshot.metadata) : undefined
+      };
+    }
     const view = this.view;
     if (view && this.viewReady) return this.requestCurrentCode(view, snapshot, this.bufferId, this.bufferVersion);
     if (this.bufferInvalid) return { kind: "invalid" };
@@ -598,7 +605,7 @@ function reportCodePreviewActionFailure(failure: CodePreviewActionFailure, actio
 }
 
 function codePreviewActionFailureMessage(failure: CodePreviewActionFailure, action = "using"): string {
-  if (failure.kind === "missing") return `Add a cleaning step before ${action} generated code.`;
+  if (failure.kind === "missing") return failure.reason ?? `Add a cleaning step before ${action} generated code.`;
   if (failure.kind === "invalid") {
     return "Code Preview must contain valid Unicode text no larger than 4 MiB. Fix or reset it before trying again.";
   }
@@ -1636,6 +1643,9 @@ function placeholderCode(snapshot: ActiveSessionSnapshot | undefined): string {
   const label = canonicalizeCodePreviewText(snapshot.metadata.source.label).replaceAll("\n", "\n# ");
   if (snapshot.metadata.source.kind === "notebookOutput") {
     return `# ${label}\n# Read-only saved notebook snapshot. Executable cleaning lineage is not embedded in notebook output.`;
+  }
+  if (snapshot.metadata.mode === "viewing") {
+    return `# ${label}\n# ${cleaningUnavailableReason(snapshot.metadata)}`;
   }
   return `# ${label}\n# Add or select a cleaning step to preview generated code.`;
 }

@@ -1951,6 +1951,7 @@ and revision and yields to newer focus, including focus outside the webview.
 Code Preview keeps its labelled content in the tab order in both editable and read-only modes. Read-only buffers
 support keyboard navigation and selection while the editor's mutation guards remain active.
 No-code placeholders comment every source-label line; code actions still require generated code.
+When a Viewing session has no generated code, Code Preview and code-action replies explain its cleaning availability.
 
 Pending grid navigation yields to a later focus choice, including headers and resize controls. Virtualizing the
 original cell alone does not cancel navigation. A column-resize drag ends when the host restores view state, the

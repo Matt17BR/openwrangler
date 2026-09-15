@@ -1425,6 +1425,62 @@ describe("native state and presentation commands", () => {
       }
     });
     expect(codePreviewView.description).toBeUndefined();
+
+    const liveViewing = exportableSnapshot("live-viewing", "live_frame", 0);
+    liveViewing.code = "";
+    liveViewing.metadata = {
+      ...liveViewing.metadata,
+      backend: "pyspark",
+      mode: "viewing",
+      steps: [],
+      source: {
+        kind: "notebookVariable",
+        label: "live_frame",
+        variableName: "live_frame",
+        uri: "file:///workspace/analysis.ipynb"
+      },
+      capabilities: {
+        ...liveViewing.metadata.capabilities,
+        editable: false,
+        exportCsv: false,
+        exportParquet: false,
+        notebookInsert: false,
+        supportedOperations: []
+      }
+    };
+    registered.setActiveSession(liveViewing);
+    expect(posted.at(-1)).toMatchObject({
+      code: "# live_frame\n# Live PySpark dataframes are viewing only in Open Wrangler; cleaning steps are not available.",
+      editable: false,
+      bufferInvalid: false,
+      runtimeIdentity: { dataframeFlavor: "pyspark", codeDialect: null }
+    });
+
+    const { env } = await import("vscode");
+    const clipboardWrites = vi.mocked(env.clipboard.writeText).mock.calls.length;
+    const missingCopy = command("openWrangler.copyCode")();
+    registered.setActiveSession({
+      ...liveViewing,
+      sessionId: "duckdb-viewing",
+      metadata: { ...liveViewing.metadata, sessionId: "duckdb-viewing", backend: "duckdb" }
+    });
+    expect(posted.at(-1)).toMatchObject({
+      code: "# live_frame\n# Live DuckDB notebook relations are viewing only in Open Wrangler; cleaning steps are not available.",
+      editable: false,
+      bufferInvalid: false,
+      runtimeIdentity: { dataframeFlavor: "duckdb", codeDialect: "python.duckdb" }
+    });
+    await expect(missingCopy).resolves.toBe(false);
+    expect(nativeMocks.showInformationMessage).toHaveBeenLastCalledWith(
+      "Live PySpark dataframes are viewing only in Open Wrangler; cleaning steps are not available."
+    );
+    expect(env.clipboard.writeText).toHaveBeenCalledTimes(clipboardWrites);
+
+    await expect(command("openWrangler.exportCode")()).resolves.toBe(false);
+    expect(nativeMocks.showInformationMessage).toHaveBeenLastCalledWith(
+      "Live DuckDB notebook relations are viewing only in Open Wrangler; cleaning steps are not available."
+    );
+    expect(nativeMocks.showSaveDialog).not.toHaveBeenCalled();
   });
 
   it("disambiguates a selected duplicate label by its human column position", () => {
