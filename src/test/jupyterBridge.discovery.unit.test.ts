@@ -301,6 +301,7 @@ describe("notebook variable discovery", () => {
   });
 
   it("discovers an R tibble and opens it through the native R bridge", async () => {
+    const name = "$(add)";
     const original = notebook("file:///workspace/r.ipynb");
     notebookMocks.notebookDocuments.push(original);
     notebookMocks.activeNotebookEditor = editor(original);
@@ -310,7 +311,7 @@ describe("notebook variable discovery", () => {
       rDiscoveryOutputs(code, {
         protocolVersion: 1,
         truncated: false,
-        variables: [{ name: "sales_tbl", dataframeFlavor: "r.tibble" }]
+        variables: [{ name, dataframeFlavor: "r.tibble" }]
       })
     );
     const { context, coordinator, coordinatedBridge } = register();
@@ -320,7 +321,7 @@ describe("notebook variable discovery", () => {
     const [items] = notebookMocks.showQuickPick.mock.calls[0] ?? [];
     expect(items).toEqual([
       expect.objectContaining({
-        label: "sales_tbl",
+        label: String.raw`"\u0024(add)"`,
         description: "R · tibble",
         detail: "Live notebook session"
       })
@@ -330,7 +331,7 @@ describe("notebook variable discovery", () => {
     expect(notebookMocks.rKernelOrigins).toEqual([{ uri: original.uri.toString(), document: original }]);
     expect(notebookMocks.rVerifiedSelections).toEqual([
       expect.objectContaining({
-        variable: expect.objectContaining({ name: "sales_tbl", dataframeFlavor: "r.tibble" })
+        variable: expect.objectContaining({ name, dataframeFlavor: "r.tibble" })
       })
     ]);
     expect(coordinator.createBridge.mock.calls[0]?.[1]).toBe(original);
@@ -339,8 +340,8 @@ describe("notebook variable discovery", () => {
       coordinatedBridge,
       {
         kind: "notebookVariable",
-        label: "sales_tbl",
-        variableName: "sales_tbl",
+        label: name,
+        variableName: name,
         uri: original.uri.toString()
       },
       "r"

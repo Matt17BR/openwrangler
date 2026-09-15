@@ -16870,8 +16870,8 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
           "try:",
           "    connection.execute('CREATE SCHEMA \"decoy schema\"')",
           "    connection.execute('CREATE SCHEMA \"selected schema\"')",
-          '    connection.execute("CREATE TABLE \\"decoy schema\\".records AS SELECT \'decoy\' AS label, 99 AS value")',
-          "    connection.execute(\"CREATE TABLE \\\"selected schema\\\".records AS SELECT * FROM (VALUES ('selected-one', 7), ('selected-two', 11), ('selected-three', 9)) source(label, value)\")",
+          '    connection.execute("CREATE TABLE \\"decoy schema\\".\\"$(add)\\" AS SELECT \'decoy\' AS label, 99 AS value")',
+          "    connection.execute(\"CREATE TABLE \\\"selected schema\\\".\\\"$(add)\\\" AS SELECT * FROM (VALUES ('selected-one', 7), ('selected-two', 11), ('selected-three', 9)) source(label, value)\")",
           "finally:",
           "    connection.close()",
           "workbook = Workbook()",
@@ -16958,18 +16958,21 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
         await fileInput.fill(path.resolve(database.fsPath), { timeout: 10_000 });
         await fileInput.press("Enter", { timeout: 10_000 });
         // VS Code can reuse this widget for the table picker without hiding its title.
-        await picker
-          .getByPlaceholder("Choose a table. Database writers are blocked until the viewer closes.", { exact: true })
-          .waitFor({ state: "visible", timeout: 10_000 });
+        const tableInput = picker.getByPlaceholder(
+          "Search shown names (JSON escapes). Database writers are blocked until the viewer closes.",
+          { exact: true }
+        );
+        await tableInput.waitFor({ state: "visible", timeout: 10_000 });
+        await tableInput.fill("add", { timeout: 10_000 });
         const choices = picker.locator(".quick-input-list [role='option']");
         const selectedTable = choices
-          .filter({ has: workbench.locator(".label-name").filter({ hasText: /^records$/u }) })
-          .filter({ hasText: 'Schema: "selected schema"' });
+          .filter({ has: workbench.locator(".label-name").filter({ hasText: /^"\\u0024\(add\)"$/u }) })
+          .filter({ hasText: "Schema: selected schema" });
         await selectedTable.waitFor({ state: "visible", timeout: 10_000 });
         assert.equal(
           await choices
             .locator(".label-name")
-            .filter({ hasText: /^records$/u })
+            .filter({ hasText: /^"\\u0024\(add\)"$/u })
             .count(),
           2
         );
@@ -16990,7 +16993,7 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
         assert.equal(active.metadata.source.path, database.fsPath);
         assert.deepEqual(active.metadata.source.importOptions, {
           duckdbSchema: "selected schema",
-          duckdbTable: "records"
+          duckdbTable: "$(add)"
         });
         assert.equal(active.metadata.backend, "duckdb");
         assert.equal(active.metadata.mode, "viewing");

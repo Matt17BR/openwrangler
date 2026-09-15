@@ -161,8 +161,11 @@ Use the existing owners to choose a focused source check:
   cancellation and actual child closure for both Excel and DuckDB discovery. Protocol, panel and coordinator owners reject invalid selectors and ordinary
   file reconfiguration; the App and mode-control owners check viewing-only actions. These source checks do not qualify
   an installed cross-platform database journey. The generic file-input journey separately exercises the registered
-  database command, both real pickers, exact schema/table selection, rendered rows and filtering, then closes its
-  reader and checks unchanged source bytes. It reuses the existing fixture child and adds no native lock or spill matrix.
+  database command, both real pickers, literal icon-like table labels and native name search, exact schema/table
+  selection, rendered rows and filtering, then closes its reader and checks unchanged source bytes. It reuses the
+  existing fixture child and adds no native lock or spill matrix.
+  The existing import-options owner checks the common name representation once. File, R document, direct/cached R
+  terminal and notebook picker owners check displayed names while retaining original selections and live-tree labels.
 - **Python engines and generated programs:** [Pandas](../python/tests/test_pandas_engine.py),
   [Polars](../python/tests/test_polars_engine.py) and [DuckDB](../python/tests/test_duckdb_engine.py) own native profiles,
   queries, source preservation and engine-specific evaluation bounds. The Polars owner also checks literal column

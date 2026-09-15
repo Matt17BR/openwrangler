@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { formatQuickPickName } from "../quickPickName";
 import type { DataBackend, SessionSource } from "../../shared/protocol";
 import { OpenWranglerPanel, restoreEditorGroupAfterQuickPick } from "../webviewPanel";
 import { KernelBridge, shouldRegisterNotebookFormatters } from "./kernelBridge";
@@ -103,9 +104,13 @@ export const registerNotebookCommands = (context: vscode.ExtensionContext, coord
         const items = discovered.variables.map(notebookVariableQuickPickItem);
         const selected = await vscode.window.showQuickPick(items, {
           title: "Open Wrangler: Open Notebook Variable",
-          placeHolder: discovered.truncated
-            ? "Open Wrangler: Select a dataframe variable (discovery results truncated)"
-            : "Open Wrangler: Select a dataframe variable from the active Jupyter kernel",
+          placeHolder: isRNotebookVariableDiscovery(discovered)
+            ? discovered.truncated
+              ? "List truncated. Search shown names (special names use JSON escapes)."
+              : "Select an R dataframe. Search shown names (special names use JSON escapes)."
+            : discovered.truncated
+              ? "Open Wrangler: Select a dataframe variable (discovery results truncated)"
+              : "Open Wrangler: Select a dataframe variable from the active Jupyter kernel",
           matchOnDescription: true,
           matchOnDetail: true,
           ignoreFocusOut: true
@@ -204,7 +209,7 @@ function notebookVariableQuickPickItem(variable: NotebookPickerVariable): Notebo
   if ("dataframeFlavor" in variable) {
     const flavor = rDataframeFlavorLabel(variable.dataframeFlavor);
     return {
-      label: variable.name,
+      label: formatQuickPickName(variable.name),
       description: `R · ${flavor}`,
       detail: "Live notebook session",
       variable

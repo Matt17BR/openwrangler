@@ -101,6 +101,12 @@ The existing persistence key includes both names; runtime recovery reopens the e
 Discovery bounds each native name projection before transferring it to Python and disables disk spill, so a killed
 metadata helper owns no temporary directory. Native catalog work can still exceed the accepted response size.
 
+DuckDB table/schema, Excel worksheet and R variable pickers retain original names in their selected descriptors.
+Names containing icon syntax, quotes, backslashes, C0 controls or edge whitespace use JSON string notation in the
+picker, with `$(` encoded as `\u0024(`. Ordinary names remain unchanged. Native search uses the displayed text;
+the notation does not escape every Unicode control or guarantee screen-reader pronunciation. Live-variable tree
+labels remain raw. One host formatter owns this presentation, without changing source names or picker lifetimes.
+
 **Open Another File with This Plan** captures one confirmed, draft-free Pandas, Polars or DuckDB file plan before
 the picker opens. It excludes Custom Code and requires unique, non-empty original column names. The host retains
 the validated original file schema through ordinary edits, refreshing it on source/runtime replacement. This receipt

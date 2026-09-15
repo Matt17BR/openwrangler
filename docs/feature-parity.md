@@ -103,6 +103,9 @@ available and export requires reopening the dataframe.
 
 ## Sessions and generated code
 
+DuckDB table, Excel worksheet and R dataframe pickers show special names with JSON escapes so names such as
+`$(add)` remain text. Search the displayed spelling; selecting an item keeps its original name.
+
 Python live entry points include the notebook toolbar, Jupyter Variables, linked MIME output, and `.py` or `# %%`
 execution through Python Interactive. MIME v2 is a static capture, not session or export data: it is capped at 10,000
 rows, 2,048 columns, 100,000 cells, 16 MiB, 64 graph levels, and 1,000,000 graph nodes, and pages at 10, 20, 50, or

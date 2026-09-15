@@ -252,7 +252,7 @@ describe("file launch command", () => {
   it("opens an exact selected DuckDB table from any local filename in viewing mode", async () => {
     const { context } = register();
     const uri = vscode.Uri.file('/workspace/quarter "data"');
-    const table = { schema: " sales. ", name: ' "orders"\n ' };
+    const table = { schema: " sales.$(add) ", name: ' "orders"\\$(add)\n ' };
     fileMocks.defaultBackend = "pandas";
     fileMocks.showOpenDialog.mockResolvedValue([uri]);
     fileMocks.discoverTables.mockResolvedValue({ tables: [table], isCurrent: () => true });
@@ -263,6 +263,13 @@ describe("file launch command", () => {
     );
     expect(fileMocks.captureSource).toHaveBeenCalledWith([uri]);
     expect(fileMocks.showOpenDialog.mock.calls[0]?.[0]?.filters).toBeUndefined();
+    expect(fileMocks.showQuickPick.mock.calls[0]?.[0]).toEqual([
+      {
+        label: String.raw`" \"orders\"\\\u0024(add)\n "`,
+        description: String.raw`Schema: " sales.\u0024(add) "`,
+        table
+      }
+    ]);
     expect(fileMocks.createPanel).toHaveBeenCalledWith(
       context,
       expect.anything(),

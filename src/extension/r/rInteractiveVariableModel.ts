@@ -1,4 +1,5 @@
 import type * as vscode from "vscode";
+import { formatQuickPickName } from "../quickPickName";
 import type { RProcessVariableDescriptor } from "./rProcessTransport";
 
 export interface RInteractiveQuickPickItem extends vscode.QuickPickItem {
@@ -28,7 +29,7 @@ export type RLiveVariableSnapshot =
 
 export function rInteractiveQuickPickItem(variable: RProcessVariableDescriptor): RInteractiveQuickPickItem {
   return {
-    label: variable.name,
+    label: formatQuickPickName(variable.name),
     description: `R · ${rDataframeFlavorLabel(variable.dataframeFlavor)}`,
     detail: "Active R session",
     variable

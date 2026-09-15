@@ -1,6 +1,7 @@
 import * as path from "node:path";
 import { accessSync, constants as fsConstants, statSync } from "node:fs";
 import * as vscode from "vscode";
+import { formatQuickPickName } from "../quickPickName";
 import type { SessionSource } from "../../shared/protocol";
 import { getSetting, runtimeRequestTimeoutMs } from "../configuration";
 import { DetachedBridgeRequestError } from "../dataBridge";
@@ -162,8 +163,8 @@ export function registerRDocumentCommands(
           selected = await vscode.window.showQuickPick(items, {
             title: `Open Wrangler: Choose a dataframe from ${fileName}`,
             placeHolder: discovery.truncated
-              ? "Select a data.frame, tibble, or data.table (the variable list was truncated)"
-              : "Select a data.frame, tibble, or data.table",
+              ? "List truncated. Search shown names (special names use JSON escapes)."
+              : "Select a dataframe. Search shown names (special names use JSON escapes).",
             matchOnDescription: true,
             matchOnDetail: true,
             ignoreFocusOut: true
@@ -505,7 +506,7 @@ function isExecutableFile(candidate: string): boolean {
 
 function rDocumentQuickPickItem(variable: RProcessVariableDescriptor, fileName: string): RDocumentQuickPickItem {
   return {
-    label: variable.name,
+    label: formatQuickPickName(variable.name),
     description: `R · ${rDataframeFlavorLabel(variable.dataframeFlavor)}`,
     detail: `From this run of ${fileName}`,
     variable
