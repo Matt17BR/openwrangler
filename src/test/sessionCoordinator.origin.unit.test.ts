@@ -1,5 +1,5 @@
 import { isOpenWranglerResponse } from "../shared/protocolValidation";
-import { mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import {
@@ -72,6 +72,131 @@ describe("SessionCoordinator", () => {
             captureExportSourceProtection([vscode.Uri.file(sourcePath)], coordinator.activeSession()?.sourceProtection)
           ).rejects.toThrow(/Reopen/u);
       } finally {
+        await coordinator.shutdown();
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.each(["unchanged", "before capture", "during open"])(
+    "retains the selected database receipt when its file is %s",
+    async (replacement) => {
+      const directory = await mkdtemp(path.join(tmpdir(), "openwrangler-database-selection-"));
+      const sourcePath = path.join(directory, "source.duckdb");
+      const originalPath = path.join(directory, "original.duckdb");
+      const source = {
+        kind: "file" as const,
+        label: "source.duckdb",
+        path: sourcePath,
+        uri: vscode.Uri.file(sourcePath).toString(),
+        importOptions: { duckdbSchema: "main", duckdbTable: "orders" }
+      };
+      let stored: Record<string, unknown> = {
+        [persistenceKey(openRequest.source, "polars")]: serializePersistedSession(
+          persistedSessionState(openedResponse("unrelated-runtime").metadata, {
+            columnWidths: new Map(),
+            viewport: { firstVisibleRow: 0, scrollLeft: 17 }
+          })
+        )
+      };
+      const workspaceState = {
+        get: vi.fn((key: string, fallback?: unknown) => (key === SESSION_STORAGE_KEY ? stored : fallback)),
+        update: vi.fn(async (_key: string, value: Record<string, unknown>) => {
+          stored = value;
+        }),
+        keys: () => [SESSION_STORAGE_KEY]
+      } as unknown as Memento;
+      const coordinator = new SessionCoordinator(workspaceState);
+      const targetStarted = deferred<void>();
+      const finishTarget = deferred<void>();
+      let pending: Promise<OpenWranglerResponse> | undefined;
+      try {
+        await writeFile(sourcePath, "original database fixture");
+        const receipt = await captureSessionSourceProtection([vscode.Uri.file(sourcePath)]);
+        expect(receipt.available).toBe(true);
+        const delegate = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+          if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+          if (request.kind === "getPage") return pageResponse(request, "unrelated-runtime");
+          if (request.kind !== "openSession") throw new Error(`Unexpected ${request.kind}`);
+          if (request.backend !== "duckdb") return openedResponse("unrelated-runtime");
+          targetStarted.resolve();
+          if (replacement === "during open") await finishTarget.promise;
+          const response = openedResponse("database-runtime", "duckdb");
+          response.metadata = {
+            ...response.metadata,
+            source,
+            mode: "viewing",
+            capabilities: { ...response.metadata.capabilities, editable: false, exportCsv: false, exportParquet: false }
+          };
+          expect(isOpenWranglerResponse(response)).toBe(true);
+          return response;
+        });
+        const bridge = coordinator.createBridge({ request: delegate });
+        const unrelated = await bridge.request(openRequest);
+        if (unrelated.kind !== "sessionOpened") throw new Error("Expected the unrelated session to open.");
+        const active = coordinator.activeSession();
+        expect(active?.viewState.viewport.scrollLeft).toBe(17);
+        const saved = structuredClone(stored);
+        const activeChanges = vi.fn();
+        coordinator.onDidChangeActiveSession(activeChanges);
+        if (replacement === "before capture") {
+          await rename(sourcePath, originalPath);
+          await writeFile(sourcePath, "replacement database fixture");
+        }
+        const options = { requiredSourceProtection: receipt, priority: "interactive" as const };
+        pending = bridge.request({ ...openRequest, source, backend: "duckdb", mode: "viewing" }, options);
+        if (replacement === "during open") {
+          await Promise.race([
+            targetStarted.promise,
+            pending.then(() => {
+              throw new Error("The database open settled before reaching the held runtime.");
+            })
+          ]);
+          await rename(sourcePath, originalPath);
+          await writeFile(sourcePath, "replacement database fixture");
+          finishTarget.resolve();
+        }
+        const result = await pending;
+        if (replacement === "unchanged") {
+          expect(result.kind).toBe("sessionOpened");
+          expect(coordinator.activeSession()?.sourceProtection?.available).toBe(true);
+          expect(coordinator.diagnostics().sessionCount).toBe(2);
+          expect(activeChanges).toHaveBeenCalledOnce();
+        } else {
+          expect(result).toMatchObject({ kind: "error", code: "source_changed", recoverable: true });
+          expect(coordinator.activeSession()).toEqual(active);
+          expect(coordinator.diagnostics().sessionCount).toBe(1);
+          expect(activeChanges).not.toHaveBeenCalled();
+          expect(await readFile(originalPath, "utf8")).toBe("original database fixture");
+        }
+        expect(
+          delegate.mock.calls.filter(([request]) => request.kind === "closeSession").map(([request]) => request)
+        ).toEqual(
+          replacement === "during open" ? [{ kind: "closeSession", sessionId: "database-runtime", revision: 0 }] : []
+        );
+        expect(
+          delegate.mock.calls.filter(([request]) => request.kind === "openSession" && request.backend === "duckdb")
+        ).toHaveLength(replacement === "before capture" ? 0 : 1);
+        expect(await readFile(sourcePath, "utf8")).toBe(
+          replacement === "unchanged" ? "original database fixture" : "replacement database fixture"
+        );
+        expect(stored).toEqual(saved);
+        expect(workspaceState.update).not.toHaveBeenCalled();
+        await expect(
+          bridge.request({
+            kind: "getPage",
+            sessionId: unrelated.metadata.sessionId,
+            revision: unrelated.metadata.revision,
+            viewRequestId: "unrelated-still-open",
+            offset: 0,
+            limit: 100,
+            ...columnWindow,
+            filterModel: unrelated.metadata.filterModel
+          })
+        ).resolves.toMatchObject({ kind: "page", metadata: { sessionId: unrelated.metadata.sessionId } });
+      } finally {
+        finishTarget.resolve();
+        await pending?.catch(() => undefined);
         await coordinator.shutdown();
         await rm(directory, { recursive: true, force: true });
       }
