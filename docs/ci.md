@@ -253,9 +253,15 @@ Windows runtime contracts for this small dependency set. Its package installatio
 
 The weekly/manual macOS and Windows runtime jobs build and verify one VSIX, then run the existing packaged VS Code
 full mode. This replaces their development-extension seed/verify run, retaining those phases and adding package
-installation and restricted-trust checks. Python and native Windows source suites remain unchanged. These jobs do not
-opt into released Jupyter, R or other optional editor integrations. Failed editor runs retain only the existing
-sealed diagnostic artifact when its safety checks permit publication.
+installation and restricted-trust checks. Scheduled and default manual runs retain the full Python and native Windows
+source suites. These jobs do not opt into released Jupyter, R or other optional editor integrations. Failed editor runs
+retain only the existing sealed diagnostic artifact when its safety checks permit publication.
+
+Manual runs may explicitly set `omit_python_source` to skip only the full Python test step while investigating
+installed behavior. The run is named “Full Python source tests omitted; installed investigation only” and provides
+no fresh full-Python qualification. Environment setup and smoke checks, package and installed verification, native
+Windows checks, and all other jobs remain enabled. Dependencies still resolve through the declared ranges; an
+earlier source result does not qualify the newly resolved environment.
 
 The weekly cross-platform workflow groups the dependency authority's exact qualification cases by Python version
 and ordinal within each dependency. Each declared tuple appears once, including intermediate versions and the
