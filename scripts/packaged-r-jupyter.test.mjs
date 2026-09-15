@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   appendFileSync,
   existsSync,
@@ -6,7 +7,10 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
+  statSync,
+  watch,
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,7 +26,8 @@ import {
   rAcceptanceRepositories
 } from "./jupyter-acceptance-environment.mjs";
 import { resolvePackagedRJourneySelection } from "./packaged-r-journey.mjs";
-import { prepareREditorAcceptanceTooling } from "./r-editor-acceptance-tooling.mjs";
+import { editorAcceptancePrivateRootIdentityLost } from "./packaged-editor-orchestration.mjs";
+import { acquireExactArtifact, prepareREditorAcceptanceTooling } from "./r-editor-acceptance-tooling.mjs";
 
 const notebookPackages = ["IRkernel", "jsonlite", "rlang", "Rcpp", "tibble", "data.table", "collapse", "nanoparquet"];
 const editorPackages = [
@@ -38,6 +43,13 @@ const editorPackages = [
   "collapse",
   "nanoparquet"
 ];
+const artifactPayload = "exact artifact";
+const artifactPin = Object.freeze({
+  fileName: "fixture.tgz",
+  url: "https://example.invalid/fixture.tgz",
+  bytes: Buffer.byteLength(artifactPayload),
+  sha256: createHash("sha256").update(artifactPayload).digest("hex")
+});
 
 function provisioning(t) {
   const root = mkdtempSync(join(tmpdir(), "openwrangler-r-dependencies-"));
@@ -85,6 +97,244 @@ function preparedPackageInputs(prepared) {
       ])
     )
   };
+}
+
+test("actual artifact acquisition verifies tiny local and fetched payloads before returning their path", async (t) => {
+  const bytes = Buffer.from(artifactPayload);
+  const pin = artifactPin;
+  for (const route of ["source", "fetch"]) {
+    for (const content of [bytes, Buffer.concat([bytes, Buffer.from("extra")]), Buffer.from("wrong artifact")]) {
+      const fixture = provisioning(t);
+      mkdirSync(fixture.directory, { mode: 0o700 });
+      const source = join(fixture.root, "input.tgz");
+      writeFileSync(source, content);
+      let fetches = 0;
+      const options = {
+        sourcePath: route === "source" ? source : undefined,
+        async fetchImpl() {
+          fetches += 1;
+          assert.equal(route, "fetch");
+          return new Response(content);
+        }
+      };
+      const acquired = acquireExactArtifact(fixture.directory, "fixture", pin, options);
+      if (content.equals(bytes)) {
+        assert.equal(await acquired, join(fixture.directory, pin.fileName));
+        assert.deepEqual(readFileSync(join(fixture.directory, pin.fileName)), bytes);
+      } else {
+        await assert.rejects(acquired, /pinned size|pinned checksum|exact response-body verification/u);
+        const destination = join(fixture.directory, pin.fileName);
+        if (existsSync(destination)) assert.ok(statSync(destination).size <= pin.bytes);
+      }
+      assert.equal(fetches, route === "source" ? 0 : 1);
+      assert.deepEqual(readFileSync(source), content);
+      assert.equal(fixture.commands.length, 0);
+    }
+  }
+});
+
+test("actual artifact acquisition preserves an existing destination on both entry routes", async (t) => {
+  const bytes = Buffer.from(artifactPayload);
+  const pin = artifactPin;
+  for (const route of ["source", "fetch"]) {
+    const fixture = provisioning(t);
+    mkdirSync(fixture.directory, { mode: 0o700 });
+    const destination = join(fixture.directory, pin.fileName);
+    const source = join(fixture.root, "input.tgz");
+    writeFileSync(destination, "existing caller artifact");
+    writeFileSync(source, bytes);
+    await assert.rejects(
+      acquireExactArtifact(fixture.directory, "fixture", pin, {
+        sourcePath: route === "source" ? source : undefined,
+        async fetchImpl() {
+          assert.equal(route, "fetch");
+          return new Response(bytes);
+        }
+      })
+    );
+    assert.equal(readFileSync(destination, "utf8"), "existing caller artifact");
+    assert.deepEqual(readFileSync(source), bytes);
+  }
+});
+
+test("actual artifact acquisition retains its deadline while unused HTTP cancellation is pending", async (t) => {
+  const fixture = provisioning(t);
+  mkdirSync(fixture.directory, { mode: 0o700 });
+  const destination = join(fixture.directory, artifactPin.fileName);
+  writeFileSync(destination, "existing caller artifact");
+  let cancellationStarted;
+  const started = new Promise((resolve) => {
+    cancellationStarted = resolve;
+  });
+  let releaseCancellation;
+  const pendingCancellation = new Promise((resolve) => {
+    releaseCancellation = resolve;
+  });
+  let deadline;
+  let cleared = 0;
+  let settled;
+  const timer = Symbol("controlled aggregate deadline");
+  const acquired = acquireExactArtifact(fixture.directory, "fixture", artifactPin, {
+    timeoutMs: 120_000,
+    timersForTest: {
+      setTimeout(callback, milliseconds) {
+        assert.equal(milliseconds, 120_000);
+        deadline = callback;
+        return timer;
+      },
+      clearTimeout(value) {
+        assert.equal(value, timer);
+        cleared += 1;
+      }
+    },
+    async fetchImpl() {
+      return new Response(
+        new ReadableStream({
+          cancel() {
+            cancellationStarted();
+            return pendingCancellation;
+          }
+        })
+      );
+    }
+  }).then(
+    (value) => {
+      settled = { value };
+    },
+    (error) => {
+      settled = { error };
+    }
+  );
+  try {
+    await Promise.race([
+      started,
+      acquired.then(() => {
+        throw new Error("Acquisition settled before unused-body cancellation.");
+      })
+    ]);
+    deadline();
+    await new Promise(setImmediate);
+    assert.ok(settled, "The aggregate deadline must settle acquisition before cancellation resolves.");
+    assert.match(settled.error.message, /exceeded its aggregate download deadline/u);
+  } finally {
+    releaseCancellation();
+    await acquired;
+    assert.equal(cleared, 1);
+    assert.equal(readFileSync(destination, "utf8"), "existing caller artifact");
+  }
+});
+
+test("actual artifact acquisition disposes rejected HTTP bodies and retains replaced-root ownership", async (t) => {
+  for (const replaced of [false, true]) {
+    const fixture = provisioning(t);
+    mkdirSync(fixture.directory, { mode: 0o700 });
+    let fetches = 0;
+    let cancellations = 0;
+    const sentinel = join(fixture.directory, "caller-owned");
+    await assert.rejects(
+      acquireExactArtifact(fixture.directory, "fixture", artifactPin, {
+        async fetchImpl() {
+          fetches += 1;
+          if (replaced) {
+            renameSync(fixture.directory, `${fixture.directory}-original`);
+            mkdirSync(fixture.directory, { mode: 0o700 });
+          }
+          writeFileSync(sentinel, "preserve caller file");
+          return new Response(
+            new ReadableStream({
+              cancel() {
+                cancellations += 1;
+              }
+            }),
+            { status: 500 }
+          );
+        }
+      }),
+      (error) => {
+        assert.equal(editorAcceptancePrivateRootIdentityLost(error), replaced);
+        if (replaced) {
+          assert.ok(error instanceof AggregateError);
+          assert.ok(error.errors.some((nested) => /non-success HTTP response/u.test(nested.message)));
+        } else assert.match(error.message, /non-success HTTP response/u);
+        return true;
+      }
+    );
+    assert.equal(fetches, 1);
+    assert.equal(cancellations, 1);
+    assert.equal(readFileSync(sentinel, "utf8"), "preserve caller file");
+    assert.equal(existsSync(join(fixture.directory, artifactPin.fileName)), false);
+    if (replaced) assert.ok(existsSync(`${fixture.directory}-original`));
+  }
+});
+
+for (const replacement of ["file", "root"]) {
+  for (const rejected of [false, true]) {
+    test(`actual artifact acquisition preserves ${replacement} replacement when its stream ${rejected ? "rejects" : "completes"}`, async (t) => {
+      const fixture = provisioning(t);
+      mkdirSync(fixture.directory, { mode: 0o700 });
+      const bytes = Buffer.from(artifactPayload);
+      const pin = artifactPin;
+      const destination = join(fixture.directory, pin.fileName);
+      const streamError = new Error("controlled artifact stream failure");
+      let controller;
+      let created;
+      const destinationCreated = new Promise((resolve) => {
+        created = resolve;
+      });
+      const watcher = watch(fixture.directory, () => {
+        if (existsSync(destination)) created();
+      });
+      const body = new ReadableStream({
+        start(value) {
+          controller = value;
+        }
+      });
+      const outcome = acquireExactArtifact(fixture.directory, "fixture", pin, {
+        timeoutMs: 2_000,
+        async fetchImpl() {
+          return new Response(body);
+        }
+      }).then(
+        (value) => ({ value }),
+        (error) => ({ error })
+      );
+      try {
+        await Promise.race([
+          destinationCreated,
+          outcome.then(() => {
+            throw new Error("Acquisition settled before opening its destination.");
+          })
+        ]);
+        const original =
+          replacement === "file" ? `${destination}.original` : join(`${fixture.directory}-original`, pin.fileName);
+        if (replacement === "file") {
+          renameSync(destination, original);
+        } else {
+          renameSync(fixture.directory, `${fixture.directory}-original`);
+          mkdirSync(fixture.directory, { mode: 0o700 });
+        }
+        writeFileSync(destination, "replacement caller artifact");
+        if (rejected) controller.error(streamError);
+        else {
+          controller.enqueue(bytes);
+          controller.close();
+        }
+        const settled = await outcome;
+        assert.equal(readFileSync(destination, "utf8"), "replacement caller artifact");
+        assert.ok(existsSync(original));
+        if (!rejected) assert.deepEqual(readFileSync(original), bytes);
+        assert.equal(editorAcceptancePrivateRootIdentityLost(settled.error), true);
+        if (rejected) {
+          assert.ok(settled.error instanceof AggregateError);
+          assert.ok(settled.error.errors.includes(streamError));
+        }
+      } finally {
+        watcher.close();
+        controller.error(new Error("Artifact stream fixture cleanup."));
+        await outcome;
+      }
+    });
+  }
 }
 
 test("R preparation selects matching Ubuntu binaries and source for other hosts", async (t) => {
