@@ -175,8 +175,10 @@ Use the existing owners to choose a focused source check:
   names across projected views, profiles, shared cleaning helpers and complete generated programs.
   It checks one full native capture at live LazyFrame admission and Custom result acceptance, followed by
   bounded page/profile results. A deterministic rotating callback checks adjacent and projected page identities,
-  tied viewing sorts, clone ownership, rollback, history and generated Custom results. The same admission owner rejects
-  reserved names before capture and checks the actual captured schema when a callback disables native validation. Its native dtype controls
+  tied viewing sorts, clone ownership, rollback, history and generated Custom results. The Custom refusal control also
+  checks actual zero-column callback results after capture in Preview and complete generated code. The same admission
+  owner rejects reserved names before capture and checks the actual captured schema when a callback disables native
+  validation. Its native dtype controls
   preserve Object references, nulls, signed zero, nested values and Enum domains. Ordinary file scans and saved MIME
   captures retain their separate lazy/bounded owners; sequential whole-column copy uses the same stable page reads.
   The [session binding owner](../python/tests/test_session_column_binding.py) covers apply/history and source identities.

@@ -157,6 +157,11 @@ def custom_code_step_lines(*, prefix: str, engine_name: str, index: int) -> list
             f"{prefix}df = {result}.to_frame() if isinstance({result}, pl.Series) else {result}",
             f"{prefix}if len(df.collect_schema() if isinstance(df, pl.LazyFrame) else df.columns) == 0:",
             f"{prefix}    raise ValueError('A transformation must leave at least one visible column.')",
+            f"{prefix}if isinstance(df, pl.LazyFrame):",
+            f"{prefix}    df = pl.collect_all([df], engine='in-memory')[0]",
+            f"{prefix}    if len(df.columns) == 0:",
+            f"{prefix}        raise ValueError('A transformation must leave at least one visible column.')",
+            f"{prefix}    df = df.lazy()",
         ]
     return [
         f"{prefix}df = _ow_visible_relation(df)",

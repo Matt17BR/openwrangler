@@ -4179,22 +4179,34 @@ def test_polars_retained_lazy_result_keeps_page_identity_and_session_ownership(
             (key, ids[key]) for key in (2, 4, 6, 3, 5, 7)
         ]
         confirmed, cache = session.committed, list(session.page_cache.items())
-        with pytest.raises(pl.exceptions.InvalidOperationError):
-            manager.preview_step(
-                sid,
-                revision,
-                {
-                    "id": "invalid",
-                    "kind": "customCode",
-                    "params": {"code": 'result = df.with_columns(pl.lit("bad").cast(pl.Int64).alias("broken"))'},
-                },
-                0,
-                2,
-                column_limit=1,
-            )
-        assert session.revision == revision and session.committed is confirmed and session.draft_frame is None
-        assert list(session.page_cache.items()) == cache and session.filter_model == filtered
-        assert manager.get_page(sid, revision, 0, 8, filtered, column_limit=1)["page"] is page["page"]
+        for code, error_type in (
+            (
+                'result = df.with_columns(pl.lit("bad").cast(pl.Int64).alias("broken"))',
+                pl.exceptions.InvalidOperationError,
+            ),
+            (
+                "lazy = df.lazy() if isinstance(df, pl.DataFrame) else df\n"
+                "result = lazy.map_batches(lambda batch: batch.select([]), "
+                "predicate_pushdown=False, projection_pushdown=False, slice_pushdown=False, "
+                "validate_output_schema=False, streamable=False)",
+                EngineError,
+            ),
+        ):
+            invalid = validate_step({"id": "invalid", "kind": "customCode", "params": {"code": code}})
+            with pytest.raises(error_type) as error:
+                manager.preview_step(sid, revision, invalid, 0, 2, column_limit=1)
+            assert session.revision == revision and session.committed is confirmed and session.draft_frame is None
+            assert list(session.page_cache.items()) == cache and session.filter_model == filtered
+            assert manager.get_page(sid, revision, 0, 8, filtered, column_limit=1)["page"] is page["page"]
+            if error_type is EngineError:
+                assert str(error.value) == "A transformation must leave at least one visible column."
+                generated_namespace: dict[str, Any] = {}
+                exec(
+                    compile(session.engine.compile_plan([invalid]), "<generated>", "exec", dont_inherit=True),
+                    generated_namespace,
+                )
+                with pytest.raises(ValueError, match="^A transformation must leave at least one visible column[.]$"):
+                    generated_namespace["clean_data"](source.lazy())
         assert visits == [8]
         if boundary == "notebook":
             clone = manager.open_session(

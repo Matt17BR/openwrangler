@@ -471,9 +471,11 @@ guards keep their stronger validation. Scalar destination guards reuse the step'
 and generated-code limits remain unchanged.
 
 Generated Pandas and Polars Custom Code checks each result for at least one column after native type validation and
-Series normalization, matching live result admission. The shared Custom invocation emitter owns this metadata check
-and its contribution to the generated-code size limit. Typed zero-row results remain valid. A Custom function may
-build an empty-column intermediate or add the first column of an empty source, provided its final result has a column.
+Series normalization, matching live result admission. Polars checks lazy schema metadata before capture and the actual
+collected columns before returning the retained lazy result. The shared Custom invocation emitter owns capture,
+these checks and their contribution to the generated-code size limit. Typed zero-row results remain valid. A Custom
+function may build an empty-column intermediate or add the first column of an empty source, provided its final result
+has a column.
 Empty plans and zero-column viewing or row operations retain their existing behavior.
 
 Viewing `FilterModel` and `SortRule` remain name-addressed, presentation-only queries. A committed Filter Rows or Sort

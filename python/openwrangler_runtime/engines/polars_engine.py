@@ -2143,13 +2143,6 @@ class PolarsEngine(DataFrameEngine):
             )
             clean_data_lines.extend(output_guards)
             clean_data_lines.extend(self._compile_step(step, index, output_name=output_name))
-            if step["kind"] == "customCode":
-                clean_data_lines.extend(
-                    [
-                        "    if isinstance(df, pl.LazyFrame):",
-                        "        df = pl.collect_all([df], engine='in-memory')[0].lazy()",
-                    ]
-                )
         clean_data_lines.append("    return df")
         clean_data = "\n".join(clean_data_lines)
         needs_filter_helpers = any(step["kind"] in {"filterRows", "conditionalColumn"} for step in plan)
