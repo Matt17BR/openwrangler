@@ -25,6 +25,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- A failed viewing query preserves newer unsubmitted sort rules, sort direction and null placement.
 - Column profiles and filters no longer cover keyboard-selected grid cells in narrow editor panes.
 - Polars refuses missing Excel files instead of opening similarly named workbooks.
 - Excel imports preserve whitespace-only worksheet names in pickers, native reads and remembered file settings.

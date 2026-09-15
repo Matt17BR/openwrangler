@@ -2219,6 +2219,107 @@ describe("App progressive profiling and view correlation", () => {
     expect(setViewContextMessages().at(-1)?.viewContextId).toBe(originalContext);
   });
 
+  it.each(["success", "failure", "header clear"] as const)(
+    "reconciles newer sort edits after the pending sort's %s",
+    async (outcome) => {
+      render(<App />);
+      dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+      await screen.findByText("Berlin");
+      const confirmedContext = setViewContextMessages().at(-1)!.viewContextId;
+      openCityFilter();
+      fireEvent.click(screen.getByText("SORTS"));
+      fireEvent.click(screen.getByRole("button", { name: "Add to sort" }));
+      fireEvent.click(screen.getByRole("button", { name: "Apply sort order" }));
+      const pending = onlyRequest("getPage");
+      const submitted: FilterModel = {
+        filters: [],
+        sort: [{ column: "city", direction: "asc", nulls: "last" }]
+      };
+      expect(filterModelOf(pending)).toEqual(submitted);
+      expect(screen.getByRole("grid")).toHaveAttribute("aria-busy", "true");
+
+      fireEvent.change(screen.getByLabelText("Sort column"), { target: { value: "c:1" } });
+      fireEvent.change(screen.getByLabelText("Sort direction"), { target: { value: "desc" } });
+      const addToSort = screen.getByRole("button", { name: "Add to sort" });
+      expect(addToSort).toBeEnabled();
+      fireEvent.click(addToSort);
+      expect(screen.getByRole("button", { name: "Remove sort 1, sales, descending, nulls last" })).toBeVisible();
+      fireEvent.change(screen.getByLabelText("Sort column"), { target: { value: "c:0" } });
+      fireEvent.change(screen.getByLabelText("Sort direction"), { target: { value: "desc" } });
+      fireEvent.change(screen.getByLabelText("Sort null placement"), { target: { value: "first" } });
+      expect(requestsOfKind("getPage")).toHaveLength(1);
+
+      if (outcome === "header clear") {
+        fireEvent.click(screen.getByLabelText("Column actions for city"));
+        fireEvent.click(screen.getByRole("button", { name: "Clear sort" }));
+        expect(requestsOfKind("getPage")).toHaveLength(2);
+        const replacement = requestsOfKind("getPage")[1];
+        expect(viewId(replacement)).not.toBe(viewId(pending));
+        expect(filterModelOf(replacement)).toEqual(metadata.filterModel);
+        expect(screen.queryByRole("button", { name: "Remove sort 1, sales, descending, nulls last" })).toBeNull();
+        expect(screen.getByLabelText("Sort direction")).toHaveValue("asc");
+        expect(screen.getByLabelText("Sort null placement")).toHaveValue("last");
+        expect(screen.getByRole("button", { name: "Apply sort order" })).toBeDisabled();
+        dispatch({
+          kind: "error",
+          code: "sort_failed",
+          message: "The superseded city sort failed.",
+          recoverable: true,
+          sessionId: metadata.sessionId,
+          viewRequestId: viewId(pending)
+        });
+        expect(screen.queryByRole("alert")).toBeNull();
+        dispatch({ kind: "page", revision: metadata.revision, viewRequestId: viewId(replacement), metadata, page });
+        expect(screen.getByRole("grid")).toHaveAttribute("aria-busy", "false");
+        expect(document.querySelector('th[data-column="city"]')).not.toHaveAttribute("aria-sort");
+        expect(screen.queryByRole("button", { name: "Remove sort 1, sales, descending, nulls last" })).toBeNull();
+        expect(screen.getByRole("button", { name: "Apply sort order" })).toBeDisabled();
+        expect(requestsOfKind("getPage")).toHaveLength(2);
+        return;
+      }
+
+      if (outcome === "failure") {
+        dispatch({
+          kind: "error",
+          code: "sort_failed",
+          message: "The submitted city sort failed.",
+          recoverable: true,
+          sessionId: metadata.sessionId,
+          viewRequestId: viewId(pending)
+        });
+        expect(screen.getByRole("alert")).toHaveTextContent("The submitted city sort failed.");
+        expect(document.querySelector('th[data-column="city"]')).not.toHaveAttribute("aria-sort");
+        expect(setViewContextMessages().at(-1)?.viewContextId).toBe(confirmedContext);
+      } else {
+        dispatch({
+          kind: "page",
+          revision: metadata.revision,
+          viewRequestId: viewId(pending),
+          metadata: { ...metadata, filterModel: submitted },
+          page
+        });
+        expect(document.querySelector('th[data-column="city"]')).toHaveAttribute("aria-sort", "ascending");
+      }
+
+      expect(screen.getByRole("grid")).toHaveAttribute("aria-busy", "false");
+      expect({
+        stagedSales: screen.queryByRole("button", { name: "Remove sort 1, sales, descending, nulls last" }) !== null,
+        direction: (screen.getByLabelText("Sort direction") as HTMLSelectElement).value,
+        nulls: (screen.getByLabelText("Sort null placement") as HTMLSelectElement).value
+      }).toEqual({ stagedSales: true, direction: "desc", nulls: "first" });
+      expect(screen.getByRole("button", { name: "Apply sort order" })).toBeEnabled();
+      expect(requestsOfKind("getPage")).toHaveLength(1);
+      fireEvent.click(screen.getByRole("button", { name: "Apply sort order" }));
+      expect(requestsOfKind("getPage")).toHaveLength(2);
+      const next = requestsOfKind("getPage")[1];
+      expect(viewId(next)).not.toBe(viewId(pending));
+      expect(filterModelOf(next)).toEqual({
+        filters: [],
+        sort: [{ column: "sales", direction: "desc", nulls: "last" }, ...submitted.sort]
+      });
+    }
+  );
+
   it.each(["ordinary", "recovered"] as const)(
     "keeps authored operation input mounted when %s preview fails",
     async (origin) => {

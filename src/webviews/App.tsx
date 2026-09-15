@@ -2677,6 +2677,7 @@ export function App() {
                     key={JSON.stringify([metadata?.sessionId, filterPanelTarget.openKey])}
                     metadata={metadata}
                     model={filterModel}
+                    failedSort={failedPageRequest?.changesView ? failedPageRequest.model.sort : undefined}
                     values={columnValues}
                     columnRequest={filterPanelTarget}
                     defaultAdvanced={webviewConfig.filterMode === "advanced"}
