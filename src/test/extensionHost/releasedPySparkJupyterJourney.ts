@@ -414,7 +414,8 @@ export function createReleasedPySparkJupyterJourney({
         cancel: false,
         exportCsv: false,
         exportParquet: false,
-        notebookInsert: false
+        notebookInsert: false,
+        supportedOperations: []
       });
       const classicPage = await assertReleasedPySparkPanelAndQueries(testing, classic, "classic");
 
