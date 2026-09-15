@@ -68,7 +68,9 @@ _Search or browse cleaning operations, then configure the selected step._
 in your workspace, then choose **Open in Open Wrangler** from Explorer, an editor tab, or the toolbar. You can also
 open TSV, Parquet, JSONL/NDJSON, and Excel files, or a supported live dataframe from a notebook output or toolbar.
 
-**2. Preview a change.** Switch to Editing if needed, choose **Add step**, then **Drop missing rows** on **sales**.
+**2. Preview a change.** Files open in Editing by default. If the sample opens in Viewing, set
+`openWrangler.fileStartMode` to `editing` in Settings, close its Open Wrangler tab, and reopen the file.
+Choose **Add step**, then **Drop missing rows** on **sales**.
 Choose **Preview changes**: Paris disappears from the sample draft, leaving Milan, Rome, and Berlin. Review the
 changed values and generated code before choosing **Apply step** or **Discard**.
 

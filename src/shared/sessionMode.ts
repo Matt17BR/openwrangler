@@ -59,7 +59,7 @@ export function sessionModeDescription(metadata: SessionMetadata): string {
     return "Open Wrangler supports read-only exploration of live DuckDB notebook relations. Cleaning steps, code insertion, and data export are not available. Filters and sorts change only the current view.";
   }
   if (isDuckDBTableSource(metadata.source)) {
-    return "Explore this DuckDB table through a read-only connection. Close this table before writing to its database or opening another table from it. Cleaning steps, generated code, and data export are not available. Computed columns may change between queries.";
+    return "Explore this DuckDB table through a read-only connection. Close all viewers of this database before writing to it. Cleaning steps, generated code, and data export are not available. Computed columns may change between queries.";
   }
   if (metadata.source.kind === "notebookOutput") {
     return "This is a saved notebook snapshot, not a live dataframe. Rerun the cell and open its live variable to build a cleaning plan.";
