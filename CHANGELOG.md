@@ -19,6 +19,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Editing saved value filters keeps raw values with different types separate, so removing Boolean `true` does not also remove the text `"true"`.
 - Activating the already-selected Filters / Sorts tab keeps unfinished form input and staged sorts.
 - Failed cleaning-plan restoration shows the replay step and runtime reason before offering to reset saved work.
 - Polars treats column names such as `*` and `^a.*$` literally in viewing, cleaning and generated code instead of selecting other columns.

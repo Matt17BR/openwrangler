@@ -101,7 +101,7 @@ export const selectionValueKey = (value: unknown): string => {
     ]);
   }
   // Persisted filters can retain scalar selections from older runtimes.
-  return `legacy:${String(value)}`;
+  return `legacy:${JSON.stringify(value)}`;
 };
 
 export const matchesLegacySelection = (selected: unknown, candidate: unknown): boolean => {

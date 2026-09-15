@@ -1522,6 +1522,7 @@ Value choices and profile representatives distinguish exact selection from displ
 field retains raw-value compatibility. Native R value lists still require typed tokens at their narrower boundary.
 Picker, summary and header actions honor availability without parsing labels.
 Unavailable values keep their labels, counts and search behavior; existing saved selections remain removable.
+Saved raw selections retain their JSON value identity. Matching text alone does not merge values of different types.
 Pandas and Polars prepare profile tokens only for their already-bounded top values, with native temporal precision
 retained. The existing filter decoder owns admission; this does not expand its precision or range.
 
