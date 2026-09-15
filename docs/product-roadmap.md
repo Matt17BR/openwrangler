@@ -18,7 +18,7 @@ Selection requires a reviewed scope, acceptance criteria and practical cost.
 These are open, unscheduled proposals. User demand is not yet established; examples and practical constraints are
 welcome in their issues. Start with useful single-source operations before taking on broader source ownership.
 
-- [Bounded explode and unnest](https://github.com/Matt17BR/openwrangler/issues/1384): expand one supported list or struct column with clear row and type rules.
+- [Expand one list column](https://github.com/Matt17BR/openwrangler/issues/1384): investigate native types, row order and growth limits. Extract Struct Fields is implemented on main; see its [supported scope](feature-parity.md#cleaning-operations).
 - [Apply a cleaning plan to another input](https://github.com/Matt17BR/openwrangler/issues/1385): review column mapping for one compatible target.
 - [Clean a DuckDB notebook relation](https://github.com/Matt17BR/openwrangler/issues/1386): extend today's viewer with native cleaning, code and export.
 - [Browse a DuckDB database](https://github.com/Matt17BR/openwrangler/issues/1387): choose a read-only table or view without writing SQL.
