@@ -117,6 +117,14 @@ so the host loads the verified bundle before `show` is imported. Windows noteboo
 limits are in the
 [compatibility notes](../README.md#compatibility-and-limits).
 
+Unordered Polars notebook LazyFrames and DuckDB notebook queries can assign the same row ID to different logical
+rows between reads, or repeat or omit rows across pages, even with unchanged input data. Keep values stable and
+give the source a deterministic order with unique tie-breakers before opening it. For example, use
+`grouped.sort("grp")` when `grp` uniquely identifies each Polars result row, or a DuckDB `ORDER BY` over a unique key.
+Sorting the grid afterward does not repair identities assigned before that sort. Whole-column copy also reads
+pages in sequence and is exposed to this limitation. The [pagination bug](https://github.com/Matt17BR/openwrangler/issues/1487)
+remains open; sorting the source is a workaround.
+
 Generated Python keeps import and helper bindings local. Pandas and Polars notebook inputs named like those bindings
 remain available after executing the program; an input named `clean_data` uses the generated function `clean_data_1`.
 The [architecture contract](architecture.md#engine-boundaries-and-capabilities) describes scope and caller limitations.
@@ -689,11 +697,7 @@ before runtime startup. CSV export is UTF-8 with single-byte delimiter and quote
 identifiers differ only by case. Notebook `DuckDBPyRelation` values retain the user's relation for serialized viewing
 only; closing releases Open Wrangler's reference and never closes the user's connection.
 
-DuckDB notebook queries can repeat or omit rows across pages even when their input and values are unchanged.
-For repeatable paging, keep values stable and give the source relation a deterministic order with unique tie-breakers
-before opening it, for example an `ORDER BY` over a unique key. Whole-column copy requests pages in sequence, so it
-is also at risk of repeated or omitted values. Sorting the grid afterward does not repair row identities assigned
-before that sort. This remains an open [pagination bug](https://github.com/Matt17BR/openwrangler/issues/1487).
+Notebook queries also have the [lazy-source ordering limitation](#sessions-and-generated-code).
 
 **Open Wrangler: Open DuckDB Table** chooses a local database and one base table without SQL. It supports viewing,
 filters, sorts and profiles through a retained read-only connection. Close the viewer before opening another table

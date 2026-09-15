@@ -984,6 +984,12 @@ Decimal NaN; live and generated code share that helper while preserving existing
 
 ### Polars
 
+Live notebook LazyFrames remain lazy. Row IDs are assigned by `with_row_index` in the retained plan, so an uncached
+page can re-evaluate an unordered source and attach the same ID to a different logical row. Cached pages do not
+stabilize other projections or row windows, and before/after diff comparisons rely on those IDs. A deterministic
+source order with unique tie-breakers must precede identity assignment; sorting the grid afterward is insufficient.
+The shared [pagination bug](https://github.com/Matt17BR/openwrangler/issues/1487) remains unresolved.
+
 Column references bind literal names, including `*` and names that resemble anchored regular expressions.
 The native selection owner checks those names against the current input schema before constructing an exact
 expression or immediate ordered selector. Ordinary names retain their existing native path. Generated selectors
@@ -1588,8 +1594,8 @@ lists the current limitations.
 
 Every schema that crosses the runtime, host, or webview boundary has non-empty unique column IDs and positions exactly
 `0..n-1`. Active, latest-step-input, and applied-step-inspection schemas are validated independently. Column names are
-display data; IDs establish identity. A private row identity supports stable viewing but cannot be named by any public
-operation and never appears in pages, generated public metadata, or exports.
+display data; IDs establish identity. Python engines use a private row-identity column for viewing that cannot be named
+by any public operation. Its values identify page rows; the column is excluded from visible columns, public schemas and exports.
 
 Semantic column families follow the native outer type. Enum labels, nested child types and timezone metadata do not
 change that family; fixed-size arrays remain containers. DuckDB schema, profiles, view validation and value selections
