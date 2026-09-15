@@ -1,9 +1,105 @@
 import type { Frame, Locator, Page } from "playwright-core";
 import { expect, it, vi } from "vitest";
 import type { TestApi } from "./extensionHost/extensionHostTestApi";
-import { createReleasedROperationPicker } from "./extensionHost/releasedROperationPicker";
+import { bindReleasedROperationDialog, createReleasedROperationPicker } from "./extensionHost/releasedROperationPicker";
 
 const sessionId = "11111111-1111-4111-8111-111111111111";
+
+it("bounds dialog acquisition while retaining cleanup of a late handle", async () => {
+  vi.useFakeTimers({ now: 0 });
+  const receipt = { sessionId, revision: 7, syncId: "a".repeat(32), layoutTransitionPending: false };
+  const testing = {
+    activeSession: () => ({ sessionId, metadata: { revision: 7 } }),
+    panelHydrated: () => true,
+    panelSynchronizationReceipt: () => receipt
+  } as unknown as TestApi;
+  let releaseElement!: () => void;
+  const elementReady = new Promise<void>((resolve) => {
+    releaseElement = resolve;
+  });
+  let releaseDisposal!: () => void;
+  const disposalReady = new Promise<void>((resolve) => {
+    releaseDisposal = resolve;
+  });
+  let disposed = false;
+  const element = {
+    ownerFrame: vi.fn(),
+    evaluate: vi.fn(),
+    dispose: vi.fn(async () => {
+      await disposalReady;
+      disposed = true;
+    })
+  };
+  const dialog = {
+    elementHandle: async () => {
+      await elementReady;
+      return element;
+    }
+  } as unknown as Locator;
+  let settled = false;
+  let failure: unknown;
+  const pending = bindReleasedROperationDialog(testing, dialog, sessionId, 1_000).then(
+    () => {
+      settled = true;
+    },
+    (error: unknown) => {
+      settled = true;
+      failure = error;
+    }
+  );
+  try {
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(settled).toBe(true);
+    expect(String(failure)).toContain("Timed out waiting for the native R dialog acquisition after 1000 ms.");
+    releaseElement();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(element.dispose).toHaveBeenCalledTimes(1);
+    expect(disposed).toBe(false);
+    expect(element.ownerFrame).not.toHaveBeenCalled();
+    expect(element.evaluate).not.toHaveBeenCalled();
+    releaseDisposal();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(disposed).toBe(true);
+    expect(element.dispose).toHaveBeenCalledTimes(1);
+  } finally {
+    try {
+      releaseElement();
+      releaseDisposal();
+      await vi.advanceTimersByTimeAsync(0);
+      await pending;
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+});
+
+it("retains the primary dialog acquisition error and its cleanup failure", async () => {
+  const receipt = { sessionId, revision: 7, syncId: "a".repeat(32), layoutTransitionPending: false };
+  const testing = {
+    activeSession: () => ({ sessionId, metadata: { revision: 7 } }),
+    panelHydrated: () => true,
+    panelSynchronizationReceipt: () => receipt
+  } as unknown as TestApi;
+  const failure = new Error("The acquired dialog frame is unavailable.");
+  const cleanupFailure = new Error("The handle disposal also failed.");
+  const element = {
+    ownerFrame: async () => {
+      throw failure;
+    },
+    dispose: vi.fn(async () => {
+      throw cleanupFailure;
+    })
+  };
+  const dialog = { elementHandle: async () => element } as unknown as Locator;
+  const result = await bindReleasedROperationDialog(testing, dialog, sessionId).catch((error: unknown) => error);
+  expect(result).toBeInstanceOf(AggregateError);
+  if (!(result instanceof AggregateError)) throw new Error("Expected both acquisition and cleanup failures.");
+  expect(result.errors).toHaveLength(2);
+  expect(result.errors[0]).toBe(failure);
+  expect(result.errors[1]).toBe(cleanupFailure);
+  expect(element.dispose).toHaveBeenCalledTimes(1);
+});
 
 it.each([false, true])("does not acquire a late renderer after the picker deadline (retry=%s)", async (retry) => {
   vi.useFakeTimers({ now: 0 });

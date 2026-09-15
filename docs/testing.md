@@ -331,6 +331,9 @@ session-scoped row IDs. Individual operations and native arithmetic remain in th
 
 Ordinary installed R actions, picker acquisition, Explorer and editor-title file launches, and completed import-option
 changes observe the exact session/revision and committed renderer receipt without forcing another panel publication.
+Once acquired, Add and Edit operation dialogs retain their physical node, frame, session and revision through an
+opaque test marker. A new publication for the same dialog can continue configuration; a replacement dialog or changed
+revision cannot satisfy the old locator. Mutation-result assertions still require the exact acknowledged publication.
 [Picker source tests](../src/test/releasedROperationPicker.unit.test.ts)
 check passive success, stale-receipt refusal and the shared ten-second acquisition budget; ordinary session acquisition
 retains its existing thirty-second bound. Dedicated recovery injection, media setup and deliberately synthetic view

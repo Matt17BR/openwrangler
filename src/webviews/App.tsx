@@ -2143,6 +2143,7 @@ export function App() {
     <main
       className="app"
       data-session-id={metadata?.sessionId}
+      data-session-revision={metadata?.revision}
       data-renderer-sync-id={
         metadata &&
         acceptedSynchronization?.sessionId === metadata.sessionId &&
