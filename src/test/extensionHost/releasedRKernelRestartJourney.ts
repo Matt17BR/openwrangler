@@ -35,10 +35,11 @@ interface ReleasedRKernelRestartJourneyDependencies {
   readonly RELEASED_JUPYTER_R_KERNEL_CELL: number;
   readonly RELEASED_JUPYTER_R_SETUP_CELL: number;
   readonly assertReleasedRPrivateLibrary: (result: Readonly<Record<string, unknown>>, description: string) => void;
-  readonly assertReleasedRVersion: (
+  readonly assertReleasedRSetupVersions: (
     result: Readonly<Record<string, unknown>>,
     target: ReleasedRKernelRestartTarget,
-    description: string
+    description: string,
+    requireCollapse: boolean
   ) => void;
   readonly bestEffortReleasedJupyterCleanup: (
     testing: TestApi,
@@ -99,7 +100,7 @@ export function createReleasedRKernelRestartJourney({
   RELEASED_JUPYTER_R_KERNEL_CELL,
   RELEASED_JUPYTER_R_SETUP_CELL,
   assertReleasedRPrivateLibrary,
-  assertReleasedRVersion,
+  assertReleasedRSetupVersions,
   bestEffortReleasedJupyterCleanup,
   connectToEditorWorkbench,
   executeReleasedNotebookCell,
@@ -192,9 +193,8 @@ export function createReleasedRKernelRestartJourney({
       }
       const setup = releasedNotebookJsonResult(setupCell, RELEASED_JUPYTER_R_SETUP_RESULT, "R restart setup");
       assert.deepEqual({ rows: setup.rows, columns: setup.columns }, { rows: 1_205, columns: 25 });
-      assertReleasedRVersion(setup, kernelTarget, "R restart setup");
+      assertReleasedRSetupVersions(setup, kernelTarget, "R restart setup", true);
       assertReleasedRPrivateLibrary(setup, "R restart setup");
-      assert.equal(setup.collapseVersion, "2.1.7");
       assert.ok(Number.isSafeInteger(Number(setup.pid)) && Number(setup.pid) > 0);
       recordReleasedRKernelLifecycleCheckpoint(phase, "initial-setup:complete");
 

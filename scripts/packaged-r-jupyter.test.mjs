@@ -25,6 +25,7 @@ import {
   rAcceptancePackageRecordMatches,
   rAcceptanceRepositories
 } from "./jupyter-acceptance-environment.mjs";
+import { resolveEditorAcceptanceJupyterEnvironment } from "./editor-acceptance.mjs";
 import { resolvePackagedRJourneySelection } from "./packaged-r-journey.mjs";
 import { editorAcceptancePrivateRootIdentityLost } from "./packaged-editor-orchestration.mjs";
 import { acquireExactArtifact, prepareREditorAcceptanceTooling } from "./r-editor-acceptance-tooling.mjs";
@@ -413,6 +414,21 @@ test("qualified selected R installs the exact acquired macOS collapse binary and
   assert.deepEqual(prepared.packageVersions, versions);
   assert.equal(prepared.packageRecord, notebookPackages.map((name) => `${name}=${versions[name]}`).join("\n"));
   assert.equal(R_ACCEPTANCE_PACKAGE_VERSIONS.collapse, "2.1.7");
+  assert.equal(
+    resolveEditorAcceptanceJupyterEnvironment(prepared.jupyterEnvironment, fixture.root)
+      .OPEN_WRANGLER_TEST_COLLAPSE_VERSION,
+    "2.1.8"
+  );
+  for (const invalid of [undefined, "", "2.1.7\n", 218]) {
+    assert.throws(
+      () =>
+        resolveEditorAcceptanceJupyterEnvironment(
+          { ...prepared.jupyterEnvironment, rCollapseVersion: invalid },
+          fixture.root
+        ),
+      /selected collapse version/u
+    );
+  }
   assert.equal(fixture.commands.length, 1);
   assert.equal(fixture.commands[0].executable, fixture.rscript);
   assert.equal(prepared.rExecutable, fixture.rExecutable);
@@ -470,6 +486,11 @@ test("macOS collapse binary eligibility follows the selected R tuple and package
     });
     assert.equal(prepared.packages.includes("collapse"), false);
     assert.equal(prepared.packageRecord.includes("collapse="), false);
+    assert.equal(
+      resolveEditorAcceptanceJupyterEnvironment(prepared.jupyterEnvironment, fixture.root)
+        .OPEN_WRANGLER_TEST_COLLAPSE_VERSION,
+      undefined
+    );
     assert.equal(commandCode(prepared.dependencyInstall).includes('type = "mac.binary"'), false);
     assert.equal(fixture.commands.length, 1);
   }
@@ -608,6 +629,11 @@ for (const [scope, selection, packages] of [
     }
     assert.equal(prepared.jupyterEnvironment.rscriptPath, fixture.rscript);
     assert.equal(prepared.jupyterEnvironment.rLibraryDir, prepared.libraryDir);
+    assert.equal(
+      resolveEditorAcceptanceJupyterEnvironment(prepared.jupyterEnvironment, fixture.root)
+        .OPEN_WRANGLER_TEST_COLLAPSE_VERSION,
+      packages.includes("collapse") ? "2.1.7" : undefined
+    );
     assert.equal(prepared.dependencyProbe.options.timeoutMs, 30_000);
     assert.equal(prepared.dependencyInstall.options.timeoutMs, 1_200_000);
     assert.ok(Object.isFrozen(R_ACCEPTANCE_PACKAGE_VERSIONS));
@@ -915,7 +941,8 @@ test("terminal preparation keeps native R ownership without a kernel on each pla
       configDir: join(prepared.root, "c"),
       path: join(prepared.root, "p"),
       rscriptPath: fixture.rscript,
-      rLibraryDir: prepared.libraryDir
+      rLibraryDir: prepared.libraryDir,
+      rCollapseVersion: null
     });
     assert.ok(Object.isFrozen(prepared.jupyterEnvironment));
     assert.deepEqual(readdirSync(prepared.root).sort(), ["c", "d", "h", "l", "p", "r", "t"]);

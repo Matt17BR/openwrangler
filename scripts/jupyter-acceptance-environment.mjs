@@ -2168,7 +2168,8 @@ export async function prepareJupyterAcceptanceREnvironment(
     configDir,
     path: pathDir,
     rscriptPath: canonicalRscript,
-    rLibraryDir: libraryDir
+    rLibraryDir: libraryDir,
+    rCollapseVersion: packageVersions.collapse ?? null
   });
   if (purpose === "interactive-terminal") return Object.freeze({ ...dependencies, jupyterEnvironment });
 

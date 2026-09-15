@@ -30,10 +30,11 @@ export function createReleasedRRuntimeBinding({
   recordAcceptanceProgress,
   releasedNotebookJsonResult
 }: ReleasedRRuntimeBindingDependencies) {
-  function assertReleasedRVersion(
+  function assertReleasedRSetupVersions(
     result: Readonly<Record<string, unknown>>,
     target: ReleasedJupyterKernelTarget,
-    description: string
+    description: string,
+    requireCollapse: boolean
   ): void {
     if (typeof result.rVersion !== "string") {
       assert.fail(`The ${description} must report its R version.`);
@@ -46,6 +47,11 @@ export function createReleasedRRuntimeBinding({
     );
     if (target.remote) {
       assert.equal(version, "4.5.2", "The pinned remote R fixture must use exactly R 4.5.2.");
+    }
+    if (requireCollapse) {
+      const expected = target.remote ? "2.1.7" : process.env.OPEN_WRANGLER_TEST_COLLAPSE_VERSION;
+      assert.ok(expected, "Local R acceptance must receive the collapse version selected by preparation.");
+      assert.equal(result.collapseVersion, expected, `The ${description} must use the selected collapse version.`);
     }
   }
 
@@ -145,7 +151,7 @@ export function createReleasedRRuntimeBinding({
   return {
     assertReleasedRPrivateLibrary,
     assertReleasedRRuntimeBinding,
-    assertReleasedRVersion,
+    assertReleasedRSetupVersions,
     recordReleasedRAcceptanceSection,
     waitForReleasedRRuntimeBindingCleanup
   };

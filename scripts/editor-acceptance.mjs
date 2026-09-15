@@ -3841,7 +3841,7 @@ export function editorAcceptanceProgressSignalPath(progressPath, runId, phase) {
   return `${progressPath}.${runId.replaceAll("-", "")}.${phase}.heartbeat`;
 }
 
-function resolveEditorAcceptanceJupyterEnvironment(jupyterEnvironment, privateRoot) {
+export function resolveEditorAcceptanceJupyterEnvironment(jupyterEnvironment, privateRoot) {
   if (jupyterEnvironment === undefined) return {};
   if (jupyterEnvironment === null || typeof jupyterEnvironment !== "object" || Array.isArray(jupyterEnvironment)) {
     throw new Error("An editor acceptance Jupyter environment must be an object.");
@@ -3872,13 +3872,13 @@ function resolveEditorAcceptanceJupyterEnvironment(jupyterEnvironment, privateRo
   const hasRProcessEnvironment =
     Object.prototype.hasOwnProperty.call(jupyterEnvironment, "rscriptPath") ||
     Object.prototype.hasOwnProperty.call(jupyterEnvironment, "rLibraryDir");
-  const expectedOwnKeyCount = fields.length + (hasRProcessEnvironment ? 2 : 0);
+  const expectedOwnKeyCount = fields.length + (hasRProcessEnvironment ? 3 : 0);
   if (
     ownKeys.length !== expectedOwnKeyCount ||
     fields.some(([field]) => !Object.prototype.hasOwnProperty.call(jupyterEnvironment, field))
   ) {
     throw new Error(
-      "An editor acceptance Jupyter environment must define its four Jupyter directories and, when present, both exact R process fields."
+      "An editor acceptance Jupyter environment must define its four Jupyter directories and, when present, the exact R process fields and selected collapse version."
     );
   }
   const environment = {};
@@ -3917,6 +3917,13 @@ function resolveEditorAcceptanceJupyterEnvironment(jupyterEnvironment, privateRo
   if (hasRProcessEnvironment) {
     const rscriptPath = jupyterEnvironment.rscriptPath;
     const rLibraryDir = jupyterEnvironment.rLibraryDir;
+    const rCollapseVersion = jupyterEnvironment.rCollapseVersion;
+    if (
+      rCollapseVersion !== null &&
+      (typeof rCollapseVersion !== "string" || !/^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$/u.test(rCollapseVersion))
+    ) {
+      throw new Error("An editor acceptance R environment requires a selected collapse version or null when omitted.");
+    }
     if (
       typeof rscriptPath !== "string" ||
       !isAbsolute(rscriptPath) ||
@@ -3956,6 +3963,7 @@ function resolveEditorAcceptanceJupyterEnvironment(jupyterEnvironment, privateRo
     }
     environment.OPEN_WRANGLER_TEST_RSCRIPT = canonicalRscript;
     environment.R_LIBS_USER = canonicalRLibrary;
+    if (rCollapseVersion !== null) environment.OPEN_WRANGLER_TEST_COLLAPSE_VERSION = rCollapseVersion;
   }
   return environment;
 }

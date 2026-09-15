@@ -44,10 +44,11 @@ interface ReleasedRJupyterExtensionJourneyDependencies {
     expectedBinding: boolean,
     checkpoint: string
   ) => Promise<void>;
-  readonly assertReleasedRVersion: (
+  readonly assertReleasedRSetupVersions: (
     result: Readonly<Record<string, unknown>>,
     target: ReleasedJupyterKernelTarget,
-    description: string
+    description: string,
+    requireCollapse: boolean
   ) => void;
   readonly bestEffortReleasedJupyterCleanup: (
     testing: TestApi,
@@ -174,7 +175,7 @@ export function createReleasedRJupyterExtensionJourney({
   RELEASED_JUPYTER_R_SETUP_CELL,
   assertReleasedRPrivateLibrary,
   assertReleasedRRuntimeBinding,
-  assertReleasedRVersion,
+  assertReleasedRSetupVersions,
   bestEffortReleasedJupyterCleanup,
   connectToEditorWorkbench,
   executeReleasedNotebookCell,
@@ -278,9 +279,8 @@ export function createReleasedRJupyterExtensionJourney({
       }
       const setup = releasedNotebookJsonResult(setupCell, RELEASED_JUPYTER_R_SETUP_RESULT, "R setup");
       assert.deepEqual({ rows: setup.rows, columns: setup.columns }, { rows: 1_205, columns: 25 });
-      assertReleasedRVersion(setup, kernelTarget, "R setup");
+      assertReleasedRSetupVersions(setup, kernelTarget, "R setup", coverage.focusedEditing === "none");
       if (!kernelTarget.remote) assertReleasedRPrivateLibrary(setup, "R setup");
-      if (coverage.focusedEditing === "none") assert.equal(setup.collapseVersion, "2.1.7");
       assert.ok(Number.isSafeInteger(Number(setup.pid)) && Number(setup.pid) > 0);
       if (kernelTarget.remote) {
         assert.equal(setup.remoteRunId, kernelTarget.remote.runId);
