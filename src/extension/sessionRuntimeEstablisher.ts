@@ -89,6 +89,7 @@ export class SessionRuntimeEstablisher {
       return { established: false, response: protocolError("invalid_source_origin", invalidOrigin, true) };
     }
     sourceProtection ??= await captureSessionSourceFiles(request.source);
+    let targetRuntimeIsCurrent: (() => boolean) | undefined;
     const currentFailure = (): OpenWranglerResponse | undefined => {
       if (!hooks.isCoordinatorAvailable())
         return protocolError(
@@ -104,6 +105,12 @@ export class SessionRuntimeEstablisher {
           true
         );
       const mismatch = sessionOriginMismatch(request, origin);
+      if (targetRuntimeIsCurrent && !targetRuntimeIsCurrent())
+        return protocolError(
+          "file_plan_target_runtime_changed",
+          "The Python runtime opening this file changed or stopped. Reopen the target to inspect any saved plan.",
+          true
+        );
       return mismatch ? protocolError("invalid_source_origin", mismatch, true) : undefined;
     };
     const beforeOpen = currentFailure();
@@ -212,6 +219,15 @@ export class SessionRuntimeEstablisher {
           true
         )
       };
+    }
+
+    if (initialFilePlan) {
+      targetRuntimeIsCurrent = delegate.captureFileSessionOwner?.(session.runtimeId) ?? (() => false);
+      const targetFailure = currentFailure();
+      if (targetFailure) {
+        await this.runtimeCleanup.close(session, "invalid open runtime");
+        return { established: false, response: targetFailure };
+      }
     }
 
     session.sourceSchema =
