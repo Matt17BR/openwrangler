@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import weakref
+from base64 import b64encode
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from decimal import Decimal
@@ -2546,6 +2547,72 @@ def test_duckdb_page_bounds_fetched_varchar_without_changing_source_queries(monk
         assert [row["values"][0]["raw"] for row in safe["rows"]] == [0, 4]
         assert len(queries) == 2 and '"text "" exact"' not in queries[-1] and "unselected" not in queries[-1]
         assert engine._terminal_scalar(source, 'SELECT length("text "" exact") FROM ow WHERE id = 4') == 262_148
+    finally:
+        engine.close()
+
+
+def test_duckdb_page_bounds_fetched_blobs_without_changing_source_queries(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = DuckDBEngine()
+    exact = b"\x00\xff" * 24_576
+    overflow = exact + b"\x00"
+    fetched: list[list[tuple[Any, ...]]] = []
+    queries: list[str] = []
+    native_execute_rows = duckdb_runtime._execute_rows
+
+    def observe_fetch(connection: Any, source_sql: str, query: str) -> list[tuple[Any, ...]]:
+        records = native_execute_rows(connection, source_sql, query)
+        fetched.append(records)
+        queries.append(query)
+        return records
+
+    monkeypatch.setattr(duckdb_runtime, "_execute_rows", observe_fetch)
+    install_conversion_guards(monkeypatch)
+    try:
+        source = engine._relation_from_sql(
+            'SELECT id, value AS "blob "" exact", from_hex(repeat(\'aa\', 262144)) AS unselected FROM (VALUES '
+            "(0, from_hex(repeat('00ff', 131072))), "
+            "(1, from_hex(repeat('00ff', 24576))), (2, NULL::BLOB), (3, ''::BLOB), "
+            "(4, from_hex(repeat('00ff', 24576) || '00')), "
+            "(5, from_hex(repeat('00ff', 131072)))) source(id, value) ORDER BY id"
+        )
+        frame = engine.ensure_row_ids(source, "bounded-binary")
+        page = engine.page(frame, 1, 5, total_rows=6, column_projection=[(1, "stable:blob")])
+
+        # These are actual native bytes before base64 normalization.
+        assert [[None if row[1] is None else len(row[1]) for row in batch] for batch in fetched] == [
+            [49_152, None, 0, 49_153, 49_153]
+        ]
+        assert [row[1] for row in fetched[0]] == [exact, None, b"", overflow, overflow]
+        assert len(queries) == 1 and "unselected" not in queries[0]
+        assert page["columnIds"] == ["stable:blob"]
+        assert [row["rowNumber"] for row in page["rows"]] == [1, 2, 3, 4, 5]
+        assert [row["id"].rsplit(":", 1)[-1] for row in page["rows"]] == ["1", "2", "3", "4", "5"]
+        cells = [row["values"][0] for row in page["rows"]]
+        encoded = [
+            b64encode(value).decode("ascii") if value is not None else None
+            for value in [exact, None, b"", overflow, overflow]
+        ]
+        assert [cell["raw"] for cell in cells] == encoded
+        assert [cell["display"] for cell in cells] == [value or "" for value in encoded]
+        assert [cell["kind"] for cell in cells] == ["binary", "null", "binary", "binary", "binary"]
+
+        filtered = engine.apply_filter_model(
+            frame,
+            {
+                "filters": [
+                    {
+                        "column": 'blob " exact',
+                        "type": "binary",
+                        "predicates": [{"kind": "predicate", "operator": "isNotNull"}],
+                    }
+                ],
+                "sort": [{"column": "id", "direction": "desc", "nulls": "last"}],
+            },
+        )
+        safe = engine.page(filtered, 0, 5, total_rows=5, column_projection=[(0, "stable:id")])
+        assert [row["values"][0]["raw"] for row in safe["rows"]] == [5, 4, 3, 1, 0]
+        assert len(queries) == 2 and '"blob "" exact"' not in queries[-1] and "unselected" not in queries[-1]
+        assert engine._terminal_scalar(source, 'SELECT octet_length("blob "" exact") FROM ow WHERE id = 5') == 262_144
     finally:
         engine.close()
 
