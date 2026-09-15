@@ -1,5 +1,4 @@
 import { isDeepStrictEqual } from "node:util";
-import { operationKinds } from "../../shared/operationCatalog.generated";
 import { reconcileViewFilterModel } from "../../shared/filterModel";
 import {
   type ColumnSchema,
@@ -19,6 +18,7 @@ import type { RKernelBridgeTransport } from "./rKernelBridgeTransport";
 import { type RKernelTransformStep, type RKernelViewQuery } from "./rKernelProtocol";
 import type { RColumnSchema, RFramePageContract } from "./rFrameContract";
 import {
+  R_BRIDGE_CAPABILITIES,
   assertMutationContract,
   clearDraft,
   copyFilterModel,
@@ -38,7 +38,7 @@ import {
   schemaFromRContract as schemaFromContract,
   validateRPageWindow as validatePageWindow
 } from "./rKernelFrameMapping";
-import { rTransformStep, type RTransformStep } from "./rKernelTransformBinding";
+import { rTransformStep, type RPreviewTransformStep, type RTransformStep } from "./rKernelTransformBinding";
 import {
   assertMutationDiff,
   categoricalRetainedSchema,
@@ -63,6 +63,10 @@ import {
 } from "./rKernelMutationSchema";
 import { copyRTransformStep } from "./rKernelTransformState";
 import { resolveRViewQuery as resolveViewQuery } from "./rKernelViewContract";
+
+function isSupportedRStep(step: TransformStep): step is RPreviewTransformStep {
+  return R_BRIDGE_CAPABILITIES.supportedOperations?.includes(step.kind) === true;
+}
 
 /**
  * Owns native-R preview and cleaning-plan mutations against confirmed bridge
@@ -124,7 +128,7 @@ export class RKernelMutationLifecycle {
         request.sessionId
       );
     }
-    if (step.kind === "extractStructFields" || !operationKinds.includes(step.kind)) {
+    if (!isSupportedRStep(step)) {
       return errorResponse(
         "unsupported_operation",
         `The native R runtime does not support ${step.kind}.`,

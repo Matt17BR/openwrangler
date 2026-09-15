@@ -590,6 +590,7 @@ def bind_step(
         "splitText",
         "splitTextColumns",
         "extractStructFields",
+        "explodeList",
         "extractRegexGroup",
         "capitalizeText",
         "lowerText",
@@ -738,6 +739,7 @@ def bind_step(
         "splitText",
         "splitTextColumns",
         "extractStructFields",
+        "explodeList",
         "extractRegexGroup",
         "capitalizeText",
         "lowerText",
@@ -817,6 +819,8 @@ def bind_step(
         context.require_type(params["column"], params.get("columnType"), "conditionalColumn.columnType")
     elif kind == "extractStructFields":
         context.require_type(params["column"], "struct", "extractStructFields.column")
+    elif kind == "explodeList":
+        context.require_type(params["column"], "list", "explodeList.column")
     elif kind == "denseRank":
         context.require_numeric_source(params["column"], "denseRank.column")
     elif kind == "extractRegexGroup":

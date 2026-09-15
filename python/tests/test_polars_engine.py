@@ -33,6 +33,175 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.parametrize("lazy", [False, True])
+def test_polars_explode_list_preserves_current_children_names_and_nulls(lazy: bool) -> None:
+    operation = {
+        "id": "explode",
+        "kind": "explodeList",
+        "params": {"column": {"id": "c:source:1", "name": "*", "position": 1}},
+    }
+    engine = PolarsEngine()
+    try:
+        namespace: dict[str, Any] = {}
+        exec(engine.compile_plan([operation]), namespace)
+        record = {"^a.*$": -1, "*": 7}
+        cases = [
+            (pl.Int64, [[-(2**63), None], [], None, [2**63 - 1, 3]], [-(2**63), None, None, None, 2**63 - 1, 3]),
+            (pl.Datetime("ns", "America/New_York"), [[-1, None], [], None, [1, 1001]], [-1, None, None, None, 1, 1001]),
+            (
+                pl.Decimal(20, 3),
+                [[Decimal("-12345678901234567.123"), None], [], None, [Decimal("1.001"), Decimal("0.000")]],
+                [Decimal("-12345678901234567.123"), None, None, None, Decimal("1.001"), Decimal("0.000")],
+            ),
+            (
+                pl.Struct({"^a.*$": pl.Datetime("ns"), "*": pl.Int64}),
+                [[record, None], [], None, [record, record]],
+                [record, None, None, None, record, record],
+            ),
+            (pl.List(pl.Int64), [[[1, None], []], [], None, [[2], [3, 4]]], [[1, None], [], None, None, [2], [3, 4]]),
+            (
+                pl.Array(pl.Int64, 2),
+                [[[1, None], [2, 3]], [], None, [[4, 5], [6, 7]]],
+                [[1, None], [2, 3], None, None, [4, 5], [6, 7]],
+            ),
+            (pl.Null, [[None, None], [], None, [None, None]], [None] * 6),
+        ]
+        for dtype, values, expected_values in cases:
+            source = pl.DataFrame({"keep": [9, 8, 7, 6], "*": pl.Series("*", values).cast(pl.List(dtype))})
+            before = source.clone()
+            expected = pl.DataFrame({"keep": [9, 9, 8, 7, 6, 6], "*": pl.Series("*", expected_values).cast(dtype)})
+            for frame, wanted in (
+                (source, expected),
+                (source.head(0), expected.head(0)),
+                (source.slice(2, 1), expected.slice(3, 1)),
+            ):
+                native = frame.lazy() if lazy else frame
+                for result in (engine.apply_transform(native, operation), namespace["clean_data"](native)):
+                    assert isinstance(result, pl.LazyFrame) == lazy
+                    actual = result.collect() if lazy else result
+                    assert actual.schema == wanted.schema and actual.equals(wanted)
+            reordered = pl.DataFrame([source.get_column("*"), source.get_column("keep")])
+            result = namespace["clean_data"](reordered.lazy() if lazy else reordered)
+            actual = result.collect() if lazy else result
+            assert actual.equals(pl.DataFrame([expected.get_column("*"), expected.get_column("keep")]))
+            assert source.schema == before.schema and source.equals(before)
+        # Reused programs resolve the current child type, without removing caller columns.
+        private_looking = engine_base.INTERNAL_ROW_ID_PREFIX + "caller"
+        changed = pl.DataFrame({"*": [["one", "two"], None], private_looking: [4, 5]})
+        result = namespace["clean_data"](changed.lazy() if lazy else changed)
+        actual = result.collect() if lazy else result
+        assert actual.equals(pl.DataFrame({"*": ["one", "two", None], private_looking: [4, 4, 5]}))
+    finally:
+        engine.close()
+
+
+def test_polars_explode_list_rejects_native_domain_before_collection(monkeypatch: pytest.MonkeyPatch) -> None:
+    operation = {
+        "id": "explode",
+        "kind": "explodeList",
+        "params": {"column": {"id": "c:source:0", "name": "values", "position": 0}},
+    }
+    engine = PolarsEngine()
+    try:
+        namespace: dict[str, Any] = {}
+        exec(engine.compile_plan([operation]), namespace)
+
+        def forbidden(*_args, **_kwargs):
+            raise AssertionError("Explode List admission collected native rows")
+
+        safe = pl.DataFrame({"values": [[1]]}).lazy()
+        # Metadata injection only: never allocate Object-backed native containers.
+        for dtype in (
+            pl.Int64,
+            pl.Array(pl.Int64, 1),
+            pl.Object,
+            pl.List(pl.Object),
+            pl.List(pl.Struct({"safe": pl.Int64, "bad": pl.Array(pl.List(pl.Object), 2)})),
+        ):
+            with monkeypatch.context() as patch:
+                patch.setattr(pl.LazyFrame, "collect_schema", lambda _self, dtype=dtype: pl.Schema({"values": dtype}))
+                patch.setattr(pl.LazyFrame, "collect", forbidden)
+                with pytest.raises(EngineError, match="Explode List"):
+                    engine.apply_transform(safe, operation)
+                with pytest.raises(ValueError, match="Explode List"):
+                    namespace["clean_data"](safe)
+        with monkeypatch.context() as patch:
+            patch.setattr(pl.LazyFrame, "collect", forbidden)
+            with pytest.raises(ValueError, match="Explode List"):
+                namespace["clean_data"](pl.DataFrame({"other": [1]}).lazy())
+    finally:
+        engine.close()
+
+
+def test_polars_explode_list_guards_retained_input_before_expansion(monkeypatch: pytest.MonkeyPatch) -> None:
+    operation = {
+        "id": "explode",
+        "kind": "explodeList",
+        "params": {"column": {"id": "c:source:1", "name": "values", "position": 1}},
+    }
+    monkeypatch.setattr(polars_engine, "_POLARS_EXPLODE_MAX_ROWS", 8, raising=False)
+    engine = PolarsEngine()
+    try:
+        namespace: dict[str, Any] = {}
+        exec(engine.compile_plan([operation]), namespace)
+        late = pl.DataFrame({"keep": [3, 2, 1], "values": [[1], [2], list(range(9))]})
+
+        def forbidden(*_args, **_kwargs):
+            raise AssertionError("Explode List constructed expansion before rejecting growth")
+
+        counts = []
+        original_select = pl.DataFrame.select
+
+        def observe_count(frame, *args, **kwargs):
+            result = original_select(frame, *args, **kwargs)
+            counts.append((result.dtypes, result.item()))
+            return result
+
+        with monkeypatch.context() as patch:
+            patch.setattr(pl.DataFrame, "select", observe_count)
+            patch.setattr(pl.DataFrame, "explode", forbidden)
+            patch.setattr(pl.LazyFrame, "explode", forbidden)
+            for frame in (late, late.lazy()):
+                with pytest.raises(EngineError, match="8.*row"):
+                    engine.apply_transform(frame, operation)
+                with pytest.raises(ValueError, match="8.*row"):
+                    namespace["clean_data"](frame)
+        assert counts == [([pl.UInt64], 11)] * 4
+        at_capacity = pl.DataFrame({"keep": [1], "values": [list(range(8))]})
+        assert engine.apply_transform(at_capacity, operation).height == 8
+        assert namespace["clean_data"](at_capacity).equals(engine.apply_transform(at_capacity, operation))
+        base = pl.DataFrame({"keep": [9, 7], "values": [[0], [0]]})
+        for transform in (lambda value: engine.apply_transform(value, operation), namespace["clean_data"]):
+            calls = []
+
+            def variable(batch, calls=calls):
+                calls.append(1)
+                values = [[30, None], [10]] if len(calls) == 1 else [[99], list(range(9))]
+                return batch.with_columns(pl.Series("values", values, dtype=pl.List(pl.Int64)))
+
+            source = base.lazy().map_batches(
+                variable,
+                schema=base.schema,
+                predicate_pushdown=False,
+                projection_pushdown=False,
+                slice_pushdown=False,
+                streamable=False,
+            )
+            result = transform(source)
+            assert isinstance(result, pl.LazyFrame) and calls == [1]
+            assert engine.shape(result) == {"rows": 3, "columns": 2}
+            assert [[cell["raw"] for cell in row["values"]] for row in engine.page(result, 1, 2)["rows"]] == [
+                [9, None],
+                [7, 10],
+            ]
+            assert result.collect().equals(pl.DataFrame({"keep": [9, 9, 7], "values": [30, None, 10]}))
+            assert result.select("keep").collect().get_column("keep").to_list() == [9, 9, 7]
+            assert calls == [1]
+        assert base.get_column("values").to_list() == [[0], [0]]
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("lazy", [False, True])
 def test_polars_extract_struct_fields_preserves_literal_names_and_current_input(lazy: bool) -> None:
     source = pl.DataFrame(
         {"id": [0, 1, 2], "^a.*$": [{"*": 7, "^a.*$": 8, "amount": 90}, None, {"*": None, "^a.*$": 4, "amount": 91}]}

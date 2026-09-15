@@ -107,6 +107,12 @@ export function buildParams(
     case "renameColumn":
     case "cloneColumn":
       return { column: columnReference("column"), newName: value("newName") };
+    case "explodeList": {
+      const column = columnReference("column");
+      if (availableColumns.find((candidate) => candidate.id === column.id)?.type !== "list")
+        throw new Error("Choose a List column to expand into rows.");
+      return { column };
+    }
     case "extractStructFields": {
       const column = columnReference("column");
       if (availableColumns.find((candidate) => candidate.id === column.id)?.type !== "struct")

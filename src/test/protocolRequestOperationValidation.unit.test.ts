@@ -11,6 +11,35 @@ import {
 import { otherReference, requests, validateTransportSchema, valueReference } from "./protocolValidation.fixtures";
 
 describe("protocol-v4 operation request validation", () => {
+  it("admits exactly one literal List column reference", () => {
+    const column = { id: "c:list", name: " ^a.*$ 城市 " };
+    for (const [params, expected] of [
+      [{ column }, true],
+      [{}, false],
+      [{ column: "items" }, false],
+      [{ column: { id: "", name: "items" } }, false],
+      [{ column, newColumn: "other" }, false],
+      [{ column: { ...column, position: 0 } }, false]
+    ] as const) {
+      const step = { id: "explode", kind: "explodeList", params };
+      const request = {
+        kind: "previewStep",
+        sessionId: "s",
+        revision: 0,
+        offset: 0,
+        limit: 1,
+        columnOffset: 0,
+        columnLimit: 1,
+        step
+      };
+      expect(isTransformStep(step)).toBe(expected);
+      expect(isOpenWranglerRequest(request)).toBe(expected);
+      expect(
+        validateTransportSchema({ protocolVersion: 4, requestId: "explode", priority: "interactive", request })
+      ).toBe(expected);
+    }
+  });
+
   it("admits bounded literal Struct field pairs without normalizing names", () => {
     const step = {
       id: "fields",

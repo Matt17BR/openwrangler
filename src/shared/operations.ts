@@ -15,7 +15,9 @@ export function operationByKind(kind: OperationKind): OperationCatalogItem {
 }
 
 export function supportsOperation(capabilities: SourceCapabilities | undefined, kind: OperationKind): boolean {
-  return capabilities?.supportedOperations?.includes(kind) ?? kind !== "extractStructFields";
+  return (
+    capabilities?.supportedOperations?.includes(kind) ?? (kind !== "extractStructFields" && kind !== "explodeList")
+  );
 }
 
 export function supportedOperationCatalog(

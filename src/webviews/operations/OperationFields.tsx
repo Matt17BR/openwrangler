@@ -90,6 +90,25 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
       />
     );
   }
+  if (kind === "explodeList") {
+    const listColumns = compatibleColumns(columns, operationColumnTypes(kind));
+    return (
+      <>
+        <ColumnReferenceSelect
+          name="column"
+          label="List column"
+          columns={listColumns}
+          defaultValue={initialColumnReference("column", listColumns[0]?.id)}
+          emptyMessage="No List columns are available."
+        />
+        <p className="panelNote">
+          Each list item becomes a row, repeating the other columns. Empty or null lists keep one row with a missing
+          value. Fixed-size Array columns are unsupported. For lazy dataframes, preview first reads the entire input
+          into memory. The output row limit is not a memory limit.
+        </p>
+      </>
+    );
+  }
   if (kind === "extractStructFields") {
     const fieldsById = new Map(initialStructFields.map((field, index) => [`struct-field-${index}`, field]));
     const structColumns = compatibleColumns(columns, operationColumnTypes(kind));

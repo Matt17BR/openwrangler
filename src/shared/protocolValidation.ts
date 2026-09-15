@@ -1019,6 +1019,8 @@ export function isTransformStep(value: unknown): value is TransformStep {
     case "renameColumn":
     case "cloneColumn":
       return isColumnReference(params.column) && isNonEmptyString(params.newName);
+    case "explodeList":
+      return isColumnReference(params.column);
     case "extractStructFields": {
       if (
         !isColumnReference(params.column) ||

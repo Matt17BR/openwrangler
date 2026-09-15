@@ -96,6 +96,7 @@
 | `renameColumn`        | Rename column           | Columns / types    | `column`, `newName`                                                                                       | None                                    |
 | `cloneColumn`         | Clone column            | Columns / types    | `column`, `newName`                                                                                       | None                                    |
 | `extractStructFields` | Extract Struct Fields   | Columns / types    | `column`, `fields`                                                                                        | None                                    |
+| `explodeList`         | Explode List            | Rows / order       | `column`                                                                                                  | None                                    |
 | `castColumn`          | Convert type            | Columns / types    | `column`, `dtype`                                                                                         | `inputFormat`                           |
 | `formula`             | Formula column          | Columns / types    | `leftColumn`, `operator`, `newColumn`                                                                     | `rightColumn`, `value`                  |
 | `conditionalColumn`   | Conditional column      | Columns / types    | `column`, `columnType`, `predicate`, `newColumn`, `resultType`, `trueValue`, `falseValue`, `missingValue` | None                                    |

@@ -105,6 +105,125 @@ def test_polars_literal_column_names_survive_session_apply_history_and_generated
     )
 
 
+def test_polars_explode_list_singletons_report_replaced_rows(tmp_path: Path) -> None:
+    path = tmp_path / "singletons.parquet"
+    pl.DataFrame({"items": [[1], [2]]}).write_parquet(path)
+    contents = path.read_bytes()
+    manager = SessionManager()
+    try:
+        opened = manager.open_session({"kind": "file", "path": str(path)}, backend="polars", mode="editing")
+        sid = opened["metadata"]["sessionId"]
+        preview = manager.preview_step(sid, 0, step("explode", "explodeList", column=ref("c:source:0", "items")), 0, 10)
+        assert [row["values"][0]["raw"] for row in preview["page"]["rows"]] == [1, 2]
+        assert not {row["id"] for row in opened["page"]["rows"]}.intersection(
+            row["id"] for row in preview["page"]["rows"]
+        )
+        assert preview["diff"] == {
+            "addedRows": 2,
+            "removedRows": 2,
+            "addedColumns": [],
+            "removedColumns": [],
+            "changedCells": 0,
+            "cells": [],
+            "truncated": False,
+        }
+    finally:
+        manager.close_all()
+    assert path.read_bytes() == contents
+
+
+def test_polars_explode_list_retains_history_fresh_ids_and_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import openwrangler_runtime.engines.polars_engine as polars_engine
+
+    source = pl.DataFrame({"keep": [3, 2, 1], "*": [[30, None], [], None]})
+    path = tmp_path / "lists.parquet"
+    source.write_parquet(path)
+    contents, stat = path.read_bytes(), path.stat()
+    manager = SessionManager()
+    try:
+        opened = manager.open_session({"kind": "file", "path": str(path)}, backend="polars", mode="editing")
+        sid, schema = opened["metadata"]["sessionId"], opened["metadata"]["schema"]
+        assert "explodeList" in opened["metadata"]["capabilities"]["supportedOperations"]
+        sort = step(
+            "sort", "sortRows", rules=[{"column": ref(schema[0]["id"], "keep"), "direction": "asc", "nulls": "last"}]
+        )
+        sorting = manager.preview_step(sid, 0, sort, 0, 10)
+        sorted_result = manager.apply_draft(sid, sorting["revision"], 0, 10)
+        public = step("explode", "explodeList", column=ref(schema[1]["id"], "*"))
+        preview = manager.preview_step(sid, sorted_result["revision"], public, 0, 10)
+        assert preview["metadata"]["draftStep"] == public
+        assert preview["metadata"]["capabilities"]["lazy"] is True
+        wanted = [[1, None], [2, None], [3, 30], [3, None]]
+        assert [[cell["raw"] for cell in row["values"]] for row in preview["page"]["rows"]] == wanted
+        assert (preview["diff"]["addedRows"], preview["diff"]["removedRows"]) == (4, 3)
+        ids = [row["id"] for row in preview["page"]["rows"]]
+        assert len(set(ids)) == 4 and not set(ids).intersection(row["id"] for row in sorted_result["page"]["rows"])
+        assert [row["rowNumber"] for row in preview["page"]["rows"]] == [0, 1, 2, 3]
+        assert [(col["id"], col["name"]) for col in preview["metadata"]["schema"]] == [
+            (col["id"], col["name"]) for col in schema
+        ]
+        assert preview["metadata"]["schema"][1]["type"] == "integer"
+        discarded = manager.discard_draft(sid, preview["revision"], 0, 10)
+        assert discarded["page"] == sorted_result["page"]
+        # A refusal leaves the confirmed plan, native frame and revision intact.
+        session = manager.sessions[sid]
+        committed, revision = session.committed, session.revision
+        with monkeypatch.context() as patch:
+            patch.setattr(polars_engine, "_POLARS_EXPLODE_MAX_ROWS", 3)
+            with pytest.raises(EngineError, match="3.*row"):
+                manager.preview_step(sid, revision, public, 0, 10)
+        assert session.committed is committed and session.revision == revision and session.draft_frame is None
+        assert session.plan == [sort]
+        preview = manager.preview_step(sid, revision, public, 0, 10)
+        draft = session.draft_frame
+        applied = manager.apply_draft(sid, preview["revision"], 0, 10)
+        assert session.committed is draft and applied["metadata"]["steps"] == [sort, public]
+        assert [row["id"] for row in applied["page"]["rows"]] == ids
+        assert not contains_private_position(applied["metadata"]["steps"])
+        undone = manager.undo_step(sid, applied["revision"], 0, 10)
+        assert undone["page"] == sorted_result["page"]
+        redone = manager.redo_step(sid, undone["revision"], 0, 10)
+        assert redone["page"] == applied["page"] and redone["code"] == applied["code"]
+        replayed, lineage, shape, replay_schema = manager._replay(session, session.bound_plan)
+        assert shape == {"rows": 4, "columns": 2}
+        assert lineage == session.committed_lineage and replay_schema == session.committed_schema
+        assert_polars_frame_equal(replayed.collect(), session.committed.collect())
+        expected = pl.DataFrame({"keep": [1, 2, 3, 3], "*": [None, None, 30, None]})
+        namespace: dict[str, Any] = {}
+        exec(redone["code"], namespace)
+        assert_polars_frame_equal(namespace["clean_data"](pl.scan_parquet(path)).collect(), expected)
+        output = tmp_path / "exploded.parquet"
+        output.touch(exist_ok=False)
+        device, inode = _regular_file_identity(output)
+        manager.export_data(
+            sid, redone["revision"], str(output), {"format": "parquet"}, {"device": str(device), "inode": str(inode)}
+        )
+        assert_polars_frame_equal(pl.read_parquet(output), expected)
+        for backend in ("pandas", "duckdb"):
+            other = manager.open_session({"kind": "file", "path": str(path)}, backend=backend, mode="editing")
+            assert "explodeList" not in other["metadata"]["capabilities"]["supportedOperations"]
+            other_id = other["metadata"]["sessionId"]
+            target = other["metadata"]["schema"][1]
+            with pytest.raises(EngineError):
+                manager.preview_step(
+                    other_id, 0, step("unsupported", "explodeList", column=ref(target["id"], target["name"])), 0, 10
+                )
+            assert manager.sessions[other_id].revision == 0 and manager.sessions[other_id].plan == []
+    finally:
+        manager.close_all()
+    assert not manager.sessions and path.read_bytes() == contents
+    after = path.stat()
+    assert (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) == (
+        stat.st_dev,
+        stat.st_ino,
+        stat.st_size,
+        stat.st_mtime_ns,
+    )
+    assert_polars_frame_equal(source, pl.read_parquet(path))
+
+
 @pytest.mark.parametrize("backend", ["polars", "duckdb"])
 def test_extract_struct_fields_preserves_parent_rows_and_appended_identity_through_history_and_export(
     tmp_path: Path, backend: str

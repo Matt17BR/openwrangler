@@ -92,6 +92,13 @@ OPERATION_DEFINITIONS: tuple[OperationDefinition, ...] = (
         optional=(),
     ),
     OperationDefinition(
+        kind="explodeList",
+        title="Explode List",
+        group="Rows / order",
+        required=("column",),
+        optional=(),
+    ),
+    OperationDefinition(
         kind="castColumn",
         title="Convert type",
         group="Columns / types",

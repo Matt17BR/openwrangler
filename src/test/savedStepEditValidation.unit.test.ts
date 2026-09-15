@@ -37,6 +37,7 @@ function column(
 type StepByKind = { [Kind in OperationKind]: Extract<TransformStep, { kind: Kind }> };
 
 const validSteps = {
+  explodeList: step("explodeList", { column: nested }),
   sortRows: step("sortRows", { rules: [{ column: text, direction: "asc", nulls: "last" }] }),
   filterRows: step("filterRows", {
     filterModel: {
@@ -168,6 +169,28 @@ describe("savedStepEditError", () => {
     );
     expect(savedStepEditError(saved, changed)).toContain("an input date format requires a Text column");
     expect(savedStepEditError(step("castColumn", { column: text, dtype: "datetime" }), changed)).toBeUndefined();
+  });
+
+  it("requires the saved List identity and type before editing expansion", () => {
+    const saved = validSteps.explodeList;
+    expect(savedStepEditError(saved, schema)).toBeUndefined();
+    expect(
+      savedStepEditError(
+        saved,
+        schema.filter((column) => column.id !== nested.id)
+      )
+    ).toContain("c:nested");
+    expect(
+      savedStepEditError(
+        saved,
+        schema.map((column) =>
+          column.id === nested.id ? { ...column, type: "string" as const, rawType: "String" } : column
+        )
+      )
+    ).toContain("list expansion requires a List column");
+    expect(savedStepEditError({ ...saved, params: { column: { ...nested, name: "other" } } }, schema)).toContain(
+      "expects column name"
+    );
   });
 
   it.each(Object.values(validSteps))("accepts a valid saved $kind operation", (savedStep) => {

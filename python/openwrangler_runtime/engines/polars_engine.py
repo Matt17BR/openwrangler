@@ -90,6 +90,7 @@ _PORTABLE_INTEGER_MAX = 10**38 - 1
 _PORTABLE_INTEGER_MIN = -_PORTABLE_INTEGER_MAX
 _POLARS_INTEGER_LIMB_BASE = 10**9
 _POLARS_INTEGER_LIMB_COUNT = 5
+_POLARS_EXPLODE_MAX_ROWS = 2_147_483_647
 
 
 def _polars_filter_literal(value: Any, dtype: Any, operator: str) -> Any:
@@ -247,6 +248,35 @@ def _polars_temporal_cast_expression(
         )
         return pl.coalesce(checked_null, naive).alias(expression.meta.output_name())
     return expression.cast(target_dtype, strict=False)
+
+
+def _polars_explode_list(df: Any, column: str) -> Any:
+    import polars as pl
+
+    def contains_object(dtype: Any) -> bool:
+        if dtype == pl.Object:
+            return True
+        if isinstance(dtype, (pl.List, pl.Array)):
+            return contains_object(dtype.inner)
+        return isinstance(dtype, pl.Struct) and any(contains_object(field.dtype) for field in dtype.fields)
+
+    lazy = isinstance(df, pl.LazyFrame)
+    schema = df.collect_schema() if lazy else df.schema
+    dtype = schema.get(column)
+    if not isinstance(dtype, pl.List):
+        raise ValueError("Explode List requires a current native List column; fixed Arrays are unsupported.")
+    if contains_object(dtype):
+        raise ValueError("Explode List does not support Object values inside the selected List.")
+    # Admission and expansion use the same retained input, even for volatile lazy plans.
+    retained = df.collect(engine="streaming") if lazy else df
+    lengths = _ow_polars_col(retained, column).list.len().cast(pl.UInt64).fill_null(0)
+    rows = retained.select(lengths.clip(lower_bound=1).sum()).item()
+    if rows > _POLARS_EXPLODE_MAX_ROWS:
+        raise ValueError(f"Explode List would exceed the {_POLARS_EXPLODE_MAX_ROWS:,}-row output capacity.")
+    result = retained.lazy() if lazy else retained
+    parameters = signature(type(result).explode).parameters
+    options = {key: True for key in ("empty_as_null", "keep_nulls") if key in parameters}
+    return result.explode(_ow_polars_columns(result, [column]), **options)
 
 
 def _polars_extract_struct_fields(df: Any, column: str, fields: list[dict[str, str]]) -> Any:
@@ -1725,6 +1755,13 @@ class PolarsEngine(DataFrameEngine):
             return df.with_columns(
                 _ow_polars_col(df, bound_column_name(params["column"], kind)).alias(params["newName"])
             )
+        if kind == "explodeList":
+            row_id = self._row_id_column(df)
+            public = df.drop(_ow_polars_columns(df, [row_id])) if row_id is not None else df
+            try:
+                return _polars_explode_list(public, bound_column_name(params["column"], kind))
+            except ValueError as error:
+                raise EngineError(str(error)) from error
         if kind == "extractStructFields":
             try:
                 return _polars_extract_struct_fields(df, bound_column_name(params["column"], kind), params["fields"])
@@ -2101,7 +2138,7 @@ class PolarsEngine(DataFrameEngine):
         lines = custom_code_prelude_lines() if has_custom_code else []
         if needs_counter:
             lines.append("from collections import Counter")
-        if any(step["kind"] == "multiLabelBinarize" for step in plan):
+        if any(step["kind"] in {"multiLabelBinarize", "explodeList"} for step in plan):
             lines.append("from inspect import signature")
         if needs_filter_helpers or needs_fill_helpers:
             decimal_import = (
@@ -2142,6 +2179,15 @@ class PolarsEngine(DataFrameEngine):
             lines.extend(_generated_polars_formula_check_helpers())
         if any(step["kind"] == "castColumn" and step["params"]["dtype"] in {"date", "datetime"} for step in plan):
             lines.extend(["from typing import Any", getsource(_polars_temporal_cast_expression), ""])
+        if any(step["kind"] == "explodeList" for step in plan):
+            lines.extend(
+                [
+                    "from typing import Any",
+                    f"_POLARS_EXPLODE_MAX_ROWS = {_POLARS_EXPLODE_MAX_ROWS}",
+                    getsource(_polars_explode_list),
+                    "",
+                ]
+            )
         if any(step["kind"] == "extractStructFields" for step in plan):
             lines.extend(
                 [
@@ -2731,6 +2777,9 @@ class PolarsEngine(DataFrameEngine):
         if kind == "extractStructFields":
             column = bound_column_name(params["column"], kind)
             return [f"{prefix}df = _polars_extract_struct_fields(df, {column!r}, {params['fields']!r})"]
+        if kind == "explodeList":
+            column = bound_column_name(params["column"], kind)
+            return [f"{prefix}df = _polars_explode_list(df, {column!r})"]
         if kind == "castColumn":
             column = bound_column_name(params["column"], kind)
             dtype_attribute, strict = _polars_cast_target(params["dtype"])

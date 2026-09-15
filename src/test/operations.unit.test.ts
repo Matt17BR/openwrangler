@@ -70,10 +70,18 @@ describe("operation entry-point predicates", () => {
 
   it("narrows operation entry points only when the backend advertises a list", () => {
     expect(supportedOperationCatalog(undefined)).toEqual(
-      operationCatalog.filter(({ kind }) => kind !== "extractStructFields")
+      operationCatalog.filter(({ kind }) => kind !== "extractStructFields" && kind !== "explodeList")
     );
     expect(supportsOperation(undefined, "cloneColumn")).toBe(true);
     expect(supportsOperation(undefined, "extractStructFields")).toBe(false);
+    expect(supportsOperation(undefined, "explodeList")).toBe(false);
+    expect(supportsOperation({ ...renameOnlyCapabilities, supportedOperations: undefined }, "explodeList")).toBe(false);
+    expect(supportsOperation(renameOnlyCapabilities, "explodeList")).toBe(false);
+    expect(
+      supportedOperationCatalog({ ...renameOnlyCapabilities, supportedOperations: ["explodeList"] }).map(
+        ({ kind }) => kind
+      )
+    ).toEqual(["explodeList"]);
     expect(
       supportsOperation({ ...renameOnlyCapabilities, supportedOperations: undefined }, "extractStructFields")
     ).toBe(false);

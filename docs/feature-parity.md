@@ -139,8 +139,17 @@ Extract Struct Fields copies known scalar fields from a Struct column into new c
 and DuckDB file sessions. Enter each exact field name and its output name; the parent column and rows stay intact.
 For example, extract `city` from an `address` Struct as `customer_city`. Missing parents produce missing outputs.
 Choose up to 64 fields, with the [native type and naming limits](architecture.md#engine-boundaries-and-capabilities).
-Pandas and R do not support this operation. Automatic field discovery, recursive flattening, transpose and explode
-remain unavailable.
+Pandas and R do not support this operation.
+
+Explode List turns one native Polars List column into rows and repeats the other columns. Empty or missing lists keep
+one row with a missing value. The operation expands one level: List and Struct children keep their types. For example,
+explode a list of addresses, then use Extract Struct Fields to copy each address's city. Fixed-size Array columns and
+Object-containing lists are unsupported. Pandas, DuckDB and R do not support Explode List.
+Lazy input is read into memory before preview so the growth check and expansion use the same values. The result stays
+lazy, but later steps cannot reduce that initial read. The [capacity limit](architecture.md#engine-boundaries-and-capabilities)
+does not guarantee that an input or its expanded output will fit in memory.
+
+Automatic field discovery, recursive flattening and transpose remain unavailable.
 
 Conditional Column adds one Text or Boolean column using an existing typed predicate. All three results are explicit
 and may be null; empty text and false remain values. Pandas, Polars, DuckDB and native R use their existing predicate
@@ -277,8 +286,9 @@ Generated Pandas and Polars Custom Code refuses a zero-column result at the same
 Typed zero-row results, Series and Custom Code that creates a source's first column remain supported.
 Custom Code checks lazy output expressions beyond the displayed columns before confirmation, with the same
 check in generated code. Other operations keep their native lazy evaluation and operation-specific guards. These checks
-do not snapshot inputs or guarantee all later queries will succeed. One-hot encoding, multi-label encoding and Custom
-Code may materialize their results.
+do not generally snapshot inputs or guarantee all later queries will succeed. One-hot encoding, multi-label encoding
+and Custom Code may materialize their results. Explode List retains its current input for the growth check and keeps
+lazy expansion over that retained input.
 
 Pandas mixed object columns keep distinct large numeric values in filters, counts, sorting, duplicate removal,
 Group By, Pivot and grouped Fill. Selected rows retain their original stored values, and grouped output preserves
@@ -723,7 +733,7 @@ These dispositions do not block stable publication unless a release starts adver
 | Surface                                                                                   | Current disposition                                                                                   |
 | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
 | Cleaning-step reorder                                                                     | Deferred; edit and delete earlier steps are supported, but no move primitive exists                   |
-| Transpose, explode, and recursive flattening                                              | Unavailable; Extract Struct Fields supports named scalar children in Polars and DuckDB file editing   |
+| Transpose and recursive flattening                                                        | Unavailable; see the supported List and Struct operations above                                       |
 | General windows, partitioned ranking, and data-quality assertions                         | Unavailable as built-in operations; Dense Rank is available                                           |
 | Joins and merge                                                                           | Deferred until multi-source identity, lifecycle, persistence, and source-immutability have one design |
 | Portable cleaning recipes and batch apply                                                 | No public recipe format or batch runner; exported native scripts can be reused                        |

@@ -1672,7 +1672,7 @@ class SessionManager:
         session.engine.validate_transform_preflight(frame, step, input_shape)
         allowed_internal = (
             None
-            if kind in {"groupBy", "customCode", "pivotLonger", "pivotWider"}
+            if kind in {"groupBy", "customCode", "pivotLonger", "pivotWider", "explodeList"}
             else session.engine.internal_row_id_column(frame)
         )
         transformed = session.engine.apply_transform(frame, step)
@@ -1807,7 +1807,7 @@ class SessionManager:
                                 "after": new,
                             }
                         )
-        replaces_rows = step["kind"] in {"groupBy", "customCode"} and not set(before_rows).intersection(
+        replaces_rows = step["kind"] in {"groupBy", "customCode", "explodeList"} and not set(before_rows).intersection(
             row["id"] for row in after_page["rows"]
         )
         before_row_count = self._exact_shape_rows(before_shape)
@@ -1876,6 +1876,7 @@ class SessionManager:
                 if engine_capabilities.supports_editing
                 and source_supports_editing
                 and (definition.kind != "extractStructFields" or session.backend in {"polars", "duckdb"})
+                and (definition.kind != "explodeList" or session.backend == "polars")
             ],
             "lazy": session.engine.is_lazy(session.display_frame, session.source.metadata),
             "cancel": engine_capabilities.supports_request_cancellation,
