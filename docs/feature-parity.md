@@ -692,6 +692,8 @@ filters, sorts and profiles through a retained read-only connection. Close the v
 from that database in the same Python runtime or using a writer. Views, SQL editing, cleaning, code generation and
 exports remain unavailable for database tables; references to DuckDB file editing above mean CSV, TSV, Parquet and JSONL.
 Computed columns keep their native expressions and can change between queries. No immutable snapshot is promised.
+If a page extends beyond its reported row total, it is refused while the previous view is retained. Use stable inputs
+for repeatable filtering and counts; other differences between volatile evaluations may not be detected.
 Current and minimum native owners cover exact table selection, WAL preservation, writer/viewer conflicts and cleanup;
 the command and full database workflow still need installed cross-platform qualification.
 

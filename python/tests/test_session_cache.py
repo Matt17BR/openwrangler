@@ -441,6 +441,62 @@ def test_strict_page_payload_rejection_happens_before_cache_insertion(tmp_path, 
     assert session.page_cache_bytes == 0
 
 
+def test_inconsistent_page_total_preserves_confirmed_view_and_cache_then_recovers(tmp_path, monkeypatch) -> None:
+    path = write_values(tmp_path, 3)
+    original = path.read_bytes()
+    manager, created = counting_manager()
+    try:
+        opened = manager.open_session(source(path), backend="pandas", page_size=1)
+        session_id = opened["metadata"]["sessionId"]
+        confirmed = manager.get_page(session_id, 0, 0, 1, greater_than(0))
+        session = manager.sessions[session_id]
+        engine = created[0]
+        old_frame = session.filtered
+        old_model = session.filter_model
+        old_shape = session.filtered_shape
+        old_cache = session.page_cache
+        old_cached = list(old_cache.items())
+        old_bytes = session.page_cache_bytes
+        old_generation = session.view_generation
+        old_epoch = session.view_change_epoch
+        counts = (engine.filter_calls, engine.shape_calls, len(engine.page_calls))
+        native_page = engine.page
+
+        def inconsistent_page(*args, **kwargs):
+            page = native_page(*args, **kwargs)
+            assert (page["offset"], len(page["rows"]), page["totalRows"]) == (2, 1, 3)
+            return {**page, "totalRows": 2}
+
+        new_model = greater_than(-1)
+        with monkeypatch.context() as fault:
+            fault.setattr(engine, "page", inconsistent_page)
+            with pytest.raises(ResponsePayloadError) as caught:
+                manager.get_page(session_id, 0, 2, 1, new_model)
+        assert caught.value.code == "page_payload_invalid"
+        assert str(caught.value) == (
+            "The returned page exceeds its reported row total. Use a stable input and reopen it."
+        )
+        assert session.filtered is old_frame and session.filter_model is old_model
+        assert session.filtered_shape is old_shape
+        assert session.page_cache is old_cache and list(old_cache.items()) == old_cached
+        assert all(old_cache[key] is entry for key, entry in old_cached)
+        assert (session.page_cache_bytes, session.view_generation, session.view_change_epoch) == (
+            old_bytes,
+            old_generation,
+            old_epoch,
+        )
+        assert (engine.filter_calls, engine.shape_calls, len(engine.page_calls)) == tuple(value + 1 for value in counts)
+        assert manager.get_page(session_id, 0, 0, 1, old_model)["page"] is confirmed["page"]
+        recovered = manager.get_page(session_id, 0, 2, 1, new_model)
+        assert (recovered["page"]["offset"], recovered["page"]["totalRows"]) == (2, 3)
+        assert recovered["page"]["rows"][0]["values"][1]["display"] == "2"
+        assert recovered["metadata"]["revision"] == 0
+        assert recovered["metadata"]["filterModel"] == new_model
+        assert path.read_bytes() == original
+    finally:
+        manager.close_all()
+
+
 @pytest.mark.parametrize(
     ("backend", "engine_factory"),
     [
