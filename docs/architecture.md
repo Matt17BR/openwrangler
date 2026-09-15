@@ -158,8 +158,9 @@ mixed older decoder rejects the new key; this is not a compatibility promise for
 
 Changing import options is a host-owned session swap. The coordinator quiesces accepted work, opens a private
 candidate against the same immutable source, replays the confirmed plan, draft, and view, publishes the replacement
-once, and then retires the prior runtime. Failure leaves the prior confirmed session unchanged. The public session
-identity remains stable while the runtime identity may change. File reconfiguration, cleaning-plan rewrites and live
+once, and then retires the prior runtime. Failure before publication leaves the prior confirmed session unchanged.
+A failed final save rolls back only while the replacement still owns the live session. The public session identity
+remains stable while the runtime identity may change. File reconfiguration, cleaning-plan rewrites and live
 mode changes check host cancellation tokens through the pending persistence write, before synchronous publication.
 Cancellation after that publication does not undo the replacement.
 
