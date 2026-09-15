@@ -667,22 +667,22 @@ Top-level TIMETZ values retain their UTC time; DuckDB 1.5.4 requires explicit co
 Representable intervals, compatible keys, nulls and empty containers remain supported. CSV retains its native text
 output.
 
-| Surface                                      | Availability       | Status      | Current evidence                               | Limit or missing proof                                                              |
-| -------------------------------------------- | ------------------ | ----------- | ---------------------------------------------- | ----------------------------------------------------------------------------------- |
-| CSV and TSV file sessions                    | Yes                | Partial     | Native lazy reader and packaged import slices  | Complete import-option and cross-platform matrix                                    |
-| Parquet file sessions                        | Yes                | Partial     | Native typed pages and source invalidation     | Large-scale and repeated cross-platform matrix                                      |
-| JSONL file sessions                          | Yes                | Partial     | Native malformed-input and packaged import     | Installed malformed/import-state interaction matrix                                 |
-| Excel file sessions                          | No                 | Unavailable | Explicit unsupported diagnostic                | Use Pandas or Polars                                                                |
-| Local database base-table browsing           | Viewing only       | Partial     | Native reader, catalog and host source tests   | One viewer per database/runtime; no views; installed platform qualification remains |
-| Notebook variables and inline MIME rendering | Viewing only       | Partial     | Native relation package slices                 | No cleaning, code insertion, or data export                                         |
-| Grid pages, typed cells, filters, and sorts  | Yes                | Partial     | Native rich-type and query contracts           | Large-scale mixed-data and cross-platform matrix                                    |
-| Summaries, statistics, and distinct values   | Yes                | Partial     | Native fixed-size profile contracts            | Repeated large-data resource evidence                                               |
-| Supported cleaning operations                | File sessions only | Partial     | Exact direct live/generated catalog equality   | Complete installed catalog and semantic-edge matrix                                 |
-| Draft preview, diff, apply, and history      | File sessions only | Partial     | Runtime and representative packaged lifecycle  | Complete edit/discard/undo interaction matrix                                       |
-| Executable generated DuckDB code             | File sessions only | Partial     | Direct equality and packaged copy/script slice | Edited-code execution acceptance                                                    |
-| CSV and Parquet cleaned-data export          | File sessions only | Partial     | Native export and publication failure tests    | Cross-platform installed destination matrix                                         |
-| Runtime crash/reload/session replay          | Yes                | Partial     | Backend-keyed replay and injected recovery     | Repeated cross-platform failure matrix                                              |
-| Runtime performance benchmark                | Diagnostic         | Partial     | Direct and stdio smoke                         | No strict DuckDB release threshold                                                  |
+| Surface                                      | Availability       | Status      | Current evidence                                        | Limit or missing proof                              |
+| -------------------------------------------- | ------------------ | ----------- | ------------------------------------------------------- | --------------------------------------------------- |
+| CSV and TSV file sessions                    | Yes                | Partial     | Native lazy reader and packaged import slices           | Complete import-option and cross-platform matrix    |
+| Parquet file sessions                        | Yes                | Partial     | Native typed pages and source invalidation              | Large-scale and repeated cross-platform matrix      |
+| JSONL file sessions                          | Yes                | Partial     | Native malformed-input and packaged import              | Installed malformed/import-state interaction matrix |
+| Excel file sessions                          | No                 | Unavailable | Explicit unsupported diagnostic                         | Use Pandas or Polars                                |
+| Local database base-table browsing           | Viewing only       | Partial     | Native owners and installed Linux/macOS/Windows pickers | One viewer per database/runtime; no views           |
+| Notebook variables and inline MIME rendering | Viewing only       | Partial     | Native relation package slices                          | No cleaning, code insertion, or data export         |
+| Grid pages, typed cells, filters, and sorts  | Yes                | Partial     | Native rich-type and query contracts                    | Large-scale mixed-data and cross-platform matrix    |
+| Summaries, statistics, and distinct values   | Yes                | Partial     | Native fixed-size profile contracts                     | Repeated large-data resource evidence               |
+| Supported cleaning operations                | File sessions only | Partial     | Exact direct live/generated catalog equality            | Complete installed catalog and semantic-edge matrix |
+| Draft preview, diff, apply, and history      | File sessions only | Partial     | Runtime and representative packaged lifecycle           | Complete edit/discard/undo interaction matrix       |
+| Executable generated DuckDB code             | File sessions only | Partial     | Direct equality and packaged copy/script slice          | Edited-code execution acceptance                    |
+| CSV and Parquet cleaned-data export          | File sessions only | Partial     | Native export and publication failure tests             | Cross-platform installed destination matrix         |
+| Runtime crash/reload/session replay          | Yes                | Partial     | Backend-keyed replay and injected recovery              | Repeated cross-platform failure matrix              |
+| Runtime performance benchmark                | Diagnostic         | Partial     | Direct and stdio smoke                                  | No strict DuckDB release threshold                  |
 
 DuckDB file imports support CSV, TSV, Parquet, and JSONL. A multibyte quote character is incompatible and fails
 before runtime startup. CSV export is UTF-8 with single-byte delimiter and quote syntax. DuckDB rejects schemas whose
@@ -699,8 +699,11 @@ for repeatable filtering and counts; other differences between volatile evaluati
 Current and minimum native owners cover exact table selection, WAL preservation, writer/viewer conflicts and cleanup.
 A focused Linux check observed private disk spill during an integer sort on both native versions with a reduced
 query-memory allowance. Other memory-limited queries can still fail; see the
-[database qualification scope](https://github.com/Matt17BR/openwrangler/issues/1387). The command and full database
-workflow still need installed cross-platform qualification.
+[database qualification scope](https://github.com/Matt17BR/openwrangler/issues/1387).
+The installed file-input journey verifies the command, both pickers, exact selected-table rows, filtering and reader
+cleanup in [macOS/Windows](https://github.com/Matt17BR/openwrangler/actions/runs/34947969563) and
+[Linux](https://github.com/Matt17BR/openwrangler/actions/runs/34947972421) VS Code. These source-build checks preserve
+the database bytes; they do not qualify views or simultaneous viewers.
 
 ## PySpark live-notebook viewing
 
