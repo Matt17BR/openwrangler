@@ -21,12 +21,26 @@ const releasedJupyter = load(
 
 function git(cwd, ...args) {
   // Detached maintenance must not keep writing into a fixture during cleanup.
-  return execFileSync("git", ["-c", "commit.gpgsign=false", "-c", "maintenance.auto=false", ...args], {
-    cwd,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    maxBuffer: 1024 * 1024
-  }).trim();
+  return execFileSync(
+    "git",
+    [
+      "-c",
+      "commit.gpgsign=false",
+      "-c",
+      "maintenance.auto=false",
+      "-c",
+      "user.email=ci-test@openwrangler.invalid",
+      "-c",
+      "user.name=Open Wrangler CI Test",
+      ...args
+    ],
+    {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: 1024 * 1024
+    }
+  ).trim();
 }
 
 function write(cwd, file, text = "updated\n") {
@@ -38,8 +52,6 @@ function repository(context, extraFiles = []) {
   const cwd = mkdtempSync(join(tmpdir(), "openwrangler-ci-docs-"));
   context.after(() => rmSync(cwd, { recursive: true, force: true }));
   git(cwd, "init", "--quiet", "--initial-branch=main");
-  git(cwd, "config", "user.email", "ci-test@openwrangler.invalid");
-  git(cwd, "config", "user.name", "Open Wrangler CI Test");
   for (const file of ["README.md", "docs/testing.md", "src/runtime.py", "package.json", ...extraFiles]) {
     write(cwd, file, "original\n");
   }
