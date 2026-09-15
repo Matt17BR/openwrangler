@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import gc
 import json
 import subprocess
 import sys
 import threading
+import weakref
 from codecs import getincrementaldecoder
-from concurrent.futures import Future
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager, suppress
 from importlib.util import find_spec
 from io import BytesIO, StringIO, TextIOWrapper
@@ -1062,15 +1064,37 @@ def test_stdio_server_reports_backend_preparation_failure(monkeypatch) -> None:
     assert response["response"]["message"] == "native import failed"
 
 
-def test_stdio_server_reports_ambiguous_view_columns_with_a_structured_code(monkeypatch) -> None:
+def test_stdio_server_reports_ambiguous_view_columns_without_retaining_failed_work(monkeypatch) -> None:
+    class CapturedResult:
+        pass
+
+    captured_refs: list[weakref.ReferenceType[CapturedResult]] = []
+    close_calls = 0
+
     class AmbiguousManager(_PassthroughRequestScope):
         def get_page(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            captured_result = CapturedResult()
+            captured_refs.append(weakref.ref(captured_result))
             raise AmbiguousViewColumnError("two Pandas columns share the displayed name '7'")
 
         def close_all(self) -> None:
-            return None
+            nonlocal close_calls
+            close_calls += 1
 
     response_written = threading.Event()
+    pending_removed = threading.Event()
+    executors: list[ThreadPoolExecutor] = []
+    original_release = server._release_live_request
+
+    def create_executor(**kwargs: Any) -> ThreadPoolExecutor:
+        executor = ThreadPoolExecutor(**kwargs)
+        executors.append(executor)
+        return executor
+
+    def release_pending(pending, live_priorities, live_counts, pending_lock, request_id) -> None:
+        original_release(pending, live_priorities, live_counts, pending_lock, request_id)
+        assert request_id not in pending
+        pending_removed.set()
 
     class SignallingOutput(StringIO):
         def write(self, value: str) -> int:
@@ -1099,13 +1123,27 @@ def test_stdio_server_reports_ambiguous_view_columns_with_a_structured_code(monk
     def input_lines():
         yield f"{json.dumps(envelope)}\n"
         assert response_written.wait(5)
+        assert pending_removed.wait(5)
+        # The same single worker runs this only after its completion callback
+        # returns, without replacing the input loop's most recent Future.
+        assert executors[0].submit(lambda: None).result(timeout=5) is None
+        gc.collect()
+        assert len(captured_refs) == 1 and captured_refs[0]() is None
 
     output = SignallingOutput()
     monkeypatch.setattr(server, "SessionManager", AmbiguousManager)
+    monkeypatch.setattr(server, "INTERACTIVE_WORKERS", 1)
+    monkeypatch.setattr(server, "ThreadPoolExecutor", create_executor)
+    monkeypatch.setattr(server, "_release_live_request", release_pending)
     monkeypatch.setattr(server.sys, "stdin", input_lines())
     monkeypatch.setattr(server.sys, "stdout", output)
 
-    server.main()
+    try:
+        assert server.main() == 0
+    finally:
+        for executor in executors:
+            executor.shutdown(wait=True, cancel_futures=True)
+    assert close_calls == 1
 
     response = json.loads(output.getvalue())
     assert response == {

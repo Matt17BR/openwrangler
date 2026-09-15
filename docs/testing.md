@@ -218,6 +218,8 @@ Use the existing owners to choose a focused source check:
   [response-framing owner](../python/tests/test_response_framing.py) checks canonical bytes and size limits.
   The [stdio server owner](../python/tests/test_server_protocol.py) opens quoted DuckDB database tables in a fresh
   process, checking exact selection, source preservation and close without attempted optional dataframe imports.
+  Its synthetic error control checks result release after publication, pending removal, callback settlement and
+  cycle collection while input remains open; it does not measure native allocation or RSS.
   Existing stdio and notebook error journeys also exercise unformattable Custom Code exceptions, preserving a
   correlated response, rollback, source ownership and subsequent page/close requests. Mapper controls retain
   classification, diagnostic budgets and lifecycle interrupts without retrying the failed formatter.

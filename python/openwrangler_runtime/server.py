@@ -449,6 +449,7 @@ def main() -> int:
                 future.add_done_callback(
                     lambda done, current=request_id, view=view_request_id: complete(current, view, done)
                 )
+                del future
                 submitted = True
             except _TerminalTransportError:
                 raise
