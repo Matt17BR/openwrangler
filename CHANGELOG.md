@@ -24,6 +24,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- DuckDB table help explains that all database viewers must close before writing, while allowing multiple tables to stay open.
 - Cleaning Steps labels its return item **Current view**, matching the data shown without undoing the plan.
 - Notebook helpers preserve existing user variables during discovery, opening and live requests.
 - Operation rows stack when their settings pane is narrow, keeping fields and row actions visible beside the catalog.

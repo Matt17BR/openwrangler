@@ -195,7 +195,7 @@ describe("SessionModeControl", () => {
     );
     expect(screen.queryByRole("button", { name: /Switch to/iu })).toBeNull();
     fireEvent.click(screen.getByText("Viewing only").closest("summary")!);
-    expect(screen.getByText(/Close this table before writing to its database/u)).toBeVisible();
+    expect(screen.getByText(/Close all viewers of this database before writing to it/u)).toBeVisible();
     expect(screen.getByText(/Cleaning steps, generated code, and data export are not available/u)).toBeVisible();
   });
 });
