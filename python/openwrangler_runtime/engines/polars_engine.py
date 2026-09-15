@@ -629,11 +629,22 @@ class PolarsEngine(DataFrameEngine):
                 return frame
         if extension in {".xlsx", ".xls"}:
             sheet_selector = resolve_excel_sheet_selector(options)
-            if sheet_selector[0] == "sheetIndex":
-                # The public import option is zero-based, while fastexcel's
-                # sheet_id follows spreadsheet conventions and is one-based.
-                return pl.read_excel(path, sheet_id=sheet_selector[1] + 1, engine="calamine")
-            return pl.read_excel(path, sheet_name=sheet_selector[1], engine="calamine")
+
+            def block_python_excel_read(*_args: Any) -> bytes:
+                raise EngineError(
+                    "Polars could not read this Excel file without buffering the whole workbook. "
+                    "Reopen the file and retry."
+                )
+
+            with open(path, "rb") as source:
+                # A stream bypasses missing-path glob expansion. Calamine reopens its literal name;
+                # refuse the Python buffering fallback if that name disappears before parsing.
+                source.read = block_python_excel_read
+                if sheet_selector[0] == "sheetIndex":
+                    # The public import option is zero-based, while fastexcel's
+                    # sheet_id follows spreadsheet conventions and is one-based.
+                    return pl.read_excel(source, sheet_id=sheet_selector[1] + 1, engine="calamine")
+                return pl.read_excel(source, sheet_name=sheet_selector[1], engine="calamine")
         raise EngineError(f"Unsupported file extension for Polars backend: {extension}")
 
     def normalize(self, value: Any) -> Any:

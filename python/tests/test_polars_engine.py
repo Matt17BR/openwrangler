@@ -2133,19 +2133,126 @@ def test_lazy_polars_count_labels_keep_projected_and_full_profiles(
         manager.close_all()
 
 
-def test_polars_excel_reader_pins_the_probed_calamine_engine(monkeypatch):
-    calls: list[tuple[str, dict[str, object]]] = []
+def test_polars_excel_session_refuses_missing_literal_path_without_reading_siblings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openpyxl import Workbook
 
-    def read_excel(path: str, **options: object) -> pl.DataFrame:
-        calls.append((path, options))
+    selected = tmp_path / "[a].xlsx"
+    sibling = tmp_path / "a.xlsx"
+    escaped = tmp_path / "[[]a].xlsx"
+    for path, value in ((selected, 11), (sibling, 22), (escaped, 33)):
+        workbook = Workbook()
+        try:
+            sheet = workbook.active
+            assert sheet is not None
+            sheet.title = "Sales"
+            sheet.append(["value"])
+            sheet.append([value])
+            workbook.save(path)
+        finally:
+            workbook.close()
+    before = {path: path.read_bytes() for path in (selected, sibling, escaped)}
+    source = {
+        "kind": "file",
+        "label": selected.name,
+        "path": str(selected),
+        "importOptions": {"sheetName": "Sales"},
+    }
+    read_excel = pl.read_excel
+    handles: list[io.BufferedReader] = []
+
+    def track_read(handle: io.BufferedReader, **options: Any) -> pl.DataFrame:
+        assert isinstance(handle, io.BufferedReader)
+        assert not handle.closed
+        handles.append(handle)
+        return read_excel(handle, **options)
+
+    monkeypatch.setattr(pl, "read_excel", track_read)
+    manager = SessionManager()
+    try:
+        opened = manager.open_session(source, backend="polars")
+        assert opened["metadata"]["source"] == source
+        assert [row["values"][0]["display"] for row in opened["page"]["rows"]] == ["11"]
+        assert len(handles) == 1 and handles[0].closed
+        with pytest.raises(EngineError, match="missing"):
+            manager.open_session({**source, "importOptions": {"sheetName": "missing"}}, backend="polars")
+        assert len(handles) == 2 and handles[1].closed
+        assert {path: path.read_bytes() for path in before} == before
+        selected.unlink()
+        with pytest.raises(EngineError, match="Could not read"):
+            manager.open_session(source, backend="polars")
+        assert not selected.exists()
+        assert list(manager.sessions) == [opened["metadata"]["sessionId"]]
+        page = manager.get_page(opened["metadata"]["sessionId"], 0, 0, 5, opened["metadata"]["filterModel"])
+        assert [row["values"][0]["display"] for row in page["page"]["rows"]] == ["11"]
+    finally:
+        manager.close_all()
+        assert manager.sessions == {}
+        assert manager._opening_engines == {}
+        assert all(handle.closed for handle in handles)
+        if selected.exists():
+            assert selected.read_bytes() == before[selected]
+        assert sibling.read_bytes() == before[sibling]
+        assert escaped.read_bytes() == before[escaped]
+
+
+def test_polars_excel_reader_refuses_python_buffering_after_owned_path_removal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "removed.xlsx"
+    before = b"This source must never be read into a Python buffer."
+    path.write_bytes(before)
+    read_excel = pl.read_excel
+    handles: list[io.BufferedReader] = []
+
+    def remove_before_parse(handle: io.BufferedReader, **options: Any) -> pl.DataFrame:
+        assert isinstance(handle, io.BufferedReader)
+        handles.append(handle)
+        try:
+            path.unlink()
+        except PermissionError:
+            if os.name == "nt":
+                pytest.skip("Windows refused removal of the owned open workbook handle.")
+            raise
+        return read_excel(handle, **options)
+
+    monkeypatch.setattr(pl, "read_excel", remove_before_parse)
+    engine = PolarsEngine()
+    try:
+        with pytest.raises(EngineError, match="without buffering the whole workbook"):
+            engine.read_file(str(path))
+        assert not path.exists()
+    finally:
+        engine.close()
+        assert len(handles) == 1 and handles[0].closed
+        if path.exists():
+            assert path.read_bytes() == before
+
+
+def test_polars_excel_reader_pins_the_probed_calamine_engine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+    handles: list[io.BufferedReader] = []
+
+    def read_excel(source: io.BufferedReader, **options: object) -> pl.DataFrame:
+        assert isinstance(source, io.BufferedReader)
+        assert not source.closed
+        handles.append(source)
+        calls.append((Path(source.name).name, options))
         return pl.DataFrame({"value": [1]})
 
     monkeypatch.setattr(pl, "read_excel", read_excel)
     runtime = PolarsEngine()
 
-    runtime.read_file("default.xlsx")
-    runtime.read_file("modern.xlsx", {"sheetIndex": 1})
-    runtime.read_file("legacy.xls", {"sheetName": " résumé "})
+    for name in ("default.xlsx", "modern.xlsx", "legacy.xls"):
+        (tmp_path / name).write_bytes(b"Native reader driver fixture")
+    try:
+        runtime.read_file(str(tmp_path / "default.xlsx"))
+        runtime.read_file(str(tmp_path / "modern.xlsx"), {"sheetIndex": 1})
+        runtime.read_file(str(tmp_path / "legacy.xls"), {"sheetName": " résumé "})
+    finally:
+        runtime.close()
+        assert all(handle.closed for handle in handles)
 
     assert calls == [
         ("default.xlsx", {"sheet_id": 1, "engine": "calamine"}),

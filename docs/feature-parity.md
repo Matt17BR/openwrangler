@@ -84,7 +84,9 @@ delimiter and quote syntax. Polars refuses syntax characters that its numeric, B
 emit unescaped, including for empty and all-null columns. Standard comma, tab, semicolon and pipe with ordinary quotes
 remain supported; Null and textlike columns retain custom syntax. See the [Polars export rules](architecture.md#polars).
 Excel accepts exactly one nonempty sheet name or zero-based sheet index. Whitespace-only names are preserved in
-selection and reopening. Delimited syntax characters are one Unicode scalar each. Import options may therefore make
+selection and reopening. Polars refuses a missing Excel path instead of reading similarly named workbooks; it also
+refuses whole-workbook Python buffering if the selected path disappears before native parsing.
+Delimited syntax characters are one Unicode scalar each. Import options may therefore make
 Pandas the only compatible backend. Direct pickle opening is unavailable; the trusted Pandas-only conversion command
 writes a separate Parquet file.
 
