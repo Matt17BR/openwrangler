@@ -126,6 +126,26 @@ describe("R kernel mutation schema", () => {
     );
     expect(renamed).toEqual([{ ...schema[0], name: "category" }, schema[1]]);
     expect(renamed).not.toBe(schema);
+
+    const castInput: readonly ColumnSchema[] = [
+      { id: "a", name: "group", position: 0, rawType: "character", type: "string", nullable: true },
+      { id: "b", name: "count", position: 1, rawType: "double", type: "float", nullable: true }
+    ];
+    expect(
+      schemaAfterRStep(
+        castInput,
+        { id: "cast", kind: "castColumn", params: { column: { id: "b", name: "count" }, dtype: "integer" } },
+        []
+      )
+    ).toEqual([
+      { id: "a", name: "group", position: 0, rawType: "character", type: "string", nullable: true },
+      { id: "b", name: "count", position: 1, rawType: "integer", type: "integer", nullable: true }
+    ]);
+    expect(castInput).toEqual([
+      { id: "a", name: "group", position: 0, rawType: "character", type: "string", nullable: true },
+      { id: "b", name: "count", position: 1, rawType: "double", type: "float", nullable: true }
+    ]);
+
     expect(rowNamesAfterRStep("explicit", groupStep)).toBe("positional");
     expect(rowNamesAfterRStep("explicit", sortStep)).toBe("explicit");
     expect(keyColumnsAfterRStep(["a", "b"], schema, sortStep)).toEqual([]);

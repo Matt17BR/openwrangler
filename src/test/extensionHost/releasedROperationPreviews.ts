@@ -11,7 +11,6 @@ import {
 import type { TestApi } from "./extensionHostTestApi";
 import { codePreviewDocumentReceipt } from "./playwrightLifecycle";
 import {
-  assertReleasedRCastGeneratedCode,
   assertReleasedRDropGeneratedCode,
   assertReleasedRFindReplaceCodeSurface,
   assertReleasedRFindReplaceGeneratedCode,
@@ -308,60 +307,6 @@ export function createReleasedROperationPreviews(dependencies: ReleasedROperatio
     };
   }
 
-  async function previewReleasedRCast(
-    testing: TestApi,
-    workbench: Page,
-    sessionId: string,
-    sourceName: string,
-    dtype: "string" | "integer" | "float" | "boolean" | "date" | "datetime",
-    variableName = "orders_frame"
-  ): Promise<Readonly<{ app: Locator; stepId: string }>> {
-    const before = testing.activeSession();
-    const input = before?.metadata.schema.find((column) => column.name === sourceName);
-    assert.ok(input, `The native R Convert type preview requires ${JSON.stringify(sourceName)}.`);
-    const { dialog } = await openReleasedROperationPicker(testing, workbench, sessionId);
-    await dialog.getByRole("button", { name: /^Convert type/u }).click();
-    await dialog.waitFor({ state: "visible", timeout: 10_000 });
-    await dialog.getByLabel("Column", { exact: true }).selectOption({ label: sourceName });
-    await dialog.getByLabel("Target type", { exact: true }).selectOption(dtype);
-    await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
-    await waitFor(
-      () => {
-        const active = testing.activeSession();
-        const draft = active?.metadata.draftStep;
-        const output = active?.metadata.schema.find((column) => column.id === input.id);
-        return (
-          active?.sessionId === sessionId &&
-          draft?.kind === "castColumn" &&
-          draft.params.column.id === input.id &&
-          draft.params.column.name === sourceName &&
-          draft.params.dtype === dtype &&
-          output?.name === sourceName &&
-          output.position === input.position &&
-          output.type === dtype &&
-          active.metadata.draftReplacesStepId === undefined &&
-          active.metadata.steps.length === 0
-        );
-      },
-      30_000,
-      "the native R Convert type preview"
-    );
-    await dialog.waitFor({ state: "hidden", timeout: 10_000 });
-    const active = testing.activeSession();
-    assert.ok(
-      active?.metadata.draftStep?.kind === "castColumn",
-      "The native R Convert type preview must retain its draft."
-    );
-    const stepId = active.metadata.draftStep.id;
-    assertReleasedRCastGeneratedCode(active.code ?? "", sourceName, dtype, variableName);
-    const codePreview = await waitForCodePreview(workbench, undefined, "R");
-    assert.match(await revealCodePreviewText(codePreview, ".ow_cast_kind"), /\.ow_cast_kind/u);
-    return {
-      app: await releasedRSessionApp(workbench, testing, sessionId, "the native R Convert type preview"),
-      stepId
-    };
-  }
-
   async function previewReleasedRSelect(
     testing: TestApi,
     workbench: Page,
@@ -564,7 +509,6 @@ export function createReleasedROperationPreviews(dependencies: ReleasedROperatio
     previewReleasedRDropDuplicates,
     previewReleasedRTextLength,
     previewReleasedRFindReplace,
-    previewReleasedRCast,
     previewReleasedRSelect,
     previewReleasedRDrop,
     previewReleasedRRename
