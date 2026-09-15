@@ -22,16 +22,33 @@ Qualification and publication remain separate; no release date or automatic publ
 Explode List and Extract Struct Fields are implemented on main within their
 [supported scope](feature-parity.md#cleaning-operations).
 
+## Selected work after 2.6
+
+The [released-product performance comparison](https://github.com/Matt17BR/openwrangler/issues/1519) follows qualified 2.6
+and does not wait for the redesign. It will compare a small set of verified common workflows in both products on the
+same machine, with pinned releases, shared Pandas and Polars inputs, repeated measurements and matching results.
+UI timings include any required input conversion. Record failures and losses, and report ordinary tasks for
+Open Wrangler's other engines separately.
+Publish and review the results before linking a summary from README. The retired
+[2.4.0 attempt](https://github.com/Matt17BR/openwrangler/issues/1419) remains incomplete; its automation is not being resumed.
+
+[Open Wrangler 3.0](https://github.com/Matt17BR/openwrangler/milestone/17) is planned for a distinctive, coherent workbench.
+[Design selection](https://github.com/Matt17BR/openwrangler/issues/1397) compares two bounded directions for inspecting and
+filtering, configuring and applying changes, and reviewing and exporting history. The milestone requires the selected
+layout and interaction hierarchy to be implemented across the grid, profiles, operation settings, history/diff and code.
+Real wide and narrow journeys, keyboard access, accessibility and representative responsiveness must support the choice.
+Update README, gallery and store media to the delivered interface. Completing the design evaluation alone does not
+complete the milestone. There is no date, automatic major-version bump or publication decision.
+
 ## Feature proposals
 
-These proposals remain outside the selected 2.6 scope and unscheduled. User demand is not yet established; examples and practical constraints are
+These proposals remain outside the selected 2.6 scope and unscheduled. Further examples and practical constraints are
 welcome in their issues. Start with useful single-source operations before taking on broader source ownership.
 
 - [Apply a cleaning plan to another input](https://github.com/Matt17BR/openwrangler/issues/1385): matching-schema file reuse is implemented on main; column mapping and broader input support remain proposals. See the [current scope](feature-parity.md#reuse-a-file-cleaning-plan).
 - [Clean a DuckDB notebook relation](https://github.com/Matt17BR/openwrangler/issues/1386): extend today's viewer with native cleaning, code and export.
 - [Browse a DuckDB database](https://github.com/Matt17BR/openwrangler/issues/1387): base-table viewing supports multiple tables in one runtime; database views remain a proposal. See the [current limits](feature-parity.md#duckdb-experimental-file-support).
 - [Join or append a second input](https://github.com/Matt17BR/openwrangler/issues/1388): a later proposal that first needs explicit source and row-growth rules.
-- [Workbench interaction design](https://github.com/Matt17BR/openwrangler/issues/1397): compare simpler, distinct layouts for task clarity, visible data and keyboard access before choosing a redesign.
 
 Spark remains a bounded local-notebook viewer. Broader Spark support, additional backends and remote or browser hosts
 need a concrete user job before selection. Historical ideas and their closure reasons remain in the
