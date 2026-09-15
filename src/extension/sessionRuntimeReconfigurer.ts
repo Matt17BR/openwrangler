@@ -197,7 +197,10 @@ export class SessionRuntimeReconfigurer {
     const persistenceResult = await this.responseCommitter.commitRuntimeReplacement(
       publishableCandidate,
       candidateRequest.source,
-      () => hooks.isCurrent() && hooks.originMismatch(candidateRequest) === undefined,
+      () =>
+        !options?.cancellation?.isCancellationRequested &&
+        hooks.isCurrent() &&
+        hooks.originMismatch(candidateRequest) === undefined,
       () => {
         publishCandidate(session, publishableCandidate, candidateRequest, publicRevision);
         session.draftPresentation = undefined;
@@ -219,13 +222,16 @@ export class SessionRuntimeReconfigurer {
       return persistenceUnavailableError(session.publicId, undefined, persistenceResult.liveState);
     }
     if (persistenceResult.kind === "stale") {
+      const response: OpenWranglerResponse = options?.cancellation?.isCancellationRequested
+        ? { kind: "cancelled", targetRequestId: `${mode}-mode:${session.publicId}` }
+        : protocolError(
+            hooks.isCoordinatorAvailable() ? "session_closing" : "coordinator_disposed",
+            `The session changed before ${displayMode} mode could be persisted and published.`,
+            false,
+            session.publicId
+          );
       await cleanupCandidate();
-      return protocolError(
-        hooks.isCoordinatorAvailable() ? "session_closing" : "coordinator_disposed",
-        `The session changed before ${displayMode} mode could be persisted and published.`,
-        false,
-        session.publicId
-      );
+      return response;
     }
     hooks.invalidateStepInspection();
     this.runtimeCleanup.track(previous.runtime, "retired runtime");
@@ -435,7 +441,10 @@ export class SessionRuntimeReconfigurer {
     const persistenceResult = await this.responseCommitter.commitRuntimeReplacement(
       publishableCandidate,
       candidateRequest.source,
-      () => hooks.isCurrent() && hooks.originMismatch(candidateRequest) === undefined,
+      () =>
+        !options?.cancellation?.isCancellationRequested &&
+        hooks.isCurrent() &&
+        hooks.originMismatch(candidateRequest) === undefined,
       () => {
         publishCandidate(session, publishableCandidate, candidateRequest, publicRevision);
         session.draftPresentation = undefined;
@@ -473,13 +482,16 @@ export class SessionRuntimeReconfigurer {
       return persistenceUnavailableError(session.publicId, undefined, persistenceResult.liveState);
     }
     if (persistenceResult.kind === "stale") {
+      const response: OpenWranglerResponse = options?.cancellation?.isCancellationRequested
+        ? { kind: "cancelled", targetRequestId: `rewrite-plan:${session.publicId}` }
+        : protocolError(
+            hooks.isCoordinatorAvailable() ? "session_closing" : "coordinator_disposed",
+            "The session changed before its rebuilt cleaning plan could be persisted and published.",
+            false,
+            session.publicId
+          );
       await cleanupCandidate();
-      return protocolError(
-        hooks.isCoordinatorAvailable() ? "session_closing" : "coordinator_disposed",
-        "The session changed before its rebuilt cleaning plan could be persisted and published.",
-        false,
-        session.publicId
-      );
+      return response;
     }
     hooks.invalidateStepInspection();
     this.runtimeCleanup.track(previous, "retired runtime");
@@ -690,7 +702,10 @@ export class SessionRuntimeReconfigurer {
     const persistenceResult = await this.responseCommitter.commitRuntimeReplacement(
       publishableCandidate,
       candidateRequest.source,
-      () => hooks.isCurrent() && hooks.originMismatch(candidateRequest) === undefined,
+      () =>
+        !options?.cancellation?.isCancellationRequested &&
+        hooks.isCurrent() &&
+        hooks.originMismatch(candidateRequest) === undefined,
       () => {
         publishCandidate(session, publishableCandidate, candidateRequest, publicRevision);
         if (options?.backendPreference === "auto") delete session.backendPreference;
@@ -712,13 +727,16 @@ export class SessionRuntimeReconfigurer {
       return persistenceUnavailableError(session.publicId, undefined, persistenceResult.liveState);
     }
     if (persistenceResult.kind === "stale") {
+      const response = options?.cancellation?.isCancellationRequested
+        ? reconfigurationCancelled(session.publicId)
+        : protocolError(
+            hooks.isCoordinatorAvailable() ? "session_closing" : "coordinator_disposed",
+            "The file session changed before its import options could be persisted and published.",
+            false,
+            session.publicId
+          );
       await cleanupCandidate();
-      return protocolError(
-        hooks.isCoordinatorAvailable() ? "session_closing" : "coordinator_disposed",
-        "The file session changed before its import options could be persisted and published.",
-        false,
-        session.publicId
-      );
+      return response;
     }
     hooks.invalidateStepInspection();
     this.runtimeCleanup.track(previous.runtime, "retired runtime");
