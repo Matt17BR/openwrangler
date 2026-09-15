@@ -1039,26 +1039,20 @@ quadratic equality work. Empty and zero-column results retain known zero counts.
 ordinary schemas retain their existing behavior. Object-column profiling remains unsupported, and eager Object
 grouping retains its native cost risk.
 
-For a new Formula integer string and an integer source, Polars checks the selected column's native minimum and
-maximum before add, subtract, multiply or integer power. It uses the smallest common native integer capacity at
-least as wide as the source, checking operands and result bounds; unsupported capacity is refused. Only the two
-aggregate values cross into Python. Division retains native floating output, and modulo retains native null and
-sign behavior.
+Polars Formula keeps arithmetic native. On integer sources, integer-string operands use the smallest supported
+integer capacity at least as wide as the source, refusing unsupported operands or results. Other integer formulas retain their inferred dtype
+and reject overflow, lossy promotion or new nulls for present operands. Integer-result addition, subtraction and
+multiplication also validate Boolean operands against the current input. Division, floating and Decimal arithmetic
+retain native behavior; supported modulo preserves native null, sign and NaN results.
 
-Ordinary integer Formula keeps its inferred native output dtype and refuses overflow or casts that would introduce
-nulls for present operand pairs. Polars scans the selected operands using each row's actual pair; integer powers use
-bounded exact limits. When UInt64 and signed integers of at most 64 bits promote to Float64, an exact native Int128
-reference detects result precision loss. Correct native floating results and modulo-zero NaN remain unchanged.
-Only one guard Boolean crosses into Python. Integer-result addition, subtraction and multiplication also check
-Boolean operands as zero or one, including saved steps replayed after a source type change and integer-string
-operands on Boolean columns. The existing integer-string bounds avoid a second scan on ordinary integer columns.
-Floating and Decimal operands, and division, retain native arithmetic.
-Two-column addition, subtraction or multiplication producing UInt128 requires a recognized stable Polars release
-from 1.36 onward. Earlier native kernels can panic depending on collection shape, so the Formula preflight refuses
-this combination before returning a result, including lazy plans. Scalar operands and other operations retain their
-existing paths; nonnumeric or prerelease version labels are conservatively refused for this combination.
-Generated code performs the same checks. A caller-owned LazyFrame must keep its external inputs stable between
-these checks and later collection; the checks do not materialize or snapshot the frame.
+Live execution and generated code apply the same checks, scanning selected operands and returning bounded aggregates
+to Python without a second validation scan for ordinary integer-string inputs. This does not snapshot a LazyFrame;
+its external inputs must remain stable until collection. Detailed capacity, replay and scan-bound cases belong to the
+[native Formula tests](../python/tests/test_polars_engine.py) and [literal tests](../python/tests/test_formula_literals.py).
+
+Two-column addition, subtraction or multiplication producing UInt128 requires a recognized stable Polars release from
+1.36 onward. Earlier, prerelease and unrecognized versions refuse this combination, including lazy
+plans. Scalar forms and other operations retain their existing behavior.
 
 Polars Custom Code runs a native per-column count over a returned LazyFrame to catch expression errors outside the
 previewed columns before accepting that Custom step. Generated code does the same immediately after Custom Code,
