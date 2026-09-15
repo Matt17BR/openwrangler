@@ -461,7 +461,12 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       editable: isEditableCodePreview(this.snapshot),
       runtimeIdentity
     };
-    this.view.description = codeDialectLanguageLabel(message.runtimeIdentity?.codeDialect ?? null);
+    const language = codeDialectLanguageLabel(message.runtimeIdentity?.codeDialect ?? null);
+    const inspection = this.snapshot?.stepInspection;
+    this.view.description =
+      language && inspection && this.snapshot?.code && !this.bufferInvalid
+        ? `${language} · Inspecting step ${inspection.stepIndex + 1} of ${this.snapshot.metadata.steps.length}`
+        : language;
     void this.view.webview.postMessage(message);
   }
 
