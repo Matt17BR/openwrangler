@@ -21,7 +21,7 @@ Every pull request reports the same five required product checks:
   The job uses the base Python dependencies for CSV editing and saved-notebook rendering.
 - **Windows filesystem and process contracts** runs Windows-specific export, dependency and shutdown cases, dependency
   journal creation races, dependency fixture cleanup, trusted-pickle source identity and descendant cleanup, and the
-  DuckDB owner's selected-file import cases against actual local-drive paths.
+  DuckDB owner's selected-file imports and database-reader lifetime against actual local-drive paths.
 
 The Windows worker also runs the real isolated dependency version and module-origin probe, including copied and
 hard-linked files. Its kernel bootstrap owner checks the complete bundled-source origin fixtures and native

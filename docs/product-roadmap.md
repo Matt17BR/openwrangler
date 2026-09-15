@@ -21,7 +21,7 @@ welcome in their issues. Start with useful single-source operations before takin
 
 - [Apply a cleaning plan to another input](https://github.com/Matt17BR/openwrangler/issues/1385): matching-schema file reuse is implemented on main; column mapping and broader input support remain proposals. See the [current scope](feature-parity.md#reuse-a-file-cleaning-plan).
 - [Clean a DuckDB notebook relation](https://github.com/Matt17BR/openwrangler/issues/1386): extend today's viewer with native cleaning, code and export.
-- [Browse a DuckDB database](https://github.com/Matt17BR/openwrangler/issues/1387): base-table viewing is implemented; database views and simultaneous tables in one runtime remain outside its scope. See the [current limits](feature-parity.md#duckdb-experimental-file-support).
+- [Browse a DuckDB database](https://github.com/Matt17BR/openwrangler/issues/1387): base-table viewing supports multiple tables in one runtime; database views remain a proposal. See the [current limits](feature-parity.md#duckdb-experimental-file-support).
 - [Join or append a second input](https://github.com/Matt17BR/openwrangler/issues/1388): a later proposal that first needs explicit source and row-growth rules.
 - [Workbench interaction design](https://github.com/Matt17BR/openwrangler/issues/1397): compare simpler, distinct layouts for task clarity, visible data and keyboard access before choosing a redesign.
 

@@ -122,8 +122,8 @@ def test_duckdb_database_table_session_retains_quoted_source_and_forces_viewing(
         with pytest.raises(EngineError, match="cannot be cloned"):
             manager.open_session(source, backend="duckdb", clone_from={"sessionId": session_id, "revision": 0})
         assert list(manager.sessions) == [session_id]
-        assert native._database_temporary is not None
-        temporary = Path(native._database_temporary.name)
+        assert native._database_reservation is not None
+        temporary = Path(native._database_reservation.temporary.name)
         assert temporary.exists() and temporary.parent != database_file.parent
         manager.close_session(session_id, 0)
         assert not temporary.exists() and not native._active_connections
@@ -169,33 +169,249 @@ def test_duckdb_database_query_fetch_and_close_are_serialized(database_file: Pat
         engine.close()
 
 
-def test_duckdb_database_second_viewer_refuses_without_retiring_first(database_file: Path) -> None:
+def test_duckdb_database_viewers_share_spill_until_last_reader_closes(database_file: Path) -> None:
     before = database_file.read_bytes()
-    first, second, reopened = DuckDBEngine(), DuckDBEngine(), DuckDBEngine()
+    first, second, later, failed = (DuckDBEngine() for _ in range(4))
     first_options = {"duckdbSchema": "main", "duckdbTable": "generated_values"}
     second_options = {"duckdbSchema": 'schema " exact', "duckdbTable": "table; exact"}
     try:
         frame = first.read_file(str(database_file), first_options)
-        with pytest.raises(EngineError, match="Close the existing table viewer") as failure:
-            second.read_file(str(database_file), second_options)
-        assert isinstance(failure.value.__cause__, duckdb.ConnectionException)
-        assert second._closed and second._database_temporary is not None
-        assert not Path(second._database_temporary.name).exists()
+        second_frame = second.read_file(str(database_file), second_options)
+        reservation = first._database_reservation
+        assert reservation is not None and second._database_reservation is reservation
+        temporary = Path(reservation.temporary.name)
+        assert temporary.exists() and temporary.parent != database_file.parent
+        assert first._database_connection is not second._database_connection
+        assert second.header_stats(second_frame) == {
+            "missingCells": 1,
+            "missingRows": 1,
+            "duplicateRows": 0,
+            "missingValuesByColumn": [
+                {"column": "id", "count": 0},
+                {"column": "label'exact", "count": 1},
+                {"column": "ordinary", "count": 0},
+            ],
+        }
+        later_frame = later.read_file(str(database_file), second_options)
+        assert later._database_reservation is reservation
+        for engine in (first, second, later):
+            with engine._tracked_connection() as connection:
+                assert connection.execute(
+                    "SELECT current_setting('threads'), current_setting('temp_directory'), "
+                    "current_setting('enable_external_access'), current_setting('autoload_known_extensions'), "
+                    "current_setting('autoinstall_known_extensions'), current_setting('enable_external_file_cache')"
+                ).fetchone() == (1, str(temporary), False, False, False, False)
+        with pytest.raises(EngineError, match="base table is no longer available"):
+            failed.read_file(str(database_file), {"duckdbSchema": "main", "duckdbTable": "ordinary_view"})
+        assert failed._closed and failed._database_reservation is None
+        assert temporary.exists()
+        cli = subprocess.run(
+            [sys.executable, "-B", "-m", "openwrangler_runtime.duckdb_tables", "--source", str(database_file)],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert json.loads(cli.stdout) == [
+            {"schema": "main", "name": "generated_values"},
+            {"schema": 'schema " exact', "name": "table; exact"},
+        ]
+        assert cli.stderr == ""
         assert first.shape(frame) == {"rows": 2, "columns": 2}
         first.close()
-        assert first._database_temporary is not None and not Path(first._database_temporary.name).exists()
-        next_frame = reopened.read_file(str(database_file), second_options)
-        assert reopened._terminal_rows(next_frame, "SELECT id, ordinary FROM ow ORDER BY id") == [
+        first.close()
+        assert first._database_reservation is None and temporary.exists()
+        assert second.shape(second_frame) == {"rows": 3, "columns": 3}
+        second.close()
+        assert temporary.exists()
+        assert later._terminal_rows(later_frame, "SELECT id, ordinary FROM ow ORDER BY id") == [
             (7, 42),
             (9, 42),
             (11, 42),
         ]
+        later.close()
+        assert not temporary.exists() and later._database_reservation is None
+        with duckdb.connect(str(database_file)) as writer:
+            assert writer.execute('SELECT id FROM "schema "" exact"."table; exact" ORDER BY id').fetchall() == [
+                (7,),
+                (9,),
+                (11,),
+            ]
+    finally:
+        for engine in (first, second, later, failed):
+            engine.close()
+    assert database_file.read_bytes() == before
+
+
+def test_duckdb_database_pending_connect_retains_spill(database_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    before = database_file.read_bytes()
+    first, pending = DuckDBEngine(), DuckDBEngine()
+    options = {"duckdbSchema": "main", "duckdbTable": "generated_values"}
+    first.read_file(str(database_file), options)
+    reservation = first._database_reservation
+    assert reservation is not None
+    temporary = Path(reservation.temporary.name)
+    entered, release = Event(), Event()
+    connect = duckdb.connect
+
+    def hold_connect(*args: Any, **kwargs: Any) -> Any:
+        entered.set()
+        assert release.wait(5)
+        assert temporary.exists()
+        return connect(*args, **kwargs)
+
+    monkeypatch.setattr(duckdb, "connect", hold_connect)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            opening = pool.submit(pending.read_file, str(database_file), options)
+            try:
+                assert entered.wait(5)
+                assert pending._database_reservation is reservation and reservation.users == 2
+                first.close()
+                assert temporary.exists() and reservation.users == 1
+            finally:
+                release.set()
+            frame = opening.result(timeout=10)
+        assert pending.shape(frame) == {"rows": 2, "columns": 2}
+        pending.close()
+        assert not temporary.exists()
+    finally:
+        release.set()
+        first.close()
+        pending.close()
+    assert database_file.read_bytes() == before
+
+
+def test_duckdb_database_last_release_cleans_only_its_old_directory(
+    database_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    before = database_file.read_bytes()
+    first, later = DuckDBEngine(), DuckDBEngine()
+    options = {"duckdbSchema": "main", "duckdbTable": "generated_values"}
+    first.read_file(str(database_file), options)
+    reservation = first._database_reservation
+    assert reservation is not None
+    old_directory = Path(reservation.temporary.name)
+    entered, release = Event(), Event()
+    cleanup = reservation.temporary.cleanup
+    calls: list[str] = []
+
+    def hold_cleanup() -> None:
+        calls.append("cleanup")
+        entered.set()
+        assert release.wait(5)
+        cleanup()
+
+    monkeypatch.setattr(reservation.temporary, "cleanup", hold_cleanup)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            closing = pool.submit(first.close)
+            try:
+                assert entered.wait(5)
+                opening = pool.submit(later.read_file, str(database_file), options)
+                frame = opening.result(timeout=5)
+                assert later._database_reservation is not None and later._database_reservation is not reservation
+                new_directory = Path(later._database_reservation.temporary.name)
+                assert new_directory != old_directory and new_directory.exists() and old_directory.exists()
+            finally:
+                release.set()
+            closing.result(timeout=10)
+        first.close()
+        assert calls == ["cleanup"] and not old_directory.exists() and new_directory.exists()
+        assert later.shape(frame) == {"rows": 2, "columns": 2}
+        later.close()
+        assert not new_directory.exists()
+    finally:
+        release.set()
+        first.close()
+        later.close()
+    assert database_file.read_bytes() == before
+
+
+def test_duckdb_database_interrupt_targets_only_its_active_connection(
+    database_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    before = database_file.read_bytes()
+    first, peer = DuckDBEngine(), DuckDBEngine()
+    options = {"duckdbSchema": "main", "duckdbTable": "generated_values"}
+    calls: list[Any] = []
+    native_interrupt = duckdb.DuckDBPyConnection.interrupt
+
+    def record_interrupt(connection: Any) -> None:
+        calls.append(connection)
+        native_interrupt(connection)
+
+    monkeypatch.setattr(duckdb.DuckDBPyConnection, "interrupt", record_interrupt)
+    try:
+        first_frame = first.read_file(str(database_file), options)
+        peer_frame = peer.read_file(str(database_file), options)
+        with first._tracked_connection() as first_connection, peer._tracked_connection() as peer_connection:
+            first_connection.execute("SELECT id FROM generated_values ORDER BY id")
+            peer_connection.execute("SELECT id FROM generated_values ORDER BY id")
+            first.interrupt()
+            assert calls == [first_connection] and first_connection is not peer_connection
+            assert peer_connection.fetchall() == [(1,), (2,)]
+        first.interrupt()
+        assert calls == [first_connection]
+        assert first.shape(first_frame) == peer.shape(peer_frame) == {"rows": 2, "columns": 2}
     finally:
         first.close()
-        second.close()
-        reopened.close()
-    assert reopened._database_temporary is not None and not Path(reopened._database_temporary.name).exists()
+        peer.close()
     assert database_file.read_bytes() == before
+
+
+def test_duckdb_database_replaced_source_refuses_join_before_native_connect(
+    database_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    before = database_file.read_bytes()
+    replacement = tmp_path / "replacement.duckdb"
+    retired = tmp_path / "retired.duckdb"
+    with duckdb.connect(str(replacement)) as writer:
+        writer.execute("CREATE TABLE generated_values AS SELECT 99 AS id")
+        writer.execute("CHECKPOINT")
+    replacement_before = replacement.read_bytes()
+    source = {
+        "kind": "file",
+        "path": str(database_file),
+        "label": database_file.name,
+        "importOptions": {"duckdbSchema": "main", "duckdbTable": "generated_values"},
+    }
+    manager = SessionManager(EngineRegistry((("duckdb", DuckDBEngine),)))
+    temporary: Path | None = None
+    try:
+        opened = manager.open_session(source, backend="duckdb")
+        session_id = opened["metadata"]["sessionId"]
+        first = manager.sessions[session_id].engine
+        assert isinstance(first, DuckDBEngine) and first._database_reservation is not None
+        reservation = first._database_reservation
+        temporary = Path(reservation.temporary.name)
+        try:
+            database_file.replace(retired)
+        except OSError as error:
+            if os.name == "nt" and getattr(error, "winerror", None) in {5, 32, 33}:
+                pytest.skip(f"Windows refused replacing the open synthetic database: {error}")
+            raise
+        replacement.replace(database_file)
+        with monkeypatch.context() as admission:
+            admission.setattr(
+                duckdb, "connect", lambda *_args, **_kwargs: pytest.fail("Changed source reached connect")
+            )
+            with pytest.raises(EngineError, match="Close the existing table viewers"):
+                manager.open_session(source, backend="duckdb")
+        assert list(manager.sessions) == [session_id] and not first._closed
+        assert first._database_reservation is reservation and reservation.users == 1 and temporary.exists()
+        manager.close_session(session_id, 0)
+        assert not temporary.exists()
+        reopened = manager.open_session(source, backend="duckdb")
+        assert [[cell["display"] for cell in row["values"]] for row in reopened["page"]["rows"]] == [["99"]]
+    finally:
+        manager.close_all()
+        if temporary is not None:
+            assert not temporary.exists()
+        if retired.exists():
+            assert retired.read_bytes() == before and database_file.read_bytes() == replacement_before
+        else:
+            assert database_file.read_bytes() == before and replacement.read_bytes() == replacement_before
 
 
 def test_duckdb_database_discovery_and_failed_selection_release_reader(
@@ -212,27 +428,40 @@ def test_duckdb_database_discovery_and_failed_selection_release_reader(
         discovery = DuckDBEngine()
         try:
             assert discovery.list_database_tables(str(database_file)) == expected
-            assert discovery._database_temporary is None
+            assert discovery._database_reservation is None
             with discovery._tracked_connection() as connection:
                 assert connection.execute("SELECT current_setting('temp_directory')").fetchone() == ("",)
         finally:
             discovery.close()
-    cli = subprocess.run(
-        [sys.executable, "-B", "-m", "openwrangler_runtime.duckdb_tables", "--source", str(database_file)],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=15,
-    )
-    assert json.loads(cli.stdout) == expected and cli.stderr == ""
     engine = DuckDBEngine()
+    directories: list[Path] = []
+    temporary_directory = duckdb_runtime.TemporaryDirectory
+
+    def record_directory(**kwargs: Any) -> Any:
+        directory = temporary_directory(**kwargs)
+        directories.append(Path(directory.name))
+        return directory
+
+    monkeypatch.setattr(duckdb_runtime, "TemporaryDirectory", record_directory)
     try:
         with pytest.raises(EngineError, match="base table is no longer available"):
             engine.read_file(str(database_file), {"duckdbSchema": "main", "duckdbTable": "ordinary_view"})
-        assert engine._closed and engine._database_temporary is not None
-        assert not Path(engine._database_temporary.name).exists()
+        assert engine._closed and engine._database_reservation is None
+        assert len(directories) == 1 and not directories[0].exists()
     finally:
         engine.close()
+    incompatible = DuckDBEngine()
+    with duckdb.connect(str(database_file), read_only=True) as caller:
+        try:
+            with pytest.raises(EngineError, match="incompatible connection") as failure:
+                incompatible.read_file(str(database_file), {"duckdbSchema": "main", "duckdbTable": "generated_values"})
+            assert isinstance(failure.value.__cause__, duckdb.ConnectionException)
+            assert incompatible._closed and incompatible._database_reservation is None
+            assert len(directories) == 2 and all(not path.exists() for path in directories)
+            assert caller.execute("SELECT id FROM generated_values ORDER BY id").fetchall() == [(1,), (2,)]
+            assert caller.execute("SELECT current_setting('enable_external_access')").fetchone() == (True,)
+        finally:
+            incompatible.close()
     writer = subprocess.run(
         [sys.executable, "-B", "-c", "import duckdb,sys; c=duckdb.connect(sys.argv[1]); c.close()", str(database_file)],
         check=True,
@@ -253,7 +482,7 @@ def test_duckdb_database_discovery_and_failed_selection_release_reader(
     failed = DuckDBEngine()
     with pytest.raises(EngineError, match="read-only"):
         failed.list_database_tables(str(absent))
-    assert failed._closed and not absent.exists() and failed._database_temporary is None
+    assert failed._closed and not absent.exists() and failed._database_reservation is None
     oversized = tmp_path / "oversized-name"
     with duckdb.connect(str(oversized)) as connection:
         connection.execute(f'CREATE TABLE "{"v" * 1_024}"(value INTEGER)')

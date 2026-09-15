@@ -157,7 +157,8 @@ Use the existing owners to choose a focused source check:
   check native CSV/Parquet readback, format refusal and recovery, and source/session preservation. Keep refusal before
   writer opening, destination preservation, bounded conversion and lazy streaming assertions in their existing owners.
   DuckDB database-table cases in the existing engine and SessionSource owners check exact selection, bounded catalog
-  reads, native WAL/source preservation, query/fetch serialization, writer and second-viewer refusal, and cleanup.
+  reads, native WAL/source preservation, query/fetch serialization, shared reader lifetime, changed-source admission,
+  writer refusal and cleanup. Catalog discovery also runs while a retained reader remains open.
   The existing file-command, PythonBridge and discovery-adapter owners cover picker cancellation, captured interpreter
   selection and dependency admission. The bridge and metadata-process cases retain package-write exclusion through
   cancellation and actual child closure for both Excel and DuckDB discovery. Protocol, panel and coordinator owners reject invalid selectors and ordinary

@@ -681,7 +681,7 @@ output.
 | Parquet file sessions                        | Yes                | Partial     | Native typed pages and source invalidation              | Large-scale and repeated cross-platform matrix      |
 | JSONL file sessions                          | Yes                | Partial     | Native malformed-input and packaged import              | Installed malformed/import-state interaction matrix |
 | Excel file sessions                          | No                 | Unavailable | Explicit unsupported diagnostic                         | Use Pandas or Polars                                |
-| Local database base-table browsing           | Viewing only       | Partial     | Native owners and installed Linux/macOS/Windows pickers | One viewer per database/runtime; no views           |
+| Local database base-table browsing           | Viewing only       | Partial     | Native owners and installed Linux/macOS/Windows pickers | No views; shared native resources between viewers   |
 | Notebook variables and inline MIME rendering | Viewing only       | Partial     | Native relation package slices                          | No cleaning, code insertion, or data export         |
 | Grid pages, typed cells, filters, and sorts  | Yes                | Partial     | Native rich-type and query contracts                    | Large-scale mixed-data and cross-platform matrix    |
 | Summaries, statistics, and distinct values   | Yes                | Partial     | Native fixed-size profile contracts                     | Repeated large-data resource evidence               |
@@ -700,13 +700,15 @@ only; closing releases Open Wrangler's reference and never closes the user's con
 Notebook queries also have the [lazy-source ordering limitation](#sessions-and-generated-code).
 
 **Open Wrangler: Open DuckDB Table** chooses a local database and one base table without SQL. It supports viewing,
-filters, sorts and profiles through a retained read-only connection. Close the viewer before opening another table
-from that database in the same Python runtime or using a writer. Views, SQL editing, cleaning, code generation and
+filters, sorts and profiles through a retained read-only connection. Multiple tables from the same database can stay
+open in one Python runtime. Close all its viewers before using a writer. Views, SQL editing, cleaning, code generation and
 exports remain unavailable for database tables; references to DuckDB file editing above mean CSV, TSV, Parquet and JSONL.
 Computed columns keep their native expressions and can change between queries. No immutable snapshot is promised.
 If a page extends beyond its reported row total, it is refused while the previous view is retained. Use stable inputs
 for repeatable filtering and counts; other differences between volatile evaluations may not be detected.
-Current and minimum native owners cover exact table selection, WAL preservation, writer/viewer conflicts and cleanup.
+Readers share DuckDB's worker, memory and spill resources. If the database file changes while a viewer remains open,
+close its existing viewers before opening the replacement. Different path aliases are not guaranteed to share a reader.
+Current and minimum native owners cover exact table selection, WAL preservation, writer conflicts and cleanup.
 A focused Linux check observed private disk spill during an integer sort on both native versions with a reduced
 query-memory allowance. Other memory-limited queries can still fail; see the
 [database qualification scope](https://github.com/Matt17BR/openwrangler/issues/1387).
