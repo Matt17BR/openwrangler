@@ -1429,9 +1429,9 @@ function rLiveVariableNodes(snapshot: RLiveVariableSnapshot | undefined): ViewNo
 function cleaningStepNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
   const { metadata, stepInspection } = snapshot;
   const nodes: ViewNode[] = [
-    new ViewNode("Original data", stepInspection ? "Show current view" : "Selected", "database", {
+    new ViewNode("Current view", stepInspection ? "Show current view" : "Selected", "database", {
       command: "openWrangler.selectStep",
-      title: "Show original data",
+      title: "Show current view",
       arguments: []
     })
   ];
