@@ -18,7 +18,11 @@ import {
   persistenceKey,
   SESSION_STORAGE_KEY
 } from "../extension/sessionPersistence";
-import { type BridgeRequestOptions, DetachedBridgeRequestError } from "../extension/dataBridge";
+import {
+  type BridgeRequestOptions,
+  type CancellationTokenLike,
+  DetachedBridgeRequestError
+} from "../extension/dataBridge";
 import {
   appliedFor,
   deferred,
@@ -1069,8 +1073,8 @@ describe("SessionCoordinator persistence diagnostics", () => {
     }
   );
 
-  it.each(["read", "stage", "final"] as const)(
-    "keeps the prior live-mode runtime and view when the persistence %s transition fails",
+  it.each(["read", "stage", "final", "cancellation", "late-cancellation"] as const)(
+    "settles the live-mode %s transition",
     async (failurePoint) => {
       const notebook = {
         uri: vscode.Uri.parse("file:///workspace/persistence-mode.ipynb"),
@@ -1084,11 +1088,22 @@ describe("SessionCoordinator persistence diagnostics", () => {
       };
       let reads = 0;
       let stored: Record<string, unknown> = {};
+      const cancellationWrite =
+        failurePoint === "cancellation" ? 1 : failurePoint === "late-cancellation" ? 2 : undefined;
+      const pendingWrite = deferred<void>();
+      let cancelled = false;
+      const cancellation: CancellationTokenLike = {
+        get isCancellationRequested() {
+          return cancelled;
+        },
+        onCancellationRequested: () => ({ dispose() {} })
+      };
       const update = vi.fn(async (_key: string, value: Record<string, unknown>) => {
         const attempt = update.mock.calls.length;
         if ((failurePoint === "stage" && attempt === 1) || (failurePoint === "final" && attempt === 2)) {
           throw new Error(`${failurePoint} mode persistence unavailable`);
         }
+        if (attempt === cancellationWrite) await pendingWrite.promise;
         stored = value;
       });
       const workspaceState = {
@@ -1134,12 +1149,21 @@ describe("SessionCoordinator persistence diagnostics", () => {
       setOpenNotebookDocuments(notebook);
       const coordinator = new SessionCoordinator(workspaceState);
       const bridge = coordinator.createBridge({ request: delegateRequest }, notebook);
+      let replacement: Promise<OpenWranglerResponse> | undefined;
       try {
         const opened = await bridge.request({ ...openRequest, source, mode: "viewing" });
         if (opened.kind !== "sessionOpened") throw new Error("Expected the live-mode session to open.");
         const before = coordinator.activeSession();
+        if (!before) throw new Error("Expected the original live-mode session.");
+        if (cancellationWrite !== undefined) {
+          const saved = serializePersistedSession(persistedSessionState(before.metadata, before.viewState));
+          expect(saved).toBeDefined();
+          stored = { [persistenceKey(source, before.metadata.backend)]: saved };
+        }
+        const previousStored = structuredClone(stored);
+        let expectedCurrent = before;
 
-        const response = await bridge.reconfigureLiveSessionMode!(
+        replacement = bridge.reconfigureLiveSessionMode!(
           opened.metadata.sessionId,
           opened.metadata.revision,
           "editing",
@@ -1147,15 +1171,61 @@ describe("SessionCoordinator persistence diagnostics", () => {
             selectedColumnId: undefined,
             columnWidths: new Map(),
             viewport: { firstVisibleRow: 0, scrollLeft: 71 }
-          }
+          },
+          { cancellation }
         );
 
-        expect(response).toMatchObject({ kind: "error", code: "persistence_unavailable", recoverable: true });
-        expect(coordinator.activeSession()).toEqual(before);
-        expect(closedRuntimeIds).toHaveLength(1);
-        expect(closedRuntimeIds).not.toContain("runtime-old");
-        await coordinator.shutdown();
+        if (cancellationWrite !== undefined) {
+          await vi.waitFor(() => expect(update).toHaveBeenCalledTimes(cancellationWrite));
+          expect(update.mock.calls[0]?.[1][persistenceKey(source, before.metadata.backend)]).toHaveProperty(
+            "pendingRuntimeReplacement"
+          );
+          expect(delegateRequest.mock.calls.filter(([request]) => request.kind === "getPage")).toHaveLength(1);
+          if (failurePoint === "late-cancellation") {
+            const published = coordinator.activeSession();
+            if (!published) throw new Error("Expected the published live-mode replacement.");
+            expect(published).toMatchObject({
+              sessionId: before.sessionId,
+              metadata: { mode: "editing", revision: opened.metadata.revision + 1, source },
+              viewState: { viewport: { firstVisibleRow: 0, scrollLeft: 71 } }
+            });
+            expectedCurrent = published;
+          } else expect(coordinator.activeSession()).toEqual(before);
+          expect(closedRuntimeIds).toEqual([]);
+          cancelled = true;
+          pendingWrite.resolve();
+        }
+
+        const response = await replacement;
+        expect(response).toMatchObject(
+          failurePoint === "cancellation"
+            ? { kind: "cancelled", targetRequestId: `editing-mode:${opened.metadata.sessionId}` }
+            : failurePoint === "late-cancellation"
+              ? { kind: "sessionOpened", metadata: expectedCurrent.metadata }
+              : { kind: "error", code: "persistence_unavailable", recoverable: true }
+        );
+        expect(coordinator.activeSession()).toEqual(expectedCurrent);
+        if (failurePoint === "late-cancellation") {
+          expect(closedRuntimeIds).toEqual(["runtime-old"]);
+          expect(stored).toEqual({
+            [persistenceKey(source, expectedCurrent.metadata.backend)]: serializePersistedSession(
+              persistedSessionState(expectedCurrent.metadata, expectedCurrent.viewState)
+            )
+          });
+        } else {
+          expect(closedRuntimeIds).toHaveLength(1);
+          expect(closedRuntimeIds).not.toContain("runtime-old");
+        }
+        if (failurePoint === "cancellation") {
+          expect(coordinator.diagnostics().sessions).toEqual([
+            expect.objectContaining({ runtimeId: "runtime-old", publicRevision: opened.metadata.revision })
+          ]);
+          expect(stored).toEqual(previousStored);
+        }
       } finally {
+        pendingWrite.resolve();
+        await replacement?.catch(() => undefined);
+        await coordinator.shutdown();
         setOpenNotebookDocuments();
       }
     }

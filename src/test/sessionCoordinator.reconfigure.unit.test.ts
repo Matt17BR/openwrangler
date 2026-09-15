@@ -5,9 +5,14 @@ import * as vscode from "vscode";
 import { captureExportSourceProtection, beginAtomicFileTransaction } from "../extension/files/safeFileExport";
 import { describe, expect, it, vi } from "vitest";
 import type { Memento } from "vscode";
-import type { BridgeRequestOptions } from "../extension/dataBridge";
+import type { BridgeRequestOptions, CancellationTokenLike } from "../extension/dataBridge";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
-import { persistenceKey, SESSION_STORAGE_KEY } from "../extension/sessionPersistence";
+import {
+  persistedSessionState,
+  persistenceKey,
+  serializePersistedSession,
+  SESSION_STORAGE_KEY
+} from "../extension/sessionPersistence";
 import type {
   OpenSessionRequest,
   OpenWranglerRequest,
@@ -416,9 +421,16 @@ describe("SessionCoordinator file-session reconfiguration", () => {
     await coordinator.shutdown();
   });
 
-  it("does not publish a replacement whose durable stage is overtaken by close", async () => {
+  it.each(["close", "cancellation"] as const)("does not publish after %s at the durable stage", async (retirement) => {
     let stored: Record<string, unknown> = {};
     const persistenceWrite = deferred<void>();
+    let cancelled = false;
+    const cancellation: CancellationTokenLike = {
+      get isCancellationRequested() {
+        return cancelled;
+      },
+      onCancellationRequested: () => ({ dispose() {} })
+    };
     const workspaceState = {
       get: vi.fn((key: string, fallback?: unknown) => (key === SESSION_STORAGE_KEY ? stored : fallback)),
       update: vi.fn(async (key: string, value: unknown) => {
@@ -492,31 +504,64 @@ describe("SessionCoordinator file-session reconfiguration", () => {
     const coordinator = new SessionCoordinator(workspaceState);
     const bridge = coordinator.createBridge({ request: delegateRequest });
     const opened = await open(bridge, initialSource);
+    const before = coordinator.activeSession();
+    if (!before) throw new Error("Expected the original active session.");
+    const saved = serializePersistedSession(persistedSessionState(before.metadata, before.viewState));
+    expect(saved).toBeDefined();
+    stored = { [persistenceKey(initialSource, before.metadata.backend)]: saved };
+    const previousStored = structuredClone(stored);
     let acknowledged = false;
     const replacement = bridge.reconfigureFileSession!(
       opened.metadata.sessionId,
       opened.metadata.revision,
-      replacementSource
+      replacementSource,
+      { cancellation }
     ).then((response) => {
       acknowledged = true;
       return response;
     });
 
-    await vi.waitFor(() => expect(workspaceState.update).toHaveBeenCalledOnce());
-    expect(acknowledged).toBe(false);
+    try {
+      await vi.waitFor(() => expect(workspaceState.update).toHaveBeenCalledOnce());
+      expect(acknowledged).toBe(false);
+      expect(coordinator.activeSession()).toEqual(before);
 
-    await expect(
-      bridge.request({
-        kind: "closeSession",
-        sessionId: opened.metadata.sessionId,
-        revision: opened.metadata.revision
-      })
-    ).resolves.toEqual({ kind: "sessionClosed", sessionId: opened.metadata.sessionId });
-    expect(acknowledged).toBe(false);
+      if (retirement === "close") {
+        await expect(
+          bridge.request({
+            kind: "closeSession",
+            sessionId: opened.metadata.sessionId,
+            revision: opened.metadata.revision
+          })
+        ).resolves.toEqual({ kind: "sessionClosed", sessionId: opened.metadata.sessionId });
+      } else cancelled = true;
+      expect(acknowledged).toBe(false);
 
-    persistenceWrite.resolve();
-    await expect(replacement).resolves.toMatchObject({ kind: "error", code: "session_closing" });
-    expect(stored[persistenceKey(replacementSource, "polars")]).toBeUndefined();
+      persistenceWrite.resolve();
+      await expect(replacement).resolves.toMatchObject(
+        retirement === "close"
+          ? { kind: "error", code: "session_closing" }
+          : { kind: "cancelled", targetRequestId: `reconfigure-import:${opened.metadata.sessionId}` }
+      );
+      expect(stored[persistenceKey(replacementSource, "polars")]).toBeUndefined();
+      const closed = delegateRequest.mock.calls
+        .map(([request]) => request)
+        .filter((request) => request.kind === "closeSession")
+        .map((request) => request.sessionId);
+      expect(closed.filter((id) => id === candidateId)).toHaveLength(1);
+      if (retirement === "cancellation") {
+        expect(closed).not.toContain("runtime-old");
+        expect(coordinator.activeSession()).toEqual(before);
+        expect(coordinator.diagnostics().sessions).toEqual([
+          expect.objectContaining({ runtimeId: "runtime-old", publicRevision: opened.metadata.revision })
+        ]);
+        expect(stored).toEqual(previousStored);
+      }
+    } finally {
+      persistenceWrite.resolve();
+      await replacement.catch(() => undefined);
+      await coordinator.shutdown();
+    }
   });
 
   it.each(["read", "stage", "final"] as const)(

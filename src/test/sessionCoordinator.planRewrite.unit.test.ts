@@ -6,6 +6,8 @@ import { captureExportSourceProtection, beginAtomicFileTransaction } from "../ex
 import { describe, expect, it, vi } from "vitest";
 import type { Memento } from "vscode";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
+import type { CancellationTokenLike } from "../extension/dataBridge";
+import { persistedSessionState, persistenceKey, serializePersistedSession } from "../extension/sessionPersistence";
 import type {
   ColumnSchema,
   FilterModel,
@@ -522,10 +524,18 @@ describe("SessionCoordinator earlier-step plan rewrites", () => {
     }
   });
 
-  it("persists the complete candidate before publishing it once", async () => {
+  it.each(["publish", "cancel"] as const)("settles the durable candidate by %s", async (outcome) => {
     const harness = rewriteHarness({ draft: replacement });
     let stored: Record<string, unknown> = {};
     const coordinatorRef: { current?: SessionCoordinator } = {};
+    const persistenceWrite = deferred<void>();
+    let cancelled = false;
+    const cancellation: CancellationTokenLike = {
+      get isCancellationRequested() {
+        return cancelled;
+      },
+      onCancellationRequested: () => ({ dispose() {} })
+    };
     let activeStepsDuringPersistence: readonly TransformStep[] | undefined;
     const workspaceState = {
       keys: () => [],
@@ -533,6 +543,7 @@ describe("SessionCoordinator earlier-step plan rewrites", () => {
         (Object.keys(stored).length > 0 ? stored : defaultValue) as T | undefined,
       update: vi.fn(async (_key: string, value: unknown) => {
         activeStepsDuringPersistence ??= coordinatorRef.current?.activeSession()?.metadata.steps;
+        await persistenceWrite.promise;
         stored = value as Record<string, unknown>;
       })
     } as unknown as Memento;
@@ -540,21 +551,49 @@ describe("SessionCoordinator earlier-step plan rewrites", () => {
     coordinatorRef.current = coordinator;
     const bridge = coordinator.createBridge({ request: harness.request });
     const opened = await open(bridge, initialSource);
+    const before = coordinator.activeSession();
+    if (!before) throw new Error("Expected the original active session.");
+    const saved = serializePersistedSession(persistedSessionState(before.metadata, before.viewState));
+    expect(saved).toBeDefined();
+    stored = { [persistenceKey(initialSource, before.metadata.backend)]: saved };
+    const previousStored = structuredClone(stored);
 
-    const response = await bridge.rewriteCleaningPlan?.(
+    const rewrite = bridge.rewriteCleaningPlan!(
       opened.metadata.sessionId,
       opened.metadata.revision,
       first.id,
       "applyDraft",
-      { offset: 0, limit: 100, columnOffset: 0, columnLimit: 16 }
+      { offset: 0, limit: 100, columnOffset: 0, columnLimit: 16 },
+      { cancellation }
     );
-
-    expect(response).toMatchObject({ kind: "planUpdated", metadata: { steps: [replacement, second, third] } });
-    expect(activeStepsDuringPersistence).toEqual([first, second, third]);
-    const persisted = Object.values(stored)[0] as { cleaning?: { steps?: TransformStep[]; draftStep?: unknown } };
-    expect(persisted.cleaning?.steps).toEqual([replacement, second, third]);
-    expect(persisted.cleaning?.draftStep).toBeUndefined();
-    expect(coordinator.activeSession()?.metadata.steps).toEqual([replacement, second, third]);
+    try {
+      await vi.waitFor(() => expect(workspaceState.update).toHaveBeenCalledOnce());
+      expect(coordinator.activeSession()).toEqual(before);
+      expect(harness.closedRuntimeIds()).toEqual([]);
+      if (outcome === "cancel") cancelled = true;
+      persistenceWrite.resolve();
+      const response = await rewrite;
+      expect(activeStepsDuringPersistence).toEqual([first, second, third]);
+      if (outcome === "cancel") {
+        expect(response).toEqual({ kind: "cancelled", targetRequestId: `rewrite-plan:${opened.metadata.sessionId}` });
+        expect(coordinator.activeSession()).toEqual(before);
+        expect(coordinator.diagnostics().sessions).toEqual([
+          expect.objectContaining({ runtimeId: "runtime-old", publicRevision: opened.metadata.revision })
+        ]);
+        expect(stored).toEqual(previousStored);
+        expect(harness.closedRuntimeIds()).toEqual([harness.candidateOpenRequests()[0]?.requestedSessionId]);
+      } else {
+        expect(response).toMatchObject({ kind: "planUpdated", metadata: { steps: [replacement, second, third] } });
+        const persisted = Object.values(stored)[0] as { cleaning?: { steps?: TransformStep[]; draftStep?: unknown } };
+        expect(persisted.cleaning?.steps).toEqual([replacement, second, third]);
+        expect(persisted.cleaning?.draftStep).toBeUndefined();
+        expect(coordinator.activeSession()?.metadata.steps).toEqual([replacement, second, third]);
+      }
+    } finally {
+      persistenceWrite.resolve();
+      await rewrite.catch(() => undefined);
+      await coordinator.shutdown();
+    }
   });
 
   it("keeps the prior runtime when replacement persistence becomes unavailable", async () => {
