@@ -32,6 +32,234 @@ from openwrangler_runtime.session_source import SourceChangedError
 ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.mark.parametrize("lazy", [False, True])
+def test_polars_extract_struct_fields_preserves_literal_names_and_current_input(lazy: bool) -> None:
+    source = pl.DataFrame(
+        {"id": [0, 1, 2], "^a.*$": [{"*": 7, "^a.*$": 8, "amount": 90}, None, {"*": None, "^a.*$": 4, "amount": 91}]}
+    )
+    engine = PolarsEngine()
+    try:
+        schema = engine.schema(source)
+        lineage = source_lineage(schema)
+        operation = bind_step(
+            validate_step(
+                {
+                    "id": "extract",
+                    "kind": "extractStructFields",
+                    "params": {
+                        "column": lineage[1],
+                        "fields": [{"field": "^a.*$", "newColumn": "*"}, {"field": "*", "newColumn": 'selected"value'}],
+                    },
+                }
+            ),
+            schema,
+            lineage,
+        )
+        namespace: dict[str, Any] = {}
+        exec(engine.compile_plan([operation]), namespace)
+        reordered_dtype = pl.Struct({"amount": pl.Int64, "^a.*$": pl.Int64, "*": pl.Int64})
+        reordered_parent = source.get_column("^a.*$").cast(reordered_dtype)
+        assert reordered_parent.dtype == reordered_dtype
+        reordered = pl.DataFrame([reordered_parent, source.get_column("id")])
+        for frame in (source, reordered, source.head(0)):
+            native = frame.lazy() if lazy else frame
+            for result in (engine.apply_transform(native, operation), namespace["clean_data"](native)):
+                assert isinstance(result, pl.LazyFrame) == lazy
+                result = result.collect() if lazy else result
+                assert result.columns == [*frame.columns, "*", 'selected"value']
+                assert result.get_column("*").to_list() == [8, None, 4][: frame.height]
+                assert result.get_column('selected"value').to_list() == [7, None, None][: frame.height]
+                assert all(result.get_column(name).equals(frame.get_column(name)) for name in frame.columns)
+        assert source.get_column("id").to_list() == [0, 1, 2]
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+def test_polars_extract_struct_fields_retains_native_scalar_storage(lazy: bool) -> None:
+    children = pl.DataFrame(
+        [
+            pl.Series("text", ["é", "hidden", None], dtype=pl.String),
+            pl.Series("category", ["one", "two", None], dtype=pl.Categorical),
+            pl.Series("enum", ["one", "two", None], dtype=pl.Enum(["one", "two"])),
+            pl.Series("signed", [-(2**127), 2**127 - 1, None], dtype=pl.Int128),
+            pl.Series("unsigned", [2**128 - 1, 0, None], dtype=pl.UInt128),
+            pl.Series("float", [float("inf"), 1.5, None], dtype=pl.Float64),
+            pl.Series(
+                "decimal",
+                [Decimal("12345678901234567890123456.7890"), Decimal("-1.0000"), None],
+                dtype=pl.Decimal(30, 4),
+            ),
+            pl.Series("boolean", [True, False, None], dtype=pl.Boolean),
+            pl.Series("date", [-1, 1, None], dtype=pl.Int32).cast(pl.Date),
+            *[
+                pl.Series(f"timestamp_{unit}", [-1, 1, None], dtype=pl.Int64).cast(pl.Datetime(unit))
+                for unit in ("ns", "us", "ms")
+            ],
+            pl.Series("zoned", [-1, 1, None], dtype=pl.Int64).cast(pl.Datetime("ns", "America/New_York")),
+            *[
+                pl.Series(f"duration_{unit}", [-1, 1, None], dtype=pl.Int64).cast(pl.Duration(unit))
+                for unit in ("ns", "us", "ms")
+            ],
+            pl.Series("binary", [b"\x00\xff", b"hidden", None], dtype=pl.Binary),
+        ]
+    )
+    source = children.select(pl.struct(pl.all()).alias("record")).with_row_index("id")
+    source = source.with_columns(pl.when(pl.col("id") == 1).then(None).otherwise(pl.col("record")).alias("record"))
+    before = source.clone()
+    fields = [{"field": name, "newColumn": f"out_{index}"} for index, name in enumerate(children.columns)]
+    operation = {
+        "id": "extract",
+        "kind": "extractStructFields",
+        "params": {"column": {"id": "c:source:1", "name": "record", "position": 1}, "fields": fields},
+    }
+    engine = PolarsEngine()
+    try:
+        namespace: dict[str, Any] = {}
+        exec(engine.compile_plan([operation]), namespace)
+        for frame in (source, source.head(0), source.filter(pl.col("id") == 1)):
+            native = frame.lazy() if lazy else frame
+            for result in (engine.apply_transform(native, operation), namespace["clean_data"](native)):
+                result = result.collect() if lazy else result
+                assert result.columns == [*source.columns, *[field["newColumn"] for field in fields]]
+                assert result.get_column("record").equals(frame.get_column("record"))
+                for field in fields:
+                    actual = result.get_column(field["newColumn"])
+                    child = children.get_column(field["field"])
+                    assert actual.dtype == child.dtype
+                    expected = pl.concat(
+                        [child.head(1), pl.Series(child.name, [None, None], dtype=child.dtype)]
+                    ).gather(frame.get_column("id"))
+                    assert actual.equals(expected.rename(actual.name))
+        assert source.equals(before)
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+def test_polars_extract_struct_fields_revalidates_before_evaluating(lazy: bool) -> None:
+    good = pl.DataFrame({"record": [{"value": 1}], "keep": [2]})
+    operation = {
+        "id": "extract",
+        "kind": "extractStructFields",
+        "params": {
+            "column": {"id": "c:source:0", "name": "record", "position": 0},
+            "fields": [{"field": "value", "newColumn": "selected"}],
+        },
+    }
+    engine = PolarsEngine()
+    try:
+        namespace: dict[str, Any] = {}
+        exec(engine.compile_plan([operation]), namespace)
+        invalid = [
+            good.drop("record"),
+            good.with_columns(pl.lit(1).alias("record")),
+            pl.DataFrame({"record": pl.Series([object()], dtype=pl.Object)}),
+            good.with_columns(pl.struct(pl.lit(1).alias("other")).alias("record")),
+            good.with_columns(pl.lit(9).alias("selected")),
+            *[
+                pl.DataFrame({"record": pl.Series([{"value": None}], dtype=pl.Struct({"value": dtype}))})
+                for dtype in (
+                    pl.List(pl.Int64),
+                    pl.Array(pl.Int64, 2),
+                    pl.Struct({"child": pl.Int64}),
+                    pl.Time,
+                    pl.Null,
+                )
+            ],
+        ]
+
+        def forbidden(batch):
+            raise AssertionError("Metadata admission evaluated source rows")
+
+        for frame in invalid:
+            native = frame.lazy().map_batches(forbidden, schema=frame.schema) if lazy else frame
+            with pytest.raises(EngineError, match="Extract Struct Fields"):
+                engine.apply_transform(native, operation)
+            with pytest.raises(ValueError, match="Extract Struct Fields"):
+                namespace["clean_data"](native)
+        # Re-resolve the current native field dtype; changing one admitted scalar to another is valid.
+        changed = good.with_columns(pl.struct(pl.lit("new").alias("value")).alias("record"))
+        result = namespace["clean_data"](changed.lazy() if lazy else changed)
+        result = result.collect() if lazy else result
+        assert result["selected"].to_list() == ["new"]
+        assert result.schema["selected"] == pl.String
+        if lazy:
+            batches = []
+
+            def observed(batch):
+                batches.append(batch.height)
+                return batch
+
+            watched = good.lazy().map_batches(observed, schema=good.schema)
+            live = engine.apply_transform(watched, operation)
+            generated = namespace["clean_data"](watched)
+            assert batches == []
+            assert live.collect()["selected"].to_list() == [1]
+            assert generated.collect()["selected"].to_list() == [1]
+            assert batches == [1, 1]
+    finally:
+        engine.close()
+
+
+def test_polars_extract_struct_fields_masks_hidden_parquet_children(tmp_path: Path) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    child = pa.array([-1, 123, None], type=pa.int64()).cast(pa.timestamp("ns"))
+    parent = pa.StructArray.from_arrays(
+        [child], names=["__open_wrangler_internal_row_id_child"], mask=pa.array([False, True, False])
+    )
+    assert parent.field(0).cast(pa.int64()).to_pylist() == [-1, 123, None]
+    assert parent[1].as_py() is None
+    path = tmp_path / "hidden.parquet"
+    pq.write_table(pa.table({"record": parent}), path)
+    before = path.read_bytes()
+    source = pl.scan_parquet(path)
+    operation = {
+        "id": "extract",
+        "kind": "extractStructFields",
+        "params": {
+            "column": {"id": "c:source:0", "name": "record", "position": 0},
+            "fields": [{"field": "__open_wrangler_internal_row_id_child", "newColumn": "selected"}],
+        },
+    }
+    engine = PolarsEngine()
+    try:
+        namespace: dict[str, Any] = {}
+        exec(engine.compile_plan([operation]), namespace)
+        for result in (engine.apply_transform(source, operation), namespace["clean_data"](source)):
+            result = result.collect()
+            assert result["selected"].cast(pl.Int64).to_list() == [-1, None, None]
+            assert result["record"].equals(source.collect()["record"])
+        assert path.read_bytes() == before
+    finally:
+        engine.close()
+
+
+def test_polars_extract_struct_fields_appends_64_columns_and_preserves_row_identity() -> None:
+    source = pl.DataFrame(
+        {"record": [{f"field_{index}": index for index in range(65)}], "__open_wrangler_internal_row_id_test": [123]}
+    )
+    fields = [{"field": f"field_{index}", "newColumn": f"selected_{index}"} for index in range(64)]
+    engine = PolarsEngine()
+    try:
+        operation = {
+            "id": "extract",
+            "kind": "extractStructFields",
+            "params": {"column": {"id": "c:source:0", "name": "record", "position": 0}, "fields": fields},
+        }
+        namespace: dict[str, Any] = {}
+        exec(engine.compile_plan([operation]), namespace)
+        for result in (engine.apply_transform(source, operation), namespace["clean_data"](source)):
+            assert result.columns == [*source.columns, *[field["newColumn"] for field in fields]]
+            assert result.row(0)[2:] == tuple(range(64))
+            assert result["__open_wrangler_internal_row_id_test"].to_list() == [123]
+        assert source.width == 2
+    finally:
+        engine.close()
+
+
 def _literal_polars_source() -> pl.DataFrame:
     return pl.DataFrame({"^a.*$": [1, 1, 2, None], "amount": [20, 30, 40, 50], "*": [3, 1, 2, None]})
 

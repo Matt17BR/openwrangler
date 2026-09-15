@@ -124,7 +124,7 @@ export class RKernelMutationLifecycle {
         request.sessionId
       );
     }
-    if (!operationKinds.includes(step.kind)) {
+    if (step.kind === "extractStructFields" || !operationKinds.includes(step.kind)) {
       return errorResponse(
         "unsupported_operation",
         `The native R runtime does not support ${step.kind}.`,

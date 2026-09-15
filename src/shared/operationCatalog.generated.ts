@@ -124,6 +124,15 @@ export const operationCatalog: readonly OperationCatalogItem[] = Object.freeze([
     optional: Object.freeze([])
   }),
   Object.freeze({
+    kind: "extractStructFields",
+    title: "Extract Struct Fields",
+    description: "Append selected scalar fields as new columns while retaining the Struct column and rows.",
+    group: "Columns / types",
+    icon: "symbol-field",
+    required: Object.freeze(["column", "fields"]),
+    optional: Object.freeze([])
+  }),
+  Object.freeze({
     kind: "castColumn",
     title: "Convert type",
     description: "Convert values to a supported deterministic type.",

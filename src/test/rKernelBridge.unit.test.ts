@@ -43,11 +43,57 @@ describe("canonical R kernel bridge", () => {
       const response = await bridge.request({ kind: "initialize" });
       if (response.kind !== "initialized") throw new Error("Native R bridge did not initialize.");
       const operations = response.capabilities.supportedOperations ?? [];
-
-      expect(operations).toEqual(operationKinds);
+      const rOperations = operationKinds.filter((kind) => kind !== "extractStructFields");
+      expect(operations).toEqual(rOperations);
       expect(operationCatalog.map(({ kind }) => kind)).toEqual(operationKinds);
-      await expect(catalogKindsFromDirectRContract()).resolves.toEqual(operationKinds);
-      expect(new Set(operations).size).toBe(operationKinds.length);
+      await expect(catalogKindsFromDirectRContract()).resolves.toEqual(rOperations);
+      expect(new Set(operations).size).toBe(rOperations.length);
+    } finally {
+      await bridge.dispose();
+    }
+  });
+
+  it("refuses Struct extraction before native R transport and preserves the session", async () => {
+    const transport = fakeTransport(frameContract());
+    const bridge = createBridge(transport);
+    try {
+      const opened = await bridge.request(openRequest("editing"));
+      if (opened.kind !== "sessionOpened") throw new Error("R source did not open.");
+      const source = opened.metadata;
+      await expect(
+        bridge.request({
+          kind: "previewStep",
+          sessionId,
+          revision: source.revision,
+          offset: 0,
+          limit: 1,
+          columnOffset: 0,
+          columnLimit: 8,
+          step: {
+            id: "fields",
+            kind: "extractStructFields",
+            params: { column: { id: "r:c:0", name: "value" }, fields: [{ field: "a", newColumn: "out" }] }
+          }
+        })
+      ).resolves.toMatchObject({ kind: "error", code: "unsupported_operation", sessionId });
+      expect(transport.previewStep).not.toHaveBeenCalled();
+      expect(transport.applyDraft).not.toHaveBeenCalled();
+      const page = await bridge.request({
+        kind: "getPage",
+        sessionId,
+        revision: source.revision,
+        viewRequestId: "after-refused-fields",
+        filterModel: source.filterModel,
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      });
+      expect(page).toMatchObject({
+        kind: "page",
+        revision: source.revision,
+        metadata: { schema: source.schema, steps: [] }
+      });
     } finally {
       await bridge.dispose();
     }

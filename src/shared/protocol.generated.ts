@@ -59,6 +59,7 @@ export type TransformStep =
   | DropColumnsTransformStep
   | RenameColumnTransformStep
   | CloneColumnTransformStep
+  | ExtractStructFieldsTransformStep
   | CastColumnTransformStep
   | FormulaTransformStep
   | ConditionalColumnTransformStep
@@ -100,6 +101,7 @@ export type OperationKind =
   | "dropColumns"
   | "renameColumn"
   | "cloneColumn"
+  | "extractStructFields"
   | "castColumn"
   | "formula"
   | "conditionalColumn"
@@ -242,6 +244,15 @@ export type CloneColumnTransformStep = TransformStepTemplate & {
   params: RenameColumnParams;
   [k: string]: unknown;
 };
+export type ExtractStructFieldsTransformStep = TransformStepTemplate & {
+  kind: "extractStructFields";
+  params: ExtractStructFieldsParams;
+  [k: string]: unknown;
+};
+/**
+ * An exact nonempty Unicode name of at most 1024 UTF-8 bytes, without NUL, CR or LF. Whitespace, punctuation and case are literal.
+ */
+export type ExtractStructFieldName = string;
 export type CastColumnTransformStep = TransformStepTemplate & {
   kind: "castColumn";
   params: CastColumnParams;
@@ -722,6 +733,20 @@ export interface ColumnsParams {
 export interface RenameColumnParams {
   column: ColumnReference;
   newName: string;
+}
+export interface ExtractStructFieldsParams {
+  column: ColumnReference;
+  /**
+   * Ordered direct scalar fields with unique field names and unique output names. Native output collision rules also apply.
+   *
+   * @minItems 1
+   * @maxItems 64
+   */
+  fields: [ExtractStructField, ...ExtractStructField[]];
+}
+export interface ExtractStructField {
+  field: ExtractStructFieldName;
+  newColumn: ExtractStructFieldName;
 }
 export interface CastColumnParams {
   column: ColumnReference;

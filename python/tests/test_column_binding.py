@@ -87,6 +87,27 @@ def test_split_text_columns_binds_one_source_and_rejects_all_output_collisions_a
         bind_step({**public, "params": {**public["params"], "newColumns": ["first", "duplicate"]}}, SCHEMA, LINEAGE)
 
 
+def test_extract_struct_fields_binds_the_exact_parent_and_all_fresh_outputs() -> None:
+    schema = [{"name": "record", "type": "struct"}, {"name": "record", "type": "string"}]
+    lineage = [{"id": "c:source:0", "name": "record"}, {"id": "c:source:1", "name": "record"}]
+    fields = [{"field": "a.b", "newColumn": "first"}, {"field": "*", "newColumn": "second"}]
+    public = step("extractStructFields", column=ref("c:source:0", "record"), fields=fields)
+    bound = bind_step(public, schema, lineage)
+    assert bound["params"] == {
+        "column": {"id": "c:source:0", "name": "record", "position": 0},
+        "fields": fields,
+    }
+    assert public["params"]["column"] == ref("c:source:0", "record")
+    for override, message in [
+        ({"column": ref("c:source:1", "record")}, "Column type mismatch"),
+        ({"column": ref("c:source:0", "renamed")}, "name mismatch"),
+        ({"column": ref("c:source:99", "record")}, "Unknown or stale"),
+        ({"fields": [fields[0], {"field": "b", "newColumn": "record"}]}, "collides"),
+    ]:
+        with pytest.raises(ColumnBindingError, match=message):
+            bind_step({**public, "params": {**public["params"], **override}}, schema, lineage)
+
+
 def test_conditional_column_binds_exact_source_type_and_fresh_output() -> None:
     public = step(
         "conditionalColumn",

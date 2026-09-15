@@ -39,6 +39,11 @@ interface OperationFieldsProps {
 export function OperationFields({ kind, metadata, columns, filterModel, initialStep }: OperationFieldsProps) {
   const params = initialStep?.params ?? {};
   const initialSortRules = Array.isArray(params.rules) ? (params.rules as Record<string, unknown>[]) : [];
+  const initialStructFields = Array.isArray(params.fields) ? (params.fields as Record<string, unknown>[]) : [];
+  const nextStructFieldRowId = useRef(Math.max(1, initialStructFields.length));
+  const [structFieldRowIds, setStructFieldRowIds] = useState(() =>
+    Array.from({ length: Math.max(1, initialStructFields.length) }, (_, index) => `struct-field-${index}`)
+  );
   const initialAggregations = Array.isArray(params.aggregations)
     ? (params.aggregations as Record<string, unknown>[])
     : [];
@@ -83,6 +88,66 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
         columns={columns}
         initial={initialStep?.kind === kind ? initialStep.params : undefined}
       />
+    );
+  }
+  if (kind === "extractStructFields") {
+    const fieldsById = new Map(initialStructFields.map((field, index) => [`struct-field-${index}`, field]));
+    const structColumns = compatibleColumns(columns, operationColumnTypes(kind));
+    return (
+      <>
+        <ColumnReferenceSelect
+          name="column"
+          label="Struct column"
+          columns={structColumns}
+          defaultValue={initialColumnReference("column", structColumns[0]?.id)}
+        />
+        <Fieldset legend="Fields to extract">
+          <p className="panelNote">
+            Enter exact field names directly inside the Struct. Only scalar fields can be extracted. The parent column
+            and rows are retained.
+          </p>
+          {structFieldRowIds.map((rowId, index) => {
+            const field = fieldsById.get(rowId);
+            return (
+              <div className="compoundRow structFieldsRow" key={rowId}>
+                <TextField
+                  name="structField"
+                  label={`Field ${index + 1}`}
+                  defaultValue={String(field?.field ?? "")}
+                  required
+                  maxUtf8Bytes={1024}
+                />
+                <TextField
+                  name="structOutput"
+                  label={`New column ${index + 1}`}
+                  defaultValue={String(field?.newColumn ?? "")}
+                  required
+                  maxUtf8Bytes={1024}
+                />
+                <RowActions
+                  label={`field ${index + 1}`}
+                  canRemove={structFieldRowIds.length > 1}
+                  canMoveUp={index > 0}
+                  canMoveDown={index < structFieldRowIds.length - 1}
+                  onRemove={() => setStructFieldRowIds((current) => current.filter((candidate) => candidate !== rowId))}
+                  onMoveUp={() => setStructFieldRowIds((current) => moveItem(current, index, index - 1))}
+                  onMoveDown={() => setStructFieldRowIds((current) => moveItem(current, index, index + 1))}
+                />
+              </div>
+            );
+          })}
+          <button
+            type="button"
+            className="secondaryButton"
+            disabled={structFieldRowIds.length >= 64}
+            onClick={() =>
+              setStructFieldRowIds((current) => [...current, `struct-field-${nextStructFieldRowId.current++}`])
+            }
+          >
+            Add field
+          </button>
+        </Fieldset>
+      </>
     );
   }
   if (kind === "sortRows") {

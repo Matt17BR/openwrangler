@@ -83,6 +83,7 @@ _COLUMN_REFERENCE_FIELDS: dict[str, tuple[str, ...]] = {
     "stripText": ("column",),
     "splitText": ("column",),
     "splitTextColumns": ("column",),
+    "extractStructFields": ("column",),
     "extractRegexGroup": ("column",),
     "capitalizeText": ("column",),
     "lowerText": ("column",),
@@ -293,6 +294,27 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
             raise OperationError("splitTextColumns.newColumns must contain between 2 and 64 non-empty names.")
         if len(new_columns) != len(set(new_columns)):
             raise OperationError("splitTextColumns.newColumns must contain unique names.")
+    elif kind == "extractStructFields":
+        fields = params.get("fields")
+        if not isinstance(fields, list) or not 1 <= len(fields) <= 64:
+            raise OperationError("extractStructFields.fields must contain between 1 and 64 field/output pairs.")
+        normalized_fields = []
+        for index, field in enumerate(fields):
+            if not isinstance(field, Mapping) or set(field) != {"field", "newColumn"}:
+                raise OperationError("Each extracted field must contain exactly field and newColumn.")
+            try:
+                normalized_fields.append(
+                    {
+                        key: validate_pivot_longer_output_name(field[key], f"extractStructFields.fields[{index}].{key}")
+                        for key in ("field", "newColumn")
+                    }
+                )
+            except PivotLongerContractError as error:
+                raise OperationError(str(error)) from error
+        for key in ("field", "newColumn"):
+            if len({field[key] for field in normalized_fields}) != len(normalized_fields):
+                raise OperationError(f"extractStructFields.fields must contain unique {key} names.")
+        params["fields"] = normalized_fields
     elif kind == "extractRegexGroup":
         try:
             portable_regex_contract(params.get("pattern"), params.get("group"))
@@ -746,6 +768,7 @@ def _reject_private_column_namespace(kind: str, params: Mapping[str, Any]) -> No
         "stripText",
         "splitText",
         "splitTextColumns",
+        "extractStructFields",
         "extractRegexGroup",
         "capitalizeText",
         "lowerText",
@@ -800,6 +823,8 @@ def _reject_private_column_namespace(kind: str, params: Mapping[str, Any]) -> No
             references.append((output_field, params[output_field]))
     if kind == "splitTextColumns":
         references.extend(("newColumns", name) for name in params["newColumns"])
+    if kind == "extractStructFields":
+        references.extend(("fields.newColumn", field["newColumn"]) for field in params["fields"])
     if kind == "pivotLonger":
         references.extend(
             (

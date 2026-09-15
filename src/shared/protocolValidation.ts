@@ -1019,6 +1019,26 @@ export function isTransformStep(value: unknown): value is TransformStep {
     case "renameColumn":
     case "cloneColumn":
       return isColumnReference(params.column) && isNonEmptyString(params.newName);
+    case "extractStructFields": {
+      if (
+        !isColumnReference(params.column) ||
+        !Array.isArray(params.fields) ||
+        params.fields.length < 1 ||
+        params.fields.length > 64
+      )
+        return false;
+      const fields = new Set<string>();
+      const outputs = new Set<string>();
+      for (const value of params.fields) {
+        const field = exactRecord(value, ["field", "newColumn"]);
+        if (!field || !isExtractStructFieldName(field.field) || !isExtractStructFieldName(field.newColumn))
+          return false;
+        if (fields.has(field.field) || outputs.has(field.newColumn)) return false;
+        fields.add(field.field);
+        outputs.add(field.newColumn);
+      }
+      return true;
+    }
     case "castColumn":
       return (
         isColumnReference(params.column) &&
@@ -1221,6 +1241,16 @@ export function isTransformStep(value: unknown): value is TransformStep {
     default:
       return false;
   }
+}
+
+export function isExtractStructFieldName(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    !value.includes("\0") &&
+    !/[\r\n]/u.test(value) &&
+    hasAtMostStrictUtf8Bytes(value, 1024)
+  );
 }
 
 export function hasAtMostStrictUtf8Bytes(value: string, maximumBytes: number): boolean {

@@ -19,7 +19,8 @@ const metadata: SessionMetadata = {
     cancel: true,
     exportCsv: true,
     exportParquet: true,
-    notebookInsert: false
+    notebookInsert: false,
+    supportedOperations: operationCatalog.map(({ kind }) => kind)
   },
   shape: { rows: 2, columns: 2 },
   filteredShape: { rows: 2, columns: 2 },
@@ -33,6 +34,73 @@ const metadata: SessionMetadata = {
 
 describe("OperationBuilder", () => {
   afterEach(() => vi.restoreAllMocks());
+
+  it("extracts ordered literal fields with the existing add, move and remove controls", () => {
+    const onPreview = vi.fn();
+    const struct = {
+      id: "c:struct",
+      name: "address",
+      position: 2,
+      rawType: "Struct",
+      type: "struct",
+      nullable: true
+    } as const;
+    render(
+      <OperationBuilder
+        metadata={{ ...metadata, schema: [...metadata.schema, struct] }}
+        filterModel={metadata.filterModel}
+        initialKind="extractStructFields"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+    const parent = screen.getByRole("combobox", { name: "Struct column" });
+    expect(
+      within(parent)
+        .getAllByRole("option")
+        .map((option) => option.textContent)
+    ).toEqual(["address"]);
+    fireEvent.change(screen.getByRole("textbox", { name: "Field 1" }), { target: { value: "^a.*$" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "New column 1" }), { target: { value: " removed " } });
+    fireEvent.click(screen.getByRole("button", { name: "Add field" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Field 2" }), { target: { value: "*" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "New column 2" }), { target: { value: " 城市 " } });
+    const moveUp = screen.getByRole("button", { name: "Move field 2 up" });
+    moveUp.focus();
+    fireEvent.click(moveUp, { detail: 0 });
+    const fields = screen.getByRole("group", { name: "Fields to extract" });
+    expect(fields).toHaveFocus();
+    expect(screen.getByRole("textbox", { name: "Field 1" })).toHaveValue("*");
+    expect(screen.getByRole("textbox", { name: "New column 1" })).toHaveValue(" 城市 ");
+    expect(screen.getByRole("button", { name: "Move field 1 up" })).toBeDisabled();
+    const moveDown = screen.getByRole("button", { name: "Move field 1 down" });
+    moveDown.focus();
+    fireEvent.click(moveDown, { detail: 0 });
+    expect(fields).toHaveFocus();
+    expect(screen.getByRole("textbox", { name: "Field 2" })).toHaveValue("*");
+    expect(screen.getByRole("textbox", { name: "New column 2" })).toHaveValue(" 城市 ");
+    expect(screen.getByRole("button", { name: "Move field 2 down" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Remove field 1" }));
+    expect(screen.getByRole("button", { name: "Remove field 1" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Add field" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Field 2" }), { target: { value: " literal.name " } });
+    fireEvent.change(screen.getByRole("textbox", { name: "New column 2" }), { target: { value: "second" } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledWith(
+      {
+        id: expect.any(String),
+        kind: "extractStructFields",
+        params: {
+          column: { id: struct.id, name: struct.name },
+          fields: [
+            { field: "*", newColumn: " 城市 " },
+            { field: " literal.name ", newColumn: "second" }
+          ]
+        }
+      },
+      undefined
+    );
+  });
 
   it("keeps a date layout while editing and omits it for another target type", () => {
     const onPreview = vi.fn();
@@ -1099,7 +1167,7 @@ describe("OperationBuilder", () => {
     expect(onPreview).toHaveBeenCalledTimes(2);
   });
 
-  it.each(["surviving control", "host"])("does not reclaim %s focus when a sort row is removed", (owner) => {
+  it.each(["surviving control", "host"])("does not reclaim %s focus when sort rows move or are removed", (owner) => {
     const onPreview = vi.fn();
     render(
       <OperationBuilder
@@ -1112,11 +1180,21 @@ describe("OperationBuilder", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Add sort column" }));
     const survivor = screen.getByLabelText("Column 1");
-    const remove = screen.getByRole("button", { name: "Remove sort rule 2" });
-    (owner === "host" ? remove : survivor).focus();
     // Model the host losing focus without replacing the currently active DOM control.
     vi.spyOn(document, "hasFocus").mockReturnValue(owner !== "host");
     const focus = vi.spyOn(HTMLElement.prototype, "focus");
+    const group = screen.getByRole("group", { name: "Sort rules" });
+    for (const label of ["Move sort rule 2 up", "Move sort rule 1 down"]) {
+      const action = screen.getByRole("button", { name: label });
+      (owner === "host" ? action : survivor).focus();
+      focus.mockClear();
+      fireEvent.click(action);
+      // React can restore the existing focused node after moving it; the row action must not claim the group.
+      expect(focus.mock.contexts).not.toContain(group);
+    }
+    const remove = screen.getByRole("button", { name: "Remove sort rule 2" });
+    (owner === "host" ? remove : survivor).focus();
+    focus.mockClear();
     fireEvent.click(remove);
     expect(focus).not.toHaveBeenCalled();
     if (owner === "surviving control") expect(survivor).toHaveFocus();

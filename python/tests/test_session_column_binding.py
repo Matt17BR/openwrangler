@@ -4,6 +4,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, cast
 
+import duckdb
 import pandas as pd
 import polars as pl
 import pytest
@@ -12,6 +13,7 @@ from polars.testing import assert_frame_equal as assert_polars_frame_equal
 from openwrangler_runtime._column_binding import bind_step
 from openwrangler_runtime.engines import EngineError
 from openwrangler_runtime.engines.base import INTERNAL_ROW_ID_PREFIX
+from openwrangler_runtime.export_target import _regular_file_identity
 from openwrangler_runtime.session import SessionManager
 
 
@@ -101,6 +103,98 @@ def test_polars_literal_column_names_survive_session_apply_history_and_generated
         stat.st_size,
         stat.st_mtime_ns,
     )
+
+
+@pytest.mark.parametrize("backend", ["polars", "duckdb"])
+def test_extract_struct_fields_preserves_parent_rows_and_appended_identity_through_history_and_export(
+    tmp_path: Path, backend: str
+) -> None:
+    path = tmp_path / "addresses.parquet"
+    connection = duckdb.connect() if backend == "duckdb" else None
+    manager = SessionManager()
+    try:
+        if connection is None:
+            source = pl.DataFrame(
+                {"address": [{"city": "Rome", "zip": 100}, None, {"city": None, "zip": 200}], "order": [2, 1, 3]}
+            )
+            source.write_parquet(path)
+        else:
+            connection.sql(
+                "SELECT CASE WHEN i = 1 THEN NULL ELSE struct_pack("
+                "city := CASE WHEN i = 0 THEN 'Rome' ELSE NULL END, zip := CASE WHEN i = 0 THEN 100 ELSE 200 END) "
+                'END AS address, CASE WHEN i = 0 THEN 2 WHEN i = 1 THEN 1 ELSE 3 END AS "order" '
+                "FROM range(3) t(i)"
+            ).write_parquet(str(path))
+        original, stat = path.read_bytes(), path.stat()
+        opened = manager.open_session(
+            {"kind": "file", "path": str(path)}, backend=backend, mode="editing", page_size=10
+        )
+        sid, schema = opened["metadata"]["sessionId"], opened["metadata"]["schema"]
+        assert "extractStructFields" in opened["metadata"]["capabilities"]["supportedOperations"]
+        public = step(
+            "address-fields",
+            "extractStructFields",
+            column=ref(schema[0]["id"], "address"),
+            fields=[{"field": "zip", "newColumn": "postal"}, {"field": "city", "newColumn": "city name"}],
+        )
+        preview = manager.preview_step(sid, 0, public, 0, 10)
+        assert manager.sessions[sid].plan == []
+        assert preview["metadata"]["draftStep"] == public
+        applied = manager.apply_draft(sid, preview["revision"], 0, 10)
+        assert applied["metadata"]["schema"][:2] == schema
+        assert [(c["name"], c["id"]) for c in applied["metadata"]["schema"][2:]] == [
+            ("postal", "c:step:address-fields:0"),
+            ("city name", "c:step:address-fields:1"),
+        ]
+        assert [row["id"] for row in applied["page"]["rows"]] == [row["id"] for row in opened["page"]["rows"]]
+        assert [row["values"][:2] for row in applied["page"]["rows"]] == [
+            row["values"] for row in opened["page"]["rows"]
+        ]
+        assert [[v["raw"] for v in row["values"][2:]] for row in applied["page"]["rows"]] == [
+            [100, "Rome"],
+            [None, None],
+            [200, None],
+        ]
+        assert applied["metadata"]["steps"] == [public]
+        assert not contains_private_position(applied["metadata"]["steps"])
+        undone = manager.undo_step(sid, applied["revision"], 0, 10)
+        assert undone["metadata"]["schema"] == schema
+        assert undone["page"] == opened["page"]
+        redone = manager.redo_step(sid, undone["revision"], 0, 10)
+        assert redone["page"] == applied["page"]
+        assert redone["code"] == applied["code"]
+        target = tmp_path / "extracted.parquet"
+        target.touch(exist_ok=False)
+        device, inode = _regular_file_identity(target)
+        manager.export_data(
+            sid, redone["revision"], str(target), {"format": "parquet"}, {"device": str(device), "inode": str(inode)}
+        )
+        namespace: dict[str, Any] = {}
+        exec(redone["code"], namespace)
+        if connection is None:
+            generated = namespace["clean_data"](pl.scan_parquet(path)).collect()
+            assert_polars_frame_equal(pl.read_parquet(target), generated)
+            assert_polars_frame_equal(generated.select("address", "order"), pl.read_parquet(path))
+        else:
+            source_relation = connection.read_parquet(str(path))
+            generated = namespace["clean_data"](source_relation)
+            exported = connection.read_parquet(str(target))
+            assert exported.columns == generated.columns == ["address", "order", "postal", "city name"]
+            assert exported.types == generated.types
+            assert exported.fetchall() == generated.fetchall()
+            assert [row[:2] for row in generated.fetchall()] == source_relation.fetchall()
+        assert path.read_bytes() == original
+        after = path.stat()
+        assert (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) == (
+            stat.st_dev,
+            stat.st_ino,
+            stat.st_size,
+            stat.st_mtime_ns,
+        )
+    finally:
+        manager.close_all()
+        if connection is not None:
+            connection.close()
 
 
 @pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])

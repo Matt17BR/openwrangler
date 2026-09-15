@@ -896,7 +896,7 @@ describe("Fill Missing operation fields", () => {
     );
 
     const input = screen.getByLabelText("Replacement value");
-    expect(screen.getByText("R text replacements can use up to 8,192 UTF-8 bytes.")).toBeInTheDocument();
+    expect(screen.getByText("Use up to 8,192 UTF-8 bytes.")).toBeInTheDocument();
     expect(
       screen.getByText(
         "Character columns stay character. For factor columns, a new value is added as a level and the factor type is kept."
@@ -906,7 +906,7 @@ describe("Fill Missing operation fields", () => {
 
     fireEvent.input(input, { target: { value: "🙂".repeat(3_000) } });
     expect(input).toBeInvalid();
-    expect(input).toHaveAccessibleDescription("R text replacements can use up to 8,192 UTF-8 bytes.");
+    expect(input).toHaveAccessibleDescription("Use up to 8,192 UTF-8 bytes.");
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
     expect(onPreview).not.toHaveBeenCalled();
 

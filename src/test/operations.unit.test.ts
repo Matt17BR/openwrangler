@@ -69,12 +69,25 @@ describe("operation entry-point predicates", () => {
   });
 
   it("narrows operation entry points only when the backend advertises a list", () => {
-    expect(supportedOperationCatalog(undefined)).toBe(operationCatalog);
+    expect(supportedOperationCatalog(undefined)).toEqual(
+      operationCatalog.filter(({ kind }) => kind !== "extractStructFields")
+    );
+    expect(supportsOperation(undefined, "cloneColumn")).toBe(true);
+    expect(supportsOperation(undefined, "extractStructFields")).toBe(false);
+    expect(
+      supportsOperation({ ...renameOnlyCapabilities, supportedOperations: undefined }, "extractStructFields")
+    ).toBe(false);
+    const structCapabilities: SourceCapabilities = {
+      ...renameOnlyCapabilities,
+      supportedOperations: ["extractStructFields"]
+    };
+    expect(supportedOperationCatalog(structCapabilities).map(({ kind }) => kind)).toEqual(["extractStructFields"]);
     expect(supportedOperationCatalog(renameOnlyCapabilities).map((operation) => operation.kind)).toEqual([
       "renameColumn"
     ]);
     expect(supportsOperation(renameOnlyCapabilities, "renameColumn")).toBe(true);
     expect(supportsOperation(renameOnlyCapabilities, "castColumn")).toBe(false);
+    expect(supportsOperation(renameOnlyCapabilities, "extractStructFields")).toBe(false);
     expect(canStartOperation({ mode: "editing", capabilities: renameOnlyCapabilities }, "renameColumn")).toBe(true);
     expect(canStartOperation({ mode: "editing", capabilities: renameOnlyCapabilities }, "castColumn")).toBe(false);
     expect(canEditLatestStep({ mode: "editing", capabilities: renameOnlyCapabilities, steps: [appliedStep] })).toBe(

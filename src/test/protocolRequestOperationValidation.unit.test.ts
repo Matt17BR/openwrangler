@@ -11,6 +11,80 @@ import {
 import { otherReference, requests, validateTransportSchema, valueReference } from "./protocolValidation.fixtures";
 
 describe("protocol-v4 operation request validation", () => {
+  it("admits bounded literal Struct field pairs without normalizing names", () => {
+    const step = {
+      id: "fields",
+      kind: "extractStructFields",
+      params: {
+        column: valueReference,
+        fields: [
+          { field: " ^a.*$ ", newColumn: "城市" },
+          { field: "*", newColumn: " literal.name " }
+        ]
+      }
+    };
+    expect(isTransformStep(step)).toBe(true);
+    expect(
+      isOpenWranglerRequest({
+        kind: "previewStep",
+        sessionId: "s",
+        revision: 0,
+        offset: 0,
+        limit: 1,
+        columnOffset: 0,
+        columnLimit: 1,
+        step
+      })
+    ).toBe(true);
+    const withFields = (fields: unknown) => ({ ...step, params: { ...step.params, fields } });
+    const schemaAdmission = (step: unknown) =>
+      validateTransportSchema({
+        protocolVersion: 4,
+        requestId: "fields",
+        priority: "interactive",
+        request: {
+          kind: "previewStep",
+          sessionId: "s",
+          revision: 0,
+          offset: 0,
+          limit: 1,
+          columnOffset: 0,
+          columnLimit: 1,
+          step
+        }
+      });
+    expect(schemaAdmission(step)).toBe(true);
+    expect(
+      isTransformStep(
+        withFields(Array.from({ length: 64 }, (_, index) => ({ field: `f${index}`, newColumn: `o${index}` })))
+      )
+    ).toBe(true);
+    for (const fields of [
+      [],
+      Array.from({ length: 65 }, (_, index) => ({ field: `f${index}`, newColumn: `o${index}` })),
+      [{ field: "a", newColumn: "a", extra: true }],
+      [{ field: "a" }],
+      [
+        { field: "a", newColumn: "x" },
+        { field: "a", newColumn: "y" }
+      ],
+      [
+        { field: "a", newColumn: "x" },
+        { field: "b", newColumn: "x" }
+      ]
+    ]) {
+      expect(isTransformStep(withFields(fields))).toBe(false);
+    }
+    for (const name of ["", "a\r", "a\n", "a\u0000", "\ud800", "😀".repeat(256) + "x"]) {
+      expect(isTransformStep(withFields([{ field: name, newColumn: "out" }]))).toBe(false);
+      expect(isTransformStep(withFields([{ field: "in", newColumn: name }]))).toBe(false);
+      expect(schemaAdmission(withFields([{ field: name, newColumn: "out" }]))).toBe(false);
+    }
+    expect(isTransformStep(withFields([{ field: "😀".repeat(256), newColumn: " " }]))).toBe(true);
+    expect(schemaAdmission(withFields([{ field: "😀".repeat(256), newColumn: " " }]))).toBe(true);
+    expect(isTransformStep({ ...step, params: { ...step.params, extra: true } })).toBe(false);
+  });
+
   it("accepts fixed input date formats only for Datetime conversion", () => {
     const admission = (params: unknown) => {
       const step = { id: "cast", kind: "castColumn", params };

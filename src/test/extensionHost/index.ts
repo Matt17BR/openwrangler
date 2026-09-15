@@ -47,7 +47,7 @@ import {
   OPEN_WRANGLER_MIME_V2,
   type NotebookOutputPayload
 } from "../../shared/notebookOutput";
-import { operationKinds as RELEASED_R_SUPPORTED_OPERATIONS } from "../../shared/operationCatalog.generated";
+import { R_BRIDGE_CAPABILITIES } from "../../extension/r/rKernelBridgeContract";
 import type {
   ColumnReference,
   GridPage,
@@ -298,6 +298,7 @@ interface FakeJupyterApi {
 
 const DUCKDB_FOREIGN_ENGINE_CONVERSION =
   /\b(?:pandas|polars|pyarrow)\b|(?:to|from)_(?:pandas|polars|arrow)\b|fetch_(?:df|pandas|arrow)\b|\.(?:arrow|df|pl)\s*\(/iu;
+const RELEASED_R_SUPPORTED_OPERATIONS = R_BRIDGE_CAPABILITIES.supportedOperations!;
 const GRID_COLUMN_WINDOW = { columnOffset: 0, columnLimit: 16 } as const;
 const SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS = DEFAULT_SESSION_OPEN_TIMEOUT_MS + 15_000;
 const QUEUED_RUNTIME_MUTATION_ACCEPTANCE_TIMEOUT_MS = DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS * 2 + 15_000;
