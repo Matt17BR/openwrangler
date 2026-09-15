@@ -175,7 +175,7 @@ The [reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/referenc
 Browse the [product gallery](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md) and
 [accessibility and keyboard guide](https://github.com/Matt17BR/openwrangler/blob/main/docs/accessibility.md).
 The [product roadmap](https://github.com/Matt17BR/openwrangler/blob/main/docs/product-roadmap.md) tracks unscheduled
-proposals such as list-column expansion, column mapping when reusing a plan, and DuckDB notebook cleaning.
+proposals such as column mapping when reusing a plan, DuckDB notebook cleaning, and two-input workflows.
 For contributions, see [CONTRIBUTING.md](https://github.com/Matt17BR/openwrangler/blob/main/CONTRIBUTING.md).
 Report bugs in [GitHub Issues](https://github.com/Matt17BR/openwrangler/issues), or follow
 [SECURITY.md](https://github.com/Matt17BR/openwrangler/blob/main/SECURITY.md) for vulnerability reports.

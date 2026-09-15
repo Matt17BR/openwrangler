@@ -694,8 +694,11 @@ exports remain unavailable for database tables; references to DuckDB file editin
 Computed columns keep their native expressions and can change between queries. No immutable snapshot is promised.
 If a page extends beyond its reported row total, it is refused while the previous view is retained. Use stable inputs
 for repeatable filtering and counts; other differences between volatile evaluations may not be detected.
-Current and minimum native owners cover exact table selection, WAL preservation, writer/viewer conflicts and cleanup;
-the command and full database workflow still need installed cross-platform qualification.
+Current and minimum native owners cover exact table selection, WAL preservation, writer/viewer conflicts and cleanup.
+A focused Linux check observed private disk spill during an integer sort on both native versions with a reduced
+query-memory allowance. Other memory-limited queries can still fail; see the
+[database qualification scope](https://github.com/Matt17BR/openwrangler/issues/1387). The command and full database
+workflow still need installed cross-platform qualification.
 
 ## PySpark live-notebook viewing
 
