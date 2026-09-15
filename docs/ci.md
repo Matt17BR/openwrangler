@@ -219,7 +219,8 @@ Released-Jupyter R editor runs use the [notebook/tooling package selection](test
 resolved by their existing journey. Private package-version checks precede editor launch; notebook and literate
 journeys also require IRkernel readiness. The terminal journey retains native R executable and private library checks
 without creating an unrelated kernel or requiring host Python and the Jupyter extension.
-The macOS job supplies system ZeroMQ through Homebrew as described in that dependency section.
+The macOS job supplies system ZeroMQ through Homebrew and uses the qualified collapse binary for its selected R tuple,
+as described in that dependency section.
 The focused terminal lane uses the pinned R extensions; Quarto extension and CLI qualification remains with the
 literate-documents lane.
 
