@@ -48,7 +48,7 @@ def _global_references(source: str) -> frozenset[str]:
     return frozenset(references)
 
 
-@lru_cache(maxsize=2)
+@lru_cache(maxsize=3)
 def _helper_catalog(source: str) -> tuple[tuple[str, tuple[str, ...], frozenset[str]], ...]:
     module = ast.parse(source, filename=_HELPER_FILENAME, mode="exec")
     definitions: set[str] = set()
