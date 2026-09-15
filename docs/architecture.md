@@ -1710,6 +1710,10 @@ cached variable list. Opening a selection rechecks that receipt and gives the ne
 the runtime session is confirmed. Refreshing the list cannot retire an already opened session, and a stale selection
 cannot bootstrap or execute against a replacement kernel.
 
+Host-injected Python helpers use a private execution dictionary. Discovery reads the original notebook namespace,
+and cell-result inspection reads its IPython history. Helper imports, payloads and temporary results do not replace
+or remove user bindings, including when bootstrap or a runtime request fails.
+
 Python bootstrap imports the bundled source into a fresh private directory and retains that directory for the
 loaded package lifetime. Reuse requires the exact source digest, the original private directory and matching
 locations for every loaded runtime module. Older, partial or mixed runtime imports require a user-directed kernel

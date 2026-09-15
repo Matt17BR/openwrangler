@@ -526,6 +526,10 @@ Kernel bridge and variable-discovery tests cover notebook preflight byte, output
 expansion, exact document replacement, fixed errors and execution settlement after cancellation or a host deadline.
 Actual generated Python controls check quiet and noisy notebook-open paths before runtime dispatch.
 
+The existing bridge, bootstrap, discovery and executed-cell tests run emitted Python to check that helpers preserve
+user bindings. Positive discovery and cell-result controls also verify that private execution retains access to the
+original notebook namespace and history.
+
 The notebook formatter's wide-capture case retains a 501-column, 200-row source and uses a local 1,000-cell cap to
 exercise full-width capture and row truncation. Dimension-budget tests retain production-limit checks and smaller
 native boundary cases.

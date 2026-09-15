@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import * as vscode from "vscode";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -33,14 +34,67 @@ describe("executed notebook cell results", () => {
   it("builds an Out lookup without rerunning cell source or changing execution history", () => {
     const code = buildNotebookCellResultCode(marker, 17, sourceFingerprint);
 
-    expect(code).toContain('__ow_cell_namespace.get("Out")');
-    expect(code).toContain('getattr(__ow_cell_history_manager, "input_hist_raw", None)');
-    expect(code).toContain(`__ow_cell_source_hash != "${sourceFingerprint}"`);
-    expect(code).toContain("17 not in __ow_cell_history");
-    expect(code).toContain("__ow_cell_history[17]");
-    expect(code).toContain("link_live_result");
-    expect(code).not.toContain("run_cell");
-    expect(code).not.toContain("execution_count");
+    const result = spawnSync(process.env.OPEN_WRANGLER_TEST_PYTHON ?? "python3", ["-I", "-"], {
+      encoding: "utf8",
+      input: `
+import builtins, contextlib, io, json, sys, types
+source = object()
+inputs = [""] * 17 + [${JSON.stringify(source)}]
+history = {17: source}
+shell = types.SimpleNamespace(user_ns={"Out": history}, history_manager=types.SimpleNamespace(input_hist_raw=inputs), execution_count=18)
+links = []
+package = types.ModuleType("openwrangler_runtime")
+notebook = types.ModuleType("openwrangler_runtime.notebook")
+def link(value, originating_shell):
+    assert value is source and originating_shell is shell
+    links.append(value)
+    return {"protocolVersion": 1, "backend": "polars", "label": "DataFrame", "variableName": "__openwrangler_live_result_0123456789abcdef0123456789abcdef"}
+notebook.link_live_result = link
+package.notebook = notebook
+sys.modules[package.__name__] = package
+sys.modules[notebook.__name__] = notebook
+sentinels = {name: object() for name in ("__ow_cell_hashlib", "__ow_cell_json", "__ow_cell_notebook", "__ow_cell_shell", "__ow_cell_namespace", "__ow_cell_history", "__ow_cell_history_manager", "__ow_cell_inputs", "__ow_cell_source", "__ow_cell_source_hash", "__ow_cell_result", "__ow_cell_link")}
+def wrong_shell():
+    raise AssertionError("cell capture ignored the shadowing user get_ipython")
+for reason, lookup, seeded in ((None, "global", True), ("missing", "global", True), ("stale", "global", True), ("unsupported", "global", True), (None, "builtin", True), (None, "global", False)):
+    builtins.get_ipython = (lambda: shell) if lookup == "builtin" else wrong_shell
+    namespace = {**(sentinels if seeded else {}), "__builtins__": builtins}
+    if lookup == "global":
+        namespace["get_ipython"] = lambda: shell
+    original = dict(namespace)
+    notebook.link_live_result = link
+    history.clear()
+    if reason != "missing":
+        history[17] = source
+    inputs[17] = "changed source" if reason == "stale" else ${JSON.stringify(source)}
+    if reason == "unsupported":
+        def refuse(value, originating_shell):
+            raise ValueError("synthetic unsupported value")
+        notebook.link_live_result = refuse
+    before_inputs, before_history = list(inputs), dict(history)
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        exec(${JSON.stringify(code)}, namespace)
+    lines = output.getvalue().splitlines()
+    assert lines[0] == "__OPEN_WRANGLER_CELL_RESULT_START_${marker}__"
+    assert lines[2] == "__OPEN_WRANGLER_CELL_RESULT_END_${marker}__"
+    result = json.loads(lines[1])
+    if reason is None:
+        assert result == {"ok": True, "protocolVersion": 1, "backend": "polars", "label": "DataFrame", "variableName": "__openwrangler_live_result_0123456789abcdef0123456789abcdef"}
+    else:
+        assert result == {"ok": False, "protocolVersion": 1, "reason": reason}
+    assert namespace.keys() == original.keys() and all(namespace[name] is value for name, value in original.items()), "cell helpers changed user bindings"
+    assert inputs == before_inputs and history == before_history and shell.execution_count == 18
+assert links == [source, source, source]
+`,
+      maxBuffer: 128 * 1024,
+      timeout: 30_000,
+      windowsHide: true
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.signal).toBeNull();
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
     expect(() => buildNotebookCellResultCode(marker, 0, sourceFingerprint)).toThrow("positive safe integer");
     expect(() => buildNotebookCellResultCode(marker, 17, "invalid")).toThrow("64 lowercase hexadecimal");
     expect(fingerprintNotebookCellSource("a\r\nb\r")).toBe(fingerprintNotebookCellSource("a\nb\n"));

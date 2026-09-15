@@ -14,6 +14,7 @@ import {
   withKernelSessionIdentity
 } from "../extension/notebooks/kernelBridge";
 import { DetachedBridgeRequestError } from "../extension/dataBridge";
+import * as kernelRuntimeBundle from "../extension/notebooks/kernelRuntimeBundle";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
 import { KernelGenerationBinding } from "../extension/notebooks/kernelLifecycle";
 import type {
@@ -37,6 +38,7 @@ import {
   initializeRequest,
   initializedResponse,
   kernelExecution,
+  kernelPythonSource,
   malformedPySparkPreflightExecution,
   mockKernel,
   notebookDocument,
@@ -321,7 +323,7 @@ describe("verified kernel bootstrap acknowledgment", () => {
             let text = "";
             for await (const item of bootstrapKernelExecution(code)) text += (item as { text: string }).text;
             const nonce = code.match(/__OPEN_WRANGLER_BOOTSTRAP_START_([a-f0-9]{32})__/u)![1];
-            const digest = code.match(/expected_id = "([a-f0-9]{64})"/u)![1];
+            const digest = kernelPythonSource(code).match(/expected_id = "([a-f0-9]{64})"/u)![1];
             switch (corruption) {
               case "missing":
                 text = "";
@@ -1481,35 +1483,131 @@ sys.modules["openwrangler_runtime.notebook"] = notebook_module`
     expect(getExtension).toHaveBeenCalledOnce();
   });
 
-  it("ends formatter preparation without an expression that can replace the current IPython output", async () => {
+  it("prepares formatters without replacing user bindings or producing a display value", async () => {
+    vi.spyOn(kernelRuntimeBundle, "readRuntimeFiles").mockReturnValue({
+      "openwrangler_runtime/__init__.py": "",
+      "openwrangler_runtime/kernel_agent.py": "manager = object()\n",
+      "openwrangler_runtime/notebook.py":
+        "handles = {'frame': object()}\ncalls = 0\ndef register_formatters():\n    global calls\n    calls += 1\n"
+    });
     let formatterBootstrap = "";
     const controller = controllableKernel((code) => {
       formatterBootstrap = code;
       return bootstrapKernelExecution(code);
     });
     mockKernel(controller.kernel);
-
     await createKernelBridge().prepareNotebookFormatter();
-
     expect(formatterBootstrap).not.toBe("");
     const result = spawnSync(process.env.OPEN_WRANGLER_TEST_PYTHON ?? "python3", ["-I", "-"], {
       encoding: "utf8",
       input: `
-import ast
-
-tree = ast.parse(${JSON.stringify(formatterBootstrap)})
-if not tree.body:
-    raise AssertionError("Formatter preparation was empty.")
-if isinstance(tree.body[-1], ast.Expr):
-    raise AssertionError("Formatter preparation can replace the current IPython output.")
+import ast, builtins, contextlib, io, json, os, pathlib, sys, tempfile
+code = ${JSON.stringify(formatterBootstrap)}
+with tempfile.TemporaryDirectory(prefix="ow-formatter-scope-") as fixture:
+    parent = pathlib.Path(fixture) / "Temp"
+    parent.mkdir(mode=0o700)
+    os.environ["LOCALAPPDATA"] = fixture
+    tempfile.tempdir = str(parent)
+    try:
+        source = object()
+        history = {17: source}
+        sentinels = {name: object() for name in ("__ow_bootstrap_runtime", "__ow_bootstrap_status", "__ow_bootstrap_json")}
+        retained = None
+        for builtin_namespace, seeded in ((builtins, True), (builtins.__dict__, True), (builtins, False)):
+            namespace = {**(sentinels if seeded else {}), "source": source, "Out": history, "__builtins__": builtin_namespace}
+            original = dict(namespace)
+            tree = ast.parse(code)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                if isinstance(tree.body[-1], ast.Expr):
+                    exec(compile(ast.Module(body=tree.body[:-1], type_ignores=[]), "<formatter-prefix>", "exec"), namespace)
+                    value = eval(compile(ast.Expression(tree.body[-1].value), "<formatter-result>", "eval"), namespace)
+                else:
+                    value = exec(compile(tree, "<formatter>", "exec"), namespace)
+            assert value is None, "formatter preparation produced a display value"
+            assert json.loads(output.getvalue().splitlines()[1])["status"] == "ready"
+            assert namespace.keys() == original.keys() and all(namespace[name] is value for name, value in original.items()), "formatter helpers changed user bindings"
+            assert namespace["source"] is source and namespace["Out"] is history and history == {17: source}
+            owner = sys.modules["openwrangler_runtime"]
+            current = (owner.__openwrangler_bundle_provenance__, sys.modules["openwrangler_runtime.kernel_agent"].manager, sys.modules["openwrangler_runtime.notebook"].handles["frame"])
+            if retained is None:
+                retained = current
+            else:
+                assert all(value is previous for value, previous in zip(current, retained))
+        assert sys.modules["openwrangler_runtime.notebook"].calls == 3
+    finally:
+        owner = sys.modules.get("openwrangler_runtime")
+        if owner is not None:
+            owner.__openwrangler_bundle_provenance__[1].cleanup()
 `,
       maxBuffer: 128 * 1024,
       timeout: 30_000,
       windowsHide: true
     });
-    if (result.error || result.signal !== null || result.status !== 0) {
-      throw new Error(`Formatter preparation syntax check failed: ${result.error ?? result.signal ?? result.stderr}`);
-    }
+    expect(result.error).toBeUndefined();
+    expect(result.signal).toBeNull();
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+  });
+
+  it("preserves user bindings through framed request success and refusal", async () => {
+    const programs: string[] = [];
+    const controller = controllableKernel((code) => {
+      if (code.includes("__ow_payload =")) programs.push(code);
+      return kernelExecution(code, () => initializedResponse);
+    });
+    mockKernel(controller.kernel);
+    const bridge = createKernelBridge();
+    await bridge.request(initializeRequest());
+    expect(programs).toHaveLength(1);
+    const result = spawnSync(process.env.OPEN_WRANGLER_TEST_PYTHON ?? "python3", ["-I", "-"], {
+      encoding: "utf8",
+      input: `
+import builtins, contextlib, io, json, sys, types
+source = object()
+package = types.ModuleType("openwrangler_runtime")
+agent = types.ModuleType("openwrangler_runtime.kernel_agent")
+package.kernel_agent = agent
+sys.modules[package.__name__] = package
+sys.modules[agent.__name__] = agent
+sentinels = {name: object() for name in ("__ow_base64", "__ow_kernel_agent", "__ow_payload", "__ow_response")}
+for outcome in ("success", "refusal", "exception", "absent"):
+    namespace = {**(sentinels if outcome != "absent" else {}), "source": source, "__builtins__": builtins}
+    original = dict(namespace)
+    def dispatch(payload):
+        request = json.loads(payload)
+        assert request["request"]["kind"] == "initialize"
+        if outcome == "exception":
+            raise RuntimeError("synthetic dispatch failure")
+        return json.dumps({"protocolVersion": 4, "requestId": request["requestId"], "response": {"kind": "error" if outcome == "refusal" else "initialized"}})
+    agent.dispatch_json = dispatch
+    output = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(output):
+            exec(${JSON.stringify(programs[0])}, namespace)
+        assert outcome != "exception", "expected dispatch failure"
+    except RuntimeError as error:
+        assert outcome == "exception" and str(error) == "synthetic dispatch failure"
+    lines = output.getvalue().splitlines()
+    if outcome == "exception":
+        assert lines == []
+    else:
+        response = json.loads(lines[1])
+        marker = response["requestId"].replace("-", "")
+        assert lines[0] == "__OPEN_WRANGLER_START_" + marker + "__"
+        assert lines[2] == "__OPEN_WRANGLER_END_" + marker + "__"
+        assert response["response"]["kind"] == ("error" if outcome == "refusal" else "initialized")
+    assert namespace.keys() == original.keys() and all(namespace[name] is value for name, value in original.items()), "request helpers changed user bindings"
+    assert namespace["source"] is source and "get_ipython" not in namespace
+`,
+      maxBuffer: 128 * 1024,
+      timeout: 30_000,
+      windowsHide: true
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.signal).toBeNull();
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
   });
 
   it("allows a timed-out formatter retry only after the exact observed kernel generation changes", async () => {
@@ -2601,7 +2699,7 @@ it.each(["undoStep", "getPage"] as const)(
   async (kind) => {
     const envelopes: RuntimeRequestEnvelope[] = [];
     const controller = controllableKernel((code) => {
-      const payload = code.match(/__ow_payload = __ow_base64\.b64decode\("([A-Za-z0-9+/=]+)"\)/);
+      const payload = kernelPythonSource(code).match(/__ow_payload = __ow_base64\.b64decode\("([A-Za-z0-9+/=]+)"\)/);
       if (payload)
         envelopes.push(JSON.parse(Buffer.from(payload[1], "base64").toString("utf8")) as RuntimeRequestEnvelope);
       return kernelExecution(code, (request) =>

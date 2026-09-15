@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionCoordinator } from "../extension/sessionCoordinator";
 import {
@@ -907,6 +908,40 @@ describe("notebook variable discovery", () => {
     expect(code).not.toContain(".collect(");
     expect(code).not.toMatch(/import (pandas|polars|pyspark|duckdb)/);
     expect(code).toContain("if __ow_scanned > 4096:");
+    const result = spawnSync(process.env.OPEN_WRANGLER_TEST_PYTHON ?? "python3", ["-I", "-"], {
+      encoding: "utf8",
+      input: `
+import builtins, contextlib, io, json, sys, types
+module = types.ModuleType("polars.dataframe.frame")
+class DataFrame:
+    __module__ = "polars.dataframe.frame"
+    def __getattribute__(self, name):
+        raise AssertionError("discovery accessed source data")
+module.DataFrame = DataFrame
+sys.modules[module.__name__] = module
+source = DataFrame()
+sentinels = {name: object() for name in ("__ow_discover_variables_v1", "__ow_discovery_result_v1")}
+for seeded in (True, False):
+    namespace = {**(sentinels if seeded else {}), "frame": source, "__builtins__": builtins}
+    original = dict(namespace)
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        exec(${JSON.stringify(code)}, namespace)
+    lines = output.getvalue().splitlines()
+    assert lines[0] == "__OPEN_WRANGLER_VARIABLES_START_0123456789abcdef0123456789abcdef__"
+    assert lines[2] == "__OPEN_WRANGLER_VARIABLES_END_0123456789abcdef0123456789abcdef__"
+    assert json.loads(lines[1]) == {"protocolVersion": 1, "truncated": False, "variables": [{"name": "frame", "type": "polars.dataframe.frame.DataFrame", "backend": "polars"}]}
+    assert namespace.keys() == original.keys() and all(namespace[name] is value for name, value in original.items()), "discovery helpers changed user bindings"
+    assert namespace["frame"] is source and "get_ipython" not in namespace
+`,
+      maxBuffer: 128 * 1024,
+      timeout: 30_000,
+      windowsHide: true
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.signal).toBeNull();
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
   });
 
   it("builds an isolated PySpark preflight without evaluating dataframe contents", () => {
@@ -931,9 +966,39 @@ describe("notebook variable discovery", () => {
     });
 
     const pinnedCode = buildPySparkNotebookPreflightCode(marker, "spark_frame", "pyspark");
-    expect(pinnedCode.indexOf('__ow_module = __ow_sys.modules.get("pyspark")')).toBeLessThan(
-      pinnedCode.indexOf("__ow_user_ns.get")
-    );
+    const result = spawnSync(process.env.OPEN_WRANGLER_TEST_PYTHON ?? "python3", ["-I", "-"], {
+      encoding: "utf8",
+      input: `
+import builtins, contextlib, io, json, sys, types
+pyspark = types.ModuleType("pyspark")
+pyspark.__version__ = "4.1.3"
+sys.modules["pyspark"] = pyspark
+class Namespace(dict):
+    def get(self, name, default=None):
+        if name == "spark_frame":
+            raise AssertionError("unsupported pinned preflight accessed selected source")
+        return super().get(name, default)
+notebook = types.ModuleType("openwrangler_runtime.notebook")
+def refuse_handle(*args):
+    raise AssertionError("unsupported pinned preflight resolved a live handle")
+notebook.is_live_result_handle = refuse_handle
+notebook.resolve_live_result = refuse_handle
+sys.modules[notebook.__name__] = notebook
+namespace = Namespace(__builtins__=builtins)
+output = io.StringIO()
+with contextlib.redirect_stdout(output):
+    exec(${JSON.stringify(pinnedCode)}, namespace)
+assert json.loads(output.getvalue().splitlines()[1]) == {"isPySpark": True, "protocolVersion": 1, "version": "4.1.3"}
+assert "get_ipython" not in namespace
+`,
+      maxBuffer: 128 * 1024,
+      timeout: 30_000,
+      windowsHide: true
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.signal).toBeNull();
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
   });
 
   it("fails closed on malformed PySpark version-probe envelopes", () => {
