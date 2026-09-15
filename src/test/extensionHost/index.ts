@@ -29,7 +29,8 @@ import {
   type Locator,
   type Page,
   type Request,
-  type Response
+  type Response,
+  type WebError
 } from "playwright-core";
 import type { Jupyter, JupyterServerCollection } from "@vscode/jupyter-extension";
 import type { PythonExtension } from "@vscode/python-extension";
@@ -3498,6 +3499,14 @@ async function exerciseReleasedJupyterExtension(
     }
   } catch (error) {
     failureCheckpoint = failedAcceptanceProgressCheckpoint(phase, lastAcceptanceProgressCheckpoint);
+    if (
+      error instanceof Error &&
+      /^Timed out waiting for [^\n]+ in the released Jupyter Variables view:/u.test(error.message)
+    ) {
+      error.stack = `${error.stack ?? error.message}\nJupyter Variables script loading: ${JSON.stringify(
+        rendererLoadObserver?.variableViewSnapshot() ?? null
+      )}`;
+    }
     throw error;
   } finally {
     try {
@@ -5020,7 +5029,21 @@ async function releasedWorkbenchDiagnostics(
                     ? await frame
                         .evaluate((limit) => {
                           type ContentDocument = {
-                            querySelector(selector: string): unknown;
+                            readyState?: string;
+                            defaultView?: {
+                              performance: {
+                                getEntriesByName(
+                                  name: string,
+                                  type: string
+                                ): Array<{
+                                  startTime: number;
+                                  duration: number;
+                                  responseEnd: number;
+                                  responseStatus?: number;
+                                }>;
+                              };
+                            } | null;
+                            querySelector(selector: string): { src?: string } | null;
                             querySelectorAll(selector: string): ArrayLike<{ contentDocument: ContentDocument | null }>;
                           };
                           const outer = (globalThis as unknown as { document: ContentDocument }).document;
@@ -5035,13 +5058,45 @@ async function releasedWorkbenchDiagnostics(
                                   const document = children[0]!.contentDocument;
                                   return document
                                     ? {
+                                        readyState: ["loading", "interactive", "complete"].includes(
+                                          document.readyState ?? ""
+                                        )
+                                          ? document.readyState
+                                          : null,
                                         rootPresent: Boolean(document.querySelector("#root")),
                                         variableViewScriptPresent: Boolean(
                                           document.querySelector('script[src$="/variableView.js"]')
                                         ),
                                         variablesDocumentPresent: Boolean(
                                           document.querySelector("#variable-view-main-panel")
-                                        )
+                                        ),
+                                        variableViewResources: (() => {
+                                          try {
+                                            const script = document.querySelector('script[src$="/variableView.js"]');
+                                            if (!script?.src || !document.defaultView) return null;
+                                            const boundedTime = (value: number): number | null =>
+                                              Number.isFinite(value) && value >= 0
+                                                ? Math.min(3_600_000, Math.round(value))
+                                                : null;
+                                            return document.defaultView.performance
+                                              .getEntriesByName(script.src, "resource")
+                                              .slice(-4)
+                                              .map((entry) => ({
+                                                startTimeMs: boundedTime(entry.startTime),
+                                                durationMs: boundedTime(entry.duration),
+                                                responseEndMs: boundedTime(entry.responseEnd),
+                                                status:
+                                                  typeof entry.responseStatus === "number" &&
+                                                  Number.isInteger(entry.responseStatus) &&
+                                                  entry.responseStatus >= 0 &&
+                                                  entry.responseStatus <= 599
+                                                    ? entry.responseStatus
+                                                    : null
+                                              }));
+                                          } catch {
+                                            return null;
+                                          }
+                                        })()
                                       }
                                     : null;
                                 } catch {
@@ -15422,7 +15477,19 @@ interface NotebookRendererLoadSnapshot {
 
 interface NotebookRendererLoadObserver {
   snapshot(): NotebookRendererLoadSnapshot;
+  variableViewSnapshot(): readonly JupyterVariableLoadEvent[];
   dispose(): void;
+}
+
+interface JupyterVariableLoadEvent {
+  readonly ordinal: number;
+  readonly elapsedMs: number;
+  readonly kind: "response" | "requestfinished" | "requestfailed" | "weberror";
+  readonly script: "variableView" | "other" | "unavailable";
+  readonly status?: number;
+  readonly errorClass?: string;
+  readonly line?: number | null;
+  readonly column?: number | null;
 }
 
 interface NotebookRendererButton {
@@ -15459,6 +15526,61 @@ async function activateNotebookRendererButtonOnce(
 }
 
 function observeNotebookRendererLoad(workbench: Page): NotebookRendererLoadObserver {
+  const context = workbench.context();
+  const startedAt = performance.now();
+  const variableViewEvents: JupyterVariableLoadEvent[] = [];
+  let variableViewEventOrdinal = 0;
+  const recordVariableViewEvent = (event: Omit<JupyterVariableLoadEvent, "ordinal" | "elapsedMs">): void => {
+    variableViewEvents.push({
+      ordinal: ++variableViewEventOrdinal,
+      elapsedMs: Math.min(3_600_000, Math.max(0, Math.round(performance.now() - startedAt))),
+      ...event
+    });
+    if (variableViewEvents.length > 12) variableViewEvents.shift();
+  };
+  const isVariableViewScript = (url: string): boolean => {
+    try {
+      return new URL(url).pathname.endsWith("/variableView.js");
+    } catch {
+      return false;
+    }
+  };
+  const onVariableViewResponse = (response: Response): void => {
+    if (isVariableViewScript(response.url())) {
+      recordVariableViewEvent({ kind: "response", script: "variableView", status: response.status() });
+    }
+  };
+  const onVariableViewFinished = (request: Request): void => {
+    if (isVariableViewScript(request.url()))
+      recordVariableViewEvent({ kind: "requestfinished", script: "variableView" });
+  };
+  const onVariableViewFailed = (request: Request): void => {
+    if (isVariableViewScript(request.url())) recordVariableViewEvent({ kind: "requestfailed", script: "variableView" });
+  };
+  const onWebError = (error: WebError): void => {
+    const location = error.location();
+    const name = error.error().name;
+    const coordinate = (value: number): number | null =>
+      Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000 ? value : null;
+    recordVariableViewEvent({
+      kind: "weberror",
+      script: location.url ? (isVariableViewScript(location.url) ? "variableView" : "other") : "unavailable",
+      errorClass: [
+        "Error",
+        "EvalError",
+        "RangeError",
+        "ReferenceError",
+        "SyntaxError",
+        "TypeError",
+        "URIError",
+        "AggregateError"
+      ].includes(name)
+        ? name
+        : "other",
+      line: coordinate(location.line),
+      column: coordinate(location.column)
+    });
+  };
   const rendererResponses: number[] = [];
   const rendererRequestFailures: string[] = [];
   const pageErrors: string[] = [];
@@ -15493,6 +15615,10 @@ function observeNotebookRendererLoad(workbench: Page): NotebookRendererLoadObser
   workbench.on("requestfailed", onRequestFailed);
   workbench.on("pageerror", onPageError);
   workbench.on("console", onConsole);
+  context.on("response", onVariableViewResponse);
+  context.on("requestfinished", onVariableViewFinished);
+  context.on("requestfailed", onVariableViewFailed);
+  context.on("weberror", onWebError);
   return {
     snapshot: () => ({
       rendererResponses: [...rendererResponses],
@@ -15500,11 +15626,16 @@ function observeNotebookRendererLoad(workbench: Page): NotebookRendererLoadObser
       pageErrors: [...pageErrors],
       consoleErrors: [...consoleErrors]
     }),
+    variableViewSnapshot: () => [...variableViewEvents],
     dispose: () => {
       workbench.off("response", onResponse);
       workbench.off("requestfailed", onRequestFailed);
       workbench.off("pageerror", onPageError);
       workbench.off("console", onConsole);
+      context.off("response", onVariableViewResponse);
+      context.off("requestfinished", onVariableViewFinished);
+      context.off("requestfailed", onVariableViewFailed);
+      context.off("weberror", onWebError);
     }
   };
 }

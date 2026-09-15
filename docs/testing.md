@@ -408,6 +408,13 @@ After editor and display ownership and private-root identity are verified, a fai
 - A paths, types, and sizes-only profile manifest.
 - Structured failure metadata.
 
+Released-Jupyter Variables timeouts include the last 12 script-load or uncaught-error observations from the captured
+browser context: event order and relative time, `variableView.js` response status and completion/failure, or a standard
+error class with script category and numeric location. Added records contain no messages, stacks or URLs. The current
+content-document read also reports readiness and up to four timings for its exact Variables script; unavailable reads
+remain null. Timing values are capped at one hour. Context events can belong to an earlier Variables document and do not
+prove that the current script executed or React mounted. These passive diagnostics do not change actions or deadlines.
+
 The R collapse-frame journey records notebook display, toolbar selection submission and session-open completion
 separately. Failure metadata reports the last stage reached when progress is read after shutdown. During the R editor
 phase, the existing progress poll also logs changed, allowlisted fixture milestones with elapsed time from phase
