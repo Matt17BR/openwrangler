@@ -11,9 +11,9 @@ Every pull request reports the same five required product checks:
 - **Python runtime contracts** runs Ruff, Pyright, and Pytest with the declared Python dependencies. Native PySpark
   checks follow the narrow local-engine omission below.
 - **Native R frame, kernel, and transport contracts** installs the R 4.5 lock on two Linux workers: one runs frame,
-  catalog and transport checks, and the other runs the kernel-agent checks, subject to the renderer omission below.
+  catalog and transport checks, and the other runs the kernel-agent checks, subject to the source omission below.
   It also requires the existing macOS and Windows jobs unless the change is proved independent of R.
-  Their numeric source checks follow the renderer omission; their installed notebook journeys follow the
+  Their numeric source checks follow the source omission; their installed notebook journeys follow the
   narrower source-test omission below.
 - **Packaged VS Code smoke** builds and verifies one VSIX, then opens those exact bytes with the `platform-smoke` /
   `daily-core` selector in the declared minimum VS Code 1.106.0 and current stable VS Code, subject to the
@@ -91,8 +91,9 @@ Required-document, generated-reference and release-document checks still run and
   Both platform R jobs still run their cleanup, package and installed-editor checks.
 - The same Python, Linux R source, platform numeric source and Windows source omissions apply to modifications of
   the existing `src/extension/nativeViews.ts`, `src/extension/nativeViewsExportOptions.ts`,
-  `src/test/nativeViewStateCommands.unit.test.ts` and `src/test/nativeViewExportCommands.unit.test.ts` files,
-  alone or with other edits eligible for those omissions. Additions, deletions, renames, mode changes and other host
+  `src/test/nativeViewStateCommands.unit.test.ts`, `src/test/nativeViewExportCommands.unit.test.ts`,
+  `src/extension/files/importOptions.ts`, `src/test/importOptions.unit.test.ts` and
+  `src/test/webviewPanel.unit.test.ts` files, alone or with other edits eligible for those omissions. Additions, deletions, renames, mode changes and other host
   files remain outside this permission. Source still runs both TypeScript programs, its full Vitest suite and the Node
   script checks; package verification and installed VS Code and R journeys remain required.
 - R source and installed-editor execution may be omitted for additions or edits to `.py` files under
@@ -126,22 +127,23 @@ Source and packaged smoke retain its validation and package-content checks. Shar
 configuration and dependency locks require full execution, as do scripts and other paths outside these scopes. If an
 affected test suite or selected runner begins consuming an omitted input, update the proof and its tests in the same change.
 
-The Python worker does not load webview source, the admitted lifecycle test or the four native view files. Its Node
-decoder checks use shared contracts, which remain outside this permission. This omission includes the worker's Python
+The Python worker does not load webview source, the admitted lifecycle test or the listed host files. Its Node
+decoder checks use shared contracts, which remain outside this permission. Its import-option tests construct their own
+requests without executing host defaults, detection or prompts. This omission includes the worker's Python
 statics and all Pytest cases, including native Spark; it gives no fresh Python execution result. The installed R journeys
 do load the webview and exercise real profiles, so they remain required. Local browser acceptance still applies to rendered UI changes.
 
 The Linux R phases load native R assets and the selected Node transport owners, without loading renderer source or the
-four native view files.
+listed host files.
 The kernel-transport phase also runs native notebook discovery, selection and dependency checks with the same selected R executable.
 Their separate `r_runtime_omittable` result permits the Linux matrix and each platform's numeric-portability step to be
-skipped. The platform step loads native R assets and its source-test helpers, without loading renderer source or those
-native view files.
+skipped. The platform step loads native R assets and its source-test helpers, without loading renderer source or the
+listed host files.
 Its `omit_source` Boolean workflow input defaults to false, so manual dispatch retains this execution. Skipping it
 also omits its separate private source-library preparation. Platform setup, artifact cleanup, macOS process
 cancellation, packaging and installed-editor checks remain required. Together with `python_omittable`, the proof
 also permits omission of the Windows filesystem and process job, whose selected Python and Node owners do not load
-renderer source or those native view files. Its bootstrap tests do load the installed-notebook fixtures, which remain
+renderer source or the listed host files. Its bootstrap tests do load the installed-notebook fixtures, which remain
 outside this additional omission. R runtime and source-test changes retain
 Windows source execution. Omission summaries report no fresh source execution for the skipped jobs.
 
@@ -187,7 +189,7 @@ execution or a proved omission with actually skipped execution. Windows source o
 `r_runtime_omittable` and `python_omittable` and a skipped worker; otherwise both flags must be valid and its execution
 must succeed. The R result also checks both installed workflow calls and their selected platform job results.
 A proved whole-R omission requires the source matrix and both installed workflow
-calls to be skipped, with empty reusable outputs. A proved renderer source omission requires a skipped source matrix and
+calls to be skipped, with empty reusable outputs. A proved source omission requires a skipped source matrix and
 successful calls and selected results for both platform jobs. Without either omission, all results must succeed.
 Missing, contradictory, failed or cancelled results cannot satisfy the check, even if a misconfigured workflow call
 otherwise reports success.
@@ -250,7 +252,7 @@ The `macos-r` and `windows-r` jobs run the existing private R artifact filesyste
 R dependencies or editor preparation. These exercise real file cleanup and refusal of replaced files and directories
 on each platform without launching R or an editor. The macOS job also runs the existing native process cancellation
 owner through default helper preparation, before private R dependency installation or editor preparation.
-Unless the renderer omission applies, the released-Jupyter jobs then run the canonical `kernel:numeric-portability`
+Unless the source omission applies, the released-Jupyter jobs then run the canonical `kernel:numeric-portability`
 source case with private jsonlite and bit64 dependencies before opening the editor.
 Parquet dependencies remain with the separate export and editor owners.
 It checks the platform-sensitive arithmetic, selections and generated programs without

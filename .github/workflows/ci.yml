@@ -296,7 +296,7 @@ jobs:
               echo 'Native R checks omitted: the tested merge contains only paths proven independent of R. No fresh R execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
               ;;
             false:true:skipped:success:success:success:success)
-              echo 'Native R source checks omitted for proven renderer or native view edits. Both platform R jobs passed; no fresh native R source execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
+              echo 'Native R source checks omitted for proven selected host and renderer edits. Both platform R jobs passed; no fresh native R source execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
               ;;
             false:false:success:success:success:success:success) ;;
             *) exit 1 ;;
