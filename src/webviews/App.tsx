@@ -13,6 +13,7 @@ import {
   formatSessionRowCount,
   isExactGridPage,
   isDuckDBTableSource,
+  sourceDisplayLabel,
   supportsViewingCapability
 } from "../shared/protocol";
 import {
@@ -2069,6 +2070,7 @@ export function App() {
   };
 
   const backgroundDiagnosticMessages = [...backgroundDiagnostics.values()].map((diagnostic) => diagnostic.message);
+  const sourceLabel = metadata ? sourceDisplayLabel(metadata.source) : undefined;
   const projectionStatusId = projectionLoading ? "column-projection-status" : undefined;
   const projectionActionTitle = projectionLoading ? "Wait for the visible columns to finish loading." : undefined;
   const importOptionsDisabled = loading || mutationPending || projectionLoading || importOptionsPending;
@@ -2164,7 +2166,7 @@ export function App() {
           className={metadata && sessionModeAction(metadata) ? "toolbar toolbarWithSessionModeAction" : "toolbar"}
         >
           <div className="toolbarIdentity">
-            <strong>{metadata?.source.label ?? "Loading dataframe..."}</strong>
+            <strong title={sourceLabel}>{sourceLabel ?? "Loading dataframe..."}</strong>
             <span aria-label={visibleShapeLabel} title={visibleShapeTitle}>
               {visibleShapeText}
             </span>

@@ -1901,12 +1901,15 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(executeCommand).toHaveBeenCalledWith("setContext", "openWrangler.canChangeImportOptions", false);
   });
 
-  it("keeps database-table import and backend controls unavailable even with a CSV suffix", async () => {
+  it.each([
+    ["main", 'Open Wrangler: "main"."orders" (database.csv)'],
+    ["archive", 'Open Wrangler: "archive"."orders" (database.csv)']
+  ])("names the %s database table while keeping its import and backend controls unavailable", async (schema, title) => {
     const source: SessionSource = {
       kind: "file",
       label: "database.csv",
       path: "/workspace/database.csv",
-      importOptions: { duckdbSchema: "main", duckdbTable: "orders" }
+      importOptions: { duckdbSchema: schema, duckdbTable: "orders" }
     };
     const opened: SessionOpenedResponse = {
       ...openedResponse,
@@ -1925,11 +1928,14 @@ describe("OpenWranglerPanel retained view state", () => {
       }
     };
     const reconfigureFileSession = vi.fn(async () => opened);
+    const request = vi.fn<OpenWranglerBridge["request"]>(async () => opened);
     const harness = createPanelHarness(
-      { request: vi.fn(async () => opened), reconfigureFileSession },
-      { source, openResponse: opened }
+      { request, reconfigureFileSession },
+      { source, openResponse: opened, createViaFactory: true, delegateOpen: true }
     );
+    expect(harness.title).toBe(title);
     await harness.open();
+    expect(request.mock.calls[0]?.[0]).toMatchObject({ kind: "openSession", source });
     expect(harness.html).toContain('data-can-change-import-options="false"');
     panelPromptMocks.showQuickPick.mockClear();
     panelPromptMocks.showInputBox.mockClear();
@@ -7791,6 +7797,7 @@ function createPanelHarness(
   }
 ): {
   posted: unknown[];
+  readonly title: string;
   readonly html: string;
   readonly htmlAssignmentCount: number;
   readonly iconPath: vscode.WebviewPanel["iconPath"];
@@ -7832,6 +7839,7 @@ function createPanelHarness(
   const reveal = vi.fn();
   const panel = {
     webview,
+    title: "",
     active: options?.active ?? true,
     visible: true,
     viewColumn: 1,
@@ -7879,7 +7887,10 @@ function createPanelHarness(
     const descriptor = Object.getOwnPropertyDescriptor(window, "createWebviewPanel");
     Object.defineProperty(window, "createWebviewPanel", {
       configurable: true,
-      value: vi.fn(() => panel)
+      value: vi.fn((_viewType: string, title: string) => {
+        panel.title = title;
+        return panel;
+      })
     });
     try {
       instance = OpenWranglerPanel.create(
@@ -7908,6 +7919,9 @@ function createPanelHarness(
   }
   const harness = {
     posted,
+    get title() {
+      return panel.title;
+    },
     get html() {
       return webview.html;
     },

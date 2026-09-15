@@ -9,8 +9,8 @@ import {
   reconcileViewFilterModel,
   viewCellSelectionFilter
 } from "../shared/filterModel";
-import type { CellValue, ColumnSchema, FilterModel } from "../shared/protocol";
-import { dataBackendLabel } from "../shared/protocol";
+import type { CellValue, ColumnSchema, FilterModel, SessionSource } from "../shared/protocol";
+import { dataBackendLabel, sourceDisplayLabel } from "../shared/protocol";
 
 describe("filter model", () => {
   it("starts empty", () => {
@@ -300,9 +300,40 @@ describe("filter model", () => {
   });
 });
 
-describe("data backend labels", () => {
+describe("session presentation", () => {
   it("uses public engine names in editor UI", () => {
     expect(dataBackendLabel("pyspark")).toBe("PySpark");
     expect(dataBackendLabel("r")).toBe("R");
+  });
+
+  it("distinguishes exact database names without changing source identity or ordinary labels", () => {
+    const cases = [
+      ["main", "orders", '"main"."orders" (sample.duckdb)'],
+      ["archive", "orders", '"archive"."orders" (sample.duckdb)'],
+      ["a.b", "c", '"a.b"."c" (sample.duckdb)'],
+      ["a", "b.c", '"a"."b.c" (sample.duckdb)'],
+      [" odd\nschema ", '"$(add)"\\\t', String.raw`" odd\nschema "."\"$(add)\"\\\t" (sample.duckdb)`]
+    ] as const;
+    const labels = cases.map(([duckdbSchema, duckdbTable, expected]) => {
+      const source: SessionSource = {
+        kind: "file",
+        label: "sample.duckdb",
+        path: "/workspace/sample.duckdb",
+        importOptions: { duckdbSchema, duckdbTable }
+      };
+      const original = structuredClone(source);
+      const label = sourceDisplayLabel(source);
+      expect(label).toBe(expected);
+      expect(source).toEqual(original);
+      return label;
+    });
+    expect(new Set(labels).size).toBe(cases.length);
+    for (const source of [
+      { kind: "file", label: "book.xlsx", path: "/workspace/book.xlsx", importOptions: { sheetName: "orders" } },
+      { kind: "notebookVariable", label: "$(frame)", variableName: "frame", uri: "file:///workspace/example.ipynb" },
+      { kind: "documentVariable", label: "r_frame", variableName: "r_frame", uri: "file:///workspace/example.R" }
+    ] satisfies SessionSource[]) {
+      expect(sourceDisplayLabel(source)).toBe(source.label);
+    }
   });
 });

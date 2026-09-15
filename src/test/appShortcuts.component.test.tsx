@@ -96,6 +96,9 @@ describe("App cleaning-plan keyboard shortcuts", () => {
       }
     });
     expect(screen.getByText("Viewing only")).toBeVisible();
+    expect(screen.getByText('"main"."orders" (database)')).toBeVisible();
+    expect(screen.getByText('"main"."orders" (database)')).toHaveAttribute("title", '"main"."orders" (database)');
+    expect(screen.getByRole("grid", { name: 'Data grid for "main"."orders" (database)' })).toBeVisible();
     expect(screen.queryByRole("button", { name: /Change dataframe engine/u })).toBeNull();
     expect(screen.queryByRole("button", { name: /Switch to Editing/u })).toBeNull();
     expect(screen.getByRole("button", { name: "Column profiles and filters" })).toBeEnabled();
