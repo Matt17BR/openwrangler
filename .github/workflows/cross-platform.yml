@@ -1,11 +1,11 @@
 name: Cross-platform runtime
-run-name: ${{ github.event_name == 'workflow_dispatch' && inputs.omit_python_source == true && 'Full Python source tests omitted; installed investigation only' || 'Cross-platform runtime' }}
+run-name: ${{ github.event_name == 'workflow_dispatch' && inputs.installed_only == true && 'Installed macOS/Windows investigation; full qualification omitted' || 'Cross-platform runtime' }}
 
 on:
   workflow_dispatch:
     inputs:
-      omit_python_source:
-        description: Omit full Python source tests for installed investigation only
+      installed_only:
+        description: Run installed macOS/Windows checks without full source qualification
         type: boolean
         default: false
   schedule:
@@ -44,7 +44,7 @@ jobs:
       - run: python -m pip install -e "python[dev]"
       - run: npm run test:python-environment-smoke
       - run: python -m pytest python/tests -q
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.omit_python_source != true }}
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.installed_only != true }}
       - run: npm run build
       - run: npm run package:prepared -- --out openwrangler.vsix
       - run: npm run verify:vsix -- openwrangler.vsix
@@ -71,6 +71,7 @@ jobs:
 
   dependency-guard-windows:
     name: Dependency guard (Windows, Python ${{ matrix.python }})
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.installed_only != true }}
     runs-on: windows-latest
     timeout-minutes: 15
     strategy:
@@ -88,6 +89,7 @@ jobs:
   # BEGIN GENERATED PYTHON RUNTIME DEPENDENCY COHORTS
   python-runtime-dependency-cohorts:
     name: Exact Python dependencies (Python ${{ matrix.python }}, cohort ${{ matrix.cohort }})
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.installed_only != true }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
@@ -122,7 +124,7 @@ jobs:
 
   r-4-4-scheduled-qualification:
     name: Scheduled R 4.4 lock qualification
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.installed_only != true) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:

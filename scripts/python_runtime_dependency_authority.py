@@ -646,6 +646,7 @@ def _render_workflow(dependencies: tuple[Dependency, ...], workflow_source: str)
     lines = [
         "  python-runtime-dependency-cohorts:",
         "    name: Exact Python dependencies (Python ${{ matrix.python }}, cohort ${{ matrix.cohort }})",
+        "    if: ${{ github.event_name != 'workflow_dispatch' || inputs.installed_only != true }}",
         "    runs-on: ubuntu-24.04",
         "    timeout-minutes: 15",
         "    strategy:",

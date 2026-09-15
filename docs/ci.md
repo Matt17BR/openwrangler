@@ -269,11 +269,13 @@ installation and restricted-trust checks. Scheduled and default manual runs reta
 source suites. These jobs do not opt into released Jupyter, R or other optional editor integrations. Failed editor runs
 retain only the existing sealed diagnostic artifact when its safety checks permit publication.
 
-Manual runs may explicitly set `omit_python_source` to skip only the full Python test step while investigating
-installed behavior. The run is named “Full Python source tests omitted; installed investigation only” and provides
-no fresh full-Python qualification. Environment setup and smoke checks, package and installed verification, native
-Windows checks, and all other jobs remain enabled. Dependencies still resolve through the declared ranges; an
-earlier source result does not qualify the newly resolved environment.
+Manual runs may explicitly set `installed_only` to investigate the installed macOS and Windows behavior. It replaces
+the former `omit_python_source` input and skips the full Python test step and the separate R 4.4, Windows
+dependency-guard and exact Python dependency-cohort jobs.
+Environment setup and smoke checks, package and installed verification, native Windows checks and failure artifacts
+remain enabled. The run is named “Installed macOS/Windows investigation; full qualification omitted”. It provides no
+fresh full-Python, R-lock or dependency-cohort qualification. Dependencies still resolve through the declared ranges;
+an earlier source result does not qualify the newly resolved environment. Scheduled and default manual runs remain full.
 
 The weekly cross-platform workflow groups the dependency authority's exact qualification cases by Python version
 and ordinal within each dependency. Each declared tuple appears once, including intermediate versions and the
