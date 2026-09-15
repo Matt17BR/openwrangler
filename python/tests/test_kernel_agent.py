@@ -208,6 +208,8 @@ def _envelope(
         ("polars", "pl", "formula"),
         ("pandas", "_open_wrangler_formula_result", "formula"),
         ("polars", "_ow_polars_check_formula", "formula"),
+        ("polars", "type", "formula"),
+        ("polars", "tuple", "formula"),
         ("pandas", "clean_data", "formula"),
         ("polars", "clean_data", "formula"),
         ("pandas", "annotations", "customCode"),
@@ -256,7 +258,7 @@ def test_kernel_generated_code_preserves_source_bindings(
             {
                 "leftColumn": {"id": "c:source:0", "name": "value"},
                 "operator": "add",
-                "value": 1,
+                "value": "1" if source_name == "tuple" else 1,
                 "newColumn": "result",
             }
             if kind == "formula"
@@ -270,7 +272,7 @@ def test_kernel_generated_code_preserves_source_bindings(
         assert applied["code"] == preview["code"]
         function_name = "clean_data_1" if source_name == "clean_data" else "clean_data"
         namespace: dict[str, Any] = {source_name: frame}
-        exec(applied["code"], namespace)
+        exec(compile(applied["code"], "<generated>", "exec", dont_inherit=True), namespace)
         assert namespace[source_name] is frame
         assert set(namespace) == {source_name, "__builtins__", function_name}
         generated = namespace[function_name](namespace[source_name])

@@ -1045,9 +1045,10 @@ and reject overflow, lossy promotion or new nulls for present operands. Integer-
 multiplication also validate Boolean operands against the current input. Division, floating and Decimal arithmetic
 retain native behavior; supported modulo preserves native null, sign and NaN results.
 
-Live execution and generated code apply the same checks, scanning selected operands and returning bounded aggregates
-to Python without a second validation scan for ordinary integer-string inputs. This does not snapshot a LazyFrame;
-its external inputs must remain stable until collection. Detailed capacity, replay and scan-bound cases belong to the
+Live execution and generated code share integer-string operand preparation and the precision guard. Validation scans
+selected operands and returns bounded aggregates to Python without a second scan for ordinary integer-string inputs.
+This does not snapshot a LazyFrame; its external inputs must remain stable until collection. Detailed capacity, replay
+and scan-bound cases belong to the
 [native Formula tests](../python/tests/test_polars_engine.py) and [literal tests](../python/tests/test_formula_literals.py).
 
 Two-column addition, subtraction or multiplication producing UInt128 requires a recognized stable Polars release from

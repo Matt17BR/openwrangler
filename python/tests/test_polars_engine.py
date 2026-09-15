@@ -25,7 +25,7 @@ from openwrangler_runtime.engines.base import EngineError, typed_selection_value
 from openwrangler_runtime.engines.polars_engine import PolarsEngine
 from openwrangler_runtime.export_target import ExportWriterPath, _regular_file_identity
 from openwrangler_runtime.lineage import source_lineage
-from openwrangler_runtime.operations import validate_step
+from openwrangler_runtime.operations import OperationError, validate_step
 from openwrangler_runtime.session import SessionManager
 from openwrangler_runtime.session_source import SourceChangedError
 
@@ -3183,11 +3183,16 @@ def test_polars_formula_integer_string_native_capacity(
     engine = PolarsEngine()
     operation = _polars_formula_literal_operation(frame, operator, str(value))
     namespace: dict[str, Any] = {}
-    exec(engine.compile_plan([operation]), namespace)
-    for run in (lambda: engine.apply_transform(frame, operation), lambda: namespace["clean_data"](frame)):
+    code = engine.compile_plan([operation])
+    exec(compile(code, "<generated>", "exec", dont_inherit=True), namespace)
+    for run, error_type in (
+        (lambda: engine.apply_transform(frame, operation), EngineError),
+        (lambda: namespace["clean_data"](frame), ValueError),
+    ):
         if expected is None:
-            with pytest.raises((EngineError, ValueError), match="native integer.*capacity"):
+            with pytest.raises(error_type, match="native integer.*capacity") as error:
                 run()
+            assert type(error.value) is error_type
         else:
             result = run()
             assert isinstance(result, pl.LazyFrame) == lazy
@@ -3216,16 +3221,27 @@ def test_polars_formula_integer_string_division_retains_native_float(lazy: bool,
         assert (result.collect_schema() if lazy else result.schema)["result"] == pl.Float64
 
 
-@pytest.mark.parametrize("value", [str(2**128), str(-(2**127) - 1), "1" + "0" * 308])
-def test_polars_formula_integer_string_refuses_literal_outside_native_capacity(value: str) -> None:
+@pytest.mark.parametrize("value", [str(2**128), str(-(2**127) - 1), "1" + "0" * 308, "1\n"])
+def test_polars_formula_integer_string_refuses_invalid_literal(value: str) -> None:
     engine = PolarsEngine()
     frame = pl.DataFrame({"value": [1, None]}).lazy()
-    operation = _polars_formula_literal_operation(frame, "add", value)
+    operation = _polars_formula_literal_operation(frame, "add", "1")
+    operation["params"]["value"] = value
+    if value == "1\n":
+        for run in (lambda: engine.apply_transform(frame, operation), lambda: engine.compile_plan([operation])):
+            with pytest.raises(OperationError, match="Formula integer text must be canonical") as error:
+                run()
+            assert type(error.value) is OperationError
+        return
     namespace: dict[str, Any] = {}
     exec(engine.compile_plan([operation]), namespace)
-    for run in (lambda: engine.apply_transform(frame, operation), lambda: namespace["clean_data"](frame)):
-        with pytest.raises((EngineError, ValueError), match="native integer.*capacity"):
+    for run, error_type in (
+        (lambda: engine.apply_transform(frame, operation), EngineError),
+        (lambda: namespace["clean_data"](frame), ValueError),
+    ):
+        with pytest.raises(error_type, match="native integer.*capacity") as error:
             run()
+        assert type(error.value) is error_type
 
 
 @pytest.mark.parametrize("right_column", [False, True])
@@ -3259,7 +3275,8 @@ def test_polars_formula_native_integer_collects_only_one_guard_boolean(
         right = pl.col("other")
     expected = source.with_columns((pl.col("value") + right).alias("result"))
     namespace: dict[str, Any] = {}
-    exec(engine.compile_plan([operation]), namespace)
+    code = engine.compile_plan([operation])
+    exec(compile(code, "<generated>", "exec", dont_inherit=True), namespace)
     native_collect = pl.LazyFrame.collect
     observed: list[tuple[dict[str, Any], list[tuple[Any, ...]]]] = []
 
@@ -3455,9 +3472,13 @@ def test_polars_formula_native_integer_rejects_unsafe_rows(
     engine.validate_transform_preflight(frame, operation, engine.shape(frame))
     namespace: dict[str, Any] = {}
     exec(engine.compile_plan([operation]), namespace)
-    for run in (lambda: engine.apply_transform(frame, operation), lambda: namespace["clean_data"](frame)):
-        with pytest.raises((EngineError, ValueError), match="native integer capacity|loses precision"):
+    for run, error_type in (
+        (lambda: engine.apply_transform(frame, operation), EngineError),
+        (lambda: namespace["clean_data"](frame), ValueError),
+    ):
+        with pytest.raises(error_type, match="native integer capacity|loses precision") as error:
             run()
+        assert type(error.value) is error_type
         assert source.equals(before)
 
 
