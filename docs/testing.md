@@ -412,6 +412,12 @@ including on success. Arrivals are sampled milestones, not exact durations; quic
 resets the unchanged 180-second inactivity deadline; the 300-second absolute deadline still bounds the phase. These
 diagnostics distinguish progress within the viewing-query journey and do not establish or fix the cause of a timeout.
 
+The damaged-file Import options recovery check observes document focus only during its picker sequence. On failure,
+it appends the last 32 focus-in/out events: relative time, bounded target/related/active tags, Quick Input membership,
+one of five fixed prompt titles or `unknown`, and document focus state. It retains no arbitrary DOM text, values,
+URLs or class names, and removes its scoped observer afterward. These events can show focus acquisition and loss;
+they do not identify an iframe's inner focus owner or establish the cause of the original failure.
+
 If the public R-file command ends before its picker appears, the failed assertion includes up to eight visible
 notifications from the existing bounded collector, each whitespace-normalized and capped at 1,000 characters. An
 unavailable collection yields an empty list; the failure-artifact redaction rules still apply.
