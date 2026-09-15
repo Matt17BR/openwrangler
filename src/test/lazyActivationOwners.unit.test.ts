@@ -207,7 +207,8 @@ vi.mock("../extension/files/fileOpen", () => ({
     registerMockCommands(context, [
       "openWrangler.changeImportOptions",
       "openWrangler.openFile",
-      "openWrangler.openPath"
+      "openWrangler.openPath",
+      "openWrangler.openFileWithPlan"
     ]);
   })
 }));
@@ -534,35 +535,44 @@ describe("lazy activation owners", () => {
     expect(active.diagnosticsForTesting().rDiscoveryStarted).toBe(true);
   });
 
-  it.each(["editor resolution", "file command"])("retains its provider through first %s", async (trigger) => {
-    active = createOwners();
-    active.startBeforeFirstYield();
-    const provider = host.customEditorProviders[0] as {
-      openCustomDocument(uri: unknown): unknown;
-      resolveCustomEditor(document: unknown, panel: unknown, token: vscode.CancellationToken): Promise<void>;
-    };
-    const document = provider.openCustomDocument({ scheme: "file", path: "/data.csv" });
+  it.each(["editor resolution", "file command", "plan command"])(
+    "retains its provider through first %s",
+    async (trigger) => {
+      active = createOwners();
+      active.startBeforeFirstYield();
+      const provider = host.customEditorProviders[0] as {
+        openCustomDocument(uri: unknown): unknown;
+        resolveCustomEditor(document: unknown, panel: unknown, token: vscode.CancellationToken): Promise<void>;
+      };
+      const document = provider.openCustomDocument({ scheme: "file", path: "/data.csv" });
 
-    expect(owners.pythonConstructed).not.toHaveBeenCalled();
-    if (trigger === "file command") await host.executeCommand("openWrangler.openFile", document);
-    const panel = {};
-    const token = resolutionToken();
-    await provider.resolveCustomEditor(document, panel, token);
+      expect(owners.pythonConstructed).not.toHaveBeenCalled();
+      if (trigger === "file command") await host.executeCommand("openWrangler.openFile", document);
+      if (trigger === "plan command") {
+        await expect(host.executeCommand("openWrangler.openFileWithPlan")).resolves.toEqual({
+          id: "openWrangler.openFileWithPlan",
+          args: []
+        });
+      }
+      const panel = {};
+      const token = resolutionToken();
+      await provider.resolveCustomEditor(document, panel, token);
 
-    expect(owners.customEditorResolved).toHaveBeenCalledOnce();
-    expect(owners.customEditorResolved).toHaveBeenCalledWith(document, panel, token);
-    expect(owners.pythonConstructed).toHaveBeenCalledOnce();
-    expect(owners.sessionConstructed).toHaveBeenCalledOnce();
-    expect(owners.rDiscovery).not.toHaveBeenCalled();
-    expect(host.customEditorProviders).toEqual([provider]);
-    expect(host.registerCustomEditorProvider).toHaveBeenCalledExactlyOnceWith("openWrangler.viewer", provider, {
-      supportsMultipleEditorsPerDocument: false,
-      webviewOptions: { retainContextWhenHidden: true }
-    });
-    await active.shutdown();
-    expect(host.customEditorProviders).toEqual([]);
-    expect(host.registerCustomEditorProvider.mock.results[0].value.dispose).toHaveBeenCalledOnce();
-  });
+      expect(owners.customEditorResolved).toHaveBeenCalledOnce();
+      expect(owners.customEditorResolved).toHaveBeenCalledWith(document, panel, token);
+      expect(owners.pythonConstructed).toHaveBeenCalledOnce();
+      expect(owners.sessionConstructed).toHaveBeenCalledOnce();
+      expect(owners.rDiscovery).not.toHaveBeenCalled();
+      expect(host.customEditorProviders).toEqual([provider]);
+      expect(host.registerCustomEditorProvider).toHaveBeenCalledExactlyOnceWith("openWrangler.viewer", provider, {
+        supportsMultipleEditorsPerDocument: false,
+        webviewOptions: { retainContextWhenHidden: true }
+      });
+      await active.shutdown();
+      expect(host.customEditorProviders).toEqual([]);
+      expect(host.registerCustomEditorProvider.mock.results[0].value.dispose).toHaveBeenCalledOnce();
+    }
+  );
 
   it("retains the provider until shutdown when file-command registration rolls back", async () => {
     active = createOwners();

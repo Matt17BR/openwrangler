@@ -126,6 +126,15 @@ export async function captureExportSourceProtection(
   return Object.freeze({ current: Object.freeze(current), retained: retained.anchors });
 }
 
+/** Plan reuse must select a different file, including through symlinks and hard links. */
+export function assertSeparateSessionSource(target: SessionSourceProtection, other: ExportSourceProtection): void {
+  if (!target.available || target.anchors.length === 0)
+    throw new Error("Open Wrangler could not verify the selected file identity.");
+  for (const anchor of target.anchors) {
+    assertDestinationDiffersFromSources(anchor, [...other.current, ...other.retained]);
+  }
+}
+
 export function createNodeAtomicExportFileSystem(openFile: typeof open = open): AtomicExportFileSystem {
   return {
     realpath,
@@ -533,7 +542,7 @@ async function assertDestinationUnchanged(
 }
 
 function assertDestinationDiffersFromSources(
-  destination: DestinationAnchor,
+  destination: Pick<DestinationAnchor, "path" | "canonicalPath" | "identity">,
   protectedSources: readonly ProtectedSourceAnchor[]
 ): void {
   for (const source of protectedSources) {

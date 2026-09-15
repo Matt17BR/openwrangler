@@ -130,6 +130,7 @@
     "onCommand:openWrangler.convertTrustedPickle",
     "onCommand:openWrangler.changeImportOptions",
     "onCommand:openWrangler.openPath",
+    "onCommand:openWrangler.openFileWithPlan",
     "onCommand:openWrangler.launchDataViewer",
     "onCommand:openWrangler.openNotebookVariable",
     "onCommand:openWrangler.openNotebookCellResult",
@@ -202,6 +203,11 @@
       {
         "command": "openWrangler.openPath",
         "title": "Open Wrangler: Open File Path"
+      },
+      {
+        "command": "openWrangler.openFileWithPlan",
+        "title": "Open Another File with This Plan",
+        "category": "Open Wrangler"
       },
       {
         "command": "openWrangler.convertTrustedPickle",

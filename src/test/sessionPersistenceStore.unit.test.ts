@@ -12,6 +12,179 @@ import { type SessionPersistenceFailure, SessionPersistenceStore } from "../exte
 const source: SessionSource = { kind: "file", label: "sample.csv", path: "/workspace/sample.csv" };
 
 describe("SessionPersistenceStore", () => {
+  it.each([
+    ["undefined", undefined],
+    ["null", null],
+    ["malformed", 42],
+    ["view-only", serializedState("polars", 3)],
+    [
+      "pending current",
+      { pendingCurrentCommit: { token: "held", candidate: serializedState("polars", 3), hadPreviousState: false } }
+    ],
+    [
+      "pending replacement",
+      { pendingRuntimeReplacement: { token: "held", candidate: serializedState("polars", 3), hadPreviousState: false } }
+    ]
+  ])("require-absent replacement refuses an own %s target entry without writing", async (_label, entry) => {
+    const key = persistenceKey(source, "polars");
+    let stored: Record<string, unknown> = { [key]: entry, unrelated: "keep" };
+    const memory = memento(
+      () => stored,
+      (value) => {
+        stored = value;
+      }
+    );
+    const persistence = new SessionPersistenceStore(memory.value);
+    const commit = vi.fn(() => vi.fn());
+
+    await expect(
+      persistence.commitRuntimeReplacement(source, state("polars", 2), () => true, commit, { requireAbsent: true })
+    ).resolves.toEqual({ kind: "stale" });
+    expect(persistence.checkAbsent(source, "polars")).toEqual({ kind: "occupied" });
+    expect(memory.update).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+    expect(Object.hasOwn(stored, key)).toBe(true);
+    expect(stored[key]).toBe(entry);
+    expect(stored.unrelated).toBe("keep");
+  });
+
+  it("commits a require-absent replacement only after its private pending record is durable", async () => {
+    const key = persistenceKey(source, "polars");
+    let stored: Record<string, unknown> = { unrelated: "keep" };
+    const memory = memento(
+      () => stored,
+      (value) => {
+        stored = value;
+      }
+    );
+    const persistence = new SessionPersistenceStore(memory.value);
+    const rollback = vi.fn();
+    const commit = vi.fn(() => {
+      expect(stored[key]).toMatchObject({ pendingRuntimeReplacement: { hadPreviousState: false } });
+      expect(persistence.load(source, "polars")).toBeUndefined();
+      expect(persistence.checkAbsent(source, "polars")).toEqual({ kind: "occupied" });
+      return rollback;
+    });
+
+    expect(persistence.checkAbsent(source, "polars")).toEqual({ kind: "absent" });
+    expect(memory.update).not.toHaveBeenCalled();
+    await expect(
+      persistence.commitRuntimeReplacement(source, state("polars", 2), () => true, commit, { requireAbsent: true })
+    ).resolves.toEqual({ kind: "committed" });
+    expect(memory.update).toHaveBeenCalledTimes(2);
+    expect(commit).toHaveBeenCalledOnce();
+    expect(rollback).not.toHaveBeenCalled();
+    expect(stored).toEqual({ [key]: serializedState("polars", 2), unrelated: "keep" });
+  });
+
+  it("rechecks require-absent target state after earlier queued storage work", async () => {
+    const key = persistenceKey(source, "polars");
+    const otherSource = { ...source, path: "/workspace/blocker.csv" };
+    let stored: Record<string, unknown> = {};
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const update = vi.fn(async (_key: string, value: Record<string, unknown>) => {
+      stored = value;
+      if (update.mock.calls.length === 1) {
+        entered.resolve(undefined);
+        await release.promise;
+      }
+    });
+    const persistence = new SessionPersistenceStore(mementoFrom(() => stored, update));
+    const commit = vi.fn(() => vi.fn());
+    const blocker = persistence.save(otherSource, "polars", () => state("polars", 1));
+    await entered.promise;
+    expect(persistence.checkAbsent(source, "polars")).toEqual({ kind: "absent" });
+    const newer = persistence.save(source, "polars", () => state("polars", 7));
+    const replacement = persistence.commitRuntimeReplacement(source, state("polars", 2), () => true, commit, {
+      requireAbsent: true
+    });
+    try {
+      release.resolve(undefined);
+      await blocker;
+      await newer;
+      await expect(replacement).resolves.toEqual({ kind: "stale" });
+      expect(update).toHaveBeenCalledTimes(2);
+      expect(commit).not.toHaveBeenCalled();
+      expect(stored[key]).toEqual(serializedState("polars", 7));
+    } finally {
+      release.resolve(undefined);
+      await Promise.allSettled([blocker, newer, replacement]);
+    }
+  });
+
+  it.each(["restore", "rollback failure", "replacement"] as const)(
+    "handles require-absent final-write failure with %s without removing unrelated state",
+    async (outcome) => {
+      const key = persistenceKey(source, "polars");
+      let stored: Record<string, unknown> = { unrelated: "keep" };
+      const update = vi.fn(async (_key: string, value: Record<string, unknown>) => {
+        const attempt = update.mock.calls.length;
+        if (attempt === 2) {
+          if (outcome === "replacement") stored = { ...stored, [key]: "newer owner" };
+          throw new Error("final storage unavailable");
+        }
+        if (attempt === 3 && outcome === "rollback failure") throw new Error("rollback unavailable");
+        stored = value;
+      });
+      const failures = vi.fn<(failure: SessionPersistenceFailure) => void>();
+      const persistence = new SessionPersistenceStore(
+        mementoFrom(() => stored, update),
+        failures
+      );
+      const rollback = vi.fn();
+      const commit = vi.fn(() => rollback);
+
+      await expect(
+        persistence.commitRuntimeReplacement(source, state("polars", 2), () => true, commit, { requireAbsent: true })
+      ).resolves.toMatchObject({
+        kind: "unavailable",
+        failure: { kind: outcome === "rollback failure" ? "rollback" : "runtime-replacement" },
+        liveState: "unchanged"
+      });
+      expect(commit).toHaveBeenCalledOnce();
+      expect(rollback).toHaveBeenCalledOnce();
+      expect(stored.unrelated).toBe("keep");
+      if (outcome === "restore") {
+        expect(update).toHaveBeenCalledTimes(3);
+        expect(Object.hasOwn(stored, key)).toBe(false);
+        expect(persistence.checkAbsent(source, "polars")).toEqual({ kind: "absent" });
+        await expect(
+          persistence.commitRuntimeReplacement(source, state("polars", 4), () => true, commit, { requireAbsent: true })
+        ).resolves.toEqual({ kind: "committed" });
+        expect(stored[key]).toEqual(serializedState("polars", 4));
+      } else {
+        expect(persistence.checkAbsent(source, "polars")).toEqual({ kind: "occupied" });
+        if (outcome === "replacement") {
+          expect(update).toHaveBeenCalledTimes(2);
+          expect(stored[key]).toBe("newer owner");
+        } else {
+          expect(update).toHaveBeenCalledTimes(3);
+          expect(stored[key]).toHaveProperty("pendingRuntimeReplacement");
+          expect(failures.mock.calls.map(([failure]) => failure.kind)).toEqual(["runtime-replacement", "rollback"]);
+        }
+      }
+    }
+  );
+
+  it("refuses require-absent work without a Memento while preserving ordinary ephemeral replacement", async () => {
+    const persistence = new SessionPersistenceStore();
+    const commit = vi.fn(() => vi.fn());
+    await expect(
+      persistence.commitRuntimeReplacement(source, state("polars", 2), () => true, commit, { requireAbsent: true })
+    ).resolves.toMatchObject({
+      kind: "unavailable",
+      failure: { kind: "read", cause: { code: "STORAGE_UNAVAILABLE" } },
+      liveState: "unchanged"
+    });
+    expect(persistence.checkAbsent(source, "polars")).toMatchObject({ kind: "unavailable", failure: { kind: "read" } });
+    expect(commit).not.toHaveBeenCalled();
+    await expect(persistence.commitRuntimeReplacement(source, state("polars", 2), () => true, commit)).resolves.toEqual(
+      { kind: "committed" }
+    );
+    expect(commit).toHaveBeenCalledOnce();
+  });
+
   it("preserves a staged candidate and confirmed cleaning/filter during a presentation save", async () => {
     const key = persistenceKey(source, "polars");
     const previous = state("polars", 1);
@@ -330,6 +503,15 @@ describe("SessionPersistenceStore", () => {
         firstInEpoch: true
       }
     });
+    expect(persistence.checkAbsent(source, "polars")).toMatchObject({
+      kind: "unavailable",
+      failure: { kind: "read", cause: { code: "INVALID_ROOT" } }
+    });
+    const commit = vi.fn(() => vi.fn());
+    await expect(
+      persistence.commitRuntimeReplacement(source, state("polars", 2), () => true, commit, { requireAbsent: true })
+    ).resolves.toMatchObject({ kind: "unavailable", failure: { kind: "read" }, liveState: "unchanged" });
+    expect(commit).not.toHaveBeenCalled();
     expect(update).not.toHaveBeenCalled();
     expect(durable).toEqual({ [key]: serializedState("polars", 7) });
     await persistence.releaseOwner("opening:invalid-root");
@@ -354,6 +536,23 @@ describe("SessionPersistenceStore", () => {
     await persistence.save(snapshotSource, "polars", () => state("polars", 1));
     await persistence.save(source, "r", () => state("r", 2));
     await persistence.save(source, "pyspark", () => state("pyspark", 3));
+    const replacementCommit = vi.fn(() => vi.fn());
+    for (const [input, backend] of [
+      [snapshotSource, "polars"],
+      [source, "r"],
+      [source, "pyspark"]
+    ] as const) {
+      expect(persistence.checkAbsent(input, backend)).toMatchObject({
+        kind: "unavailable",
+        failure: { kind: "read", cause: { code: "STORAGE_UNAVAILABLE" } }
+      });
+      await expect(
+        persistence.commitRuntimeReplacement(input, state(backend, 2), () => true, replacementCommit, {
+          requireAbsent: true
+        })
+      ).resolves.toMatchObject({ kind: "unavailable", liveState: "unchanged" });
+    }
+    expect(replacementCommit).not.toHaveBeenCalled();
     await expect(
       persistence.commitCurrent(
         source,
@@ -810,42 +1009,61 @@ describe("SessionPersistenceStore", () => {
     ]);
   });
 
-  it("restores live state and retains the durable value when a post-swap read fails", async () => {
-    const key = persistenceKey(source, "polars");
-    const previous = serializedState("polars", 1);
-    let stored: Record<string, unknown> = { [key]: previous, unrelated: "keep" };
-    let reads = 0;
-    const update = vi.fn(async (_storageKey: string, value: Record<string, unknown>) => {
-      stored = value;
-    });
-    const workspaceState = mementoFrom(() => {
-      reads += 1;
-      if (reads === 2) throw new Error("workspace read unavailable");
-      return stored;
-    }, update);
-    const failures = vi.fn<(failure: SessionPersistenceFailure) => void>();
-    const persistence = new SessionPersistenceStore(workspaceState, failures);
-    const rollback = vi.fn();
-    const commit = vi.fn(() => rollback);
+  it.each([
+    { requireAbsent: false, cleanupReadFails: false },
+    { requireAbsent: true, cleanupReadFails: false },
+    { requireAbsent: true, cleanupReadFails: true }
+  ])(
+    "restores live state after a post-swap read failure (requireAbsent=$requireAbsent, cleanupReadFails=$cleanupReadFails)",
+    async ({ requireAbsent, cleanupReadFails }) => {
+      const key = persistenceKey(source, "polars");
+      const previous = serializedState("polars", 1);
+      let stored: Record<string, unknown> = { ...(requireAbsent ? {} : { [key]: previous }), unrelated: "keep" };
+      let reads = 0;
+      const update = vi.fn(async (_storageKey: string, value: Record<string, unknown>) => {
+        stored = value;
+      });
+      const workspaceState = mementoFrom(() => {
+        reads += 1;
+        if (reads === 2) throw codedError("EACCES", "workspace read unavailable");
+        if (reads === 3 && cleanupReadFails) throw codedError("EIO", "cleanup read unavailable");
+        return stored;
+      }, update);
+      const failures = vi.fn<(failure: SessionPersistenceFailure) => void>();
+      const persistence = new SessionPersistenceStore(workspaceState, failures);
+      const rollback = vi.fn();
+      const commit = vi.fn(() => rollback);
 
-    await expect(
-      persistence.commitRuntimeReplacement(source, state("polars", 2), () => true, commit)
-    ).resolves.toMatchObject({
-      kind: "unavailable",
-      failure: { kind: "read" },
-      liveState: "unchanged"
-    });
+      await expect(
+        persistence.commitRuntimeReplacement(source, state("polars", 2), () => true, commit, { requireAbsent })
+      ).resolves.toMatchObject({
+        kind: "unavailable",
+        failure: { kind: "read", cause: { code: cleanupReadFails ? "EIO" : "EACCES" } },
+        liveState: "unchanged"
+      });
 
-    expect(commit).toHaveBeenCalledOnce();
-    expect(rollback).toHaveBeenCalledOnce();
-    expect(update).toHaveBeenCalledOnce();
-    expect(stored[key]).toHaveProperty("pendingRuntimeReplacement");
-    expect(new SessionPersistenceStore(workspaceState).load(source, "polars")).toEqual(state("polars", 1));
-    expect(persistence.status(source, "polars")).toEqual({ degraded: true, epoch: 1, failureKind: "read" });
-    expect(failureReceipts(failures)).toEqual([
-      { kind: "read", cause: { name: "Error" }, epoch: 1, firstInEpoch: true }
-    ]);
-  });
+      expect(commit).toHaveBeenCalledOnce();
+      expect(rollback).toHaveBeenCalledOnce();
+      if (requireAbsent && !cleanupReadFails) {
+        expect(Object.hasOwn(stored, key)).toBe(false);
+      } else {
+        expect(stored[key]).toHaveProperty("pendingRuntimeReplacement");
+      }
+      expect(stored.unrelated).toBe("keep");
+      expect(reads).toBe(requireAbsent ? 3 : 2);
+      expect(update).toHaveBeenCalledTimes(requireAbsent && !cleanupReadFails ? 2 : 1);
+      expect(persistence.checkAbsent(source, "polars")).toEqual({
+        kind: requireAbsent && !cleanupReadFails ? "absent" : "occupied"
+      });
+      expect(new SessionPersistenceStore(workspaceState).load(source, "polars")).toEqual(
+        requireAbsent ? undefined : state("polars", 1)
+      );
+      expect(persistence.status(source, "polars")).toEqual({ degraded: true, epoch: 1, failureKind: "read" });
+      expect(failureReceipts(failures)).toEqual([
+        { kind: "read", cause: { name: "Error", code: "EACCES" }, epoch: 1, firstInEpoch: true }
+      ]);
+    }
+  );
 
   it("classifies availability reads separately and recovers only after a confirmed write", async () => {
     let readsFail = true;
@@ -908,6 +1126,15 @@ describe("SessionPersistenceStore", () => {
       failure: { kind: "read", cause: { name: "Error", code: "EACCES" }, firstInEpoch: false },
       liveState: "unchanged"
     });
+    expect(persistence.checkAbsent(source, "polars")).toMatchObject({
+      kind: "unavailable",
+      failure: { kind: "read", cause: { code: "EACCES" } }
+    });
+    await expect(
+      persistence.commitRuntimeReplacement(source, state("polars", 2), () => true, replacementCommit, {
+        requireAbsent: true
+      })
+    ).resolves.toMatchObject({ kind: "unavailable", failure: { kind: "read" }, liveState: "unchanged" });
 
     expect(pageCommit).not.toHaveBeenCalled();
     expect(replacementCommit).not.toHaveBeenCalled();

@@ -2,13 +2,18 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import * as vscode from "vscode";
 import type {
+  ColumnSchema,
   DataBackend,
   OpenSessionRequest,
   OpenWranglerResponse,
   PageResponse,
   SessionBoundRequest,
-  SessionOpenedResponse
+  SessionOpenedResponse,
+  SessionSource,
+  TransformStep
 } from "../shared/protocol";
+import { isFileDataBackend } from "./pythonEnvironmentModel";
+import { supportsOperation } from "../shared/operations";
 import { canRequestLiveSessionMode } from "../shared/sessionMode";
 import { DetachedBridgeRequestError, type BridgeRequestOptions, type OpenWranglerBridge } from "./dataBridge";
 import type { CoordinatedSessionOrigin } from "./sessionOrigin";
@@ -53,6 +58,16 @@ export interface RuntimeEstablishmentHooks {
   ): Promise<OpenWranglerResponse>;
 }
 
+/** A host-owned plan captured before the user chooses another file. */
+export interface InitialFilePlan {
+  readonly backend: Extract<DataBackend, "pandas" | "polars" | "duckdb">;
+  readonly importOptions: SessionSource["importOptions"];
+  readonly sourceSchema: readonly ColumnSchema[];
+  readonly steps: readonly TransformStep[];
+  isCurrent(): boolean;
+  assertTargetAvailable(source: SessionSource, protection: SessionSourceProtection): Promise<void>;
+}
+
 export class SessionRuntimeEstablisher {
   constructor(
     private readonly runtimeCleanup: SessionRuntimeCleanup,
@@ -66,7 +81,8 @@ export class SessionRuntimeEstablisher {
     options: BridgeRequestOptions | undefined,
     origin: CoordinatedSessionOrigin | undefined,
     hooks: RuntimeEstablishmentHooks,
-    sourceProtection?: SessionSourceProtection
+    sourceProtection?: SessionSourceProtection,
+    initialFilePlan?: InitialFilePlan
   ): Promise<RuntimeEstablishmentResult> {
     const invalidOrigin = sessionOriginMismatch(request, origin);
     if (invalidOrigin) {
@@ -81,11 +97,59 @@ export class SessionRuntimeEstablisher {
           false
         );
       if (options?.cancellation?.isCancellationRequested) return { kind: "cancelled", targetRequestId: "not-started" };
+      if (initialFilePlan && (!vscode.workspace.isTrusted || !initialFilePlan.isCurrent()))
+        return protocolError(
+          "file_plan_changed",
+          "The session that supplied this plan changed or is no longer available. Run Open Another File with This Plan again.",
+          true
+        );
       const mismatch = sessionOriginMismatch(request, origin);
       return mismatch ? protocolError("invalid_source_origin", mismatch, true) : undefined;
     };
     const beforeOpen = currentFailure();
     if (beforeOpen) return { established: false, response: beforeOpen };
+    if (initialFilePlan) {
+      if (
+        request.source.kind !== "file" ||
+        request.backend !== initialFilePlan.backend ||
+        request.mode !== "editing" ||
+        !isDeepStrictEqual(request.source.importOptions, initialFilePlan.importOptions)
+      )
+        return {
+          established: false,
+          response: protocolError(
+            "invalid_file_plan_target",
+            "Plan reuse requires the original engine and import options.",
+            true
+          )
+        };
+      const absent = this.persistence.checkAbsent(request.source, initialFilePlan.backend);
+      if (absent.kind !== "absent")
+        return {
+          established: false,
+          response: protocolError(
+            absent.kind === "occupied" ? "file_plan_target_occupied" : "persistence_unavailable",
+            absent.kind === "occupied"
+              ? "This file already has saved Open Wrangler work for these import options. Choose another file."
+              : "Open Wrangler could not read workspace storage. Retry after storage is available.",
+            true
+          )
+        };
+      try {
+        await initialFilePlan.assertTargetAvailable(request.source, sourceProtection);
+      } catch {
+        return {
+          established: false,
+          response: protocolError(
+            "file_plan_target_unavailable",
+            "Choose a different file from every open file session. Open Wrangler must be able to verify those file identities.",
+            true
+          )
+        };
+      }
+      const afterPreflight = currentFailure();
+      if (afterPreflight) return { established: false, response: afterPreflight };
+    }
     const response = await delegate.request(request, options);
     if (response.kind === "error" || response.kind === "cancelled") {
       return { established: false, response };
@@ -137,7 +201,7 @@ export class SessionRuntimeEstablisher {
       await this.runtimeCleanup.close(session, "invalid open runtime");
       return { established: false, response: afterOpen };
     }
-    const openedMismatch = sessionOpenedResponseMismatch(request, response);
+    const openedMismatch = sessionOpenedResponseMismatch(request, response, initialFilePlan !== undefined);
     if (openedMismatch) {
       await this.runtimeCleanup.close(session, "invalid open runtime");
       return {
@@ -150,10 +214,27 @@ export class SessionRuntimeEstablisher {
       };
     }
 
-    const restored = await this.restorePersistedSession(session, request, response, currentFailure, options);
+    session.sourceSchema =
+      request.source.kind === "file" && isFileDataBackend(response.metadata.backend)
+        ? structuredClone(response.metadata.schema)
+        : undefined;
+    const restored = initialFilePlan
+      ? await this.restoreInitialFilePlan(session, request, initialFilePlan, currentFailure, options)
+      : await this.restorePersistedSession(session, request, response, currentFailure, options);
     if (!restored.established) return restored;
     if (session.sourceProtection) {
       session.sourceProtection = await confirmSessionSourceProtection(session.sourceProtection);
+    }
+    if (initialFilePlan && !session.sourceProtection?.available) {
+      await this.runtimeCleanup.close(session, "late-open runtime");
+      return {
+        established: false,
+        response: protocolError(
+          "file_plan_target_changed",
+          "The selected file changed while its plan was being saved. The copied plan may be saved; reopen the file to inspect it.",
+          true
+        )
+      };
     }
     const beforePublication = currentFailure();
     if (beforePublication) {
@@ -165,6 +246,127 @@ export class SessionRuntimeEstablisher {
       session,
       response: publicOpenedResponse(restored.response, publicId, session.publicRevision, session.openRequest.source)
     };
+  }
+
+  private async restoreInitialFilePlan(
+    session: RuntimeEstablishedSession,
+    request: OpenSessionRequest,
+    plan: InitialFilePlan,
+    currentFailure: () => OpenWranglerResponse | undefined,
+    options?: BridgeRequestOptions
+  ): Promise<RuntimeEstablishmentResult> {
+    const assertCurrent = (): void => {
+      if (currentFailure()) throw new RuntimeStateRestoreError("The originating plan is no longer current.");
+    };
+    const source = structuredClone(session.metadata.source);
+    const assertCompletePlan = (): void => {
+      if (
+        session.metadata.backend !== plan.backend ||
+        session.metadata.mode !== "editing" ||
+        !session.metadata.capabilities.editable ||
+        !isDeepStrictEqual(session.metadata.source, source) ||
+        !isDeepStrictEqual(session.metadata.steps, plan.steps) ||
+        session.metadata.draftStep ||
+        !session.code.trim()
+      )
+        throw new RuntimeStateRestoreError("The runtime did not confirm the complete copied plan and generated code.");
+    };
+    try {
+      const schema = session.sourceSchema!;
+      if (
+        schema.length !== plan.sourceSchema.length ||
+        schema.some((column, index) => {
+          const original = plan.sourceSchema[index];
+          return (
+            column.id !== original.id ||
+            column.name !== original.name ||
+            column.position !== original.position ||
+            column.type !== original.type ||
+            column.rawType !== original.rawType
+          );
+        })
+      )
+        throw new RuntimeStateRestoreError(
+          "The selected file must have the same column names, order, and types as the plan's original input."
+        );
+      if (
+        !session.metadata.capabilities.editable ||
+        plan.steps.some((step) => !supportsOperation(session.metadata.capabilities, step.kind))
+      )
+        throw new RuntimeStateRestoreError("The selected file does not support every operation in this plan.");
+      await this.runtimeStateRestorer.restoreCleaningState(
+        session,
+        { steps: structuredClone([...plan.steps]) },
+        request.columnOffset,
+        request.columnLimit,
+        options,
+        assertCurrent
+      );
+      assertCompletePlan();
+      const page = await this.runtimeStateRestorer.restoreViewingState(
+        session,
+        undefined,
+        request.pageSize,
+        request.columnOffset,
+        request.columnLimit,
+        options,
+        assertCurrent
+      );
+      assertCompletePlan();
+      session.publicRevision = session.runtimeRevision;
+      session.sourceProtection = await confirmSessionSourceProtection(session.sourceProtection!);
+      await plan.assertTargetAvailable(request.source, session.sourceProtection);
+      assertCurrent();
+      const saved = await this.persistence.commitRuntimeReplacement(
+        request.source,
+        persistedSessionState(session.metadata, session.viewState),
+        () => !currentFailure(),
+        // This initial candidate stays private until the durable write succeeds.
+        () => () => undefined,
+        { requireAbsent: true }
+      );
+      if (saved.kind !== "committed") {
+        await this.runtimeCleanup.close(session, "invalid open runtime");
+        return {
+          established: false,
+          response:
+            currentFailure() ??
+            protocolError(
+              saved.kind === "unavailable" ? "persistence_unavailable" : "file_plan_target_changed",
+              saved.kind === "unavailable"
+                ? "Open Wrangler could not save the copied plan. Retry after workspace storage is available."
+                : "The target's saved state changed before the plan could be saved. Choose another file.",
+              true
+            )
+        };
+      }
+      return {
+        established: true,
+        session,
+        response: { kind: "sessionOpened", metadata: session.metadata, page: page.page, summaries: [] }
+      };
+    } catch (error) {
+      if (error instanceof DetachedBridgeRequestError) {
+        this.runtimeCleanup.trackDelegateSettlement(
+          session.delegate,
+          error.settlement.then(() => this.runtimeCleanup.close(session, "invalid open runtime"))
+        );
+      } else {
+        await this.runtimeCleanup.close(session, "invalid open runtime");
+      }
+      return {
+        established: false,
+        response:
+          currentFailure() ??
+          protocolError(
+            "file_plan_replay_failed",
+            error instanceof RuntimeStateRestoreError
+              ? error.message
+              : "Open Wrangler could not finish copying this plan. The original session was kept.",
+            true
+          )
+      };
+    }
   }
 
   private async restorePersistedSession(
@@ -260,6 +462,10 @@ export class SessionRuntimeEstablisher {
       session.runtimeRevision = clean.metadata.revision;
       session.publicRevision = clean.metadata.revision;
       session.metadata = clean.metadata;
+      session.sourceSchema =
+        request.source.kind === "file" && isFileDataBackend(clean.metadata.backend)
+          ? structuredClone(clean.metadata.schema)
+          : undefined;
       session.code = "";
       session.draftPresentation = undefined;
       session.draftBaseView = undefined;

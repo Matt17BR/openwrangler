@@ -49,6 +49,8 @@ export interface DraftBaseView {
 
 export interface RuntimeSessionState {
   sourceProtection?: SessionSourceProtection;
+  /** Initial file source schema retained by the host before cleaning replay. */
+  sourceSchema?: readonly ColumnSchema[];
   publicId: string;
   runtimeId: string;
   runtimeRevision: number;

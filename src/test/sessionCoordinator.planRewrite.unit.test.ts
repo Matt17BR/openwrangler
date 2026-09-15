@@ -130,6 +130,8 @@ describe("SessionCoordinator earlier-step plan rewrites", () => {
     const coordinator = new SessionCoordinator();
     const bridge = coordinator.createBridge({ request: harness.request });
     const opened = await open(bridge, initialSource);
+    const session = coordinator["sessions"].get(opened.metadata.sessionId)!;
+    session.sourceSchema = undefined;
 
     const response = await bridge.rewriteCleaningPlan?.(
       opened.metadata.sessionId,
@@ -145,6 +147,7 @@ describe("SessionCoordinator earlier-step plan rewrites", () => {
       metadata: { steps: [first, third] }
     });
     expect(harness.replayedStepIds()).toEqual([first.id, third.id]);
+    expect(session.sourceSchema).toBeUndefined();
   });
 
   it.each([
@@ -454,6 +457,11 @@ describe("SessionCoordinator earlier-step plan rewrites", () => {
       const bridge = coordinator.createBridge({ request });
       const opened = await open(bridge, initialSource);
       const sid = opened.metadata.sessionId;
+      const session = coordinator["sessions"].get(sid)!;
+      // This fixture starts with a confirmed plan, so retain its genuine
+      // original input separately from the already-cleaned opening metadata.
+      const sourceSchema = structuredClone(inputSchema);
+      session.sourceSchema = sourceSchema;
       const viewRequest = {
         kind: "getPage" as const,
         sessionId: sid,
@@ -505,6 +513,10 @@ describe("SessionCoordinator earlier-step plan rewrites", () => {
       const expectedView = newerView ? changedView : baseView;
       expect(harness.candidatePageRequests()).toEqual([expect.objectContaining({ filterModel: expectedView })]);
       expect(coordinator.activeSession()?.metadata.filterModel).toEqual(expectedView);
+      expect(session.sourceSchema).toEqual(inputSchema);
+      expect(session.sourceSchema).not.toBe(sourceSchema);
+      expect(session.sourceSchema?.[0]).not.toBe(sourceSchema[0]);
+      expect(session.sourceSchema).not.toEqual(finalSchema);
     } finally {
       await coordinator.shutdown();
     }
@@ -610,6 +622,9 @@ describe("SessionCoordinator earlier-step plan rewrites", () => {
     const coordinator = new SessionCoordinator(workspaceState);
     const bridge = coordinator.createBridge({ request: harness.request });
     const opened = await open(bridge, initialSource);
+    const session = coordinator["sessions"].get(opened.metadata.sessionId)!;
+    const sourceSchema = session.sourceSchema;
+    expect(sourceSchema).toEqual(opened.metadata.schema);
 
     const rewrite = bridge.rewriteCleaningPlan?.(
       opened.metadata.sessionId,
@@ -619,6 +634,9 @@ describe("SessionCoordinator earlier-step plan rewrites", () => {
       { offset: 0, limit: 100, columnOffset: 0, columnLimit: 16 }
     );
     await finalWriteStarted.promise;
+    const candidateSourceSchema = session.sourceSchema;
+    expect(candidateSourceSchema).toEqual(sourceSchema);
+    expect(candidateSourceSchema).not.toBe(sourceSchema);
     const candidateId = harness.candidateOpenRequests()[0]?.requestedSessionId;
     expect(candidateId).toEqual(expect.any(String));
 
@@ -632,6 +650,9 @@ describe("SessionCoordinator earlier-step plan rewrites", () => {
 
     releaseFinalWrite.resolve();
     await expect(rewrite).resolves.toMatchObject({ kind: "error", code: "persistence_unavailable" });
+    expect(session.runtimeId).toBe(candidateId);
+    expect(session.sourceSchema).toBe(candidateSourceSchema);
+    expect(session.sourceSchema).toEqual(sourceSchema);
     await expect(close).resolves.toEqual({ kind: "sessionClosed", sessionId: opened.metadata.sessionId });
     expect(harness.closedRuntimeIds()).toEqual(["runtime-old", candidateId]);
     expect(coordinator.activeSession()).toBeUndefined();

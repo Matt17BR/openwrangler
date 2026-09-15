@@ -54,6 +54,42 @@ export class OpenWranglerCustomEditorProvider implements vscode.CustomReadonlyEd
 
 export const registerFileCommands = (context: vscode.ExtensionContext, bridge: OpenWranglerBridge): void => {
   context.subscriptions.push(
+    vscode.commands.registerCommand("openWrangler.openFileWithPlan", async () => {
+      const captured = bridge.captureActiveFilePlan?.();
+      if (!captured) {
+        await vscode.window.showInformationMessage(
+          "Open a file with a confirmed cleaning plan before using it on another file."
+        );
+        return;
+      }
+      if ("kind" in captured) {
+        await vscode.window.showInformationMessage(captured.message);
+        return;
+      }
+      const enabledFileTypes = getEnabledFileTypes();
+      if (enabledFileTypes.length === 0) {
+        await vscode.window.showWarningMessage("Enable at least one Open Wrangler file type in Settings.");
+        return;
+      }
+      const files = await vscode.window.showOpenDialog({
+        title: "Open Another File with This Plan",
+        canSelectMany: false,
+        filters: { "Data files": enabledFileTypes }
+      });
+      const selected = files?.[0];
+      if (!selected || !(await validateFileTarget(selected))) return;
+      OpenWranglerPanel.create(
+        context,
+        captured.bridge,
+        fileSource(selected, captured.importOptions),
+        captured.backend,
+        captured.backend,
+        "editing"
+      );
+    })
+  );
+
+  context.subscriptions.push(
     vscode.commands.registerCommand("openWrangler.changeImportOptions", async () => {
       if (await OpenWranglerPanel.changeActiveImportOptions()) return;
       await vscode.window.showInformationMessage(

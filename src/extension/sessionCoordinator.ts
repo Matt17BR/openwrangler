@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 import type {
   ColumnSchema,
   DataBackend,
+  ErrorResponse,
   ExportOptions,
   OpenWranglerRequest,
   OpenWranglerResponse,
@@ -19,6 +20,7 @@ import { sessionModeAction } from "../shared/sessionMode";
 import type { GridViewState } from "../shared/viewState";
 import {
   type BridgeRequestOptions,
+  type FilePlanOpenContext,
   type OpenWranglerBridge,
   type SessionPresentation,
   type SessionRuntimeReplacement
@@ -47,7 +49,11 @@ import {
 } from "./sessionResponseCommitter";
 import { requestViewId } from "./sessionRequestScheduler";
 import { SessionRuntimeCleanup } from "./sessionRuntimeCleanup";
-import { SessionRuntimeEstablisher, type RuntimeEstablishedSession } from "./sessionRuntimeEstablisher";
+import {
+  SessionRuntimeEstablisher,
+  type RuntimeEstablishedSession,
+  type InitialFilePlan
+} from "./sessionRuntimeEstablisher";
 import { SessionRuntimeRecovery, type RuntimeRecoveryHooks } from "./sessionRuntimeRecovery";
 import {
   reconfigurationCancelled,
@@ -72,6 +78,7 @@ import {
   type SessionSchedulerState
 } from "./sessionCoordinatorState";
 import {
+  assertSeparateSessionSource,
   captureExportSourceProtection,
   type ExportSourceProtection,
   type SessionSourceProtection
@@ -144,12 +151,25 @@ export class SessionCoordinator implements vscode.Disposable {
   createBridge(
     delegate: OpenWranglerBridge,
     origin?: BridgeSessionOrigin,
-    sourceProtection?: Promise<SessionSourceProtection>
+    sourceProtection?: Promise<SessionSourceProtection>,
+    initialFilePlan?: InitialFilePlan
   ): OpenWranglerBridge {
     const confirmedOrigin = normalizeSessionOrigin(origin);
     sourceProtection ??= confirmedOrigin?.kind === "textDocument" ? confirmedOrigin.sourceProtection : undefined;
     return {
-      request: (request, options) => this.request(delegate, request, options, confirmedOrigin, sourceProtection),
+      request: async (request, options) => {
+        const response = await this.request(
+          delegate,
+          request,
+          options,
+          confirmedOrigin,
+          sourceProtection,
+          initialFilePlan
+        );
+        if (request.kind === "openSession" && response.kind === "sessionOpened") initialFilePlan = undefined;
+        return response;
+      },
+      captureActiveFilePlan: () => this.captureActiveFilePlan(delegate),
       installFileDependencies: (source, backend, options) =>
         delegate.installFileDependencies?.(source, backend, options) ?? Promise.resolve(false),
       onDidReplaceRuntime: (listener) =>
@@ -176,6 +196,100 @@ export class SessionCoordinator implements vscode.Disposable {
       clearStepInspection: (sessionId) => this.clearStepInspection(sessionId),
       setActiveSession: (sessionId) => this.setActive(sessionId),
       reportDiagnostic: (message) => this.reportDiagnostic(delegate, message)
+    };
+  }
+
+  private captureActiveFilePlan(delegate: OpenWranglerBridge): FilePlanOpenContext | ErrorResponse {
+    const session = this.activeSessionId ? this.sessions.get(this.activeSessionId) : undefined;
+    if (
+      !session ||
+      !this.isLiveSession(session) ||
+      this.sessionOwnerDelegates.get(session) !== delegate ||
+      session.openRequest.source.kind !== "file" ||
+      !isFileDataBackend(session.metadata.backend) ||
+      session.metadata.mode !== "editing" ||
+      !session.metadata.capabilities.editable ||
+      session.metadata.steps.length === 0 ||
+      session.metadata.draftStep ||
+      session.metadata.steps.some((step) => step.kind === "customCode") ||
+      !session.sourceSchema
+    )
+      return protocolError(
+        "file_plan_unavailable",
+        "Open a file with confirmed built-in cleaning steps and no draft before reusing its plan. Custom Code and notebook plans are not supported.",
+        true
+      );
+    if (!vscode.workspace.isTrusted)
+      return protocolError("workspace_untrusted", "Trust this workspace before reusing a cleaning plan.", true);
+    const names = session.sourceSchema.map((column) => column.name);
+    if (names.some((name) => name.length === 0) || new Set(names).size !== names.length)
+      return protocolError(
+        "file_plan_ambiguous_schema",
+        "Plan reuse requires unique, non-empty source column names.",
+        true
+      );
+    const { runtimeId, runtimeRevision, publicRevision, openRequest, sourceSchema } = session;
+    const ready = (): boolean => {
+      const state = session.scheduler.snapshot();
+      return (
+        !session.closing &&
+        !session.reconfiguring &&
+        !session.reconnecting &&
+        !session.recoveryRequired &&
+        !session.runtimeSettlementBarrier &&
+        !session.liveReconnectRequired &&
+        !state.activeForegroundOperation &&
+        state.interactiveQueueLength === 0 &&
+        !state.terminalOperation
+      );
+    };
+    if (!ready())
+      return protocolError(
+        "file_plan_busy",
+        "Wait for the current file operation to finish, then reuse its plan.",
+        true
+      );
+    const runtimeIsCurrent = delegate.captureFileSessionOwner?.(runtimeId);
+    if (!runtimeIsCurrent?.())
+      return protocolError(
+        "file_plan_runtime_unavailable",
+        "The Python runtime that supplied this plan is no longer available. Reopen the original file before reusing its plan.",
+        true
+      );
+    const backend = session.metadata.backend;
+    let target: SessionSource | undefined;
+    const plan: InitialFilePlan = {
+      backend,
+      importOptions: structuredClone(openRequest.source.importOptions),
+      sourceSchema: structuredClone(sourceSchema),
+      steps: structuredClone(session.metadata.steps),
+      isCurrent: () =>
+        this.isLiveSession(session) &&
+        runtimeIsCurrent() &&
+        ready() &&
+        session.delegate === delegate &&
+        session.runtimeId === runtimeId &&
+        session.runtimeRevision === runtimeRevision &&
+        session.publicRevision === publicRevision &&
+        session.openRequest === openRequest &&
+        session.sourceSchema === sourceSchema,
+      assertTargetAvailable: async (source, protection) => {
+        if (target && !isDeepStrictEqual(target, source)) throw new Error("The selected target changed.");
+        target ??= structuredClone(source);
+        for (const other of this.sessions.values()) {
+          if (other.openRequest.source.kind !== "file") continue;
+          const otherProtection = await captureExportSourceProtection(
+            sessionSourceFileUris(other.openRequest.source),
+            other.sourceProtection
+          );
+          assertSeparateSessionSource(protection, otherProtection);
+        }
+      }
+    };
+    return {
+      backend,
+      importOptions: structuredClone(plan.importOptions),
+      bridge: this.createBridge(delegate, undefined, undefined, plan)
     };
   }
 
@@ -439,7 +553,8 @@ export class SessionCoordinator implements vscode.Disposable {
     request: OpenWranglerRequest,
     options?: BridgeRequestOptions,
     origin?: CoordinatedSessionOrigin,
-    sourceProtection?: Promise<SessionSourceProtection>
+    sourceProtection?: Promise<SessionSourceProtection>,
+    initialFilePlan?: InitialFilePlan
   ): Promise<OpenWranglerResponse> {
     if (this.disposed) {
       return protocolError(
@@ -451,7 +566,7 @@ export class SessionCoordinator implements vscode.Disposable {
       );
     }
     if (request.kind === "openSession") {
-      return this.open(delegate, request, options, origin, sourceProtection);
+      return this.open(delegate, request, options, origin, sourceProtection, initialFilePlan);
     }
     if (!isSessionBoundRequest(request)) {
       return delegate.request(request, options);
@@ -563,7 +678,8 @@ export class SessionCoordinator implements vscode.Disposable {
     request: OpenSessionRequest,
     options?: BridgeRequestOptions,
     origin?: CoordinatedSessionOrigin,
-    sourceProtection?: Promise<SessionSourceProtection>
+    sourceProtection?: Promise<SessionSourceProtection>,
+    initialFilePlan?: InitialFilePlan
   ): Promise<OpenWranglerResponse> {
     this.pendingOpens.set(delegate, (this.pendingOpens.get(delegate) ?? 0) + 1);
     try {
@@ -584,7 +700,7 @@ export class SessionCoordinator implements vscode.Disposable {
       }
       const retainedSource = await (sourceProtection ?? captureSessionSourceFiles(request.source));
       return await this.serializeSessionEstablishment(delegate, () =>
-        this.openTracked(delegate, request, options, origin, retainedSource)
+        this.openTracked(delegate, request, options, origin, retainedSource, initialFilePlan)
       );
     } finally {
       const remaining = (this.pendingOpens.get(delegate) ?? 1) - 1;
@@ -600,7 +716,8 @@ export class SessionCoordinator implements vscode.Disposable {
     request: OpenSessionRequest,
     options?: BridgeRequestOptions,
     origin?: CoordinatedSessionOrigin,
-    sourceProtection?: SessionSourceProtection
+    sourceProtection?: SessionSourceProtection,
+    initialFilePlan?: InitialFilePlan
   ): Promise<OpenWranglerResponse> {
     const provisionalOwner = `opening:${++this.persistenceOwnerOrdinal}`;
     try {
@@ -615,7 +732,8 @@ export class SessionCoordinator implements vscode.Disposable {
             executeSessionRequest: (session, scheduledRequest, scheduledOptions) =>
               this.executeSessionRequest(session, scheduledRequest, scheduledOptions)
           },
-          sourceProtection
+          sourceProtection,
+          initialFilePlan
         )
       );
       const result = attempt.value;

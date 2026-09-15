@@ -28,6 +28,7 @@ import {
 import { SessionRuntimeCleanup, runtimeCleanupOptions } from "./sessionRuntimeCleanup";
 import { recoveryFollowupOptions } from "./sessionRuntimeRequestExecutor";
 import { captureSessionSourceFiles } from "./sessionOrigin";
+import { isFileDataBackend } from "./pythonEnvironmentModel";
 import { confirmSessionSourceProtection } from "./files/safeFileExport";
 import {
   gridState,
@@ -318,6 +319,9 @@ export class SessionRuntimeReconfigurer {
         session.publicId
       );
     }
+    if (candidateRequest.source.kind === "file" && isFileDataBackend(response.metadata.backend)) {
+      candidate.sourceSchema = structuredClone(previous.sourceSchema);
+    }
     const openedIdentity = {
       backend: candidate.metadata.backend,
       mode: candidate.metadata.mode,
@@ -445,6 +449,7 @@ export class SessionRuntimeReconfigurer {
           session.publicRevision = previousPublicRevision;
           session.openRequest = previousOpenRequest;
           session.sourceProtection = previous.sourceProtection;
+          session.sourceSchema = previous.sourceSchema;
           session.metadata = previous.metadata;
           session.code = previous.code;
           session.draftPresentation = previous.draftPresentation;
@@ -593,6 +598,9 @@ export class SessionRuntimeReconfigurer {
         session.publicId
       );
     }
+    if (candidateRequest.source.kind === "file" && isFileDataBackend(response.metadata.backend)) {
+      candidate.sourceSchema = structuredClone(response.metadata.schema);
+    }
     if (options?.cancellation?.isCancellationRequested) {
       await cleanupCandidate();
       return reconfigurationCancelled(session.publicId);
@@ -730,6 +738,7 @@ function modeName(mode: SessionMode): "Editing" | "Viewing" {
 function runtimeState(session: RuntimeReconfigurationSession): RuntimeSessionState {
   return {
     sourceProtection: session.sourceProtection,
+    sourceSchema: session.sourceSchema,
     publicId: session.publicId,
     runtimeId: session.runtimeId,
     runtimeRevision: session.runtimeRevision,
@@ -793,6 +802,7 @@ function restoreReplacement(session: RuntimeReconfigurationSession, snapshot: Ru
   session.publicRevision = snapshot.publicRevision;
   session.openRequest = snapshot.openRequest;
   session.sourceProtection = snapshot.runtime.sourceProtection;
+  session.sourceSchema = snapshot.runtime.sourceSchema;
   session.metadata = snapshot.runtime.metadata;
   session.code = snapshot.runtime.code;
   session.draftPresentation = snapshot.runtime.draftPresentation;
@@ -850,6 +860,7 @@ function publishCandidate(
   session.publicRevision = publicRevision;
   session.openRequest = confirmedReplayOpenRequest(request, candidate.metadata);
   session.sourceProtection = candidate.sourceProtection;
+  session.sourceSchema = candidate.sourceSchema;
   session.metadata = candidate.metadata;
   session.code = candidate.code;
   session.draftPresentation = candidate.draftPresentation;

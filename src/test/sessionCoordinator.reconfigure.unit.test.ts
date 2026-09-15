@@ -149,6 +149,7 @@ describe("SessionCoordinator file-session reconfiguration", () => {
 
   it("atomically keeps the public identity while replaying cleaning and viewing state on a new backend", async () => {
     const requests: Array<{ request: OpenWranglerRequest; options?: BridgeRequestOptions }> = [];
+    const candidateSourceSchema = schema.map((column) => ({ ...column, nullable: true }));
     const initialMetadata = metadataFor({
       runtimeId: "runtime-old",
       source: initialSource,
@@ -170,7 +171,10 @@ describe("SessionCoordinator file-session reconfiguration", () => {
         }
         if (request.kind === "openSession") {
           candidateId = request.requestedSessionId ?? "";
-          return openedFor(request, metadataFor({ runtimeId: candidateId, source: request.source, backend: "pandas" }));
+          return openedFor(request, {
+            ...metadataFor({ runtimeId: candidateId, source: request.source, backend: "pandas" }),
+            schema: candidateSourceSchema
+          });
         }
         if (request.kind === "previewStep" && request.sessionId === candidateId) {
           const priorSteps = request.step.id === draftStep.id ? [appliedStep] : [];
@@ -242,6 +246,7 @@ describe("SessionCoordinator file-session reconfiguration", () => {
     const bridge = coordinator.createBridge({ request: delegateRequest });
     const opened = await open(bridge, initialSource);
     const publicId = opened.metadata.sessionId;
+    const previousSourceSchema = coordinator["sessions"].get(publicId)?.sourceSchema;
     await bridge.updateViewState?.(publicId, {
       selectedColumnId: "c:value",
       columnWidths: new Map([["c:value", 260]]),
@@ -296,6 +301,13 @@ describe("SessionCoordinator file-session reconfiguration", () => {
         filterModel: savedFilter
       }
     });
+    const restoredSourceSchema = coordinator["sessions"].get(publicId)?.sourceSchema;
+    expect(restoredSourceSchema).toEqual(candidateSourceSchema);
+    expect(restoredSourceSchema).not.toEqual(previousSourceSchema);
+    expect(restoredSourceSchema).not.toEqual(coordinator.activeSession()?.metadata.schema);
+    expect(restoredSourceSchema).not.toBe(candidateSourceSchema);
+    candidateSourceSchema[0]!.nullable = false;
+    expect(restoredSourceSchema?.[0]?.nullable).toBe(true);
     expect(bridge.getSessionPresentation?.(publicId)).toEqual({
       sessionId: publicId,
       revision: opened.metadata.revision + 1,
@@ -494,9 +506,25 @@ describe("SessionCoordinator file-session reconfiguration", () => {
       } as unknown as Memento;
       const delegate = simpleReconfiguringDelegate("runtime-old");
       const coordinator = new SessionCoordinator(workspaceState);
-      const bridge = coordinator.createBridge({ request: delegate.request });
+      const bridge = coordinator.createBridge({
+        request: async (request, options) => {
+          const response = await delegate.request(request, options);
+          return (response.kind === "sessionOpened" || response.kind === "page") &&
+            response.metadata.sessionId !== "runtime-old"
+            ? {
+                ...response,
+                metadata: {
+                  ...response.metadata,
+                  schema: schema.map((column) => ({ ...column, nullable: true }))
+                }
+              }
+            : response;
+        }
+      });
       const opened = await open(bridge, initialSource);
       const before = coordinator.activeSession();
+      const previousSourceSchema = coordinator["sessions"].get(opened.metadata.sessionId)?.sourceSchema;
+      expect(previousSourceSchema).toEqual(schema);
 
       const response = await bridge.reconfigureFileSession!(
         opened.metadata.sessionId,
@@ -506,6 +534,7 @@ describe("SessionCoordinator file-session reconfiguration", () => {
 
       expect(response).toMatchObject({ kind: "error", code: "persistence_unavailable", recoverable: true });
       expect(coordinator.activeSession()).toEqual(before);
+      expect(coordinator["sessions"].get(opened.metadata.sessionId)?.sourceSchema).toBe(previousSourceSchema);
       const closedBeforeShutdown = vi
         .mocked(delegate.request)
         .mock.calls.map(([request]) => request)

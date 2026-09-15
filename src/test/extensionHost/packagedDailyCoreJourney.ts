@@ -5,7 +5,7 @@ import * as path from "node:path";
 import type { Frame, Locator, Page } from "playwright-core";
 import * as vscode from "vscode";
 import { OPEN_WRANGLER_MIME_V2, type NotebookOutputPayload } from "../../shared/notebookOutput";
-import { assertExactBytes } from "./acceptanceSourceFixture";
+import { assertExactBytes, ensureDeterministicDelimitedFixturePath } from "./acceptanceSourceFixture";
 import { cleanupAcceptanceTemporaryDirectory } from "./acceptanceTemporaryDirectory";
 import type { ExtensionApi, TestApi } from "./extensionHostTestApi";
 import { notebookTab } from "./rendererProvenance";
@@ -76,6 +76,10 @@ export function createPackagedDailyCoreJourney({
       "The daily preview journey runs in the representative VS Code editor."
     );
     const sourceBytes = await vscode.workspace.fs.readFile(fixture);
+    const planTarget = vscode.Uri.file(
+      path.join(path.dirname(fixture.fsPath), "[Plan reuse] regional orders 2024-2025.csv")
+    );
+    let planTargetBytes: Uint8Array | undefined;
     const notebookDirectory = mkdtempSync(path.join(tmpdir(), "openwrangler-daily-index-"));
     const notebookLabel = "daily Pandas index preview";
     const notebookPath = path.join(notebookDirectory, "pandas-index.ipynb");
@@ -251,6 +255,131 @@ export function createPackagedDailyCoreJourney({
         "The daily preview sort must leave the CSV unchanged."
       );
 
+      recordAcceptanceProgress("platform-smoke:daily-core:plan-seed");
+      const orderId = active.metadata.schema.find((column) => column.name === "order_id");
+      assert.ok(orderId, "The daily plan source must contain its original order_id column.");
+      assert.equal(active.metadata.mode, "editing");
+      await target.frame.getByRole("button", { name: "Add step", exact: true }).click();
+      const operationDialog = target.frame.getByRole("dialog", { name: "Add cleaning step" });
+      await operationDialog.waitFor({ state: "visible", timeout: 10_000 });
+      await operationDialog.getByPlaceholder("Search operations").fill("rename column");
+      await operationDialog.getByRole("button", { name: /^Rename column\b/u }).click();
+      await operationDialog.getByLabel("Column", { exact: true }).selectOption(orderId.id);
+      await operationDialog.getByLabel("New name", { exact: true }).fill("reused_order_id");
+      await operationDialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+      await waitFor(
+        () => {
+          const preview = testing.activeSession();
+          const draft = preview?.metadata.draftStep;
+          return (
+            preview?.sessionId === active.sessionId &&
+            draft?.kind === "renameColumn" &&
+            draft.params.column.id === orderId.id &&
+            draft.params.newName === "reused_order_id"
+          );
+        },
+        30_000,
+        "the daily Rename preview on the original session"
+      );
+      await operationDialog.waitFor({ state: "hidden", timeout: 10_000 });
+      await target.frame
+        .getByRole("region", { name: "Draft review" })
+        .getByRole("button", { name: "Apply step", exact: true })
+        .click();
+      await waitFor(
+        () => {
+          const confirmed = testing.activeSession();
+          const step = confirmed?.metadata.steps[0];
+          return (
+            confirmed?.sessionId === active.sessionId &&
+            confirmed.metadata.draftStep === undefined &&
+            confirmed.metadata.steps.length === 1 &&
+            step?.kind === "renameColumn" &&
+            step.params.column.id === orderId.id &&
+            step.params.newName === "reused_order_id" &&
+            confirmed.metadata.schema[0]?.name === "reused_order_id" &&
+            testing.sessionSchedulerState(active.sessionId)?.quiescent === true
+          );
+        },
+        30_000,
+        "one confirmed daily Rename step before plan capture"
+      );
+      const observedOrigin = testing.sessionSnapshot(active.sessionId);
+      assert.ok(observedOrigin?.code, "The confirmed daily plan must have generated code.");
+      const origin = {
+        sessionId: observedOrigin.sessionId,
+        metadata: structuredClone(observedOrigin.metadata),
+        code: observedOrigin.code,
+        viewState: structuredClone(observedOrigin.viewState)
+      };
+      assert.equal(testing.activeSession()?.sessionId, origin.sessionId);
+      assert.deepEqual(origin.viewState.filterModel.sort, [{ column: "market", direction: "desc", nulls: "last" }]);
+
+      const sourceText = Buffer.from(sourceBytes).toString("utf8");
+      const originalFirstId = "\n2400001;";
+      assert.equal(sourceText.split(originalFirstId).length, 2, "The target substitution must occur exactly once.");
+      const targetText = sourceText.replace(originalFirstId, "\n3400001;");
+      ensureDeterministicDelimitedFixturePath(planTarget.fsPath, targetText, "daily plan reuse");
+      planTargetBytes = Buffer.from(targetText, "utf8");
+
+      recordAcceptanceProgress("platform-smoke:daily-core:reuse-plan");
+      const openWithPlan = vscode.commands.executeCommand("openWrangler.openFileWithPlan");
+      const openDialog = page
+        .locator(".quick-input-widget:visible")
+        .filter({ hasText: "Open Another File with This Plan" })
+        .last();
+      const openInput = openDialog.locator(".quick-input-box input").first();
+      try {
+        await openDialog.waitFor({ state: "visible", timeout: 10_000 });
+        await openInput.fill(path.resolve(planTarget.fsPath));
+        await openInput.press("Enter");
+        await openDialog.waitFor({ state: "hidden", timeout: 10_000 });
+      } finally {
+        if (await openDialog.isVisible()) await openInput.press("Escape");
+        await withBoundedAcceptancePromise(openWithPlan, 10_000, "the daily plan file picker to finish");
+      }
+      await waitFor(
+        () => testing.activeSession()?.metadata.source.uri === planTarget.toString(),
+        SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+        "the reused plan to publish its new target session"
+      );
+      const reused = testing.activeSession();
+      assert.ok(reused, "Plan reuse must publish an ordinary target session.");
+      assert.notEqual(reused.sessionId, origin.sessionId);
+      assert.equal(reused.metadata.backend, "polars");
+      assert.equal(reused.metadata.mode, "editing");
+      assert.equal(reused.metadata.draftStep, undefined);
+      assert.deepEqual(reused.metadata.shape, active.metadata.shape);
+      assert.deepEqual(reused.metadata.steps, origin.metadata.steps);
+      assert.equal(reused.metadata.schema[0]?.name, "reused_order_id");
+      assert.deepEqual(reused.viewState.filterModel.filters, []);
+      assert.deepEqual(reused.viewState.filterModel.sort, []);
+      assert.equal(reused.code, origin.code);
+      const reusedTarget = await waitForOpenWranglerGridTarget(page, testing, reused.sessionId);
+      await reusedTarget.frame.locator('th[data-column="reused_order_id"]').waitFor({
+        state: "visible",
+        timeout: 10_000
+      });
+      const reusedFirstCell = reusedTarget.frame.locator('td[data-grid-row="0"][data-grid-column="0"]').first();
+      await reusedFirstCell.waitFor({ state: "visible", timeout: 10_000 });
+      assert.equal((await reusedFirstCell.innerText()).trim(), "3400001");
+      const retainedOrigin = testing.sessionSnapshot(origin.sessionId);
+      assert.ok(retainedOrigin, "Opening the target must retain the original session.");
+      assert.equal(retainedOrigin.metadata.revision, origin.metadata.revision);
+      assert.deepEqual(retainedOrigin.metadata.steps, origin.metadata.steps);
+      assert.equal(retainedOrigin.code, origin.code);
+      assert.deepEqual(retainedOrigin.viewState.filterModel, origin.viewState.filterModel);
+      assertExactBytes(
+        await vscode.workspace.fs.readFile(fixture),
+        sourceBytes,
+        "Plan reuse must preserve its source."
+      );
+      assertExactBytes(
+        await vscode.workspace.fs.readFile(planTarget),
+        planTargetBytes,
+        "Plan reuse must preserve its target file."
+      );
+
       recordAcceptanceProgress("platform-smoke:daily-core:pandas-index");
       const notebook = await vscode.workspace.openNotebookDocument(notebookUri);
       const notebookEditor = await vscode.window.showNotebookDocument(notebook, {
@@ -324,6 +453,17 @@ export function createPackagedDailyCoreJourney({
         );
       } catch (error) {
         failures.push(error);
+      }
+      if (planTargetBytes) {
+        try {
+          assertExactBytes(
+            await vscode.workspace.fs.readFile(planTarget),
+            planTargetBytes,
+            "Daily preview cleanup must preserve the plan target CSV."
+          );
+        } catch (error) {
+          failures.push(error);
+        }
       }
       if (!editorMayBeOpen) {
         try {

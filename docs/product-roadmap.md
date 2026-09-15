@@ -19,7 +19,7 @@ These are open, unscheduled proposals. User demand is not yet established; examp
 welcome in their issues. Start with useful single-source operations before taking on broader source ownership.
 
 - [Expand one list column](https://github.com/Matt17BR/openwrangler/issues/1384): investigate native types, row order and growth limits. Extract Struct Fields is implemented on main; see its [supported scope](feature-parity.md#cleaning-operations).
-- [Apply a cleaning plan to another input](https://github.com/Matt17BR/openwrangler/issues/1385): review column mapping for one compatible target.
+- [Apply a cleaning plan to another input](https://github.com/Matt17BR/openwrangler/issues/1385): matching-schema file reuse is implemented on main; column mapping and broader input support remain proposals. See the [current scope](feature-parity.md#reuse-a-file-cleaning-plan).
 - [Clean a DuckDB notebook relation](https://github.com/Matt17BR/openwrangler/issues/1386): extend today's viewer with native cleaning, code and export.
 - [Browse a DuckDB database](https://github.com/Matt17BR/openwrangler/issues/1387): choose a read-only table or view without writing SQL.
 - [Join or append a second input](https://github.com/Matt17BR/openwrangler/issues/1388): a later proposal that first needs explicit source and row-growth rules.

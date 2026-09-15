@@ -110,7 +110,8 @@ export class OpenWranglerPanel {
     private source: SessionSource,
     private readonly backend?: DataBackend,
     openImmediately = true,
-    private backendPreference: DataBackend | "auto" = backend ?? "auto"
+    private backendPreference: DataBackend | "auto" = backend ?? "auto",
+    private readonly initialMode?: SessionMode
   ) {
     this.panel.iconPath = {
       light: vscode.Uri.joinPath(this.context.extensionUri, "media", "action-icon-light.svg"),
@@ -406,7 +407,8 @@ export class OpenWranglerPanel {
     bridge: OpenWranglerBridge,
     source: SessionSource,
     backend?: DataBackend,
-    backendPreference: DataBackend | "auto" = backend ?? "auto"
+    backendPreference: DataBackend | "auto" = backend ?? "auto",
+    initialMode?: SessionMode
   ): OpenWranglerPanel {
     const panel = vscode.window.createWebviewPanel(
       "openWrangler.session",
@@ -419,7 +421,7 @@ export class OpenWranglerPanel {
       }
     );
 
-    return new OpenWranglerPanel(panel, context, bridge, source, backend, true, backendPreference);
+    return new OpenWranglerPanel(panel, context, bridge, source, backend, true, backendPreference, initialMode);
   }
 
   async open(): Promise<void> {
@@ -430,10 +432,11 @@ export class OpenWranglerPanel {
     const mode =
       this.backend === "pyspark"
         ? "viewing"
-        : getSetting<"editing" | "viewing">(
+        : (this.initialMode ??
+          getSetting<"editing" | "viewing">(
             isFile ? "fileStartMode" : "notebookStartMode",
             isFile ? "editing" : "viewing"
-          );
+          ));
     const generation = ++this.openAttemptGeneration;
     const reportsNotebookOpenProgress = this.source.kind === "notebookVariable";
     if (reportsNotebookOpenProgress) this.activeSessionOpenProgressGeneration = generation;
@@ -1363,7 +1366,7 @@ export class OpenWranglerPanel {
       pageSize,
       columnOffset: 0,
       columnLimit,
-      mode: getSetting<"editing" | "viewing">("fileStartMode", "editing")
+      mode: this.initialMode ?? getSetting<"editing" | "viewing">("fileStartMode", "editing")
     };
   }
 

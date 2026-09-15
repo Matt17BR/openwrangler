@@ -85,6 +85,11 @@ Choose an applied step in **Cleaning Steps** to inspect its changes, then return
 or delete earlier steps, or use **Undo** and **Redo**. Changing an earlier step replays the later steps so the result
 and generated code follow the updated plan.
 
+Use **Open Wrangler: Open Another File with This Plan** to repeat confirmed steps on a file matching the plan's original
+column names, order, and types. It opens a separate Editing session using the same engine and import options. This supports
+Pandas, Polars, and DuckDB file plans without Custom Code or an unfinished draft. Choose a file that is not already
+open in Open Wrangler and has no saved work for those import options. Both source files remain unchanged.
+
 <a href="https://github.com/Matt17BR/openwrangler/blob/main/docs/images/readme/gallery/applied-step-inspection-detail.png"><img alt="Inspecting an applied Formula column step with its added column highlighted and history controls visible" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/gallery/applied-step-inspection-detail.png" width="960"></a>
 
 _Inspect an applied step without changing the confirmed data or viewing filters._
@@ -163,7 +168,7 @@ The [reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/referenc
 Browse the [product gallery](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md) and
 [accessibility and keyboard guide](https://github.com/Matt17BR/openwrangler/blob/main/docs/accessibility.md).
 The [product roadmap](https://github.com/Matt17BR/openwrangler/blob/main/docs/product-roadmap.md) tracks unscheduled
-proposals such as explicit date parsing, nested-column expansion and guided reuse of a cleaning plan on another input.
+proposals such as list-column expansion, column mapping when reusing a plan, and DuckDB notebook cleaning.
 For contributions, see [CONTRIBUTING.md](https://github.com/Matt17BR/openwrangler/blob/main/CONTRIBUTING.md).
 Report bugs in [GitHub Issues](https://github.com/Matt17BR/openwrangler/issues), or follow
 [SECURITY.md](https://github.com/Matt17BR/openwrangler/blob/main/SECURITY.md) for vulnerability reports.

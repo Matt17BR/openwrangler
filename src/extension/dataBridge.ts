@@ -92,8 +92,19 @@ export interface SessionRuntimeReplacement {
   }): Promise<{ response: PageResponse | ErrorResponse | CancelledResponse; isCurrent(): boolean } | undefined>;
 }
 
+/** A confirmed file plan captured before choosing its target; replay stays owned by the coordinator. */
+export interface FilePlanOpenContext {
+  readonly backend: Extract<DataBackend, "pandas" | "polars" | "duckdb">;
+  readonly importOptions: SessionSource["importOptions"];
+  readonly bridge: OpenWranglerBridge;
+}
+
 export interface OpenWranglerBridge {
   request(request: OpenWranglerRequest, options?: BridgeRequestOptions): Promise<OpenWranglerResponse>;
+  /** Retains a liveness check for the exact Python process and selection owning a file session. */
+  captureFileSessionOwner?(sessionId: string): (() => boolean) | undefined;
+  /** Pins the active confirmed file plan and returns its initial-open bridge, or an eligibility diagnostic. */
+  captureActiveFilePlan?(): FilePlanOpenContext | ErrorResponse;
   /** Rechecks a failed file open and confirms any installation for that source. True permits a fresh normal open. */
   installFileDependencies?(
     source: SessionSource,

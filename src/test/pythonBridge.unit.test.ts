@@ -546,6 +546,8 @@ describe("PythonBridge process-slot routing", () => {
     await harness.waitForWrites("first", 1);
     await harness.waitForWrites("second", 1);
     expect(harness.sessionOwnership.confirmedOwner("first-session")).toBeUndefined();
+    expect(harness.bridge.captureFileSessionOwner("first-session")).toBeUndefined();
+    expect(harness.bridge.captureFileSessionOwner("missing-session")).toBeUndefined();
     expect(harness.sessionOwnership.provisionalClaim("first-session")?.runtime).toBe(harness.runtimes.first);
     harness.respond("first", harness.writes("first")[0].requestId, openedFor(firstRequest, "first-session"));
     harness.respond("second", harness.writes("second")[0].requestId, openedFor(secondRequest, "second-session"));
@@ -1029,6 +1031,14 @@ describe("PythonBridge process lifecycle", () => {
 
   it("spawns one replacement only after restart observes the prior process exit", async () => {
     const { bridge, internals, process } = createLifecycleHarness();
+    const raw = bridge as unknown as RawBridgeInternals;
+    const request = openSessionRequest(remoteFileSource());
+    raw.sessionOwnership.finalizeResponse(
+      { requestId: "initial-open", request, runtime: internals.runtime },
+      openedFor(request, "retained-session")
+    );
+    const owner = bridge.captureFileSessionOwner("retained-session");
+    expect(owner?.()).toBe(true);
     const replacement = new LifecycleChildProcess();
     internals.spawnProcess.mockReturnValue(replacement as unknown as ChildProcessWithoutNullStreams);
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue({
@@ -1041,6 +1051,8 @@ describe("PythonBridge process lifecycle", () => {
     });
 
     bridge.restart("Acceptance restart.");
+    expect(owner?.()).toBe(false);
+    expect(bridge.captureFileSessionOwner("retained-session")).toBeUndefined();
     const starting = internals.ensureProcess(initializeRequest);
     await Promise.resolve();
     await Promise.resolve();
@@ -1063,10 +1075,19 @@ describe("PythonBridge process lifecycle", () => {
       })
     });
 
-    bridge.restart("Acceptance cleanup.");
-    const cleanup = internals.processStop;
-    replacement.emit("exit", null, "SIGKILL");
-    await expect(cleanup).resolves.toBeUndefined();
+    raw.sessionOwnership.finalizeResponse(
+      { requestId: "replacement-open", request, runtime: internals.runtime },
+      openedFor(request, "retained-session")
+    );
+    const replacementOwner = bridge.captureFileSessionOwner("retained-session");
+    expect(replacementOwner?.()).toBe(true);
+    expect(owner?.()).toBe(false);
+
+    replacement.emit("exit", 1, null);
+    expect(replacementOwner?.()).toBe(false);
+    expect(owner?.()).toBe(false);
+    expect(bridge.captureFileSessionOwner("retained-session")).toBeUndefined();
+    expect(internals.process).toBeUndefined();
   });
 
   it("rejects an unpinned runtime executable before spawning", async () => {
@@ -3728,8 +3749,9 @@ describe("PythonBridge environment resource selection", () => {
       version: "3.13.2",
       source: "pythonExtension"
     };
+    const secondResolution = deferred<TestPythonEnvironment>();
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockImplementation(async (_context, resource) =>
-      resource?.path.startsWith("/first/") ? firstEnvironment : secondEnvironment
+      resource?.path.startsWith("/first/") ? firstEnvironment : secondResolution.promise
     );
     vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({
       missing: []
@@ -3759,16 +3781,12 @@ describe("PythonBridge environment resource selection", () => {
 
     const firstOpen = bridge.request(firstRequest);
     const secondOpen = bridge.request(secondRequest);
-    await vi.waitFor(() => {
-      expect(firstWrites).toHaveLength(1);
-      expect(secondWrites).toHaveLength(1);
-    });
+    await vi.waitFor(() => expect(firstWrites).toHaveLength(1));
+    expect(pythonEnvironment.resolvePythonEnvironment).toHaveBeenCalledTimes(2);
+    expect(secondWrites).toEqual([]);
+    expect(spawnProcess).toHaveBeenCalledOnce();
     const firstRuntime = raw.runtimeSlots.get(firstFolder.uri.toString(true));
-    const secondRuntime = raw.runtimeSlots.get(secondFolder.uri.toString(true));
     expect(firstRuntime).toBeDefined();
-    expect(secondRuntime).toBeDefined();
-    expect(firstRuntime).not.toBe(secondRuntime);
-    expect(spawnProcess).toHaveBeenCalledTimes(2);
     raw.runtimeTransport.handleLine(
       firstRuntime!,
       firstProcess as unknown as ChildProcessWithoutNullStreams,
@@ -3778,6 +3796,19 @@ describe("PythonBridge environment resource selection", () => {
         response: openedFor(firstRequest, "first-live-session")
       } satisfies RuntimeResponseEnvelope)
     );
+    await expect(firstOpen).resolves.toMatchObject({ kind: "sessionOpened" });
+    const firstOwner = bridge.captureFileSessionOwner("first-live-session");
+    expect(firstOwner?.()).toBe(true);
+    const firstGeneration = bridge.runtimeGeneration;
+
+    secondResolution.resolve(secondEnvironment);
+    await vi.waitFor(() => expect(secondWrites).toHaveLength(1));
+    const secondRuntime = raw.runtimeSlots.get(secondFolder.uri.toString(true));
+    expect(secondRuntime).toBeDefined();
+    expect(firstRuntime).not.toBe(secondRuntime);
+    expect(spawnProcess).toHaveBeenCalledTimes(2);
+    expect(bridge.runtimeGeneration).toBe(firstGeneration + 1);
+    expect(firstOwner?.()).toBe(true);
     raw.runtimeTransport.handleLine(
       secondRuntime!,
       secondProcess as unknown as ChildProcessWithoutNullStreams,
@@ -3787,8 +3818,9 @@ describe("PythonBridge environment resource selection", () => {
         response: openedFor(secondRequest, "second-live-session")
       } satisfies RuntimeResponseEnvelope)
     );
-    await expect(firstOpen).resolves.toMatchObject({ kind: "sessionOpened" });
     await expect(secondOpen).resolves.toMatchObject({ kind: "sessionOpened" });
+    const secondOwner = bridge.captureFileSessionOwner("second-live-session");
+    expect(secondOwner?.()).toBe(true);
 
     const secondClose = bridge.request({
       kind: "closeSession",
@@ -3804,6 +3836,9 @@ describe("PythonBridge environment resource selection", () => {
 
     expect(firstProcess.stdin.end).toHaveBeenCalledOnce();
     expect(secondProcess.stdin.end).not.toHaveBeenCalled();
+    expect(firstOwner?.()).toBe(false);
+    expect(bridge.captureFileSessionOwner("first-live-session")).toBeUndefined();
+    expect(secondOwner?.()).toBe(true);
     expect(raw.sessionOwnership.confirmedOwner("first-live-session")).toBeUndefined();
     expect(raw.sessionOwnership.confirmedOwner("second-live-session")).toBe(secondRuntime);
     expect(secondRuntime!.pendingIds.size).toBe(1);
@@ -3821,6 +3856,7 @@ describe("PythonBridge environment resource selection", () => {
       sessionId: "second-live-session"
     });
     expect(secondProcess.stdin.end).toHaveBeenCalledOnce();
+    expect(secondOwner?.()).toBe(false);
 
     const firstStop = firstRuntime!.processStop;
     const secondStop = secondRuntime!.processStop;

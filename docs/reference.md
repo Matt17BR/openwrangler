@@ -8,6 +8,7 @@
 | --------------------------------------------- | -------------------------------------------------------------- |
 | `openWrangler.openFile`                       | Open in Open Wrangler                                          |
 | `openWrangler.openPath`                       | Open Wrangler: Open File Path                                  |
+| `openWrangler.openFileWithPlan`               | Open Another File with This Plan                               |
 | `openWrangler.convertTrustedPickle`           | Convert Trusted Pickle to Parquet…                             |
 | `openWrangler.changeImportOptions`            | Open Wrangler: Change Import Options                           |
 | `openWrangler.launchDataViewer`               | Open Wrangler: Launch Selected Notebook Variable               |

@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { link, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -9,7 +9,8 @@ import type {
   OpenWranglerRequest,
   OpenWranglerResponse,
   SessionMetadata,
-  SessionSource
+  SessionSource,
+  TransformStep
 } from "../shared/protocol";
 import {
   persistedSessionState,
@@ -17,6 +18,15 @@ import {
   persistenceKey,
   SESSION_STORAGE_KEY
 } from "../extension/sessionPersistence";
+import { type BridgeRequestOptions, DetachedBridgeRequestError } from "../extension/dataBridge";
+import {
+  appliedFor,
+  deferred,
+  metadataFor,
+  openedFor,
+  pageFor,
+  previewFor
+} from "./sessionReconfigurationTestFixtures";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
 import { SessionPersistenceStore } from "../extension/sessionPersistenceStore";
 import { isOpenWranglerRequest, isOpenWranglerResponse } from "../shared/protocolValidation";
@@ -1326,4 +1336,341 @@ function presentationOpenedResponse(): ReturnType<typeof openedResponse> {
       ]
     }
   };
+}
+
+describe("SessionCoordinator file-plan reuse", () => {
+  it("keeps the complete copied plan private until saved and then routes an independent target session", async () => {
+    const fixture = await filePlanFixture();
+    try {
+      const selected = fixture.capture();
+      const finalWrite = deferred<void>();
+      const writing = deferred<void>();
+      fixture.beforeSave = async (value) => {
+        const target = value[fixture.targetKey] as { cleaning?: { steps?: unknown[] } } | undefined;
+        if (target?.cleaning?.steps) {
+          writing.resolve();
+          await finalWrite.promise;
+        }
+      };
+      const opening = selected.bridge.request(fixture.targetRequest);
+      await writing.promise;
+      expect(fixture.coordinator.activeSession()?.sessionId).toBe(fixture.originId);
+      expect(fixture.coordinator.diagnostics().sessionCount).toBe(1);
+      expect(fixture.targetRequests.map((request) => request.kind)).toEqual([
+        "openSession",
+        "previewStep",
+        "applyDraft",
+        "previewStep",
+        "applyDraft",
+        "getPage"
+      ]);
+      finalWrite.resolve();
+      const result = await opening;
+      expect(result.kind).toBe("sessionOpened");
+      if (result.kind !== "sessionOpened") throw new Error("Expected copied plan.");
+      expect(result.metadata.source).toEqual(fixture.targetRequest.source);
+      expect(result.metadata.steps).toEqual(fixture.steps);
+      expect(result.metadata.sessionId).not.toBe(fixture.originId);
+      expect(fixture.coordinator.sessionSnapshot(fixture.originId)).toEqual(fixture.originSnapshot);
+      expect(fixture.stored[fixture.originKey]).toEqual(fixture.savedOrigin);
+      expect(fixture.stored[fixture.targetKey]).toMatchObject({ cleaning: { steps: fixture.steps } });
+      expect(fixture.coordinator.activeSession()?.code).toBe("# target.csv");
+      await fixture.bridge.request({
+        kind: "closeSession",
+        sessionId: fixture.originId,
+        revision: fixture.originSnapshot!.metadata.revision
+      });
+      await expect(
+        selected.bridge.request({
+          kind: "getPage",
+          sessionId: result.metadata.sessionId,
+          revision: result.metadata.revision,
+          offset: 0,
+          limit: 10,
+          columnOffset: 0,
+          columnLimit: 16,
+          viewRequestId: "independent-target",
+          filterModel: { filters: [], sort: [] }
+        })
+      ).resolves.toMatchObject({ kind: "page" });
+      expect(await readFile(fixture.originPath, "utf8")).toBe("value\n1.2\n2.3\n");
+      expect(await readFile(fixture.targetPath, "utf8")).toBe("value\n4.5\n6.7\n");
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it.each([
+    "saved target",
+    "hard-link alias",
+    "retired origin",
+    "runtime replacement",
+    "changed import options"
+  ] as const)("refuses %s before opening a target runtime", async (failure) => {
+    const fixture = await filePlanFixture();
+    try {
+      const selected = fixture.capture();
+      const request = structuredClone(fixture.targetRequest);
+      if (failure === "saved target") fixture.stored[fixture.targetKey] = { unknownWork: true };
+      if (failure === "runtime replacement") fixture.runtimeOwnerCurrent = false;
+      if (failure === "hard-link alias") {
+        const alias = join(fixture.directory, "alias.csv");
+        await link(fixture.originPath, alias);
+        request.source = { kind: "file", label: "alias.csv", path: alias, uri: vscode.Uri.file(alias).toString() };
+      }
+      if (failure === "retired origin")
+        await fixture.bridge.request({
+          kind: "closeSession",
+          sessionId: fixture.originId,
+          revision: fixture.originSnapshot!.metadata.revision
+        });
+      if (failure === "changed import options") request.source.importOptions = { delimiter: ";" };
+      await expect(selected.bridge.request(request)).resolves.toMatchObject({ kind: "error" });
+      expect(fixture.targetRequests).toEqual([]);
+      if (failure === "saved target") expect(fixture.stored[fixture.targetKey]).toEqual({ unknownWork: true });
+      else expect(Object.hasOwn(fixture.stored, fixture.targetKey)).toBe(false);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it.each([
+    "schema",
+    "incomplete plan",
+    "page source drift",
+    "unsupported operation",
+    "runtime refusal",
+    "cancellation",
+    "detached cancellation",
+    "retired origin"
+  ] as const)("abandons a private target on %s without replacing saved work", async (failure) => {
+    const fixture = await filePlanFixture();
+    const cancellation = new vscode.CancellationTokenSource();
+    const settlement = deferred<void>();
+    try {
+      const selected = fixture.capture();
+      if (failure === "schema") fixture.targetSchemaMismatch = true;
+      if (failure === "incomplete plan") fixture.targetIncompletePlan = true;
+      if (failure === "page source drift") fixture.targetPageSourceDrift = true;
+      if (failure === "unsupported operation") fixture.targetUnsupported = true;
+      fixture.beforeTargetPreview = async () => {
+        if (failure === "runtime refusal")
+          return { kind: "error", code: "engine_error", message: "Cannot replay this value.", recoverable: true };
+        if (failure === "cancellation") cancellation.cancel();
+        if (failure === "detached cancellation")
+          throw new DetachedBridgeRequestError("cancelled", "cancellation", true, settlement.promise);
+        if (failure === "retired origin")
+          await fixture.bridge.request({
+            kind: "closeSession",
+            sessionId: fixture.originId,
+            revision: fixture.originSnapshot!.metadata.revision
+          });
+        return undefined;
+      };
+      const result = await selected.bridge.request(fixture.targetRequest, { cancellation: cancellation.token });
+      expect(result.kind).toBe(failure === "cancellation" ? "cancelled" : "error");
+      expect(Object.hasOwn(fixture.stored, fixture.targetKey)).toBe(false);
+      expect(fixture.stored[fixture.originKey]).toEqual(fixture.savedOrigin);
+      expect(fixture.coordinator.diagnostics().sessionCount).toBe(failure === "retired origin" ? 0 : 1);
+      if (failure === "detached cancellation") {
+        expect(fixture.targetRequests.some((request) => request.kind === "closeSession")).toBe(false);
+        settlement.resolve();
+        await vi.waitFor(() =>
+          expect(fixture.targetRequests.filter((request) => request.kind === "closeSession")).toHaveLength(1)
+        );
+      } else expect(fixture.targetRequests.filter((request) => request.kind === "closeSession")).toHaveLength(1);
+      expect(fixture.targetRequests.filter((request) => request.kind === "applyDraft")).toHaveLength(
+        failure === "incomplete plan" || failure === "page source drift" ? 2 : 0
+      );
+      if (failure === "runtime refusal") {
+        fixture.beforeTargetPreview = undefined;
+        await expect(selected.bridge.request(fixture.targetRequest)).resolves.toMatchObject({
+          kind: "sessionOpened",
+          metadata: { steps: fixture.steps }
+        });
+      }
+    } finally {
+      settlement.resolve();
+      cancellation.dispose();
+      await fixture.close();
+    }
+  });
+
+  it.each(["cancellation", "file replacement"] as const)(
+    "keeps a durable copied plan after late %s without publishing its runtime",
+    async (failure) => {
+      const fixture = await filePlanFixture();
+      const cancellation = new vscode.CancellationTokenSource();
+      try {
+        const selected = fixture.capture();
+        fixture.beforeSave = async (value) => {
+          if ((value[fixture.targetKey] as { cleaning?: unknown } | undefined)?.cleaning) {
+            if (failure === "cancellation") cancellation.cancel();
+            else {
+              await rename(fixture.targetPath, join(fixture.directory, "retired-target.csv"));
+              await writeFile(fixture.targetPath, "value\n9\n");
+            }
+          }
+        };
+        await expect(
+          selected.bridge.request(fixture.targetRequest, { cancellation: cancellation.token })
+        ).resolves.toMatchObject(
+          failure === "cancellation" ? { kind: "cancelled" } : { kind: "error", code: "file_plan_target_changed" }
+        );
+        expect(fixture.stored[fixture.targetKey]).toMatchObject({ cleaning: { steps: fixture.steps } });
+        expect(fixture.coordinator.activeSession()?.sessionId).toBe(fixture.originId);
+        expect(fixture.targetRequests.filter((request) => request.kind === "closeSession")).toHaveLength(1);
+      } finally {
+        cancellation.dispose();
+        await fixture.close();
+      }
+    }
+  );
+});
+
+async function filePlanFixture() {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-file-plan-"));
+  const originPath = join(directory, "origin.csv");
+  const targetPath = join(directory, "target.csv");
+  await writeFile(originPath, "value\n1.2\n2.3\n");
+  await writeFile(targetPath, "value\n4.5\n6.7\n");
+  const source = (path: string, label: string): SessionSource => ({
+    kind: "file",
+    label,
+    path,
+    uri: vscode.Uri.file(path).toString()
+  });
+  const originSource = source(originPath, "origin.csv");
+  const targetSource = source(targetPath, "target.csv");
+  const steps: TransformStep[] = [
+    { id: "round-value", kind: "roundNumber", params: { column: { id: "c:value", name: "value" }, decimals: 1 } },
+    { id: "floor-value", kind: "floorNumber", params: { column: { id: "c:value", name: "value" } } }
+  ];
+  const originKey = persistenceKey(originSource, "polars");
+  const targetKey = persistenceKey(targetSource, "polars");
+  const originMetadata = metadataFor({ runtimeId: "seed", source: originSource, steps });
+  const savedOrigin = serializePersistedSession(
+    persistedSessionState(originMetadata, { columnWidths: new Map(), viewport: { firstVisibleRow: 0, scrollLeft: 0 } })
+  );
+  if (!savedOrigin) throw new Error("Expected saved origin fixture.");
+  const controls: {
+    stored: Record<string, unknown>;
+    beforeSave?: (value: Record<string, unknown>) => Promise<void>;
+    beforeTargetPreview?: () => Promise<OpenWranglerResponse | undefined>;
+    runtimeOwnerCurrent: boolean;
+    targetSchemaMismatch: boolean;
+    targetIncompletePlan: boolean;
+    targetPageSourceDrift: boolean;
+    targetUnsupported: boolean;
+  } = {
+    stored: { [originKey]: savedOrigin },
+    runtimeOwnerCurrent: true,
+    targetSchemaMismatch: false,
+    targetIncompletePlan: false,
+    targetPageSourceDrift: false,
+    targetUnsupported: false
+  };
+  const memory: Memento = {
+    get: <T>() => controls.stored as T,
+    keys: () => [SESSION_STORAGE_KEY],
+    update: async (_key, value) => {
+      await controls.beforeSave?.(value);
+      controls.stored = value;
+    }
+  };
+  const coordinator = new SessionCoordinator(memory);
+  const sessions = new Map<string, SessionMetadata>();
+  const targetRequests: OpenWranglerRequest[] = [];
+  let ordinal = 0;
+  const bridge = coordinator.createBridge({
+    captureFileSessionOwner: (sessionId) => {
+      const owner = sessions.get(sessionId);
+      return owner ? () => controls.runtimeOwnerCurrent && sessions.get(sessionId) === owner : undefined;
+    },
+    request: async (request: OpenWranglerRequest, _options?: BridgeRequestOptions): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") {
+        const metadata = metadataFor({ runtimeId: `runtime-${++ordinal}`, source: request.source });
+        metadata.schema = structuredClone(metadata.schema);
+        if (request.source.path !== originPath) {
+          targetRequests.push(request);
+          if (controls.targetSchemaMismatch) metadata.schema[0].rawType = "Int64";
+          if (controls.targetUnsupported) metadata.capabilities.supportedOperations = [];
+        }
+        sessions.set(metadata.sessionId, metadata);
+        return openedFor(request, metadata);
+      }
+      if (!("sessionId" in request)) throw new Error(`Unexpected request ${request.kind}`);
+      const metadata = sessions.get(request.sessionId);
+      if (!metadata) throw new Error("Unknown fixture runtime.");
+      const target = metadata.source.path !== originPath;
+      if (target) targetRequests.push(request);
+      if (request.kind === "closeSession") {
+        sessions.delete(request.sessionId);
+        return { kind: "sessionClosed", sessionId: request.sessionId };
+      }
+      if (request.kind === "getPage")
+        return pageFor(
+          request,
+          target && controls.targetPageSourceDrift
+            ? { ...metadata, source: { ...metadata.source, path: join(directory, "unselected.csv") } }
+            : metadata
+        );
+      if (request.kind === "previewStep") {
+        if (target) {
+          const refused = await controls.beforeTargetPreview?.();
+          if (refused) return refused;
+        }
+        metadata.revision++;
+        metadata.draftStep = request.step;
+        return previewFor(request, structuredClone(metadata), `# ${metadata.source.label}`);
+      }
+      if (request.kind === "applyDraft") {
+        if (!metadata.draftStep) throw new Error("Expected fixture draft.");
+        metadata.revision++;
+        metadata.steps.push(metadata.draftStep);
+        if (target && controls.targetIncompletePlan && metadata.steps.length === 2) metadata.steps.pop();
+        metadata.latestStepInputSchema = structuredClone(metadata.schema);
+        delete metadata.draftStep;
+        return appliedFor(request, structuredClone(metadata), `# ${metadata.source.label}`);
+      }
+      throw new Error(`Unexpected fixture request ${request.kind}`);
+    }
+  });
+  const originRequest = { ...openRequest, source: originSource };
+  const origin = await bridge.request(originRequest);
+  if (origin.kind !== "sessionOpened") {
+    await coordinator.shutdown();
+    await rm(directory, { recursive: true, force: true });
+    throw new Error(`Origin failed: ${JSON.stringify(origin)}`);
+  }
+  const snapshot = coordinator.activeSession()!;
+  const originSnapshot = {
+    ...snapshot,
+    metadata: structuredClone(snapshot.metadata),
+    viewState: structuredClone(snapshot.viewState)
+  };
+  return Object.assign(controls, {
+    directory,
+    originPath,
+    targetPath,
+    targetKey,
+    originKey,
+    savedOrigin: structuredClone(controls.stored[originKey]),
+    steps,
+    coordinator,
+    bridge,
+    originId: origin.metadata.sessionId,
+    originSnapshot,
+    targetRequests,
+    targetRequest: { ...openRequest, source: targetSource },
+    capture() {
+      const selected = bridge.captureActiveFilePlan!();
+      if ("kind" in selected) throw new Error(selected.message);
+      return selected;
+    },
+    async close() {
+      await coordinator.shutdown();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
 }
