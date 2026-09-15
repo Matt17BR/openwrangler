@@ -47,6 +47,7 @@ from ..portable_regex import (
     PORTABLE_REGEX_TEXT_LIMIT_MESSAGE,
     portable_regex_contract,
 )
+from ..trusted_pickle_to_parquet import SourceFingerprint, _confirmed_source_path_fingerprint
 from .base import (
     DEFAULT_STRIP_CHARACTERS,
     INTERNAL_ROW_ID_PREFIX,
@@ -90,6 +91,47 @@ _PORTABLE_INTEGER_MAX = 10**38 - 1
 _PORTABLE_INTEGER_MIN = -_PORTABLE_INTEGER_MAX
 _DUCKDB_DECIMAL_TYPE = re.compile(r"^DECIMAL\((\d+),\s*(\d+)\)$", re.IGNORECASE)
 _STRUCTURAL_TRANSFORM_KINDS = frozenset({"renameColumn", "selectColumns", "dropColumns"})
+
+
+@dataclass
+class _DuckDBDatabaseReservation:
+    path: str
+    fingerprint: SourceFingerprint
+    temporary: TemporaryDirectory[str]
+    users: int = 1
+
+
+_database_reservations: dict[str, _DuckDBDatabaseReservation] = {}
+_database_reservations_lock = RLock()
+
+
+def _reserve_database(path: str) -> _DuckDBDatabaseReservation:
+    # SessionSource supplies the resolved path. Count pending native connects as
+    # users so another engine cannot remove their configured spill directory.
+    with _database_reservations_lock:
+        fingerprint = _confirmed_source_path_fingerprint(Path(path))
+        reservation = _database_reservations.get(path)
+        if reservation is not None:
+            if fingerprint != reservation.fingerprint:
+                raise EngineError(
+                    "The DuckDB database changed while table viewers remain open. "
+                    "Close the existing table viewers, then reopen the database."
+                )
+            reservation.users += 1
+            return reservation
+        reservation = _DuckDBDatabaseReservation(path, fingerprint, TemporaryDirectory(prefix="open-wrangler-duckdb-"))
+        _database_reservations[path] = reservation
+        return reservation
+
+
+def _release_database(reservation: _DuckDBDatabaseReservation) -> None:
+    with _database_reservations_lock:
+        reservation.users -= 1
+        if reservation.users:
+            return
+        del _database_reservations[reservation.path]
+    # A new reservation may now own a different directory for this path.
+    reservation.temporary.cleanup()
 
 
 def _literal_file_path(path: str) -> str:
@@ -321,7 +363,7 @@ class DuckDBEngine(DataFrameEngine):
         self._notebook_relation_owners: list[_DuckDBNotebookRelationOwner] = []
         self._database_query_lock = RLock()
         self._database_connection: Any | None = None
-        self._database_temporary: TemporaryDirectory[str] | None = None
+        self._database_reservation: _DuckDBDatabaseReservation | None = None
 
     def detect(self, value: Any) -> bool:
         if isinstance(value, (DuckDBSqlPlan, DuckDBNotebookPlan)):
@@ -408,8 +450,10 @@ class DuckDBEngine(DataFrameEngine):
                 if self._database_connection is not None:
                     self._database_connection.close()
             finally:
-                if self._database_temporary is not None:
-                    self._database_temporary.cleanup()
+                reservation = self._database_reservation
+                self._database_reservation = None
+                if reservation is not None:
+                    _release_database(reservation)
         for owner in owners:
             owner.close()
 
@@ -422,9 +466,9 @@ class DuckDBEngine(DataFrameEngine):
                     raise EngineError("The DuckDB engine is closed.")
                 if self._database_connection is not None:
                     raise EngineError("This DuckDB engine already owns a database reader.")
-            if allow_spill:
-                self._database_temporary = TemporaryDirectory(prefix="open-wrangler-duckdb-")
             try:
+                if allow_spill:
+                    self._database_reservation = _reserve_database(path)
                 self._database_connection = duckdb.connect(
                     path,
                     read_only=True,
@@ -434,12 +478,16 @@ class DuckDBEngine(DataFrameEngine):
                         "autoload_known_extensions": False,
                         "enable_external_file_cache": False,
                         "preserve_insertion_order": True,
-                        "temp_directory": self._database_temporary.name if self._database_temporary is not None else "",
+                        "temp_directory": (
+                            self._database_reservation.temporary.name if self._database_reservation is not None else ""
+                        ),
                     },
                 )
                 self._database_connection.execute("SET TimeZone = 'UTC'")
             except Exception as error:
                 self.close()
+                if isinstance(error, EngineError):
+                    raise
                 if isinstance(error, duckdb.ConnectionException) and (
                     "same database file with a different configuration than existing connections" in str(error)
                 ):
@@ -994,7 +1042,7 @@ class DuckDBEngine(DataFrameEngine):
             if isinstance(frame, DuckDBSqlPlan):
                 # The fused group can otherwise reserve one wide hash-table
                 # partition per DuckDB worker. Transient file connections close
-                # below; database readers retain this setting until session close.
+                # below; shared database readers retain it until the last reader closes.
                 connection.execute("SET threads = 1")
                 counts = _execute_rows(
                     connection,

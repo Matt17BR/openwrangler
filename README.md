@@ -139,8 +139,8 @@ describes supported frame classes, operations and export limits.
 ## Supported dataframes
 
 In [source builds](https://github.com/Matt17BR/openwrangler/blob/main/CONTRIBUTING.md#build-and-install-from-source),
-use **Open Wrangler: Open DuckDB Table** to choose a local database and explore one base table with the grid,
-filters and profiles. Close its viewer before opening another table from that database or writing to the database.
+use **Open Wrangler: Open DuckDB Table** to choose a local database and explore its base tables with the grid,
+filters and profiles. Multiple tables can stay open. Close all its viewers before writing to the database.
 Views, SQL editing, cleaning and exports are unavailable for this entry point. Computed columns can change between queries.
 
 | Dataframe or source                                  | View    | Cleaning and generated code         | Data export                |

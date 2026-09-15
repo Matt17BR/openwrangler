@@ -1162,16 +1162,20 @@ caching remain disabled.
 
 Database-table sessions retain one read-only connection in their engine and serialize each full query and fetch
 scope. They reuse the same SQL-plan, page and profile owners. Native spill files belong to a private temporary
-directory, removed after the connection closes; DuckDB's database-adjacent default is not used. External access is
+directory, removed after the last reserved reader closes; DuckDB's database-adjacent default is not used. External access is
 disabled. Only base tables are admitted; views and SQL editing are unsupported. Stored defaults and computed columns
 retain native behavior, so computed values may change between requests. This is not a snapshot transaction.
 Catalog admission quotes validated schema and table names through the existing SQL-literal owner. It avoids
 parameter binding that initializes optional Pandas, NumPy and PyArrow modules on a cold request worker.
 
-One viewer per database per Python runtime is supported because independent private spill paths conflict with DuckDB's
-shared database configuration. A second viewer is refused without disturbing the first. Ordinary database writers are
-excluded while the reader is open. Close waits for the active query/fetch scope and then releases the connection and
-owned temporary directory once. Initial-open cancellation retains the existing late-result cleanup path; it does not
+Viewers of the same resolved database path share a private spill directory and native database resources, while each
+engine retains its own connection, query lock and interruption tracking. A reservation includes pending opens; the last
+release removes the directory after native connection closure. Joining compares the existing file fingerprint with the
+first reservation, refusing a changed source instead of serving an older cached database. This adds no path-alias policy.
+An incompatible connection created outside these viewers is still refused without disturbing its owner. Header statistics
+retain their single-thread guard, which also affects the other readers of that database; resource budgets are not per viewer.
+Ordinary database writers are excluded while any reader remains open. Close waits for that engine's active query/fetch scope
+and releases its reservation once. Initial-open cancellation retains the existing late-result cleanup path; it does not
 promise immediate native preemption. Main-file identity is checked before and after reads even without a known suffix.
 Read-only recovery of a native WAL is supported without changing its bytes. Metadata checks are not a database snapshot
 or protection against every same-size in-place change. Cleaning, code generation, export and cloning are unavailable.
