@@ -482,8 +482,8 @@ a logical-view change or disabled controls.
 
 Unnamed columns support viewing, profiling, keyboard selection, and copy. Their cell menus, header sorts, profile
 actions, and Filters / Sorts consistently disable name-addressed actions without leaving a page request pending.
-Toggling an ordinary value preserves null and NaN selections. Supported scalar selections remain
-checked beside their corresponding typed values. Saved Filter Rows steps accept historical `inf` and `-inf` values
+Toggling an ordinary value preserves null and NaN selections. Saved scalar selections remain checked where the picker recognizes their typed equivalent.
+Other raw selections may have no checked counterpart and remain removable through their chips. Saved Filter Rows steps accept historical `inf` and `-inf` values
 without dropping the cleaning plan during replay.
 Python and native R reject malformed viewing structures before execution. Native R applies the same array and
 logic admission checks to Filter Rows drafts; valid empty filters and existing native operand behavior remain.
