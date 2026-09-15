@@ -569,15 +569,19 @@ def test_custom_result_column_check_preserves_native_empty_and_first_column_resu
         engine.close()
 
 
-def test_generated_custom_result_schema_check_does_not_evaluate_lazy_rows() -> None:
+def test_generated_custom_result_captures_lazy_rows_after_schema_check() -> None:
     visits: list[int] = []
+    drop_columns = False
 
     def observe(batch: pl.DataFrame) -> pl.DataFrame:
         visits.append(batch.height)
-        return batch
+        return batch.select([]) if drop_columns else batch
 
-    frame = pl.DataFrame({"key": [2, 3]}).lazy().map_batches(observe, schema={"key": pl.Int64})
-    # Exercise this shared schema check separately from the Polars Custom result expression check.
+    frame = (
+        pl.DataFrame({"key": [2, 3]})
+        .lazy()
+        .map_batches(observe, schema={"key": pl.Int64}, validate_output_schema=False)
+    )
     lines = [
         *custom_code_prelude_lines(),
         "import polars as pl",
@@ -587,9 +591,17 @@ def test_generated_custom_result_schema_check_does_not_evaluate_lazy_rows() -> N
         "    return df",
     ]
     namespace: dict[str, Any] = {}
-    exec(compile("\n".join(lines), "<generated-custom-result>", "exec"), namespace, namespace)
-    result = namespace["custom_result"](frame)
-    assert result is frame
+    exec(compile("\n".join(lines), "<generated-custom-result>", "exec", dont_inherit=True), namespace, namespace)
+    with pytest.raises(ValueError, match="^A transformation must leave at least one visible column[.]$"):
+        namespace["custom_result"](frame.select([]))
     assert visits == []
-    assert result.collect().rows() == [(2,), (3,)]
+    result = namespace["custom_result"](frame)
+    assert isinstance(result, pl.LazyFrame) and result is not frame
     assert visits == [2]
+    assert result.collect().rows() == [(2,), (3,)]
+    assert result.select("key").collect().rows() == [(2,), (3,)]
+    assert visits == [2]
+    drop_columns = True
+    with pytest.raises(ValueError, match="^A transformation must leave at least one visible column[.]$"):
+        namespace["custom_result"](frame)
+    assert visits == [2, 2]
