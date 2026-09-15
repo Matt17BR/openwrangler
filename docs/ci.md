@@ -89,6 +89,12 @@ Required-document, generated-reference and release-document checks still run and
   not extend to the lifecycle unit test, installed harness, scripts or runtime source. Additions, deletions, renames
   and mode changes retain execution.
   Both platform R jobs still run their cleanup, package and installed-editor checks.
+- The same Python, Linux R source, platform numeric source and Windows source omissions apply to modifications of
+  the existing `src/extension/nativeViews.ts`, `src/extension/nativeViewsExportOptions.ts`,
+  `src/test/nativeViewStateCommands.unit.test.ts` and `src/test/nativeViewExportCommands.unit.test.ts` files,
+  alone or with other edits eligible for those omissions. Additions, deletions, renames, mode changes and other host
+  files remain outside this permission. Source still runs both TypeScript programs, its full Vitest suite and the Node
+  script checks; package verification and installed VS Code and R journeys remain required.
 - R source and installed-editor execution may be omitted for additions or edits to `.py` files under
   `python/openwrangler_runtime/` or `python/tests/`, and modifications to allowed Markdown files.
 - Native Spark may be omitted for modifications to one or more of the existing
@@ -116,25 +122,27 @@ Required-document, generated-reference and release-document checks still run and
 Mixed Python/R changes require both runtimes. The Python job does not consume the allowed R or installed-harness files.
 The R checks do not execute the allowed Python files; the selected installed R journeys use Python only for Jupyter client readiness
 and exclude the mixed-language literate journey. The Python and Windows contract suites do not read CHANGELOG;
-Source and packaged smoke retain its validation and package-content checks. Shared/host code, fixtures, configuration
-and dependency locks require full execution, as do scripts and other paths outside these scopes. If an affected test suite
-or selected runner begins consuming an omitted input, update the proof and its tests in the same change.
+Source and packaged smoke retain its validation and package-content checks. Shared code, other host code, fixtures,
+configuration and dependency locks require full execution, as do scripts and other paths outside these scopes. If an
+affected test suite or selected runner begins consuming an omitted input, update the proof and its tests in the same change.
 
-The Python worker does not load webview source or the admitted lifecycle test. Its Node decoder checks use shared
-contracts, which remain outside this permission. This omission includes the worker's Python statics and all Pytest
-cases, including native Spark; it gives no fresh Python execution result. The installed R journeys do load the webview
-and exercise real profiles, so they remain required. Local browser acceptance still applies to rendered UI changes.
+The Python worker does not load webview source, the admitted lifecycle test or the four native view files. Its Node
+decoder checks use shared contracts, which remain outside this permission. This omission includes the worker's Python
+statics and all Pytest cases, including native Spark; it gives no fresh Python execution result. The installed R journeys
+do load the webview and exercise real profiles, so they remain required. Local browser acceptance still applies to rendered UI changes.
 
-The Linux R phases load native R assets and the selected Node transport owners, without loading renderer source.
+The Linux R phases load native R assets and the selected Node transport owners, without loading renderer source or the
+four native view files.
 The kernel-transport phase also runs native notebook discovery, selection and dependency checks with the same selected R executable.
 Their separate `r_runtime_omittable` result permits the Linux matrix and each platform's numeric-portability step to be
-skipped. The platform step loads native R assets and its source-test helpers, without loading renderer source.
+skipped. The platform step loads native R assets and its source-test helpers, without loading renderer source or those
+native view files.
 Its `omit_source` Boolean workflow input defaults to false, so manual dispatch retains this execution. Skipping it
 also omits its separate private source-library preparation. Platform setup, artifact cleanup, macOS process
 cancellation, packaging and installed-editor checks remain required. Together with `python_omittable`, the proof
 also permits omission of the Windows filesystem and process job, whose selected Python and Node owners do not load
-renderer source. Its bootstrap tests do load the
-installed-notebook fixtures, which remain outside this additional omission. R runtime and source-test changes retain
+renderer source or those native view files. Its bootstrap tests do load the installed-notebook fixtures, which remain
+outside this additional omission. R runtime and source-test changes retain
 Windows source execution. Omission summaries report no fresh source execution for the skipped jobs.
 
 The `native_spark_omittable` proof changes only the Python worker's Spark installation requirement. Pandas stays

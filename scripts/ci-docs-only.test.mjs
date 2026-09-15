@@ -14,6 +14,12 @@ const arrowFormulaHelper = "python/openwrangler_runtime/engines/_pandas_arrow_fo
 const arrowFormulaTests = ["python/tests/test_operation_edges.py", "python/tests/test_session_transactions.py"];
 const pandasFilterTests = ["python/tests/test_pandas_engine.py", "python/tests/test_filter_logic.py"];
 const screenshot = "docs/images/acceptance/operation-dialog-dark-1280.png";
+const nativeViewFiles = [
+  "src/extension/nativeViews.ts",
+  "src/extension/nativeViewsExportOptions.ts",
+  "src/test/nativeViewStateCommands.unit.test.ts",
+  "src/test/nativeViewExportCommands.unit.test.ts"
+];
 const workflow = load(readFileSync(resolve(import.meta.dirname, "../.github/workflows/ci.yml"), "utf8"));
 const releasedJupyter = load(
   readFileSync(resolve(import.meta.dirname, "../.github/workflows/released-jupyter.yml"), "utf8")
@@ -506,7 +512,7 @@ test("omits Linux R source work for the grid accessibility change while keeping 
   assert.equal(proof.docsOnly, false);
 });
 
-test("proves Python omissions while retaining Linux R source checks for non-renderer inputs", async (context) => {
+test("proves Python omissions with selective native R source checks", async (context) => {
   const cases = [
     { added: [], modified: [screenshot], checkCli: true },
     {
@@ -543,6 +549,19 @@ test("proves Python omissions while retaining Linux R source checks for non-rend
     { added: [], modified: ["src/webviews/grid/rowScrollModel.ts"], runtimeOmittable: true },
     { added: [], modified: ["src/webviews/grid/DataGrid.tsx"], runtimeOmittable: true },
     { added: [], modified: ["src/webviews/styles/grid.css"], runtimeOmittable: true },
+    ...nativeViewFiles.map((file) => ({ added: [], modified: [file], runtimeOmittable: true })),
+    {
+      added: [],
+      modified: [...nativeViewFiles, "docs/architecture.md", "CHANGELOG.md"],
+      runtimeOmittable: true,
+      checkCli: true
+    },
+    { added: [], modified: [nativeViewFiles[0], "r/openwrangler_runtime/kernel_agent.R"] },
+    {
+      added: [],
+      modified: [nativeViewFiles[0], "python/openwrangler_runtime/session.py"],
+      pythonOmittable: false
+    },
     ...[
       "r/openwrangler_runtime/frame_contract.R",
       "r/tests/kernel_agent.R",
@@ -658,6 +677,7 @@ test("keeps both runtimes required for R and CHANGELOG changes with Python sourc
 test("requires full owners for deleted or renamed source, including alongside additions", async (context) => {
   for (const file of [
     screenshot,
+    nativeViewFiles[0],
     "src/webviews/progressiveProfilingLifecycle.ts",
     "src/test/progressiveProfilingLifecycle.unit.test.tsx",
     arrowFormulaHelper,
@@ -697,6 +717,7 @@ test("requires full owners for deleted or renamed source, including alongside ad
 test("requires full owners for source mode changes and existing executable or symlink entries", async (context) => {
   for (const file of [
     screenshot,
+    nativeViewFiles[0],
     "src/webviews/styles/grid.css",
     "src/test/progressiveProfilingLifecycle.unit.test.tsx",
     arrowFormulaHelper,
@@ -765,6 +786,7 @@ test("requires full owners for added executable or symlink runtime source", asyn
 test("requires full owners for additions outside the documentary and runtime source scopes", async (context) => {
   for (const file of [
     screenshot,
+    ...nativeViewFiles,
     "src/webviews/progressiveProfilingLifecycle.ts",
     "src/test/progressiveProfilingLifecycle.unit.test.tsx",
     "docs/result.json",
@@ -904,6 +926,11 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
     "src/test/component.test.tsx",
     "tsconfig.extension-test.json",
     "src/extension/r/rKernelBridge.ts",
+    "src/extension/nativeViewsDataExport.ts",
+    "src/extension/nativeViews.ts.bak",
+    "src/extension/nested/nativeViews.ts",
+    "src/test/nativeViews.testFixtures.ts",
+    "src/test/nested/nativeViewStateCommands.unit.test.ts",
     "src/shared/installedPerformanceFixtureManifest.cjs",
     "src/test/extensionHost/nested/helper.ts",
     "src/test/extensionHost/releasedRCoreEditing.ts.bak",
@@ -950,8 +977,10 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
         releasePolicy,
         proofTest,
         webview,
-        screenshot
+        screenshot,
+        ...nativeViewFiles
       ]);
+      for (const nativeView of nativeViewFiles) write(cwd, nativeView);
       write(cwd, component);
       write(cwd, releasePolicy);
       write(cwd, proofTest);
