@@ -8,6 +8,7 @@ import {
   confirmedFileConfiguration,
   CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY
 } from "../extension/files/confirmedFileConfigurations";
+import { ImportCancelledError, promptImportOptions } from "../extension/files/importOptions";
 import { DependencyGuardCommandError } from "../extension/dependencyGuardProtocol";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
 import { persistenceKey, SESSION_STORAGE_KEY } from "../extension/sessionPersistence";
@@ -24,6 +25,11 @@ import type {
   SessionOpenedResponse,
   SessionSource
 } from "../shared/protocol";
+
+vi.mock("../extension/files/importOptions", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../extension/files/importOptions")>();
+  return { ...original, promptImportOptions: vi.fn<typeof original.promptImportOptions>() };
+});
 
 const metadata: SessionMetadata = {
   protocolVersion: 4,
@@ -76,23 +82,15 @@ const summary: ColumnSummary = {
 const openedResponse: SessionOpenedResponse = { kind: "sessionOpened", metadata, page, summaries: [] };
 const liveHarnesses: Array<{ dispose(): void }> = [];
 
+type ImportOptions = NonNullable<SessionSource["importOptions"]>;
+
 interface PromptOptions {
   readonly title?: string;
-  readonly value?: string;
-}
-
-interface PromptPick {
-  readonly label: string;
-  readonly description?: string;
-  readonly detail?: string;
-  readonly value: unknown;
-  readonly custom?: boolean;
 }
 
 const panelPromptMocks = {
   showQuickPick:
     vi.fn<(items: readonly unknown[], options?: PromptOptions, token?: vscode.CancellationToken) => Promise<unknown>>(),
-  showInputBox: vi.fn<(options?: PromptOptions, token?: vscode.CancellationToken) => Promise<string | undefined>>(),
   showWarningMessage:
     vi.fn<(message: string, options?: vscode.MessageOptions, ...items: string[]) => Promise<string | undefined>>()
 };
@@ -1435,20 +1433,16 @@ describe("OpenWranglerPanel retained view state", () => {
 
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.mocked(promptImportOptions).mockReset();
+    vi.mocked(promptImportOptions).mockRejectedValue(new ImportCancelledError());
     panelPromptMocks.showQuickPick.mockReset();
     panelPromptMocks.showQuickPick.mockResolvedValue(undefined);
-    panelPromptMocks.showInputBox.mockReset();
-    panelPromptMocks.showInputBox.mockResolvedValue(undefined);
     panelPromptMocks.showWarningMessage.mockReset();
     panelPromptMocks.showWarningMessage.mockResolvedValue(undefined);
     Object.defineProperties(window, {
       showQuickPick: {
         configurable: true,
         value: panelPromptMocks.showQuickPick
-      },
-      showInputBox: {
-        configurable: true,
-        value: panelPromptMocks.showInputBox
       },
       showWarningMessage: {
         configurable: true,
@@ -1633,7 +1627,6 @@ describe("OpenWranglerPanel retained view state", () => {
   afterEach(() => {
     while (liveHarnesses.length) liveHarnesses.pop()?.dispose();
     delete (window as unknown as { showQuickPick?: unknown }).showQuickPick;
-    delete (window as unknown as { showInputBox?: unknown }).showInputBox;
     delete (window as unknown as { showWarningMessage?: unknown }).showWarningMessage;
   });
 
@@ -1938,11 +1931,10 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(request.mock.calls[0]?.[0]).toMatchObject({ kind: "openSession", source });
     expect(harness.html).toContain('data-can-change-import-options="false"');
     panelPromptMocks.showQuickPick.mockClear();
-    panelPromptMocks.showInputBox.mockClear();
     await harness.receive({ kind: "changeImportOptions" });
     await harness.receive({ kind: "changeBackend" });
     expect(panelPromptMocks.showQuickPick).not.toHaveBeenCalled();
-    expect(panelPromptMocks.showInputBox).not.toHaveBeenCalled();
+    expect(promptImportOptions).not.toHaveBeenCalled();
     expect(reconfigureFileSession).not.toHaveBeenCalled();
   });
 
@@ -1963,7 +1955,6 @@ describe("OpenWranglerPanel retained view state", () => {
     });
     await harness.open();
     panelPromptMocks.showQuickPick.mockClear();
-    panelPromptMocks.showInputBox.mockClear();
     executeCommand.mockClear();
 
     harness.hide();
@@ -1971,7 +1962,7 @@ describe("OpenWranglerPanel retained view state", () => {
 
     expect(handled).toBe(false);
     expect(panelPromptMocks.showQuickPick).not.toHaveBeenCalled();
-    expect(panelPromptMocks.showInputBox).not.toHaveBeenCalled();
+    expect(promptImportOptions).not.toHaveBeenCalled();
     expect(reconfigureFileSession).not.toHaveBeenCalled();
     expect(bridge.setActiveSession).toHaveBeenLastCalledWith(undefined);
     expect(executeCommand).toHaveBeenLastCalledWith("setContext", "openWrangler.canChangeImportOptions", false);
@@ -2130,21 +2121,8 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.open();
     await harness.receive({ kind: "ready" });
     await acknowledgeLatestRendererSynchronization(harness);
-    const delimiterPrompt = deferred<unknown>();
-    let delimiterChoices: PromptPick[] = [];
-    panelPromptMocks.showQuickPick.mockImplementation(async (items, options) => {
-      const choices = items as PromptPick[];
-      if (options?.title === "Delimiter") {
-        delimiterChoices = choices;
-        return delimiterPrompt.promise;
-      }
-      if (options?.title === "Text encoding") return choices.find(({ value }) => value === "utf-8");
-      if (options?.title === "Header row") return choices.find(({ value }) => value === true);
-      return choices[0];
-    });
-    panelPromptMocks.showInputBox.mockImplementation(async (options) =>
-      options?.title === "Quote character" ? '"' : options?.value
-    );
+    const importPrompt = deferred<ImportOptions>();
+    vi.mocked(promptImportOptions).mockReturnValue(importPrompt.promise);
     harness.posted.length = 0;
 
     const command = OpenWranglerPanel.changeActiveImportOptions();
@@ -2158,7 +2136,7 @@ describe("OpenWranglerPanel retained view state", () => {
       kind: "changeImportOptions",
       actionId: rendererRequest.actionId
     });
-    await vi.waitFor(() => expect(delimiterChoices.length).toBeGreaterThan(0));
+    await vi.waitFor(() => expect(promptImportOptions).toHaveBeenCalledOnce());
     let commandSettled = false;
     void command.then(
       () => {
@@ -2171,7 +2149,7 @@ describe("OpenWranglerPanel retained view state", () => {
     await Promise.resolve();
     expect(commandSettled).toBe(false);
 
-    delimiterPrompt.resolve(delimiterChoices.find(({ value }) => value === ","));
+    importPrompt.resolve(source.importOptions!);
     await vi.waitFor(() => expect(reconfigureFileSession).toHaveBeenCalledOnce());
     await Promise.resolve();
     expect(commandSettled).toBe(false);
@@ -2183,7 +2161,7 @@ describe("OpenWranglerPanel retained view state", () => {
       kind: "requestImportOptionsChange",
       actionId: expect.stringMatching(/^[A-Za-z0-9]{32}$/u)
     });
-    expect(panelPromptMocks.showQuickPick).toHaveBeenCalled();
+    expect(promptImportOptions).toHaveBeenCalled();
     expect(reconfigureFileSession).toHaveBeenCalledOnce();
   });
 
@@ -3861,7 +3839,7 @@ describe("OpenWranglerPanel retained view state", () => {
       await harness.open();
       await harness.receive({ kind: "ready" });
       await acknowledgeLatestRendererSynchronization(harness);
-      configureDelimitedPrompts({
+      configureImportOptions({
         delimiter: ";",
         encoding: "utf-8",
         quoteChar: '"',
@@ -3912,7 +3890,7 @@ describe("OpenWranglerPanel retained view state", () => {
       await harness.open();
       await harness.receive({ kind: "ready" });
       await acknowledgeLatestRendererSynchronization(harness);
-      configureDelimitedPrompts({
+      configureImportOptions({
         delimiter: ";",
         encoding: "utf-8",
         quoteChar: '"',
@@ -3954,21 +3932,8 @@ describe("OpenWranglerPanel retained view state", () => {
         },
         1
       );
-      const delimiterPrompt = deferred<unknown>();
-      let delimiterChoices: PromptPick[] = [];
-      panelPromptMocks.showQuickPick.mockImplementation(async (items, options) => {
-        const choices = items as PromptPick[];
-        if (options?.title === "Delimiter") {
-          delimiterChoices = choices;
-          return delimiterPrompt.promise;
-        }
-        if (options?.title === "Text encoding") return choices.find(({ value }) => value === "utf-8");
-        if (options?.title === "Header row") return choices.find(({ value }) => value === true);
-        return choices[0];
-      });
-      panelPromptMocks.showInputBox.mockImplementation(async (options) =>
-        options?.title === "Quote character" ? '"' : options?.value
-      );
+      const importPrompt = deferred<ImportOptions>();
+      vi.mocked(promptImportOptions).mockReturnValue(importPrompt.promise);
       const reconfigureFileSession = vi.fn(async (): Promise<OpenWranglerResponse> => configured);
       const harness = createPanelHarness(
         {
@@ -3986,19 +3951,17 @@ describe("OpenWranglerPanel retained view state", () => {
       const rendererRequest = harness.posted.find(isRendererImportRequest);
       if (!rendererRequest) throw new Error("The panel did not publish a renderer import request.");
       await vi.advanceTimersByTimeAsync(1_500);
-      await vi.waitFor(() => expect(delimiterChoices.length).toBeGreaterThan(0));
+      await vi.waitFor(() => expect(promptImportOptions).toHaveBeenCalledOnce());
 
       const manualIntent = harness.receive({ kind: "changeImportOptions" });
       await Promise.resolve();
-      expect(panelPromptMocks.showQuickPick).toHaveBeenCalledOnce();
+      expect(promptImportOptions).toHaveBeenCalledOnce();
       expect(reconfigureFileSession).not.toHaveBeenCalled();
 
-      delimiterPrompt.resolve(delimiterChoices.find(({ value }) => value === ";"));
+      importPrompt.resolve(configured.metadata.source.importOptions!);
       await expect(Promise.all([command, manualIntent])).resolves.toEqual([true, undefined]);
       expect(reconfigureFileSession).toHaveBeenCalledOnce();
-      expect(
-        panelPromptMocks.showQuickPick.mock.calls.filter(([, options]) => options?.title === "Delimiter")
-      ).toHaveLength(1);
+      expect(promptImportOptions).toHaveBeenCalledOnce();
 
       await harness.receive({ kind: "changeImportOptions", actionId: rendererRequest.actionId });
       expect(reconfigureFileSession).toHaveBeenCalledOnce();
@@ -4023,21 +3986,8 @@ describe("OpenWranglerPanel retained view state", () => {
       },
       1
     );
-    const delimiterPrompt = deferred<unknown>();
-    let delimiterChoices: PromptPick[] = [];
-    panelPromptMocks.showQuickPick.mockImplementation(async (items, options) => {
-      const choices = items as PromptPick[];
-      if (options?.title === "Delimiter") {
-        delimiterChoices = choices;
-        return delimiterPrompt.promise;
-      }
-      if (options?.title === "Text encoding") return choices.find(({ value }) => value === "utf-8");
-      if (options?.title === "Header row") return choices.find(({ value }) => value === true);
-      return choices[0];
-    });
-    panelPromptMocks.showInputBox.mockImplementation(async (options) =>
-      options?.title === "Quote character" ? '"' : options?.value
-    );
+    const importPrompt = deferred<ImportOptions>();
+    vi.mocked(promptImportOptions).mockReturnValue(importPrompt.promise);
     const reconfigureFileSession = vi.fn(async (): Promise<OpenWranglerResponse> => configured);
     const harness = createPanelHarness(
       {
@@ -4052,18 +4002,16 @@ describe("OpenWranglerPanel retained view state", () => {
     harness.posted.length = 0;
 
     const manualIntent = harness.receive({ kind: "changeImportOptions" });
-    await vi.waitFor(() => expect(delimiterChoices.length).toBeGreaterThan(0));
+    await vi.waitFor(() => expect(promptImportOptions).toHaveBeenCalledOnce());
     const command = OpenWranglerPanel.changeActiveImportOptions();
     await Promise.resolve();
     expect(harness.posted.filter(isRendererImportRequest)).toHaveLength(0);
-    expect(panelPromptMocks.showQuickPick).toHaveBeenCalledOnce();
+    expect(promptImportOptions).toHaveBeenCalledOnce();
 
-    delimiterPrompt.resolve(delimiterChoices.find(({ value }) => value === ";"));
+    importPrompt.resolve(configured.metadata.source.importOptions!);
     await expect(Promise.all([manualIntent, command])).resolves.toEqual([undefined, true]);
     expect(reconfigureFileSession).toHaveBeenCalledOnce();
-    expect(
-      panelPromptMocks.showQuickPick.mock.calls.filter(([, options]) => options?.title === "Delimiter")
-    ).toHaveLength(1);
+    expect(promptImportOptions).toHaveBeenCalledOnce();
   });
 
   it("runs the native import command in the host before the renderer first becomes ready", async () => {
@@ -4098,7 +4046,7 @@ describe("OpenWranglerPanel retained view state", () => {
       { source, openResponse: opened }
     );
     await harness.open();
-    configureDelimitedPrompts({
+    configureImportOptions({
       delimiter: ";",
       encoding: "utf-8",
       quoteChar: '"',
@@ -4108,10 +4056,7 @@ describe("OpenWranglerPanel retained view state", () => {
 
     await expect(OpenWranglerPanel.changeActiveImportOptions()).resolves.toBe(true);
 
-    expect(
-      panelPromptMocks.showQuickPick.mock.calls.filter(([, options]) => options?.title === "Delimiter")
-    ).toHaveLength(1);
-    expect(panelPromptMocks.showInputBox).toHaveBeenCalledOnce();
+    expect(promptImportOptions).toHaveBeenCalledOnce();
     expect(reconfigureFileSession).toHaveBeenCalledOnce();
     expect(reconfigureFileSession.mock.calls[0]?.[2].importOptions).toEqual(configured.metadata.source.importOptions);
     expect(harness.posted).toEqual([
@@ -4159,7 +4104,7 @@ describe("OpenWranglerPanel retained view state", () => {
       { source, openResponse: opened }
     );
     await harness.open();
-    configureDelimitedPrompts({
+    configureImportOptions({
       delimiter: ";",
       encoding: "utf-8",
       quoteChar: '"',
@@ -4665,7 +4610,7 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.open();
     await confirmLatestSnapshot(harness);
     harness.posted.length = 0;
-    configureDelimitedPrompts({
+    configureImportOptions({
       delimiter: ";",
       encoding: "utf-8",
       quoteChar: '"',
@@ -4720,7 +4665,7 @@ describe("OpenWranglerPanel retained view state", () => {
       { source, openResponse: initial }
     );
     await harness.open();
-    configureDelimitedPrompts({
+    configureImportOptions({
       delimiter: ";",
       encoding: "utf-8",
       quoteChar: '"',
@@ -5057,7 +5002,7 @@ describe("OpenWranglerPanel retained view state", () => {
           return completion.promise;
         }
       );
-      vi.spyOn(window, "showQuickPick").mockResolvedValue(undefined);
+      vi.mocked(promptImportOptions).mockRejectedValue(new ImportCancelledError());
       const harness = createPanelHarness({ request, installFileDependencies }, { delegateOpen: true });
       await harness.open();
       const action = harness.receive({ kind: "installRuntimeDependencies" });
@@ -5279,14 +5224,17 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.open();
     await confirmLatestSnapshot(harness);
     harness.posted.length = 0;
-    configureDelimitedPrompts(nextOptions);
+    configureImportOptions(nextOptions);
 
     await harness.receive({ kind: "changeImportOptions" });
 
-    expect(promptPicksAt(0)[0]).toMatchObject({ value: ",", description: "Current" });
-    expect(promptPicksAt(1)[0]).toMatchObject({ value: "utf-8", description: "Current" });
-    expect(promptPicksAt(2)[0]).toMatchObject({ value: true, description: "Current" });
-    expect(promptInputAt(0)).toMatchObject({ title: "Quote character", value: '"' });
+    expect(vi.mocked(promptImportOptions).mock.calls[0]?.[0].toString()).toBe(source.uri);
+    expect(promptImportOptions).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ scheme: "file", fsPath: source.path }),
+      source.importOptions,
+      expect.objectContaining({ isCancellationRequested: false, onCancellationRequested: expect.any(Function) }),
+      undefined
+    );
     expect(reconfigureFileSession).toHaveBeenCalledWith(
       "session",
       2,
@@ -5324,11 +5272,10 @@ describe("OpenWranglerPanel retained view state", () => {
       revision: 7
     });
 
-    panelPromptMocks.showQuickPick.mockReset();
-    panelPromptMocks.showQuickPick.mockResolvedValue(undefined);
-    panelPromptMocks.showInputBox.mockReset();
+    vi.mocked(promptImportOptions).mockReset();
+    vi.mocked(promptImportOptions).mockRejectedValue(new ImportCancelledError());
     await harness.receive({ kind: "changeImportOptions" });
-    expect(promptPicksAt(0)[0]).toMatchObject({ value: ";", description: "Current" });
+    expect(vi.mocked(promptImportOptions).mock.calls[0]?.[1]).toEqual(nextOptions);
   });
 
   it("recovers a reconfigured renderer that accepts publication but never acknowledges its new snapshot", async () => {
@@ -5368,7 +5315,7 @@ describe("OpenWranglerPanel retained view state", () => {
       expect(OpenWranglerPanel.panelHydratedForSession(initial.metadata.sessionId)).toBe(true);
       expect(harness.htmlAssignmentCount).toBe(1);
       harness.posted.length = 0;
-      configureDelimitedPrompts(nextOptions);
+      configureImportOptions(nextOptions);
 
       await harness.receive({ kind: "changeImportOptions" });
 
@@ -5429,7 +5376,7 @@ describe("OpenWranglerPanel retained view state", () => {
     }
   });
 
-  it("uses live workbook sheet names for Excel reconfiguration without asking users to type one", async () => {
+  it("passes live workbook sheet names to the import prompt and reconfigures the selected sheet", async () => {
     const source: SessionSource = {
       kind: "file",
       label: "workbook.xlsx",
@@ -5453,9 +5400,7 @@ describe("OpenWranglerPanel retained view state", () => {
     );
     await harness.open();
     harness.posted.length = 0;
-    panelPromptMocks.showQuickPick.mockImplementationOnce(async (items) =>
-      (items as PromptPick[]).find(({ value }) => value === "Sales")
-    );
+    vi.mocked(promptImportOptions).mockResolvedValueOnce({ sheetName: "Sales" });
 
     await harness.receive({ kind: "changeImportOptions" });
 
@@ -5465,8 +5410,13 @@ describe("OpenWranglerPanel retained view state", () => {
         onCancellationRequested: expect.any(Function)
       })
     });
-    expect(promptPicksAt(0).map(({ label }) => label)).toEqual(["Overview", "Sales", "2024"]);
-    expect(panelPromptMocks.showInputBox).not.toHaveBeenCalled();
+    expect(vi.mocked(promptImportOptions).mock.calls[0]?.[0].toString()).toBe(source.uri);
+    expect(promptImportOptions).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ scheme: "file", fsPath: source.path }),
+      source.importOptions,
+      expect.objectContaining({ isCancellationRequested: false, onCancellationRequested: expect.any(Function) }),
+      ["Overview", "Sales", "2024"]
+    );
     expect(reconfigureFileSession).toHaveBeenCalledWith(
       "session",
       0,
@@ -5556,7 +5506,7 @@ describe("OpenWranglerPanel retained view state", () => {
       { request, reconfigureFileSession, setActiveSession },
       { source, delegateOpen: true, workspaceState }
     );
-    configureDelimitedPrompts({
+    configureImportOptions({
       delimiter: ";",
       encoding: "utf-8",
       quoteChar: '"',
@@ -5687,7 +5637,7 @@ describe("OpenWranglerPanel retained view state", () => {
     const warning = deferred<string | undefined>();
     panelPromptMocks.showWarningMessage.mockReturnValue(warning.promise);
     harness.posted.length = 0;
-    configureDelimitedPrompts(nextOptions);
+    configureImportOptions(nextOptions);
 
     const changing = harness.receive({ kind: "changeImportOptions" });
     try {
@@ -5771,7 +5721,7 @@ describe("OpenWranglerPanel retained view state", () => {
       await harness.open();
       if (save === "failed")
         workspaceState.update.mockRejectedValueOnce(new Error("Configuration storage unavailable"));
-      configureDelimitedPrompts(nextOptions);
+      configureImportOptions(nextOptions);
 
       const changing = harness.receive({ kind: "changeImportOptions" });
       await vi.waitFor(() => expect(reconfigureFileSession).toHaveBeenCalledOnce());
@@ -5821,7 +5771,7 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.open();
     await confirmLatestSnapshot(harness);
     harness.posted.length = 0;
-    configureDelimitedPrompts({
+    configureImportOptions({
       delimiter: ";",
       encoding: "utf-8",
       quoteChar: '"',
@@ -5888,9 +5838,9 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.receive({ kind: "ready" });
     expect(harness.posted).toContainEqual(hostSnapshot(initial));
 
-    panelPromptMocks.showQuickPick.mockClear();
+    vi.mocked(promptImportOptions).mockClear();
     await harness.receive({ kind: "changeImportOptions" });
-    expect(promptPicksAt(0)[0]).toMatchObject({ value: "|", description: "Current" });
+    expect(vi.mocked(promptImportOptions).mock.calls[0]?.[1]).toEqual(source.importOptions);
   });
 
   it("keeps the exact confirmed live snapshot and source after a bridge error", async () => {
@@ -5916,7 +5866,7 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.open();
     await confirmLatestSnapshot(harness);
     harness.posted.length = 0;
-    configureDelimitedPrompts({
+    configureImportOptions({
       delimiter: ";",
       encoding: "windows-1252",
       quoteChar: "'",
@@ -5934,11 +5884,10 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.receive({ kind: "ready" });
     expect(harness.posted).toContainEqual(hostSnapshot(initial));
 
-    panelPromptMocks.showQuickPick.mockReset();
-    panelPromptMocks.showQuickPick.mockResolvedValue(undefined);
-    panelPromptMocks.showInputBox.mockReset();
+    vi.mocked(promptImportOptions).mockReset();
+    vi.mocked(promptImportOptions).mockRejectedValue(new ImportCancelledError());
     await harness.receive({ kind: "changeImportOptions" });
-    expect(promptPicksAt(0)[0]).toMatchObject({ value: ",", description: "Current" });
+    expect(vi.mocked(promptImportOptions).mock.calls[0]?.[1]).toEqual(source.importOptions);
   });
 
   it("keeps the exact confirmed live snapshot and source after a dispatched cancellation", async () => {
@@ -5962,7 +5911,7 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.open();
     await confirmLatestSnapshot(harness);
     harness.posted.length = 0;
-    configureDelimitedPrompts({
+    configureImportOptions({
       delimiter: ";",
       encoding: "utf-8",
       quoteChar: '"',
@@ -5980,11 +5929,10 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.receive({ kind: "ready" });
     expect(harness.posted).toContainEqual(hostSnapshot(initial));
 
-    panelPromptMocks.showQuickPick.mockReset();
-    panelPromptMocks.showQuickPick.mockResolvedValue(undefined);
-    panelPromptMocks.showInputBox.mockReset();
+    vi.mocked(promptImportOptions).mockReset();
+    vi.mocked(promptImportOptions).mockRejectedValue(new ImportCancelledError());
     await harness.receive({ kind: "changeImportOptions" });
-    expect(promptPicksAt(0)[0]).toMatchObject({ value: ",", description: "Current" });
+    expect(vi.mocked(promptImportOptions).mock.calls[0]?.[1]).toEqual(source.importOptions);
   });
 
   it("recovers an initially failed file panel through a fresh configured open", async () => {
@@ -6016,7 +5964,7 @@ describe("OpenWranglerPanel retained view state", () => {
     );
     const harness = createPanelHarness({ request }, { source, delegateOpen: true });
     await harness.open();
-    configureDelimitedPrompts({
+    configureImportOptions({
       delimiter: ";",
       encoding: "utf-8",
       quoteChar: '"',
@@ -6079,7 +6027,7 @@ describe("OpenWranglerPanel retained view state", () => {
       );
       await harness.open();
       await harness.open();
-      configureDelimitedPrompts({ delimiter: ";", encoding: "utf-8", quoteChar: '"', hasHeader: true });
+      configureImportOptions({ delimiter: ";", encoding: "utf-8", quoteChar: '"', hasHeader: true });
 
       await harness.receive({ kind: "changeImportOptions" });
 
@@ -6135,7 +6083,7 @@ describe("OpenWranglerPanel retained view state", () => {
         }
       );
       await harness.open();
-      configureDelimitedPrompts({
+      configureImportOptions({
         delimiter: ";",
         encoding: "utf-8",
         quoteChar: '"',
@@ -6173,7 +6121,7 @@ describe("OpenWranglerPanel retained view state", () => {
       { delimiter: ";", encoding: "utf-8", quoteChar: '"', hasHeader: true },
       { delimiter: "|", encoding: "windows-1252", quoteChar: "'", hasHeader: false }
     ] as const;
-    configureDelimitedPromptAttempts(attempts);
+    configureImportOptionAttempts(attempts);
     let activeCandidates = 0;
     let maximumActiveCandidates = 0;
     let candidateNumber = 0;
@@ -6239,7 +6187,7 @@ describe("OpenWranglerPanel retained view state", () => {
       { delimiter: ";", encoding: "utf-8", quoteChar: '"', hasHeader: true },
       { delimiter: "|", encoding: "windows-1252", quoteChar: "'", hasHeader: false }
     ] as const;
-    configureDelimitedPromptAttempts(attempts);
+    configureImportOptionAttempts(attempts);
     const initial = responseForSource(source, 2);
     const firstOpened = responseForSource({ ...source, importOptions: attempts[0] }, 7);
     firstOpened.metadata.backend = "pandas";
@@ -6288,11 +6236,8 @@ describe("OpenWranglerPanel retained view state", () => {
       ...firstOpened.metadata.source,
       importOptions: attempts[1]
     });
-    const delimiterPrompts = panelPromptMocks.showQuickPick.mock.calls.filter(
-      ([, options]) => options?.title === "Delimiter"
-    );
-    expect(delimiterPrompts).toHaveLength(2);
-    expect(delimiterPrompts[1]?.[0][0]).toMatchObject({ value: ";", description: "Current" });
+    expect(promptImportOptions).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(promptImportOptions).mock.calls[1]?.[1]).toEqual(attempts[0]);
     expect(harness.posted).not.toContainEqual(hostSnapshot(firstOpened));
     expect(harness.posted).toContainEqual(hostSnapshot(secondOpened));
   });
@@ -6324,13 +6269,13 @@ describe("OpenWranglerPanel retained view state", () => {
       await persistedFirstReplacement.promise;
     });
     harness.posted.length = 0;
-    configureDelimitedPrompts(firstOptions);
+    configureImportOptions(firstOptions);
 
     const first = harness.receive({ kind: "changeImportOptions" });
     await vi.waitFor(() => expect(reconfigureFileSession).toHaveBeenCalledOnce());
     await vi.waitFor(() => expect(workspaceState.update).toHaveBeenCalledTimes(2));
-    panelPromptMocks.showQuickPick.mockReset();
-    panelPromptMocks.showQuickPick.mockResolvedValue(undefined);
+    vi.mocked(promptImportOptions).mockReset();
+    vi.mocked(promptImportOptions).mockRejectedValue(new ImportCancelledError());
     const second = harness.receive({ kind: "changeImportOptions" });
 
     persistedFirstReplacement.resolve();
@@ -6392,7 +6337,7 @@ describe("OpenWranglerPanel retained view state", () => {
       await persistedFirstReplacement.promise;
     });
     harness.posted.length = 0;
-    configureDelimitedPromptAttempts(attempts);
+    configureImportOptionAttempts(attempts);
 
     const first = harness.receive({ kind: "changeImportOptions" });
     await vi.waitFor(() => expect(reconfigureFileSession).toHaveBeenCalledOnce());
@@ -6424,30 +6369,21 @@ describe("OpenWranglerPanel retained view state", () => {
       importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
     };
     const initial = responseForSource(source);
-    let delimiterPromptCount = 0;
+    let importPromptCount = 0;
     let firstPromptWasCancelled = false;
-    panelPromptMocks.showQuickPick.mockImplementation(async (items, options, token) => {
-      const choices = items as PromptPick[];
-      if (options?.title === "Delimiter") {
-        delimiterPromptCount += 1;
-        if (delimiterPromptCount === 1) {
-          return new Promise((resolve) => {
-            const subscription = token?.onCancellationRequested(() => {
-              firstPromptWasCancelled = true;
-              subscription?.dispose();
-              resolve(undefined);
-            });
+    vi.mocked(promptImportOptions).mockImplementation(async (_uri, _current, token) => {
+      importPromptCount += 1;
+      if (importPromptCount === 1) {
+        return new Promise((_resolve, reject) => {
+          const subscription = token?.onCancellationRequested(() => {
+            firstPromptWasCancelled = true;
+            subscription?.dispose();
+            reject(new ImportCancelledError());
           });
-        }
-        return choices.find(({ value }) => value === ";");
+        });
       }
-      if (options?.title === "Text encoding") return choices.find(({ value }) => value === "utf-8");
-      if (options?.title === "Header row") return choices.find(({ value }) => value === true);
-      return choices[0];
+      return { delimiter: ";", encoding: "utf-8", quoteChar: '"', hasHeader: true };
     });
-    panelPromptMocks.showInputBox.mockImplementation(async (options) =>
-      options?.title === "Quote character" ? '"' : options?.value
-    );
     const reconfigureFileSession = vi.fn(
       async (_sessionId: string, _revision: number, nextSource: SessionSource): Promise<OpenWranglerResponse> =>
         responseForSource(nextSource, 1)
@@ -6460,12 +6396,12 @@ describe("OpenWranglerPanel retained view state", () => {
     harness.posted.length = 0;
 
     const first = harness.receive({ kind: "changeImportOptions" });
-    await vi.waitFor(() => expect(delimiterPromptCount).toBe(1));
+    await vi.waitFor(() => expect(importPromptCount).toBe(1));
     const second = harness.receive({ kind: "changeImportOptions" });
     await Promise.all([first, second]);
 
     expect(firstPromptWasCancelled).toBe(true);
-    expect(delimiterPromptCount).toBe(2);
+    expect(importPromptCount).toBe(2);
     expect(reconfigureFileSession).toHaveBeenCalledOnce();
     expect(reconfigureFileSession.mock.calls[0]?.[2].importOptions).toEqual({
       delimiter: ";",
@@ -6506,7 +6442,7 @@ describe("OpenWranglerPanel retained view state", () => {
       async (_sessionId: string, _revision: number, nextSource: SessionSource): Promise<OpenWranglerResponse> =>
         responseForSource(nextSource, 1)
     );
-    configureDelimitedPrompts({
+    configureImportOptions({
       delimiter: ";",
       encoding: "utf-8",
       quoteChar: '"',
@@ -6523,7 +6459,7 @@ describe("OpenWranglerPanel retained view state", () => {
     await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
     const changing = harness.receive({ kind: "changeImportOptions" });
     await vi.waitFor(() => expect(harness.posted).toContainEqual({ kind: "importOptionsState", busy: true }));
-    expect(panelPromptMocks.showQuickPick).toHaveBeenCalled();
+    expect(promptImportOptions).toHaveBeenCalled();
     expect(reconfigureFileSession).not.toHaveBeenCalled();
 
     mutationResponse.resolve({
@@ -6534,7 +6470,7 @@ describe("OpenWranglerPanel retained view state", () => {
       sessionId: metadata.sessionId
     });
     await mutation;
-    await vi.waitFor(() => expect(panelPromptMocks.showQuickPick).toHaveBeenCalled());
+    await vi.waitFor(() => expect(promptImportOptions).toHaveBeenCalled());
     await changing;
 
     expect(reconfigureFileSession).toHaveBeenCalledOnce();
@@ -6587,7 +6523,7 @@ describe("OpenWranglerPanel retained view state", () => {
       }
     );
     const harness = createPanelHarness({ request }, { source, delegateOpen: true });
-    configureDelimitedPrompts({
+    configureImportOptions({
       delimiter: ";",
       encoding: "utf-8",
       quoteChar: '"',
@@ -6639,16 +6575,8 @@ describe("OpenWranglerPanel retained view state", () => {
       importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
     };
     const initial = responseForSource(source);
-    const delayedDelimiter = deferred<unknown>();
-    let delimiterChoices: readonly unknown[] = [];
-    panelPromptMocks.showQuickPick.mockImplementation(async (items, options) => {
-      if (options?.title === "Delimiter") {
-        delimiterChoices = items;
-        return delayedDelimiter.promise;
-      }
-      return items[0];
-    });
-    panelPromptMocks.showInputBox.mockImplementation(async (options) => options?.value);
+    const delayedImport = deferred<ImportOptions>();
+    vi.mocked(promptImportOptions).mockReturnValue(delayedImport.promise);
     const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
       if (candidate.kind === "openSession") return initial;
       if (candidate.kind === "closeSession") return { kind: "sessionClosed", sessionId: candidate.sessionId };
@@ -6659,10 +6587,13 @@ describe("OpenWranglerPanel retained view state", () => {
     harness.posted.length = 0;
 
     const changing = harness.receive({ kind: "changeImportOptions" });
-    await vi.waitFor(() => expect(panelPromptMocks.showQuickPick).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(promptImportOptions).toHaveBeenCalledOnce());
+    const promptCancellation = vi.mocked(promptImportOptions).mock.calls[0]?.[2];
+    expect(promptCancellation?.isCancellationRequested).toBe(false);
     harness.dispose();
+    expect(promptCancellation?.isCancellationRequested).toBe(true);
     const postedAtDisposal = [...harness.posted];
-    delayedDelimiter.resolve(delimiterChoices[0]);
+    delayedImport.resolve(source.importOptions!);
     await changing;
 
     expect(request.mock.calls.filter(([candidate]) => candidate.kind === "closeSession")).toHaveLength(1);
@@ -6678,7 +6609,7 @@ describe("OpenWranglerPanel retained view state", () => {
       importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
     };
     const initial = responseForSource(source);
-    configureDelimitedPrompts({
+    configureImportOptions({
       delimiter: ";",
       encoding: "utf-8",
       quoteChar: '"',
@@ -7600,51 +7531,17 @@ describe("OpenWranglerPanel retained view state", () => {
   });
 });
 
-interface DelimitedPromptResult {
-  readonly delimiter: string;
-  readonly encoding: string;
-  readonly quoteChar: string;
-  readonly hasHeader: boolean;
+function configureImportOptions(result: ImportOptions): void {
+  vi.mocked(promptImportOptions).mockResolvedValue(result);
 }
 
-function configureDelimitedPrompts(result: DelimitedPromptResult): void {
-  panelPromptMocks.showQuickPick.mockImplementation(async (items, options) => {
-    const choices = items as PromptPick[];
-    if (options?.title === "Delimiter") return choices.find(({ value }) => value === result.delimiter);
-    if (options?.title === "Text encoding") return choices.find(({ value }) => value === result.encoding);
-    if (options?.title === "Header row") return choices.find(({ value }) => value === result.hasHeader);
-    return choices[0];
-  });
-  panelPromptMocks.showInputBox.mockImplementation(async (options) =>
-    options?.title === "Quote character" ? result.quoteChar : options?.value
-  );
-}
-
-function configureDelimitedPromptAttempts(attempts: readonly DelimitedPromptResult[]): void {
-  let attempt = -1;
-  panelPromptMocks.showQuickPick.mockImplementation(async (items, options) => {
-    if (options?.title === "Delimiter") attempt += 1;
-    const result = attempts[attempt];
+function configureImportOptionAttempts(attempts: readonly ImportOptions[]): void {
+  let attempt = 0;
+  vi.mocked(promptImportOptions).mockImplementation(async () => {
+    const result = attempts[attempt++];
     if (!result) throw new Error(`Missing prompt result for import-options attempt ${attempt}.`);
-    const choices = items as PromptPick[];
-    if (options?.title === "Delimiter") return choices.find(({ value }) => value === result.delimiter);
-    if (options?.title === "Text encoding") return choices.find(({ value }) => value === result.encoding);
-    if (options?.title === "Header row") return choices.find(({ value }) => value === result.hasHeader);
-    return choices[0];
+    return result;
   });
-  panelPromptMocks.showInputBox.mockImplementation(async (options) => {
-    const result = attempts[attempt];
-    if (!result) throw new Error(`Missing prompt result for import-options attempt ${attempt}.`);
-    return options?.title === "Quote character" ? result.quoteChar : options?.value;
-  });
-}
-
-function promptPicksAt(call: number): PromptPick[] {
-  return panelPromptMocks.showQuickPick.mock.calls[call]?.[0] as PromptPick[];
-}
-
-function promptInputAt(call: number): PromptOptions {
-  return panelPromptMocks.showInputBox.mock.calls[call]?.[0] as PromptOptions;
 }
 
 function responseForSource(source: SessionSource, revision = 0): SessionOpenedResponse {
