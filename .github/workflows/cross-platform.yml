@@ -1,7 +1,13 @@
 name: Cross-platform runtime
+run-name: ${{ github.event_name == 'workflow_dispatch' && inputs.omit_python_source == true && 'Full Python source tests omitted; installed investigation only' || 'Cross-platform runtime' }}
 
 on:
   workflow_dispatch:
+    inputs:
+      omit_python_source:
+        description: Omit full Python source tests for installed investigation only
+        type: boolean
+        default: false
   schedule:
     - cron: "17 4 * * 1"
 
@@ -38,6 +44,7 @@ jobs:
       - run: python -m pip install -e "python[dev]"
       - run: npm run test:python-environment-smoke
       - run: python -m pytest python/tests -q
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.omit_python_source != true }}
       - run: npm run build
       - run: npm run package:prepared -- --out openwrangler.vsix
       - run: npm run verify:vsix -- openwrangler.vsix
