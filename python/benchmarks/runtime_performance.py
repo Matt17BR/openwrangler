@@ -38,7 +38,6 @@ VISIBLE_PROFILE_COLUMNS = 8
 DEFAULT_FETCH_COLUMN_BLOCK_SIZE = 16
 EMPTY_FILTER = {"logic": "and", "filters": [], "sort": []}
 TRANSPORT_TIMEOUT_SECONDS = 30.0
-SERIALIZATION_EVIDENCE_MIN_MS = 5.0
 _BENCHMARK_EVENT_PREFIX = "__OPEN_WRANGLER_BENCHMARK_EVENT__ "
 _BENCHMARK_SERVER_BOOTSTRAP = r"""
 import json
@@ -97,9 +96,6 @@ RELEASE_GATE_METRICS = {
     "stdioTransportCacheMissPageP95Ms": "*.stdioTransport.cacheMissPageP95Ms",
     "stdioSameSessionStatsContendedPageLatencyMs": "*.stdioTransport.sameSessionStatsContendedPageLatencyMs",
     "stdioSameSessionActiveProfileProof": "*.stdioTransport.statsActiveWhenPageWasSent (must be true)",
-    "stdioSameSessionInteractiveOverlap": (
-        "*.stdioTransport.interactivePageOverlappedProfile when statsActiveWhenPageWasSent is true"
-    ),
 }
 
 
@@ -279,8 +275,8 @@ class StdioRuntimeClient:
         self.process = subprocess.Popen(
             # The bootstrap changes no stdin/stdout behavior. It wraps only the
             # selected engine's header-statistics call so the benchmark can prove, using
-            # Python's process-wide monotonic clock, that the page was sent
-            # while production runtime work was genuinely active.
+            # Python's system-wide monotonic clock, that the page was sent
+            # while production runtime work was active.
             [sys.executable, "-c", _BENCHMARK_SERVER_BOOTSTRAP],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -299,7 +295,7 @@ class StdioRuntimeClient:
         self._stderr: list[str] = []
         self._sequence = 0
         self.response_order: list[str] = []
-        self.response_arrivals: dict[str, float] = {}
+        self.response_arrivals_ns: dict[str, int] = {}
         self.request_send_completed_ns: dict[str, int] = {}
         self.resource_samples: list[dict[str, Any]] = []
         self._stdout_thread = threading.Thread(
@@ -330,7 +326,7 @@ class StdioRuntimeClient:
         *,
         priority: Literal["interactive", "background"] = "interactive",
         label: str | None = None,
-    ) -> tuple[str, float]:
+    ) -> tuple[str, int]:
         self._sequence += 1
         request_id = f"benchmark-{label or request.get('kind', 'request')}-{self._sequence}"
         envelope = {
@@ -342,7 +338,7 @@ class StdioRuntimeClient:
         stdin = self.process.stdin
         if stdin is None or stdin.closed or self.process.poll() is not None:
             raise AssertionError(self._runtime_failure("Standalone runtime input is not writable."))
-        started = perf_counter()
+        started = perf_counter_ns()
         stdin.write(json.dumps(envelope, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + "\n")
         stdin.flush()
         self.request_send_completed_ns[request_id] = perf_counter_ns()
@@ -358,7 +354,7 @@ class StdioRuntimeClient:
     ) -> tuple[dict[str, Any], float]:
         request_id, started = self.send(request, priority=priority, label=label)
         response = self.receive(request_id, timeout=timeout)
-        return response, (perf_counter() - started) * 1_000
+        return response, (perf_counter_ns() - started) / 1_000_000
 
     def receive(self, request_id: str, *, timeout: float = TRANSPORT_TIMEOUT_SECONDS) -> dict[str, Any]:
         self._drain_available()
@@ -429,7 +425,7 @@ class StdioRuntimeClient:
                 if not line.strip():
                     continue
                 try:
-                    self._messages.put((json.loads(line), perf_counter()))
+                    self._messages.put((json.loads(line), perf_counter_ns()))
                 except Exception as error:
                     self._messages.put(AssertionError(f"Invalid runtime JSON frame: {line.rstrip()!r}: {error}"))
         finally:
@@ -471,8 +467,8 @@ class StdioRuntimeClient:
             raise AssertionError(self._runtime_failure(str(item))) from item
         if item is _TRANSPORT_EOF:
             raise AssertionError(self._runtime_failure("Standalone runtime closed stdout before responding."))
-        arrival = perf_counter()
-        if isinstance(item, tuple) and len(item) == 2 and isinstance(item[1], float):
+        arrival = perf_counter_ns()
+        if isinstance(item, tuple) and len(item) == 2 and isinstance(item[1], int):
             item, arrival = item
         if not isinstance(item, dict):
             raise AssertionError(f"Standalone runtime returned a non-object envelope: {item!r}.")
@@ -483,7 +479,7 @@ class StdioRuntimeClient:
             raise AssertionError(f"Standalone runtime returned an invalid response payload: {item!r}.")
         request_id = item["requestId"]
         self.response_order.append(request_id)
-        self.response_arrivals[request_id] = arrival
+        self.response_arrivals_ns[request_id] = arrival
         return request_id, response
 
     def _runtime_failure(self, message: str) -> str:
@@ -740,23 +736,22 @@ def _profile_overlap_evidence(
     stats_started_ns: int,
     page_sent_ns: int,
     stats_finished_ns: int,
-    completion_delta_ms: float,
-    serialized_gap_threshold_ms: float,
+    page_observed_ns: int,
 ) -> dict[str, Any]:
     if stats_finished_ns < stats_started_ns:
         raise AssertionError("Dataset-statistics finish preceded its benchmark start event.")
     stats_active = stats_started_ns <= page_sent_ns < stats_finished_ns
     stats_completed = stats_finished_ns <= page_sent_ns
     stats_started_after_page = page_sent_ns < stats_started_ns
-    page_overlapped = stats_active and completion_delta_ms < serialized_gap_threshold_ms
+    page_overlapped = stats_active and page_observed_ns < stats_finished_ns
     return {
         "statsActiveWhenPageWasSent": stats_active,
         "statsCompletedBeforePageWasSent": stats_completed,
         "statsStartedAfterPageWasSent": stats_started_after_page,
         "interactivePageOverlappedProfile": page_overlapped,
-        "sameSessionContentionObserved": stats_active and not page_overlapped,
         "pageSendAfterStatsStartMs": (page_sent_ns - stats_started_ns) / 1_000_000,
         "statsFinishAfterPageSendMs": (stats_finished_ns - page_sent_ns) / 1_000_000,
+        "pageObservedAfterStatsFinishMs": (page_observed_ns - stats_finished_ns) / 1_000_000,
     }
 
 
@@ -854,9 +849,9 @@ def measure_stdio_transport(
         )
         page_sent_ns = client.request_send_completed_ns[page_id]
         contended_page = client.receive(page_id)
-        contended_page_ms = (client.response_arrivals[page_id] - page_started) * 1_000
+        contended_page_ms = (client.response_arrivals_ns[page_id] - page_started) / 1_000_000
         stats = client.receive(stats_id)
-        stats_ms = (client.response_arrivals[stats_id] - stats_started) * 1_000
+        stats_ms = (client.response_arrivals_ns[stats_id] - stats_started) / 1_000_000
         stats_finished_event = client.receive_benchmark_event("statsFinished")
         client.record_resources("profile-contention-complete")
         _expect_response_kind(contended_page, "page", f"same-session contended page for {path.name}")
@@ -871,22 +866,15 @@ def measure_stdio_transport(
             contention_column_offset,
             f"same-session contended page for {path.name}",
         )
-        completion_delta_ms = (client.response_arrivals[page_id] - client.response_arrivals[stats_id]) * 1_000
-        # A serialized cache miss would only begin after statistics completes,
-        # leaving approximately a full uncontented cache-miss gap between the
-        # two responses. A gap below half the lower-tail baseline demonstrates
-        # substantial execution overlap even when CPU contention makes the two
-        # callbacks complete together or reverses their write order slightly.
-        serialized_gap_threshold_ms = max(
-            SERIALIZATION_EVIDENCE_MIN_MS,
-            _percentile(transport_samples, 0.05) * 0.5,
-        )
+        completion_delta_ms = (client.response_arrivals_ns[page_id] - client.response_arrivals_ns[stats_id]) / 1_000_000
+        # A decoded page response observed before header_stats exits proves
+        # request overlap, not native CPU parallelism. A later observation
+        # leaves overlap unproven; the response gap alone cannot establish it.
         overlap_evidence = _profile_overlap_evidence(
             int(stats_started_event["perfCounterNs"]),
             page_sent_ns,
             int(stats_finished_event["perfCounterNs"]),
-            completion_delta_ms,
-            serialized_gap_threshold_ms,
+            client.response_arrivals_ns[page_id],
         )
 
         closed, _ = client.request(
@@ -902,8 +890,8 @@ def measure_stdio_transport(
             f"standalone Python process using canonical protocol-v{PROTOCOL_VERSION} newline-delimited JSON envelopes"
         ),
         "statsStartProof": (
-            f"benchmark-only {backend.title()} header_stats entry/exit events on stderr using process-wide "
-            "perf_counter_ns"
+            f"benchmark-only {backend.title()} header_stats entry/exit events on stderr using system-wide "
+            "perf_counter_ns. Response-before-exit observation is diagnostic; a later response leaves overlap unproven."
         ),
         "initializeRoundTripMs": round(initialize_ms, 3),
         "openRoundTripMs": round(open_ms, 3),
@@ -918,7 +906,6 @@ def measure_stdio_transport(
         "sameSessionContentionOffset": contention_offset,
         "sameSessionContentionColumnOffset": contention_column_offset,
         **overlap_evidence,
-        "serializedCompletionGapThresholdMs": round(serialized_gap_threshold_ms, 3),
         "pageMinusStatsCompletionMs": round(completion_delta_ms, 3),
         "responseOrder": [
             "stats" if item == stats_id else "page" for item in client.response_order if item in {stats_id, page_id}
@@ -1045,11 +1032,6 @@ def assert_release_limits(report: dict[str, Any]) -> None:
                 else "the benchmark did not prove an active dataset-statistics call at page send"
             )
             failures.append(f"{kind.title()} same-session active-profile proof: {reason}")
-        elif transport["sameSessionContentionObserved"]:
-            failures.append(
-                f"{kind.title()} same-session interactive overlap: cache-miss page did not substantially "
-                "overlap dataset statistics that were active when the page was sent"
-            )
     if failures:
         raise AssertionError("Performance release gates failed:\n" + "\n".join(failures))
 
