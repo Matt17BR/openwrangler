@@ -3360,8 +3360,16 @@ describe("App file import options", () => {
     const cityHeader = document.querySelector<HTMLElement>('th[data-column="city"]');
     if (!cityHeader) throw new Error("Expected the city header.");
     fireEvent.click(within(cityHeader).getByLabelText("Column actions for city"));
-    expect(within(cityHeader).getByRole("button", { name: "Filter…" })).toBeDisabled();
-    expect(within(cityHeader).getByRole("button", { name: "Sort ascending" })).toBeDisabled();
+    for (const [name, reason] of [
+      ["Filter…", "Filtering is unavailable for this dataframe."],
+      ["Sort ascending", "Sorting is unavailable for this dataframe."]
+    ]) {
+      const action = within(cityHeader).getByRole("button", { name });
+      const notice = within(cityHeader).getByText(reason);
+      expect(action).toBeDisabled();
+      expect(notice).toBeVisible();
+      expect(document.getElementById(action.getAttribute("aria-describedby") ?? "")).toBe(notice);
+    }
 
     webviewPostMessage.mockClear();
     dispatchAppMessage({ kind: "editorAction", action: "openFilters", column: "city" });

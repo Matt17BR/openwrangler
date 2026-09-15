@@ -22,6 +22,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Grid filter and sort actions show a waiting reason while a cleaning step is pending, instead of accepting clicks that do nothing.
 - Runtime shutdown requests interruption of active DuckDB work during session opening, while the opening worker retains cleanup ownership.
 - Open DuckDB Table refuses a file replaced after table selection while the viewer is opening, preserving other open sessions.
 - DuckDB table, Excel worksheet and R dataframe pickers display icon-like names as text while retaining exact selections.

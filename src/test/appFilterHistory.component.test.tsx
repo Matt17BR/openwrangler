@@ -359,16 +359,77 @@ describe("App confirmed viewing-filter history", () => {
       screen.getByRole("button", { name: "Undo" })
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
-    dispatchAppMessage({
-      kind: "planUpdated",
-      action: "undo",
-      revision: 1,
-      metadata: { ...withStep, revision: 1, filterModel: filter.filterModel, steps: [] },
-      page,
-      code: ""
-    });
+    const waitingReason = "Wait for the cleaning step to finish before filtering or sorting.";
+    for (const outcome of ["error", "success"]) {
+      webviewPostMessage.mockClear();
+      fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+      const salesHeader = document.querySelector<HTMLElement>('th[data-column="sales"]')!;
+      const summary = within(salesHeader).getByLabelText("Column actions for sales");
+      fireEvent.click(summary);
+      const notices = within(salesHeader).getAllByText(waitingReason);
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).toBeVisible();
+      const headerActions = ["Filter…", "Sort ascending", "Sort descending", "Clear sort"].map((name) =>
+        within(salesHeader).getByRole("button", { name })
+      );
+      for (const action of headerActions.slice(0, 3)) {
+        expect(document.getElementById(action.getAttribute("aria-describedby") ?? "")).toBe(notices[0]);
+      }
+      headerActions.push(within(salesHeader).getByRole("button", { name: /Clear sort for sales/u }));
+      for (const action of headerActions) {
+        expect(action).toBeDisabled();
+        expect(action).toHaveAttribute("title", waitingReason);
+        fireEvent.click(action);
+      }
+      expect(within(salesHeader).getByRole("button", { name: "Resize sales column" })).toBeEnabled();
+      fireEvent.click(summary);
+
+      fireEvent.contextMenu(screen.getByRole("cell", { name: "Milan" }));
+      const menu = screen.getByRole("menu", { name: "Filter city by this cell" });
+      const cellActions = ["Keep only this value", "Exclude this value"].map((name) =>
+        within(menu).getByRole("menuitem", { name })
+      );
+      for (const action of cellActions) {
+        expect(action).toBeDisabled();
+        expect(action).toHaveAttribute("title", waitingReason);
+        fireEvent.click(action);
+      }
+      expect(screen.getByRole("button", { name: "Copy cell" })).toBeEnabled();
+      expect(
+        webviewPostMessage.mock.calls
+          .map(([message]) => message)
+          .filter((message) => message.kind === "runtimeRequest" && message.request.kind === "getPage")
+      ).toHaveLength(0);
+      fireEvent.keyDown(menu, { key: "Escape" });
+
+      if (outcome === "error") {
+        dispatchAppMessage({ kind: "error", code: "undo_failed", message: "Undo failed.", recoverable: true });
+      } else {
+        dispatchAppMessage({
+          kind: "planUpdated",
+          action: "undo",
+          revision: 1,
+          metadata: { ...withStep, revision: 1, filterModel: filter.filterModel, steps: [] },
+          page,
+          code: ""
+        });
+      }
+      for (const action of headerActions) expect(action).toBeEnabled();
+      fireEvent.contextMenu(screen.getByRole("cell", { name: "Milan" }));
+      const recoveredMenu = screen.getByRole("menu", { name: "Filter city by this cell" });
+      for (const name of ["Keep only this value", "Exclude this value"]) {
+        expect(within(recoveredMenu).getByRole("menuitem", { name })).toBeEnabled();
+      }
+      fireEvent.keyDown(recoveredMenu, { key: "Escape" });
+    }
     expect(within(bar).getByRole("button", { name: "Undo latest filter" })).toBeDisabled();
+
+    await applyCellFilter("Milan", "Exclude this value");
+    const recoveredFilter = lastPageRequest();
+    expect(recoveredFilter.filterModel.filters[0].predicates).toEqual([
+      expect.objectContaining({ operator: "notEquals" })
+    ]);
+    confirmPage(recoveredFilter, { ...withStep, revision: 1, steps: [] });
 
     dispatchAppMessage({
       kind: "sessionOpened",
