@@ -115,9 +115,9 @@ _Bring the cleaning function back into the notebook that opened the dataframe._
 
 DuckDB notebook relations and local PySpark DataFrames support viewing, filters, sorts and profiles, with the limits
 in the table below. Their notebook sessions do not offer cleaning or export.
-DuckDB notebook queries can repeat or omit rows across pages unless values and source ordering remain stable;
-see the [ordering limitation and workaround](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#duckdb-experimental-file-support)
-before opening a relation.
+Unordered Polars LazyFrames and DuckDB notebook queries can associate row IDs with different values or repeat rows
+across pages, even with unchanged input data. Give the source a deterministic order before opening it;
+see the [ordering limitation and workaround](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#sessions-and-generated-code).
 
 ## Work with R directly
 
