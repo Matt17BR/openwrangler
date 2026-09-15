@@ -357,7 +357,8 @@ If acquisition fails, the existing diagnostic distinguishes hidden Variables tab
 fixed Variables-document and panel-container presence/visibility. It also records capped pane header/body counts,
 expansion and body visibility, then inspects up to twelve Jupyter webview shells attached to the workbench root.
 Each shell reports visibility and its current active/pending content-frame counts. A single readable content document
-reports only root, `variableView.js` script-suffix and Variables-panel presence; a script tag does not prove execution.
+reports root, `variableView.js` script-suffix and Variables-panel presence, readiness, and exact-script resource timings.
+A script tag or completed request does not prove execution.
 Jupyter shells are not assumed to belong to Variables. Missing, ambiguous, inaccessible or timed-out document reads
 remain `null`. These failure-only observations use one-second collection bounds and include no page content, URLs or
 raw probe errors; they do not identify which event caused the observed state.
