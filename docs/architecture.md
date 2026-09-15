@@ -1260,8 +1260,8 @@ plans receive the same guard.
 Other native result types, explicit floating or Decimal operands, division, power and By Example retain their existing
 paths. BIGNUM addition and subtraction also retain native behavior.
 
-CSV, TSV, JSONL, and Parquet file sessions support native viewing and all catalog operations in both live and
-generated code. DuckDB file editing remains experimental; Excel is unsupported. Database tables retain the read-only
+CSV, TSV, JSONL, and Parquet file sessions support native viewing and the DuckDB operations in the
+[cleaning support guide](feature-parity.md#cleaning-operations), with matching live and generated code. DuckDB file editing remains experimental; Excel is unsupported. Database tables retain the read-only
 connection described above. A live notebook `DuckDBPyRelation` retains the exact user-owned relation, serialized on
 its originating connection, is viewing-only, and is released without closing or mutating the user's relation.
 The runtime keeps both notebook source kinds in viewing mode even when a caller requests editing.
