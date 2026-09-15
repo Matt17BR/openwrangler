@@ -615,12 +615,12 @@ their names when reopening the native query. Use Pandas or Polars for those file
 values, JSONL keys and Parquet headers are supported. Standalone generated programs given an externally loaded DuckDB
 CSV relation with affected headers inherit the same native limitation.
 
-DuckDB CSV, TSV, Parquet and JSONL sessions use native SQL plans with request-owned connections, without converting through Pandas, Polars
-or Arrow. Extension auto-install, autoload and external-file caching remain disabled. Generated programs use the input
-relation's connection, preserving its private tables and functions. Live and generated execution check computed
-cleaning results beyond the displayed rows and columns before confirmation. Rename, Select Columns and Drop Columns
-retain lazy input evaluation, so later reads can still reveal inherited source errors. Query ownership, cleanup and
-validation costs are described in the [DuckDB architecture](architecture.md#duckdb).
+DuckDB CSV, TSV, Parquet and JSONL sessions run natively, without converting through Pandas, Polars or Arrow.
+Generated programs reuse the input relation's connection, including its private tables and functions. Live and
+generated execution check computed cleaning results beyond the displayed rows and columns before confirmation.
+Rename, Select Columns and Drop Columns remain lazy, so later reads can reveal source errors. Volatile inputs can
+change after validation. The [DuckDB architecture](architecture.md#duckdb) defines connection setup, cleanup and
+validation costs.
 
 Caller-defined DuckDB functions do not replace Open Wrangler's viewing statistics, value searches or filter tests.
 Functions used by the source relation keep their original behavior.
@@ -639,8 +639,7 @@ DuckDB Convert Type to Datetime preserves typed timestamp precision and TIMESTAM
 timestamps to Date keeps their calendar day. Format Datetime uses DuckDB syntax, preserving nanosecond fractions and
 wide dates; zoned values use the execution connection's timezone. Formatting can refuse finer-than-microsecond values
 near the lower nanosecond endpoint; exact microsecond-aligned values remain supported there. These rules apply to live
-and generated code. See [DuckDB temporal bounds](architecture.md#duckdb); use Custom Code for explicit precision or
-timezone conversions.
+and generated code. Use Custom Code for explicit precision or timezone conversions.
 
 Split Column delimiters and literal Find/Replace values can contain NUL characters in live and generated DuckDB code.
 Leading, trailing and repeated delimiters preserve empty fields; missing fields and null source values stay null.
@@ -678,7 +677,7 @@ output.
 | Notebook variables and inline MIME rendering | Viewing only       | Partial     | Native relation package slices                 | No cleaning, code insertion, or data export                                         |
 | Grid pages, typed cells, filters, and sorts  | Yes                | Partial     | Native rich-type and query contracts           | Large-scale mixed-data and cross-platform matrix                                    |
 | Summaries, statistics, and distinct values   | Yes                | Partial     | Native fixed-size profile contracts            | Repeated large-data resource evidence                                               |
-| Complete operation catalog                   | File sessions only | Partial     | Exact direct live/generated catalog equality   | Complete installed catalog and semantic-edge matrix                                 |
+| Supported cleaning operations                | File sessions only | Partial     | Exact direct live/generated catalog equality   | Complete installed catalog and semantic-edge matrix                                 |
 | Draft preview, diff, apply, and history      | File sessions only | Partial     | Runtime and representative packaged lifecycle  | Complete edit/discard/undo interaction matrix                                       |
 | Executable generated DuckDB code             | File sessions only | Partial     | Direct equality and packaged copy/script slice | Edited-code execution acceptance                                                    |
 | CSV and Parquet cleaned-data export          | File sessions only | Partial     | Native export and publication failure tests    | Cross-platform installed destination matrix                                         |
