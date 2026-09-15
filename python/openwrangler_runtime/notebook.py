@@ -75,6 +75,7 @@ def build_payload(
         if "notebookOutput" not in engine.capabilities.source_kinds:
             raise EngineError(f"The {engine.name} backend does not support notebook output sources.")
         frame = _normalize_snapshot_value(engine, value)
+        engine.validate_internal_row_id_namespace(frame)
         filter_model = {"filters": [], "sort": []}
         source: dict[str, Any] = {"kind": "notebookOutput", "label": label}
         if variable_name:
