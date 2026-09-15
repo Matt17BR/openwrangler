@@ -553,9 +553,12 @@ or coexistence options are rejected. Leave the profile unset to run the complete
 PySpark and generic verification. Qualification coverage is determined by the selected lane, not by a focused pass.
 
 For hosted Python and file-input investigations, manually select `linux-python` in the released-Jupyter workflow.
-It uses that complete default Python lane with remote Jupyter enabled and omits the separate R invocations.
-It does not run the full Python source suite or qualify R. The default `linux-all` target retains R execution;
-see [CI](ci.md#scheduled-and-release-workflows) for selection and qualification boundaries.
+It first runs `python-notebooks`, then runs full mode with released Jupyter disabled and the profile unset. The second
+invocation retains restricted-trust, seed and generic verification, including the database picker. Both use the same
+VSIX and their existing private environments; failure in the first stops the second. Spark provisioning and remote
+Jupyter are omitted. Each invocation repeats runner preparation and cleanup, including editor resolution, harness
+packaging and display setup. Their combined elapsed time has not been measured. See
+[CI](ci.md#scheduled-and-release-workflows) for selection and qualification boundaries.
 
 ## Native R editor dependencies
 
