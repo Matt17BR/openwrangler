@@ -277,15 +277,13 @@ Pandas Pivot Wider preserves object identifiers containing `NaT` and mixed scala
 Native Arrow timestamp and duration identifiers retain their exact ticks and remain distinct from null groups,
 including the minimum int64 value and dictionary-encoded identifiers.
 Integer `1` and string `"1"` remain distinct keys. Generated Group By preserves the same integral object-key values
-and dtypes as live execution. Missing-value checks recognize the actual Pandas `NA` and `NaT` sentinels; similarly
-named custom values retain their values in pages, nested cells, Pivot and Fill. Integral objects with
-temporal-looking class names retain exact Group By keys. Cell rendering checks actual
-NumPy and Pandas scalar types and preserves nanoseconds in Pandas `Timedelta` subclasses. Existing native type and
-hashability limits remain.
+and dtypes as live execution. Pandas treats its actual `NA` and `NaT` sentinels as missing; similarly named custom
+values are preserved in pages, nested cells, Pivot and Fill. Integral objects retain exact Group By keys even when
+their class names resemble temporal types. Scalar class names alone do not determine how cells are displayed.
+Pandas `Timedelta` subclasses retain nanoseconds. Existing native type and hashability limits remain.
 
 Polars Pivot Wider accepts public identifier and key columns named `len` and output names resembling temporary
-columns. Native eager/lazy and executable generated-code regressions cover collisions and duplicate null keys in
-`python/tests/test_pivot_wider.py`.
+columns. Native eager/lazy execution and generated code agree on these names and duplicate null keys.
 An empty input produces zero rows even when no identifier columns remain, preserving the declared output types.
 
 ## Native values and precision
@@ -334,10 +332,13 @@ Pandas object columns treat NumPy datetime and duration `NaT` as null in profile
 including generated code. Floating NaN remains separate.
 
 Python duration cells preserve exact seconds, including large microsecond values and NumPy unit multipliers.
-Pandas choices and grid selections refuse finer-than-microsecond values instead of matching a rounded neighbor.
+Selections from Pandas duration choices or the grid must fit microsecond precision and the Python timedelta range.
+Finer or wider values cannot be selected. Pandas durations stored in seconds, milliseconds or microseconds remain
+displayable outside the nanosecond range.
 Duration filters in Pandas, Polars and DuckDB retain exact microseconds when notebook code changes Decimal precision,
 including in generated Python. Calendar and unitless NumPy durations remain displayable but cannot be selected as seconds.
 Previously saved selections with rounded temporal values must be cleared and reselected.
+
 Pandas object duration choices count and compare fixed-unit NumPy, ordinary Pandas and Python duration values by
 exact elapsed time. Equal values share one choice with the first source spelling. Live and generated filters retain
 fine-unit neighbors and wide values without converting the source to nanoseconds. Mixed columns containing an
@@ -345,29 +346,33 @@ ordinary NumPy or Pandas duration together with calendar/unitless durations or c
 and present-value comparisons; paging and null-only filters remain available. Pure custom-only columns keep their
 existing native behavior.
 Built-in Python timedelta object columns keep their source spelling in profiles and value choices, so displayed
-labels can be searched without changing counts or selection values.
-Pandas durations stored in seconds, milliseconds or microseconds remain displayable outside the nanosecond range.
-Their selections retain the existing Python timedelta range; wider values remain visible but cannot be selected.
+labels can be searched without changing counts or selection values. Object duration searches retain their existing
+representation limits.
+
 Pandas Arrow duration pages, profiles and choices preserve valid int64 extrema and dictionary labels. The minimum
 microsecond value remains selectable; native and generated filters compare it exactly without an overflowing conversion.
+
 NumPy-backed Pandas duration columns and categories search the labels shown in value choices, including whole days
 and large durations. Direct and dictionary-encoded Arrow duration columns and Arrow-backed duration categories also
 accept their displayed labels while retaining native raw-text searches. Matching unused duration categories remain
-available with zero counts.
+available with zero counts. Supported Sparse choices search displayed labels, including whole days, and retain raw
+clock matches.
+
 Pandas temporal categories preserve exact displayed values, missing counts and directional Fill anchors. Supported
 duration choices select the exact stored rows, including positive NumPy unit multipliers and Arrow extrema, in live
 and generated filters. Values outside the existing filter range or precision remain visible with selection unavailable.
 Zero-unit duration categories remain viewable but refuse nonempty duration membership.
+
 Pandas Sparse durations with positive second, millisecond, microsecond or nanosecond multipliers preserve physical
 values in cells, choices, profiles and value selections, including generated filters. Simple Sparse duration index
-labels retain the same values. Supported Sparse choices search displayed labels, including whole days, and retain raw
-clock matches. The existing selection range and microsecond precision limits still apply.
-Scalar preparation for these operations and export refuses zero-unit Sparse durations and used fills that cannot be
-represented exactly; unrelated operations retain their native limits. Profiles, choices and nonempty membership also
-refuse finer units, calendar or unitless storage and multiplied coarse units, including some representable values.
+labels retain the same values. Value selections follow the bounds above. Scalar preparation for these operations and
+export refuses zero-unit Sparse durations and used fills that cannot be represented exactly; unrelated operations
+retain their native limits. Profiles, choices and nonempty membership also refuse finer units, calendar or unitless
+storage and multiplied coarse units, including some representable values.
 Ordinary coarse units and existing empty/null page behavior remain available.
 CSV export refuses nonempty multiplied Sparse duration data or preserved indexes before changing the destination;
-empty exports and omitted indexes remain available. Object duration searches retain their existing representation limits.
+empty exports and omitted indexes remain available.
+
 Polars Datetime and Duration columns retain nanoseconds in grid cells, value choices and profile labels, and datetime
 offsets retain seconds. Duration choices now work and use native signed-unit labels, such as `1m 40s 1µs`.
 Datetime labels retain the native unit's three, six or nine fractional digits. Search accepts the displayed labels,
@@ -395,7 +400,7 @@ are rejected.
 
 Pandas Arrow date columns, including Parquet imports, retain date-range profiles, typed filters and stable sorting.
 Parquet imports preserve exact nullable integer row-index values, including adjacent integers above 2^53. Row labels
-follow filtered and sorted rows; the index-fidelity owner checks these through actual file sessions.
+follow filtered and sorted rows in file sessions.
 Present extreme Arrow timestamps and durations also keep exact row labels, including copied row-index text,
 instead of appearing as null. This preserves existing index and MultiIndex label conventions.
 Nullable integer data and integer children in lists, structs and maps also retain exact values and missingness through
@@ -423,22 +428,24 @@ rows retain the original UUID objects, and unrelated object values are not conve
 
 Pandas scalar Arrow dictionaries use logical values for profiles, value selection, filters, sorting and row removal.
 Null dictionary entries and duplicate values across chunks retain their meaning. Nested and arbitrary extension
-dictionary values do not gain scalar operations. Integer filtering, sorting, directional Fill and Drop Duplicates
-preserve exact large values in Sparse columns, including returned columns that were not used as keys.
-Nullable Arrow integers, timestamps and durations preserve exact duplicate membership, including nanosecond
-differences, in live and generated row removal and dataset duplicate counts. Retained rows keep their original arrays.
-Sparse integer dataset duplicate counts agree with the existing exact row-removal comparison.
-Missing-cell totals agree with per-column counts for Sparse and mixed Dense/Sparse dataframes.
-Arrow timestamp and duration missing-value filters, pages and profiles preserve present nanosecond extrema.
-Supported Fill methods retain valid temporal values in targets, donors and directional anchors. The minimum
-nanosecond timestamp is displayed; using it as a filter value remains unsupported under the existing input precision.
+dictionary values do not gain scalar operations.
 Convert Type uses the dictionary's logical input type, so valid casts work across chunks and signed-integer range
 checks also cover encoded unsigned values.
 Fill supports logical dictionary values across its existing methods and retains encoded targets when no cells change.
 Generated Fill code treats native Arrow dates as dates, including empty and all-null columns.
 CSV and Parquet writers support scalar dictionary columns and preserved index levels, including null codebook entries.
+
+Nullable Arrow integers, timestamps and durations preserve exact duplicate membership, including nanosecond
+differences, in live and generated row removal and dataset duplicate counts. Retained rows keep their original arrays.
+Arrow timestamp and duration missing-value filters, pages and profiles preserve present nanosecond extrema.
+Supported Fill methods retain valid temporal values in targets, donors and directional anchors. The minimum
+nanosecond timestamp is displayed; using it as a filter value remains unsupported under the existing input precision.
 Group By, Pivot and grouped Fill share missing-value and signed-zero key equality for Arrow float32/float64 columns.
 Group By preserves computed NaN separately from an empty group's null result.
+
+Pandas integer filtering, sorting, directional Fill and Drop Duplicates preserve exact large values in Sparse columns,
+including returned columns that were not used as keys. Sparse integer dataset duplicate counts agree with the existing
+exact row-removal comparison. Missing-cell totals agree with per-column counts for Sparse and mixed Dense/Sparse dataframes.
 Group By Count accepts Sparse columns, including missing and empty inputs, while preserving other aggregates on
 the same column.
 Group By, Pivot and grouped Fill preserve distinct Sparse integer keys, including adjacent large values and native
