@@ -454,12 +454,109 @@ def test_polars_nested_temporal_output_preserves_values_and_native_counts(
     engine.close()
 
 
+def _literal_nested_temporal_source() -> tuple[pl.DataFrame, list[list[Any]]]:
+    dtype = pl.Struct(
+        {
+            "^a.*$": pl.Datetime("ns"),
+            "amount": pl.Datetime("ns"),
+            "*": pl.Struct({"^a.*$": pl.Datetime("ns"), "amount": pl.Datetime("ns"), "__ow_field_0": pl.String}),
+            "__ow_field_0": pl.String,
+            "__ow_field_1": pl.Int64,
+        }
+    )
+    record = {
+        "^a.*$": -1,
+        "amount": 1_000_000_001,
+        "*": {"^a.*$": 1, "amount": -1, "__ow_field_0": "inner"},
+        "__ow_field_0": "outer",
+        "__ow_field_1": 23,
+    }
+    child_nulls = {**record, "^a.*$": None, "*": None}
+    source = pl.DataFrame(
+        {
+            "items": pl.Series([[record], [record], [], None]).cast(pl.List(dtype)),
+            "record": pl.Series([record, record, child_nulls, None]).cast(dtype),
+            "fixed": pl.Series([[record, None], [record, None], [child_nulls, None], None]).cast(pl.Array(dtype, 2)),
+        }
+    )
+    expected = {
+        "^a.*$": "1969-12-31T23:59:59.999999999",
+        "amount": "1970-01-01T00:00:01.000000001",
+        "*": {
+            "^a.*$": "1970-01-01T00:00:00.000000001",
+            "amount": "1969-12-31T23:59:59.999999999",
+            "__ow_field_0": "inner",
+        },
+        "__ow_field_0": "outer",
+        "__ow_field_1": 23,
+    }
+    expected_nulls = {**expected, "^a.*$": None, "*": None}
+    return source, [
+        [[expected], expected, [expected, None]],
+        [[expected], expected, [expected, None]],
+        [[], expected_nulls, [expected_nulls, None]],
+        [None, None, None],
+    ]
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+def test_polars_nested_temporal_fields_are_literal(lazy: bool) -> None:
+    source, expected = _literal_nested_temporal_source()
+    before = source.clone()
+    frame = source.lazy() if lazy else source
+    engine = PolarsEngine()
+    try:
+        schema = engine.schema(frame)
+        page = engine.page(frame, 0, 4)
+        assert [[cell["raw"] for cell in row["values"]] for row in page["rows"]] == expected
+        assert [row["rowNumber"] for row in page["rows"]] == list(range(4))
+        for row, values in zip(page["rows"], expected, strict=True):
+            assert [cell["display"] for cell in row["values"]] == [
+                "" if value is None else json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+                for value in values
+            ]
+        for position, summary in enumerate(engine.summaries(frame)):
+            label = json.dumps(expected[0][position], ensure_ascii=False, separators=(",", ":"))
+            assert {value["value"]: value["count"] for value in summary["topValues"]}[label] == 2
+            assert summary["nullCount"] == source[:, position].null_count()
+            assert summary["distinctCount"] == source[:, position].drop_nulls().n_unique()
+            assert summary["totalCount"] == 4
+            assert all(value["selectionValue"] is None for value in summary["topValues"])
+        assert engine.page(frame.head(0), 0, 4)["rows"] == []
+        assert all(summary["totalCount"] == 0 for summary in engine.summaries(frame.head(0)))
+        choices_source = pl.DataFrame(
+            {
+                "choice": pl.Series(
+                    [
+                        {"^a.*$": -1, "amount": 1_000_000_001, "text": "keep"},
+                        {"^a.*$": -1, "amount": 1_000_000_001, "text": "keep"},
+                        {"^a.*$": None, "amount": None, "text": "keep"},
+                    ]
+                ).cast(pl.Struct({"^a.*$": pl.Datetime("ns"), "amount": pl.Datetime("ns"), "text": pl.String}))
+            }
+        )
+        choices_frame = choices_source.lazy() if lazy else choices_source
+        choices, has_more = engine.column_values(choices_frame.head(2), "choice")
+        label = json.dumps(
+            {"^a.*$": "1969-12-31T23:59:59.999999999", "amount": "1970-01-01T00:00:01.000000001", "text": "keep"},
+            separators=(",", ":"),
+        )
+        assert {value["value"]: value["count"] for value in choices} == {label: 2}
+        assert not has_more and all(value["selectionValue"] is None for value in choices)
+        with pytest.raises(pl.exceptions.InvalidOperationError, match="conversion from `struct"):
+            engine.column_values(choices_frame, "choice")
+        assert engine.schema(frame) == schema
+    finally:
+        engine.close()
+    assert source.equals(before) and source.schema == before.schema
+
+
 def test_polars_nontemporal_containers_do_not_enter_temporal_value_traversal(monkeypatch: pytest.MonkeyPatch) -> None:
     source = pl.DataFrame(
         {
             "items": pl.Series([[1, None], [], None], dtype=pl.List(pl.Int64)),
-            "record": pl.Series([{"ticks": 1, "text": "keep"}, None, {"ticks": None, "text": "last"}]),
-            "unselected": pl.Series([[1], [None], []], dtype=pl.List(pl.Int64)).cast(pl.List(pl.Datetime("ns"))),
+            "record": pl.Series([{"*": 1, "^a.*$": "keep"}, None, {"*": None, "^a.*$": "last"}]),
+            "unselected": _literal_nested_temporal_source()[0].get_column("record").head(3),
         }
     )
 
@@ -475,7 +572,7 @@ def test_polars_nontemporal_containers_do_not_enter_temporal_value_traversal(mon
     for frame in (source, source.lazy()):
         page = engine.page(frame, 0, 2, column_projection=projection)
         assert page["columnIds"] == [identifier for _, identifier in projection] and len(page["rows"]) == 2
-        assert [cell["raw"] for cell in page["rows"][0]["values"]] == [[1, None], {"ticks": 1, "text": "keep"}]
+        assert [cell["raw"] for cell in page["rows"][0]["values"]] == [[1, None], {"*": 1, "^a.*$": "keep"}]
         assert [summary["distinctCount"] for summary in engine.summaries(frame, projection)] == [2, 2]
     engine.close()
 
@@ -505,10 +602,7 @@ def test_polars_sliced_nested_page_formats_only_returned_children_in_one_batch(m
 
 
 def test_polars_nested_temporal_file_session_keeps_native_generated_export_and_source(tmp_path: Path) -> None:
-    source = pl.DataFrame({"value": pl.Series([-1, 0, 1, None], dtype=pl.Int64).cast(pl.Datetime("ns"))}).select(
-        pl.concat_list("value").alias("items"),
-        pl.struct(pl.col("value").alias("when"), pl.lit("source").alias("text")).alias("record"),
-    )
+    source, expected_rows = _literal_nested_temporal_source()
     before = source.clone()
     path = tmp_path / "nested.parquet"
     source.write_parquet(path)
@@ -516,6 +610,7 @@ def test_polars_nested_temporal_file_session_keeps_native_generated_export_and_s
     manager = SessionManager()
     try:
         opened = manager.open_session({"kind": "file", "path": str(path)}, backend="polars", mode="editing")
+        assert [[cell["raw"] for cell in row["values"]] for row in opened["page"]["rows"]] == expected_rows
         sid = opened["metadata"]["sessionId"]
         reference = {key: opened["metadata"]["schema"][0][key] for key in ("id", "name")}
         preview = manager.preview_step(
@@ -523,7 +618,7 @@ def test_polars_nested_temporal_file_session_keeps_native_generated_export_and_s
         )
         applied = manager.apply_draft(sid, preview["revision"], 0, 4)
         assert [row["id"] for row in applied["page"]["rows"]] == [row["id"] for row in opened["page"]["rows"]]
-        assert applied["page"]["rows"][0]["values"][0]["raw"] == ["1969-12-31T23:59:59.999999999"]
+        assert [[cell["raw"] for cell in row["values"][:-1]] for row in applied["page"]["rows"]] == expected_rows
         assert [row["values"][-1] for row in applied["page"]["rows"]] == [
             row["values"][0] for row in opened["page"]["rows"]
         ]
@@ -542,7 +637,7 @@ def test_polars_nested_temporal_file_session_keeps_native_generated_export_and_s
         assert exported.equals(expected) and exported.schema == expected.schema
     finally:
         manager.close_all()
-    assert not manager.sessions and source.equals(before)
+    assert not manager.sessions and source.equals(before) and source.schema == before.schema
     after = path.stat()
     assert path.read_bytes() == contents
     assert (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) == (
