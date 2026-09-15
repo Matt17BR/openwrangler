@@ -313,8 +313,7 @@ class SessionManager:
         self.sessions: dict[str, Session] = {}
         self._sessions_lock = threading.RLock()
         self._sessions_condition = threading.Condition(self._sessions_lock)
-        self._pending_opens = 0
-        self._opening_session_ids: set[str] = set()
+        self._opening_engines: dict[str, DataFrameEngine | None] = {}
         self._closed = False
         self._shutdown_in_progress = False
         self._shutdown_complete = False
@@ -409,10 +408,9 @@ class SessionManager:
         with self._sessions_condition:
             if self._closed:
                 raise EngineError("The runtime session manager is closed.")
-            if session_id in self.sessions or session_id in self._opening_session_ids:
+            if session_id in self.sessions or session_id in self._opening_engines:
                 raise EngineError(f"Session already exists: {session_id}")
-            self._opening_session_ids.add(session_id)
-            self._pending_opens += 1
+            self._opening_engines[session_id] = None
 
         engine: DataFrameEngine | None = None
         session: Session | None = None
@@ -422,6 +420,7 @@ class SessionManager:
             source_kind = str(source.get("kind", ""))
             if clone_from is None:
                 engine = self._engine_for_source(source, backend)
+                self._attach_opening_engine(session_id, engine)
                 if is_duckdb_table_source(source) and engine.name != "duckdb":
                     raise EngineError("DuckDB database tables require the DuckDB backend.")
                 engine.validate_runtime()
@@ -457,6 +456,7 @@ class SessionManager:
                     if requested_mode != source_session.mode:
                         raise EngineError("The clone mode no longer matches the confirmed runtime mode.")
                     engine = self.registry.create(source_session.backend)
+                    self._attach_opening_engine(session_id, engine)
                     engine.validate_runtime()
                     session_source = source_session.source.clone_for(session_id)
                     frame = engine.clone_session_source(source_session.original)
@@ -530,6 +530,7 @@ class SessionManager:
                 if self._closed:
                     raise EngineError("The runtime session manager is closed.")
                 self.sessions[session_id] = session
+                self._opening_engines[session_id] = None
             return response
         except EngineError:
             if engine is not None:
@@ -546,9 +547,14 @@ class SessionManager:
             raise
         finally:
             with self._sessions_condition:
-                self._opening_session_ids.discard(session_id)
-                self._pending_opens -= 1
+                self._opening_engines.pop(session_id, None)
                 self._sessions_condition.notify_all()
+
+    def _attach_opening_engine(self, session_id: str, engine: DataFrameEngine) -> None:
+        with self._sessions_condition:
+            if self._closed:
+                raise EngineError("The runtime session manager is closed.")
+            self._opening_engines[session_id] = engine
 
     def get_page(
         self,
@@ -1330,20 +1336,25 @@ class SessionManager:
                 return
             self._shutdown_in_progress = True
 
-            interruptible_sessions = [
-                session
+            interruptible_engines = [
+                session.engine
                 for session in self.sessions.values()
                 if session.engine.capabilities.supports_shutdown_interrupt and not session.disposed
             ]
+            interruptible_engines.extend(
+                engine
+                for engine in self._opening_engines.values()
+                if engine is not None and engine.capabilities.supports_shutdown_interrupt
+            )
 
         # Interrupt must not wait for the session lock: the work that needs to be
         # interrupted owns that lock until its engine call returns.
-        for session in interruptible_sessions:
+        for engine in interruptible_engines:
             with suppress(Exception):
-                session.engine.interrupt()
+                engine.interrupt()
 
         with self._sessions_condition:
-            while self._pending_opens:
+            while self._opening_engines:
                 self._sessions_condition.wait()
             sessions = list(self.sessions.values())
             self.sessions.clear()

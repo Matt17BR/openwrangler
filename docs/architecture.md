@@ -353,7 +353,12 @@ mutation. Unknown sessions remain errors, and every open-failure, explicit-close
 session cleanup at most once.
 
 Engine registries hold factories, not shared adapters. Each live or transient session owns one engine instance, and
-open failure, close, shutdown, and notebook snapshot completion clean it up at most once. The standalone server
+open failure, close, shutdown, and notebook snapshot completion clean it up at most once. Pending opens retain their
+exact engine for shutdown interruption before loading or cloning the source. Shutdown requests interruption from
+eligible pending and published engines, then waits for the opening worker to clean up a failed candidate. Engine
+creation that finishes after shutdown begins is refused before loading. Interruption is best-effort for already-active
+native work; it does not prevent later queries from starting between interruption and the final publication check.
+Running user cancellation remains unchanged. The standalone server
 prepares native dependencies before dispatching session work; preparation does not authorize conversion through a
 different dataframe engine.
 
