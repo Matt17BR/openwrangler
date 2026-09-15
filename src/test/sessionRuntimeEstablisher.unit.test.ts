@@ -89,7 +89,11 @@ describe("SessionRuntimeEstablisher", () => {
     "final save failure",
     "cancel during choice",
     "cancel before commit",
-    "cancel after commit"
+    "cancel after commit",
+    "decline reset",
+    "thrown diagnostic",
+    "mismatched diagnostic",
+    "cancelled diagnostic"
   ] as const)("protects saved cleaning during an explicit recovery: %s", async (outcome) => {
     const directory = await mkdtemp(join(tmpdir(), "openwrangler-saved-recovery-"));
     const sourcePath = join(directory, "source.csv");
@@ -127,6 +131,7 @@ describe("SessionRuntimeEstablisher", () => {
     let opens = 0;
     const order: string[] = [];
     let orderAtChoice: string[] = [];
+    const declinesReset = outcome === "decline reset" || outcome.endsWith("diagnostic");
     const warning = vi
       .spyOn(vscode.window, "showWarningMessage")
       .mockImplementation(async (_message, _options, ...items) => {
@@ -136,7 +141,7 @@ describe("SessionRuntimeEstablisher", () => {
           await rename(sourcePath, join(directory, "retained.csv"));
           await writeFile(sourcePath, "replacement\n2\n");
         }
-        return items[0];
+        return declinesReset ? undefined : items[0];
       });
     const delegate = bridge(async (next): Promise<OpenWranglerResponse> => {
       if (next.kind === "openSession") {
@@ -148,12 +153,17 @@ describe("SessionRuntimeEstablisher", () => {
       }
       if (next.kind === "previewStep") {
         order.push("preview-failed");
+        if (outcome === "thrown diagnostic") throw new Error("UNTRUSTED_THROWN_CAUSE");
+        if (outcome === "cancelled diagnostic")
+          return { kind: "cancelled", targetRequestId: "UNTRUSTED_CANCELLED_CAUSE" };
         return {
           kind: "error",
           code: "engine_error",
-          message: "Saved step cannot currently run.",
+          message:
+            outcome === "mismatched diagnostic" ? "UNTRUSTED_OTHER_SESSION_CAUSE" : "Saved step cannot currently run.",
+          detail: "PRIVATE_TRACEBACK",
           recoverable: true,
-          sessionId: next.sessionId
+          sessionId: outcome === "mismatched diagnostic" ? "another-runtime" : next.sessionId
         };
       }
       if (next.kind === "closeSession") {
@@ -176,9 +186,15 @@ describe("SessionRuntimeEstablisher", () => {
         { modal: true },
         "Open Original and Reset Plan"
       );
+      const warningMessage = warning.mock.calls[0][0];
+      if (!outcome.endsWith("diagnostic")) {
+        expect(warningMessage).toContain("replay cleaning step 1");
+        expect(warningMessage).toContain("Saved step cannot currently run.");
+      }
+      expect(warningMessage).not.toMatch(/UNTRUSTED_|PRIVATE_TRACEBACK/u);
       expect(result).toMatchObject({
         established: false,
-        response: outcome.startsWith("cancel")
+        response: outcome.startsWith("cancel ")
           ? { kind: "cancelled" }
           : {
               kind: "error",
@@ -186,11 +202,17 @@ describe("SessionRuntimeEstablisher", () => {
               recoverable: true
             }
       });
+      if (outcome === "decline reset") {
+        expect(result).toMatchObject({
+          response: { message: expect.stringContaining("Saved step cannot currently run.") }
+        });
+      }
+      expect(JSON.stringify(result)).not.toMatch(/UNTRUSTED_|PRIVATE_TRACEBACK/u);
       expect(order).toEqual([
         "open-1",
         "preview-failed",
         "close-runtime-1",
-        ...(outcome === "cancel during choice" ? [] : ["open-2", "close-runtime-2"])
+        ...(outcome === "cancel during choice" || declinesReset ? [] : ["open-2", "close-runtime-2"])
       ]);
       const expectedSteps =
         outcome === "cancel after commit"
@@ -201,7 +223,7 @@ describe("SessionRuntimeEstablisher", () => {
       expect(new SessionPersistenceStore(workspaceState).load(request.source, "polars")?.cleaning.steps).toEqual(
         expectedSteps
       );
-      if (["newer plan", "source replacement", "cancel during choice"].includes(outcome))
+      if (declinesReset || ["newer plan", "source replacement", "cancel during choice"].includes(outcome))
         expect(workspaceState.update).not.toHaveBeenCalled();
     } finally {
       warning.mockRestore();

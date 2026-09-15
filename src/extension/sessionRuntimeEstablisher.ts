@@ -21,7 +21,11 @@ import { protocolError, type SessionResponseState } from "./sessionResponseCommi
 import { SessionRequestScheduler } from "./sessionRequestScheduler";
 import { SessionRuntimeCleanup } from "./sessionRuntimeCleanup";
 import { confirmedReplayOpenRequest, publicOpenedResponse } from "./sessionRuntimeReconfigurer";
-import { initialViewingState, SessionRuntimeStateRestorer } from "./sessionRuntimeStateRestorer";
+import {
+  initialViewingState,
+  RuntimeStateRestoreError,
+  SessionRuntimeStateRestorer
+} from "./sessionRuntimeStateRestorer";
 
 export interface RuntimeEstablishedSession extends SessionResponseState {
   backendPreference?: DataBackend;
@@ -221,9 +225,10 @@ export class SessionRuntimeEstablisher {
       const afterClose = currentFailure();
       if (afterClose) return { established: false, response: afterClose };
       const savedCleaning = structuredClone(persisted.cleaning);
+      const restoreContext = error instanceof RuntimeStateRestoreError ? ` ${error.message}` : "";
       const restoreFailure = protocolError(
         "saved_plan_restore_failed",
-        `Open Wrangler could not restore the saved cleaning plan for ${request.source.label}. Saved history was kept. Retry opening the dataframe when the source and runtime are available.`,
+        `Open Wrangler could not restore the saved cleaning plan for ${request.source.label}.${restoreContext} Saved history was kept. Retry opening the dataframe when the source and runtime are available.`,
         true
       );
       const resetIsCurrent = (): boolean =>
@@ -233,7 +238,7 @@ export class SessionRuntimeEstablisher {
         isDeepStrictEqual(this.persistence.load(request.source, response.metadata.backend)?.cleaning, savedCleaning);
       const resetAction = "Open Original and Reset Plan";
       const choice = await vscode.window.showWarningMessage(
-        `Open Wrangler could not restore the saved cleaning plan for ${request.source.label}. Opening original data will replace its saved cleaning plan and draft.`,
+        `Open Wrangler could not restore the saved cleaning plan for ${request.source.label}.${restoreContext} Opening original data will replace its saved cleaning plan and draft.`,
         { modal: true },
         resetAction
       );

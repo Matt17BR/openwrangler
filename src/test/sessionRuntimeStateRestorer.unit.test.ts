@@ -24,6 +24,132 @@ const schema: SessionMetadata["schema"] = [
 ];
 
 describe("SessionRuntimeStateRestorer", () => {
+  it.each(["preview", "apply", "draft"] as const)(
+    "reports the correlated cause and replay request when %s fails",
+    async (phase) => {
+      const steps: TransformStep[] = ["first", "second"].map((id) => ({
+        id,
+        kind: "roundNumber",
+        params: { column: { id: "c:value", name: "value" }, decimals: 1 }
+      }));
+      const draft: TransformStep = { ...steps[0], id: "replacement" };
+      const requests: OpenWranglerRequest[] = [];
+      let confirmed: TransformStep[] = [];
+      let pending: TransformStep | undefined;
+      const cause = "The selected field no longer exists.";
+      const delegate = bridge(async (request) => {
+        requests.push(request);
+        if (request.kind === "previewStep") pending = request.step;
+        if (
+          (phase === "preview" && request.kind === "previewStep" && pending?.id === "second") ||
+          (phase === "apply" && request.kind === "applyDraft" && pending?.id === "second") ||
+          (phase === "draft" && request.kind === "previewStep" && pending?.id === "replacement")
+        ) {
+          return {
+            kind: "error",
+            code: "engine_error",
+            message: cause,
+            detail: "PRIVATE_TRACEBACK",
+            recoverable: true,
+            sessionId: "runtime-session"
+          };
+        }
+        if (request.kind === "previewStep")
+          return previewResponse(
+            request,
+            metadata({ revision: request.revision + 1, steps: confirmed, draftStep: pending })
+          );
+        if (request.kind === "applyDraft" && pending) {
+          confirmed = [...confirmed, pending];
+          pending = undefined;
+          return planResponse(request, metadata({ revision: request.revision + 1, steps: confirmed }));
+        }
+        throw new Error(`Unexpected diagnostic replay request: ${request.kind}`);
+      });
+      const session = runtimeSession(delegate);
+      const error = await new SessionRuntimeStateRestorer()
+        .restoreCleaningState(
+          session,
+          { steps, ...(phase === "draft" ? { draftStep: draft, draftReplacesStepId: "first" } : {}) },
+          0,
+          1
+        )
+        .catch((failure: unknown) => failure);
+
+      expect(error).toBeInstanceOf(RuntimeStateRestoreError);
+      expect((error as Error).message).toContain(cause);
+      expect((error as Error).message).toContain(
+        phase === "draft"
+          ? "restore the draft cleaning step"
+          : `${phase === "preview" ? "replay" : "apply replayed"} cleaning step 2`
+      );
+      expect((error as Error).message).not.toContain("PRIVATE_TRACEBACK");
+      expect(session.runtimeRevision).toBe(phase === "preview" ? 2 : phase === "apply" ? 3 : 4);
+      expect(session.metadata.steps).toEqual(phase === "draft" ? steps : steps.slice(0, 1));
+      expect(requests).toHaveLength(phase === "preview" ? 3 : phase === "apply" ? 4 : 5);
+      if (phase === "draft") expect(requests.at(-1)).toMatchObject({ replaceStepId: "first" });
+    }
+  );
+
+  it("bounds the runtime cause without splitting a Unicode character or including detail", async () => {
+    const delegate = bridge(async () => ({
+      kind: "error",
+      code: "engine_error",
+      message: "Cannot bind: " + "😀".repeat(2_000) + "UNRETAINED_TAIL",
+      detail: "PRIVATE_TRACEBACK",
+      recoverable: true
+    }));
+    const error = await new SessionRuntimeStateRestorer()
+      .restoreCleaningState(
+        runtimeSession(delegate),
+        {
+          steps: [],
+          draftStep: { id: "draft", kind: "dropColumns", params: { columns: [{ id: "c:value", name: "value" }] } }
+        },
+        0,
+        1
+      )
+      .catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(RuntimeStateRestoreError);
+    const message = (error as Error).message;
+    expect(message).toContain("Cannot bind: 😀");
+    expect(message).toContain("[truncated]");
+    expect(Buffer.byteLength(message, "utf8")).toBeLessThan(4_096 + 128);
+    expect(message).toBe(Buffer.from(message, "utf8").toString("utf8"));
+    expect(message).not.toMatch(/PRIVATE_TRACEBACK|UNRETAINED_TAIL/u);
+  });
+
+  it("keeps a mismatched draft-view response out of the restore diagnostic", async () => {
+    const requests: OpenWranglerRequest[] = [];
+    const session = runtimeSession(
+      bridge(async (request) => {
+        requests.push(request);
+        return {
+          kind: "error",
+          code: "engine_error",
+          message: "PRIVATE_OTHER_CAUSE",
+          sessionId: "PRIVATE_OTHER_RUNTIME",
+          recoverable: true
+        };
+      })
+    );
+    const before = session.metadata;
+    await expect(
+      new SessionRuntimeStateRestorer().restoreCleaningState(
+        session,
+        {
+          steps: [],
+          draftStep: { id: "draft", kind: "dropColumns", params: { columns: [{ id: "c:value", name: "value" }] } },
+          draftBaseFilterModel: emptyFilter
+        },
+        0,
+        1
+      )
+    ).rejects.toMatchObject({ message: "Open Wrangler could not validate the saved draft view." });
+    expect(requests.map((request) => request.kind)).toEqual(["getPage"]);
+    expect(session.metadata).toBe(before);
+  });
+
   it("replays exact committed steps and restores a draft against its nonempty confirmed base view", async () => {
     const groupStep: TransformStep = {
       id: "group",
