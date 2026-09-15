@@ -13,6 +13,7 @@ const script = resolve(import.meta.dirname, "ci-docs-only.mjs");
 const arrowFormulaHelper = "python/openwrangler_runtime/engines/_pandas_arrow_formula_helpers.py";
 const arrowFormulaTests = ["python/tests/test_operation_edges.py", "python/tests/test_session_transactions.py"];
 const pandasFilterTests = ["python/tests/test_pandas_engine.py", "python/tests/test_filter_logic.py"];
+const screenshot = "docs/images/acceptance/operation-dialog-dark-1280.png";
 const workflow = load(readFileSync(resolve(import.meta.dirname, "../.github/workflows/ci.yml"), "utf8"));
 const releasedJupyter = load(
   readFileSync(resolve(import.meta.dirname, "../.github/workflows/released-jupyter.yml"), "utf8")
@@ -148,6 +149,7 @@ test("keeps all owners for documentary additions, removals or report data mixed 
     { file: "r/tests/kernel_agent.R" },
     { file: "r/tests/added.R", added: true },
     { file: "src/test/webview.component.test.tsx" },
+    { file: screenshot },
     { file: "python/tests/existing.py", document: "docs/new.md", status: "A" },
     { file: "r/tests/kernel_agent.R", document: "docs/performance/result.json", status: "A" },
     { file: "src/test/webview.component.test.tsx", document: "docs/performance/result.json", status: "M" },
@@ -494,6 +496,26 @@ test("omits Linux R source work for the grid accessibility change while keeping 
 
 test("proves Python omissions while retaining Linux R source checks for non-renderer inputs", async (context) => {
   const cases = [
+    { added: [], modified: [screenshot], checkCli: true },
+    {
+      added: [],
+      modified: [
+        screenshot,
+        "docs/images/readme/gallery/by-example-setup.png",
+        "src/webviews/App.tsx",
+        "src/webviews/grid/GridColumnHeader.tsx",
+        "src/test/appFilterHistory.component.test.tsx",
+        "src/test/webview.component.test.tsx",
+        "scripts/capture-screenshots.mjs",
+        "docs/testing.md",
+        "CHANGELOG.md"
+      ]
+    },
+    {
+      added: [],
+      modified: [screenshot, "python/openwrangler_runtime/engines/duckdb_engine.py"],
+      pythonOmittable: false
+    },
     { added: [], modified: ["r/openwrangler_runtime/frame_contract.R"], checkCli: true },
     { added: ["r/openwrangler_runtime/helper.R"], modified: [] },
     { added: ["r/tests/new_contract.R"], modified: [] },
@@ -576,6 +598,8 @@ test("proves Python omissions while retaining Linux R source checks for non-rend
             message,
             /native R source and Windows filesystem and process checks; platform artifact, package and installed-editor checks remain required\./u
           );
+        } else if (pythonOmittable) {
+          assert.match(message, /Python worker; R, editor and Windows checks remain required\./u);
         }
         assert.equal(
           readFileSync(output, "utf8"),
@@ -621,6 +645,7 @@ test("keeps both runtimes required for R and CHANGELOG changes with Python sourc
 
 test("requires full owners for deleted or renamed source, including alongside additions", async (context) => {
   for (const file of [
+    screenshot,
     "src/webviews/progressiveProfilingLifecycle.ts",
     "src/test/progressiveProfilingLifecycle.unit.test.tsx",
     arrowFormulaHelper,
@@ -635,7 +660,7 @@ test("requires full owners for deleted or renamed source, including alongside ad
     for (const change of ["add and delete", "delete", "rename", "rename into runtime"]) {
       await context.test(`${file}: ${change}`, (child) => {
         const cwd = repository(child, [file]);
-        const destination = file.replace(/\.(py|R|tsx?|mjs)$/u, "-new.$1");
+        const destination = file.replace(/\.(py|R|tsx?|mjs|png)$/u, "-new.$1");
         if (change === "add and delete") {
           write(cwd, destination);
           rmSync(join(cwd, file));
@@ -659,6 +684,7 @@ test("requires full owners for deleted or renamed source, including alongside ad
 
 test("requires full owners for source mode changes and existing executable or symlink entries", async (context) => {
   for (const file of [
+    screenshot,
     "src/webviews/styles/grid.css",
     "src/test/progressiveProfilingLifecycle.unit.test.tsx",
     arrowFormulaHelper,
@@ -726,6 +752,7 @@ test("requires full owners for added executable or symlink runtime source", asyn
 
 test("requires full owners for additions outside the documentary and runtime source scopes", async (context) => {
   for (const file of [
+    screenshot,
     "src/webviews/progressiveProfilingLifecycle.ts",
     "src/test/progressiveProfilingLifecycle.unit.test.tsx",
     "docs/result.json",
@@ -764,6 +791,7 @@ test("requires full owners for additions outside the documentary and runtime sou
 
 test("requires full owners for control characters in source paths", async (context) => {
   for (const file of [
+    "docs/images/unusual\nname.png",
     "src/webviews/unusual\nname.ts",
     "python/tests/unusual\nname.py",
     "r/tests/unusual\nname.R",
@@ -843,6 +871,11 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
     "docs/performance-extra/result.json",
     "docs/performance/probe.py",
     "docs/image.svg",
+    "docs/images/image.svg",
+    "docs/images/image.PNG",
+    "docs/images/image.png.bak",
+    "docs/images-extra/image.png",
+    "media/icon.png",
     "AGENTS.md.bak",
     "CONTRIBUTING.md.bak",
     "src/shared/protocol.ts",
@@ -904,12 +937,14 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
         component,
         releasePolicy,
         proofTest,
-        webview
+        webview,
+        screenshot
       ]);
       write(cwd, component);
       write(cwd, releasePolicy);
       write(cwd, proofTest);
       write(cwd, webview);
+      write(cwd, screenshot);
       write(cwd, "README.md");
       write(cwd, "CHANGELOG.md");
       write(cwd, "CONTRIBUTING.md");

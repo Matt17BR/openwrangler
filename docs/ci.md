@@ -79,6 +79,11 @@ Required-document, generated-reference and release-document checks still run and
   `src/test/progressiveProfilingLifecycle.unit.test.tsx` owner, optionally with the allowed component-test and Markdown
   edits. Platform R jobs, Source and packaged smoke remain required; their numeric source step follows the next scope.
   Additions, deletions, renames and mode changes remain outside this permission.
+- The Python worker may also be omitted for modifications to existing `docs/images/**/*.png` files, alone or with other
+  edits already permitted to omit Python. Python source tests do not consume these images. Such diffs keep
+  `docs_only=false` and retain Source, R, Windows and installed-editor execution. Image additions, deletions, renames,
+  mode changes and other image paths remain outside this permission. Screenshot changes still require
+  [local browser acceptance](testing.md#direct-source-checks); this omission does not qualify their visual content.
 - The Linux R workers, platform R numeric source step and Windows filesystem and process job may also be omitted for modifications to existing
   `src/webviews/` files, optionally with the allowed component-test and Markdown edits. This additional omission does
   not extend to the lifecycle unit test, installed harness, scripts or runtime source. Additions, deletions, renames
