@@ -363,6 +363,12 @@ Lowercase remains a separate transport check. R restart scenarios open the editi
 whose restart behavior they inspect and restore their prior notebook setting. Platform and other focused scenario
 coverage remain described in [Native R editor dependencies](#native-r-editor-dependencies).
 
+Focused value and categorical runs enter their forms after the common setup and mode/view round trip. They retain
+clean-plan checks, same-session Undo chains, final source-binding checks and panel disposal. They omit the
+representative Rename/Custom Code prefix, so they no longer check a focused operation immediately after Custom Code
+Undo. The [representative journey](../src/test/extensionHost/releasedRRepresentativeEditing.ts) remains in Cursor,
+remote and Windows default coverage; [native history tests](../r/tests/kernel_agent_redo.R) retain branching after Undo.
+
 [Lazy activation tests](../src/test/lazyActivationOwners.unit.test.ts) own lifetime custom-editor, native-tree and Code
 Preview registrations, exact resolution cancellation, rollback and once-only shutdown. The environment-gated test API
 is acquired explicitly and refuses acquisition that outlives its activation owner. The existing daily-core journey
