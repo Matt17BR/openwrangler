@@ -31,7 +31,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 - Pandas preserves nanosecond timestamp types inside Parquet structs through editing and export. Lossy text conversion of supported nested temporal minima is refused.
 - Nested mapping output, including Pandas row labels, refuses colliding text keys instead of silently dropping entries.
 - DuckDB output preserves nanosecond timestamps inside lists, arrays, structs and maps, including distinct timestamp map keys.
-- Polars grid and profile output preserves timestamp and duration precision inside lists, arrays and structs. Copied cells retain that precision.
+- Polars grid, profiles and copied cells retain exact nested timestamps and durations, including fields named `*` or `^a.*$`. Those names no longer cause incorrect values or failed file opening.
 - New columns remain in view when Code Preview opens automatically.
 - Automatic R dataframe discovery waits for a new terminal to replace metadata left by a previous session.
 - Polars integer Group By sums return an empty typed result for empty input instead of failing, in live execution and generated code.

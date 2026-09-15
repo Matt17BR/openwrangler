@@ -356,13 +356,27 @@ def _polars_temporal_expression(expression: Any, dtype: Any) -> Any | None:
             values = expression.arr.to_list() if isinstance(dtype, pl.Array) else expression
             return values.list.eval(inner)
     if isinstance(dtype, pl.Struct):
+        original_names = None
+        if any(
+            (field.name == "*" or (field.name.startswith("^") and field.name.endswith("$")))
+            and _polars_has_temporal(field.dtype)
+            for field in dtype.fields
+        ):
+            # Rename every sibling so native field access cannot expand literal names.
+            original_names = [field.name for field in dtype.fields]
+            names = [f"__ow_field_{index}" for index in range(len(dtype.fields))]
+            expression = expression.struct.rename_fields(names)
+            dtype = pl.Struct([pl.Field(name, field.dtype) for name, field in zip(names, dtype.fields, strict=True)])
         fields = [
             projected.alias(field.name)
             for field in dtype.fields
             if (projected := _polars_temporal_expression(expression.struct.field(field.name), field.dtype)) is not None
         ]
         # Updating fields preserves the parent validity, including null structs.
-        return expression.struct.with_fields(fields) if fields else None
+        if not fields:
+            return None
+        result = expression.struct.with_fields(fields)
+        return result.struct.rename_fields(original_names) if original_names is not None else result
     return None
 
 

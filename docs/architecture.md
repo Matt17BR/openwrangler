@@ -922,7 +922,9 @@ List, Array and Struct output also prepares Datetime and Duration leaves before 
 precision and null structure. Original dtype metadata directs decoding; source arrays and native grouping are unchanged.
 Array output temporarily uses a List expression to support the minimum Polars version. Only affected branches are
 transformed, after the page slice or bounded profile aggregation. Work within each returned container grows with its
-child values. Eager output consolidates affected container Series before expression evaluation, avoiding per-row
+child values. Struct levels with selector-like temporal field names use temporary native field names during formatting,
+then restore the original names and order while preserving parent nulls. This leaves source schemas unchanged.
+Eager output consolidates affected container Series before expression evaluation, avoiding per-row
 dispatch in minimum Polars. This can copy ordinary siblings within an affected Struct; lazy profile expressions keep
 their existing aggregation path. Complex-value selection and comparisons remain unavailable; native List value-choice casting can still refuse.
 
