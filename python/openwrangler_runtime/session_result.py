@@ -65,6 +65,12 @@ def read_live_page(
             "page_payload_invalid",
         ) from error
     _validate_page_projection(page, column_projection)
+    returned_total = page["totalRows"]
+    if returned_total is not None and page["offset"] + len(page["rows"]) > returned_total:
+        raise ResponsePayloadError(
+            "The returned page exceeds its reported row total. Use a stable input and reopen it.",
+            "page_payload_invalid",
+        )
     try:
         return page, validate_live_page_payload(page)
     except LivePagePayloadError as error:

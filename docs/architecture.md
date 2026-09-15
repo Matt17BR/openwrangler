@@ -243,6 +243,9 @@ Python live pages with a known total clamp the requested row position to that to
 A request beyond the end returns an empty page at the exact end, with its requested limit and column projection.
 Inspection applies this rule separately to its input and output. The host requires this exact position; unknown-total
 continuations retain the requested position and their existing anchor checks. No extra row count is performed.
+Before publication, Python rejects a returned page whose row range exceeds its known total. The existing recoverable
+page error preserves the confirmed view and cache. This catches observed count/page disagreement, including volatile
+DuckDB expressions, without another scan; it does not make separate evaluations a snapshot.
 Spark owns a page-only scope for its continuation anchors. A rejected candidate therefore cannot prevent the prior
 view from continuing after a cached page, and background profile failure cannot roll back newer foreground paging.
 Spark page requests also carry the host's accepted filter and epoch. The runtime retains one accepted query with its
