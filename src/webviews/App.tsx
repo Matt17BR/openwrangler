@@ -1949,6 +1949,7 @@ export function App() {
   };
 
   const selectSummaryPanelView = (view: SummaryPanelView) => {
+    if (view === summaryPanelView) return;
     const currentMetadata = metadataRef.current;
     if (!currentMetadata) return;
     if (

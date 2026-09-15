@@ -3819,7 +3819,7 @@ describe("App file import options", () => {
   );
 
   it.each(["city", "sales"])(
-    "selects native Sort Edit's %s target without discarding local drafts or requesting values",
+    "preserves local drafts through native Sort Edit to %s and active-tab selection",
     async (column) => {
       const sortedMetadata: SessionMetadata = {
         ...metadata,
@@ -3859,6 +3859,11 @@ describe("App file import options", () => {
       }
 
       dispatchAppMessage({ kind: "editorAction", action: "openFilters", column });
+      const activeTab = screen.getByRole("tab", { name: "Filters / Sorts" });
+      activeTab.focus();
+      if (column === "city") fireEvent.click(activeTab);
+      else fireEvent.keyDown(activeTab, { key: "End" });
+      expect(activeTab).toHaveFocus();
       expect(screen.getByLabelText("Sort column")).toHaveDisplayValue(column);
       expect(screen.getByLabelText("Filter column")).toHaveDisplayValue(column);
       expect(screen.getByPlaceholderText("Search values")).toHaveValue("mil");
