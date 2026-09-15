@@ -113,7 +113,17 @@ export function preflightAcceptancePython(python, profile, execute = execFileSyn
       windowsHide: true
     });
   } catch (error) {
-    throw prerequisiteError(error?.status === DEPENDENCY_FAILURE_EXIT ? "dependencies" : "interpreter", profile);
+    const timedOut = error?.code === "ETIMEDOUT";
+    if (!timedOut && (error?.status === INTERPRETER_FAILURE_EXIT || error?.status === DEPENDENCY_FAILURE_EXIT)) {
+      throw prerequisiteError(error.status === DEPENDENCY_FAILURE_EXIT ? "dependencies" : "interpreter", profile);
+    }
+    const code = timedOut ? "OW_ACCEPTANCE_PYTHON_TIMEOUT" : "OW_ACCEPTANCE_PYTHON_PROBE";
+    const detail = timedOut
+      ? "Python prerequisite probe timed out after 15 seconds."
+      : "Python prerequisite probe could not complete.";
+    const failure = new Error(`${code}: ${PROFILE_LABELS[profile]} ${detail}`);
+    failure.code = code;
+    throw failure;
   }
   return exactPython;
 }
@@ -136,8 +146,6 @@ export function runAcceptancePythonPreflightCli(
 export function acceptancePythonProfileModulesForTesting(profile) {
   return [...dependenciesFor(profile)];
 }
-
-export const acceptancePythonProbeSourceForTesting = PROBE_SOURCE;
 
 function dependenciesFor(profile) {
   if (typeof profile !== "string" || !Object.hasOwn(PROFILES, profile)) {

@@ -19,6 +19,10 @@ Successful editor phases report elapsed time at result observation and after pro
 result validation. Both use the phase's existing start clock, before launch. Outer dependency preparation, Docker work
 and profile cleanup fall outside these measurements.
 
+The acceptance Python preflight probes the selected interpreter and the profile's imports once, with a 15-second limit.
+An unsupported version or unavailable dependency has its own prerequisite error. A timeout or unexpected probe
+failure is reported separately; child output and raw process errors remain excluded from diagnostics.
+
 Run local released-Jupyter invocations one at a time on each host, waiting for cleanup before starting the next.
 The [pinned Jupyter launcher](https://github.com/microsoft/vscode-jupyter/blob/fc61dfe2fd70a3d62d3ce0fef580757e7d64b81c/src/kernels/raw/launcher/kernelLauncher.node.ts)
 checks ports before the kernel binds them and tracks selections only within one extension host. Separate profiles
