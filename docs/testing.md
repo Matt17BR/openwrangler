@@ -172,8 +172,14 @@ Use the existing owners to choose a focused source check:
 - **Python engines and generated programs:** [Pandas](../python/tests/test_pandas_engine.py),
   [Polars](../python/tests/test_polars_engine.py) and [DuckDB](../python/tests/test_duckdb_engine.py) own native profiles,
   queries, source preservation and engine-specific evaluation bounds. The Polars owner also checks literal column
-  names across projected views, profiles, shared cleaning helpers and complete generated programs. The existing
-  [session binding owner](../python/tests/test_session_column_binding.py) covers their apply/history and source identities.
+  names across projected views, profiles, shared cleaning helpers and complete generated programs.
+  It checks one full native capture at live LazyFrame admission and Custom result acceptance, followed by
+  bounded page/profile results. A deterministic rotating callback checks adjacent and projected page identities,
+  tied viewing sorts, clone ownership, rollback, history and generated Custom results. The same admission owner rejects
+  reserved names before capture and checks the actual captured schema when a callback disables native validation. Its native dtype controls
+  preserve Object references, nulls, signed zero, nested values and Enum domains. Ordinary file scans and saved MIME
+  captures retain their separate lazy/bounded owners; sequential whole-column copy uses the same stable page reads.
+  The [session binding owner](../python/tests/test_session_column_binding.py) covers apply/history and source identities.
   Extract Struct Fields uses the Polars and DuckDB owners for native types, exact names, current-input refusals and
   full generated programs. The session binding owner checks appended identities, history and native Parquet export;
   shared operation/form tests check request bounds and engine availability.

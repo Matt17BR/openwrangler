@@ -43,6 +43,7 @@ from .session_source import (
 from .version import __version__
 
 if TYPE_CHECKING:
+    from .engines.polars_engine import PolarsEngine
     from .engines.pyspark_engine import PySparkEngine, PySparkPageCheckpoint
 
 PAGE_CACHE_LIMIT = 8
@@ -463,6 +464,8 @@ class SessionManager:
                     cloned_row_id = engine.internal_row_id_column(frame)
             engine.validate_internal_row_id_namespace(frame, cloned_row_id)
             engine.validate_column_addressability(frame)
+            if clone_from is None and source_kind != "file" and engine.name == "polars":
+                frame = cast("PolarsEngine", engine).capture_notebook_source(frame)
             frame = engine.ensure_row_ids(frame, f"{session_id}:source")
             filter_model = {"logic": "and", "filters": [], "sort": []}
             source_shape = engine.shape(frame)

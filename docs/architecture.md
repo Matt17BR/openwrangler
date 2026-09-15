@@ -991,11 +991,18 @@ Decimal NaN; live and generated code share that helper while preserving existing
 
 ### Polars
 
-Live notebook LazyFrames remain lazy. Row IDs are assigned by `with_row_index` in the retained plan, so an uncached
-page can re-evaluate an unordered source and attach the same ID to a different logical row. Cached pages do not
-stabilize other projections or row windows, and before/after diff comparisons rely on those IDs. A deterministic
-source order with unique tie-breakers must precede identity assignment; sorting the grid afterward is insufficient.
-The shared [pagination bug](https://github.com/Matt17BR/openwrangler/issues/1487) remains unresolved.
+Fresh live notebook LazyFrames are collected once into a native DataFrame after namespace and column-addressability
+validation, before row IDs are assigned. The actual collected schema is validated again because native callbacks can
+disable their output-schema checks. A LazyFrame over that retained result preserves the native lazy type while
+pages, projections, profiles and cleaning steps read the same rows. Cloned sessions share the retained source without
+re-evaluating the caller's query. Eager notebook inputs keep their existing identity, ordinary file sources keep their
+native lazy scans, and saved notebook MIME capture keeps its separate bounded query path.
+
+Capture uses `pl.collect_all` with `engine="in-memory"`, including on minimum Polars under caller-configured streaming.
+It evaluates and retains every result column and row; page and transport limits do not bound that work or memory.
+Subsequent projection cannot avoid the original full capture. Native dtypes and Python Object references are preserved;
+mutable Python objects are not deep-copied or protected from caller mutation. The remaining DuckDB query-order limitation
+is tracked in [the pagination issue](https://github.com/Matt17BR/openwrangler/issues/1487).
 
 Column references bind literal names, including `*` and names that resemble anchored regular expressions.
 The native selection owner checks those names against the current input schema before constructing an exact
@@ -1094,17 +1101,17 @@ Two-column addition, subtraction or multiplication producing UInt128 requires a 
 1.36 onward. Earlier, prerelease and unrecognized versions refuse this combination, including lazy
 plans. Scalar forms and other operations retain their existing behavior.
 
-Polars Custom Code runs a native per-column count over a returned LazyFrame to catch expression errors outside the
-previewed columns before accepting that Custom step. Generated code does the same immediately after Custom Code,
+Polars Custom Code collects and retains a returned LazyFrame's full native result before accepting that Custom step.
+Generated code does the same immediately after Custom Code,
 before a later step can discard its output. The existing Custom operation owns this check; ordinary operations retain
 their own type, capacity and preflight checks without an added full-width scan after every step. Visible-column and
 identity validation still apply to all cleaning results.
 
-The Custom count uses `pl.collect_all` with `engine="in-memory"`, which respects that choice on minimum Polars even
-under caller-configured streaming. The aggregate is discarded and the same LazyFrame is retained. It does not prove
-that every relational operator will execute: native optimization can remove work unnecessary to the count. Later reads
-can evaluate the plan again; mutable inputs and nondeterministic code are not snapshotted. The small count result does
-not bound native execution memory.
+The same in-memory collection and LazyFrame wrapper used for notebook admission preserve native types and stabilize
+row identity within each accepted Custom result. Eager results retain their existing identity. Preview retains the
+complete new result alongside the original and confirmed frames needed for rollback; Apply reuses that draft. Replay
+or Redo executes Custom Code again and can produce a different retained result. Full results must fit available memory,
+including any old and new results that coexist during a mutation. This has no page-sized memory guarantee.
 
 Other lazy expression errors follow native evaluation. For example, Format Datetime can fail when present values are
 formatted, while an all-null result succeeds or a later projection removes the unused expression. Empty generated plans
@@ -1317,11 +1324,12 @@ The runtime keeps both notebook source kinds in viewing mode even when a caller 
 Each terminal request removes its temporary query view after consuming the results, including when the query fails,
 under the catalog ownership rules above. The notebook lock serializes Open Wrangler requests.
 
-Notebook row identity is `row_number() OVER () - 1` in a lazy derived plan, before viewing filters and sorts.
+Notebook sources and file Custom Code results receive row identity from `row_number() OVER () - 1` in a lazy derived
+plan, before viewing filters and sorts.
 Each uncached `LIMIT`/`OFFSET` page evaluates it again. The session cache key includes view generation, revision,
 row window and projected column IDs; cache hits do not establish consistent identities across other windows or
 projections. An unordered relation can therefore map the same ID to different logical rows across reads, even with
-stable values. The runtime neither snapshots the relation nor enforces deterministic source ordering. Reliable
+stable values. These paths neither snapshot the query output nor enforce deterministic ordering. Reliable
 paging requires stable values and a deterministic source order with unique tie-breakers before row numbering;
 a later grid sort does not repair the earlier identity assignment. The open
 [pagination bug](https://github.com/Matt17BR/openwrangler/issues/1487) tracks the correction.

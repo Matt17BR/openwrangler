@@ -2248,6 +2248,7 @@ def test_live_notebook_lazyframe_stays_lazy_through_bounded_queries_edit_export_
     native_to_list = pl.Series.to_list
     collected_heights: list[int] = []
     to_list_lengths: list[int] = []
+    captured_heights: list[int] = []
 
     def bounded_collect(frame: pl.LazyFrame, *args: Any, **kwargs: Any) -> pl.DataFrame:
         result = cast(pl.DataFrame, native_collect(frame, *args, **kwargs))
@@ -2257,6 +2258,10 @@ def test_live_notebook_lazyframe_stays_lazy_through_bounded_queries_edit_export_
 
     def bounded_collect_all(frames: Any, *args: Any, **kwargs: Any) -> list[pl.DataFrame]:
         results = native_collect_all(frames, *args, **kwargs)
+        if len(frames) == 1 and frames[0] is live:
+            assert kwargs == {"engine": "in-memory"}
+            captured_heights.extend(result.height for result in results)
+            return results
         collected_heights.extend(result.height for result in results)
         assert all(result.height <= 20 for result in results), "A live LazyFrame profile collected unbounded results."
         return results
@@ -2388,13 +2393,14 @@ def test_live_notebook_lazyframe_stays_lazy_through_bounded_queries_edit_export_
     assert session_id not in manager.sessions
     assert live.collect_schema() == original_schema
     assert live.explain(optimized=False) == original_plan
+    assert captured_heights == [row_count]
     assert collected_heights
     assert max(collected_heights) <= 20
     assert all(length <= 20 for length in to_list_lengths)
 
 
 @pytest.mark.parametrize("kind", ["oneHotEncode", "multiLabelBinarize"])
-def test_live_notebook_lazyframe_materializes_only_after_explicit_dynamic_encoder_preview(
+def test_live_notebook_lazyframe_dynamic_encoder_returns_eager_preview(
     kind: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2597,7 +2603,7 @@ def test_polars_profiles_a_wide_int64_projection_with_exact_native_sums(
         assert max(collected_heights) <= 20
 
 
-def test_live_lazy_polars_profiles_many_horizontal_column_windows_without_unbounded_collection(
+def test_live_lazy_polars_profiles_many_horizontal_column_windows_after_capture(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2621,6 +2627,7 @@ def test_live_lazy_polars_profiles_many_horizontal_column_windows_without_unboun
     native_to_list = pl.Series.to_list
     collected_heights: list[int] = []
     to_list_lengths: list[int] = []
+    captured_heights: list[int] = []
 
     def bounded_collect(lazy_frame: pl.LazyFrame, *args: Any, **kwargs: Any) -> pl.DataFrame:
         result = cast(pl.DataFrame, native_collect(lazy_frame, *args, **kwargs))
@@ -2630,6 +2637,10 @@ def test_live_lazy_polars_profiles_many_horizontal_column_windows_without_unboun
 
     def bounded_collect_all(frames: Any, *args: Any, **kwargs: Any) -> list[pl.DataFrame]:
         results = native_collect_all(frames, *args, **kwargs)
+        if len(frames) == 1 and frames[0] is live:
+            assert kwargs == {"engine": "in-memory"}
+            captured_heights.extend(result.height for result in results)
+            return results
         collected_heights.extend(result.height for result in results)
         assert all(result.height <= 20 for result in results), "A horizontal profile collected unbounded results."
         return results
@@ -2688,6 +2699,7 @@ def test_live_lazy_polars_profiles_many_horizontal_column_windows_without_unboun
     assert manager.close_session(session_id, 0) == {"kind": "sessionClosed", "sessionId": session_id}
     assert live.collect_schema() == original_schema
     assert live.explain(optimized=False) == original_plan
+    assert captured_heights == [row_count]
     assert collected_heights and max(collected_heights) <= 20
     assert all(length <= 20 for length in to_list_lengths)
 
@@ -4063,6 +4075,171 @@ def test_polars_custom_result_refuses_invalid_expression_before_projection(bound
     assert source.equals(before)
 
 
+@pytest.mark.parametrize("boundary", ["notebook", "custom"])
+def test_polars_retained_lazy_result_keeps_page_identity_and_session_ownership(
+    boundary: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import __main__
+
+    source = pl.DataFrame({"key": range(8), "bucket": [0, 1] * 4, "value": [key * 10 for key in range(8)]})
+    before = source.clone()
+    visits: list[int] = []
+
+    def rotate(frame: pl.DataFrame) -> pl.DataFrame:
+        shift = len(visits) % frame.height
+        visits.append(frame.height)
+        return pl.concat([frame.slice(shift), frame.head(shift)])
+
+    lazy = source.lazy().map_batches(rotate, predicate_pushdown=False, projection_pushdown=False, slice_pushdown=False)
+    monkeypatch.setattr(__main__, "retained_polars_source", lazy, raising=False)
+    monkeypatch.setattr(__main__, "retained_polars_rotate", rotate, raising=False)
+    path = tmp_path / "retained.parquet"
+    source.write_parquet(path)
+    contents, stat = path.read_bytes(), path.stat()
+    manager = SessionManager()
+    view: dict[str, Any] = {"filters": [], "sort": []}
+    request = (
+        {"kind": "notebookVariable", "variableName": "retained_polars_source"}
+        if boundary == "notebook"
+        else {"kind": "file", "path": str(path)}
+    )
+    try:
+        if boundary == "notebook":
+            bad = lazy.rename({"key": "__open_wrangler_internal_row_id_user"})
+            monkeypatch.setattr(__main__, "retained_polars_source", bad)
+            with pytest.raises(EngineError, match="private row-identity prefix"):
+                manager.open_session(request, backend="polars", page_size=2)
+            assert visits == [] and not manager.sessions
+            bad = lazy.map_batches(
+                lambda batch: batch.with_columns(
+                    (pl.col("key") + 91).cast(pl.UInt32).alias("__open_wrangler_internal_row_id_user")
+                ),
+                validate_output_schema=False,
+                predicate_pushdown=False,
+                projection_pushdown=False,
+                slice_pushdown=False,
+            )
+            assert bad.collect_schema() == source.schema
+            monkeypatch.setattr(__main__, "retained_polars_source", bad)
+            with pytest.raises(EngineError, match="private row-identity prefix"):
+                manager.open_session(request, backend="polars", page_size=2)
+            assert visits == [8] and not manager.sessions
+            assert __main__.retained_polars_source is bad and source.equals(before) and source.schema == before.schema
+            visits.clear()
+            monkeypatch.setattr(__main__, "retained_polars_source", lazy)
+        opened = manager.open_session(request, backend="polars", mode="editing", page_size=2, column_limit=1)
+        sid = opened["metadata"]["sessionId"]
+        session = manager.sessions[sid]
+        if boundary == "custom":
+            assert "Parquet SCAN" in session.original.explain() and visits == []
+            preview = manager.preview_step(
+                sid,
+                0,
+                {
+                    "id": "rotate",
+                    "kind": "customCode",
+                    "params": {
+                        "code": (
+                            "import __main__\nresult = df.map_batches(__main__.retained_polars_rotate, "
+                            "predicate_pushdown=False, projection_pushdown=False, slice_pushdown=False)"
+                        )
+                    },
+                },
+                0,
+                2,
+                column_limit=1,
+            )
+            draft = session.draft_frame
+            opened = manager.apply_draft(sid, preview["revision"], 0, 2, column_limit=1)
+            assert session.committed is draft
+        assert visits == [8]
+        assert isinstance(session.original, pl.LazyFrame) and isinstance(session.committed, pl.LazyFrame)
+        revision = session.revision
+        full = manager.get_page(sid, revision, 0, 8, view, column_limit=3)
+        rows = full["page"]["rows"]
+        assert [row["id"] for row in opened["page"]["rows"]] == [row["id"] for row in rows[:2]]
+        assert [[cell["raw"] for cell in row["values"]] for row in rows] == [
+            [key, key % 2, key * 10] for key in range(8)
+        ]
+        ids = {row["values"][0]["raw"]: row["id"] for row in rows}
+        assert len(set(ids.values())) == 8
+        for offset in (0, 4):
+            page = manager.get_page(sid, revision, offset, 4, view, column_limit=2)
+            assert [(row["values"][0]["raw"], row["id"]) for row in page["page"]["rows"]] == [
+                (key, ids[key]) for key in range(offset, offset + 4)
+            ]
+            assert manager.get_page(sid, revision, offset, 4, view, column_limit=2)["page"] is page["page"]
+        filtered = {
+            "logic": "and",
+            "filters": [{"column": "key", "type": "integer", "predicates": [{"operator": "gte", "value": 2}]}],
+            "sort": [{"column": "bucket", "direction": "asc", "nulls": "last"}],
+        }
+        page = manager.get_page(sid, revision, 0, 8, filtered, column_limit=1)
+        assert [(row["values"][0]["raw"], row["id"]) for row in page["page"]["rows"]] == [
+            (key, ids[key]) for key in (2, 4, 6, 3, 5, 7)
+        ]
+        confirmed, cache = session.committed, list(session.page_cache.items())
+        with pytest.raises(pl.exceptions.InvalidOperationError):
+            manager.preview_step(
+                sid,
+                revision,
+                {
+                    "id": "invalid",
+                    "kind": "customCode",
+                    "params": {"code": 'result = df.with_columns(pl.lit("bad").cast(pl.Int64).alias("broken"))'},
+                },
+                0,
+                2,
+                column_limit=1,
+            )
+        assert session.revision == revision and session.committed is confirmed and session.draft_frame is None
+        assert list(session.page_cache.items()) == cache and session.filter_model == filtered
+        assert manager.get_page(sid, revision, 0, 8, filtered, column_limit=1)["page"] is page["page"]
+        assert visits == [8]
+        if boundary == "notebook":
+            clone = manager.open_session(
+                request,
+                backend="polars",
+                mode="editing",
+                page_size=2,
+                clone_from={"sessionId": sid, "revision": revision},
+            )
+            clone_id = clone["metadata"]["sessionId"]
+            assert manager.sessions[clone_id].original is session.original
+            manager.close_session(sid, revision)
+            cloned = manager.get_page(clone_id, 0, 0, 8, view, column_limit=3)
+            assert cloned["page"]["rows"] == rows and visits == [8]
+        else:
+            undone = manager.undo_step(sid, revision, 0, 2)
+            assert session.committed is session.original and visits == [8]
+            redone = manager.redo_step(sid, undone["revision"], 0, 8)
+            assert visits == [8, 8]
+            assert [row["values"][0]["raw"] for row in redone["page"]["rows"]] == [2, 4, 6, 3, 5, 7]
+            replayed = manager.get_page(sid, redone["revision"], 0, 8, view)
+            assert [row["values"][0]["raw"] for row in replayed["page"]["rows"]] == [1, 2, 3, 4, 5, 6, 7, 0]
+            visits.clear()
+            namespace: dict[str, Any] = {}
+            exec(compile(redone["code"], "<generated>", "exec", dont_inherit=True), namespace)
+            generated = namespace["clean_data"](source.lazy())
+            assert isinstance(generated, pl.LazyFrame) and visits == [8]
+            assert generated.collect().equals(source) and generated.select("value").collect().equals(
+                source.select("value")
+            )
+            assert visits == [8]
+    finally:
+        manager.close_all()
+    assert not manager.sessions and source.equals(before) and source.schema == before.schema
+    assert __main__.retained_polars_source is lazy
+    after = path.stat()
+    assert path.read_bytes() == contents
+    assert (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) == (
+        stat.st_dev,
+        stat.st_ino,
+        stat.st_size,
+        stat.st_mtime_ns,
+    )
+
+
 @pytest.mark.parametrize("lazy", [False, True])
 @pytest.mark.parametrize("empty", [False, True])
 def test_polars_custom_result_check_preserves_native_objects_nulls_and_empty_frames(lazy: bool, empty: bool) -> None:
@@ -4072,6 +4249,8 @@ def test_polars_custom_result_check_preserves_native_objects_nulls_and_empty_fra
             "object": pl.Series([token, None], dtype=pl.Object),
             "number": pl.Series([-0.0, None], dtype=pl.Float64),
             "nested": pl.Series([{"items": [1, None]}, None], dtype=pl.Struct({"items": pl.List(pl.Int64)})),
+            "category": pl.Series(["b", None], dtype=pl.Enum(["a", "b", "unused"])),
+            "binary": pl.Series([b"\x00\xff", None], dtype=pl.Binary),
         }
     )
     if empty:
@@ -4080,19 +4259,25 @@ def test_polars_custom_result_check_preserves_native_objects_nulls_and_empty_fra
     engine = PolarsEngine()
     engine.validate_transformation_result(frame)
     step = validate_step({"id": "identity", "kind": "customCode", "params": {"code": "result = df"}})
-    assert engine.apply_transform(frame, step) is frame
     namespace: dict[str, Any] = {}
     exec(engine.compile_plan([step]), namespace)
-    result = namespace["clean_data"](frame)
-    assert result is frame
-    output = result.collect(engine="streaming") if lazy else result
-    assert output.schema == source.schema
-    assert output.shape == source.shape
-    assert output.null_count().row(0) == ((0, 0, 0) if empty else (1, 1, 1))
-    if not empty:
-        assert output["object"][0] is token and source["object"][0] is token
-        assert output["number"][0].hex() == source["number"][0].hex() == "-0x0.0p+0"
-        assert output["nested"].to_list() == source["nested"].to_list() == [{"items": [1, None]}, None]
+    for result in (
+        engine.apply_transform(frame, step),
+        namespace["clean_data"](frame),
+        engine.capture_notebook_source(frame),
+    ):
+        assert isinstance(result, type(frame))
+        assert (result is frame) is not lazy
+        output = result.collect(engine="streaming") if isinstance(result, pl.LazyFrame) else result
+        assert output.schema == source.schema
+        assert output.shape == source.shape
+        assert output.null_count().row(0) == ((0, 0, 0, 0, 0) if empty else (1, 1, 1, 1, 1))
+        if not empty:
+            assert output["object"][0] is token and source["object"][0] is token
+            assert output["number"][0].hex() == source["number"][0].hex() == "-0x0.0p+0"
+            assert output["nested"].to_list() == source["nested"].to_list() == [{"items": [1, None]}, None]
+            assert output["category"].to_list() == source["category"].to_list() == ["b", None]
+            assert output["binary"].to_list() == source["binary"].to_list() == [b"\x00\xff", None]
     with pytest.raises(EngineError, match="at least one visible column"):
         engine.validate_transformation_result(pl.DataFrame().lazy() if lazy else pl.DataFrame())
 
@@ -4146,7 +4331,10 @@ def test_polars_only_custom_steps_evaluate_rows_during_plan_construction(with_cu
     engine.validate_transformation_result(intermediate)
     assert visits == []
     if with_custom:
-        assert engine.apply_transform(intermediate, plan[1]) is intermediate
+        retained = engine.apply_transform(intermediate, plan[1])
+        assert isinstance(retained, pl.LazyFrame) and retained is not intermediate
+        assert Counter(visits) == Counter([1, 2, None])
+        assert retained.collect().rename({"next": "value"}).equals(source)
         assert Counter(visits) == Counter([1, 2, None])
     visits.clear()
     generated = namespace["clean_data"](frame)
@@ -4154,7 +4342,7 @@ def test_polars_only_custom_steps_evaluate_rows_during_plan_construction(with_cu
     assert Counter(visits) == Counter([1, 2, None] if with_custom else [])
     visits.clear()
     assert generated.collect(engine="streaming").equals(source)
-    assert Counter(visits) == Counter([1, 2, None])
+    assert Counter(visits) == Counter([] if with_custom else [1, 2, None])
     assert source.schema == {"value": pl.Int64} and source.rows() == [(1,), (2,), (None,)]
 
 
