@@ -21,6 +21,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Runtime shutdown requests interruption of active DuckDB work during session opening, while the opening worker retains cleanup ownership.
 - Open DuckDB Table refuses a file replaced after table selection while the viewer is opening, preserving other open sessions.
 - DuckDB table, Excel worksheet and R dataframe pickers display icon-like names as text while retaining exact selections.
 - A page that extends beyond its reported row total now returns a recoverable error and keeps the previous view. This can occur when filtering DuckDB computed columns whose values change between queries.

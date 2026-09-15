@@ -432,6 +432,104 @@ def test_close_all_waits_for_pending_open_and_rejects_late_registration(tmp_path
     assert manager.sessions == {}
 
 
+@pytest.mark.parametrize("clone", [False, True], ids=["file", "clone"])
+def test_shutdown_interrupts_the_exact_unpublished_engine(tmp_path, clone: bool) -> None:
+    path = write_csv(tmp_path)
+    source_bytes = path.read_bytes()
+    created: list[TrackingPandasEngine] = []
+    original = TrackingPandasEngine()
+    candidate = InterruptiblePandasEngine()
+    candidate.block_pages = True
+    engines = iter((original, candidate))
+    manager = SessionManager(tracking_registry(created, factory=lambda: next(engines)))
+    opened = manager.open_session(csv_source(path), backend="pandas")
+    original_id = opened["metadata"]["sessionId"]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        open_future = executor.submit(
+            manager.open_session,
+            csv_source(path),
+            "pandas",
+            requested_session_id="opening-candidate",
+            clone_from={"sessionId": original_id, "revision": 0} if clone else None,
+        )
+        try:
+            assert candidate.page_started.wait(1)
+            assert set(manager.sessions) == {original_id}
+            close_future = executor.submit(manager.close_all)
+            with pytest.raises(EngineError, match="runtime session manager is closed"):
+                open_future.result(timeout=1)
+            close_future.result(timeout=1)
+        finally:
+            candidate.release_page.set()
+            manager.close_all()
+
+    assert created == [original, candidate]
+    assert candidate.interrupt_calls == 1
+    assert original.interrupt_calls == 0
+    assert [engine.close_calls for engine in created] == [1, 1]
+    assert manager.sessions == {}
+    assert path.read_bytes() == source_bytes
+
+
+@pytest.mark.parametrize("clone", [False, True], ids=["file", "clone"])
+def test_shutdown_refuses_an_engine_returned_after_the_interrupt_snapshot(tmp_path, monkeypatch, clone: bool) -> None:
+    path = write_csv(tmp_path)
+    source_bytes = path.read_bytes()
+    created: list[TrackingPandasEngine] = []
+    original = InterruptiblePandasEngine()
+    candidate = TrackingPandasEngine()
+    factory_started = threading.Event()
+    release_factory = threading.Event()
+    validation_calls: list[bool] = []
+
+    def validate_candidate() -> None:
+        validation_calls.append(True)
+        raise RuntimeError("candidate validation started after shutdown")
+
+    monkeypatch.setattr(candidate, "validate_runtime", validate_candidate)
+
+    def create() -> TrackingPandasEngine:
+        if not created:
+            return original
+        factory_started.set()
+        if not release_factory.wait(2):
+            raise RuntimeError("timed out waiting for the factory test to release")
+        return candidate
+
+    manager = SessionManager(tracking_registry(created, factory=create))
+    opened = manager.open_session(csv_source(path), backend="pandas")
+    original_id = opened["metadata"]["sessionId"]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        open_future = executor.submit(
+            manager.open_session,
+            csv_source(path),
+            "pandas",
+            requested_session_id="opening-candidate",
+            clone_from={"sessionId": original_id, "revision": 0} if clone else None,
+        )
+        try:
+            assert factory_started.wait(1)
+            close_future = executor.submit(manager.close_all)
+            # The existing published-engine interrupt proves shutdown has taken
+            # its snapshot while the candidate factory is still blocked.
+            assert original.release_page.wait(1)
+        finally:
+            release_factory.set()
+            manager.close_all()
+        with pytest.raises(EngineError, match="runtime session manager is closed"):
+            open_future.result(timeout=1)
+        close_future.result(timeout=1)
+
+    assert created == [original, candidate]
+    assert validation_calls == []
+    assert [engine.interrupt_calls for engine in created] == [1, 0]
+    assert [engine.close_calls for engine in created] == [1, 1]
+    assert manager.sessions == {}
+    assert path.read_bytes() == source_bytes
+
+
 def test_explicit_close_surfaces_cleanup_failure_after_removing_session(tmp_path) -> None:
     path = write_csv(tmp_path)
     created: list[TrackingPandasEngine] = []
