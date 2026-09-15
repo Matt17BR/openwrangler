@@ -117,6 +117,10 @@ so the host loads the verified bundle before `show` is imported. Windows noteboo
 limits are in the
 [compatibility notes](../README.md#compatibility-and-limits).
 
+The released Jupyter Variables view can become blank with a
+[React update-limit error](https://github.com/Matt17BR/openwrangler/issues/1498). When this happens, open the value
+from the Open Wrangler notebook toolbar or an available inline output action.
+
 Unordered Polars notebook LazyFrames and DuckDB notebook queries can assign the same row ID to different logical
 rows between reads, or repeat or omit rows across pages, even with unchanged input data. Keep values stable and
 give the source a deterministic order with unique tie-breakers before opening it. For example, use
