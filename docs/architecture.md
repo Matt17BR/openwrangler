@@ -993,9 +993,12 @@ These rules do not change selectors written by the user in Custom Code.
 
 Pages bound selected top-level `String` values to 65,537 Unicode code points before Python row boxing, on the
 already projected and sliced resident frame. Values within the 65,536-code-point text limit remain exact; the extra
-code point preserves the existing live-page and saved-notebook refusal for oversized text. This adds native
-expression work only when a selected String column is present, without another source scan. It does not bound
-native source memory, aggregate page allocation, Binary values or nested strings.
+code point preserves the existing live-page and saved-notebook refusal for oversized text. When the installed Polars
+provides native `bin.slice`, the same expression batch bounds selected top-level `Binary` values to 49,153 bytes.
+Binary values within 49,152 bytes remain exact; one overflow byte preserves the existing base64 text-limit refusal.
+Older supported Polars without this API still boxes and base64-encodes complete binary values before refusal.
+These expressions add no source scan and run only for applicable selected columns. They do not bound native source
+memory, aggregate page allocation or nested values.
 
 Native Datetime and Duration columns retain their precision in pages, value choices and profile labels. Pages format
 only the projected, sliced result after its source collection. Choice search and tie ordering use native temporal

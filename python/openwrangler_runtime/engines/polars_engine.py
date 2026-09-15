@@ -922,13 +922,21 @@ class PolarsEngine(DataFrameEngine):
                 total_rows = int(df.height)
         temporal_schema = sliced.schema
         sliced = _polars_prepare_temporal_cells(sliced, {column: temporal_schema[column] for column in columns})
-        text_expressions = [
-            _ow_polars_col(sliced, column).str.slice(0, LIVE_PAGE_TEXT_CHARACTER_LIMIT + 1).alias(column)
-            for column in columns
-            if temporal_schema[column] == pl.String
-        ]
-        if text_expressions:
-            sliced = sliced.with_columns(text_expressions)
+        page_expressions = []
+        for column in columns:
+            if temporal_schema[column] == pl.String:
+                page_expressions.append(
+                    _ow_polars_col(sliced, column).str.slice(0, LIVE_PAGE_TEXT_CHARACTER_LIMIT + 1).alias(column)
+                )
+            elif temporal_schema[column] == pl.Binary:
+                binary_slice = getattr(_ow_polars_col(sliced, column).bin, "slice", None)
+                if callable(binary_slice):
+                    # Base64 uses four characters per three bytes; keep one overflow byte.
+                    page_expressions.append(
+                        cast(pl.Expr, binary_slice(0, 3 * (LIVE_PAGE_TEXT_CHARACTER_LIMIT // 4) + 1)).alias(column)
+                    )
+        if page_expressions:
+            sliced = sliced.with_columns(page_expressions)
         rows = []
         for row_number, row in enumerate(sliced.iter_rows(named=True), start=offset):
             rows.append(
