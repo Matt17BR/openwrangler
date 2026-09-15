@@ -17377,18 +17377,6 @@ async function exerciseConfiguredFileImportOptions(testing: TestApi, directory: 
       expectedFirstColumn: ["alpha", "beta"]
     },
     {
-      label: "BIFF Excel sheet name in Polars",
-      source: {
-        kind: "file",
-        label: "legacy.xls",
-        path: legacyExcelPath,
-        importOptions: { sheetName: "second" }
-      },
-      backend: "polars",
-      expectedColumns: ["name", "value", "active"],
-      expectedFirstColumn: ["second", "résumé"]
-    },
-    {
       label: "BIFF Excel sheet index in Polars",
       source: {
         kind: "file",
@@ -17397,18 +17385,6 @@ async function exerciseConfiguredFileImportOptions(testing: TestApi, directory: 
         importOptions: { sheetIndex: 1 }
       },
       backend: "polars",
-      expectedColumns: ["name", "value", "active"],
-      expectedFirstColumn: ["second", "résumé"]
-    },
-    {
-      label: "BIFF Excel sheet name in Pandas",
-      source: {
-        kind: "file",
-        label: "legacy.xls",
-        path: legacyExcelPath,
-        importOptions: { sheetName: "second" }
-      },
-      backend: "pandas",
       expectedColumns: ["name", "value", "active"],
       expectedFirstColumn: ["second", "résumé"]
     },

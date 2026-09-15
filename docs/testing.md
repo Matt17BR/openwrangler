@@ -331,6 +331,8 @@ runtime restart. It retains each engine's edited clipboard/export path, Pandas S
 The separate Pandas duplicate/non-string structural journey composes Select, Clone, Drop and Rename, comparing full
 values, physical labels, dtypes and indexes through generated replay and restart. Page replay comparisons exclude only
 session-scoped row IDs. Individual operations and native arithmetic remain in their source/generated-code owners.
+BIFF worksheet names are qualified through the real Polars and Pandas import-options pickers; direct configured-import
+cases retain zero-based worksheet indexes.
 
 Ordinary installed R actions, picker acquisition, Explorer and editor-title file launches, and completed import-option
 changes observe the exact session/revision and committed renderer receipt without forcing another panel publication.
