@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { FilterModel } from "../shared/filterModel";
 import { viewCellSelectionFilter } from "../shared/filterModel";
 import type { SessionMetadata, TypedSelectionToken, ValuesResponse } from "../shared/protocol";
+import { isFilterModel } from "../shared/protocolValidation";
 import { MAX_VIEW_VALUE_TEXT_CHARACTERS, MAX_VIEW_VALUE_TEXT_UTF16_CODE_UNITS } from "../shared/viewValueLimits";
 import { FilterPanel } from "../webviews/filters/FilterPanel";
 import { matchesLegacySelection, selectionValueKey } from "../webviews/filters/filterPresentation";
@@ -1132,6 +1133,67 @@ describe("FilterPanel", () => {
       })
     );
   });
+
+  it.each(["remove one chip", "toggle an unrelated typed choice"] as const)(
+    "preserves distinct admitted raw selections when users %s",
+    (action) => {
+      const onApply = vi.fn();
+      const other: TypedSelectionToken = {
+        kind: "typedSelection",
+        version: 1,
+        columnType: "string",
+        cell: { kind: "string", raw: "Berlin", display: "Berlin", isNull: false, isNaN: false }
+      };
+      const filter: FilterModel["filters"][number] = {
+        column: "city",
+        type: "string",
+        logic: "and",
+        valueFilter: { kind: "values", selectedValues: [true, "true"], includeNulls: false, includeNaN: false },
+        predicates: []
+      };
+      const model: FilterModel = {
+        logic: "or",
+        filters: [filter],
+        sort: [{ column: "sales", direction: "desc", nulls: "last" }]
+      };
+      const original = structuredClone(model);
+      expect(isFilterModel(model)).toBe(true);
+      render(
+        <FilterPanel
+          metadata={metadata}
+          model={model}
+          values={
+            new Map([
+              ["city", { ...values.get("city")!, values: [{ value: "Berlin", count: 2, selectionValue: other }] }]
+            ])
+          }
+          onApply={onApply}
+          onRequestValues={() => undefined}
+        />
+      );
+      const booleanChip = screen.getByRole("button", { name: "Remove equals true (boolean) filter from city" });
+      expect(screen.getByRole("button", { name: 'Remove equals "true" filter from city' })).toBeVisible();
+      const checkbox = screen.getByRole("checkbox", { name: /Berlin/u });
+      expect(checkbox).not.toBeChecked();
+
+      fireEvent.click(action === "remove one chip" ? booleanChip : checkbox);
+
+      expect(onApply).toHaveBeenCalledExactlyOnceWith({
+        ...model,
+        filters: [
+          {
+            ...filter,
+            valueFilter: {
+              ...filter.valueFilter,
+              selectedValues: action === "remove one chip" ? ["true"] : [true, "true", other],
+              ...(action === "toggle an unrelated typed choice" ? { search: "" } : {})
+            }
+          }
+        ]
+      });
+      expect(model).toEqual(original);
+    }
+  );
 
   it("removes a final value filter structurally without disturbing a sort on the same column", () => {
     const onApply = vi.fn();
