@@ -2528,18 +2528,27 @@ async function exerciseReleasedJupyterExtension(
       );
       assert.deepEqual(temporaryResultSession.metadata.shape, { rows: 3, columns: 12 });
       assert.deepEqual(temporaryResultSession.metadata.filteredShape, { rows: 3, columns: 12 });
-      const temporaryPage = await testing.request({
-        kind: "getPage",
-        columnOffset: 0,
-        columnLimit: 12,
-        viewRequestId: "released-jupyter-temporary-result-page",
-        sessionId: temporaryResultSession.sessionId,
-        revision: temporaryResultSession.metadata.revision,
-        offset: 0,
-        limit: 3,
-        filterModel: temporaryResultSession.metadata.filterModel
-      });
-      assert.equal(temporaryPage.kind, "page");
+      const temporaryPage = await testing.request(
+        {
+          kind: "getPage",
+          columnOffset: 0,
+          columnLimit: 12,
+          viewRequestId: "released-jupyter-temporary-result-page",
+          sessionId: temporaryResultSession.sessionId,
+          revision: temporaryResultSession.metadata.revision,
+          offset: 0,
+          limit: 3,
+          filterModel: temporaryResultSession.metadata.filterModel
+        },
+        { ephemeralPage: true }
+      );
+      assert.equal(
+        temporaryPage.kind,
+        "page",
+        temporaryPage.kind === "error"
+          ? `Temporary-result page failed (${temporaryPage.code.slice(0, 80)}, recoverable=${temporaryPage.recoverable}).`
+          : "The temporary-result live page must resolve."
+      );
       if (temporaryPage.kind !== "page") throw new Error("The temporary-result live page did not resolve.");
       assert.equal(temporaryPage.page.totalRows, 3);
       assert.equal(temporaryPage.page.rows[0]?.values[0]?.display, "2499998");
