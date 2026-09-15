@@ -154,6 +154,13 @@ Use the existing owners to choose a focused source check:
   [kernel owner's](../r/tests/kernel_agent.R) `group-pivot-and-export` case. These and the configurable-export owner
   check native CSV/Parquet readback, format refusal and recovery, and source/session preservation. Keep refusal before
   writer opening, destination preservation, bounded conversion and lazy streaming assertions in their existing owners.
+  DuckDB database-table cases in the existing engine and SessionSource owners check exact selection, bounded catalog
+  reads, native WAL/source preservation, query/fetch serialization, writer and second-viewer refusal, and cleanup.
+  The existing file-command, PythonBridge and discovery-adapter owners cover picker cancellation, captured interpreter
+  selection and dependency admission. The bridge and metadata-process cases retain package-write exclusion through
+  cancellation and actual child closure for both Excel and DuckDB discovery. Protocol, panel and coordinator owners reject invalid selectors and ordinary
+  file reconfiguration; the App and mode-control owners check viewing-only actions. These source checks do not qualify
+  an installed cross-platform database journey.
 - **Python engines and generated programs:** [Pandas](../python/tests/test_pandas_engine.py),
   [Polars](../python/tests/test_polars_engine.py) and [DuckDB](../python/tests/test_duckdb_engine.py) own native profiles,
   queries, source preservation and engine-specific evaluation bounds. The Polars owner also checks literal column

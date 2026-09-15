@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as vscode from "vscode";
 import type { ExtensionContext } from "vscode";
-import type { FilePlanOpenContext, OpenWranglerBridge } from "../extension/dataBridge";
+import type { DuckDBTableDiscovery, FilePlanOpenContext, OpenWranglerBridge } from "../extension/dataBridge";
+import type { SessionSourceProtection } from "../extension/files/safeFileExport";
+import type { SessionSource } from "../shared/protocol";
 
 type CommandHandler = (...args: unknown[]) => unknown;
 
@@ -12,7 +14,7 @@ const fileMocks = vi.hoisted(() => ({
   panelConstructor: vi.fn(),
   changeActiveImportOptions: vi.fn(async () => false),
   detectImportOptions: vi.fn<(uri: unknown) => Promise<unknown>>(async () => undefined),
-  bridgeRequest: vi.fn(async () => {
+  bridgeRequest: vi.fn<OpenWranglerBridge["request"]>(async () => {
     throw new Error("Unsupported files must not start Python.");
   }),
   stat: vi.fn(async () => ({ type: 1 })),
@@ -22,6 +24,11 @@ const fileMocks = vi.hoisted(() => ({
   showOpenDialog: vi.fn<
     (options?: { filters?: Record<string, string[]>; canSelectMany?: boolean }) => Promise<unknown>
   >(async () => undefined),
+  showQuickPick: vi.fn<(items: readonly unknown[]) => Promise<unknown>>(async (items) => items[0]),
+  discoverTables: vi.fn<() => Promise<DuckDBTableDiscovery | undefined>>(async () => undefined),
+  captureSource: vi.fn(async () => ({ available: true as const, anchors: [] })),
+  confirmSource: vi.fn(async (source: SessionSourceProtection) => source),
+  trusted: true,
   customEditorProvider: undefined as
     | {
         resolveCustomEditor(
@@ -92,7 +99,37 @@ vi.mock("vscode", () => {
   }
 
   const disposable = () => ({ dispose: () => undefined });
+  class CancellationTokenSource {
+    private readonly state = { cancelled: false };
+    private readonly listeners = new Set<(event: unknown) => unknown>();
+    readonly token: vscode.CancellationToken;
+    constructor() {
+      const state = this.state;
+      this.token = {
+        get isCancellationRequested(): boolean {
+          return state.cancelled;
+        },
+        onCancellationRequested: (listener: (event: unknown) => unknown) => {
+          this.listeners.add(listener);
+          return {
+            dispose: () => {
+              this.listeners.delete(listener);
+            }
+          };
+        }
+      };
+    }
+    cancel(): void {
+      this.state.cancelled = true;
+      for (const listener of this.listeners) listener(undefined);
+    }
+    dispose(): void {
+      this.listeners.clear();
+    }
+  }
   return {
+    CancellationTokenSource,
+    ProgressLocation: { Notification: 15 },
     Uri,
     TabInputText,
     TabInputTextDiff,
@@ -120,9 +157,15 @@ vi.mock("vscode", () => {
       showWarningMessage: fileMocks.showWarningMessage,
       showInformationMessage: fileMocks.showInformationMessage,
       showErrorMessage: fileMocks.showErrorMessage,
-      showOpenDialog: fileMocks.showOpenDialog
+      showOpenDialog: fileMocks.showOpenDialog,
+      showQuickPick: fileMocks.showQuickPick,
+      withProgress: async (_options: unknown, action: (progress: unknown, token: unknown) => Promise<unknown>) =>
+        action({}, { isCancellationRequested: false, onCancellationRequested: () => disposable() })
     },
     workspace: {
+      get isTrusted() {
+        return fileMocks.trusted;
+      },
       fs: { stat: fileMocks.stat }
     }
   };
@@ -146,6 +189,10 @@ vi.mock("../extension/webviewPanel", () => ({
 
 vi.mock("../extension/files/importOptions", () => ({
   detectImportOptions: fileMocks.detectImportOptions
+}));
+vi.mock("../extension/files/safeFileExport", () => ({
+  captureSessionSourceProtection: fileMocks.captureSource,
+  confirmSessionSourceProtection: fileMocks.confirmSource
 }));
 
 vi.mock("../extension/configuration", () => ({
@@ -184,6 +231,12 @@ describe("file launch command", () => {
     fileMocks.enabledFileTypes = ["csv", "tsv", "parquet", "jsonl", "xlsx", "xls"];
     fileMocks.defaultBackend = "auto";
     fileMocks.workspaceValues.clear();
+    fileMocks.trusted = true;
+    fileMocks.discoverTables.mockReset();
+    fileMocks.discoverTables.mockResolvedValue(undefined);
+    fileMocks.captureSource.mockReset().mockResolvedValue({ available: true, anchors: [] });
+    fileMocks.confirmSource.mockReset().mockImplementation(async (source) => source);
+    fileMocks.showQuickPick.mockReset().mockImplementation(async (items) => items[0]);
   });
 
   it("delegates the change-import-options command to the active configurable panel", async () => {
@@ -194,6 +247,121 @@ describe("file launch command", () => {
 
     expect(fileMocks.changeActiveImportOptions).toHaveBeenCalledOnce();
     expect(fileMocks.showInformationMessage).not.toHaveBeenCalled();
+  });
+
+  it("opens an exact selected DuckDB table from any local filename in viewing mode", async () => {
+    const { context } = register();
+    const uri = vscode.Uri.file('/workspace/quarter "data"');
+    const table = { schema: " sales. ", name: ' "orders"\n ' };
+    fileMocks.defaultBackend = "pandas";
+    fileMocks.showOpenDialog.mockResolvedValue([uri]);
+    fileMocks.discoverTables.mockResolvedValue({ tables: [table], isCurrent: () => true });
+    await command("openWrangler.openDuckDBTable")();
+    expect(fileMocks.discoverTables).toHaveBeenCalledWith(
+      { kind: "file", label: 'quarter "data"', path: uri.fsPath, uri: uri.toString(), importOptions: undefined },
+      expect.objectContaining({ cancellation: expect.anything() })
+    );
+    expect(fileMocks.captureSource).toHaveBeenCalledWith([uri]);
+    expect(fileMocks.showOpenDialog.mock.calls[0]?.[0]?.filters).toBeUndefined();
+    expect(fileMocks.createPanel).toHaveBeenCalledWith(
+      context,
+      expect.anything(),
+      {
+        kind: "file",
+        label: 'quarter "data"',
+        path: uri.fsPath,
+        uri: uri.toString(),
+        importOptions: { duckdbSchema: table.schema, duckdbTable: table.name }
+      },
+      "duckdb",
+      "duckdb",
+      "viewing"
+    );
+    expect(fileMocks.detectImportOptions).not.toHaveBeenCalled();
+    expect(fileMocks.bridgeRequest).not.toHaveBeenCalled();
+  });
+
+  it("retains the source and interpreter guard until the initial DuckDB open is dispatched", async () => {
+    register();
+    let current = true;
+    fileMocks.showOpenDialog.mockResolvedValue([vscode.Uri.file("/workspace/analytics")]);
+    fileMocks.discoverTables.mockResolvedValue({
+      tables: [{ schema: "main", name: "orders" }],
+      isCurrent: () => current
+    });
+    await command("openWrangler.openDuckDBTable")();
+    const call = fileMocks.createPanel.mock.calls[0]!;
+    const scoped = call[1] as OpenWranglerBridge;
+    const source = call[2] as SessionSource;
+    const request = {
+      kind: "openSession" as const,
+      source,
+      backend: "duckdb" as const,
+      pageSize: 1,
+      columnOffset: 0,
+      columnLimit: 1
+    };
+    fileMocks.confirmSource.mockResolvedValueOnce({ available: false });
+    await expect(scoped.request(request)).resolves.toMatchObject({ kind: "error", code: "duckdb_selection_changed" });
+    expect(fileMocks.bridgeRequest).not.toHaveBeenCalled();
+    fileMocks.bridgeRequest.mockImplementationOnce(async (_request, options) => {
+      expect(options?.cancellation?.isCancellationRequested).toBe(false);
+      current = false;
+      expect(options?.cancellation?.isCancellationRequested).toBe(true);
+      return { kind: "cancelled", targetRequestId: "not-started" };
+    });
+    await expect(scoped.request(request)).resolves.toMatchObject({ kind: "cancelled" });
+    expect(fileMocks.bridgeRequest).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a changed DuckDB discovery selection after the table picker", async () => {
+    register();
+    let current = true;
+    fileMocks.showOpenDialog.mockResolvedValue([vscode.Uri.file("/workspace/analytics")]);
+    fileMocks.discoverTables.mockResolvedValue({
+      tables: [{ schema: "main", name: "orders" }],
+      isCurrent: () => current
+    });
+    fileMocks.showQuickPick.mockImplementationOnce(async (items) => {
+      current = false;
+      return items[0];
+    });
+    await command("openWrangler.openDuckDBTable")();
+    expect(fileMocks.createPanel).not.toHaveBeenCalled();
+    expect(fileMocks.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining("changed"));
+  });
+
+  it("does no DuckDB discovery before trust and explains an empty catalog without opening a panel", async () => {
+    register();
+    fileMocks.trusted = false;
+    await command("openWrangler.openDuckDBTable")();
+    expect(fileMocks.showOpenDialog).not.toHaveBeenCalled();
+    expect(fileMocks.discoverTables).not.toHaveBeenCalled();
+    fileMocks.trusted = true;
+    fileMocks.showOpenDialog.mockResolvedValue([vscode.Uri.file("/workspace/empty")]);
+    fileMocks.discoverTables.mockResolvedValue({ tables: [], isCurrent: () => true });
+    await command("openWrangler.openDuckDBTable")();
+    expect(fileMocks.showInformationMessage).toHaveBeenLastCalledWith(expect.stringContaining("no user tables"));
+    expect(fileMocks.showQuickPick).not.toHaveBeenCalled();
+    expect(fileMocks.createPanel).not.toHaveBeenCalled();
+  });
+
+  it("discards late DuckDB discovery after command-owner disposal", async () => {
+    const { context } = register();
+    let finish!: (value: DuckDBTableDiscovery) => void;
+    fileMocks.discoverTables.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      })
+    );
+    fileMocks.showOpenDialog.mockResolvedValue([vscode.Uri.file("/workspace/analytics")]);
+    const pending = command("openWrangler.openDuckDBTable")();
+    await vi.waitFor(() => expect(fileMocks.discoverTables).toHaveBeenCalledOnce());
+    for (const subscription of context.subscriptions) subscription.dispose();
+    finish({ tables: [{ schema: "main", name: "orders" }], isCurrent: () => true });
+    await pending;
+    expect(fileMocks.showQuickPick).not.toHaveBeenCalled();
+    expect(fileMocks.createPanel).not.toHaveBeenCalled();
   });
 
   it("captures the plan before the picker and uses its bridge, backend and import settings", async () => {
@@ -760,7 +928,10 @@ function register(): { context: ExtensionContext; bridge: OpenWranglerBridge } {
       }
     }
   } as unknown as ExtensionContext;
-  const bridge = { request: fileMocks.bridgeRequest } as OpenWranglerBridge;
+  const bridge = {
+    request: fileMocks.bridgeRequest,
+    discoverDuckDBTables: fileMocks.discoverTables
+  } as OpenWranglerBridge;
   registerFileCommands(context, bridge);
   fileMocks.customEditorProvider = new OpenWranglerCustomEditorProvider(context, bridge);
   return { context, bridge };

@@ -183,6 +183,93 @@ describe("protocol-v4 request validation", () => {
     expect(isOpenWranglerResponse({ ...responses[1], metadata: { ...metadata, backend: "duckdb" } })).toBe(true);
   });
 
+  it("binds a DuckDB table to its exact file, schema and table names", () => {
+    const source = {
+      kind: "file",
+      label: "database",
+      path: "/tmp/database",
+      importOptions: { duckdbSchema: 'quoted " schema', duckdbTable: "💠".repeat(1024) }
+    };
+    const request = {
+      kind: "openSession",
+      source,
+      backend: "duckdb",
+      mode: "editing",
+      pageSize: 200,
+      columnOffset: 0,
+      columnLimit: 16
+    };
+    const check = (candidate: unknown, valid: boolean) => {
+      expect(isOpenWranglerRequest(candidate)).toBe(valid);
+      expect(
+        validateTransportSchema({
+          protocolVersion: 4,
+          requestId: "database",
+          priority: "interactive",
+          request: candidate
+        })
+      ).toBe(valid);
+    };
+    check(request, true);
+    check({ ...request, source: { ...source, importOptions: { duckdbSchema: " ", duckdbTable: " " } } }, true);
+    for (const importOptions of [
+      { duckdbSchema: "main" },
+      { duckdbTable: "orders" },
+      ...["", "x".repeat(1025), "\0", "\ud800", null, 1].map((duckdbTable) => ({ duckdbSchema: "main", duckdbTable })),
+      { ...source.importOptions, delimiter: "," },
+      { ...source.importOptions, sheetName: "orders" }
+    ])
+      check({ ...request, source: { ...source, importOptions } }, false);
+    for (const path of [undefined, ""]) check({ ...request, source: { ...source, path } }, false);
+    check({ ...request, source: { ...source, kind: "notebookVariable" } }, false);
+    for (const backend of [undefined, "pandas", "polars", "pyspark", "r"]) check({ ...request, backend }, false);
+  });
+
+  it("admits only viewing state and capabilities for a DuckDB database table", () => {
+    const databaseMetadata = {
+      ...metadata,
+      backend: "duckdb",
+      mode: "viewing",
+      steps: [],
+      latestStepInputSchema: undefined,
+      source: {
+        kind: "file",
+        label: "database",
+        path: "/tmp/database",
+        importOptions: { duckdbSchema: "main", duckdbTable: "orders" }
+      },
+      capabilities: {
+        ...metadata.capabilities,
+        editable: false,
+        exportCsv: false,
+        exportParquet: false,
+        supportedOperations: []
+      }
+    };
+    delete databaseMetadata.latestStepInputSchema;
+    const check = (candidate: unknown, valid: boolean) => {
+      const response = { ...responses[1], metadata: candidate };
+      expect(isOpenWranglerResponse(response)).toBe(valid);
+      expect(validateTransportSchema({ protocolVersion: 4, requestId: "database-opened", response })).toBe(valid);
+    };
+    check(databaseMetadata, true);
+    for (const backend of ["pandas", "polars"]) check({ ...databaseMetadata, backend }, false);
+    check({ ...databaseMetadata, mode: "editing" }, false);
+    check({ ...databaseMetadata, steps: metadata.steps, latestStepInputSchema: metadata.schema }, false);
+    check({ ...databaseMetadata, draftStep: metadata.steps[0] }, false);
+    check({ ...databaseMetadata, canRedo: true }, false);
+    for (const capability of ["editable", "exportCsv", "exportParquet", "notebookInsert", "documentInsert"]) {
+      check({ ...databaseMetadata, capabilities: { ...databaseMetadata.capabilities, [capability]: true } }, false);
+    }
+    check(
+      {
+        ...databaseMetadata,
+        capabilities: { ...databaseMetadata.capabilities, supportedOperations: ["renameColumn"] }
+      },
+      false
+    );
+  });
+
   it("accepts PySpark only for live notebook variables", () => {
     const source = {
       kind: "notebookVariable" as const,

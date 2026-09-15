@@ -611,7 +611,7 @@ their names when reopening the native query. Use Pandas or Polars for those file
 values, JSONL keys and Parquet headers are supported. Standalone generated programs given an externally loaded DuckDB
 CSV relation with affected headers inherit the same native limitation.
 
-DuckDB file sessions use native SQL plans with request-owned connections, without converting through Pandas, Polars
+DuckDB CSV, TSV, Parquet and JSONL sessions use native SQL plans with request-owned connections, without converting through Pandas, Polars
 or Arrow. Extension auto-install, autoload and external-file caching remain disabled. Generated programs use the input
 relation's connection, preserving its private tables and functions. Live and generated execution check computed
 cleaning results beyond the displayed rows and columns before confirmation. Rename, Select Columns and Drop Columns
@@ -664,27 +664,35 @@ Top-level TIMETZ values retain their UTC time; DuckDB 1.5.4 requires explicit co
 Representable intervals, compatible keys, nulls and empty containers remain supported. CSV retains its native text
 output.
 
-| Surface                                      | Availability       | Status      | Current evidence                               | Limit or missing proof                              |
-| -------------------------------------------- | ------------------ | ----------- | ---------------------------------------------- | --------------------------------------------------- |
-| CSV and TSV file sessions                    | Yes                | Partial     | Native lazy reader and packaged import slices  | Complete import-option and cross-platform matrix    |
-| Parquet file sessions                        | Yes                | Partial     | Native typed pages and source invalidation     | Large-scale and repeated cross-platform matrix      |
-| JSONL file sessions                          | Yes                | Partial     | Native malformed-input and packaged import     | Installed malformed/import-state interaction matrix |
-| Excel file sessions                          | No                 | Unavailable | Explicit unsupported diagnostic                | Use Pandas or Polars                                |
-| `.duckdb` database/catalog/table browsing    | No                 | Unavailable | Source kind is not registered                  | Separate connection, discovery, and security design |
-| Notebook variables and inline MIME rendering | Viewing only       | Partial     | Native relation package slices                 | No cleaning, code insertion, or data export         |
-| Grid pages, typed cells, filters, and sorts  | Yes                | Partial     | Native rich-type and query contracts           | Large-scale mixed-data and cross-platform matrix    |
-| Summaries, statistics, and distinct values   | Yes                | Partial     | Native fixed-size profile contracts            | Repeated large-data resource evidence               |
-| Complete operation catalog                   | File sessions only | Partial     | Exact direct live/generated catalog equality   | Complete installed catalog and semantic-edge matrix |
-| Draft preview, diff, apply, and history      | File sessions only | Partial     | Runtime and representative packaged lifecycle  | Complete edit/discard/undo interaction matrix       |
-| Executable generated DuckDB code             | File sessions only | Partial     | Direct equality and packaged copy/script slice | Edited-code execution acceptance                    |
-| CSV and Parquet cleaned-data export          | File sessions only | Partial     | Native export and publication failure tests    | Cross-platform installed destination matrix         |
-| Runtime crash/reload/session replay          | Yes                | Partial     | Backend-keyed replay and injected recovery     | Repeated cross-platform failure matrix              |
-| Runtime performance benchmark                | Diagnostic         | Partial     | Direct and stdio smoke                         | No strict DuckDB release threshold                  |
+| Surface                                      | Availability       | Status      | Current evidence                               | Limit or missing proof                                                              |
+| -------------------------------------------- | ------------------ | ----------- | ---------------------------------------------- | ----------------------------------------------------------------------------------- |
+| CSV and TSV file sessions                    | Yes                | Partial     | Native lazy reader and packaged import slices  | Complete import-option and cross-platform matrix                                    |
+| Parquet file sessions                        | Yes                | Partial     | Native typed pages and source invalidation     | Large-scale and repeated cross-platform matrix                                      |
+| JSONL file sessions                          | Yes                | Partial     | Native malformed-input and packaged import     | Installed malformed/import-state interaction matrix                                 |
+| Excel file sessions                          | No                 | Unavailable | Explicit unsupported diagnostic                | Use Pandas or Polars                                                                |
+| Local database base-table browsing           | Viewing only       | Partial     | Native reader, catalog and host source tests   | One viewer per database/runtime; no views; installed platform qualification remains |
+| Notebook variables and inline MIME rendering | Viewing only       | Partial     | Native relation package slices                 | No cleaning, code insertion, or data export                                         |
+| Grid pages, typed cells, filters, and sorts  | Yes                | Partial     | Native rich-type and query contracts           | Large-scale mixed-data and cross-platform matrix                                    |
+| Summaries, statistics, and distinct values   | Yes                | Partial     | Native fixed-size profile contracts            | Repeated large-data resource evidence                                               |
+| Complete operation catalog                   | File sessions only | Partial     | Exact direct live/generated catalog equality   | Complete installed catalog and semantic-edge matrix                                 |
+| Draft preview, diff, apply, and history      | File sessions only | Partial     | Runtime and representative packaged lifecycle  | Complete edit/discard/undo interaction matrix                                       |
+| Executable generated DuckDB code             | File sessions only | Partial     | Direct equality and packaged copy/script slice | Edited-code execution acceptance                                                    |
+| CSV and Parquet cleaned-data export          | File sessions only | Partial     | Native export and publication failure tests    | Cross-platform installed destination matrix                                         |
+| Runtime crash/reload/session replay          | Yes                | Partial     | Backend-keyed replay and injected recovery     | Repeated cross-platform failure matrix                                              |
+| Runtime performance benchmark                | Diagnostic         | Partial     | Direct and stdio smoke                         | No strict DuckDB release threshold                                                  |
 
 DuckDB file imports support CSV, TSV, Parquet, and JSONL. A multibyte quote character is incompatible and fails
 before runtime startup. CSV export is UTF-8 with single-byte delimiter and quote syntax. DuckDB rejects schemas whose
 identifiers differ only by case. Notebook `DuckDBPyRelation` values retain the user's relation for serialized viewing
 only; closing releases Open Wrangler's reference and never closes the user's connection.
+
+**Open Wrangler: Open DuckDB Table** chooses a local database and one base table without SQL. It supports viewing,
+filters, sorts and profiles through a retained read-only connection. Close the viewer before opening another table
+from that database in the same Python runtime or using a writer. Views, SQL editing, cleaning, code generation and
+exports remain unavailable for database tables; references to DuckDB file editing above mean CSV, TSV, Parquet and JSONL.
+Computed columns keep their native expressions and can change between queries. No immutable snapshot is promised.
+Current and minimum native owners cover exact table selection, WAL preservation, writer/viewer conflicts and cleanup;
+the command and full database workflow still need installed cross-platform qualification.
 
 ## PySpark live-notebook viewing
 
@@ -730,19 +738,19 @@ semantics. The existing daily-core journey owns the installed command, file pick
 
 These dispositions do not block stable publication unless a release starts advertising the capability.
 
-| Surface                                                                                   | Current disposition                                                                                   |
-| ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| Cleaning-step reorder                                                                     | Deferred; edit and delete earlier steps are supported, but no move primitive exists                   |
-| Transpose and recursive flattening                                                        | Unavailable; see the supported List and Struct operations above                                       |
-| General windows, partitioned ranking, and data-quality assertions                         | Unavailable as built-in operations; Dense Rank is available                                           |
-| Joins and merge                                                                           | Deferred until multi-source identity, lifecycle, persistence, and source-immutability have one design |
-| Portable cleaning recipes and batch apply                                                 | No public recipe format or batch runner; exported native scripts can be reused                        |
-| Natural-language and Copilot operations                                                   | Unavailable                                                                                           |
-| DuckDB Excel and database browsing                                                        | Unsupported; use Pandas or Polars for Excel files                                                     |
-| Debugger variables and non-dataframe list, dictionary, array, tensor, or scalar renderers | Deferred entry-point and data-model work                                                              |
-| Browser, code-server, virtual-workspace, and Remote SSH hosts                             | Not release-qualified; the desktop target is VS Code and editors based on it                          |
-| VS Code-based desktop editors                                                             | Bounded Linux Cursor platform smoke is representative; broader compatibility remains experimental     |
-| Localization and telemetry                                                                | Deferred product breadth                                                                              |
-| Broader cross-engine CSV codec parity and polished row-header presentation                | Deferred                                                                                              |
+| Surface                                                                                   | Current disposition                                                                                     |
+| ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Cleaning-step reorder                                                                     | Deferred; edit and delete earlier steps are supported, but no move primitive exists                     |
+| Transpose and recursive flattening                                                        | Unavailable; see the supported List and Struct operations above                                         |
+| General windows, partitioned ranking, and data-quality assertions                         | Unavailable as built-in operations; Dense Rank is available                                             |
+| Joins and merge                                                                           | Deferred until multi-source identity, lifecycle, persistence, and source-immutability have one design   |
+| Portable cleaning recipes and batch apply                                                 | No public recipe format or batch runner; exported native scripts can be reused                          |
+| Natural-language and Copilot operations                                                   | Unavailable                                                                                             |
+| DuckDB Excel and database views                                                           | Unsupported; use Pandas or Polars for Excel files; database base tables have a viewing-only entry point |
+| Debugger variables and non-dataframe list, dictionary, array, tensor, or scalar renderers | Deferred entry-point and data-model work                                                                |
+| Browser, code-server, virtual-workspace, and Remote SSH hosts                             | Not release-qualified; the desktop target is VS Code and editors based on it                            |
+| VS Code-based desktop editors                                                             | Bounded Linux Cursor platform smoke is representative; broader compatibility remains experimental       |
+| Localization and telemetry                                                                | Deferred product breadth                                                                                |
+| Broader cross-engine CSV codec parity and polished row-header presentation                | Deferred                                                                                                |
 
 Current proposals and their scope are tracked in the [product roadmap](product-roadmap.md).

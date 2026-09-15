@@ -1901,6 +1901,45 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(executeCommand).toHaveBeenCalledWith("setContext", "openWrangler.canChangeImportOptions", false);
   });
 
+  it("keeps database-table import and backend controls unavailable even with a CSV suffix", async () => {
+    const source: SessionSource = {
+      kind: "file",
+      label: "database.csv",
+      path: "/workspace/database.csv",
+      importOptions: { duckdbSchema: "main", duckdbTable: "orders" }
+    };
+    const opened: SessionOpenedResponse = {
+      ...openedResponse,
+      metadata: {
+        ...metadata,
+        source,
+        backend: "duckdb",
+        mode: "viewing",
+        capabilities: {
+          ...metadata.capabilities,
+          editable: false,
+          exportCsv: false,
+          exportParquet: false,
+          supportedOperations: []
+        }
+      }
+    };
+    const reconfigureFileSession = vi.fn(async () => opened);
+    const harness = createPanelHarness(
+      { request: vi.fn(async () => opened), reconfigureFileSession },
+      { source, openResponse: opened }
+    );
+    await harness.open();
+    expect(harness.html).toContain('data-can-change-import-options="false"');
+    panelPromptMocks.showQuickPick.mockClear();
+    panelPromptMocks.showInputBox.mockClear();
+    await harness.receive({ kind: "changeImportOptions" });
+    await harness.receive({ kind: "changeBackend" });
+    expect(panelPromptMocks.showQuickPick).not.toHaveBeenCalled();
+    expect(panelPromptMocks.showInputBox).not.toHaveBeenCalled();
+    expect(reconfigureFileSession).not.toHaveBeenCalled();
+  });
+
   it("never routes import reconfiguration to a hidden panel", async () => {
     const executeCommand = vi.spyOn(commands, "executeCommand");
     const reconfigureFileSession = vi.fn(async (): Promise<OpenWranglerResponse> => openedResponse);

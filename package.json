@@ -130,6 +130,7 @@
     "onCommand:openWrangler.convertTrustedPickle",
     "onCommand:openWrangler.changeImportOptions",
     "onCommand:openWrangler.openPath",
+    "onCommand:openWrangler.openDuckDBTable",
     "onCommand:openWrangler.openFileWithPlan",
     "onCommand:openWrangler.launchDataViewer",
     "onCommand:openWrangler.openNotebookVariable",
@@ -203,6 +204,11 @@
       {
         "command": "openWrangler.openPath",
         "title": "Open Wrangler: Open File Path"
+      },
+      {
+        "command": "openWrangler.openDuckDBTable",
+        "title": "Open DuckDB Table",
+        "category": "Open Wrangler"
       },
       {
         "command": "openWrangler.openFileWithPlan",
@@ -592,12 +598,12 @@
       {
         "id": "gettingStarted",
         "title": "Get started with Open Wrangler",
-        "description": "Open files or live dataframe variables, inspect profiles, and preview cleaning steps. Pandas and Polars support cleaning and export. R notebooks and trusted .R, .Rmd, and .qmd documents support the current R cleaning set. DuckDB file sessions support cleaning and export; notebook relations are experimental and view-only. Local stable/final PySpark 4.2.x Classic/Connect batch DataFrames are notebook-only and view-only.",
+        "description": "Open files or live dataframe variables, inspect profiles, and preview cleaning steps. Pandas and Polars support cleaning and export. R notebooks and trusted .R, .Rmd, and .qmd documents support the current R cleaning set. DuckDB CSV, TSV, Parquet and JSONL sessions support cleaning and export. Database tables and experimental notebook relations are viewing-only. Local stable/final PySpark 4.2.x Classic/Connect batch DataFrames are notebook-only and view-only.",
         "steps": [
           {
             "id": "openData",
             "title": "Open files or notebook variables",
-            "description": "Choose [Open File Path](command:openWrangler.openPath) for CSV, TSV, Parquet, JSONL/NDJSON, or Excel. Use the notebook toolbar for live Python or R dataframes. On macOS or Linux, run a trusted .R file or the R cells in an .Rmd/.qmd document from its editor or Explorer menu."
+            "description": "Choose [Open File Path](command:openWrangler.openPath) for CSV, TSV, Parquet, JSONL/NDJSON, or Excel. Use [Open DuckDB Table](command:openWrangler.openDuckDBTable) to view a table in a local database. Use the notebook toolbar for live Python or R dataframes. On macOS or Linux, run a trusted .R file or the R cells in an .Rmd/.qmd document from its editor or Explorer menu."
           },
           {
             "id": "explore",
@@ -849,7 +855,7 @@
             "pandas"
           ],
           "default": "auto",
-          "description": "Default backend for file-backed sessions. Auto selects the first available engine in Polars, DuckDB, then Pandas order, subject to file-format and import-option support. It does not switch engines after a file-read error."
+          "description": "Default backend for CSV, TSV, Parquet, JSONL/NDJSON and Excel sessions. Auto selects the first available engine in Polars, DuckDB, then Pandas order, subject to file-format and import-option support. It does not switch engines after a file-read error. Open DuckDB Table always uses DuckDB."
         },
         "openWrangler.fileStartMode": {
           "type": "string",
@@ -858,7 +864,7 @@
             "viewing"
           ],
           "default": "editing",
-          "description": "Initial mode for file-backed sessions. Editing remains non-destructive until an explicit export."
+          "description": "Initial mode for file-backed sessions. Editing remains non-destructive until an explicit export. DuckDB database tables always open in viewing mode."
         },
         "openWrangler.notebookStartMode": {
           "type": "string",
@@ -908,7 +914,7 @@
             "xlsx",
             "xls"
           ],
-          "description": "File types accepted by Open Wrangler launch commands and offered by its file picker. The JSONL option includes both .jsonl and .ndjson files. Explicit Reopen Editor With selection remains available."
+          "description": "File types accepted by ordinary file launch commands and offered by their picker. The JSONL option includes both .jsonl and .ndjson files. Open DuckDB Table accepts any database filename independently of this setting. Explicit Reopen Editor With selection remains available."
         },
         "openWrangler.insightsOnOpen": {
           "type": "boolean",

@@ -579,6 +579,14 @@ export interface SessionSource {
     lineEnding?: "lf" | "cr";
     sheetName?: string;
     sheetIndex?: number;
+    /**
+     * Exact schema name for a read-only DuckDB database table. Requires duckdbTable and excludes other import options.
+     */
+    duckdbSchema?: string;
+    /**
+     * Exact base-table name in duckdbSchema. Views are not supported.
+     */
+    duckdbTable?: string;
   };
 }
 export interface SessionCloneSource {

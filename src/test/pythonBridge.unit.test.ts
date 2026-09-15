@@ -36,6 +36,11 @@ import { requiredDependencies, type PythonDependency } from "../extension/python
 import { PythonRuntimeScopeRegistry } from "../extension/pythonRuntimeScopeRegistry";
 import { PythonRuntimeTransport } from "../extension/pythonRuntimeTransport";
 import { PythonSessionOwnership } from "../extension/pythonSessionOwnership";
+import { discoverDuckDBTableNames } from "../extension/files/duckdbTableNames";
+import { discoverExcelSheetNames } from "../extension/files/excelSheetNames";
+
+vi.mock("../extension/files/duckdbTableNames", () => ({ discoverDuckDBTableNames: vi.fn() }));
+vi.mock("../extension/files/excelSheetNames", () => ({ discoverExcelSheetNames: vi.fn() }));
 
 vi.mock("../extension/pythonEnvironment", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../extension/pythonEnvironment")>();
@@ -1310,6 +1315,78 @@ describe("PythonBridge dependency installation", () => {
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockReset();
     vi.mocked(pythonEnvironment.probeDependencies).mockReset();
   });
+
+  it.each(["Excel", "DuckDB"] as const)(
+    "blocks package writes through cancelled %s discovery settlement",
+    async (kind) => {
+      const { bridge, raw, launchDependencyInstall } = createDependencyHarness();
+      const target = raw.lastMissingDependencies!;
+      const source: SessionSource = {
+        kind: "file",
+        label: "input.xlsx",
+        path: testPythonExecutablePath("/data/input.xlsx")
+      };
+      const resource = vscode.Uri.file(source.path!);
+      const selection = testEnvironmentSelection(resource.toString(true), target.environment, { resource });
+      raw.environmentSelections.set(selection.key, selection);
+      raw.selectionEpochs.set(selection.key, selection.epoch);
+      const runtime = raw.runtimeSlot(selection.key);
+      const child = new LifecycleChildProcess();
+      child.stdin.once("finish", () => {
+        child.exitCode = 0;
+        child.emit("exit", 0, null);
+      });
+      runtime.process = child as unknown as ChildProcessWithoutNullStreams;
+      runtime.processSelection = { selection, environment: target.environment };
+      const open = openSessionRequest(source);
+      raw.sessionOwnership.finalizeResponse(
+        { requestId: "metadata-owner", request: open, runtime },
+        openedFor(open, "metadata-session")
+      );
+      const closed = deferred<void>();
+      let signal: AbortSignal | undefined;
+      vi.mocked(discoverExcelSheetNames).mockImplementationOnce(async (request) => {
+        signal = request.signal;
+        await closed.promise;
+        return ["Sheet1"];
+      });
+      vi.mocked(discoverDuckDBTableNames).mockImplementationOnce(async (request) => {
+        signal = request.signal;
+        await closed.promise;
+        return [{ schema: "main", name: "orders" }];
+      });
+      vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [] });
+      const cancellation = new vscode.CancellationTokenSource();
+      const discovery =
+        kind === "Excel"
+          ? bridge.listExcelSheets("metadata-session", source, "pandas", { cancellation: cancellation.token })
+          : bridge.discoverDuckDBTables(source, { cancellation: cancellation.token });
+      const warning = vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue(undefined);
+      try {
+        await vi.waitFor(() => expect(signal).toBeDefined());
+        raw.lastMissingDependencies = target;
+        await expect(bridge.installMissingDependencies()).resolves.toBe(false);
+        expect(warning).not.toHaveBeenCalled();
+        expect(launchDependencyInstall).not.toHaveBeenCalled();
+        cancellation.cancel();
+        expect(signal?.aborted).toBe(true);
+        await expect(bridge.installMissingDependencies()).resolves.toBe(false);
+        expect(warning).not.toHaveBeenCalled();
+        expect(launchDependencyInstall).not.toHaveBeenCalled();
+        closed.resolve();
+        await expect(discovery).resolves.toBeUndefined();
+        warning.mockResolvedValue("Install" as never);
+        await expect(bridge.installMissingDependencies()).resolves.toBe(true);
+        expect(launchDependencyInstall).toHaveBeenCalledOnce();
+      } finally {
+        closed.resolve();
+        await discovery;
+        cancellation.dispose();
+        vi.mocked(discoverExcelSheetNames).mockReset();
+        vi.mocked(discoverDuckDBTableNames).mockReset();
+      }
+    }
+  );
 
   it.each(["ready", "missing"] as const)(
     "installs the original file requirements after another file becomes %s",
@@ -3520,6 +3597,80 @@ describe("PythonBridge environment resource selection", () => {
   beforeEach(() => {
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockClear();
     vi.mocked(pythonEnvironment.probeDependencies).mockClear();
+    vi.mocked(discoverDuckDBTableNames).mockReset();
+  });
+
+  it("prepares DuckDB discovery through normal dependency admission without starting a file session", async () => {
+    const { bridge, context, internals } = createEnvironmentHarness();
+    const source: SessionSource = {
+      kind: "file",
+      label: "analytics",
+      path: testPythonExecutablePath("/data/analytics")
+    };
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [] });
+    vi.mocked(discoverDuckDBTableNames).mockResolvedValue([{ schema: "main", name: "orders" }]);
+    const result = await bridge.discoverDuckDBTables(source);
+    expect(result).toMatchObject({ tables: [{ schema: "main", name: "orders" }] });
+    if (!result || "kind" in result) throw new Error("Expected a discovered catalog");
+    expect(result.isCurrent()).toBe(true);
+    expect(vi.mocked(pythonEnvironment.resolvePythonEnvironment).mock.calls[0]?.slice(0, 2)).toEqual([
+      context,
+      expect.objectContaining({ fsPath: source.path })
+    ]);
+    expect(vi.mocked(pythonEnvironment.probeDependencies).mock.calls[0]?.[1]).toEqual(
+      requiredDependencies("duckdb", source)
+    );
+    expect(discoverDuckDBTableNames).toHaveBeenCalledWith({
+      pythonPath: environment.executable,
+      extensionPath: "/extension",
+      sourcePath: source.path,
+      signal: expect.any(AbortSignal)
+    });
+    expect(internals.spawnProcess).not.toHaveBeenCalled();
+    bridge.clearRuntimeSelection();
+    expect(result.isCurrent()).toBe(false);
+  });
+
+  it("retains the ordinary missing-dependency diagnostic without launching DuckDB discovery", async () => {
+    const { bridge } = createEnvironmentHarness();
+    const source: SessionSource = {
+      kind: "file",
+      label: "analytics",
+      path: testPythonExecutablePath("/data/analytics")
+    };
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: ["duckdb>=1.5.4,<1.6"] });
+    await expect(bridge.discoverDuckDBTables(source)).resolves.toMatchObject({
+      kind: "error",
+      code: "missing_dependencies"
+    });
+    expect(discoverDuckDBTableNames).not.toHaveBeenCalled();
+    expect(startDependencyGuardValidation).not.toHaveBeenCalled();
+  });
+
+  it("aborts and discards DuckDB metadata when discovery is cancelled", async () => {
+    const { bridge } = createEnvironmentHarness();
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [] });
+    let finish!: (tables: readonly { schema: string; name: string }[]) => void;
+    vi.mocked(discoverDuckDBTableNames).mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      })
+    );
+    const cancellation = new vscode.CancellationTokenSource();
+    const pending = bridge.discoverDuckDBTables(
+      { kind: "file", label: "analytics", path: testPythonExecutablePath("/data/analytics") },
+      { cancellation: cancellation.token }
+    );
+    await vi.waitFor(() => expect(discoverDuckDBTableNames).toHaveBeenCalledOnce());
+    const signal = vi.mocked(discoverDuckDBTableNames).mock.calls[0]![0].signal!;
+    cancellation.cancel();
+    expect(signal.aborted).toBe(true);
+    finish([{ schema: "main", name: "orders" }]);
+    await expect(pending).resolves.toBeUndefined();
+    cancellation.dispose();
   });
 
   afterEach(() => {
@@ -4685,6 +4836,7 @@ function createLifecycleHarness(): {
 }
 
 interface EnvironmentBridgeInternals {
+  readonly spawnProcess: ReturnType<typeof vi.fn>;
   dependencyProbes: PythonDependencyProbeRegistry;
   environmentSelections: Map<string, TestEnvironmentSelection>;
   lastMissingDependencies: TestMissingDependencies | undefined;
@@ -4743,6 +4895,7 @@ function createEnvironmentHarness(options: { disposed?: boolean } = {}): {
   internals: EnvironmentBridgeInternals;
 } {
   const context = testExtensionContext();
+  const spawnProcess = vi.fn();
   const bridge = Object.create(PythonBridge.prototype) as PythonBridge;
   const raw = bridge as unknown as RawBridgeInternals;
   const runtimeSlots = new Map<string, TestRuntimeSlot>();
@@ -4770,12 +4923,15 @@ function createEnvironmentHarness(options: { disposed?: boolean } = {}): {
     dependencyMutations: new Map(),
     lastMissingDependencies: undefined,
     generation: 0,
-    spawnProcess: vi.fn(),
+    duckDBTableReads: new Set<AbortController>(),
+    pythonEnvironmentReadLeases: new Map<string, number>(),
+    spawnProcess,
     configurationSubscription: { dispose: vi.fn() },
     output: { appendLine: vi.fn(), dispose: vi.fn() }
   });
   attachRuntimeTransport(bridge);
   const internals: EnvironmentBridgeInternals = {
+    spawnProcess,
     get dependencyProbes() {
       return raw.dependencyProbes;
     },
@@ -4854,6 +5010,9 @@ function createDependencyHarness(execute: () => Promise<unknown> = async () => u
     dependencyInstallOperation: undefined,
     dependencyMutations: new Map(),
     launchDependencyInstall,
+    excelSheetReads: new Set<AbortController>(),
+    duckDBTableReads: new Set<AbortController>(),
+    pythonEnvironmentReadLeases: new Map<string, number>(),
     waitForDependencyInstallExit,
     spawnProcess: vi.fn(),
     configurationSubscription: { dispose: vi.fn() },

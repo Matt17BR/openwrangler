@@ -23,6 +23,14 @@ export type MissingValueByColumn = DatasetStats["missingValuesByColumn"][number]
 export type SessionBoundRequest = Extract<OpenWranglerRequest, { sessionId: string }>;
 export type OptionalViewingCapability = "filter" | "sort" | "profile" | "columnValues";
 
+export function isDuckDBTableSource(source: SessionSource): boolean {
+  return (
+    source.kind === "file" &&
+    source.importOptions?.duckdbSchema !== undefined &&
+    source.importOptions.duckdbTable !== undefined
+  );
+}
+
 /** Omitted viewing capabilities retain the original supported default. */
 export function supportsViewingCapability(
   capabilities: SourceCapabilities | undefined,

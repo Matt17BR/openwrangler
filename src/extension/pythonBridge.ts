@@ -9,7 +9,12 @@ import type {
   SessionSource
 } from "../shared/protocol";
 import { isSessionBoundRequest, PROTOCOL_VERSION } from "../shared/protocol";
-import type { BridgeRequestOptions, CancellationTokenLike, OpenWranglerBridge } from "./dataBridge";
+import type {
+  BridgeRequestOptions,
+  CancellationTokenLike,
+  DuckDBTableDiscovery,
+  OpenWranglerBridge
+} from "./dataBridge";
 import { getSetting } from "./configuration";
 import { DependencyGuardCommandError } from "./dependencyGuardProtocol";
 import {
@@ -47,6 +52,7 @@ import { isFullyQualifiedPythonPath } from "./pythonPath";
 import { buildPythonProcessEnvironment } from "./pythonProcessEnvironment";
 import { stopChildProcessGracefully } from "./processShutdown";
 import { discoverExcelSheetNames } from "./files/excelSheetNames";
+import { discoverDuckDBTableNames } from "./files/duckdbTableNames";
 import { exportPythonDataSafely, type SafePythonDataExportOptions } from "./files/safePythonDataExport";
 import {
   DependencyGuardCrossIdentityFlightError,
@@ -267,8 +273,9 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private dependencyInstallOperation: DependencyInstallOperation | undefined;
   private dependencyRecoveryOperation: DependencyRecoveryOperation | undefined;
   private readonly dependencyMutations = new Map<string, DependencyInstallOperation>();
-  private readonly trustedPickleEnvironmentLeases = new Map<string, number>();
+  private readonly pythonEnvironmentReadLeases = new Map<string, number>();
   private readonly excelSheetReads = new Set<AbortController>();
+  private readonly duckDBTableReads = new Set<AbortController>();
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -362,6 +369,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     ) {
       return undefined;
     }
+    const sourcePath = source.path;
     const runtime = this.sessionOwnership.confirmedOwner(sessionId);
     const processSelection = runtime?.processSelection;
     if (
@@ -380,13 +388,15 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       controller.abort(new Error("Excel worksheet discovery was cancelled."))
     );
     try {
-      const names = await discoverExcelSheetNames({
-        pythonPath: processSelection.environment.executable,
-        extensionPath: this.context.extensionPath,
-        sourcePath: source.path,
-        backend,
-        signal: controller.signal
-      });
+      const names = await this.withPythonEnvironmentReadLease(processSelection.environment, () =>
+        discoverExcelSheetNames({
+          pythonPath: processSelection.environment.executable,
+          extensionPath: this.context.extensionPath,
+          sourcePath,
+          backend,
+          signal: controller.signal
+        })
+      );
       if (
         controller.signal.aborted ||
         this.disposed ||
@@ -408,6 +418,71 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     } finally {
       cancellation?.dispose();
       this.excelSheetReads.delete(controller);
+      release();
+    }
+  }
+
+  async discoverDuckDBTables(
+    source: SessionSource,
+    options: BridgeRequestOptions = {}
+  ): Promise<DuckDBTableDiscovery | ErrorResponse | undefined> {
+    if (this.disposed || !vscode.workspace.isTrusted || options.cancellation?.isCancellationRequested) return undefined;
+    if (source.kind !== "file" || !source.path) return undefined;
+    const capturedSource = Object.freeze({ ...source });
+    const selection = this.environmentSelection(sourceResource(capturedSource));
+    const release = this.retainRuntime(this.runtimeSlot(selection.key));
+    const controller = new AbortController();
+    this.duckDBTableReads.add(controller);
+    let packageEnvironmentKey: string | undefined;
+    const cancellation = options.cancellation?.onCancellationRequested(() => {
+      controller.abort();
+      this.abortEnvironmentSelection(selection, new PythonEnvironmentResolutionCancelledError());
+    });
+    const isCurrent = (): boolean =>
+      !this.disposed &&
+      vscode.workspace.isTrusted &&
+      !controller.signal.aborted &&
+      !options.cancellation?.isCancellationRequested &&
+      this.isCurrentEnvironmentSelection(selection) &&
+      (packageEnvironmentKey === undefined || !this.dependencyMutations.has(packageEnvironmentKey));
+    try {
+      // Share ordinary file dependency admission without opening a runtime session.
+      const prepared = await this.prepareRequestForDispatch({
+        kind: "openSession",
+        source: capturedSource,
+        backend: "duckdb",
+        mode: "viewing",
+        pageSize: 1,
+        columnOffset: 0,
+        columnLimit: 1
+      });
+      if (!isCurrent()) return undefined;
+      if (prepared.request.kind === "error") return prepared.request;
+      const processSelection = prepared.processSelection;
+      if (!processSelection || processSelection.selection !== selection) return undefined;
+      packageEnvironmentKey = pythonPackageEnvironmentKey(processSelection.environment);
+      const tables = await this.withPythonEnvironmentReadLease(processSelection.environment, () =>
+        discoverDuckDBTableNames({
+          pythonPath: processSelection.environment.executable,
+          extensionPath: this.context.extensionPath,
+          sourcePath: capturedSource.path!,
+          signal: controller.signal
+        })
+      );
+      if (!isCurrent()) return undefined;
+      return { tables, isCurrent };
+    } catch {
+      if (!isCurrent()) return undefined;
+      return {
+        kind: "error",
+        code: "duckdb_discovery_failed",
+        recoverable: true,
+        message:
+          "Could not list tables in this DuckDB database. Close other viewers or writers using it and check that the file is a readable DuckDB database."
+      };
+    } finally {
+      cancellation?.dispose();
+      this.duckDBTableReads.delete(controller);
       release();
     }
   }
@@ -858,27 +933,29 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     if (!owner || !this.isTrustedPicklePreflightOwnerCurrent(owner)) {
       return Promise.reject(new Error("The selected Python runtime changed before pickle conversion started."));
     }
-    const key = pythonPackageEnvironmentKey(owner.environment);
+    return this.withPythonEnvironmentReadLease(owner.environment, run);
+  }
+
+  private withPythonEnvironmentReadLease<T>(environment: PythonEnvironment, run: () => Promise<T>): Promise<T> {
+    const key = pythonPackageEnvironmentKey(environment);
     if (this.dependencyMutations.has(key)) {
-      return Promise.reject(
-        new Error(`Open Wrangler is changing Python dependencies in ${owner.environment.executable}.`)
-      );
+      return Promise.reject(new Error(`Open Wrangler is changing Python dependencies in ${environment.executable}.`));
     }
-    this.trustedPickleEnvironmentLeases.set(key, (this.trustedPickleEnvironmentLeases.get(key) ?? 0) + 1);
+    this.pythonEnvironmentReadLeases.set(key, (this.pythonEnvironmentReadLeases.get(key) ?? 0) + 1);
     let task: Promise<T>;
     try {
       task = run();
     } catch (error) {
-      this.releaseTrustedPickleEnvironmentLease(key);
+      this.releasePythonEnvironmentReadLease(key);
       return Promise.reject(error);
     }
-    return task.finally(() => this.releaseTrustedPickleEnvironmentLease(key));
+    return task.finally(() => this.releasePythonEnvironmentReadLease(key));
   }
 
-  private releaseTrustedPickleEnvironmentLease(key: string): void {
-    const remaining = (this.trustedPickleEnvironmentLeases.get(key) ?? 1) - 1;
-    if (remaining > 0) this.trustedPickleEnvironmentLeases.set(key, remaining);
-    else this.trustedPickleEnvironmentLeases.delete(key);
+  private releasePythonEnvironmentReadLease(key: string): void {
+    const remaining = (this.pythonEnvironmentReadLeases.get(key) ?? 1) - 1;
+    if (remaining > 0) this.pythonEnvironmentReadLeases.set(key, remaining);
+    else this.pythonEnvironmentReadLeases.delete(key);
   }
 
   private isTrustedPicklePreflightOwnerCurrent(owner: TrustedPicklePreflightOwner): boolean {
@@ -1434,8 +1511,8 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     environment: PythonEnvironment
   ): Promise<void> {
     const mutationKey = pythonPackageEnvironmentKey(environment);
-    if ((this.trustedPickleEnvironmentLeases?.get(mutationKey) ?? 0) > 0) {
-      throw new Error(`Open Wrangler cannot change Python dependencies while converting a trusted pickle.`);
+    if ((this.pythonEnvironmentReadLeases?.get(mutationKey) ?? 0) > 0) {
+      throw new Error("Open Wrangler cannot change Python dependencies while a file helper is using the environment.");
     }
     const existing = this.dependencyMutations.get(mutationKey);
     if (existing && existing !== operation) {
@@ -1543,7 +1620,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       this.isCurrentEnvironmentSelection(missing.selection) &&
       missing.selectionEpoch === missing.selection.epoch &&
       ownsTarget &&
-      (this.trustedPickleEnvironmentLeases?.get(pythonPackageEnvironmentKey(missing.environment)) ?? 0) === 0 &&
+      (this.pythonEnvironmentReadLeases?.get(pythonPackageEnvironmentKey(missing.environment)) ?? 0) === 0 &&
       missing.environment.executable === executable &&
       missing.dependencies.length === requirements.length &&
       missing.dependencies.every((dependency, index) => dependency.installSpec === requirements[index]) &&
@@ -1634,8 +1711,8 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
 
   private async shutdownBridge(): Promise<void> {
     this.disposed = true;
-    for (const controller of this.excelSheetReads ?? []) {
-      controller.abort(new Error("Open Wrangler runtime bridge disposed during Excel worksheet discovery."));
+    for (const controller of [...(this.excelSheetReads ?? []), ...(this.duckDBTableReads ?? [])]) {
+      controller.abort(new Error("Open Wrangler runtime bridge disposed during Python metadata discovery."));
     }
     const dependencyInstall = this.dependencyInstallOperation;
     const failures: unknown[] = [];

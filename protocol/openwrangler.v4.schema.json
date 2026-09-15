@@ -341,6 +341,10 @@
                 }
               },
               "then": { "$ref": "#/definitions/ExcelFileSourceLocation" }
+            },
+            {
+              "if": { "properties": { "importOptions": { "required": ["duckdbSchema"] } } },
+              "then": { "required": ["path"], "properties": { "path": { "type": "string", "minLength": 1 } } }
             }
           ]
         }
@@ -355,6 +359,8 @@
         "uri": { "type": "string" },
         "variableName": { "type": "string" },
         "importOptions": {
+          "if": { "anyOf": [{ "required": ["duckdbSchema"] }, { "required": ["duckdbTable"] }] },
+          "then": { "required": ["duckdbSchema", "duckdbTable"], "maxProperties": 2 },
           "type": "object",
           "additionalProperties": false,
           "not": {
@@ -405,7 +411,21 @@
               "minLength": 1,
               "pattern": "[^\\u0009-\\u000D \\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF]"
             },
-            "sheetIndex": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+            "sheetIndex": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+            "duckdbSchema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024,
+              "pattern": "^[^\\u0000\\uD800-\\uDFFF]+$",
+              "description": "Exact schema name for a read-only DuckDB database table. Requires duckdbTable and excludes other import options."
+            },
+            "duckdbTable": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024,
+              "pattern": "^[^\\u0000\\uD800-\\uDFFF]+$",
+              "description": "Exact base-table name in duckdbSchema. Views are not supported."
+            }
           }
         }
       }
@@ -2275,6 +2295,32 @@
       }
     },
     "SessionMetadata": {
+      "if": {
+        "required": ["source"],
+        "properties": {
+          "source": {
+            "required": ["importOptions"],
+            "properties": { "importOptions": { "required": ["duckdbSchema"] } }
+          }
+        }
+      },
+      "then": {
+        "not": { "anyOf": [{ "required": ["draftStep"] }, { "required": ["draftReplacesStepId"] }] },
+        "properties": {
+          "backend": { "const": "duckdb" },
+          "mode": { "const": "viewing" },
+          "steps": { "maxItems": 0 },
+          "canRedo": { "const": false },
+          "capabilities": {
+            "properties": {
+              "editable": { "const": false },
+              "exportCsv": { "const": false },
+              "exportParquet": { "const": false },
+              "supportedOperations": { "maxItems": 0 }
+            }
+          }
+        }
+      },
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -2424,6 +2470,16 @@
       }
     },
     "OpenSessionRequest": {
+      "if": {
+        "required": ["source"],
+        "properties": {
+          "source": {
+            "required": ["importOptions"],
+            "properties": { "importOptions": { "required": ["duckdbSchema"] } }
+          }
+        }
+      },
+      "then": { "required": ["backend"], "properties": { "backend": { "const": "duckdb" } } },
       "type": "object",
       "additionalProperties": false,
       "required": ["kind", "source", "pageSize", "columnOffset", "columnLimit"],

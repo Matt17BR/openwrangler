@@ -174,4 +174,28 @@ describe("SessionModeControl", () => {
     fireEvent.click(screen.getByText("Viewing only").closest("summary")!);
     expect(screen.getByText(/saved notebook snapshot, not a live dataframe/u)).toBeVisible();
   });
+
+  it("explains the read-only database connection without offering Editing", () => {
+    render(
+      <SessionModeControl
+        metadata={{
+          ...metadata,
+          backend: "duckdb",
+          source: {
+            kind: "file",
+            label: "database",
+            path: "/tmp/database",
+            importOptions: { duckdbSchema: "main", duckdbTable: "orders" }
+          },
+          capabilities: { ...metadata.capabilities, notebookInsert: false, supportedOperations: [] }
+        }}
+        busy={false}
+        onSwitch={vi.fn()}
+      />
+    );
+    expect(screen.queryByRole("button", { name: /Switch to/iu })).toBeNull();
+    fireEvent.click(screen.getByText("Viewing only").closest("summary")!);
+    expect(screen.getByText(/Close this table before writing to its database/u)).toBeVisible();
+    expect(screen.getByText(/Cleaning steps, generated code, and data export are not available/u)).toBeVisible();
+  });
 });

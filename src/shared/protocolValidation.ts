@@ -16,6 +16,7 @@ import type {
   RowAxis,
   SessionDataShape,
   SessionMetadata,
+  SessionSource,
   TransformColumnFilter,
   TransformSortRule,
   TransformStep,
@@ -46,7 +47,7 @@ import {
   validatePivotWiderOutputName
 } from "./pivotWider";
 import { portableRegexContract, validatePortableRegexOutputName } from "./portableRegex";
-import { PROTOCOL_VERSION } from "./protocol";
+import { isDuckDBTableSource, PROTOCOL_VERSION } from "./protocol";
 import { hasAtMostViewValueTextCodePoints } from "./viewValueLimits";
 
 type UnknownRecord = Record<string, unknown>;
@@ -140,6 +141,7 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
     case "openSession":
       return (
         isSessionSource(candidate.source) &&
+        (!isDuckDBTableSource(candidate.source) || candidate.backend === "duckdb") &&
         optional(candidate, "requestedSessionId", isNonEmptyString) &&
         optional(candidate, "cloneFrom", isSessionCloneSource) &&
         (candidate.cloneFrom === undefined || candidate.requestedSessionId !== undefined) &&
@@ -507,6 +509,21 @@ function isSessionMetadata(value: unknown): value is SessionMetadata {
     isSessionSource(candidate.source) &&
     isSourceCapabilities(candidate.capabilities) &&
     hasCompatibleInsertionCapabilities(candidate.source, candidate.capabilities) &&
+    (!isDuckDBTableSource(candidate.source) ||
+      (candidate.backend === "duckdb" &&
+        candidate.mode === "viewing" &&
+        isRecord(candidate.capabilities) &&
+        candidate.capabilities.editable === false &&
+        candidate.capabilities.exportCsv === false &&
+        candidate.capabilities.exportParquet === false &&
+        (candidate.capabilities.supportedOperations === undefined ||
+          (Array.isArray(candidate.capabilities.supportedOperations) &&
+            candidate.capabilities.supportedOperations.length === 0)) &&
+        Array.isArray(candidate.steps) &&
+        candidate.steps.length === 0 &&
+        candidate.draftStep === undefined &&
+        candidate.draftReplacesStepId === undefined &&
+        candidate.canRedo !== true)) &&
     isSessionDataShape(candidate.shape) &&
     isSessionDataShape(candidate.filteredShape) &&
     (candidate.backend === "pyspark" || (candidate.shape.rows !== null && candidate.filteredShape.rows !== null)) &&
@@ -526,7 +543,7 @@ function isSessionMetadata(value: unknown): value is SessionMetadata {
   );
 }
 
-function isSessionSource(value: unknown): boolean {
+function isSessionSource(value: unknown): value is SessionSource {
   const candidate = exactRecord(value, ["kind", "label"], ["path", "uri", "variableName", "importOptions"]);
   if (
     candidate === undefined ||
@@ -575,6 +592,7 @@ function hasCompatibleImportOptions(source: Record<string, unknown>): boolean {
   const keys = Object.keys(options);
   if (keys.length === 0) return true;
   if (source.kind !== "file") return false;
+  if ("duckdbSchema" in options) return isNonEmptyString(source.path);
   const extension = sourceExtension(source);
   const excelFields = new Set(["sheetName", "sheetIndex"]);
   const delimitedFields = new Set(["delimiter", "encoding", "quoteChar", "hasHeader", "lineEnding"]);
@@ -599,9 +617,33 @@ function isImportOptions(value: unknown): boolean {
   const candidate = exactRecord(
     value,
     [],
-    ["delimiter", "encoding", "quoteChar", "hasHeader", "lineEnding", "sheetName", "sheetIndex"]
+    [
+      "delimiter",
+      "encoding",
+      "quoteChar",
+      "hasHeader",
+      "lineEnding",
+      "sheetName",
+      "sheetIndex",
+      "duckdbSchema",
+      "duckdbTable"
+    ]
   );
   if (candidate === undefined) return false;
+  if ("duckdbSchema" in candidate || "duckdbTable" in candidate) {
+    return (
+      Object.keys(candidate).length === 2 &&
+      [candidate.duckdbSchema, candidate.duckdbTable].every(
+        (name) =>
+          typeof name === "string" &&
+          name.length > 0 &&
+          name.length <= 2048 &&
+          [...name].length <= 1024 &&
+          !name.includes("\0") &&
+          !/[\uD800-\uDFFF]/u.test(name)
+      )
+    );
+  }
   const hasSheetName = Object.prototype.hasOwnProperty.call(candidate, "sheetName");
   const hasSheetIndex = Object.prototype.hasOwnProperty.call(candidate, "sheetIndex");
   const hasExcelSelector = hasSheetName || hasSheetIndex;

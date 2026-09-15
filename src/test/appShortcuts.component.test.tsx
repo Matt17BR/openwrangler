@@ -70,6 +70,37 @@ const page: GridPage = {
 describe("App cleaning-plan keyboard shortcuts", () => {
   beforeEach(() => postMessage.mockClear());
 
+  it("keeps a database table's engine fixed while retaining viewing controls", () => {
+    render(<App />);
+    dispatch({
+      kind: "sessionOpened",
+      page,
+      summaries: [],
+      metadata: {
+        ...metadataWithoutDraft,
+        backend: "duckdb",
+        mode: "viewing",
+        source: {
+          kind: "file",
+          label: "database",
+          path: "/tmp/database",
+          importOptions: { duckdbSchema: "main", duckdbTable: "orders" }
+        },
+        capabilities: {
+          ...metadata.capabilities,
+          editable: false,
+          exportCsv: false,
+          exportParquet: false,
+          supportedOperations: []
+        }
+      }
+    });
+    expect(screen.getByText("Viewing only")).toBeVisible();
+    expect(screen.queryByRole("button", { name: /Change dataframe engine/u })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Switch to Editing/u })).toBeNull();
+    expect(screen.getByRole("button", { name: "Column profiles and filters" })).toBeEnabled();
+  });
+
   it.each(["draft", "drawer"])("closes the column menu before Escape reaches the outer %s shortcut", async (outer) => {
     const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
     try {
