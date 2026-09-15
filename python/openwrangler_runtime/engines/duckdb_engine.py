@@ -975,9 +975,8 @@ class DuckDBEngine(DataFrameEngine):
         with self._terminal_connection(frame) as (connection, source_sql):
             if isinstance(frame, DuckDBSqlPlan):
                 # The fused group can otherwise reserve one wide hash-table
-                # partition per DuckDB worker. This connection is owned only
-                # by the current file read and closes below, so the local pin
-                # cannot change another request or a user's notebook relation.
+                # partition per DuckDB worker. Transient file connections close
+                # below; database readers retain this setting until session close.
                 connection.execute("SET threads = 1")
                 counts = _execute_rows(
                     connection,
