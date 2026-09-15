@@ -131,6 +131,8 @@ configuration keys are preserved. The existing store repeats that absence check 
 The existing restorer replays the complete plan privately, with one-row intermediate responses, and obtains the final
 page before saving. Small responses do not bound native scans or temporary memory. The candidate becomes an ordinary
 Editing session only after durable success. Failure closes only that candidate, after detached execution settles.
+The failure response is selected before terminal cleanup, preserving an already-observed cancellation or stale owner;
+closing the failed candidate does not replace a schema, replay or storage diagnostic with a runtime-change error.
 Cancellation, runtime retirement or file replacement during the final durable write can leave the copied plan saved
 without publishing its runtime. Reopening that target uses ordinary saved-plan restoration. Subsequent exports protect the target's own
 source through the normal destination checks; the originating file is not an additional execution input.

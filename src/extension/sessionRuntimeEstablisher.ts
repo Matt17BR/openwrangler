@@ -390,18 +390,19 @@ export class SessionRuntimeEstablisher {
         { requireAbsent: true }
       );
       if (saved.kind !== "committed") {
+        const response =
+          currentFailure() ??
+          protocolError(
+            saved.kind === "unavailable" ? "persistence_unavailable" : "file_plan_target_changed",
+            saved.kind === "unavailable"
+              ? "Open Wrangler could not save the copied plan. Retry after workspace storage is available."
+              : "The target's saved state changed before the plan could be saved. Choose another file.",
+            true
+          );
         await this.runtimeCleanup.close(session, "invalid open runtime");
         return {
           established: false,
-          response:
-            currentFailure() ??
-            protocolError(
-              saved.kind === "unavailable" ? "persistence_unavailable" : "file_plan_target_changed",
-              saved.kind === "unavailable"
-                ? "Open Wrangler could not save the copied plan. Retry after workspace storage is available."
-                : "The target's saved state changed before the plan could be saved. Choose another file.",
-              true
-            )
+          response
         };
       }
       return {
@@ -410,6 +411,15 @@ export class SessionRuntimeEstablisher {
         response: { kind: "sessionOpened", metadata: session.metadata, page: page.page, summaries: [] }
       };
     } catch (error) {
+      const response =
+        currentFailure() ??
+        protocolError(
+          "file_plan_replay_failed",
+          error instanceof RuntimeStateRestoreError
+            ? error.message
+            : "Open Wrangler could not finish copying this plan. The original session was kept.",
+          true
+        );
       if (error instanceof DetachedBridgeRequestError) {
         this.runtimeCleanup.trackDelegateSettlement(
           session.delegate,
@@ -420,15 +430,7 @@ export class SessionRuntimeEstablisher {
       }
       return {
         established: false,
-        response:
-          currentFailure() ??
-          protocolError(
-            "file_plan_replay_failed",
-            error instanceof RuntimeStateRestoreError
-              ? error.message
-              : "Open Wrangler could not finish copying this plan. The original session was kept.",
-            true
-          )
+        response
       };
     }
   }

@@ -23,6 +23,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Failed file-plan reuse reports the schema, replay or storage failure instead of a runtime-change message caused by cleaning up the failed session.
 - Notebook snapshots reject reserved row-identity column names instead of silently omitting those columns.
 - Grid filter and sort actions show a waiting reason while a cleaning step is pending, instead of accepting clicks that do nothing.
 - Runtime shutdown requests interruption of active DuckDB work during session opening, while the opening worker retains cleanup ownership.

@@ -1479,6 +1479,7 @@ describe("SessionCoordinator file-plan reuse", () => {
     "target runtime unavailable",
     "target runtime replacement",
     "runtime refusal",
+    "persistence failure",
     "cancellation",
     "detached cancellation",
     "retired origin"
@@ -1495,6 +1496,11 @@ describe("SessionCoordinator file-plan reuse", () => {
       if (failure === "page source drift") fixture.targetPageSourceDrift = true;
       if (failure === "unsupported operation") fixture.targetUnsupported = true;
       if (failure === "target runtime unavailable") fixture.targetRuntimeOwnerCurrent = false;
+      if (failure === "persistence failure")
+        fixture.beforeSave = async (value) => {
+          if ((value[fixture.targetKey] as { cleaning?: unknown } | undefined)?.cleaning)
+            throw new Error("Workspace state write unavailable.");
+        };
       fixture.beforeTargetPreview = async () => {
         if (failure === "target runtime replacement") fixture.targetRuntimeOwnerCurrent = false;
         if (failure === "runtime refusal")
@@ -1523,8 +1529,28 @@ describe("SessionCoordinator file-plan reuse", () => {
         );
       } else expect(fixture.targetRequests.filter((request) => request.kind === "closeSession")).toHaveLength(1);
       expect(fixture.targetRequests.filter((request) => request.kind === "applyDraft")).toHaveLength(
-        failure === "incomplete plan" || failure === "page source drift" ? 3 : 0
+        failure === "incomplete plan" || failure === "page source drift" || failure === "persistence failure" ? 3 : 0
       );
+      if (failure === "schema")
+        expect(result).toMatchObject({
+          kind: "error",
+          code: "file_plan_replay_failed",
+          recoverable: true,
+          message: "The selected file must have the same unique column names and types as the plan's original input."
+        });
+      if (failure === "persistence failure")
+        expect(result).toMatchObject({
+          kind: "error",
+          code: "persistence_unavailable",
+          recoverable: true,
+          message: "Open Wrangler could not save the copied plan. Retry after workspace storage is available."
+        });
+      if (failure === "target runtime replacement")
+        expect(result).toMatchObject({
+          kind: "error",
+          code: "file_plan_target_runtime_changed",
+          recoverable: true
+        });
       if (failure === "runtime refusal") {
         fixture.beforeTargetPreview = undefined;
         await expect(selected.bridge.request(fixture.targetRequest)).resolves.toMatchObject({
