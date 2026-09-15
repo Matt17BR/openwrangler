@@ -192,6 +192,7 @@ For contributions, see [CONTRIBUTING.md](https://github.com/Matt17BR/openwrangle
 Report bugs in [GitHub Issues](https://github.com/Matt17BR/openwrangler/issues), or follow
 [SECURITY.md](https://github.com/Matt17BR/openwrangler/blob/main/SECURITY.md) for vulnerability reports.
 
-Open Wrangler was built independently, inspired by [Microsoft Data Wrangler](https://github.com/microsoft/vscode-data-wrangler).
-It uses no Microsoft Data Wrangler code or assets and is not affiliated with Microsoft.
-Licensed under the [MIT License](https://github.com/Matt17BR/openwrangler/blob/main/LICENSE).
+Open Wrangler grew out of an appreciation for [Microsoft Data Wrangler](https://github.com/microsoft/vscode-data-wrangler)
+and a desire to extend the idea as an open-source project. It is independently built, supports more dataframe engines
+natively, and is not affiliated with Microsoft. Licensed under the
+[MIT License](https://github.com/Matt17BR/openwrangler/blob/main/LICENSE).
