@@ -108,6 +108,8 @@ viewports and actual keyboard, pointer and focus behavior; Code Preview readines
 visible code, because virtualized offscreen text need not exist in the DOM.
 Draft-preview, summary-family and by-example screenshots wait for their expected header profiles within the existing
 capture deadline. A virtual-time advance alone does not establish that asynchronous profile batches have rendered.
+Screenshot verification reports all visual mismatches after capturing the remaining images. Browser, readiness and
+invalid-image errors still stop the run immediately; any mismatch fails verification before accessibility checks run.
 
 Use the existing owners to choose a focused source check:
 
