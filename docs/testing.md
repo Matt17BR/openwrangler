@@ -606,8 +606,10 @@ input delivery, not host admission. The original click and 30-second wait remain
 cleanup have separate two-second limits.
 
 The Linux comprehensive journey retains the broader operation catalog, final-page/last-column assertion, separate
-native Viewing opens and both native-flavor operations. Rename owns the shared Preview/Discard check; Drop, Select,
-Clone and Text Length proceed from Preview to Apply, inspection and Undo. Clone also retains Edit.
+native Viewing opens and both native-flavor operations. Rename owns the shared Preview/Discard check; Drop, Select
+and Clone proceed from Preview to Apply, inspection and Undo. Clone also retains Edit. Text Length keeps its form,
+Preview/Apply/Undo and rendered integer output. Its inspection is checked by the
+[host lifecycle](../src/test/rKernelTextLength.unit.test.ts) and [native transport](../src/test/rKernelTransport.cross.test.ts) tests.
 Convert type semantics and generated execution are checked in the [native R transport owner](../src/test/rKernelTransport.cross.test.ts).
 Its [form controls](../src/test/operationBuilder.component.test.tsx) and [host schema dispatch](../src/test/rKernelMutationSchema.unit.test.ts)
 have separate source tests. The installed journey no longer runs the combined Convert type form, Preview/Apply/Undo sequence.
