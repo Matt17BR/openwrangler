@@ -809,20 +809,98 @@ export function createLiveImportReconfiguration(
     assert.equal(testing.activeSession(), undefined, "The corrupt initial open must not publish an active session.");
 
     const errorImportAction = await waitForOpenWranglerWebviewButton(page, "Import options");
-    await errorImportAction.click();
-    await acceptDelimitedImportOptions(
-      page,
-      testing,
-      damaged,
-      undefined,
-      "verify:file-inputs:reconfigure:damaged-options",
-      {
-        delimiter: "Comma",
-        encoding: "utf8-lossy",
-        header: "First row contains column names",
-        quoteChar: '"'
+    const focusObserver = await page.locator("body").evaluateHandle((body) => {
+      const document = body.ownerDocument;
+      const browserWindow = document.defaultView;
+      if (!browserWindow) throw new Error("The damaged-import focus observer requires its document window.");
+      const started = browserWindow.performance.now();
+      const titles = ["Delimiter", "Text encoding", "Header row", "Quote character", "Line ending"];
+      const events: {
+        elapsedMs: number;
+        type: string;
+        targetTag: string | null;
+        relatedTag: string | null;
+        activeTag: string | null;
+        targetInQuickInput: boolean;
+        prompt: string;
+        documentHasFocus: boolean;
+      }[] = [];
+      const isElement = (target: unknown): target is typeof body => target instanceof browserWindow.Element;
+      const tag = (target: unknown): string | null => (isElement(target) ? target.tagName.slice(0, 32) : null);
+      const record = (event: { type: string; target: unknown; relatedTarget: unknown }): void => {
+        const titleElement = document.querySelector(".quick-input-widget .quick-input-title");
+        const title = titleElement?.getClientRects().length ? titleElement.textContent?.trim() : undefined;
+        if (events.length === 32) events.shift();
+        events.push({
+          elapsedMs: Math.round(browserWindow.performance.now() - started),
+          type: event.type,
+          targetTag: tag(event.target),
+          relatedTag: tag(event.relatedTarget),
+          activeTag: tag(document.activeElement),
+          targetInQuickInput: isElement(event.target) && event.target.closest(".quick-input-widget") !== null,
+          prompt: titles.find((candidate) => candidate === title) ?? "unknown",
+          documentHasFocus: document.hasFocus()
+        });
+      };
+      document.addEventListener("focusin", record, true);
+      document.addEventListener("focusout", record, true);
+      return {
+        events,
+        stop: () => {
+          document.removeEventListener("focusin", record, true);
+          document.removeEventListener("focusout", record, true);
+        }
+      };
+    });
+    let cleanupError: unknown;
+    try {
+      await errorImportAction.click();
+      await acceptDelimitedImportOptions(
+        page,
+        testing,
+        damaged,
+        undefined,
+        "verify:file-inputs:reconfigure:damaged-options",
+        {
+          delimiter: "Comma",
+          encoding: "utf8-lossy",
+          header: "First row contains column names",
+          quoteChar: '"'
+        }
+      );
+    } catch (error) {
+      let focusTrace: unknown = "unavailable";
+      try {
+        focusTrace = await withAcceptanceOperationDeadline(
+          focusObserver.evaluate((observer) => observer.events),
+          WORKBENCH_OPERATION_TIMEOUT_MS,
+          "the damaged-import focus trace"
+        );
+      } catch {
+        // Preserve the acceptance error when its diagnostic cannot be collected.
       }
-    );
+      throw new Error(
+        `${error instanceof Error ? error.message : "The damaged-file import options failed."} ` +
+          `Focus transitions: ${JSON.stringify(focusTrace)}`,
+        { cause: error }
+      );
+    } finally {
+      try {
+        await withAcceptanceOperationDeadline(
+          focusObserver.evaluate((observer) => observer.stop()),
+          WORKBENCH_OPERATION_TIMEOUT_MS,
+          "removing the damaged-import focus observer"
+        );
+      } catch (error) {
+        cleanupError = error;
+      }
+      try {
+        await focusObserver.dispose();
+      } catch (error) {
+        cleanupError ??= error;
+      }
+    }
+    if (cleanupError !== undefined) throw cleanupError;
     await waitFor(
       () => {
         const active = testing.activeSession();
