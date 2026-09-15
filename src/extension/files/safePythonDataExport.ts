@@ -39,8 +39,8 @@ export async function exportPythonDataSafely({
       }
     });
     if (response.kind !== "dataExported") {
-      await transaction.rollback();
       settled = true;
+      await transaction.rollback();
       return response;
     }
     if (

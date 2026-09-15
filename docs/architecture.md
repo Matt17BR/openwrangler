@@ -1778,6 +1778,7 @@ After the applicable writer closes, the host revalidates the temporary, source, 
 remote authority and performs one atomic rename. A runtime may use an additional private engine artifact internally,
 but publication always terminates at the host-owned temporary. No path truncates, unlinks, follows, or replaces the
 active source or a destination symlink, and failure cleans only the still-identified temporary.
+Python and R export owners attempt rollback once and propagate cleanup failures.
 
 ## Webview and accessibility boundary
 
