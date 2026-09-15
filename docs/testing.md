@@ -240,7 +240,13 @@ bootstrap. The bootstrap owner retains complete module-prefix validation.
 
 The runtime benchmark's three backend smoke checks use nine page samples, enough to exceed the eight-entry cache,
 while retaining five fresh opens per format. Smoke timings are diagnostics: their nine-point p95 is the maximum.
-Ordinary and strict benchmark runs retain 20 page samples and their existing qualification rules.
+Ordinary and strict benchmark runs retain 20 page samples. Strict runs require the same-session page to meet the
+500 ms response limit after being sent during an active header-statistics call. The client and profile events use
+Python's [counter shared across processes](https://docs.python.org/3.10/library/time.html#time.perf_counter).
+A response decoded before that call ends provides positive overlap evidence; a later response leaves overlap
+unproven. This observation and response gaps remain diagnostic, separate from the responsiveness gate.
+[Session concurrency tests](../python/tests/test_session_concurrency.py) prove page progress during a held profile;
+[server protocol tests](../python/tests/test_server_protocol.py) retain the interactive executor starvation control.
 The [fixture owner tests](../python/tests/test_installed_editor_fixtures.py) cover complete value validation and
 atomic regeneration directly through the shared benchmark fixture contract.
 

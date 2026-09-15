@@ -55,9 +55,6 @@ def test_performance_harness_smoke(tmp_path: Path) -> None:
         "parquetColdSourceFirstGridMs": "parquet.stdioTransport.coldSourceOpenRoundTripMs",
         "stdioSameSessionActiveProfileProof": "*.stdioTransport.statsActiveWhenPageWasSent (must be true)",
         "stdioSameSessionStatsContendedPageLatencyMs": "*.stdioTransport.sameSessionStatsContendedPageLatencyMs",
-        "stdioSameSessionInteractiveOverlap": (
-            "*.stdioTransport.interactivePageOverlappedProfile when statsActiveWhenPageWasSent is true"
-        ),
         "stdioTransportCacheMissPageP95Ms": "*.stdioTransport.cacheMissPageP95Ms",
     }
     assert payload["limits"] == {
@@ -125,14 +122,13 @@ def test_performance_harness_smoke(tmp_path: Path) -> None:
         assert transport["statsStartProof"].startswith("benchmark-only Polars header_stats")
         assert transport["sameSessionStatsDurationMs"] >= 0
         assert transport["sameSessionStatsContendedPageLatencyMs"] >= 0
-        assert isinstance(transport["sameSessionContentionObserved"], bool)
         assert isinstance(transport["statsActiveWhenPageWasSent"], bool)
         assert isinstance(transport["statsCompletedBeforePageWasSent"], bool)
         assert isinstance(transport["statsStartedAfterPageWasSent"], bool)
         assert isinstance(transport["interactivePageOverlappedProfile"], bool)
         assert isinstance(transport["pageSendAfterStatsStartMs"], (int, float))
         assert isinstance(transport["statsFinishAfterPageSendMs"], (int, float))
-        assert transport["serializedCompletionGapThresholdMs"] >= 5.0
+        assert isinstance(transport["pageObservedAfterStatsFinishMs"], (int, float))
         assert (
             sum(
                 (
@@ -144,12 +140,11 @@ def test_performance_harness_smoke(tmp_path: Path) -> None:
             == 1
         )
         if not transport["statsActiveWhenPageWasSent"]:
-            assert transport["sameSessionContentionObserved"] is False
             assert transport["interactivePageOverlappedProfile"] is False
         else:
             assert transport["pageSendAfterStatsStartMs"] >= 0
             assert transport["statsFinishAfterPageSendMs"] > 0
-            assert transport["sameSessionContentionObserved"] is not transport["interactivePageOverlappedProfile"]
+            assert transport["interactivePageOverlappedProfile"] is (transport["pageObservedAfterStatsFinishMs"] < 0)
         assert transport["responseOrder"] in (["stats", "page"], ["page", "stats"])
         assert transport["closedCleanly"] is True
     assert '"warmSourceReopenMedianMs"' in result.stdout
@@ -293,45 +288,43 @@ def test_full_benchmark_preserves_twenty_spread_page_samples(tmp_path: Path, mon
     assert runtime_performance._percentile([*range(1, 20), 1_000], 0.95) == 19
 
 
-def test_profile_overlap_evidence_requires_the_page_send_to_fall_inside_the_stats_call() -> None:
-    active_overlap = runtime_performance._profile_overlap_evidence(100, 200, 300, 9.999, 10.0)
+def test_profile_overlap_evidence_requires_active_send_and_response_observed_before_stats_exit() -> None:
+    active_overlap = runtime_performance._profile_overlap_evidence(100, 200, 300, 299)
     assert active_overlap == {
         "statsActiveWhenPageWasSent": True,
         "statsCompletedBeforePageWasSent": False,
         "statsStartedAfterPageWasSent": False,
         "interactivePageOverlappedProfile": True,
-        "sameSessionContentionObserved": False,
         "pageSendAfterStatsStartMs": 0.0001,
         "statsFinishAfterPageSendMs": 0.0001,
+        "pageObservedAfterStatsFinishMs": -0.000001,
     }
 
-    active_serialized = runtime_performance._profile_overlap_evidence(100, 200, 300, 10.0, 10.0)
-    assert active_serialized["statsActiveWhenPageWasSent"] is True
-    assert active_serialized["interactivePageOverlappedProfile"] is False
-    assert active_serialized["sameSessionContentionObserved"] is True
+    for observed_ns in (300, 301):
+        unproven = runtime_performance._profile_overlap_evidence(100, 200, 300, observed_ns)
+        assert unproven["statsActiveWhenPageWasSent"] is True
+        assert unproven["interactivePageOverlappedProfile"] is False
+        assert unproven["pageObservedAfterStatsFinishMs"] >= 0
 
-    completed = runtime_performance._profile_overlap_evidence(100, 300, 200, -50.0, 10.0)
+    completed = runtime_performance._profile_overlap_evidence(100, 300, 200, 400)
     assert completed["statsCompletedBeforePageWasSent"] is True
     assert completed["interactivePageOverlappedProfile"] is False
-    assert completed["sameSessionContentionObserved"] is False
 
-    not_started = runtime_performance._profile_overlap_evidence(200, 100, 300, -50.0, 10.0)
+    not_started = runtime_performance._profile_overlap_evidence(200, 100, 300, 250)
     assert not_started["statsStartedAfterPageWasSent"] is True
     assert not_started["interactivePageOverlappedProfile"] is False
-    assert not_started["sameSessionContentionObserved"] is False
 
     with pytest.raises(AssertionError, match="finish preceded"):
-        runtime_performance._profile_overlap_evidence(300, 200, 100, 0.0, 10.0)
+        runtime_performance._profile_overlap_evidence(300, 200, 100, 400)
 
 
-def test_release_gates_require_active_overlap_and_the_documented_transport_limits() -> None:
+def test_release_gates_require_active_profile_and_the_documented_transport_limits() -> None:
     fixture = {
         "stdioTransport": {
             "coldSourceOpenRoundTripMs": 1.0,
             "coldSourceCacheDrop": {"applied": True, "detail": "accepted"},
             "cacheMissPageP95Ms": 1.0,
             "sameSessionStatsContendedPageLatencyMs": 1.0,
-            "sameSessionContentionObserved": False,
             "statsActiveWhenPageWasSent": True,
             "statsCompletedBeforePageWasSent": False,
             "statsStartedAfterPageWasSent": False,
@@ -367,8 +360,10 @@ def test_release_gates_require_active_overlap_and_the_documented_transport_limit
     report["parquet"]["stdioTransport"]["sameSessionStatsContendedPageLatencyMs"] = (
         runtime_performance.RELEASE_LIMITS["stdioSameSessionStatsContendedPageLatencyMs"] + 1
     )
-    with pytest.raises(AssertionError, match="same-session stats-contended page latency"):
-        runtime_performance.assert_release_limits(report)
+    for observed_overlap in (True, False):
+        report["parquet"]["stdioTransport"]["interactivePageOverlappedProfile"] = observed_overlap
+        with pytest.raises(AssertionError, match="same-session stats-contended page latency"):
+            runtime_performance.assert_release_limits(report)
 
     report = {"csv": deepcopy(fixture), "parquet": deepcopy(fixture)}
     report["csv"]["stdioTransport"]["cacheMissPageP95Ms"] = (
@@ -380,33 +375,20 @@ def test_release_gates_require_active_overlap_and_the_documented_transport_limit
     report = {"csv": deepcopy(fixture), "parquet": deepcopy(fixture)}
     report["parquet"]["stdioTransport"].update(
         {
-            "sameSessionContentionObserved": True,
-            "statsActiveWhenPageWasSent": True,
-            "statsCompletedBeforePageWasSent": False,
-            "statsStartedAfterPageWasSent": False,
-            "interactivePageOverlappedProfile": False,
-        }
-    )
-    with pytest.raises(AssertionError, match="same-session interactive overlap"):
-        runtime_performance.assert_release_limits(report)
-
-    report = {"csv": deepcopy(fixture), "parquet": deepcopy(fixture)}
-    report["parquet"]["stdioTransport"].update(
-        {
-            "sameSessionContentionObserved": False,
             "statsActiveWhenPageWasSent": False,
             "statsCompletedBeforePageWasSent": True,
             "statsStartedAfterPageWasSent": False,
             "interactivePageOverlappedProfile": False,
         }
     )
-    with pytest.raises(AssertionError, match="completed before the page envelope"):
-        runtime_performance.assert_release_limits(report)
+    for observed_overlap in (True, False):
+        report["parquet"]["stdioTransport"]["interactivePageOverlappedProfile"] = observed_overlap
+        with pytest.raises(AssertionError, match="completed before the page envelope"):
+            runtime_performance.assert_release_limits(report)
 
     report = {"csv": deepcopy(fixture), "parquet": deepcopy(fixture)}
     report["parquet"]["stdioTransport"].update(
         {
-            "sameSessionContentionObserved": False,
             "statsActiveWhenPageWasSent": False,
             "statsCompletedBeforePageWasSent": False,
             "statsStartedAfterPageWasSent": True,
@@ -415,3 +397,13 @@ def test_release_gates_require_active_overlap_and_the_documented_transport_limit
     )
     with pytest.raises(AssertionError, match="did not prove an active"):
         runtime_performance.assert_release_limits(report)
+
+    # A page observed after statistics ends leaves overlap unproven, but can
+    # still satisfy the active-profile responsiveness limit.
+    report = {"csv": deepcopy(fixture), "parquet": deepcopy(fixture)}
+    report["parquet"]["stdioTransport"].update(
+        runtime_performance._profile_overlap_evidence(0, 50_000_000, 100_000_000, 101_200_000)
+    )
+    report["parquet"]["stdioTransport"]["sameSessionStatsContendedPageLatencyMs"] = 51.2
+    assert report["parquet"]["stdioTransport"]["interactivePageOverlappedProfile"] is False
+    runtime_performance.assert_release_limits(report)
