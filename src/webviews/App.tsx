@@ -1819,8 +1819,7 @@ export function App() {
     const pendingPage = latestPageRequest.current;
     let filterHistoryUndoTarget = options.filterHistoryUndoTarget;
     if (filterHistoryUndoTarget && !sameConfirmedFilters(nextModel, filterHistoryUndoTarget)) return;
-    if (pendingPage?.filterHistoryUndoTarget) {
-      if (!sameConfirmedFilters(nextModel, pendingPage.filterHistoryUndoTarget)) return;
+    if (pendingPage?.filterHistoryUndoTarget && sameConfirmedFilters(nextModel, pendingPage.filterHistoryUndoTarget)) {
       filterHistoryUndoTarget ??= pendingPage.filterHistoryUndoTarget;
     }
     const capabilityMetadata = metadataRef.current;
