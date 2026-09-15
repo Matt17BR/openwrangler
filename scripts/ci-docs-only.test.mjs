@@ -371,6 +371,7 @@ test("omits native Spark for nonempty subsets of the existing local-engine owner
     ["python/openwrangler_runtime/engines/duckdb_engine.py"],
     ["python/tests/test_duckdb_engine.py"],
     ["python/tests/test_split_text_columns.py"],
+    ["python/tests/test_operations.py"],
     [pandasFilterTests[0]],
     [pandasFilterTests[1]],
     [
@@ -413,6 +414,8 @@ test("keeps native Spark for other inputs alongside the eligible local-engine ow
     "python/openwrangler_runtime/engines/polars_engine.py",
     "python/openwrangler_runtime/engines/base.py",
     "python/openwrangler_runtime/session.py",
+    "python/openwrangler_runtime/operations.py",
+    "python/openwrangler_runtime/protocol.py",
     "python/tests/test_pyspark_engine.py",
     "python/tests/conftest.py",
     "python/tests/pyspark_connect_test_support.py",
@@ -421,7 +424,13 @@ test("keeps native Spark for other inputs alongside the eligible local-engine ow
     ".github/workflows/ci.yml",
     "scripts/ci-docs-only.mjs",
     "scripts/ci-docs-only.test.mjs"
-  ].map((file) => [arrowFormulaHelper, ...arrowFormulaTests, ...pandasFilterTests, file]);
+  ].map((file) => [
+    arrowFormulaHelper,
+    ...arrowFormulaTests,
+    ...pandasFilterTests,
+    "python/tests/test_operations.py",
+    file
+  ]);
   for (const files of cases) {
     await context.test(files.join(", "), (child) => {
       const cwd = repository(child, [arrowFormulaHelper, ...files]);

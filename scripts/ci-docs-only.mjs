@@ -36,6 +36,7 @@ const nativeSparkOmissionFiles = new Set([
   "python/tests/test_duckdb_engine.py",
   "python/tests/test_split_text_columns.py",
   "python/tests/test_operation_edges.py",
+  "python/tests/test_operations.py",
   "python/tests/test_session_transactions.py"
 ]);
 
