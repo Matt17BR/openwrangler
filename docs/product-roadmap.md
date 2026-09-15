@@ -11,8 +11,8 @@ records delivered changes. This page records release priorities and proposals th
 in desktop VS Code on Linux, macOS and Windows.
 
 [Open Wrangler 2.6](https://github.com/Matt17BR/openwrangler/milestone/16) is the next selected release. It requires
-outcomes for [DuckDB row consistency](https://github.com/Matt17BR/openwrangler/issues/1487) and
-[macOS import-options focus](https://github.com/Matt17BR/openwrangler/issues/1482).
+an outcome for [DuckDB row consistency](https://github.com/Matt17BR/openwrangler/issues/1487).
+The [macOS import-options focus](https://github.com/Matt17BR/openwrangler/issues/1482) issue is fixed on main.
 The [notebook entry-point failure](https://github.com/Matt17BR/openwrangler/issues/1498) also requires a release decision:
 a verified fix or a specific, evidence-backed support limitation with independently working supported entry points.
 The milestone links the required outcomes and records the release decision.
@@ -22,15 +22,16 @@ Qualification and publication remain separate; no release date or automatic publ
 Explode List and Extract Struct Fields are implemented on main within their
 [supported scope](feature-parity.md#cleaning-operations).
 
-## Selected work after 2.6
+## Released-product comparison
 
-The [released-product performance comparison](https://github.com/Matt17BR/openwrangler/issues/1519) follows qualified 2.6
-and does not wait for the redesign. It will compare a small set of verified common workflows in both products on the
-same machine, with pinned releases, shared Pandas and Polars inputs, repeated measurements and matching results.
-UI timings include any required input conversion. Record failures and losses, and report ordinary tasks for
-Open Wrangler's other engines separately.
-Publish and review the results before linking a summary from README. The retired
+The [released-product comparison](https://github.com/Matt17BR/openwrangler/issues/1519) uses released Open Wrangler 2.5.0
+and Microsoft Data Wrangler through their public interfaces in an isolated local VS Code instance. It does not wait
+for 2.6 or the redesign. The [dated report](performance/2026-09-16-released-products/review.md) records paired Pandas
+and Polars routes, separate Open Wrangler engine observations, and output differences. Update the comparison when useful;
+it is not a per-release obligation. The retired
 [2.4.0 attempt](https://github.com/Matt17BR/openwrangler/issues/1419) remains incomplete; its automation is not being resumed.
+
+## Selected work after 2.6
 
 [Open Wrangler 3.0](https://github.com/Matt17BR/openwrangler/milestone/17) is planned for a distinctive, coherent workbench.
 [Design selection](https://github.com/Matt17BR/openwrangler/issues/1397) compares two bounded directions for inspecting and
