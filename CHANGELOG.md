@@ -25,6 +25,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Code Preview keeps multiline filenames inside placeholder comments.
 - Variable names ending in `.tsv` no longer select a tab delimiter for CSV export.
 - Value Search is unavailable while a new view is loading, so enabled clicks are no longer silently ignored.
 - Adding a filter while filter Undo is pending applies the new query instead of discarding the entered predicate.

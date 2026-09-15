@@ -1186,6 +1186,29 @@ describe("native state and presentation commands", () => {
       }
     });
 
+    const freshFile = snapshot({
+      mode: "editing",
+      steps: [],
+      source: {
+        kind: "file",
+        label: "sales\r\nnorth\npart.csv",
+        path: "/workspace/sales\r\nnorth\npart.csv",
+        uri: "file:///workspace/sales%0D%0Anorth%0Apart.csv"
+      }
+    });
+    freshFile.code = "";
+    registered.setActiveSession(freshFile);
+    expect(posted.at(-1)).toMatchObject({
+      code: "# sales\n# north\n# part.csv\n# Add or select a cleaning step to preview generated code.",
+      editable: false,
+      bufferInvalid: false
+    });
+    await expect(command("openWrangler.copyCode")()).resolves.toBe(false);
+    expect(nativeMocks.showInformationMessage).toHaveBeenCalledWith(
+      "Add a cleaning step before copying generated code."
+    );
+    expect(freshFile.metadata.source.label).toBe("sales\r\nnorth\npart.csv");
+
     const editable = noDraftSnapshot();
     editable.metadata.steps.push({ ...appliedStep, id: "second" });
     editable.code = "def clean_data(df):\n    return df.dropna(how='all').head(10)\n";
