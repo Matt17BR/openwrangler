@@ -14,6 +14,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Changed
 
+- Operation dialogs can hide the catalog to give settings more space, preserving unfinished fields. Specific operations start collapsed; Add step keeps the catalog open.
 - Open Another File with This Plan accepts reordered columns when their names and types still match the original input.
 - DuckDB (`VARCHAR`, `BLOB`) and Polars (`String`) page reads bound values before Python row conversion. Polars also bounds `Binary` values when its native binary-slicing API is available; oversized cells still return the existing error.
 - Dependency discovery and installation validation share one implementation of package-version and provenance checks.

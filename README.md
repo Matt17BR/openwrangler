@@ -54,6 +54,10 @@ For work outside the catalog, a Custom Code step can use your dataframe engine d
 fill methods depend on the engine and column type; see the
 [operation support guide](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#cleaning-operations).
 
+In [source builds](https://github.com/Matt17BR/openwrangler/blob/main/CONTRIBUTING.md#build-and-install-from-source),
+opening a specific operation gives its settings the full dialog width. **Choose operation** shows or hides the catalog
+without clearing unfinished fields. **Add step** starts with the catalog open.
+
 <a href="https://github.com/Matt17BR/openwrangler/blob/main/docs/images/readme/gallery/operation-catalog.png"><img alt="The searchable cleaning-operation picker in Open Wrangler" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/gallery/operation-catalog.png" width="960"></a>
 
 _Search or browse cleaning operations, then configure the selected step._
