@@ -335,6 +335,10 @@ Requests and cancellations route through the exact owner. Restart invalidates th
 last session stops its process after bounded stdin/EOF shutdown. A forced kill is reserved for recovery or an expired
 shutdown bound.
 
+The input loop releases its temporary request Future after registration. The executor and pending map own active
+work; completion removes pending ownership so an idle reader does not retain the last failure's traceback or result.
+Remaining exception cycles follow normal Python garbage collection.
+
 At EOF, the Python server cancels queued work and uses one shared grace period to wait for session cleanup and
 unfinished work.
 

@@ -23,6 +23,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- The standalone Python runtime releases completed request handles so discarded failure data can be garbage-collected while idle.
 - Operation settings keep keyboard-focused fields visible above the persistent Cancel and Preview controls in narrow panes.
 - Polars live notebook LazyFrames and lazy Custom Code results retain stable rows across pages and column projections. Opening or accepting these results now retains their complete native output in memory.
 - Failed file-plan reuse reports the schema, replay or storage failure instead of a runtime-change message caused by cleaning up the failed session.
