@@ -76,7 +76,7 @@ describe("PythonBridge UTF-16 backend routing", () => {
     const internals = bridge as unknown as BridgeInternals;
     vi.spyOn(internals, "dependencyGuardErrorForEnvironment").mockResolvedValue(undefined);
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
-    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["pandas"] });
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [] });
 
     try {
       await expect(internals.prepareRequest(openSessionRequest(source))).resolves.toMatchObject({
