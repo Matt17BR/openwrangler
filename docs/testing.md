@@ -118,6 +118,9 @@ The existing operation-form browser owner checks that Group By controls fit with
 fully visible during Tab navigation at 1280px, 800px and 620px with the catalog expanded or collapsed. It also checks
 header controls at 360px, retained catalog search and scroll, physical form inputs, and keyboard navigation through
 disclosure and failed preview. Busy forms retain keyboard scrolling without focusing a hidden catalog.
+The filter keyboard owner also checks selected-column/profile agreement and hit visibility of the focused cell and
+header with the panel open at 1280px, 800px, 621px, 620px and a short 320px viewport. A column wider than the available
+data lane must expose that lane; the panel must not cover the grid, and its short-layout controls retain Tab/Escape access.
 
 Use the existing owners to choose a focused source check:
 
