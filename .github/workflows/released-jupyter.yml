@@ -10,6 +10,7 @@ on:
         type: choice
         options:
           - linux-all
+          - linux-python
           - macos-r
           - windows-r
   workflow_call:
@@ -43,8 +44,8 @@ concurrency:
 
 jobs:
   vscode:
-    name: Released Jupyter in VS Code and Cursor
-    if: ${{ inputs.target == 'linux-all' }}
+    name: ${{ inputs.target == 'linux-python' && 'Python/file-input investigation in VS Code; R omitted' || 'Released Jupyter in VS Code and Cursor' }}
+    if: ${{ inputs.target == 'linux-all' || (github.event_name == 'workflow_dispatch' && inputs.target == 'linux-python') }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -62,11 +63,13 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: r-lib/actions/setup-r@465b7d8e732ca3921382b1674c59bada9cbf3399 # v2.13.0
+        if: ${{ inputs.target == 'linux-all' }}
         with:
           r-version: "4.5.2"
           use-public-rspm: true
       - id: rscript
         name: Locate hosted Rscript
+        if: ${{ inputs.target == 'linux-all' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -139,9 +142,11 @@ jobs:
           include-hidden-files: false
       - id: canonical_r_jupyter
         name: Reverify the VSIX for core R operations
+        if: ${{ inputs.target == 'linux-all' }}
         run: npm run verify:vsix -- openwrangler.vsix
       - id: packaged_editor_r
         name: Test released R Jupyter in packaged VS Code and Cursor
+        if: ${{ inputs.target == 'linux-all' }}
         continue-on-error: true
         run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
         env:
@@ -165,9 +170,11 @@ jobs:
           include-hidden-files: false
       - id: canonical_r_values
         name: Reverify the VSIX for value R operations
+        if: ${{ inputs.target == 'linux-all' }}
         run: npm run verify:vsix -- openwrangler.vsix
       - id: packaged_editor_r_values
         name: Test value R operations in fresh packaged VS Code and Cursor phases
+        if: ${{ inputs.target == 'linux-all' }}
         continue-on-error: true
         run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
         env:
@@ -192,9 +199,11 @@ jobs:
           include-hidden-files: false
       - id: canonical_r_categorical
         name: Reverify the VSIX for categorical R operations
+        if: ${{ inputs.target == 'linux-all' }}
         run: npm run verify:vsix -- openwrangler.vsix
       - id: packaged_editor_r_categorical
         name: Test categorical R operations in fresh packaged VS Code and Cursor phases
+        if: ${{ inputs.target == 'linux-all' }}
         continue-on-error: true
         run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
         env:
@@ -219,9 +228,11 @@ jobs:
           include-hidden-files: false
       - id: canonical_r_interactive
         name: Reverify the VSIX for the active R terminal
+        if: ${{ inputs.target == 'linux-all' }}
         run: npm run verify:vsix -- openwrangler.vsix
       - id: packaged_editor_r_interactive
         name: Test the active R terminal in fresh packaged VS Code and Cursor phases
+        if: ${{ inputs.target == 'linux-all' }}
         continue-on-error: true
         run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
         env:

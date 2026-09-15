@@ -1751,10 +1751,56 @@ test("CI schedules every existing native R phase on two workers and cancellation
   assert.deepEqual(scheduled.sort(), phases.map((phase) => phase.id).sort());
 });
 
-test("installed R calls use the tested workflow and expose each actual platform result", () => {
+test("released Jupyter investigation targets preserve installed R calls and actual platform results", () => {
   assert.deepEqual(Object.keys(releasedJupyter.on).sort(), ["workflow_call", "workflow_dispatch"]);
-  assert.deepEqual(releasedJupyter.on.workflow_dispatch.inputs.target.options, ["linux-all", "macos-r", "windows-r"]);
+  assert.deepEqual(releasedJupyter.on.workflow_dispatch.inputs.target.options, [
+    "linux-all",
+    "linux-python",
+    "macos-r",
+    "windows-r"
+  ]);
   assert.equal(releasedJupyter.on.workflow_dispatch.inputs.target.default, "linux-all");
+  const linux = releasedJupyter.jobs.vscode;
+  assert.equal(
+    linux.if,
+    "${{ inputs.target == 'linux-all' || (github.event_name == 'workflow_dispatch' && inputs.target == 'linux-python') }}"
+  );
+  assert.equal(
+    linux.name,
+    "${{ inputs.target == 'linux-python' && 'Python/file-input investigation in VS Code; R omitted' || 'Released Jupyter in VS Code and Cursor' }}"
+  );
+  assert.equal(linux["timeout-minutes"], 90);
+  const rOnly = "${{ inputs.target == 'linux-all' }}";
+  assert.deepEqual(
+    linux.steps.filter((step) => step.if === rOnly).map((step) => step.id ?? step.uses.split("@")[0]),
+    [
+      "r-lib/actions/setup-r",
+      "rscript",
+      "canonical_r_jupyter",
+      "packaged_editor_r",
+      "canonical_r_values",
+      "packaged_editor_r_values",
+      "canonical_r_categorical",
+      "packaged_editor_r_categorical",
+      "canonical_r_interactive",
+      "packaged_editor_r_interactive"
+    ]
+  );
+  for (const step of linux.steps) {
+    if (step.if === rOnly || step.uses?.startsWith("actions/upload-artifact@") || step.run === "exit 1") continue;
+    assert.equal(step.if, undefined, step.name ?? step.run ?? step.uses);
+  }
+  const python = linux.steps.find((step) => step.id === "packaged_editor");
+  assert.equal(python.run, "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix");
+  assert.equal(python["continue-on-error"], undefined);
+  assert.deepEqual(python.env, {
+    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode",
+    OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
+    OPEN_WRANGLER_XVFB_EXECUTABLE: "${{ steps.prepare_xvfb.outputs.executable }}",
+    OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
+    OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1",
+    VSCODE_TEST_VERSION: "stable"
+  });
   assert.equal(releasedJupyter.on.workflow_call.inputs.target.type, "string");
   assert.equal(releasedJupyter.on.workflow_call.inputs.target.required, true);
   assert.equal(releasedJupyter.on.workflow_call.inputs.omit_editor.type, "boolean");

@@ -522,6 +522,11 @@ This profile excludes PySpark, remote/coexistence, native R, and generic file/se
 or coexistence options are rejected. Leave the profile unset to run the complete default Python lane, including
 PySpark and generic verification. Qualification coverage is determined by the selected lane, not by a focused pass.
 
+For hosted Python and file-input investigations, manually select `linux-python` in the released-Jupyter workflow.
+It uses that complete default Python lane with remote Jupyter enabled and omits the separate R invocations.
+It does not run the full Python source suite or qualify R. The default `linux-all` target retains R execution;
+see [CI](ci.md#scheduled-and-release-workflows) for selection and qualification boundaries.
+
 ## Native R editor dependencies
 
 The `r-jupyter` notebook journeys prepare their reviewed package subset in a fresh private R library. They omit
