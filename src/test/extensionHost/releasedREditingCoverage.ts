@@ -82,27 +82,25 @@ export function createReleasedREditingCoverage({
       );
     } else if (phase === "jupyter-r" && coverage.focusedEditing === "pivot-wider") {
       await exerciseReleasedRPivotWiderJourney(testing, workbench, base.sessionId);
+    } else if (phase === "jupyter-r" && coverage.focusedEditing === "categorical-operations") {
+      await exerciseReleasedRCategoricalEditingJourney(
+        { testing, workbench, sessionId: base.sessionId },
+        categoricalDependencies
+      );
+    } else if (phase === "jupyter-r" && coverage.focusedEditing === "value-operations") {
+      await exerciseReleasedREditingJourney(
+        testing,
+        workbench,
+        base.sessionId,
+        notebook,
+        notebookPath,
+        directory,
+        phase,
+        screenshotOutput,
+        "value-operations"
+      );
     } else {
       await exerciseReleasedRRepresentativeEditingJourney(testing, workbench, base.sessionId, notebook, phase);
-      if (phase === "jupyter-r" && coverage.focusedEditing === "categorical-operations") {
-        await exerciseReleasedRCategoricalEditingJourney(
-          { testing, workbench, sessionId: base.sessionId },
-          categoricalDependencies
-        );
-      }
-      if (phase === "jupyter-r" && coverage.focusedEditing === "value-operations") {
-        await exerciseReleasedREditingJourney(
-          testing,
-          workbench,
-          base.sessionId,
-          notebook,
-          notebookPath,
-          directory,
-          phase,
-          screenshotOutput,
-          "value-operations"
-        );
-      }
     }
     recordReleasedRAcceptanceSection(phase, coverage, "editing", "complete");
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-after-editing-journey`);
