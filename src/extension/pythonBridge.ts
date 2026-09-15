@@ -329,6 +329,22 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     );
   }
 
+  captureFileSessionOwner(sessionId: string): (() => boolean) | undefined {
+    const session = this.sessionOwnership.confirmedSession(sessionId);
+    if (session?.source.kind !== "file") return undefined;
+    const runtime = session.runtime;
+    const process = runtime.process;
+    const processSelection = runtime.processSelection;
+    if (!process || !processSelection) return undefined;
+    const isCurrent = (): boolean =>
+      !this.disposed &&
+      this.sessionOwnership.confirmedSession(sessionId) === session &&
+      runtime.process === process &&
+      runtime.processSelection === processSelection &&
+      this.isCurrentEnvironmentSelection(processSelection.selection);
+    return isCurrent() ? isCurrent : undefined;
+  }
+
   async listExcelSheets(
     sessionId: string,
     source: SessionSource,

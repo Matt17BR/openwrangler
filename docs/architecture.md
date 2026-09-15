@@ -87,6 +87,27 @@ file format and import options. This happens before the native read; a read erro
 **Open Wrangler: Open File Path** reads the configured default and creates a fresh panel, including after a failed
 open. Restoring a custom editor instead preserves its previously confirmed backend.
 
+**Open Another File with This Plan** captures one confirmed, draft-free Pandas, Polars or DuckDB file plan before
+the picker opens. It excludes Custom Code and requires unique, non-empty original column names. The host retains
+the validated original file schema through ordinary edits, refreshing it on source/runtime replacement. This receipt
+is private and is not persisted. Target admission compares original column IDs, names, positions, semantic types and
+raw types; observed nullability, row counts and row labels may differ. Both files use the same concrete backend and
+import options. Column mapping and notebook inputs are outside this command's scope.
+
+The captured session, Python process and environment selection, and revision must remain current through replay and persistence staging; switching
+active editors cannot retarget the action. The origin's already-loaded data is not re-executed. The selected target
+follows ordinary eager-snapshot or lazy-file fingerprint rules. Current and retained file identities prevent selecting
+the origin or another open file session through a path, symlink or hard-link alias. Unverifiable identities are refused.
+The target configuration's exact persistence key must be absent, including raw malformed or pending records; other
+configuration keys are preserved. The existing store repeats that absence check inside its commit queue.
+
+The existing restorer replays the complete plan privately, with one-row intermediate responses, and obtains the final
+page before saving. Small responses do not bound native scans or temporary memory. The candidate becomes an ordinary
+Editing session only after durable success. Failure closes only that candidate, after detached execution settles.
+Cancellation or file replacement during the final durable write can leave the copied plan saved without publishing
+its runtime. Reopening that target uses ordinary saved-plan restoration. Subsequent exports protect the target's own
+source through the normal destination checks; the originating file is not an additional execution input.
+
 Delimited import detection reads at most 65,539 bytes once: a 64 KiB nominal prefix and up to three bytes to complete
 its final UTF-8 scalar. A valid nominal prefix ignores later bytes; malformed interior bytes retain the existing
 encoding fallback. This sample does not prove EOF or validate the full file.

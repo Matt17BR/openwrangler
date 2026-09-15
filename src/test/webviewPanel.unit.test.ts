@@ -20,6 +20,7 @@ import type {
   OpenWranglerRequest,
   OpenWranglerResponse,
   SessionMetadata,
+  SessionMode,
   SessionOpenedResponse,
   SessionSource
 } from "../shared/protocol";
@@ -6008,6 +6009,45 @@ describe("OpenWranglerPanel retained view state", () => {
     );
   });
 
+  it.each([undefined, "editing"] as const)(
+    "keeps initial mode %s across ordinary and import retries",
+    async (initialMode) => {
+      vi.spyOn(workspace, "getConfiguration").mockReturnValue({
+        get: (key: string, fallback?: unknown): unknown => (key === "fileStartMode" ? "viewing" : fallback)
+      } as vscode.WorkspaceConfiguration);
+      const source: SessionSource = {
+        kind: "file",
+        label: "sample.csv",
+        path: "/workspace/sample.csv",
+        uri: "file:///workspace/sample.csv",
+        importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+      };
+      const request = vi.fn(async (_request: OpenWranglerRequest): Promise<OpenWranglerResponse> => ({
+        kind: "error",
+        code: "invalid_import_options",
+        message: "The selected import settings could not open this file.",
+        recoverable: true
+      }));
+      const harness = createPanelHarness(
+        { request },
+        { source, delegateOpen: true, createViaFactory: true, initialMode }
+      );
+      await harness.open();
+      await harness.open();
+      configureDelimitedPrompts({ delimiter: ";", encoding: "utf-8", quoteChar: '"', hasHeader: true });
+
+      await harness.receive({ kind: "changeImportOptions" });
+
+      expect(request).toHaveBeenCalledTimes(3);
+      for (const [candidate] of request.mock.calls) {
+        expect(candidate).toMatchObject({ kind: "openSession", mode: initialMode ?? "viewing", backend: "polars" });
+      }
+      expect(request.mock.calls[2]?.[0]).toMatchObject({
+        source: { ...source, importOptions: { ...source.importOptions, delimiter: ";" } }
+      });
+    }
+  );
+
   it.each([
     { preference: "auto" as const, expectedRetryBackend: undefined },
     { preference: "pandas" as const, expectedRetryBackend: "pandas" as const }
@@ -7707,6 +7747,7 @@ function createPanelHarness(
     workspaceState?: Pick<vscode.Memento, "get" | "update">;
     backend?: DataBackend | null;
     backendPreference?: DataBackend | "auto";
+    initialMode?: SessionMode;
     postMessage?: (message: unknown) => Promise<boolean>;
   }
 ): {
@@ -7807,7 +7848,8 @@ function createPanelHarness(
         panelBridge,
         source,
         backend,
-        backendPreference
+        backendPreference,
+        options?.initialMode
       );
     } finally {
       if (descriptor) Object.defineProperty(window, "createWebviewPanel", descriptor);
@@ -7821,7 +7863,8 @@ function createPanelHarness(
       source,
       backend,
       false,
-      backendPreference
+      backendPreference,
+      options?.initialMode
     );
   }
   const harness = {

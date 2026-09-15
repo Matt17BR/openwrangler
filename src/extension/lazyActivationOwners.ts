@@ -25,7 +25,12 @@ const CUSTOM_EDITOR_ID = "openWrangler.viewer";
 const NOTEBOOK_PREVIEW_COMMAND = "openWrangler.chooseNotebookPreviewProvider";
 const DEFAULT_OWNER_SETTLEMENT_TIMEOUT_MS = 2_000;
 
-const FILE_COMMANDS = ["openWrangler.changeImportOptions", "openWrangler.openFile", "openWrangler.openPath"] as const;
+const FILE_COMMANDS = [
+  "openWrangler.changeImportOptions",
+  "openWrangler.openFile",
+  "openWrangler.openPath",
+  "openWrangler.openFileWithPlan"
+] as const;
 const PICKLE_COMMANDS = ["openWrangler.convertTrustedPickle"] as const;
 const NOTEBOOK_COMMANDS = [
   "openWrangler.launchDataViewer",

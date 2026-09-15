@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as vscode from "vscode";
 import type { ExtensionContext } from "vscode";
-import type { OpenWranglerBridge } from "../extension/dataBridge";
+import type { FilePlanOpenContext, OpenWranglerBridge } from "../extension/dataBridge";
 
 type CommandHandler = (...args: unknown[]) => unknown;
 
@@ -194,6 +194,86 @@ describe("file launch command", () => {
 
     expect(fileMocks.changeActiveImportOptions).toHaveBeenCalledOnce();
     expect(fileMocks.showInformationMessage).not.toHaveBeenCalled();
+  });
+
+  it("captures the plan before the picker and uses its bridge, backend and import settings", async () => {
+    const { context, bridge } = register();
+    const target = vscode.Uri.file("/workspace/next.csv");
+    const targetBridge: OpenWranglerBridge = { request: vi.fn() };
+    const captured: FilePlanOpenContext = {
+      backend: "pandas",
+      importOptions: { delimiter: ";", encoding: "windows-1252", quoteChar: "'", hasHeader: false },
+      bridge: targetBridge
+    };
+    const capture = vi.fn(() => captured);
+    bridge.captureActiveFilePlan = capture;
+    fileMocks.showOpenDialog.mockImplementationOnce(async () => {
+      expect(capture).toHaveBeenCalledOnce();
+      fileMocks.defaultBackend = "duckdb";
+      fileMocks.activeTextUri = vscode.Uri.file("/workspace/unrelated.parquet");
+      capture.mockReturnValue({ backend: "polars", importOptions: undefined, bridge });
+      return [target];
+    });
+
+    await command("openWrangler.openFileWithPlan")();
+
+    expect(capture).toHaveBeenCalledOnce();
+    expect(fileMocks.showOpenDialog).toHaveBeenCalledWith(expect.objectContaining({ canSelectMany: false }));
+    expect(fileMocks.stat).toHaveBeenCalledWith(target);
+    expect(fileMocks.detectImportOptions).not.toHaveBeenCalled();
+    expect(fileMocks.createPanel).toHaveBeenCalledExactlyOnceWith(
+      context,
+      targetBridge,
+      {
+        kind: "file",
+        label: "next.csv",
+        path: target.fsPath,
+        uri: target.toString(),
+        importOptions: captured.importOptions
+      },
+      "pandas",
+      "pandas",
+      "editing"
+    );
+    expect(fileMocks.bridgeRequest).not.toHaveBeenCalled();
+  });
+
+  it.each(["unavailable", "busy"])("explains a %s plan source before opening the picker", async (reason) => {
+    const { bridge } = register();
+    if (reason === "busy") {
+      bridge.captureActiveFilePlan = () => ({
+        kind: "error",
+        code: "session_busy",
+        message: "Wait for the current cleaning operation to finish before opening another file with this plan.",
+        recoverable: true
+      });
+    }
+
+    await command("openWrangler.openFileWithPlan")();
+
+    expect(fileMocks.showInformationMessage).toHaveBeenCalledExactlyOnceWith(
+      reason === "busy"
+        ? "Wait for the current cleaning operation to finish before opening another file with this plan."
+        : "Open a file with a confirmed cleaning plan before using it on another file."
+    );
+    expect(fileMocks.showOpenDialog).not.toHaveBeenCalled();
+    expect(fileMocks.stat).not.toHaveBeenCalled();
+    expect(fileMocks.createPanel).not.toHaveBeenCalled();
+  });
+
+  it.each(["cancelled", "unsupported"])("does not open a plan target when its selection is %s", async (reason) => {
+    const { bridge } = register();
+    bridge.captureActiveFilePlan = () => ({ backend: "polars", importOptions: undefined, bridge });
+    fileMocks.showOpenDialog.mockResolvedValueOnce(
+      reason === "cancelled" ? undefined : [vscode.Uri.file("/workspace/private.pkl")]
+    );
+
+    await command("openWrangler.openFileWithPlan")();
+
+    expect(fileMocks.createPanel).not.toHaveBeenCalled();
+    expect(fileMocks.detectImportOptions).not.toHaveBeenCalled();
+    expect(fileMocks.bridgeRequest).not.toHaveBeenCalled();
+    expect(fileMocks.showWarningMessage).toHaveBeenCalledTimes(reason === "cancelled" ? 0 : 1);
   });
 
   it("explains when no configurable file panel is active", async () => {

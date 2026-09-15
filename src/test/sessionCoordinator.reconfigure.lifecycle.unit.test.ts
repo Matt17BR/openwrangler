@@ -42,7 +42,11 @@ describe("SessionCoordinator file-session reconfiguration lifecycle", () => {
       if (request.kind === "openSession") {
         candidateId = request.requestedSessionId ?? "";
         cancelled = true;
-        return openedFor(request, metadataFor({ runtimeId: candidateId, source: request.source }));
+        const metadata = metadataFor({ runtimeId: candidateId, source: request.source });
+        return openedFor(request, {
+          ...metadata,
+          schema: metadata.schema.map((column) => ({ ...column, nullable: true }))
+        });
       }
       if (request.kind === "closeSession") {
         closeCalls.push(request);
@@ -54,6 +58,8 @@ describe("SessionCoordinator file-session reconfiguration lifecycle", () => {
     const bridge = coordinator.createBridge({ request: delegateRequest });
     const opened = await open(bridge, initialSource);
     const before = clone(coordinator.activeSession());
+    const previousSourceSchema = coordinator["sessions"].get(opened.metadata.sessionId)?.sourceSchema;
+    expect(previousSourceSchema).toEqual(opened.metadata.schema);
 
     const response = await bridge.reconfigureFileSession?.(
       opened.metadata.sessionId,
@@ -68,6 +74,7 @@ describe("SessionCoordinator file-session reconfiguration lifecycle", () => {
     });
     expect(closeCalls).toEqual([{ kind: "closeSession", sessionId: candidateId, revision: 0 }]);
     expect(coordinator.activeSession()).toEqual(before);
+    expect(coordinator["sessions"].get(opened.metadata.sessionId)?.sourceSchema).toBe(previousSourceSchema);
   });
 
   it.each(["close", "shutdown"] as const)(

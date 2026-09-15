@@ -7,6 +7,7 @@ import { protocolError, publicMetadata, type SessionResponseState } from "./sess
 import type { SessionRequestScheduler } from "./sessionRequestScheduler";
 import { SessionRuntimeCleanup } from "./sessionRuntimeCleanup";
 import { captureSessionSourceFiles } from "./sessionOrigin";
+import { isFileDataBackend } from "./pythonEnvironmentModel";
 import { confirmSessionSourceProtection } from "./files/safeFileExport";
 import { automaticRecoveryOptions, recoveryFollowupOptions } from "./sessionRuntimeRequestExecutor";
 import {
@@ -156,6 +157,7 @@ export class SessionRuntimeRecovery {
     );
     const previous: RuntimeSessionState = {
       sourceProtection: session.sourceProtection,
+      sourceSchema: session.sourceSchema,
       publicId: session.publicId,
       runtimeId: session.runtimeId,
       runtimeRevision: session.runtimeRevision,
@@ -204,6 +206,9 @@ export class SessionRuntimeRecovery {
       assertCurrent();
       const openedMismatch = sessionOpenedResponseMismatch(session.openRequest, response, true);
       if (openedMismatch) throw new Error(openedMismatch);
+      if (session.openRequest.source.kind === "file" && isFileDataBackend(response.metadata.backend)) {
+        candidate.sourceSchema = structuredClone(response.metadata.schema);
+      }
       restoredPage = await this.runtimeStateRestorer.restoreRuntimeState(
         candidate,
         persisted,
@@ -246,6 +251,7 @@ export class SessionRuntimeRecovery {
     session.runtimeId = candidate.runtimeId;
     session.runtimeRevision = candidate.runtimeRevision;
     session.sourceProtection = candidate.sourceProtection;
+    session.sourceSchema = candidate.sourceSchema;
     session.metadata = candidate.metadata;
     session.committedPage = undefined;
     session.code = candidate.code;

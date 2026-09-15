@@ -125,6 +125,10 @@ Use the existing owners to choose a focused source check:
   Initial saved-plan restoration stops further dispatch
   and fallback when its opening owner retires. Protocol admission and source lifetime rules remain in
   [Architecture](architecture.md#protocol-and-publication) and its linked runtime owners.
+  File-plan reuse uses the same coordinator persistence owner for private publication, stale origins, alias refusal,
+  failed replay and cancellation. The [persistence store](../src/test/sessionPersistenceStore.unit.test.ts) checks raw
+  target absence and failed-save rollback; [file commands](../src/test/fileOpen.unit.test.ts) check capture before the
+  picker and pinned engine/import settings. Operation semantics remain in the native/generated-code owners.
 - **UI state and interactions:** [App draft state](../src/test/appDraftState.component.test.tsx),
   [operation forms](../src/test/operationBuilder.component.test.tsx),
   [progressive profiling](../src/test/appProgressiveProfiling.component.test.tsx) and
@@ -348,6 +352,9 @@ is acquired explicitly and refuses acquisition that outlives its activation owne
 delays full API acquisition until its natural file title action, using a controlled profile without notebook or
 visible-view demand; other journeys acquire the same API normally. This fixture does not assert that all activation
 contexts have no demand-loaded owners.
+The same journey applies a Rename step through the workbench, then uses **Open Another File with This Plan** and
+the real file picker. It checks the target's distinct rows and copied plan, both files' unchanged bytes, the original
+session's retained state and ordinary cleanup. Schema, stale-owner and persistence refusal cases stay in source tests.
 
 The two pure acceptance-helper checks live in [Source](../src/test/acceptanceFixtures.unit.test.ts): bounded mismatch
 diagnostics and direct-child temporary-directory ownership/cleanup. They no longer run during installed startup.

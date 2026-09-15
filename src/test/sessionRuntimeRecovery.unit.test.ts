@@ -63,7 +63,12 @@ describe("SessionRuntimeRecovery", () => {
       });
       const session = runtimeSession(delegate);
       if (stage !== "getPage") session.metadata = { ...session.metadata, steps: [step] };
-      const original = { metadata: session.metadata, code: session.code, viewState: session.viewState };
+      const original = {
+        sourceSchema: session.sourceSchema,
+        metadata: session.metadata,
+        code: session.code,
+        viewState: session.viewState
+      };
       const recoveryHooks = {
         ...hooks(),
         isCurrent: () => owner !== "current" || !stale,
@@ -88,6 +93,7 @@ describe("SessionRuntimeRecovery", () => {
       expect(requests.map((request) => request.kind)).toEqual(kinds);
       expect(requests.at(-1)).toEqual({ kind: "closeSession", sessionId: "candidate", revision: closeRevision });
       expect(session.runtimeId).toBe("runtime-old");
+      expect(session.sourceSchema).toBe(original.sourceSchema);
       expect(session.metadata).toBe(original.metadata);
       expect(session.code).toBe(original.code);
       expect(session.viewState).toBe(original.viewState);
@@ -149,6 +155,13 @@ describe("SessionRuntimeRecovery", () => {
   it("replays the pinned runtime contract and retires the replaced runtime", async () => {
     const requests: OpenWranglerRequest[] = [];
     const candidate = openedResponse("runtime-new", "polars");
+    const freshSourceSchema = [
+      { id: "c:source", name: "source", position: 0, rawType: "Int64", type: "integer", nullable: false }
+    ] satisfies SessionMetadata["schema"];
+    candidate.metadata.schema = structuredClone(freshSourceSchema);
+    candidate.metadata.shape.columns = 1;
+    candidate.metadata.filteredShape.columns = 1;
+    candidate.page.columnIds = ["c:source"];
     const delegate = bridge(async (request) => {
       requests.push(request);
       if (request.kind === "openSession") return candidate;
@@ -157,6 +170,7 @@ describe("SessionRuntimeRecovery", () => {
       throw new Error(`Unexpected request: ${request.kind}`);
     });
     const session = runtimeSession(delegate);
+    const previousSourceSchema = session.sourceSchema;
     session.committedPage = { viewRequestId: "retired-page", page: candidate.page! };
     session.viewState = {
       ...session.viewState,
@@ -176,8 +190,13 @@ describe("SessionRuntimeRecovery", () => {
     expect(session).toMatchObject({
       runtimeId: "runtime-new",
       runtimeRevision: 0,
+      sourceSchema: freshSourceSchema,
       viewState: { columnWidths: new Map(), viewport: { firstVisibleRow: 0, scrollLeft: 19 } }
     });
+    expect(session.sourceSchema).not.toEqual(previousSourceSchema);
+    expect(session.sourceSchema).not.toBe(candidate.metadata.schema);
+    candidate.metadata.schema[0]!.name = "changed response object";
+    expect(session.sourceSchema).toEqual(freshSourceSchema);
     expect(requests).toContainEqual({ kind: "closeSession", sessionId: "runtime-old", revision: 0 });
     expect(recoveryHooks.clearPublishedStepInspection).toHaveBeenCalledOnce();
     expect(recoveryHooks.publishActive).toHaveBeenCalledOnce();
@@ -708,6 +727,9 @@ function runtimeSession(
       waitForIdle: vi.fn(async () => undefined)
     } as unknown as SessionRequestScheduler,
     metadata: opened.metadata,
+    ...(backend === "polars" || backend === "pandas" || backend === "duckdb"
+      ? { sourceSchema: structuredClone(opened.metadata.schema) }
+      : {}),
     code: "",
     viewState: initialViewingState(opened.metadata),
     closing: false,

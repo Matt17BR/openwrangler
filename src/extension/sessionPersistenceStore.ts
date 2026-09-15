@@ -34,6 +34,11 @@ export type SessionPersistenceCommitResult =
       readonly liveState: "committed" | "unchanged";
     };
 
+export type SessionPersistenceAbsenceResult =
+  | { readonly kind: "absent" }
+  | { readonly kind: "occupied" }
+  | { readonly kind: "unavailable"; readonly failure: SessionPersistenceFailure };
+
 export type SessionPersistenceStageResult =
   | { readonly kind: "staged"; readonly transaction: SessionPersistenceTransaction }
   | {
@@ -156,6 +161,19 @@ export class SessionPersistenceStore {
     }
     const state = decodePersistedSession(loadableSessionValue(stored.value[key]));
     return state?.backend === backend ? state : undefined;
+  }
+
+  checkAbsent(source: SessionSource, backend: DataBackend): SessionPersistenceAbsenceResult {
+    const key = persistenceKey(source, backend);
+    if (!this.workspaceState || !isPersistentSession(source, backend)) {
+      return {
+        kind: "unavailable",
+        failure: this.recordFailure(key, "read", { code: "STORAGE_UNAVAILABLE" })
+      };
+    }
+    const stored = this.readStored(key);
+    if (!stored.ok) return { kind: "unavailable", failure: stored.failure };
+    return { kind: Object.hasOwn(stored.value, key) ? "occupied" : "absent" };
   }
 
   async save(
@@ -344,9 +362,16 @@ export class SessionPersistenceStore {
     source: SessionSource,
     state: PersistedSessionState,
     isCurrent: () => boolean,
-    commit: () => () => boolean | void
+    commit: () => () => boolean | void,
+    options?: { readonly requireAbsent?: boolean }
   ): Promise<SessionPersistenceCommitResult> {
     if (!this.workspaceState || !isPersistentSession(source, state.backend)) {
+      if (options?.requireAbsent) {
+        return unavailable(
+          this.recordFailure(persistenceKey(source, state.backend), "read", { code: "STORAGE_UNAVAILABLE" }),
+          "unchanged"
+        );
+      }
       if (!isCurrent()) return { kind: "stale" };
       commit();
       return { kind: "committed" };
@@ -364,7 +389,8 @@ export class SessionPersistenceStore {
         result = unavailable(stored.failure, "unchanged");
         return;
       }
-      const previousState = loadableSessionValue(stored.value[key]);
+      if (options?.requireAbsent && Object.hasOwn(stored.value, key)) return;
+      const previousState = options?.requireAbsent ? undefined : loadableSessionValue(stored.value[key]);
       const hadPreviousState = previousState !== undefined;
       const pending = {
         pendingRuntimeReplacement: {
@@ -403,6 +429,13 @@ export class SessionPersistenceStore {
       const latest = this.readStored(key);
       if (!latest.ok) {
         const rolledBack = this.rollbackPublished(latest.failure, rollback);
+        if (options?.requireAbsent && rolledBack) {
+          const restored = await this.restorePendingReplacement(key, token);
+          if (restored.kind === "unavailable") {
+            result = restored;
+            return;
+          }
+        }
         result = unavailable(latest.failure, rolledBack ? "unchanged" : "committed");
         return;
       }
@@ -413,6 +446,15 @@ export class SessionPersistenceStore {
       const candidateWrite = await this.writeStored(key, { ...latest.value, [key]: serialized }, "runtime-replacement");
       if (!candidateWrite.ok) {
         const rolledBack = this.rollbackPublished(candidateWrite.failure, rollback);
+        if (options?.requireAbsent && rolledBack) {
+          // This unpublished target began absent. Remove only our still-owned
+          // pending record so a later retry can prove absence again.
+          const restored = await this.restorePendingReplacement(key, token);
+          if (restored.kind === "unavailable") {
+            result = restored;
+            return;
+          }
+        }
         // A pending record always decodes to the previously confirmed state,
         // matching the synchronously restored live runtime.
         result = unavailable(candidateWrite.failure, rolledBack ? "unchanged" : "committed");
