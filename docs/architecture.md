@@ -1888,6 +1888,8 @@ session-owned state, not the source variable or source file.
 Data export and generated-script export require a separate destination. The public script command always uses VS Code's
 Save dialog and chooses a Python or R suffix from the active session. Only the extension host chooses or commits the
 user destination.
+CSV export reuses supported source import settings. Without a supported imported delimiter, TSV file sources default
+to tab and other sources default to comma.
 
 The host captures concrete source-file identities before opening a file or acquiring a live value and confirms them
 before publishing the session. Explicit Python Interactive document entry retains its originating document even when
