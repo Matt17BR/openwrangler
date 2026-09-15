@@ -1632,12 +1632,12 @@ function filterNodeDescription(filter: FilterModel["filters"][number]): string {
 }
 
 function placeholderCode(snapshot: ActiveSessionSnapshot | undefined): string {
-  if (snapshot?.metadata.source.kind === "notebookOutput") {
-    return `# ${snapshot.metadata.source.label}\n# Read-only saved notebook snapshot. Executable cleaning lineage is not embedded in notebook output.`;
+  if (!snapshot) return "# Open a dataframe to preview generated code.";
+  const label = canonicalizeCodePreviewText(snapshot.metadata.source.label).replaceAll("\n", "\n# ");
+  if (snapshot.metadata.source.kind === "notebookOutput") {
+    return `# ${label}\n# Read-only saved notebook snapshot. Executable cleaning lineage is not embedded in notebook output.`;
   }
-  return snapshot
-    ? `# ${snapshot.metadata.source.label}\n# Add or select a cleaning step to preview generated code.`
-    : "# Open a dataframe to preview generated code.";
+  return `# ${label}\n# Add or select a cleaning step to preview generated code.`;
 }
 
 function safePlaceholderCode(snapshot: ActiveSessionSnapshot | undefined): string {
