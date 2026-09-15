@@ -59,7 +59,10 @@ function csvExportDefaults(snapshot: ActiveSessionSnapshot): CsvExportOptions {
   const supportsUnicodeDelimiter = snapshot.metadata.backend === "pandas" || snapshot.metadata.backend === "r";
   const supportsUnicodeQuote = snapshot.metadata.backend === "pandas";
   const supportsConfiguredQuote = snapshot.metadata.backend !== "r";
-  const fallbackDelimiter = snapshot.metadata.source.label.toLowerCase().endsWith(".tsv") ? "\t" : ",";
+  const fallbackDelimiter =
+    snapshot.metadata.source.kind === "file" && snapshot.metadata.source.label.toLowerCase().endsWith(".tsv")
+      ? "\t"
+      : ",";
   let delimiter = validExportCharacter(imported?.delimiter, supportsUnicodeDelimiter) ?? fallbackDelimiter;
   let quoteChar = supportsConfiguredQuote
     ? (validExportCharacter(imported?.quoteChar, supportsUnicodeQuote) ?? '"')

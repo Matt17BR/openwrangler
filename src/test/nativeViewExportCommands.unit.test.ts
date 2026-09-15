@@ -55,7 +55,7 @@ describe("native export commands", () => {
   });
 
   it("exports the exact webview session even when another dataframe becomes active during the dialogs", async () => {
-    const origin = exportableSnapshot("origin-session", "orders.csv", 3);
+    const origin = exportableSnapshot("origin-session", "orders.TSV", 3);
     const other = exportableSnapshot("other-session", "customers.csv", 8);
     const registered = register(origin);
     nativeMocks.showQuickPick.mockImplementation(async (items) => {
@@ -66,13 +66,19 @@ describe("native export commands", () => {
 
     await expect(command("openWrangler.internal.exportSessionData")("origin-session", 3)).resolves.toBe(true);
 
+    const settings = nativeMocks.showQuickPick.mock.calls[1]?.[0] as Array<{ label: string; description: string }>;
+    expect(settings[0]).toMatchObject({
+      label: "Use standard CSV settings",
+      description: expect.stringContaining("Tab delimiter")
+    });
+
     expect(registered.exportData).toHaveBeenCalledWith(
       "origin-session",
       3,
       "/workspace/orders.cleaned.csv",
       {
         format: "csv",
-        delimiter: ",",
+        delimiter: "\t",
         quoteChar: '"',
         encoding: "utf-8",
         header: true
@@ -189,7 +195,7 @@ describe("native export commands", () => {
   });
 
   it("offers the confirmed import dialect as the CSV export default", async () => {
-    const active = pandasExportableSnapshot("pandas-session", "orders.csv", 3, {
+    const active = pandasExportableSnapshot("pandas-session", "orders.tsv", 3, {
       kind: "index",
       levelNames: ["account"]
     });
@@ -392,6 +398,11 @@ describe("native export commands", () => {
 
   it("offers only CSV when an editable R document session advertises native export", async () => {
     const active = rDocumentSnapshot();
+    active.metadata.source = {
+      ...active.metadata.source,
+      label: "measurements.tsv",
+      variableName: "measurements.tsv"
+    };
     active.metadata.capabilities = {
       ...active.metadata.capabilities,
       exportCsv: true,
@@ -399,9 +410,15 @@ describe("native export commands", () => {
     };
     const registered = register(active);
     nativeMocks.showQuickPick.mockImplementation(async (items) => (items as unknown[])[0]);
-    nativeMocks.showSaveDialog.mockResolvedValueOnce(vscodeUri("/workspace/orders.cleaned.csv"));
+    nativeMocks.showSaveDialog.mockResolvedValueOnce(vscodeUri("/workspace/measurements.cleaned.csv"));
 
     await expect(command("openWrangler.exportData")()).resolves.toBe(true);
+
+    const settings = nativeMocks.showQuickPick.mock.calls[1]?.[0] as Array<{ label: string; description: string }>;
+    expect(settings[0]).toMatchObject({
+      label: "Use standard CSV settings",
+      description: expect.stringContaining('"," delimiter')
+    });
 
     expect(nativeMocks.showQuickPick).toHaveBeenCalledWith(
       [{ label: "CSV", description: "Rounds timestamps to microseconds; no time-zone offset", format: "csv" }],
@@ -409,14 +426,14 @@ describe("native export commands", () => {
     );
     expect(nativeMocks.showSaveDialog).toHaveBeenCalledWith({
       title: "Export Cleaned Data",
-      defaultUri: expect.objectContaining({ fsPath: "/workspace/orders.cleaned.csv" }),
+      defaultUri: expect.objectContaining({ fsPath: "/workspace/measurements.cleaned.csv" }),
       filters: { CSV: ["csv"] },
       saveLabel: "Export data"
     });
     expect(registered.exportData).toHaveBeenCalledWith(
       "session",
       0,
-      "/workspace/orders.cleaned.csv",
+      "/workspace/measurements.cleaned.csv",
       {
         format: "csv",
         delimiter: ",",
