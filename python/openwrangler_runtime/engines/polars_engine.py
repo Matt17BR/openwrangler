@@ -1783,8 +1783,9 @@ class PolarsEngine(DataFrameEngine):
             left_column = bound_column_name(params["leftColumn"], kind)
             left = _ow_polars_col(df, left_column)
             if not params.get("rightColumn") and isinstance(params.get("value"), str):
+                value = formula_scalar_value(params["value"])
                 left, right = _polars_formula_integer_operands(
-                    df, left_column, formula_scalar_value(params["value"]), params["operator"]
+                    df, left_column, value, params["operator"], error_type=EngineError
                 )
             else:
                 right = (
@@ -1801,8 +1802,14 @@ class PolarsEngine(DataFrameEngine):
                     and (df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema)[left_column] == pl.Boolean
                 )
             ):
-                _polars_check_formula(
-                    df, left, right, params["operator"], expression, right_is_column=bool(params.get("rightColumn"))
+                _ow_polars_check_formula(
+                    df,
+                    left,
+                    right,
+                    params["operator"],
+                    expression,
+                    right_is_column=bool(params.get("rightColumn")),
+                    error_type=EngineError,
                 )
             return df.with_columns(expression.alias(params["newColumn"]))
         if kind == "textLength":
@@ -2165,7 +2172,7 @@ class PolarsEngine(DataFrameEngine):
             and isinstance(step["params"].get("value"), str)
             for step in plan
         ):
-            lines.extend(_generated_polars_formula_integer_helpers())
+            lines.extend(["from typing import Any", getsource(_polars_formula_integer_operands), ""])
         if any(
             step["kind"] == "formula"
             and step["params"]["operator"] != "divide"
@@ -2176,7 +2183,7 @@ class PolarsEngine(DataFrameEngine):
             )
             for step in plan
         ):
-            lines.extend(_generated_polars_formula_check_helpers())
+            lines.extend(["from typing import Any", getsource(_ow_polars_check_formula), ""])
         if any(step["kind"] == "castColumn" and step["params"]["dtype"] in {"date", "datetime"} for step in plan):
             lines.extend(["from typing import Any", getsource(_polars_temporal_cast_expression), ""])
         if any(step["kind"] == "explodeList" for step in plan):
@@ -2812,7 +2819,7 @@ class PolarsEngine(DataFrameEngine):
                 left_name, right_name = f"_formula_left_{index}", f"_formula_right_{index}"
                 lines = [
                     (
-                        f"{prefix}{left_name}, {right_name} = _ow_polars_formula_integer_operands("
+                        f"{prefix}{left_name}, {right_name} = _polars_formula_integer_operands("
                         f"df, {left_column!r}, {value!r}, {params['operator']!r})"
                     )
                 ]
@@ -4173,18 +4180,25 @@ def _polars_valid_value(expression: Any, dtype: Any) -> Any:
     return valid & ~expression.is_nan() if dtype.is_float() else valid
 
 
-def _polars_formula_integer_operands(frame: Any, column: str, value: Any, operator: str) -> tuple[Any, Any]:
+def _polars_formula_integer_operands(
+    frame: Any,
+    column: str,
+    value: Any,
+    operator: str,
+    *,
+    error_type: "type[Exception]" = ValueError,  # noqa: UP037 - Avoid caller globals in emitted annotations.
+) -> "tuple[Any, Any]":  # noqa: UP037 - Avoid caller globals in emitted annotations.
     import polars as pl
 
     if not -(2**127) <= value < 2**128:
-        raise EngineError("Formula literal exceeds Polars native integer capacity.")
+        raise error_type("Formula literal exceeds Polars native integer capacity.")
     dtype = (frame.collect_schema() if isinstance(frame, pl.LazyFrame) else frame.schema)[column]
     left = _ow_polars_col(frame, column)
     if not dtype.is_integer():
         literal_type = pl.Int64 if -(2**63) <= value < 2**63 else pl.Int128 if value < 2**127 else pl.UInt128
         return left, pl.lit(str(value)).cast(literal_type, strict=True)
     if operator == "power" and not 0 <= value < 2**32:
-        raise EngineError("Formula exponent exceeds Polars native integer exponent capacity.")
+        raise error_type("Formula exponent exceeds Polars native integer exponent capacity.")
     # Only the selected two-value aggregate crosses into Python; arithmetic stays native.
     query = frame.select(left.min().alias("minimum"), left.max().alias("maximum"))
     bounds = (query.collect(engine="streaming") if isinstance(query, pl.LazyFrame) else query).row(0)
@@ -4201,7 +4215,7 @@ def _polars_formula_integer_operands(frame: Any, column: str, value: Any, operat
         elif operator == "power":
             # A larger power of any integer outside -1/0/1 exceeds 128-bit capacity.
             if value > 127 and max(abs(low), abs(high)) > 1:
-                raise EngineError("Formula result exceeds Polars native integer capacity.")
+                raise error_type("Formula result exceeds Polars native integer capacity.")
             required.extend((low**value, high**value))
     width = int(str(dtype).removeprefix("U").removeprefix("Int"))
     minimum, maximum = min(required), max(required)
@@ -4217,65 +4231,18 @@ def _polars_formula_integer_operands(frame: Any, column: str, value: Any, operat
             top = 2**bits - 1 if is_unsigned else 2 ** (bits - 1) - 1
             if bottom <= minimum and maximum <= top:
                 return left.cast(target, strict=True), pl.lit(str(value)).cast(target, strict=True)
-    raise EngineError("Formula operands or results exceed Polars native integer capacity.")
+    raise error_type("Formula operands or results exceed Polars native integer capacity.")
 
 
-def _generated_polars_formula_integer_helpers() -> list[str]:
-    source: str = """
-def _ow_polars_formula_integer_operands(frame, column, value, operator):
-    if not -(2**127) <= value < 2**128:
-        raise ValueError("Formula literal exceeds Polars native integer capacity.")
-    dtype = (frame.collect_schema() if isinstance(frame, pl.LazyFrame) else frame.schema)[column]
-    left = _ow_polars_col(frame, column)
-    if not dtype.is_integer():
-        literal_type = pl.Int64 if -(2**63) <= value < 2**63 else pl.Int128 if value < 2**127 else pl.UInt128
-        return left, pl.lit(str(value)).cast(literal_type, strict=True)
-    if operator == 'power' and not 0 <= value < 2**32:
-        raise ValueError("Formula exponent exceeds Polars native integer exponent capacity.")
-    # Only the selected two-value aggregate crosses into Python; arithmetic stays native.
-    query = frame.select(left.min().alias('minimum'), left.max().alias('maximum'))
-    bounds = (query.collect(engine='streaming') if isinstance(query, pl.LazyFrame) else query).row(0)
-    low, high = bounds
-    required = [value]
-    if low is not None:
-        required.extend((low, high))
-        if operator == 'add':
-            required.extend((low + value, high + value))
-        elif operator == 'subtract':
-            required.extend((low - value, high - value))
-        elif operator == 'multiply':
-            required.extend((low * value, high * value))
-        elif operator == 'power':
-            # A larger power of any integer outside -1/0/1 exceeds 128-bit capacity.
-            if value > 127 and max(abs(low), abs(high)) > 1:
-                raise ValueError("Formula result exceeds Polars native integer capacity.")
-            required.extend((low**value, high**value))
-    width = int(str(dtype).removeprefix('U').removeprefix('Int'))
-    minimum, maximum = min(required), max(required)
-    unsigned = str(dtype).startswith('U') and minimum >= 0
-    for bits in (8, 16, 32, 64, 128):
-        if bits < width:
-            continue
-        for is_unsigned in (unsigned, not unsigned):
-            target = getattr(pl, ('UInt' if is_unsigned else 'Int') + str(bits), None)
-            if target is None:
-                continue
-            bottom = 0 if is_unsigned else -(2**(bits-1))
-            top = 2**bits - 1 if is_unsigned else 2**(bits-1)-1
-            if bottom <= minimum and maximum <= top:
-                return left.cast(target, strict=True), pl.lit(str(value)).cast(target, strict=True)
-    raise ValueError("Formula operands or results exceed Polars native integer capacity.")
-
-
-"""
-    lines: list[str] = []
-    lines.extend(source.strip().splitlines())
-    lines.extend(["", ""])
-    return lines
-
-
-def _polars_check_formula(
-    frame: Any, left: Any, right: Any, operator: str, result: Any, *, right_is_column: bool = False
+def _ow_polars_check_formula(
+    frame: Any,
+    left: Any,
+    right: Any,
+    operator: str,
+    result: Any,
+    *,
+    right_is_column: bool = False,
+    error_type: "type[Exception]" = ValueError,  # noqa: UP037 - Avoid caller globals in emitted annotations.
 ) -> None:
     import polars as pl
 
@@ -4293,7 +4260,7 @@ def _polars_check_formula(
             and tuple(int(part) for part in version_parts[:2]) >= (1, 36)
         )
         if not supported_release:
-            raise EngineError("Formula producing UInt128 from two columns requires stable Polars 1.36 or later.")
+            raise error_type("Formula producing UInt128 from two columns requires stable Polars 1.36 or later.")
     if not (
         (left_type.is_integer() and right_type.is_integer())
         or (
@@ -4409,159 +4376,12 @@ def _polars_check_formula(
         # Modulo zero retains native Float64 NaN, rather than replacing it with integer null.
         safe = (result.cast(pl.Int128, strict=False) == exact).fill_null(False) | exact.is_null()
     else:
-        raise EngineError("Formula operands exceed native integer capacity.")
+        raise error_type("Formula operands exceed native integer capacity.")
     invalid = frame.select((~safe).any().alias("invalid"))
     if isinstance(invalid, pl.LazyFrame):
         invalid = invalid.collect(engine="streaming")
     if invalid.item():
-        raise EngineError("Formula exceeds native integer capacity or loses precision.")
-
-
-def _generated_polars_formula_check_helpers() -> list[str]:
-    source = """
-def _ow_polars_check_formula(frame, left, right, operator, result, *, right_is_column=False):
-    import polars as pl
-
-    if operator == "divide":
-        return
-    query = frame if isinstance(frame, pl.LazyFrame) else frame.lazy()
-    schema = query.select(left.alias("left"), right.alias("right"), result.alias("result")).collect_schema()
-    left_type, right_type, dtype = schema["left"], schema["right"], schema["result"]
-    if dtype == pl.UInt128 and operator in {"add", "subtract", "multiply"} and right_is_column:
-        # Earlier owned column kernels can panic even when a one-row preview succeeds.
-        version_parts = pl.__version__.split(".")
-        supported_release = (
-            len(version_parts) == 3
-            and all(part.isdecimal() for part in version_parts)
-            and tuple(int(part) for part in version_parts[:2]) >= (1, 36)
-        )
-        if not supported_release:
-            raise ValueError("Formula producing UInt128 from two columns requires stable Polars 1.36 or later.")
-    if not (
-        (left_type.is_integer() and right_type.is_integer())
-        or (
-            dtype.is_integer()
-            and operator in {"add", "subtract", "multiply"}
-            and all(value_type.is_integer() or value_type == pl.Boolean for value_type in (left_type, right_type))
-        )
-    ):
-        return
-
-    def unsigned_literal(value):
-        return pl.lit(str(value)).cast(pl.UInt128, strict=True)
-
-    def magnitude(value):
-        # Avoid negating signed MIN, and keep both native when branches representable.
-        negative = pl.lit(0, dtype=pl.Int128) - (value.clip(upper_bound=-1).cast(pl.Int128) + 1)
-        return (
-            pl.when(value < 0)
-            .then(negative.cast(pl.UInt128) + unsigned_literal(1))
-            .otherwise(value.clip(lower_bound=0).cast(pl.UInt128))
-        )
-
-    if dtype.is_integer():
-        bits = int(str(dtype).removeprefix("U").removeprefix("Int"))
-        unsigned = str(dtype).startswith("U")
-        bottom = 0 if unsigned else -(2 ** (bits - 1))
-        top = 2**bits - 1 if unsigned else 2 ** (bits - 1) - 1
-        minimum = pl.lit(str(bottom)).cast(dtype, strict=True)
-        maximum = pl.lit(str(top)).cast(dtype, strict=True)
-        if operator == "power":
-            def root_limit(capacity, exponent):
-                if exponent == 0:
-                    return 2**128 - 1
-                if exponent == 1:
-                    return capacity
-                low, high = 0, 1 << ((capacity.bit_length() + exponent - 1) // exponent)
-                while low < high:
-                    middle = (low + high + 1) // 2
-                    if middle**exponent <= capacity:
-                        low = middle
-                    else:
-                        high = middle - 1
-                return low
-
-            # At most two bounded native lists; row arithmetic and lookup stay in Polars.
-            index = right.clip(lower_bound=0, upper_bound=127).cast(pl.UInt32)
-            limit = (
-                pl.lit([str(root_limit(top, exponent)) for exponent in range(128)])
-                .cast(pl.List(pl.UInt128))
-                .list.get(index)
-            )
-            if not unsigned:
-                negative_limit = (
-                    pl.lit([str(root_limit(-bottom, exponent)) for exponent in range(128)])
-                    .cast(pl.List(pl.UInt128))
-                    .list.get(index)
-                )
-                limit = pl.when((left < 0) & (right % 2 == 1)).then(negative_limit).otherwise(limit)
-            limit = pl.when(right > 127).then(unsigned_literal(1)).otherwise(limit)
-            absolute = left.cast(pl.UInt128) if unsigned else magnitude(left)
-            # Native pow validates its UInt32 exponent even beside a missing base.
-            safe = ((right >= 0) & (right < 2**32)).fill_null(True) & (absolute <= limit).fill_null(True)
-        else:
-            converted_left = left.cast(dtype, strict=False)
-            converted_right = right.cast(dtype, strict=False)
-            # A native promotion can silently introduce nulls. Only present pairs need conversion.
-            safe = (left.is_null() | right.is_null()) | (
-                converted_left.is_not_null() & converted_right.is_not_null()
-            )
-            if unsigned:
-                if operator == "add":
-                    within_capacity = converted_left <= maximum - converted_right
-                elif operator == "subtract":
-                    within_capacity = converted_left >= converted_right
-                elif operator == "multiply":
-                    within_capacity = (converted_right == 0) | (
-                        converted_left <= maximum // converted_right.clip(lower_bound=1)
-                    )
-                else:
-                    within_capacity = pl.lit(True)
-            else:
-                positive = converted_right.clip(lower_bound=0)
-                negative = converted_right.clip(upper_bound=0)
-                if operator == "add":
-                    within_capacity = (converted_left <= maximum - positive) & (converted_left >= minimum - negative)
-                elif operator == "subtract":
-                    within_capacity = (converted_left <= maximum + negative) & (converted_left >= minimum + positive)
-                elif operator == "multiply":
-                    left_absolute, right_absolute = magnitude(converted_left), magnitude(converted_right)
-                    capacity = (
-                        pl.when((converted_left < 0) != (converted_right < 0))
-                        .then(unsigned_literal(-bottom))
-                        .otherwise(unsigned_literal(top))
-                    )
-                    within_capacity = (right_absolute == 0) | (
-                        left_absolute <= capacity // right_absolute.clip(lower_bound=1)
-                    )
-                else:
-                    within_capacity = pl.lit(True)
-            safe = safe & within_capacity.fill_null(True)
-    elif dtype == pl.Float64 and all(
-        int(str(value_type).removeprefix("U").removeprefix("Int")) <= 64 for value_type in (left_type, right_type)
-    ):
-        # Mixed UInt64/signed<=64 promotes to Float64; its exact reference fits Int128.
-        exact_left, exact_right = left.cast(pl.Int128), right.cast(pl.Int128)
-        if operator == "add":
-            exact = exact_left + exact_right
-        elif operator == "subtract":
-            exact = exact_left - exact_right
-        elif operator == "multiply":
-            exact = exact_left * exact_right
-        else:
-            exact = exact_left % exact_right
-        # Modulo zero retains native Float64 NaN, rather than replacing it with integer null.
-        safe = (result.cast(pl.Int128, strict=False) == exact).fill_null(False) | exact.is_null()
-    else:
-        raise ValueError("Formula operands exceed native integer capacity.")
-    invalid = frame.select((~safe).any().alias("invalid"))
-    if isinstance(invalid, pl.LazyFrame):
-        invalid = invalid.collect(engine="streaming")
-    if invalid.item():
-        raise ValueError("Formula exceeds native integer capacity or loses precision.")
-
-"""
-    return [*source.strip().splitlines(), "", ""]
+        raise error_type("Formula exceeds native integer capacity or loses precision.")
 
 
 def _polars_formula(left: Any, right: Any, operator: str) -> Any:
