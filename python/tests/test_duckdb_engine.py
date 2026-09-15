@@ -1077,7 +1077,7 @@ def execute_generated(engine: DuckDBEngine, frame: Any, plan: list[dict[str, Any
     code = engine.compile_plan(plan)
     assert "openwrangler_runtime" not in code
     namespace: dict[str, Any] = {}
-    exec(compile(code, "<generated-duckdb-plan>", "exec"), namespace, namespace)
+    exec(compile(code, "<generated-duckdb-plan>", "exec", dont_inherit=True), namespace, namespace)
     result = namespace["clean_data"](frame)
     assert isinstance(result, duckdb.DuckDBPyRelation)
     return result

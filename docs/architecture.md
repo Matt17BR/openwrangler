@@ -1246,8 +1246,8 @@ integer types, through 128 bits, and DuckDB promotes the result to DOUBLE. Each 
 operand pair and result, refusing precision loss while retaining correct native values and types. Its own arithmetic
 resolves from the built-in catalog, so caller macros cannot replace the guard's primitives. Metadata inspection does
 not evaluate source values. The embedded check adds native work and may allocate hash state for distinct operand
-pairs; it does not retain a frame or introduce a Python row loop. Generated code applies the same check and includes
-its helpers once under the existing code-size limit.
+pairs; it does not retain a frame or introduce a Python row loop. Live execution and generated code use one SQL
+builder; generated helpers remain subject to the existing code-size limit.
 Multiplication and modulo also check integer operand pairs containing BIGNUM. Each selected BIGNUM operand must fit
 the signed 128-bit range before conversion to bounded decimal text and exact integer arithmetic. Fixed-width unsigned
 counterparts retain their full range. Outside that bound, only a zero-product or unit-divisor identity that agrees
