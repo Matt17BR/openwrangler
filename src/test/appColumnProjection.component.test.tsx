@@ -255,11 +255,21 @@ describe("App column projection", () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page: projectedPage(0, 0), summaries: [] });
     await screen.findByRole("cell", { name: "value-0-row-0" });
+    const columnActions = screen.getByLabelText("Column actions for column-0");
+    fireEvent.click(columnActions);
+    fireEvent.click(within(columnActions.closest("details")!).getByRole("button", { name: "Filter…" }));
+    const searchInput = screen.getByPlaceholderText("Search values");
+    const searchButton = screen.getByRole("button", { name: "Search values in column-0" });
 
     postMessage.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "Next block" }));
     const rowRequest = await onlyRuntimeRequest("getPage");
     expect(rowRequest).toMatchObject({ offset: 200, columnOffset: 0, columnLimit: 16 });
+    expect(searchButton).toBeEnabled();
+    fireEvent.change(searchInput, { target: { value: "first" } });
+    fireEvent.keyDown(searchInput, { key: "Enter" });
+    expect(runtimeRequests("getColumnValues")).toHaveLength(1);
+    expect(runtimeRequests("getColumnValues")[0]).toMatchObject({ search: "first", filterModel: metadata.filterModel });
 
     const scroller = screen.getByTestId("data-grid-scroller");
     Object.defineProperty(scroller, "clientWidth", { configurable: true, value: 180 });
@@ -271,6 +281,14 @@ describe("App column projection", () => {
     await waitFor(() => expect(runtimeRequests("getPage")).toHaveLength(2));
     const projectionRequest = runtimeRequests("getPage")[1];
     expect(projectionRequest).toMatchObject({ offset: 200, columnOffset: 16, columnLimit: 16 });
+    expect(searchButton).toBeEnabled();
+    fireEvent.change(searchInput, { target: { value: "second" } });
+    fireEvent.click(searchButton);
+    expect(runtimeRequests("getColumnValues")).toHaveLength(2);
+    expect(runtimeRequests("getColumnValues")[1]).toMatchObject({
+      search: "second",
+      filterModel: metadata.filterModel
+    });
 
     dispatch(pageResponse(projectionRequest, metadata, projectedPage(200, 16)));
     expect(await screen.findByRole("cell", { name: "value-20-row-200" })).toBeVisible();

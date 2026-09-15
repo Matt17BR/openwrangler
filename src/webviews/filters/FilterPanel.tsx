@@ -42,6 +42,7 @@ interface FilterPanelProps {
   /** Sort from the current correlated failure of a viewing-model request. */
   failedSort?: FilterModel["sort"];
   values: ReadonlyMap<string, ValuesResponse>;
+  canSearchValues?: boolean;
   /** A new object requests column selection without resetting form drafts. */
   columnRequest?: Readonly<{ column: string }>;
   defaultAdvanced?: boolean;
@@ -58,6 +59,7 @@ export function FilterPanel({
   model,
   failedSort,
   values,
+  canSearchValues = true,
   columnRequest,
   defaultAdvanced = false,
   disabled = false,
@@ -479,7 +481,13 @@ export function FilterPanel({
             disabled={valueControlsDisabled || !hasActiveColumn || !supportsTypedComparison}
             onChange={(event) => setSearch(event.target.value)}
             onKeyDown={(event) => {
-              if (!valueControlsDisabled && supportsTypedComparison && event.key === "Enter" && activeColumn) {
+              if (
+                canSearchValues &&
+                !valueControlsDisabled &&
+                supportsTypedComparison &&
+                event.key === "Enter" &&
+                activeColumn
+              ) {
                 onRequestValues(activeColumn, search);
               }
             }}
@@ -488,7 +496,7 @@ export function FilterPanel({
             type="button"
             className="searchValuesButton"
             aria-label={`Search values in ${activeColumn || "selected column"}`}
-            disabled={valueControlsDisabled || !hasActiveColumn || !supportsTypedComparison}
+            disabled={!canSearchValues || valueControlsDisabled || !hasActiveColumn || !supportsTypedComparison}
             onClick={() => {
               if (activeColumn) onRequestValues(activeColumn, search);
             }}

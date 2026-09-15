@@ -212,6 +212,9 @@ request, including when the requested column is unchanged. Activating the alread
 column, inputs, staged sorts and current values request. Native Sort Edit navigation selects its column without
 clearing search, predicate or staged-sort drafts, including when it targets a different column. It does not request
 values. Passive metadata and viewing changes retain local form input.
+Value Search and its Enter shortcut are unavailable while the current view cannot be profiled. During a pending
+viewing query, search text remains editable; settlement does not queue or replay a search. The request owner
+rechecks eligibility at dispatch.
 Clipboard pages share the foreground queue with ordinary viewing requests. Before dispatch or recovery, and again
 after awaited recovery or detached-execution settlement, the coordinator rejects cancelled clipboard pages and
 those whose logical context is no longer current. This prevents a queued read for an older view from changing

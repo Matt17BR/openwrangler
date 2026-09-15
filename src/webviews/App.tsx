@@ -125,7 +125,9 @@ export function App() {
   const [filterModel, setFilterModel] = useState<FilterModel>(emptyFilterModel);
   const [confirmedFilterHistory, setConfirmedFilterHistory] =
     useState<ConfirmedFilterHistory>(emptyConfirmedFilterHistory);
-  const [filterBarRequestLifecycle, setFilterBarRequestLifecycle] = useState<FilterBarRequestLifecycle>({});
+  const [pageRequestLifecycle, setPageRequestLifecycle] = useState<
+    FilterBarRequestLifecycle & { pendingViewContextId?: string }
+  >({});
   const [foregroundError, setForegroundError] = useState<ForegroundError | undefined>();
   const [failedPageRequest, setFailedPageRequest] = useState<PendingPageRequest | undefined>();
   const [loading, setLoading] = useState(true);
@@ -651,7 +653,7 @@ export function App() {
       resetViewProfiling();
       storeMetadata(withoutDatasetStats(previous.metadata));
       foregroundRequest.current = "mutation";
-      setFilterBarRequestLifecycle({});
+      setPageRequestLifecycle({});
       setMutationPending(true);
       storeFailedPageRequest(undefined);
       setForegroundError(undefined);
@@ -875,13 +877,18 @@ export function App() {
           const fresh = captureConfirmedViewState();
           if (!fresh) return;
           // Rollback and Retry must refer to the replacement, never its retired profiles or page.
-          if (pending)
+          if (pending) {
             latestPageRequest.current = {
               ...pending,
               viewContextId: recovery.offeredViewContextId,
               previousConfirmedState: fresh,
               filterHistoryUndoTarget: undefined
             };
+            setPageRequestLifecycle({
+              pendingRequestId: pending.viewRequestId,
+              pendingViewContextId: recovery.offeredViewContextId
+            });
+          }
           const failed = failedPageRequestRef.current;
           if (failed)
             storeFailedPageRequest({
@@ -1187,7 +1194,7 @@ export function App() {
           const pendingPage = latestPageRequest.current;
           if (pendingPage?.viewRequestId === response.viewRequestId) {
             latestPageRequest.current = undefined;
-            setFilterBarRequestLifecycle({ settledRequestId: response.viewRequestId });
+            setPageRequestLifecycle({ settledRequestId: response.viewRequestId });
             if (
               typeof foregroundRequest.current === "object" &&
               foregroundRequest.current.viewRequestId === response.viewRequestId
@@ -1282,7 +1289,7 @@ export function App() {
         const pendingPage = latestPageRequest.current;
         if (pendingPage?.viewRequestId === response.viewRequestId) {
           latestPageRequest.current = undefined;
-          setFilterBarRequestLifecycle({ settledRequestId: response.viewRequestId });
+          setPageRequestLifecycle({ settledRequestId: response.viewRequestId });
           if (
             typeof foregroundRequest.current === "object" &&
             foregroundRequest.current.viewRequestId === response.viewRequestId
@@ -1318,7 +1325,7 @@ export function App() {
         }
         latestPageRequest.current = undefined;
         lastIssuedPageRequestId.current = null;
-        setFilterBarRequestLifecycle({});
+        setPageRequestLifecycle({});
         foregroundRequest.current = undefined;
         mutationSnapshot.current = undefined;
         setMutationPending(false);
@@ -1336,7 +1343,7 @@ export function App() {
         const pendingPage = latestPageRequest.current;
         if (!pendingPage || pendingPage.viewRequestId !== response.viewRequestId) return;
         latestPageRequest.current = undefined;
-        setFilterBarRequestLifecycle({ settledRequestId: response.viewRequestId });
+        setPageRequestLifecycle({ settledRequestId: response.viewRequestId });
         if (
           typeof foregroundRequest.current === "object" &&
           foregroundRequest.current.viewRequestId === response.viewRequestId
@@ -1430,7 +1437,7 @@ export function App() {
         const previous = mutationSnapshot.current?.view;
         latestPageRequest.current = undefined;
         lastIssuedPageRequestId.current = null;
-        setFilterBarRequestLifecycle({});
+        setPageRequestLifecycle({});
         foregroundRequest.current = undefined;
         mutationSnapshot.current = undefined;
         setMutationPending(false);
@@ -1742,7 +1749,7 @@ export function App() {
     latestPageRequest.current = pendingPage;
     lastIssuedPageRequestId.current = viewRequestId;
     foregroundRequest.current = { kind: "page", viewRequestId };
-    setFilterBarRequestLifecycle({ pendingRequestId: viewRequestId });
+    setPageRequestLifecycle({ pendingRequestId: viewRequestId, pendingViewContextId: viewContextId });
     desiredColumnWindow.current = columnWindow;
     storeFailedPageRequest(undefined);
     setForegroundError(undefined);
@@ -2487,7 +2494,7 @@ export function App() {
                 disabled={loading || projectionLoading || mutationPending || importOptionsPending || inspectionMode}
                 canUndo={confirmedFilterHistory.entries.length > 0}
                 retainVisible={hasActiveFilters(metadata.filterModel)}
-                requestLifecycle={filterBarRequestLifecycle}
+                requestLifecycle={pageRequestLifecycle}
                 onApply={applyFilters}
                 onUndo={undoLatestFilter}
               />
@@ -2678,6 +2685,11 @@ export function App() {
                     model={filterModel}
                     failedSort={failedPageRequest?.changesView ? failedPageRequest.model.sort : undefined}
                     values={columnValues}
+                    canSearchValues={
+                      activeViewContextId !== "" &&
+                      (pageRequestLifecycle.pendingViewContextId === undefined ||
+                        pageRequestLifecycle.pendingViewContextId === activeViewContextId)
+                    }
                     columnRequest={filterPanelTarget}
                     defaultAdvanced={webviewConfig.filterMode === "advanced"}
                     disabled={mutationPending || importOptionsPending}

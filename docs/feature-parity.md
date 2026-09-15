@@ -478,6 +478,7 @@ Opening value filters from a header, the Filters tab or Show More selects the re
 Editing a sort from the sidebar selects its column while preserving unfinished filter and sort input.
 Sort edits made while an earlier query is pending remain available if that query fails; applying them stays explicit.
 New filters can replace a pending filter Undo; confirmed changes remain undoable.
+While new filters or sorts are loading, value-search text stays editable; Search becomes available when the view is ready.
 Pandas and Polars keep values visible and searchable when they cannot be selected within the supported precision or
 range. Those actions are unavailable in the picker, summary and header profile; supported values use exact filter
 operands. Existing saved selections remain removable through the filter controls.
