@@ -117,19 +117,6 @@ function canRestoreFocusTo(target: HTMLElement | null | undefined): target is HT
   );
 }
 
-function restoreCleaningPlanFocus(target: HTMLButtonElement | null): void {
-  if (
-    !target ||
-    !document.hasFocus() ||
-    (document.activeElement !== target && document.activeElement !== document.body)
-  )
-    return;
-  scheduleWebviewFocusRestoration(() => {
-    if (document.activeElement !== target && document.activeElement !== document.body) return;
-    document.querySelector<HTMLButtonElement>("[data-cleaning-plan-focus-fallback]:not(:disabled)")?.focus();
-  });
-}
-
 export function App() {
   const [metadata, setMetadata] = useState<SessionMetadata | undefined>();
   const [page, setPage] = useState<LiveGridPage | undefined>();
@@ -247,6 +234,27 @@ export function App() {
   const desiredColumnWindow = useRef<ColumnWindow>(initialColumnWindow());
   const inspectionColumnWindow = useRef<ColumnWindow>(initialColumnWindow());
   const planActionReturnFocus = useRef<HTMLButtonElement | null>(null);
+
+  const restoreCleaningPlanFocus = useCallback((target: HTMLButtonElement | null) => {
+    const owner = metadataRef.current;
+    if (
+      !owner ||
+      !target ||
+      !document.hasFocus() ||
+      (document.activeElement !== target && document.activeElement !== document.body)
+    )
+      return;
+    scheduleWebviewFocusRestoration(() => {
+      const current = metadataRef.current;
+      if (
+        current?.sessionId !== owner.sessionId ||
+        current.revision !== owner.revision ||
+        (document.activeElement !== target && document.activeElement !== document.body)
+      )
+        return;
+      document.querySelector<HTMLButtonElement>("[data-cleaning-plan-focus-fallback]:not(:disabled)")?.focus();
+    });
+  }, []);
 
   const nextViewRequestId = useCallback(() => {
     lastViewRequestSequence += 1;
@@ -669,7 +677,9 @@ export function App() {
       const redoViewRequestId = action === "redoStep" ? nextViewRequestId() : undefined;
       if (!beginMutation(undefined, redoViewRequestId)) return;
       planActionReturnFocus.current =
-        (action === "redoStep" ||
+        (action === "applyDraft" ||
+          action === "discardDraft" ||
+          action === "redoStep" ||
           (action === "undoStep" && current?.steps.length === 1 && current.draftStep === undefined)) &&
         returnTarget !== undefined &&
         document.hasFocus() &&
@@ -1432,7 +1442,9 @@ export function App() {
         const nextMetadata = withoutDatasetStats(response.metadata);
         const shouldRestorePlanFocus =
           response.kind === "planUpdated" &&
-          ((response.action === "undo" && nextMetadata.steps.length === 0) ||
+          (response.action === "apply" ||
+            response.action === "discard" ||
+            (response.action === "undo" && nextMetadata.steps.length === 0) ||
             (response.action === "redo" && nextMetadata.canRedo !== true)) &&
           nextMetadata.draftStep === undefined;
         confirmView(nextMetadata, recovery?.offeredViewContextId ?? nextViewRequestId());
@@ -1537,6 +1549,7 @@ export function App() {
     restartProfilingAfterMutation,
     restartProfilingForConfirmedView,
     restoreConfirmedViewState,
+    restoreCleaningPlanFocus,
     restoreViewAfterPageFailure,
     resetViewProfiling,
     settleProfileMessage,
@@ -1979,6 +1992,11 @@ export function App() {
     const modifier = event.ctrlKey || event.metaKey;
     const key = event.key.toLowerCase();
     const editableTarget = isEditableKeyboardTarget(event.target);
+    const activeElement = document.activeElement;
+    const draftReturnTarget =
+      activeElement instanceof HTMLButtonElement && activeElement.hasAttribute("data-cleaning-plan-draft-action")
+        ? activeElement
+        : undefined;
     let handled = false;
 
     if (event.key === "Escape") {
@@ -1994,7 +2012,7 @@ export function App() {
         handled = true;
       } else if (metadata?.draftStep) {
         if (!projectionLoading) {
-          sendPlanAction("discardDraft");
+          sendPlanAction("discardDraft", draftReturnTarget);
           handled = true;
         }
       }
@@ -2006,7 +2024,7 @@ export function App() {
       metadata?.draftStep &&
       !projectionLoading
     ) {
-      sendPlanAction("applyDraft");
+      sendPlanAction("applyDraft", draftReturnTarget);
       handled = true;
     } else if (!editableTarget && modifier && event.altKey && !event.shiftKey && key === "z") {
       if (!projectionLoading && !metadata?.draftStep && metadata?.steps.length) {
@@ -2379,22 +2397,24 @@ export function App() {
               <button
                 type="button"
                 className="secondaryButton"
+                data-cleaning-plan-draft-action
                 disabled={loading || projectionLoading || importOptionsPending}
                 aria-describedby={projectionStatusId}
                 aria-keyshortcuts="Escape"
                 title={projectionActionTitle ?? "Discard draft (Escape)"}
-                onClick={() => sendPlanAction("discardDraft")}
+                onClick={(event) => sendPlanAction("discardDraft", event.currentTarget)}
               >
                 Discard
               </button>
               <button
                 type="button"
                 data-operation-focus-fallback
+                data-cleaning-plan-draft-action
                 disabled={loading || projectionLoading || importOptionsPending}
                 aria-describedby={projectionStatusId}
                 aria-keyshortcuts="Control+Enter Meta+Enter"
                 title={projectionActionTitle ?? "Apply draft (Ctrl/Cmd+Enter)"}
-                onClick={() => sendPlanAction("applyDraft")}
+                onClick={(event) => sendPlanAction("applyDraft", event.currentTarget)}
               >
                 Apply step
               </button>

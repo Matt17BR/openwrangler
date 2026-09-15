@@ -37,25 +37,31 @@ export function StepInspectionPanel({
           </span>
         </div>
         <div className="inspectionActions">
-          {canModify && !confirmingDelete && (
-            <>
-              <button type="button" className="secondaryButton" onClick={onEdit}>
-                Edit step
+          {canModify && (
+            <div
+              style={{ display: "inline" }}
+              role={confirmingDelete ? "group" : undefined}
+              aria-label={confirmingDelete ? "Confirm step deletion" : undefined}
+            >
+              {confirmingDelete ? (
+                <span>Delete this step and replay every later step?</span>
+              ) : (
+                <button type="button" className="secondaryButton" onClick={onEdit}>
+                  Edit step
+                </button>
+              )}
+              <button
+                type="button"
+                className="secondaryButton"
+                onClick={() => setConfirmingDelete((current) => !current)}
+              >
+                {confirmingDelete ? "Cancel" : "Delete step"}
               </button>
-              <button type="button" className="secondaryButton" onClick={() => setConfirmingDelete(true)}>
-                Delete step
-              </button>
-            </>
-          )}
-          {canModify && confirmingDelete && (
-            <div role="group" aria-label="Confirm step deletion">
-              <span>Delete this step and replay every later step?</span>
-              <button type="button" className="secondaryButton" onClick={() => setConfirmingDelete(false)}>
-                Cancel
-              </button>
-              <button type="button" onClick={onDelete}>
-                Delete
-              </button>
+              {confirmingDelete && (
+                <button type="button" onClick={onDelete}>
+                  Delete
+                </button>
+              )}
             </div>
           )}
           <button type="button" className="secondaryButton" onClick={() => onClear()}>
