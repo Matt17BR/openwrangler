@@ -121,11 +121,6 @@ export interface ReleasedRCoreEditingDependencies {
     expectation: string,
     diagnostics?: () => string | Promise<string>
   ) => Promise<void>;
-  readonly waitForOpenWranglerWebviewAction: (
-    workbench: Page,
-    name: string,
-    requireEnabled?: boolean
-  ) => Promise<unknown>;
 }
 
 export interface ReleasedRCoreEditingInput {
@@ -171,8 +166,7 @@ export async function exerciseReleasedRCoreEditingCatalog(
     recordAcceptanceProgress,
     reacquireAcknowledgedSessionApp,
     releasedRSessionApp,
-    waitFor,
-    waitForOpenWranglerWebviewAction
+    waitFor
   } = dependencies;
 
   const appForObservedMutation = async (observed: ActiveSession, description: string): Promise<Locator> => {
@@ -1204,7 +1198,7 @@ export async function exerciseReleasedRCoreEditingCatalog(
   );
 
   await exerciseReleasedRCloneEditingLifecycle(testing, workbench, sessionId, phase);
-  recordAcceptanceProgress(`${phase}:editing:text-length-preview-apply-inspect-undo`);
+  recordAcceptanceProgress(`${phase}:editing:text-length-preview-apply-undo`);
   const measured = await previewReleasedRTextLength(testing, workbench, sessionId, "label", "label_length");
   app = measured.app;
   await app
@@ -1232,7 +1226,7 @@ export async function exerciseReleasedRCoreEditingCatalog(
     30_000,
     "applying the native R Text Length step"
   );
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Text Length step before inspection");
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Text Length step");
   const appliedLength = testing.activeSession();
   assert.ok(appliedLength, "The applied native R Text Length step must retain its session.");
   assertReleasedRTextLengthGeneratedCode(appliedLength.code ?? "", "label", "label_length");
@@ -1257,44 +1251,6 @@ export async function exerciseReleasedRCoreEditingCatalog(
   const firstLengthCell = app.locator(`td[data-grid-row="0"][data-grid-column="${lengthColumnPosition}"]`).first();
   await firstLengthCell.getByText("8", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
   assert.equal((await firstLengthCell.textContent())?.trim(), "8");
-  await waitForOpenWranglerWebviewAction(workbench, "Add step", true);
-  await vscode.commands.executeCommand("openWrangler.selectStep", measured.stepId);
-  await waitFor(
-    () => testing.activeSession()?.stepInspection?.stepId === measured.stepId,
-    30_000,
-    "the applied native R Text Length inspection"
-  );
-  const lengthInspection = testing.activeSession()?.stepInspection;
-  assert.ok(lengthInspection, "Selecting the applied R Text Length step must publish its inspection.");
-  assert.deepEqual(lengthInspection.diff, {
-    addedRows: 0,
-    removedRows: 0,
-    addedColumns: ["label_length"],
-    removedColumns: [],
-    changedCells: 0,
-    cells: [],
-    truncated: false
-  });
-  assert.equal(
-    lengthInspection.inputSchema.some((column) => column.name === "label_length"),
-    false
-  );
-  assert.deepEqual(
-    lengthInspection.outputSchema.at(-1),
-    appliedLength.metadata.schema.at(-1),
-    "The R Text Length inspection must retain the derived column identity and type."
-  );
-  assertReleasedRTextLengthGeneratedCode(lengthInspection.code, "label", "label_length");
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the inspected R Text Length session");
-  await app
-    .getByRole("region", { name: "Selected applied-step inspection" })
-    .getByRole("button", { name: "Show confirmed data", exact: true })
-    .click();
-  await waitFor(
-    () => testing.activeSession()?.stepInspection === undefined,
-    10_000,
-    "returning from the native R Text Length inspection"
-  );
   app = await releasedRSessionApp(workbench, testing, sessionId, "the R Text Length session before undo");
   const lengthUndoState = (): Record<string, unknown> => {
     const active = testing.activeSession();

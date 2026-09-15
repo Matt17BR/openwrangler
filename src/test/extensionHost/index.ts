@@ -1987,8 +1987,7 @@ async function exerciseReleasedREditingJourney(
         recordAcceptanceProgress,
         reacquireAcknowledgedSessionApp,
         releasedRSessionApp,
-        waitFor,
-        waitForOpenWranglerWebviewAction
+        waitFor
       }
     );
     app = core.app;
