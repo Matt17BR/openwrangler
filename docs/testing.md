@@ -526,6 +526,8 @@ Quarto extension and CLI; the literate-documents journey retains both, including
 native Quarto media preview checks. Tooling pins remain in `scripts/r-editor-acceptance-tooling.mjs`, and its selected
 extension records drive installation and expected versions. The existing preparer selects dependencies by purpose,
 including those three focused notebook selectors; omitting the purpose retains the full tooling subset.
+Artifact acquisition refuses an existing destination and verifies the file it created. Failed partial archives remain
+under the caller's existing private-root cleanup owner. A replaced file or directory withholds cleanup.
 
 The macOS and Windows R jobs first run `kernel:numeric-portability`, the same case included in the canonical
 Linux kernel suite. It owns the platform-sensitive mean, decimal parsing, selection and generated-literal assertions

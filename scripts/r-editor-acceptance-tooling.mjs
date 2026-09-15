@@ -1,9 +1,25 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createReadStream, createWriteStream, existsSync, lstatSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import {
+  closeSync,
+  createReadStream,
+  createWriteStream,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  realpathSync
+} from "node:fs";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Readable, Transform } from "node:stream";
-import { pipeline } from "node:stream/promises";
+import { finished, pipeline } from "node:stream/promises";
 import { createEditorAcceptanceEnvironment, runBoundedEditorCommand } from "./editor-acceptance.mjs";
+import {
+  assertEditorAcceptancePrivateRootReceipt,
+  createEditorAcceptancePrivateRootReceipt,
+  editorAcceptancePrivateRootIdentityLost,
+  privateRootIdentityLostError
+} from "./packaged-editor-orchestration.mjs";
 
 const DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
 const MAX_DOWNLOAD_ATTEMPTS = 3;
@@ -173,7 +189,8 @@ export async function acquireExactArtifact(
   ) {
     throw new Error("R editor tooling artifact acquisition requires one valid pinned artifact.");
   }
-  const destination = join(privateDirectory(root), pin.fileName);
+  const rootReceipt = createEditorAcceptancePrivateRootReceipt(root);
+  const destination = join(rootReceipt.path, pin.fileName);
   if (sourcePath !== undefined) {
     if (typeof sourcePath !== "string" || !isAbsolute(sourcePath)) {
       throw new Error(`${pin.fileName} override must be an absolute path.`);
@@ -182,7 +199,8 @@ export async function acquireExactArtifact(
     if (lstatSync(source).isSymbolicLink() || !lstatSync(source).isFile()) {
       throw new Error(`${pin.fileName} override must be a regular, non-symbolic file.`);
     }
-    await writeVerifiedArtifact(createReadStream(source), destination, pin);
+    const identity = await writeVerifiedArtifact(createReadStream(source), destination, pin, rootReceipt);
+    assertArtifactIdentity(rootReceipt, destination, identity);
     return destination;
   }
   const deadlineController = new AbortController();
@@ -266,19 +284,16 @@ export async function acquireExactArtifact(
             throw artifactAttemptError(key, pin, attempt, "returned an invalid response body");
           }
           try {
-            await writeVerifiedArtifact(body, destination, pin, attemptController.signal);
-          } catch {
+            const identity = await writeVerifiedArtifact(body, destination, pin, rootReceipt, attemptController.signal);
+            assertArtifactIdentity(rootReceipt, destination, identity);
+          } catch (error) {
+            if (editorAcceptancePrivateRootIdentityLost(error)) throw error;
             if (deadlineController.signal.aborted) {
               throw artifactAttemptError(key, pin, attempt, "exceeded its aggregate download deadline");
             }
             throw artifactAttemptError(key, pin, attempt, "failed exact response-body verification");
           }
           if (deadlineController.signal.aborted) {
-            try {
-              rmSync(destination, { force: true });
-            } catch {
-              throw artifactAttemptError(key, pin, attempt, "could not remove its expired response body");
-            }
             throw artifactAttemptError(key, pin, attempt, "exceeded its aggregate download deadline");
           }
           return destination;
@@ -305,6 +320,17 @@ export async function acquireExactArtifact(
         throw artifactAttemptError(key, pin, attempt, "could not complete its retry backoff");
       }
     }
+  } catch (error) {
+    if (editorAcceptancePrivateRootIdentityLost(error)) throw error;
+    try {
+      assertEditorAcceptancePrivateRootReceipt(rootReceipt);
+    } catch (identityError) {
+      throw new AggregateError(
+        [error, identityError],
+        "Pinned artifact acquisition failed and its private identity was lost."
+      );
+    }
+    throw error;
   } finally {
     if (timer !== undefined) timersForTest.clearTimeout(timer);
     deadlineController.abort();
@@ -410,7 +436,7 @@ function waitForRetry(delayMs, signal, timers) {
   });
 }
 
-async function writeVerifiedArtifact(source, destination, pin, signal) {
+async function writeVerifiedArtifact(source, destination, pin, rootReceipt, signal) {
   const digest = createHash("sha256");
   let bytes = 0;
   const verifier = new Transform({
@@ -431,16 +457,72 @@ async function writeVerifiedArtifact(source, destination, pin, signal) {
       callback();
     }
   });
-  const writer = createWriteStream(destination, { flags: "wx", mode: 0o600 });
+  let descriptor;
+  let identity;
+  let writer;
   try {
+    assertEditorAcceptancePrivateRootReceipt(rootReceipt);
+    descriptor = openSync(destination, "wx", 0o600);
+    identity = fstatSync(descriptor, { bigint: true });
+    writer = createWriteStream(destination, { fd: descriptor, autoClose: true });
+    descriptor = undefined;
     if (signal) {
       await pipeline(source, verifier, writer, { signal });
     } else {
       await pipeline(source, verifier, writer);
     }
   } catch (error) {
-    rmSync(destination, { force: true });
-    throw error;
+    let failure = error;
+    if (descriptor !== undefined) {
+      try {
+        closeSync(descriptor);
+      } catch (closeError) {
+        failure = new AggregateError([failure, closeError], "Pinned artifact writing and descriptor cleanup failed.");
+      }
+    }
+    if (writer === undefined) {
+      const sourceSettled = finished(source, { cleanup: true }).catch(() => {});
+      source.destroy();
+      if (signal) {
+        await settleOperationBeforeAbort(() => sourceSettled, signal);
+      } else {
+        await sourceSettled;
+      }
+    }
+    try {
+      assertArtifactIdentity(rootReceipt, destination, identity);
+    } catch (identityError) {
+      throw new AggregateError(
+        [failure, identityError],
+        "Pinned artifact writing failed and its private identity was lost."
+      );
+    }
+    throw failure;
+  }
+  return identity;
+}
+
+function assertArtifactIdentity(rootReceipt, destination, identity) {
+  assertEditorAcceptancePrivateRootReceipt(rootReceipt);
+  if (identity === undefined) return;
+  let named;
+  try {
+    named = lstatSync(destination, { bigint: true });
+  } catch {
+    throw privateRootIdentityLostError("receipt-mismatch");
+  }
+  if (
+    !identity.isFile() ||
+    identity.nlink !== 1n ||
+    !named.isFile() ||
+    named.isSymbolicLink() ||
+    named.nlink !== 1n ||
+    named.dev !== identity.dev ||
+    named.ino !== identity.ino ||
+    named.mode !== identity.mode ||
+    named.birthtimeNs !== identity.birthtimeNs
+  ) {
+    throw privateRootIdentityLostError("receipt-mismatch");
   }
 }
 

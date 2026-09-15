@@ -692,7 +692,7 @@ function assertQuarantinedPrivateRootReceipt(receipt, quarantinePath) {
   return quarantinePath;
 }
 
-function privateRootIdentityLostError(checkpoint) {
+export function privateRootIdentityLostError(checkpoint) {
   if (!PRIVATE_ROOT_IDENTITY_CHECKPOINTS.has(checkpoint)) {
     throw new Error("Private-root identity loss requires one fixed checkpoint.");
   }
