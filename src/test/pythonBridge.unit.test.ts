@@ -269,7 +269,7 @@ describe("PythonBridge cancellation", () => {
     const subscribe = vi.spyOn(token, "onCancellationRequested");
     const source = remoteSourceAt("/resolution/confirmed.csv");
     const probeStarted = deferred<void>();
-    const probe = deferred<{ missing: string[]; available: string[] }>();
+    const probe = deferred<{ missing: string[] }>();
     const confirmedEnvironment: pythonEnvironment.PythonEnvironment = {
       executable: testPythonExecutablePath("/env/bin/python"),
       executableIdentity: TEST_EXECUTABLE_IDENTITY,
@@ -286,8 +286,7 @@ describe("PythonBridge cancellation", () => {
         return probe.promise;
       })
       .mockResolvedValue({
-        missing: requiredDependencies("pandas", source).map((dependency) => dependency.installSpec),
-        available: []
+        missing: requiredDependencies("pandas", source).map((dependency) => dependency.installSpec)
       });
     const bridge = new PythonBridge(testExtensionContext());
     const generation = bridge.runtimeGeneration;
@@ -302,7 +301,7 @@ describe("PythonBridge cancellation", () => {
 
       token.cancel();
       const remainedUnaborted = signal?.aborted === false;
-      probe.resolve({ missing: [], available: ["polars"] });
+      probe.resolve({ missing: [] });
       await expect(opening).resolves.toEqual({ kind: "cancelled", targetRequestId: "not-started" });
       expect(token.dispose).toHaveBeenCalledOnce();
       expect(bridge.runtimeRunning).toBe(false);
@@ -315,7 +314,7 @@ describe("PythonBridge cancellation", () => {
       expect(pythonEnvironment.resolvePythonEnvironment).toHaveBeenCalledOnce();
       expect(remainedUnaborted).toBe(true);
     } finally {
-      probe.resolve({ missing: [], available: ["polars"] });
+      probe.resolve({ missing: [] });
       await bridge.shutdown();
       subscribe.mockRestore();
       vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockReset();
@@ -1194,8 +1193,7 @@ describe("PythonBridge trusted pickle preflight", () => {
     Object.assign(bridge as object, { spawnProcess });
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
     vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({
-      missing: ["pandas>=2.3.3,<4", "pyarrow>=25,<26"],
-      available: []
+      missing: ["pandas>=2.3.3,<4", "pyarrow>=25,<26"]
     });
     const warning = vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue(undefined);
 
@@ -1208,22 +1206,26 @@ describe("PythonBridge trusted pickle preflight", () => {
         source: environment.source,
         missing: ["pandas>=2.3.3,<4", "pyarrow>=25,<26"]
       });
-      expect(pythonEnvironment.probeDependencies).toHaveBeenCalledWith(environment.executable, [
-        {
-          importModule: "pandas",
-          distribution: "pandas",
-          installSpec: "pandas>=2.3.3,<4",
-          minimumVersion: "2.3.3",
-          maximumVersionExclusive: "4"
-        },
-        {
-          importModule: "pyarrow",
-          distribution: "pyarrow",
-          installSpec: "pyarrow>=25,<26",
-          minimumVersion: "25",
-          maximumVersionExclusive: "26"
-        }
-      ]);
+      expect(pythonEnvironment.probeDependencies).toHaveBeenCalledWith(
+        environment,
+        [
+          {
+            importModule: "pandas",
+            distribution: "pandas",
+            installSpec: "pandas>=2.3.3,<4",
+            minimumVersion: "2.3.3",
+            maximumVersionExclusive: "4"
+          },
+          {
+            importModule: "pyarrow",
+            distribution: "pyarrow",
+            installSpec: "pyarrow>=25,<26",
+            minimumVersion: "25",
+            maximumVersionExclusive: "26"
+          }
+        ],
+        join("/extension", "python", "openwrangler_runtime", "dependency_guard.py")
+      );
       expect(raw.lastMissingDependencies).toBe(unrelatedTarget);
 
       const leaseGate = deferred<void>();
@@ -1303,8 +1305,7 @@ describe("PythonBridge dependency installation", () => {
           ? excelDependency.map((item) => item.installSpec)
           : otherState === "missing"
             ? otherDependencies.map((item) => item.installSpec)
-            : [],
-        available: []
+            : []
       }));
       const warning = vi.spyOn(vscode.window, "showWarningMessage").mockImplementation(async () => {
         // Another file may replace the global command target while A's modal is open.
@@ -1342,8 +1343,7 @@ describe("PythonBridge dependency installation", () => {
       const { bridge, internals, launchDependencyInstall } = createDependencyHarness();
       const source = remoteFileSource();
       vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({
-        missing: state === "ready" ? [] : ["pandas>=2.3.3,<4"],
-        available: []
+        missing: state === "ready" ? [] : ["pandas>=2.3.3,<4"]
       });
       const warning = vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue(undefined);
 
@@ -1357,14 +1357,14 @@ describe("PythonBridge dependency installation", () => {
 
   it("does not prompt after a file dependency preflight is cancelled", async () => {
     const { bridge, launchDependencyInstall } = createDependencyHarness();
-    const probe = deferred<{ missing: string[]; available: string[] }>();
+    const probe = deferred<{ missing: string[] }>();
     vi.mocked(pythonEnvironment.probeDependencies).mockReturnValue(probe.promise);
     const warning = vi.spyOn(vscode.window, "showWarningMessage");
     const cancellation = new ManualCancellation();
     const action = bridge.installFileDependencies(remoteFileSource(), "pandas", { cancellation });
     await vi.waitFor(() => expect(pythonEnvironment.probeDependencies).toHaveBeenCalledOnce());
     cancellation.cancel();
-    probe.resolve({ missing: ["pandas>=2.3.3,<4"], available: [] });
+    probe.resolve({ missing: ["pandas>=2.3.3,<4"] });
 
     await expect(action).resolves.toBe(false);
     expect(warning).not.toHaveBeenCalled();
@@ -1374,8 +1374,7 @@ describe("PythonBridge dependency installation", () => {
   it("keeps a source-bound install separate from another file action", async () => {
     const { bridge, launchDependencyInstall } = createDependencyHarness();
     vi.mocked(pythonEnvironment.probeDependencies).mockImplementation(async (_environment, dependencies) => ({
-      missing: dependencies.map((item) => item.installSpec),
-      available: []
+      missing: dependencies.map((item) => item.installSpec)
     }));
     const choice = deferred<"Install">();
     const warning = vi
@@ -1398,7 +1397,7 @@ describe("PythonBridge dependency installation", () => {
 
   it("aborts a cancelled file install at READY without authorizing writes", async () => {
     const { bridge, raw, launchDependencyInstall } = createDependencyHarness();
-    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: ["pandas>=2.3.3,<4"], available: [] });
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: ["pandas>=2.3.3,<4"] });
     vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
     const controlled = controlledDependencyInstall(undefined, true);
     launchDependencyInstall.mockReturnValue(controlled.operation);
@@ -1960,7 +1959,7 @@ describe("PythonBridge dependency installation", () => {
       source: "pythonExtension"
     };
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(independentEnvironment);
-    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: ["polars"], available: [] });
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: ["polars"] });
 
     await expect(
       internals.prepareRequest(openSessionRequest(remoteSourceAt("/independent/data.csv")))
@@ -2032,7 +2031,7 @@ describe("PythonBridge dependency installation", () => {
     };
     launchDependencyInstall.mockReturnValue(controlled.operation);
     vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
-    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [] });
 
     const installation = bridge.installMissingDependencies();
     await vi.waitFor(() => expect(launchDependencyInstall).toHaveBeenCalledOnce());
@@ -2376,17 +2375,17 @@ describe("PythonBridge dependency installation", () => {
 
   it("invalidates a completed shared probe when pip completes in the same selection epoch", async () => {
     const request = openSessionRequest(remoteFileSource());
-    const sharedProbe = deferred<{ missing: string[]; available: string[] }>();
+    const sharedProbe = deferred<{ missing: string[] }>();
     const { bridge, internals } = createDependencyHarness();
     vi.mocked(pythonEnvironment.probeDependencies)
       .mockReturnValueOnce(sharedProbe.promise)
-      .mockResolvedValueOnce({ missing: [], available: ["polars"] });
+      .mockResolvedValueOnce({ missing: [] });
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(missingDependencies().environment);
 
     const firstPreparation = internals.prepareRequest(request);
     const overlappingPreparation = internals.prepareRequest(request);
     await vi.waitFor(() => expect(pythonEnvironment.probeDependencies).toHaveBeenCalledOnce());
-    sharedProbe.resolve({ missing: ["polars>=1.35.2,!=1.44.0,<2"], available: [] });
+    sharedProbe.resolve({ missing: ["polars>=1.35.2,!=1.44.0,<2"] });
     await expect(firstPreparation).resolves.toMatchObject({ kind: "error", code: "missing_dependencies" });
     await expect(overlappingPreparation).resolves.toMatchObject({
       kind: "error",
@@ -2507,8 +2506,7 @@ describe("PythonBridge dependency guard recovery", () => {
     const { internals } = createEnvironmentHarness();
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
     vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({
-      missing: ["pandas>=2.3.3,<4", "xlrd>=2.0.2,<3"],
-      available: []
+      missing: ["pandas>=2.3.3,<4", "xlrd>=2.0.2,<3"]
     });
 
     await expect(
@@ -2541,7 +2539,7 @@ describe("PythonBridge dependency guard recovery", () => {
     const { bridge, internals } = createEnvironmentHarness();
     const raw = bridge as unknown as RawBridgeInternals;
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
-    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [] });
     vi.mocked(startDependencyGuardStatus).mockImplementationOnce((environment) =>
       ownedDependencyGuardCommand<DependencyGuardStatus>("status", environment.executable, status.promise)
     );
@@ -2577,7 +2575,7 @@ describe("PythonBridge dependency guard recovery", () => {
     const { bridge, internals } = createEnvironmentHarness();
     const raw = bridge as unknown as RawBridgeInternals;
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
-    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [] });
 
     const preparation = internals.prepareRequest(openSessionRequest(remoteFileSource()));
     await vi.waitFor(() => expect(raw.activeDependencyGuardCommands?.size).toBe(1));
@@ -2607,7 +2605,7 @@ describe("PythonBridge dependency guard recovery", () => {
     const { bridge, internals } = createEnvironmentHarness();
     const raw = bridge as unknown as RawBridgeInternals;
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
-    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [] });
 
     const preparation = internals.prepareRequest(openSessionRequest(remoteFileSource()));
     await vi.waitFor(() => expect(raw.activeDependencyGuardCommands?.size).toBe(1));
@@ -2710,7 +2708,7 @@ describe("PythonBridge dependency guard recovery", () => {
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockImplementation(async (_context, resource) =>
       resource?.path.includes("/alias/") ? alias : environment
     );
-    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [] });
     vi.mocked(startDependencyGuardStatus).mockImplementationOnce((environment) =>
       ownedDependencyGuardCommand<DependencyGuardStatus>("status", environment.executable, status.promise)
     );
@@ -2745,7 +2743,7 @@ describe("PythonBridge dependency guard recovery", () => {
     const { bridge, internals } = createEnvironmentHarness();
     const raw = bridge as unknown as RawBridgeInternals;
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
-    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [] });
     raw.markDependencyEnvironmentUncertain(environment, TEST_DEPENDENCY_TOKEN, new Error("validation failed"));
 
     await expect(internals.prepareRequest(openSessionRequest(remoteFileSource()))).resolves.toMatchObject({
@@ -3514,8 +3512,8 @@ describe("PythonBridge environment resource selection", () => {
     const { internals } = createEnvironmentHarness();
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
     vi.mocked(pythonEnvironment.probeDependencies)
-      .mockResolvedValueOnce({ missing: ["fsspec==2026.7.0"], available: ["duckdb", "pytz"] })
-      .mockResolvedValueOnce({ missing: [], available: ["pandas"] });
+      .mockResolvedValueOnce({ missing: ["fsspec==2026.7.0"] })
+      .mockResolvedValueOnce({ missing: [] });
 
     await expect(internals.prepareRequest(automaticOpenSessionRequest(source))).resolves.toMatchObject({
       kind: "openSession",
@@ -3533,7 +3531,7 @@ describe("PythonBridge environment resource selection", () => {
     const source = { ...remoteFileSource(), importOptions: { quoteChar: "“" } };
     const { internals } = createEnvironmentHarness();
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
-    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["pandas"] });
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [] });
 
     await expect(internals.prepareRequest(automaticOpenSessionRequest(source))).resolves.toMatchObject({
       kind: "openSession",
@@ -3552,8 +3550,8 @@ describe("PythonBridge environment resource selection", () => {
     const { internals } = createEnvironmentHarness();
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
     vi.mocked(pythonEnvironment.probeDependencies)
-      .mockResolvedValueOnce({ missing: ["fastexcel>=0.20.2,<1"], available: ["polars"] })
-      .mockResolvedValueOnce({ missing: ["openpyxl>=3.1.5,<4"], available: ["pandas"] });
+      .mockResolvedValueOnce({ missing: ["fastexcel>=0.20.2,<1"] })
+      .mockResolvedValueOnce({ missing: ["openpyxl>=3.1.5,<4"] });
 
     await expect(internals.prepareRequest(automaticOpenSessionRequest(source))).resolves.toEqual({
       kind: "error",
@@ -3615,7 +3613,7 @@ describe("PythonBridge environment resource selection", () => {
     const parse = vi.spyOn(vscode.Uri, "parse");
     const file = vi.spyOn(vscode.Uri, "file");
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
-    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [] });
 
     await expect(internals.prepareRequest(openSessionRequest(source))).resolves.toMatchObject({
       kind: "openSession",
@@ -3674,7 +3672,7 @@ describe("PythonBridge environment resource selection", () => {
     const parse = vi.spyOn(vscode.Uri, "parse");
     const file = vi.spyOn(vscode.Uri, "file");
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
-    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [] });
 
     await internals.prepareRequest(openSessionRequest(malformed));
 
@@ -3696,7 +3694,7 @@ describe("PythonBridge environment resource selection", () => {
     const secondSource = remoteSourceAt("/second/three.csv");
     const { internals } = createEnvironmentHarness();
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
-    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [] });
 
     await internals.prepareRequest(openSessionRequest(firstSource));
     await internals.prepareRequest(openSessionRequest(siblingSource));
@@ -3734,8 +3732,7 @@ describe("PythonBridge environment resource selection", () => {
       resource?.path.startsWith("/first/") ? firstEnvironment : secondEnvironment
     );
     vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({
-      missing: [],
-      available: ["polars"]
+      missing: []
     });
     const firstProcess = new LifecycleChildProcess();
     const secondProcess = new LifecycleChildProcess();
@@ -3843,7 +3840,7 @@ describe("PythonBridge environment resource selection", () => {
     const { bridge, internals } = createEnvironmentHarness();
     const raw = bridge as unknown as RawBridgeInternals;
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
-    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [] });
     await internals.prepareRequest(openSessionRequest(remoteSourceAt("/first/data.csv")));
     const authorizedSelection = raw.environmentSelections.get(firstFolder.uri.toString(true));
     expect(authorizedSelection?.resolvedEnvironment).toEqual(environment);
@@ -3886,7 +3883,7 @@ describe("PythonBridge environment resource selection", () => {
     );
     const { internals } = createEnvironmentHarness();
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
-    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [] });
     await internals.prepareRequest(openSessionRequest(remoteSourceAt("/first/data.csv")));
 
     internals.handlePythonEnvironmentSelectionChange({
@@ -3907,7 +3904,7 @@ describe("PythonBridge environment resource selection", () => {
       ...environment,
       source: "configuration"
     });
-    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [] });
     vi.spyOn(vscode.workspace, "getConfiguration").mockReturnValue({
       get: <T>(key: string, fallback: T): T => (key === "pythonPath" ? ("/configured/python" as T) : fallback)
     } as vscode.WorkspaceConfiguration);
@@ -3933,7 +3930,7 @@ describe("PythonBridge environment resource selection", () => {
       })
     );
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
-    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [] });
 
     await expect(internals.prepareRequest(openSessionRequest(source))).resolves.toMatchObject({
       kind: "openSession",
@@ -3951,7 +3948,7 @@ describe("PythonBridge environment resource selection", () => {
     const source = remoteFileSource();
     const { internals } = createEnvironmentHarness();
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
-    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: ["polars"], available: [] });
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: ["polars"] });
 
     await expect(internals.prepareRequest(openSessionRequest(source))).resolves.toMatchObject({
       kind: "error",
@@ -3973,7 +3970,7 @@ describe("PythonBridge environment resource selection", () => {
   it("runs one deferred dependency probe for exact environments and descriptors across independent scopes", async () => {
     const firstSource = remoteSourceAt("/single-flight/first.csv");
     const secondSource = remoteSourceAt("/single-flight/second.csv");
-    const probe = deferred<{ missing: string[]; available: string[] }>();
+    const probe = deferred<{ missing: string[] }>();
     const { bridge, internals } = createEnvironmentHarness();
     const raw = bridge as unknown as RawBridgeInternals;
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
@@ -3984,7 +3981,7 @@ describe("PythonBridge environment resource selection", () => {
     await vi.waitFor(() => expect(pythonEnvironment.probeDependencies).toHaveBeenCalledOnce());
 
     expect(raw.dependencyProbes.diagnostics()).toMatchObject({ inFlightCount: 1, completedCount: 0 });
-    probe.resolve({ missing: [], available: ["polars"] });
+    probe.resolve({ missing: [] });
 
     await expect(first).resolves.toMatchObject({ kind: "openSession", backend: "polars" });
     await expect(second).resolves.toMatchObject({ kind: "openSession", backend: "polars" });
@@ -3996,8 +3993,8 @@ describe("PythonBridge environment resource selection", () => {
 
   it("does not let a detached old completion overwrite newer cached or install state", async () => {
     const source = remoteSourceAt("/single-flight/newer-state.csv");
-    const staleProbe = deferred<{ missing: string[]; available: string[] }>();
-    const currentProbe = deferred<{ missing: string[]; available: string[] }>();
+    const staleProbe = deferred<{ missing: string[] }>();
+    const currentProbe = deferred<{ missing: string[] }>();
     const { bridge, internals } = createEnvironmentHarness();
     const raw = bridge as unknown as RawBridgeInternals;
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
@@ -4014,7 +4011,7 @@ describe("PythonBridge environment resource selection", () => {
     });
     const currentPreparation = internals.prepareRequest(openSessionRequest(source));
     await vi.waitFor(() => expect(pythonEnvironment.probeDependencies).toHaveBeenCalledTimes(2));
-    currentProbe.resolve({ missing: ["polars"], available: [] });
+    currentProbe.resolve({ missing: ["polars"] });
     await expect(currentPreparation).resolves.toMatchObject({
       kind: "error",
       code: "missing_dependencies"
@@ -4024,7 +4021,7 @@ describe("PythonBridge environment resource selection", () => {
     const key = [...currentSelection!.dependencyKeys][0]!;
     expect(raw.dependencyProbes.completedMissing(key)).toEqual(["polars"]);
 
-    staleProbe.resolve({ missing: [], available: ["polars"] });
+    staleProbe.resolve({ missing: [] });
     await expect(stalePreparation).resolves.toMatchObject({
       kind: "error",
       code: "runtime_selection_changed"
@@ -4037,7 +4034,7 @@ describe("PythonBridge environment resource selection", () => {
   it("makes every joined consumer stale when explicit invalidation lands after probe publication", async () => {
     const firstSource = remoteSourceAt("/single-flight/post-resolution-first.csv");
     const secondSource = remoteSourceAt("/single-flight/post-resolution-second.csv");
-    const probe = deferred<{ missing: string[]; available: string[] }>();
+    const probe = deferred<{ missing: string[] }>();
     const { bridge, internals } = createEnvironmentHarness();
     const raw = bridge as unknown as RawBridgeInternals;
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
@@ -4049,7 +4046,6 @@ describe("PythonBridge environment resource selection", () => {
     const key = [...raw.environmentSelections.get(firstSource.uri!)!.dependencyKeys][0]!;
     const missing = ["polars"];
     const result = {
-      available: [] as string[],
       get missing(): string[] {
         queueMicrotask(() => raw.dependencyProbes.invalidateKey(key));
         return missing;
@@ -4066,7 +4062,7 @@ describe("PythonBridge environment resource selection", () => {
   it("does not publish an old deferred probe after runtime selection is cleared", async () => {
     const source = remoteFileSource();
     const { internals } = createEnvironmentHarness();
-    const probe = deferred<{ missing: string[]; available: string[] }>();
+    const probe = deferred<{ missing: string[] }>();
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
     vi.mocked(pythonEnvironment.probeDependencies).mockReturnValue(probe.promise);
 
@@ -4077,7 +4073,7 @@ describe("PythonBridge environment resource selection", () => {
       path: "/changed/python",
       resource: vscode.Uri.parse(source.uri!, true)
     });
-    probe.resolve({ missing: ["polars"], available: [] });
+    probe.resolve({ missing: ["polars"] });
 
     await expect(preparation).resolves.toMatchObject({
       kind: "error",
@@ -4148,7 +4144,7 @@ describe("PythonBridge environment resource selection", () => {
 
   it("does not let a dependency probe republish cache or install state after shutdown", async () => {
     const source = remoteFileSource();
-    const probe = deferred<{ missing: string[]; available: string[] }>();
+    const probe = deferred<{ missing: string[] }>();
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
     vi.mocked(pythonEnvironment.probeDependencies).mockReturnValue(probe.promise);
     const bridge = new PythonBridge(testExtensionContext());
@@ -4159,7 +4155,7 @@ describe("PythonBridge environment resource selection", () => {
     expect(internals.dependencyProbes.diagnostics().inFlightCount).toBe(1);
     await bridge.shutdown();
     expect(internals.dependencyProbes.diagnostics().inFlightCount).toBe(0);
-    probe.resolve({ missing: ["polars"], available: [] });
+    probe.resolve({ missing: ["polars"] });
 
     await expect(preparation).resolves.toMatchObject({
       kind: "error",
@@ -4187,14 +4183,12 @@ describe("PythonBridge environment resource selection", () => {
       packageRootIdentity: testPackageRootIdentity("/envs/healthy")
     };
     const resolution = deferred<TestPythonEnvironment>();
-    const probe = deferred<{ missing: string[]; available: string[] }>();
+    const probe = deferred<{ missing: string[] }>();
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockImplementation((_context, resource) =>
       resource?.toString(true) === targetSource.uri ? resolution.promise : Promise.resolve(healthyEnvironment)
     );
-    vi.mocked(pythonEnvironment.probeDependencies).mockImplementation((executable) =>
-      executable === targetEnvironment.executable
-        ? probe.promise
-        : Promise.resolve({ missing: [], available: ["polars"] })
+    vi.mocked(pythonEnvironment.probeDependencies).mockImplementation((selectedEnvironment) =>
+      selectedEnvironment.executable === targetEnvironment.executable ? probe.promise : Promise.resolve({ missing: [] })
     );
 
     const preparation = internals.prepareRequest(openSessionRequest(targetSource));
@@ -4210,12 +4204,16 @@ describe("PythonBridge environment resource selection", () => {
 
     resolution.resolve(targetEnvironment);
     await vi.waitFor(() =>
-      expect(pythonEnvironment.probeDependencies).toHaveBeenCalledWith(targetEnvironment.executable, expect.any(Array))
+      expect(pythonEnvironment.probeDependencies).toHaveBeenCalledWith(
+        targetEnvironment,
+        expect.any(Array),
+        join("/extension", "python", "openwrangler_runtime", "dependency_guard.py")
+      )
     );
     expect(raw.runtimeSlots.get(targetSource.uri!)).toBe(targetRuntime);
     expect(targetRuntime?.leaseCount).toBe(1);
 
-    probe.resolve({ missing: [], available: ["polars"] });
+    probe.resolve({ missing: [] });
     await expect(preparation).resolves.toMatchObject({ kind: "openSession", backend: "polars" });
     expect(targetRuntime?.leaseCount).toBe(0);
 
@@ -4245,7 +4243,7 @@ describe("PythonBridge environment resource selection", () => {
     vi.mocked(pythonEnvironment.resolvePythonEnvironment)
       .mockReturnValueOnce(staleResolution.promise)
       .mockResolvedValue(currentEnvironment);
-    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [] });
 
     const stalePreparation = internals.prepareRequest(openSessionRequest(source));
     await vi.waitFor(() => expect(pythonEnvironment.resolvePythonEnvironment).toHaveBeenCalledOnce());
@@ -4269,7 +4267,7 @@ describe("PythonBridge environment resource selection", () => {
     expect(raw.environmentSelections.get(source.uri!)).toBe(currentSelection);
     expect(currentSelection?.resolvedEnvironment).toEqual(currentEnvironment);
     expect(pythonEnvironment.probeDependencies).toHaveBeenCalledOnce();
-    expect(vi.mocked(pythonEnvironment.probeDependencies).mock.calls[0]?.[0]).toBe(currentEnvironment.executable);
+    expect(vi.mocked(pythonEnvironment.probeDependencies).mock.calls[0]?.[0]).toEqual(currentEnvironment);
   });
 
   it("does not let a stale dependency probe publish after a same-key recreation", async () => {
@@ -4288,13 +4286,13 @@ describe("PythonBridge environment resource selection", () => {
       packageRoot: "/envs/current-probe",
       packageRootIdentity: testPackageRootIdentity("/envs/current-probe")
     };
-    const staleProbe = deferred<{ missing: string[]; available: string[] }>();
+    const staleProbe = deferred<{ missing: string[] }>();
     vi.mocked(pythonEnvironment.resolvePythonEnvironment)
       .mockResolvedValueOnce(staleEnvironment)
       .mockResolvedValue(currentEnvironment);
     vi.mocked(pythonEnvironment.probeDependencies)
       .mockReturnValueOnce(staleProbe.promise)
-      .mockResolvedValue({ missing: [], available: ["polars"] });
+      .mockResolvedValue({ missing: [] });
 
     const stalePreparation = internals.prepareRequest(openSessionRequest(source));
     await vi.waitFor(() => expect(pythonEnvironment.probeDependencies).toHaveBeenCalledOnce());
@@ -4309,7 +4307,7 @@ describe("PythonBridge environment resource selection", () => {
     });
     const currentSelection = raw.environmentSelections.get(source.uri!);
 
-    staleProbe.resolve({ missing: ["polars"], available: [] });
+    staleProbe.resolve({ missing: ["polars"] });
     await expect(stalePreparation).resolves.toMatchObject({
       kind: "error",
       code: "runtime_selection_changed"
@@ -4446,7 +4444,12 @@ interface RawBridgeInternals {
 function createDependencyProbeRegistry(raw: RawBridgeInternals): PythonDependencyProbeRegistry {
   return new PythonDependencyProbeRegistry(
     (packageEnvironmentKey) => raw.disposed || raw.dependencyMutations.has(packageEnvironmentKey),
-    (executable, dependencies) => pythonEnvironment.probeDependencies(executable, dependencies)
+    (environment, dependencies) =>
+      pythonEnvironment.probeDependencies(
+        environment,
+        dependencies,
+        join("/extension", "python", "openwrangler_runtime", "dependency_guard.py")
+      )
   );
 }
 
@@ -4499,7 +4502,7 @@ async function cacheDependencyProbe(
   dependencies: readonly PythonDependency[],
   missing: readonly string[]
 ): Promise<string> {
-  vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValueOnce({ missing: [...missing], available: [] });
+  vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValueOnce({ missing: [...missing] });
   const probe = registry.probe(environment, dependencies);
   await probe.result;
   return probe.key;

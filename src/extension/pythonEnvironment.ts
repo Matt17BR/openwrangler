@@ -11,6 +11,7 @@ import type {
   Resource
 } from "@vscode/python-extension";
 import { getSetting } from "./configuration";
+import { startDependencyGuardProbe } from "./dependencyInstaller";
 import { isFullyQualifiedPythonPath, resolvePythonCommandPath, resolvePythonExecutable } from "./pythonPath";
 import { isSupportedPythonVersion, type PythonDependency } from "./pythonEnvironmentModel";
 import { buildPythonProcessEnvironment } from "./pythonProcessEnvironment";
@@ -414,7 +415,6 @@ export interface PythonPackageRootIdentity {
 
 export interface DependencyProbe {
   missing: string[];
-  available: string[];
 }
 
 export async function resolvePythonEnvironment(
@@ -626,163 +626,23 @@ function isDisposable(value: unknown): value is vscode.Disposable {
 }
 
 export async function probeDependencies(
-  executable: string,
-  dependencies: readonly PythonDependency[]
+  environment: PythonEnvironment,
+  dependencies: readonly PythonDependency[],
+  helperPath: string
 ): Promise<DependencyProbe> {
-  if (dependencies.length === 0) return { missing: [], available: [] };
-  if (!isFullyQualifiedPythonPath(executable)) {
-    throw new Error("Python dependency probing requires an absolute executable path.");
-  }
-  const program = [
-    "import ctypes,importlib,importlib.metadata,json,os,stat",
-    "try:",
-    " from pip._vendor.packaging.requirements import Requirement",
-    " from pip._vendor.packaging.version import Version",
-    "except BaseException: Requirement=Version=None",
-    `deps=json.loads(${JSON.stringify(JSON.stringify(dependencies))})`,
-    `VERSION_FIELD_MAX_LENGTH=${PYTHON_DEPENDENCY_VERSION_MAX_LENGTH}`,
-    "def entry(v): return (v.st_dev,v.st_ino,v.st_mode,v.st_nlink,v.st_size,v.st_mtime_ns,v.st_ctime_ns)",
-    "def file_identity(v): return (v.st_dev,v.st_ino,v.st_size,v.st_mtime_ns,v.st_ctime_ns)",
-    "def directory_identity(v): return (v.st_dev,v.st_ino,v.st_mode)",
-    "def posix_identity(path):",
-    " normalized=os.path.normpath(path)",
-    " if os.path.normcase(normalized)!=os.path.normcase(path): return None",
-    " parts=normalized.split(os.path.sep)",
-    " if len(parts)<2 or parts[0]!='': return None",
-    " directory_flags=os.O_RDONLY|getattr(os,'O_DIRECTORY',0)|getattr(os,'O_NOFOLLOW',0)",
-    " file_flags=os.O_RDONLY|getattr(os,'O_NOFOLLOW',0)",
-    " descriptors=[]; ancestors=[]",
-    " try:",
-    "  current=os.open(os.path.sep,directory_flags); descriptors.append(current)",
-    "  for component in parts[1:-1]:",
-    "   if component in ('','.','..'): return None",
-    "   named=os.stat(component,dir_fd=current,follow_symlinks=False)",
-    "   if not stat.S_ISDIR(named.st_mode): return None",
-    "   child=os.open(component,directory_flags,dir_fd=current); descriptors.append(child)",
-    "   opened=os.fstat(child); expected=directory_identity(named)",
-    "   if not stat.S_ISDIR(opened.st_mode) or directory_identity(opened)!=expected: return None",
-    "   ancestors.append((current,component,child,expected)); current=child",
-    "  filename=parts[-1]",
-    "  named=os.stat(filename,dir_fd=current,follow_symlinks=False)",
-    "  if not stat.S_ISREG(named.st_mode): return None",
-    "  descriptor=os.open(filename,file_flags,dir_fd=current); descriptors.append(descriptor)",
-    "  opened=os.fstat(descriptor); current_file=os.stat(filename,dir_fd=current,follow_symlinks=False); expected=entry(named)",
-    "  if not stat.S_ISREG(opened.st_mode) or entry(opened)!=expected or entry(current_file)!=expected: return None",
-    "  for parent,component,child,expected in ancestors:",
-    "   named_ancestor=os.stat(component,dir_fd=parent,follow_symlinks=False); opened_ancestor=os.fstat(child)",
-    "   if not stat.S_ISDIR(named_ancestor.st_mode) or not stat.S_ISDIR(opened_ancestor.st_mode) or directory_identity(named_ancestor)!=expected or directory_identity(opened_ancestor)!=expected: return None",
-    "  current_file=os.stat(filename,dir_fd=current,follow_symlinks=False)",
-    "  if entry(current_file)!=entry(named) or entry(os.fstat(descriptor))!=entry(named): return None",
-    "  return file_identity(named)",
-    " except (OSError,ValueError): return None",
-    " finally:",
-    "  for descriptor in reversed(descriptors):",
-    "   try: os.close(descriptor)",
-    "   except OSError: pass",
-    "class WinTime(ctypes.Structure): _fields_=[('low',ctypes.c_uint32),('high',ctypes.c_uint32)]",
-    "class WinInfo(ctypes.Structure): _fields_=[('attributes',ctypes.c_uint32),('creation',WinTime),('access',WinTime),('write',WinTime),('volume',ctypes.c_uint32),('size_high',ctypes.c_uint32),('size_low',ctypes.c_uint32),('links',ctypes.c_uint32),('index_high',ctypes.c_uint32),('index_low',ctypes.c_uint32)]",
-    "def win_value(v): return (v.volume,(v.index_high<<32)|v.index_low,(v.size_high<<32)|v.size_low,(v.write.high<<32)|v.write.low,(v.creation.high<<32)|v.creation.low)",
-    "def win_directory(v): return (v.volume,(v.index_high<<32)|v.index_low,v.attributes&0x410)",
-    "def windows_identity(path):",
-    " normalized=os.path.normpath(path)",
-    " if os.path.normcase(normalized)!=os.path.normcase(path): return None",
-    " path=normalized",
-    " handles=[]",
-    " try:",
-    "  drive,tail=os.path.splitdrive(path); components=[item for item in tail.replace('/',os.path.sep).split(os.path.sep) if item]",
-    "  if not drive or not components: return None",
-    "  kernel=ctypes.windll.kernel32; create=kernel.CreateFileW; create.argtypes=[ctypes.c_wchar_p,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_void_p,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_void_p]; create.restype=ctypes.c_void_p",
-    "  info=kernel.GetFileInformationByHandle; info.argtypes=[ctypes.c_void_p,ctypes.POINTER(WinInfo)]; info.restype=ctypes.c_int; close=kernel.CloseHandle; close.argtypes=[ctypes.c_void_p]",
-    "  current=drive+os.path.sep",
-    "  for index,component in enumerate(components):",
-    "   current=os.path.join(current,component); is_file=index==len(components)-1; flags=0x00200000|(0 if is_file else 0x02000000)",
-    "   handle=create(current,0,0x00000001|0x00000002,None,3,flags,None)",
-    "   if handle in (None,0,ctypes.c_void_p(-1).value): return None",
-    "   value=WinInfo()",
-    "   if not info(ctypes.c_void_p(handle),ctypes.byref(value)): close(ctypes.c_void_p(handle)); return None",
-    "   is_directory=bool(value.attributes&0x10)",
-    "   if bool(value.attributes&0x400) or is_directory==is_file: close(ctypes.c_void_p(handle)); return None",
-    "   handles.append((handle,current,value))",
-    "  # Access-zero handles do not pin names; validate named prefixes and then the final leaf.",
-    "  for handle,named_path,expected in handles:",
-    "   current_info=WinInfo()",
-    "   if not info(ctypes.c_void_p(handle),ctypes.byref(current_info)): return None",
-    "   is_directory=bool(expected.attributes&0x10); flags=0x00200000|(0x02000000 if is_directory else 0)",
-    "   named_handle=create(named_path,0,0x00000001|0x00000002,None,3,flags,None)",
-    "   if named_handle in (None,0,ctypes.c_void_p(-1).value): return None",
-    "   try:",
-    "    named_info=WinInfo()",
-    "    if not info(ctypes.c_void_p(named_handle),ctypes.byref(named_info)): return None",
-    "    for observed in (current_info,named_info):",
-    "     if is_directory:",
-    "      if win_directory(observed)!=win_directory(expected): return None",
-    "     elif observed.attributes!=expected.attributes or observed.links!=expected.links or win_value(observed)!=win_value(expected): return None",
-    "   finally: close(ctypes.c_void_p(named_handle))",
-    "  return win_value(handles[-1][2])",
-    " except BaseException: return None",
-    " finally:",
-    "  for handle,_path,_value in reversed(handles): close(ctypes.c_void_p(handle))",
-    "def identity(path):",
-    " if not isinstance(path,str) or not os.path.isabs(path) or '\\0' in path or any(ord(c)<32 for c in path): return None",
-    " return windows_identity(path) if os.name=='nt' else posix_identity(path)",
-    "def owned(dist,module):",
-    " try:",
-    "  files=dist.files",
-    "  origin=getattr(module,'__file__',None)",
-    "  specification=getattr(module,'__spec__',None)",
-    "  specification_origin=getattr(specification,'origin',None)",
-    "  loader=getattr(specification,'loader',None)",
-    "  if files is None or not isinstance(origin,str) or not isinstance(specification_origin,str) or loader is None or not os.path.isabs(origin): return False",
-    "  normalized=os.path.normcase(os.path.abspath(origin))",
-    "  if normalized!=os.path.normcase(os.path.abspath(specification_origin)): return False",
-    "  origin_identity=identity(origin)",
-    "  if origin_identity is None: return False",
-    "  for index,item in enumerate(files):",
-    "   if index>=100000: return False",
-    "   try: candidate=os.fspath(dist.locate_file(item))",
-    "   except (OSError,TypeError,ValueError): continue",
-    "   if not isinstance(candidate,str) or not os.path.isabs(candidate) or os.path.normcase(os.path.abspath(candidate))!=normalized: continue",
-    "   if identity(candidate)!=origin_identity: return False",
-    "   if getattr(module,'__file__',None)!=origin or getattr(module,'__spec__',None) is not specification or getattr(specification,'origin',None)!=specification_origin or getattr(specification,'loader',None) is not loader or identity(origin)!=origin_identity: return False",
-    "   return True",
-    " except BaseException: return False",
-    " return False",
-    "out={}",
-    "for d in deps:",
-    " try:",
-    "  bounds=(d.get('exactVersion'),d.get('minimumVersion'),d.get('maximumVersionExclusive'))",
-    "  if any(v is not None and (not isinstance(v,str) or not 0<len(v)<=VERSION_FIELD_MAX_LENGTH or '\\0' in v or any(ord(c)<32 for c in v)) for v in bounds): raise ValueError()",
-    "  dist=importlib.metadata.distribution(d['distribution'])",
-    "  module=importlib.import_module(d['importModule'])",
-    "  version=dist.version",
-    "  valid=isinstance(version,str) and 0<len(version)<=VERSION_FIELD_MAX_LENGTH and '\\0' not in version and not any(ord(c)<32 for c in version)",
-    "  spec=Requirement(d['installSpec']).specifier if Requirement else None",
-    "  supported=bool(valid and spec is not None and Version and owned(dist,module) and spec.contains(Version(version),prereleases=False))",
-    " except BaseException: supported=False",
-    " out[d['importModule']]={'supported':supported}",
-    "print(json.dumps(out))"
-  ].join("\n");
-  const { stdout } = await execFileAsync(executable, ["-I", "-c", program], {
-    env: buildPythonProcessEnvironment(),
-    shell: false,
-    timeout: 10_000,
-    windowsHide: true
-  });
-  const result = JSON.parse(stdout.trim()) as Record<string, { supported?: unknown }>;
-  return classifyDependencyProbe(dependencies, result);
+  if (dependencies.length === 0) return { missing: [] };
+  const result = await startDependencyGuardProbe(environment, dependencies, { helperPath }).completion;
+  return classifyDependencyProbe(dependencies, result.supported);
 }
 
 export function classifyDependencyProbe(
   dependencies: readonly PythonDependency[],
-  result: Readonly<Record<string, { supported?: unknown }>>
+  supported: readonly boolean[]
 ): DependencyProbe {
-  const supported = (dependency: PythonDependency): boolean => {
-    const observed = result[dependency.importModule];
-    return observed?.supported === true;
-  };
   return {
-    missing: dependencies.filter((dependency) => !supported(dependency)).map((dependency) => dependency.installSpec),
-    available: dependencies.filter(supported).map((dependency) => dependency.importModule)
+    missing: dependencies
+      .filter((_dependency, index) => supported[index] !== true)
+      .map((dependency) => dependency.installSpec)
   };
 }
 

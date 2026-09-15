@@ -10,6 +10,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Changed
 
+- Dependency discovery and installation validation share one implementation of package-version and provenance checks.
 - R notebook dependency and discovery tests run in the explicit native R tier instead of detecting R during ordinary unit runs.
 - Generated Polars code includes only the integer helpers needed by its By Example and Group By steps.
 - Generated Pandas code for a constant By Example column omits unused helpers while preserving input and output checks.

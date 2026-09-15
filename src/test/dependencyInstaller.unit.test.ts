@@ -13,6 +13,7 @@ import {
   DependencyInstallAbortedError,
   DependencyInstallExitUnconfirmedError,
   DependencyInstallReadyTimeoutError,
+  startDependencyGuardProbe,
   startDependencyGuardStatus,
   startDependencyGuardValidation,
   startDependencyInstall,
@@ -21,6 +22,7 @@ import {
   type OwnedDependencyInstall
 } from "../extension/dependencyInstaller";
 import type { PythonEnvironment } from "../extension/pythonEnvironment";
+import { PythonDependencyProbeRegistry } from "../extension/pythonDependencyState";
 import { requiredDependencies } from "../extension/pythonEnvironmentModel";
 
 const OWNED_PYTHON_PROCESS_ENVIRONMENT = {
@@ -582,6 +584,129 @@ describe("owned dependency installation", () => {
 });
 
 describe("dependency guard status and validation", () => {
+  it("returns the exact ordered discovery result only after close", async () => {
+    const child = new DependencyChildProcess();
+    let privateCwd: string | undefined;
+    const command = startDependencyGuardProbe(TEST_ENVIRONMENT, TEST_DEPENDENCIES, {
+      helperPath: TEST_HELPER_PATH,
+      spawnProcess: (_executable, _args, options) => {
+        privateCwd = options.cwd as string;
+        return child as unknown as ChildProcess;
+      }
+    });
+    child.emit("spawn");
+    expect(child.inputFrames()).toEqual([
+      {
+        protocol: DEPENDENCY_GUARD_PROTOCOL,
+        kind: "probe",
+        environment: expectedWireEnvironment(),
+        dependencies: TEST_DEPENDENCIES.map((dependency) => ({
+          ...dependency,
+          exactVersion: dependency.exactVersion ?? null,
+          minimumVersion: dependency.minimumVersion ?? null,
+          maximumVersionExclusive: dependency.maximumVersionExclusive ?? null
+        }))
+      }
+    ]);
+    const result = { protocol: DEPENDENCY_GUARD_PROTOCOL, kind: "probe", supported: [false, true] };
+    emitFrame(child, result);
+    let settled = false;
+    void command.completion.then(() => {
+      settled = true;
+    });
+    child.emit("exit", 0, null);
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(existsSync(privateCwd!)).toBe(true);
+    child.emit("close", 0, null);
+    await expect(command.completion).resolves.toEqual(result);
+    await expect(command.ownershipReleased).resolves.toBeUndefined();
+    expect(existsSync(privateCwd!)).toBe(false);
+    expect(child.kill).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { supported: [] },
+    { supported: [true] },
+    { supported: [true, false, true] },
+    { supported: [true, "false"] },
+    { supported: { first: true, second: false } }
+  ])("rejects a discovery result with wrong count or nonboolean entries: $supported", async ({ supported }) => {
+    const child = new DependencyChildProcess();
+    const command = startDependencyGuardProbe(TEST_ENVIRONMENT, TEST_DEPENDENCIES, guardOptions(child));
+    child.emit("spawn");
+    emitFrame(child, { protocol: DEPENDENCY_GUARD_PROTOCOL, kind: "probe", supported });
+    child.emit("close", 0, null);
+    await expect(command.completion).rejects.toBeInstanceOf(DependencyGuardProtocolError);
+    await expect(command.ownershipReleased).resolves.toBeUndefined();
+  });
+
+  it("terminates timed-out discovery once and coalesces retries until actual close", async () => {
+    vi.useFakeTimers();
+    const child = new DependencyChildProcess();
+    let privateCwd: string | undefined;
+    const spawnProcess = vi.fn((_executable: string, _args: string[], options: SpawnOptions) => {
+      privateCwd = options.cwd as string;
+      return child as unknown as ChildProcess;
+    });
+    const command = startDependencyGuardProbe(TEST_ENVIRONMENT, TEST_DEPENDENCIES, {
+      helperPath: TEST_HELPER_PATH,
+      spawnProcess
+    });
+    const launch = vi.fn(() => command.completion.then(() => ({ missing: [] })));
+    const registry = new PythonDependencyProbeRegistry(() => false, launch);
+    const first = registry.probe(TEST_ENVIRONMENT, TEST_DEPENDENCIES);
+    let settled = false;
+    void Promise.resolve(first.result).then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      }
+    );
+    child.emit("spawn");
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(child.kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(child.kill).toHaveBeenCalledExactlyOnceWith("SIGTERM");
+    expect(settled).toBe(false);
+    expect(existsSync(privateCwd!)).toBe(true);
+    const retry = registry.probe(TEST_ENVIRONMENT, TEST_DEPENDENCIES);
+    expect(retry.result).toBe(first.result);
+    expect(launch).toHaveBeenCalledOnce();
+    expect(spawnProcess).toHaveBeenCalledOnce();
+    expect(registry.diagnostics()).toMatchObject({ completedCount: 0, inFlightCount: 1 });
+    const rejected = expect(first.result).rejects.toBeInstanceOf(DependencyGuardCommandTimeoutError);
+    emitFrame(child, { protocol: DEPENDENCY_GUARD_PROTOCOL, kind: "probe", supported: [true, true] });
+    child.emit("close", 0, null);
+    await rejected;
+    await expect(command.ownershipReleased).resolves.toBeUndefined();
+    expect(registry.diagnostics()).toMatchObject({ completedCount: 0, inFlightCount: 0 });
+    expect(existsSync(privateCwd!)).toBe(false);
+    expect(child.kill).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("does not send discovery work after a late spawn crosses its deadline", async () => {
+    vi.useFakeTimers();
+    const child = new DependencyChildProcess();
+    const command = startDependencyGuardProbe(TEST_ENVIRONMENT, TEST_DEPENDENCIES, {
+      ...guardOptions(child),
+      timeoutMs: 25
+    });
+    await vi.advanceTimersByTimeAsync(25);
+    expect(child.kill).toHaveBeenCalledExactlyOnceWith("SIGTERM");
+    child.emit("spawn");
+    expect(child.inputBytes()).toHaveLength(0);
+    expect(child.stdin.writableEnded).toBe(true);
+    const rejected = expect(command.completion).rejects.toBeInstanceOf(DependencyGuardCommandTimeoutError);
+    child.emit("close", null, "SIGTERM");
+    await rejected;
+    await expect(command.ownershipReleased).resolves.toBeUndefined();
+    expect(child.kill).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     {
       mode: "status",

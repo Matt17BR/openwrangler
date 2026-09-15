@@ -9,7 +9,8 @@ import { describe, expect, it } from "vitest";
 import {
   classifyDependencyProbe,
   probeDependencies,
-  PYTHON_DEPENDENCY_VERSION_MAX_LENGTH
+  PYTHON_DEPENDENCY_VERSION_MAX_LENGTH,
+  type PythonEnvironment
 } from "../extension/pythonEnvironment";
 import type { PythonDependency } from "../extension/pythonEnvironmentModel";
 
@@ -24,20 +25,18 @@ interface VersionContract {
 describe("selected-interpreter PEP 440 dependency probing", () => {
   it("trusts only the selected interpreter's compatibility decision", () => {
     const dependency = contract().dependency;
-    expect(classifyDependencyProbe([dependency], { [dependency.importModule]: { supported: true } })).toEqual({
-      available: [dependency.importModule],
+    expect(classifyDependencyProbe([dependency], [true])).toEqual({
       missing: []
     });
-    for (const observed of [
-      {},
-      { [dependency.importModule]: { supported: false } },
-      { [dependency.importModule]: { supported: "true" } }
-    ]) {
-      expect(classifyDependencyProbe([dependency], observed)).toEqual({
-        available: [],
+    for (const observed of [false, "true"] as const) {
+      expect(classifyDependencyProbe([dependency], [observed] as readonly boolean[])).toEqual({
         missing: [dependency.installSpec]
       });
     }
+    const ordered = [dependency, { ...dependency, installSpec: "middle" }, { ...dependency, installSpec: "last" }];
+    expect(classifyDependencyProbe(ordered, [false, true, false])).toEqual({
+      missing: [dependency.installSpec, "last"]
+    });
   });
 
   it("matches the post-install PEP 440 contract in a real isolated probe", async () => {
@@ -45,19 +44,43 @@ describe("selected-interpreter PEP 440 dependency probing", () => {
     expect(fixture.maximumVersionLength).toBe(PYTHON_DEPENDENCY_VERSION_MAX_LENGTH);
     const root = await mkdtemp(path.join(tmpdir(), "openwrangler-pep440-probe-"));
     try {
-      const environment = path.join(root, "venv");
-      await execFileAsync(selectedPython(), ["-m", "venv", environment], { timeout: 30_000 });
+      const environmentRoot = path.join(root, "venv");
+      await execFileAsync(selectedPython(), ["-m", "venv", environmentRoot], { timeout: 30_000 });
       const executable = path.join(
-        environment,
+        environmentRoot,
         process.platform === "win32" ? "Scripts" : "bin",
         process.platform === "win32" ? "python.exe" : "python"
       );
       const { stdout } = await execFileAsync(
         executable,
-        ["-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+        [
+          "-I",
+          "-c",
+          [
+            "import json,os,sys,sysconfig",
+            "executable=os.path.abspath(sys.executable); root=os.path.realpath(os.path.abspath(sys.prefix))",
+            "e=os.stat(executable); r=os.stat(root)",
+            "print(json.dumps({'purelib':sysconfig.get_path('purelib'),'environment':{",
+            "'executable':executable,'executableIdentity':{",
+            "'device':str(e.st_dev),'inode':str(e.st_ino),'size':str(e.st_size),",
+            "'mtimeNs':str(e.st_mtime_ns),'ctimeNs':str(e.st_ctime_ns)},",
+            "'version':'.'.join(str(p) for p in sys.version_info[:3]),",
+            "'packageRoot':root,'packageRootIdentity':{'device':str(r.st_dev),'inode':str(r.st_ino)},",
+            "'source':'configuration'}}))"
+          ].join("\n")
+        ],
         { timeout: 10_000 }
       );
-      const purelib = stdout.trim();
+      const { purelib, environment } = JSON.parse(stdout) as {
+        purelib: string;
+        environment: PythonEnvironment;
+      };
+      const probe = (dependencies: readonly PythonDependency[]) =>
+        probeDependencies(
+          environment,
+          dependencies,
+          path.join(process.cwd(), "python", "openwrangler_runtime", "dependency_guard.py")
+        );
       const modulePath = path.join(purelib, `${fixture.dependency.importModule}.py`);
       await writeFile(modulePath, "VALUE = 1\n", "utf8");
       const metadataRoot = path.join(purelib, `${fixture.dependency.importModule}-0.dist-info`);
@@ -73,17 +96,14 @@ describe("selected-interpreter PEP 440 dependency probing", () => {
         "utf8"
       );
       await writeFile(recordPath, `owned-distribution-module/${fixture.dependency.importModule}.py,,\n`, "utf8");
-      await expect(probeDependencies(executable, [fixture.dependency]), "shadowed import module").resolves.toEqual({
-        available: [],
+      await expect(probe([fixture.dependency]), "shadowed import module").resolves.toEqual({
         missing: [fixture.dependency.installSpec]
       });
       await writeFile(recordPath, `${fixture.dependency.importModule}.py,,\n`, "utf8");
-      const rejected = { available: [], missing: [fixture.dependency.installSpec] };
+      const rejected = { missing: [fixture.dependency.installSpec] };
 
       await writeFile(modulePath, "__file__ = __file__ + '.moved'\n", "utf8");
-      await expect(probeDependencies(executable, [fixture.dependency]), "path-changing module").resolves.toEqual(
-        rejected
-      );
+      await expect(probe([fixture.dependency]), "path-changing module").resolves.toEqual(rejected);
       await writeFile(modulePath, "VALUE = 1\n", "utf8");
 
       if (process.platform === "win32") {
@@ -94,10 +114,7 @@ describe("selected-interpreter PEP 440 dependency probing", () => {
           ),
           "utf8"
         );
-        await expect(
-          probeDependencies(executable, [fixture.dependency]),
-          "dot-component module origin"
-        ).resolves.toEqual(rejected);
+        await expect(probe([fixture.dependency]), "dot-component module origin").resolves.toEqual(rejected);
 
         const redundant = path.join(purelib, "origin-redundant");
         await mkdir(redundant);
@@ -110,9 +127,7 @@ describe("selected-interpreter PEP 440 dependency probing", () => {
           ].join("\n"),
           "utf8"
         );
-        await expect(probeDependencies(executable, [fixture.dependency]), "redundant module origin").resolves.toEqual(
-          rejected
-        );
+        await expect(probe([fixture.dependency]), "redundant module origin").resolves.toEqual(rejected);
         await writeFile(modulePath, "VALUE = 1\n", "utf8");
       }
       const changingPackage = path.join(purelib, fixture.dependency.importModule);
@@ -154,7 +169,7 @@ describe("selected-interpreter PEP 440 dependency probing", () => {
             " if filename == '__init__.py' and not _probe_changed: _probe_mutate()",
             " return descriptor",
             "def _probe_trace(frame,event,arg):",
-            " if event == 'line' and frame.f_code.co_name == 'windows_identity' and frame.f_locals.get('is_file') and not _probe_changed: _probe_mutate()",
+            " if event == 'line' and frame.f_code.co_name == '_windows_regular_module_file_identity' and frame.f_locals.get('is_file') and not _probe_changed: _probe_mutate()",
             " return _probe_trace",
             "if os.name == 'nt': sys.settrace(_probe_trace)",
             "else: os.open = _probe_open",
@@ -163,8 +178,8 @@ describe("selected-interpreter PEP 440 dependency probing", () => {
           "utf8"
         );
         await writeFile(recordPath, `${fixture.dependency.importModule}/__init__.py,,\n`, "utf8");
-        await expect(probeDependencies(executable, [fixture.dependency]), change).resolves.toEqual(
-          change === "sibling" ? { available: [fixture.dependency.importModule], missing: [] } : rejected
+        await expect(probe([fixture.dependency]), change).resolves.toEqual(
+          change === "sibling" ? { missing: [] } : rejected
         );
         expect(readFileSync(mutationMarker, "utf8")).toBe("changed");
         await rm(changingPackage, { recursive: true });
@@ -176,8 +191,7 @@ describe("selected-interpreter PEP 440 dependency probing", () => {
       await unlink(modulePath);
       await writeFile(hardlinkSource, "VALUE = 1\n", "utf8");
       await link(hardlinkSource, modulePath);
-      await expect(probeDependencies(executable, [fixture.dependency]), "hard-linked module").resolves.toEqual({
-        available: [fixture.dependency.importModule],
+      await expect(probe([fixture.dependency]), "hard-linked module").resolves.toEqual({
         missing: []
       });
       await unlink(modulePath);
@@ -189,9 +203,7 @@ describe("selected-interpreter PEP 440 dependency probing", () => {
         await unlink(modulePath);
         await writeFile(symlinkSource, "VALUE = 1\n", "utf8");
         await symlink(symlinkSource, modulePath);
-        await expect(probeDependencies(executable, [fixture.dependency]), "symlinked module").resolves.toEqual(
-          rejected
-        );
+        await expect(probe([fixture.dependency]), "symlinked module").resolves.toEqual(rejected);
         await unlink(modulePath);
         await unlink(symlinkSource);
         await writeFile(modulePath, "VALUE = 1\n", "utf8");
@@ -204,9 +216,7 @@ describe("selected-interpreter PEP 440 dependency probing", () => {
       await writeFile(path.join(linkedPackageSource, "__init__.py"), "VALUE = 1\n", "utf8");
       await symlink(linkedPackageSource, linkedPackage, process.platform === "win32" ? "junction" : "dir");
       await writeFile(recordPath, `${fixture.dependency.importModule}/__init__.py,,\n`, "utf8");
-      await expect(probeDependencies(executable, [fixture.dependency]), "symlinked package directory").resolves.toEqual(
-        rejected
-      );
+      await expect(probe([fixture.dependency]), "symlinked package directory").resolves.toEqual(rejected);
       await unlink(linkedPackage);
       await writeFile(modulePath, "VALUE = 1\n", "utf8");
 
@@ -216,7 +226,7 @@ describe("selected-interpreter PEP 440 dependency probing", () => {
       await writeFile(path.join(namespaceRoot, "data.txt"), "namespace\n", "utf8");
       await writeFile(recordPath, `${namespaceName}/data.txt,,\n`, "utf8");
       await expect(
-        probeDependencies(executable, [{ ...fixture.dependency, importModule: namespaceName }]),
+        probe([{ ...fixture.dependency, importModule: namespaceName }]),
         "namespace module"
       ).resolves.toEqual(rejected);
 
@@ -237,7 +247,7 @@ describe("selected-interpreter PEP 440 dependency probing", () => {
       await writeFile(path.join(purelib, "openwrangler-archive.pth"), `${archivePath}\n`, "utf8");
       await writeFile(recordPath, `${archiveName}/${archivedModule}.py,,\n`, "utf8");
       await expect(
-        probeDependencies(executable, [{ ...fixture.dependency, importModule: archivedModule }]),
+        probe([{ ...fixture.dependency, importModule: archivedModule }]),
         "zip-imported module"
       ).resolves.toEqual(rejected);
 
@@ -260,13 +270,8 @@ describe("selected-interpreter PEP 440 dependency probing", () => {
           minimumVersion: undefined,
           maximumVersionExclusive: undefined
         };
-        await expect(
-          probeDependencies(executable, [dependency]),
-          `descriptor length ${version.length}`
-        ).resolves.toEqual(
-          supported
-            ? { available: [fixture.dependency.importModule], missing: [] }
-            : { available: [], missing: [dependency.installSpec] }
+        await expect(probe([dependency]), `descriptor length ${version.length}`).resolves.toEqual(
+          supported ? { missing: [] } : { missing: [dependency.installSpec] }
         );
       }
       for (const entry of fixture.cases) {
@@ -277,10 +282,8 @@ describe("selected-interpreter PEP 440 dependency probing", () => {
           ),
           "utf8"
         );
-        await expect(probeDependencies(executable, [fixture.dependency]), entry.name).resolves.toEqual(
-          entry.supported
-            ? { available: [fixture.dependency.importModule], missing: [] }
-            : { available: [], missing: [fixture.dependency.installSpec] }
+        await expect(probe([fixture.dependency]), entry.name).resolves.toEqual(
+          entry.supported ? { missing: [] } : { missing: [fixture.dependency.installSpec] }
         );
       }
     } finally {

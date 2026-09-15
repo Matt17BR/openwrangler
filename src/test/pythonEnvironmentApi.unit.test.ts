@@ -5,7 +5,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import * as vscode from "vscode";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PythonEnvironmentSelectionChangeEvent } from "../extension/pythonEnvironment";
+import type { PythonEnvironment, PythonEnvironmentSelectionChangeEvent } from "../extension/pythonEnvironment";
 
 import {
   classifyDependencyProbe,
@@ -197,18 +197,21 @@ describe("Python environment API broker", () => {
       process.env.PYTHONPATH = directory;
 
       const environment = await resolveConfiguredEnvironment(executable);
-      const dependencies = await probeDependencies(environment.executable, [
-        {
-          importModule: moduleName,
-          distribution: moduleName,
-          installSpec: moduleName
-        }
-      ]);
+      const dependencies = await probeDependencies(
+        environment,
+        [
+          {
+            importModule: moduleName,
+            distribution: moduleName,
+            installSpec: moduleName
+          }
+        ],
+        path.join(process.cwd(), "python", "openwrangler_runtime", "dependency_guard.py")
+      );
 
       expect(path.isAbsolute(environment.executable)).toBe(true);
       expect(environment.version).toMatch(/^3\.(?:10|11|12|13|14)\.\d+$/);
       expect(dependencies).toEqual({
-        available: [],
         missing: [moduleName]
       });
     } finally {
@@ -221,13 +224,17 @@ describe("Python environment API broker", () => {
   it("rejects an unpinned dependency-probe executable before process creation", async () => {
     const executable = process.platform === "win32" ? "\\root-relative\\python.exe" : "python3";
     await expect(
-      probeDependencies(executable, [
-        {
-          importModule: "pandas",
-          distribution: "pandas",
-          installSpec: "pandas"
-        }
-      ])
+      probeDependencies(
+        { executable } as PythonEnvironment,
+        [
+          {
+            importModule: "pandas",
+            distribution: "pandas",
+            installSpec: "pandas"
+          }
+        ],
+        path.join(process.cwd(), "python", "openwrangler_runtime", "dependency_guard.py")
+      )
     ).rejects.toThrow("requires an absolute executable path");
   });
 
@@ -239,15 +246,11 @@ describe("Python environment API broker", () => {
       exactVersion: "2026.7.0"
     };
 
-    expect(classifyDependencyProbe([exact], { fsspec: { supported: true } })).toEqual({
-      available: ["fsspec"],
+    expect(classifyDependencyProbe([exact], [true])).toEqual({
       missing: []
     });
     for (const observed of [undefined, false]) {
-      expect(
-        classifyDependencyProbe([exact], observed === undefined ? {} : { fsspec: { supported: observed } })
-      ).toEqual({
-        available: [],
+      expect(classifyDependencyProbe([exact], observed === undefined ? [] : [observed])).toEqual({
         missing: ["fsspec==2026.7.0"]
       });
     }

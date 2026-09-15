@@ -1675,6 +1675,12 @@ It still locks and validates an existing journal, cleans owned abandoned tempora
 a retained mutation needs exact validation. Clean status is an observation at that time; the guard does not keep
 a lock through later runtime use.
 
+The standalone dependency guard owns the package-version and module-provenance checks used by both availability
+and fresh post-install validation. Availability uses its read-only probe, returning one result per dependency in
+request order after rechecking the captured interpreter. It neither inspects the installation journal nor runs pip.
+After ten seconds the host requests probe termination and retains its flight until the process closes; a late result
+cannot turn that timeout into success. Status and installation recovery keep their separate settlement rules.
+
 Dependency availability and post-install validation accept hard-linked regular module files when the supported
 version, distribution record and import origin agree. Checks revalidate named ancestor directory objects and the
 final module file, refusing symlink or reparse traversal. Unrelated sibling files and directories may change without

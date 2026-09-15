@@ -29,11 +29,12 @@ describe("PythonDependencyProbeRegistry", () => {
     const second = registry.probe(environment, [dependency]);
     await vi.waitFor(() => expect(launch).toHaveBeenCalledOnce());
 
+    expect(launch).toHaveBeenCalledWith(environment, [dependency]);
     expect(first.key).toBe(second.key);
     expect(first.result).toBe(second.result);
     expect(registry.diagnostics()).toMatchObject({ completedCount: 0, inFlightCount: 1 });
 
-    pending.resolve({ missing: [], available: ["polars"] });
+    pending.resolve({ missing: [] });
     const [firstOutcome, secondOutcome] = await Promise.all([first.result, second.result]);
     expect(firstOutcome.missing).toEqual([]);
     expect(firstOutcome.isCurrent()).toBe(true);
@@ -90,12 +91,12 @@ describe("PythonDependencyProbeRegistry", () => {
       const currentHandle = registry.probe(environment, [dependency]);
       await vi.waitFor(() => expect(launch).toHaveBeenCalledTimes(2));
 
-      if (completion === "success") stale.resolve({ missing: ["polars"], available: [] });
+      if (completion === "success") stale.resolve({ missing: ["polars"] });
       else stale.reject(new Error("old probe failed"));
       await expect(staleOutcome).resolves.toBeInstanceOf(DetachedDependencyProbeError);
       expect(registry.diagnostics()).toMatchObject({ completedCount: 0, inFlightCount: 1 });
 
-      current.resolve({ missing: [], available: ["polars"] });
+      current.resolve({ missing: [] });
       const outcome = await currentHandle.result;
       expect(outcome.missing).toEqual([]);
       expect(outcome.isCurrent()).toBe(true);
@@ -104,7 +105,7 @@ describe("PythonDependencyProbeRegistry", () => {
   );
 
   it("rejects a deferred launch invalidated before the probe process begins", async () => {
-    const launch = vi.fn(async () => ({ missing: [], available: ["polars"] }));
+    const launch = vi.fn(async () => ({ missing: [] }));
     const registry = new PythonDependencyProbeRegistry(() => false, launch);
     const handle = registry.probe(environment, [dependency]);
 
@@ -124,7 +125,7 @@ describe("PythonDependencyProbeRegistry", () => {
     const first = registry.probe(environment, [dependency]);
     const second = registry.probe(environment, [dependency]);
 
-    pending.resolve({ missing: ["polars"], available: [] });
+    pending.resolve({ missing: ["polars"] });
     const [firstOutcome, secondOutcome] = await Promise.all([first.result, second.result]);
     registry.invalidateKey(first.key);
 
@@ -146,8 +147,8 @@ describe("PythonDependencyProbeRegistry", () => {
     await vi.waitFor(() => expect(launch).toHaveBeenCalledTimes(2));
 
     registry.invalidatePackageEnvironment(pythonPackageEnvironmentKey(firstEnvironment));
-    launches[0]!.resolve({ missing: [], available: ["polars"] });
-    launches[1]!.resolve({ missing: [], available: ["polars"] });
+    launches[0]!.resolve({ missing: [] });
+    launches[1]!.resolve({ missing: [] });
 
     await expect(Promise.all(outcomes)).resolves.toEqual([
       expect.any(DetachedDependencyProbeError),
@@ -157,10 +158,7 @@ describe("PythonDependencyProbeRegistry", () => {
   });
 
   it("does not cache failures and permits the exact request to retry", async () => {
-    const launch = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("probe failed"))
-      .mockResolvedValueOnce({ missing: [], available: ["polars"] });
+    const launch = vi.fn().mockRejectedValueOnce(new Error("probe failed")).mockResolvedValueOnce({ missing: [] });
     const registry = new PythonDependencyProbeRegistry(() => false, launch);
 
     await expect(registry.probe(environment, [dependency]).result).rejects.toThrow("probe failed");
@@ -173,7 +171,7 @@ describe("PythonDependencyProbeRegistry", () => {
   it("bounds completed results to 128 entries and refreshes recency on a cache hit", async () => {
     const registry = new PythonDependencyProbeRegistry(
       () => false,
-      async () => ({ missing: [], available: ["engine"] })
+      async () => ({ missing: [] })
     );
     const descriptor = (index: number): PythonDependency => ({
       importModule: `engine_${index}`,

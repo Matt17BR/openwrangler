@@ -333,7 +333,7 @@ def _normalize_environment(value: Any, *, compare_actual: bool, code: str) -> di
     return normalized
 
 
-def _normalize_dependency(value: Any, *, code: str) -> dict[str, Any]:
+def _normalize_dependency(value: Any, *, code: str, for_probe: bool = False) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) != _DEPENDENCY_KEYS:
         _fail(code)
     import_module = _bounded_string(value["importModule"], maximum=256, code=code)
@@ -344,6 +344,18 @@ def _normalize_dependency(value: Any, *, code: str) -> dict[str, Any]:
     exact = value["exactVersion"]
     minimum = value["minimumVersion"]
     maximum = value["maximumVersionExclusive"]
+    normalized = {
+        "importModule": import_module,
+        "distribution": distribution,
+        "installSpec": install_spec,
+        "exactVersion": exact,
+        "minimumVersion": minimum,
+        "maximumVersionExclusive": maximum,
+    }
+    if for_probe:
+        # Availability reports unsupported descriptors without requiring packaging
+        # to be importable; mutation requests retain the strict PEP 440 checks below.
+        return normalized
     exact_version = None
     minimum_version = None
     maximum_version = None
@@ -414,14 +426,7 @@ def _normalize_dependency(value: Any, *, code: str) -> dict[str, Any]:
                 or not minimum_version < excluded_version < maximum_version
             ):
                 _fail(code)
-    return {
-        "importModule": import_module,
-        "distribution": distribution,
-        "installSpec": install_spec,
-        "exactVersion": exact,
-        "minimumVersion": minimum,
-        "maximumVersionExclusive": maximum,
-    }
+    return normalized
 
 
 def _normalize_legacy_journal_dependency(value: Any, *, code: str) -> dict[str, Any]:
@@ -440,11 +445,13 @@ def _normalize_legacy_journal_dependency(value: Any, *, code: str) -> dict[str, 
     return cast(dict[str, Any], value)
 
 
-def _normalize_dependencies(value: Any, *, code: str, allow_legacy: bool = False) -> list[dict[str, Any]]:
+def _normalize_dependencies(
+    value: Any, *, code: str, allow_legacy: bool = False, for_probe: bool = False
+) -> list[dict[str, Any]]:
     if not isinstance(value, list) or not 1 <= len(value) <= MAX_DEPENDENCIES:
         _fail(code)
     try:
-        dependencies = [_normalize_dependency(dependency, code=code) for dependency in value]
+        dependencies = [_normalize_dependency(dependency, code=code, for_probe=for_probe) for dependency in value]
     except GuardError:
         if not allow_legacy:
             raise
@@ -467,6 +474,15 @@ def _normalize_request(mode: str, request: dict[str, Any]) -> dict[str, Any]:
             "token": token,
             "environment": _normalize_environment(request["environment"], compare_actual=True, code="invalid_request"),
             "dependencies": dependencies,
+        }
+    elif mode == "probe":
+        if set(request) != {"protocol", "kind", "environment", "dependencies"}:
+            _fail("invalid_request")
+        normalized = {
+            "protocol": request["protocol"],
+            "kind": request["kind"],
+            "environment": _normalize_environment(request["environment"], compare_actual=True, code="invalid_request"),
+            "dependencies": _normalize_dependencies(request["dependencies"], code="invalid_request", for_probe=True),
         }
     elif mode == "status":
         if set(request) != {"protocol", "kind", "environment"}:
@@ -2687,27 +2703,47 @@ def _distribution_owns_module(distribution: Any, module: Any) -> bool:
     return False
 
 
+def _validate_dependency(dependency: dict[str, Any]) -> None:
+    for field in ("exactVersion", "minimumVersion", "maximumVersionExclusive"):
+        bound = dependency.get(field)
+        if bound is not None:
+            _bounded_string(bound, maximum=VERSION_FIELD_MAX_LENGTH, code="validation_failed")
+    try:
+        distribution = importlib.metadata.distribution(dependency["distribution"])
+        module = importlib.import_module(dependency["importModule"])
+        observed = distribution.version
+    except BaseException:
+        _fail("validation_failed")
+    _bounded_string(observed, maximum=VERSION_FIELD_MAX_LENGTH, code="validation_failed")
+    if not _dependency_version_supported(dependency, observed):
+        _fail("validation_failed")
+    if not _distribution_owns_module(distribution, module):
+        _fail("validation_failed")
+
+
 def _validate_dependencies(dependencies: list[dict[str, Any]]) -> None:
     with _silence_file_descriptors():
         for dependency in dependencies:
+            _validate_dependency(dependency)
+
+
+def _run_probe(request: dict[str, Any]) -> int:
+    environment = request["environment"]
+    _revalidate_actual_environment(environment)
+    supported = []
+    with _silence_file_descriptors():
+        for dependency in request["dependencies"]:
             try:
-                distribution = importlib.metadata.distribution(dependency["distribution"])
-                module = importlib.import_module(dependency["importModule"])
-                observed = distribution.version
-            except BaseException:
-                _fail("validation_failed")
-            if (
-                not isinstance(observed, str)
-                or not observed
-                or len(observed) > VERSION_FIELD_MAX_LENGTH
-                or "\x00" in observed
-                or any(ord(character) < 0x20 for character in observed)
-            ):
-                _fail("validation_failed")
-            if not _dependency_version_supported(dependency, observed):
-                _fail("validation_failed")
-            if not _distribution_owns_module(distribution, module):
-                _fail("validation_failed")
+                _validate_dependency(dependency)
+            except GuardError as error:
+                if error.code != "validation_failed":
+                    raise
+                supported.append(False)
+            else:
+                supported.append(True)
+    _revalidate_actual_environment(environment)
+    _emit({"kind": "probe", "protocol": PROTOCOL, "supported": supported})
+    return EXIT_SUCCESS
 
 
 def _run_install(request: dict[str, Any]) -> int:
@@ -2807,7 +2843,7 @@ def _run_validate(request: dict[str, Any]) -> int:
 
 
 def main() -> int:
-    if len(sys.argv) != 2 or sys.argv[1] not in {"install", "status", "validate"}:
+    if len(sys.argv) != 2 or sys.argv[1] not in {"install", "status", "validate", "probe"}:
         with contextlib.suppress(BrokenPipeError, GuardError, OSError):
             _emit_error("invalid_request")
         return EXIT_INVALID_REQUEST
@@ -2819,6 +2855,8 @@ def main() -> int:
         request = _normalize_request(mode, raw_request)
         if mode == "install":
             return _run_install(request)
+        if mode == "probe":
+            return _run_probe(request)
         if mode == "status":
             return _run_status(request)
         return _run_validate(request)

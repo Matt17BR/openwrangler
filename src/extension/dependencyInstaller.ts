@@ -14,6 +14,7 @@ import {
   DEPENDENCY_GUARD_PROTOCOL,
   DependencyGuardCommandError,
   decodeDependencyGuardError,
+  decodeDependencyGuardProbe,
   decodeDependencyGuardReady,
   decodeDependencyGuardStatus,
   decodeDependencyGuardValidation,
@@ -23,6 +24,7 @@ import {
   encodeDependencyGuardFrame,
   isCanonicalDependencyGuardToken,
   validateDependencyGuardTarget,
+  type DependencyGuardProbe,
   type DependencyGuardReady,
   type DependencyGuardStatus,
   type DependencyGuardValidation
@@ -40,11 +42,13 @@ export {
   DEPENDENCY_GUARD_PROTOCOL,
   DependencyGuardCommandError,
   type DependencyGuardErrorCode,
+  type DependencyGuardProbe,
   type DependencyGuardReady,
   type DependencyGuardStatus,
   type DependencyGuardValidation
 } from "./dependencyGuardProtocol";
 export const DEPENDENCY_GUARD_COMMAND_TIMEOUT_MS = 30_000;
+export const DEPENDENCY_PROBE_TIMEOUT_MS = 10_000;
 export const DEPENDENCY_INSTALL_READY_TIMEOUT_MS = 30_000;
 export const DEPENDENCY_INSTALL_TIMEOUT_MS = 10 * 60_000;
 export const DEPENDENCY_INSTALL_SHUTDOWN_WAIT_MS = 5_000;
@@ -68,7 +72,7 @@ export interface OwnedDependencyInstall {
 
 export interface OwnedDependencyGuardCommand<Result> {
   readonly child: ChildProcess;
-  readonly mode: "status" | "validate";
+  readonly mode: Exclude<DependencyGuardMode, "install">;
   readonly executable: string;
   readonly completion: Promise<Result>;
   readonly ownershipReleased: Promise<void>;
@@ -191,6 +195,31 @@ export function startDependencyInstall(
     goFrame,
     workingDirectory,
     readyTimeoutMs
+  );
+}
+
+export function startDependencyGuardProbe(
+  environment: PythonEnvironment,
+  dependencies: readonly PythonDependency[],
+  options: DependencyGuardClientOptions
+): OwnedDependencyGuardCommand<DependencyGuardProbe> {
+  validateDependencyGuardTarget(environment, options.helperPath);
+  const expectedCount = dependencies.length;
+  if (expectedCount === 0) {
+    throw new Error("Python dependency probing requires at least one dependency.");
+  }
+  const requestFrame = encodeDependencyGuardFrame({
+    protocol: DEPENDENCY_GUARD_PROTOCOL,
+    kind: "probe",
+    environment: dependencyGuardEnvironmentWire(environment),
+    dependencies: dependencies.map(dependencyGuardDependencyWire)
+  });
+  return startDependencyGuardCommand(
+    "probe",
+    environment.executable,
+    { ...options, timeoutMs: options.timeoutMs ?? DEPENDENCY_PROBE_TIMEOUT_MS },
+    requestFrame,
+    (frame) => decodeDependencyGuardProbe(frame, expectedCount)
   );
 }
 
@@ -586,7 +615,7 @@ function dependencyInstallCloseFailure(state: DependencyInstallCloseState): Erro
 }
 
 function startDependencyGuardCommand<Result>(
-  mode: "status" | "validate",
+  mode: Exclude<DependencyGuardMode, "install">,
   executable: string,
   options: DependencyGuardClientOptions,
   requestFrame: Buffer,
@@ -620,6 +649,7 @@ function startDependencyGuardCommand<Result>(
   let processError: Error | undefined;
   let protocolError: Error | undefined;
   let helperError: DependencyGuardCommandError | undefined;
+  let probeTimeoutError: Error | undefined;
   let result: Result | undefined;
   let resultReceived = false;
   let output: BoundedDependencyGuardFrameReader | undefined;
@@ -696,7 +726,8 @@ function startDependencyGuardCommand<Result>(
     spawned = true;
     if (!guardStdio) return;
     try {
-      guardStdio.stdin.end(requestFrame);
+      // A late spawn after the probe deadline must not begin dependency imports.
+      guardStdio.stdin.end(probeTimeoutError ? undefined : requestFrame);
     } catch (error) {
       recordProcessError(
         new Error(`Open Wrangler could not send the dependency guard ${mode} request: ${asError(error).message}`)
@@ -718,17 +749,19 @@ function startDependencyGuardCommand<Result>(
     output?.dispose();
     closed = true;
     const cleanupError = workingDirectory.cleanup();
-    const failure = dependencyGuardCommandCloseFailure({
-      mode,
-      executable,
-      spawned,
-      processError,
-      protocolError,
-      helperError,
-      resultReceived,
-      code,
-      signal
-    });
+    const failure =
+      probeTimeoutError ??
+      dependencyGuardCommandCloseFailure({
+        mode,
+        executable,
+        spawned,
+        processError,
+        protocolError,
+        helperError,
+        resultReceived,
+        code,
+        signal
+      });
     const combined = combineCleanupFailure(failure, cleanupError);
     settleOwnership();
     if (combined) {
@@ -753,6 +786,19 @@ function startDependencyGuardCommand<Result>(
     timer = setTimeout(() => {
       output?.dispose();
       const uncertainty = new DependencyGuardCommandTimeoutError(mode, executable, timeoutMs);
+      if (mode === "probe") {
+        probeTimeoutError = uncertainty;
+        try {
+          if (!closed) child.kill("SIGTERM");
+        } catch (error) {
+          probeTimeoutError = new AggregateError(
+            [uncertainty, error],
+            "Open Wrangler could not terminate its timed-out dependency probe."
+          );
+        }
+        // Match discovery's execFile ownership: keep the flight pending until close.
+        return;
+      }
       try {
         if (!closed) unrefCommand();
         reject(uncertainty);
@@ -783,7 +829,7 @@ function startDependencyGuardCommand<Result>(
 }
 
 interface DependencyGuardCommandCloseState {
-  readonly mode: "status" | "validate";
+  readonly mode: Exclude<DependencyGuardMode, "install">;
   readonly executable: string;
   readonly spawned: boolean;
   readonly processError?: Error;

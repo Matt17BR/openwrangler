@@ -132,6 +132,11 @@ Use the existing owners to choose a focused source check:
   request correlation and effective-query cache ownership. [Grid clipboard](../src/test/gridClipboard.unit.test.ts)
   and [renderer lifecycle](../src/test/rendererPresentationLifecycle.unit.test.tsx) own focus and acknowledgement
   ordering. Browser acceptance supplies the native layout and interaction evidence.
+- **Python dependency admission:** [native package provenance](../src/test/pythonDependencyPep440.unit.test.ts)
+  exercises the shared guard through discovery, including version bounds and actual file/ancestor substitution.
+  [Guard checks](../python/tests/test_dependency_guard_exact_version.py) cover partial availability, unavailable packaging and
+  journal isolation. [Process ownership](../src/test/dependencyInstaller.unit.test.ts) and
+  [probe caching](../src/test/pythonDependencyState.unit.test.ts) check timeout termination, settlement and stale results.
 - **Import and export boundaries:** [import detection](../src/test/importDetection.unit.test.ts) and
   [import options](../src/test/importOptions.unit.test.ts) own the bounded sample, decoding and dialect intent.
   [Native reader adaptation](../python/tests/test_empty_delimited_files.py) and the engine owners below check actual
