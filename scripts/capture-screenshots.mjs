@@ -34,6 +34,7 @@ const browserIsolation = Object.freeze({
 });
 const browser = await preflightWebviewBrowser({ chromium, cwd: root, workspaceTmp: browserIsolation.workspaceTmp });
 let screenshotQueue = Promise.resolve();
+const visualMismatches = [];
 
 rmSync(tmpDir, { recursive: true, force: true });
 mkdirSync(tmpDir, { recursive: true });
@@ -847,6 +848,9 @@ for (const zoom of [0.8, 1.5, 2]) {
 }
 
 await screenshotQueue;
+if (visualMismatches.length > 0) {
+  throw new Error(`Screenshot comparison failed:\n${visualMismatches.join("\n")}`);
+}
 
 function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName, suppliedPages = {}, appearance = {}) {
   const htmlPath = resolve(tmpDir, fileName);
@@ -1227,7 +1231,10 @@ function screenshot(htmlPath, outputPath, width = 1280, height = 760, pixelRatio
     writeFileSync(outputPath, portable);
     const size = portable.byteLength;
     console.log(`Captured ${outputPath} (${size} bytes)`);
-    if (verify) compareScreenshot(outputPath);
+    if (verify) {
+      const mismatch = compareScreenshot(outputPath);
+      if (mismatch) visualMismatches.push(mismatch);
+    }
   });
 }
 
@@ -1241,9 +1248,7 @@ function compareScreenshot(actualPath) {
   const baseline = PNG.sync.read(readFileSync(baselinePath));
   const actual = PNG.sync.read(readFileSync(actualPath));
   if (baseline.width !== actual.width || baseline.height !== actual.height) {
-    throw new Error(
-      `Visual regression for ${relativePath}: expected ${baseline.width}x${baseline.height}, received ${actual.width}x${actual.height}.`
-    );
+    return `Visual regression for ${relativePath}: expected ${baseline.width}x${baseline.height}, received ${actual.width}x${actual.height}.`;
   }
   const diff = new PNG({ width: actual.width, height: actual.height });
   const changed = pixelmatch(baseline.data, actual.data, diff.data, actual.width, actual.height, {
@@ -1255,9 +1260,7 @@ function compareScreenshot(actualPath) {
     const diffPath = resolve(diffDir, relativePath);
     mkdirSync(dirname(diffPath), { recursive: true });
     writeFileSync(diffPath, PNG.sync.write(diff));
-    throw new Error(
-      `Visual regression for ${relativePath}: ${(ratio * 100).toFixed(2)}% of pixels changed (limit 1.00%). Diff: ${diffPath}`
-    );
+    return `Visual regression for ${relativePath}: ${(ratio * 100).toFixed(2)}% of pixels changed (limit 1.00%). Diff: ${diffPath}`;
   }
   console.log(`Verified ${relativePath} (${(ratio * 100).toFixed(3)}% changed).`);
 }
