@@ -991,6 +991,12 @@ resolve names against the input at that step; missing names refuse and existing 
 Internal lazy top-value payloads use a fixed value-field name; they retain the public column identity separately.
 These rules do not change selectors written by the user in Custom Code.
 
+Pages bound selected top-level `String` values to 65,537 Unicode code points before Python row boxing, on the
+already projected and sliced resident frame. Values within the 65,536-code-point text limit remain exact; the extra
+code point preserves the existing live-page and saved-notebook refusal for oversized text. This adds native
+expression work only when a selected String column is present, without another source scan. It does not bound
+native source memory, aggregate page allocation, Binary values or nested strings.
+
 Native Datetime and Duration columns retain their precision in pages, value choices and profile labels. Pages format
 only the projected, sliced result after its source collection. Choice search and tie ordering use native temporal
 text; exact ticks and labels are retained only for the limited choices. Profile labels are formatted after counting

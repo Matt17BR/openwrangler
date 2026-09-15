@@ -14,7 +14,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Changed
 
-- DuckDB page reads bound text columns (`VARCHAR`) before fetching them into Python; oversized cells still return the existing error.
+- DuckDB (`VARCHAR`) and Polars (`String`) page reads bound text before Python row conversion; oversized cells still return the existing error.
 - Dependency discovery and installation validation share one implementation of package-version and provenance checks.
 - R notebook dependency and discovery tests run in the explicit native R tier instead of detecting R during ordinary unit runs.
 - Generated Polars code includes only the integer helpers needed by its By Example and Group By steps.
