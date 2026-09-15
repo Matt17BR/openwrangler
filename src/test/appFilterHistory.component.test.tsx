@@ -265,36 +265,113 @@ describe("App confirmed viewing-filter history", () => {
     await waitFor(() => expect(screen.queryByRole("region", { name: "Viewing filters" })).not.toBeInTheDocument());
   });
 
-  it("carries a pending filter undo through a superseding sort request", async () => {
-    render(<App />);
-    dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
-    await applyCellFilter("Milan", "Keep only this value");
-    confirmPage(lastPageRequest());
+  it.each(["sort", "filter success", "filter failure"] as const)(
+    "settles pending filter undo after %s",
+    async (change) => {
+      render(<App />);
+      dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+      await applyCellFilter("Milan", "Keep only this value");
+      const originalFilter = lastPageRequest();
+      confirmPage(originalFilter);
 
-    const bar = await screen.findByRole("region", { name: "Viewing filters" });
-    webviewPostMessage.mockClear();
-    fireEvent.click(within(bar).getByRole("button", { name: "Undo latest filter" }));
-    const undo = lastPageRequest();
+      if (change !== "sort") {
+        const cityHeader = document.querySelector<HTMLElement>('th[data-column="city"]');
+        if (!cityHeader) throw new Error("Expected the city header.");
+        fireEvent.click(within(cityHeader).getByLabelText("Column actions for city"));
+        fireEvent.click(within(cityHeader).getByRole("button", { name: "Filter…" }));
+        fireEvent.change(screen.getByLabelText("Predicate operator"), { target: { value: "equals" } });
+      }
 
-    const salesHeader = document.querySelector<HTMLElement>('th[data-column="sales"]');
-    if (!salesHeader) throw new Error("Expected the sales header.");
-    fireEvent.click(within(salesHeader).getByLabelText("Column actions for sales"));
-    fireEvent.click(within(salesHeader).getByRole("button", { name: "Sort ascending" }));
-    const sortedUndo = lastPageRequest();
+      const bar = await screen.findByRole("region", { name: "Viewing filters" });
+      webviewPostMessage.mockClear();
+      fireEvent.click(within(bar).getByRole("button", { name: "Undo latest filter" }));
+      const undo = lastPageRequest();
 
-    expect(sortedUndo.viewRequestId).not.toBe(undo.viewRequestId);
-    expect(sortedUndo.filterModel).toEqual({
-      filters: [],
-      sort: [{ column: "sales", direction: "asc", nulls: "last" }]
-    });
-    confirmPage(undo);
-    expect(screen.getByRole("region", { name: "Viewing filters" })).toBeInTheDocument();
-    confirmPage(sortedUndo);
-    await waitFor(() => expect(screen.queryByRole("region", { name: "Viewing filters" })).not.toBeInTheDocument());
-    expect(document.querySelector<HTMLElement>('th[data-column="sales"]')).toHaveAccessibleName(
-      "sales, sorted ascending"
-    );
-  });
+      if (change !== "sort") {
+        const input = screen.getByLabelText("equals predicate value");
+        fireEvent.change(input, { target: { value: "Paris" } });
+        const add = screen.getByRole("button", { name: "Add predicate" });
+        expect(add).toBeEnabled();
+        fireEvent.click(add);
+        expect(input).toHaveValue("");
+        const replacement = lastPageRequest();
+        expect(replacement.viewRequestId).not.toBe(undo.viewRequestId);
+        expect(replacement.filterModel).toEqual({
+          filters: [
+            {
+              column: "city",
+              type: "string",
+              logic: "and",
+              predicates: [{ kind: "predicate", operator: "equals", value: "Paris" }]
+            }
+          ],
+          sort: metadata.filterModel.sort
+        });
+        fireEvent.change(input, { target: { value: "Lyon" } });
+        confirmPage(undo);
+        expect(within(bar).getByRole("button", { name: 'Remove equals "Paris" filter from city' })).toBeVisible();
+        expect(within(bar).getByRole("button", { name: "Undo latest filter" })).toBeDisabled();
+
+        if (change === "filter failure") {
+          dispatchAppMessage({
+            kind: "error",
+            code: "filter_failed",
+            message: "The replacement filter failed.",
+            recoverable: true,
+            sessionId: metadata.sessionId,
+            viewRequestId: replacement.viewRequestId
+          });
+          expect(
+            within(bar).getByRole("button", { name: 'Remove equals "Milan" (string) filter from city' })
+          ).toBeVisible();
+          expect(within(bar).getByRole("button", { name: "Undo latest filter" })).toBeEnabled();
+          expect(input).toHaveValue("Lyon");
+          fireEvent.click(screen.getByRole("button", { name: "Retry page" }));
+          const retry = lastPageRequest();
+          expect(retry.viewRequestId).not.toBe(replacement.viewRequestId);
+          expect(retry.filterModel).toEqual(replacement.filterModel);
+          confirmPage(retry);
+        } else {
+          confirmPage(replacement);
+        }
+        expect(input).toHaveValue("Lyon");
+        expect(within(bar).getByRole("button", { name: "Undo latest filter" })).toBeEnabled();
+        fireEvent.click(within(bar).getByRole("button", { name: "Undo latest filter" }));
+        const undoReplacement = lastPageRequest();
+        expect(undoReplacement.filterModel).toEqual(originalFilter.filterModel);
+        confirmPage(undoReplacement);
+        expect(
+          within(bar).getByRole("button", { name: 'Remove equals "Milan" (string) filter from city' })
+        ).toBeVisible();
+        fireEvent.click(within(bar).getByRole("button", { name: "Undo latest filter" }));
+        const originalUndo = lastPageRequest();
+        expect(originalUndo.filterModel).toEqual(undo.filterModel);
+        confirmPage(originalUndo);
+        await waitFor(() => expect(screen.queryByRole("region", { name: "Viewing filters" })).not.toBeInTheDocument());
+        expect(input).toHaveValue("Lyon");
+        return;
+      }
+
+      const salesHeader = document.querySelector<HTMLElement>('th[data-column="sales"]');
+      if (!salesHeader) throw new Error("Expected the sales header.");
+      fireEvent.click(within(salesHeader).getByLabelText("Column actions for sales"));
+      fireEvent.click(within(salesHeader).getByRole("button", { name: "Sort ascending" }));
+      const sortedUndo = lastPageRequest();
+
+      expect(sortedUndo.viewRequestId).not.toBe(undo.viewRequestId);
+      expect(sortedUndo.filterModel).toEqual({
+        filters: [],
+        sort: [{ column: "sales", direction: "asc", nulls: "last" }]
+      });
+      confirmPage(undo);
+      expect(screen.getByRole("region", { name: "Viewing filters" })).toBeInTheDocument();
+      confirmPage(sortedUndo);
+      await waitFor(() => expect(screen.queryByRole("region", { name: "Viewing filters" })).not.toBeInTheDocument());
+      expect(document.querySelector<HTMLElement>('th[data-column="sales"]')).toHaveAccessibleName(
+        "sales, sorted ascending"
+      );
+    }
+  );
 
   it("keeps a stable focus target while the final filter removal is confirmed or restored", async () => {
     const restoredFilterModel: SessionMetadata["filterModel"] = {

@@ -527,6 +527,9 @@ only at the operand root, and request framing retains its existing byte bound.
 Confirmed viewing-filter history preserves admitted operand objects and their own keys. History entries, Undo
 targets and outgoing filter requests hold independent copies; Undo retains the current viewing sorts. JSON operand
 objects keep their serialized shape rather than becoming lookup Maps.
+A sort-only request can supersede pending filter Undo while retaining its target. A newer request with different
+filters instead records an ordinary transition from the prior confirmed filters if it succeeds. Failure preserves
+those filters and their history; a superseded Undo response cannot consume a history entry.
 
 Viewing models may contain multiple filter entries for the same column. Individual value, flag and predicate edits
 replace only their originating entry; the panel builder edits the first active entry or appends one when absent.
