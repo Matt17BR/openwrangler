@@ -139,6 +139,7 @@ export function proveRuntimeOmissions({ cwd = process.cwd(), env = process.env }
     if (
       rSource ||
       webviewSource ||
+      (modified && /^docs\/images\/[^\p{Cc}]+\.png$/u.test(path)) ||
       (modified &&
         (path === "src/test/progressiveProfilingLifecycle.unit.test.tsx" ||
           /^src\/test\/extensionHost\/[^/\p{Cc}]+\.ts$/u.test(path) ||
