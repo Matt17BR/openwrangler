@@ -16928,10 +16928,10 @@ async function verifyPersistedReplayAndRecovery(
 }
 
 async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Uri, python: string): Promise<void> {
+  // The outer runner removes these sources after editor and runtime settlement.
   const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-file-inputs-"));
   const config = vscode.workspace.getConfiguration("openWrangler");
   const originalBackend = config.get<"auto" | "polars" | "duckdb" | "pandas">("defaultBackend", "auto");
-  let databaseCleanupSafe = true;
   try {
     writeFileSync(
       path.join(directory, "sample.csv"),
@@ -17079,7 +17079,6 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
       const failures: unknown[] = [];
       let databaseSessionId: string | undefined;
       recordAcceptanceProgress("verify:file-inputs:duckdb:database:pick");
-      databaseCleanupSafe = false;
       const opening = Promise.resolve(vscode.commands.executeCommand("openWrangler.openDuckDBTable")).catch(
         (error: unknown) => {
           failures.push(error);
@@ -17197,7 +17196,6 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
         );
         if (databaseSessionId) assert.equal(testing.sessionSnapshot(databaseSessionId), undefined);
         assert.equal(databaseTabs().length, 0);
-        databaseCleanupSafe = true;
         assertExactBytes(
           readFileSync(database.fsPath),
           databaseBytes,
@@ -17313,7 +17311,6 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
     }
   } finally {
     await config.update("defaultBackend", originalBackend, vscode.ConfigurationTarget.Global);
-    if (databaseCleanupSafe) cleanupAcceptanceTemporaryDirectory(directory);
   }
 }
 

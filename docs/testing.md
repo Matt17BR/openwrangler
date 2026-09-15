@@ -318,6 +318,11 @@ the original profile must retain its normal per-user protections. A private chil
 requirement. Existing process-settlement and root-identity checks govern cleanup, including files left by killed
 fixture kernels.
 
+The packaged file-input fixture directory stays under this outer root on every outcome, until editor processes and
+captured output have settled. Per-fixture session and runtime closes and configuration restoration remain explicit;
+deferring directory deletion keeps a failed verifier from removing a source still used by its viewer. These bounded
+fixture files remain on disk through the remaining phases.
+
 The `r-jupyter` and `data-wrangler-coexistence` modes skip the generic smoke profile's fixture and extension
 installation. They retain editor-version discovery, the shared harness package and exact installed-version checks
 in the extension directory used by the selected journey.
