@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+from base64 import b64encode
 from collections import Counter
 from collections.abc import Iterator
 from copy import deepcopy
@@ -1798,6 +1799,96 @@ def test_polars_page_bounds_boxed_strings_without_changing_source_queries(
         safe = engine.page(filtered, 0, 2, total_rows=2, column_projection=[(0, "id")])
         assert [row["values"][0]["raw"] for row in safe["rows"]] == [0, 4]
         assert len(boxed_columns) == 2 and boxed_columns[-1][1:] == ["id"]
+        assert isinstance(frame, pl.LazyFrame) == isinstance(filtered, pl.LazyFrame) == lazy
+        assert source.schema == before.schema and source.equals(before)
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+def test_polars_page_bounds_binary_boxing_when_native_slicing_is_available(
+    monkeypatch: pytest.MonkeyPatch, lazy: bool
+) -> None:
+    exact = b"\x00\xff" * 24_576
+    overflow = exact + b"\x00"
+    oversized = b"\x00\xff" * 131_072
+    source = pl.DataFrame(
+        {
+            "id": range(6),
+            "*": pl.Series([oversized, exact, None, b"", overflow, oversized], dtype=pl.Binary),
+            "^a.*$": [7] * 6,
+            "apple": [oversized] * 6,
+        }
+    )
+    before = source.clone()
+    native_slice_available = callable(getattr(pl.col("*").bin, "slice", None))
+    expected_large = overflow if native_slice_available else oversized
+    boxed_values: list[bytes | None] = []
+    boxed_columns: list[list[str]] = []
+    expression_batches = 0
+    native_iter_rows = pl.DataFrame.iter_rows
+    native_with_columns = pl.DataFrame.with_columns
+
+    def observe_rows(frame: pl.DataFrame, *args: Any, **kwargs: Any) -> Iterator[Any]:
+        boxed_columns.append(frame.columns)
+        for row in cast(Iterator[Any], native_iter_rows(frame, *args, **kwargs)):
+            if isinstance(row, dict) and "*" in row:
+                boxed_values.append(row["*"])
+            yield row
+
+    def observe_batch(frame: pl.DataFrame, *args: Any, **kwargs: Any) -> pl.DataFrame:
+        nonlocal expression_batches
+        expression_batches += 1
+        return native_with_columns(frame, *args, **kwargs)
+
+    monkeypatch.setattr(pl.DataFrame, "iter_rows", observe_rows)
+    monkeypatch.setattr(pl.DataFrame, "with_columns", observe_batch)
+    engine = PolarsEngine()
+    try:
+        frame = engine.ensure_row_ids(source.lazy() if lazy else source, "bounded-binary")
+        page = engine.page(frame, 1, 5, total_rows=6, column_projection=[(1, "star"), (2, "pattern")])
+
+        # Observe native bytes before base64; minimum Polars retains full boxing.
+        assert [None if value is None else len(value) for value in boxed_values] == [
+            49_152,
+            None,
+            0,
+            49_153,
+            len(expected_large),
+        ]
+        assert boxed_values == [exact, None, b"", overflow, expected_large]
+        assert expression_batches == int(native_slice_available)
+        assert len(boxed_columns) == 1 and boxed_columns[0][1:] == ["*", "^a.*$"]
+        assert page["columnIds"] == ["star", "pattern"]
+        assert [row["rowNumber"] for row in page["rows"]] == [1, 2, 3, 4, 5]
+        assert [row["id"].rsplit(":", 1)[-1] for row in page["rows"]] == ["1", "2", "3", "4", "5"]
+        cells = [row["values"][0] for row in page["rows"]]
+        encoded = [
+            b64encode(value).decode("ascii") if value is not None else None
+            for value in [exact, None, b"", overflow, expected_large]
+        ]
+        assert [cell["raw"] for cell in cells] == encoded
+        assert [cell["display"] for cell in cells] == [value or "" for value in encoded]
+        assert [cell["kind"] for cell in cells] == ["binary", "null", "binary", "binary", "binary"]
+        assert [row["values"][1]["raw"] for row in page["rows"]] == [7] * 5
+
+        filtered = engine.apply_filter_model(
+            frame,
+            {
+                "filters": [
+                    {
+                        "column": "*",
+                        "type": "binary",
+                        "predicates": [{"kind": "predicate", "operator": "isNotNull"}],
+                    }
+                ],
+                "sort": [{"column": "id", "direction": "desc", "nulls": "last"}],
+            },
+        )
+        safe = engine.page(filtered, 0, 5, total_rows=5, column_projection=[(0, "id")])
+        assert [row["values"][0]["raw"] for row in safe["rows"]] == [5, 4, 3, 1, 0]
+        assert len(boxed_columns) == 2 and boxed_columns[-1][1:] == ["id"]
+        assert expression_batches == int(native_slice_available)
         assert isinstance(frame, pl.LazyFrame) == isinstance(filtered, pl.LazyFrame) == lazy
         assert source.schema == before.schema and source.equals(before)
     finally:
