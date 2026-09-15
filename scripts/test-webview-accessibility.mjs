@@ -72,7 +72,7 @@ try {
   await verifyNotebookPreviewDisclosure(browser);
   await verifyCodePreviewOrigin(browser);
   await verifyCompactDraftReview(browser);
-  await verifyConditionalColumnForm(browser);
+  await verifyOperationForms(browser);
   await verifyColumnSearchEscapePropagation(browser);
   await verifyAppliedPlanToolbarLayout(browser);
   await verifyStepInspectionWorkflow(browser);
@@ -93,7 +93,7 @@ try {
   }
 }
 
-async function verifyConditionalColumnForm(browser) {
+async function verifyOperationForms(browser) {
   for (const width of [1280, 800]) {
     const page = await browser.newPage();
     try {
@@ -145,7 +145,7 @@ async function verifyConditionalColumnForm(browser) {
       ) {
         throw new Error("Conditional form changed its selected input, empty comparison or explicit results.");
       }
-      const settings = form.getByRole("form", { name: "Operation settings" });
+      const settings = form.getByRole("group", { name: "Operation settings content" });
       const catalog = form.getByRole("navigation", { name: "Operation catalog" });
       await page.keyboard.press("Tab");
       if (!(await catalog.evaluate((element) => element === document.activeElement))) {
@@ -156,9 +156,9 @@ async function verifyConditionalColumnForm(browser) {
         throw new Error("Pending Preview did not retain keyboard access to operation settings.");
       }
       await page.keyboard.press("Home");
-      await page.waitForFunction(() => document.querySelector(".operationForm").scrollTop === 0);
+      await page.waitForFunction(() => document.querySelector(".operationFormContent").scrollTop === 0);
       await page.keyboard.press("PageDown");
-      await page.waitForFunction(() => document.querySelector(".operationForm").scrollTop > 0);
+      await page.waitForFunction(() => document.querySelector(".operationFormContent").scrollTop > 0);
       await page.keyboard.press("Tab");
       if (!(await catalog.evaluate((element) => element === document.activeElement))) {
         throw new Error("Pending Preview let keyboard focus leave its dialog.");
@@ -173,7 +173,72 @@ async function verifyConditionalColumnForm(browser) {
       await page.close();
     }
   }
-  console.log("Conditional Column form, exact submission and keyboard navigation verified at two widths.");
+  for (const width of [800, 620]) {
+    const page = await browser.newPage();
+    try {
+      await page.setViewportSize({ width, height: 600 });
+      await page.goto(pathToFileURL(resolve(harnessDir, "operation-dialog.html")).href, { waitUntil: "load" });
+      const dialog = page.getByRole("dialog");
+      await dialog.getByRole("button", { name: /^Group and aggregate/u }).click();
+      const form = dialog.getByRole("form", { name: "Operation settings" });
+      await form.getByRole("checkbox").first().check();
+      await form.getByRole("button", { name: "Add aggregation", exact: true }).click();
+      await form.getByRole("combobox", { name: "Value 2", exact: true }).waitFor();
+      await form.getByRole("combobox", { name: "Value 1", exact: true }).focus();
+      const focused = [];
+      for (let index = 0; index < 15; index += 1) {
+        const state = await page.locator(":focus").evaluate((element) => {
+          const form = element.closest("form");
+          if (!form) return undefined;
+          const bounds = element.getBoundingClientRect();
+          const viewport = form.getBoundingClientRect();
+          const left = Math.max(bounds.left, viewport.left, 0);
+          const right = Math.min(bounds.right, viewport.right, innerWidth);
+          return {
+            name: element.getAttribute("aria-label") ?? element.textContent.trim(),
+            exposed:
+              bounds.top >= Math.max(viewport.top, 0) - 1 &&
+              bounds.bottom <= Math.min(viewport.bottom, innerHeight) + 1 &&
+              right > left &&
+              element.contains(document.elementFromPoint((left + right) / 2, bounds.top + bounds.height / 2))
+          };
+        });
+        if (!state?.exposed) {
+          throw new Error(`Group By at ${width}px obscured its focused control: ${JSON.stringify(state)}.`);
+        }
+        focused.push(state.name);
+        if (state.name === "Preview changes") break;
+        await page.keyboard.press("Tab");
+      }
+      if (
+        !["Calculation 2", "Remove aggregation 2", "Add aggregation", "Preview changes"].every((name) =>
+          focused.includes(name)
+        )
+      ) {
+        throw new Error(`Group By at ${width}px did not preserve its form tab order: ${JSON.stringify(focused)}.`);
+      }
+      await form.getByRole("button", { name: "Remove aggregation 2", exact: true }).click();
+      await form.getByRole("combobox", { name: "Value 2", exact: true }).waitFor({ state: "detached" });
+      await form.getByRole("button", { name: "Preview changes", exact: true }).click();
+      await waitForRuntimeRequest(page, "previewStep");
+      const requests = await page.evaluate(() =>
+        window.openWranglerMessages.filter(
+          (message) => message.kind === "runtimeRequest" && message.request.kind === "previewStep"
+        )
+      );
+      if (
+        requests.length !== 1 ||
+        requests[0].request.step.kind !== "groupBy" ||
+        requests[0].request.step.params.keys.length !== 1 ||
+        requests[0].request.step.params.aggregations.length !== 1
+      ) {
+        throw new Error(`Group By at ${width}px changed its submitted fields.`);
+      }
+    } finally {
+      await page.close();
+    }
+  }
+  console.log("Conditional Column submission, busy scrolling and Group By focus exposure verified at narrow widths.");
 }
 
 async function verifyNotebookPreviewDisclosure(browser) {

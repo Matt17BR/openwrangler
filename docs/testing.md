@@ -110,6 +110,8 @@ Draft-preview, summary-family and by-example screenshots wait for their expected
 capture deadline. A virtual-time advance alone does not establish that asynchronous profile batches have rendered.
 Screenshot verification reports all visual mismatches after capturing the remaining images. Browser, readiness and
 invalid-image errors still stop the run immediately; any mismatch fails verification before accessibility checks run.
+The existing operation-form browser owner checks that Tab exposes Group By controls above the persistent actions at
+800px and 620px, while busy forms retain keyboard scrolling through their content.
 
 Use the existing owners to choose a focused source check:
 
