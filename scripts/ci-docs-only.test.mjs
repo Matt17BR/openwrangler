@@ -557,7 +557,17 @@ test("proves Python omissions while retaining Linux R source checks for non-rend
       });
       if (checkCli) {
         const output = join(cwd, "action-output");
-        execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
+        const message = execFileSync(process.execPath, [script], {
+          cwd,
+          env: { ...process.env, ...env, GITHUB_OUTPUT: output },
+          encoding: "utf8"
+        });
+        if (runtimeOmittable) {
+          assert.match(
+            message,
+            /Windows filesystem and process checks; platform R source and installed-editor checks remain required\./u
+          );
+        }
         assert.equal(
           readFileSync(output, "utf8"),
           `docs_only=false\nr_omittable=false\nr_runtime_omittable=${runtimeOmittable}\npython_omittable=${pythonOmittable}\nr_editor_omittable=false\nnative_spark_omittable=false\n`
@@ -1524,7 +1534,7 @@ test("required runtime results reject missing proof and incomplete or canceled e
     assert.equal(guard.env.PROOF_RESULT, "${{ needs.docs-proof.result }}");
     const omissionOutputs =
       id === "windows"
-        ? ["r_omittable", "python_omittable"]
+        ? ["r_runtime_omittable", "python_omittable"]
         : id === "r"
           ? ["r_omittable", "r_runtime_omittable"]
           : ["python_omittable"];
@@ -1539,7 +1549,7 @@ test("required runtime results reject missing proof and incomplete or canceled e
     assert.equal(
       runtime.if,
       id === "windows"
-        ? "${{ !cancelled() && needs.docs-proof.result == 'success' && (needs.docs-proof.outputs.r_omittable == 'false' || needs.docs-proof.outputs.python_omittable == 'false') }}"
+        ? "${{ !cancelled() && needs.docs-proof.result == 'success' && (needs.docs-proof.outputs.r_runtime_omittable == 'false' || needs.docs-proof.outputs.python_omittable == 'false') }}"
         : `\${{ !cancelled() && needs.docs-proof.result == 'success' && needs.docs-proof.outputs.${id === "r" ? "r_runtime" : id}_omittable == 'false' }}`,
       "execution jobs must be cancellable, including while queued after a successful proof"
     );
@@ -1584,7 +1594,8 @@ test("required runtime results reject missing proof and incomplete or canceled e
           ...process.env,
           PROOF_RESULT: result,
           DOCS_ONLY: omittable === "true" ? "false" : "true",
-          R_OMITTABLE: id === "r" || id === "windows" ? omittable : omittable === "true" ? "false" : "true",
+          // Whole-R omission deliberately disagrees with the Windows source flag.
+          R_OMITTABLE: id === "r" ? omittable : omittable === "true" ? "false" : "true",
           PYTHON_OMITTABLE:
             id === "windows" ? otherOmittable : id === "python" ? omittable : omittable === "true" ? "false" : "true",
           R_RUNTIME_OMITTABLE: omittable,
@@ -1606,7 +1617,7 @@ test("required runtime results reject missing proof and incomplete or canceled e
             ? /Native R checks omitted:.*No fresh R execution is claimed/u
             : id === "python"
               ? /Python checks omitted:.*No fresh Python execution is claimed/u
-              : /Windows checks omitted:.*No fresh Windows execution is claimed/u
+              : /Windows filesystem and process checks omitted:.*No fresh Windows source execution is claimed/u
         );
       }
     }

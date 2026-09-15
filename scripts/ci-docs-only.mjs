@@ -178,7 +178,7 @@ if (process.argv[1] !== undefined && pathToFileURL(resolve(process.argv[1])).hre
           : rOmittable
             ? "Verified changes independent of native R."
             : rRuntimeOmittable
-              ? "Verified renderer edits permit omission of Linux R source and Python checks; platform R, editor and Windows checks remain required."
+              ? "Verified renderer edits permit omission of Python, Linux R source and Windows filesystem and process checks; platform R source and installed-editor checks remain required."
               : pythonOmittable
                 ? "Verified edits permit omission of the Python worker; R, editor and Windows checks remain required."
                 : "Full runtime checks required."

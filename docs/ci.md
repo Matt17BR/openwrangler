@@ -77,11 +77,12 @@ Required-document, generated-reference and release-document checks still run and
   and other scripts are outside this permission.
 - The Python worker may also be omitted for modifications to existing files under `src/webviews/` and the existing
   `src/test/progressiveProfilingLifecycle.unit.test.tsx` owner, optionally with the allowed component-test and Markdown
-  edits. Platform R source and installed-editor checks, Windows contracts, Source and packaged smoke remain required.
+  edits. Platform R source and installed-editor checks, Source and packaged smoke remain required.
   Additions, deletions, renames and mode changes remain outside this permission.
-- The Linux R workers may also be omitted for modifications to existing `src/webviews/` files, optionally with the
-  allowed component-test and Markdown edits. This additional omission does not extend to the lifecycle unit test,
-  installed harness, scripts or runtime source. Additions, deletions, renames and mode changes retain execution.
+- The Linux R workers and Windows filesystem and process job may also be omitted for modifications to existing
+  `src/webviews/` files, optionally with the allowed component-test and Markdown edits. This additional omission does
+  not extend to the lifecycle unit test, installed harness, scripts or runtime source. Additions, deletions, renames
+  and mode changes retain execution.
   Both platform R jobs still run their source, cleanup, package and installed-editor checks.
 - R source and installed-editor execution may be omitted for additions or edits to `.py` files under
   `python/openwrangler_runtime/` or `python/tests/`, and modifications to allowed Markdown files.
@@ -122,7 +123,10 @@ and exercise real profiles, so they remain required. Local browser acceptance st
 The Linux R phases load native R assets and the selected Node transport owners, without loading renderer source.
 The kernel-transport phase also runs native notebook discovery, selection and dependency checks with the same selected R executable.
 Their separate `r_runtime_omittable` result permits the Linux matrix to be skipped without changing platform R or
-Windows selection. Its summary reports no fresh Linux R source execution.
+installed-editor selection. Together with `python_omittable`, it also permits omission of the Windows filesystem and
+process job, whose selected Python and Node owners do not load renderer source. Its bootstrap tests do load the
+installed-notebook fixtures, which remain outside this additional omission. R runtime and source-test changes retain
+Windows source execution. Omission summaries report no fresh source execution for the skipped jobs.
 
 The `native_spark_omittable` proof changes only the Python worker's Spark installation requirement. Pandas stays
 below version 3, Java remains installed, and the same Ruff, Pyright and full Pytest commands run. Without Spark,
@@ -162,9 +166,10 @@ or hosted-environment regressions.
 Scheduled R 4.4 qualification does not replace R 4.5 coverage. Release qualification remains separate.
 
 Each runtime has cancellable execution and a short required-result job. The latter reports success only for completed
-execution or a proved omission with actually skipped execution. Windows omission requires both runtime omission flags
-and a skipped worker; otherwise both flags must be valid and its execution must succeed. The R result also checks both installed workflow calls
-and their selected platform job results. A proved whole-R omission requires the source matrix and both installed workflow
+execution or a proved omission with actually skipped execution. Windows source omission requires both
+`r_runtime_omittable` and `python_omittable` and a skipped worker; otherwise both flags must be valid and its execution
+must succeed. The R result also checks both installed workflow calls and their selected platform job results.
+A proved whole-R omission requires the source matrix and both installed workflow
 calls to be skipped, with empty reusable outputs. A proved Linux-only omission requires a skipped source matrix and
 successful calls and selected results for both platform jobs. Without either omission, all results must succeed.
 Missing, contradictory, failed or cancelled results cannot satisfy the check, even if a misconfigured workflow call

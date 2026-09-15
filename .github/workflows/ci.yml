@@ -365,7 +365,7 @@ jobs:
   windows-runtime:
     name: Execute Windows contracts
     needs: docs-proof
-    if: ${{ !cancelled() && needs.docs-proof.result == 'success' && (needs.docs-proof.outputs.r_omittable == 'false' || needs.docs-proof.outputs.python_omittable == 'false') }}
+    if: ${{ !cancelled() && needs.docs-proof.result == 'success' && (needs.docs-proof.outputs.r_runtime_omittable == 'false' || needs.docs-proof.outputs.python_omittable == 'false') }}
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
@@ -417,14 +417,14 @@ jobs:
         shell: bash
         env:
           PROOF_RESULT: ${{ needs.docs-proof.result }}
-          R_OMITTABLE: ${{ needs.docs-proof.outputs.r_omittable }}
+          R_RUNTIME_OMITTABLE: ${{ needs.docs-proof.outputs.r_runtime_omittable }}
           PYTHON_OMITTABLE: ${{ needs.docs-proof.outputs.python_omittable }}
           RUNTIME_RESULT: ${{ needs.windows-runtime.result }}
         run: |
           test "$PROOF_RESULT" = success
-          case "$R_OMITTABLE:$PYTHON_OMITTABLE:$RUNTIME_RESULT" in
+          case "$R_RUNTIME_OMITTABLE:$PYTHON_OMITTABLE:$RUNTIME_RESULT" in
             true:true:skipped)
-              echo 'Windows checks omitted: all changed paths permit omission of both native runtimes. No fresh Windows execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
+              echo 'Windows filesystem and process checks omitted: changed paths are independent of these source contracts. No fresh Windows source execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
               ;;
             false:false:success|false:true:success|true:false:success) ;;
             *) exit 1 ;;
