@@ -174,10 +174,19 @@
 .operationForm {
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.operationFormContent {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
   gap: 12px;
   min-height: 0;
+  min-width: 0;
   overflow: auto;
-  padding: 18px 20px 0;
+  padding: 18px 20px;
 }
 
 .operationFormTitle {
@@ -369,13 +378,11 @@
 .operationFormActions {
   background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
   border-top: 1px solid var(--vscode-panel-border);
-  bottom: 0;
   display: flex;
+  flex: 0 0 auto;
   gap: 8px;
   justify-content: flex-end;
-  margin: auto -20px 0;
   padding: 10px 20px;
-  position: sticky;
 }
 
 .operationPrompt {

@@ -280,59 +280,69 @@ export function OperationBuilder({
             key={selectedKind ?? "none"}
             onSubmit={submit}
             aria-label="Operation settings"
-            tabIndex={busy ? 0 : undefined}
           >
-            <fieldset className="operationControls" disabled={busy}>
-              {selectedKind ? (
-                <>
-                  <div className="operationFormTitle">
-                    <span className={`codicon codicon-${operationByKind(selectedKind).icon}`} aria-hidden="true" />
-                    <div>
-                      <h2>{operationByKind(selectedKind).title}</h2>
-                      <p>{operationByKind(selectedKind).description}</p>
+            <div
+              className="operationFormContent"
+              role="group"
+              aria-label="Operation settings content"
+              tabIndex={busy ? 0 : undefined}
+            >
+              <fieldset className="operationControls" disabled={busy}>
+                {selectedKind ? (
+                  <>
+                    <div className="operationFormTitle">
+                      <span className={`codicon codicon-${operationByKind(selectedKind).icon}`} aria-hidden="true" />
+                      <div>
+                        <h2>{operationByKind(selectedKind).title}</h2>
+                        <p>{operationByKind(selectedKind).description}</p>
+                      </div>
                     </div>
+                    {editPreflightError ? (
+                      <p className="operationFormError" role="alert">
+                        {editPreflightError}
+                      </p>
+                    ) : (
+                      <>
+                        <OperationFields
+                          kind={selectedKind}
+                          metadata={metadata}
+                          columns={availableColumns}
+                          filterModel={filterModel}
+                          initialStep={activeInitial}
+                        />
+                        {visibleFormError && (
+                          <p className="operationFormError" role="alert">
+                            {visibleFormError}
+                          </p>
+                        )}
+                      </>
+                    )}
+                  </>
+                ) : (
+                  <div className="operationPrompt">
+                    <span className="codicon codicon-wand" aria-hidden="true" />
+                    <h2>Choose an operation</h2>
+                    <p>Search or browse the catalog. Your source dataframe remains unchanged.</p>
                   </div>
-                  {editPreflightError ? (
-                    <p className="operationFormError" role="alert">
-                      {editPreflightError}
-                    </p>
-                  ) : (
-                    <>
-                      <OperationFields
-                        kind={selectedKind}
-                        metadata={metadata}
-                        columns={availableColumns}
-                        filterModel={filterModel}
-                        initialStep={activeInitial}
-                      />
-                      {visibleFormError && (
-                        <p className="operationFormError" role="alert">
-                          {visibleFormError}
-                        </p>
-                      )}
-                    </>
-                  )}
-                  <footer className="operationFormActions">
-                    <button type="button" className="secondaryButton" onClick={onClose}>
-                      Cancel
-                    </button>
-                    <button
-                      ref={previewButtonRef}
-                      type="submit"
-                      disabled={editPreflightError !== undefined || selectedFilterQueryIsEmpty}
-                    >
-                      Preview changes
-                    </button>
-                  </footer>
-                </>
-              ) : (
-                <div className="operationPrompt">
-                  <span className="codicon codicon-wand" aria-hidden="true" />
-                  <h2>Choose an operation</h2>
-                  <p>Search or browse the catalog. Your source dataframe remains unchanged.</p>
-                </div>
-              )}
-            </fieldset>
+                )}
+              </fieldset>
+            </div>
+            {selectedKind && (
+              <fieldset className="operationControls" disabled={busy}>
+                <footer className="operationFormActions">
+                  <button type="button" className="secondaryButton" onClick={onClose}>
+                    Cancel
+                  </button>
+                  <button
+                    ref={previewButtonRef}
+                    type="submit"
+                    disabled={editPreflightError !== undefined || selectedFilterQueryIsEmpty}
+                  >
+                    Preview changes
+                  </button>
+                </footer>
+              </fieldset>
+            )}
           </form>
         </div>
       </section>

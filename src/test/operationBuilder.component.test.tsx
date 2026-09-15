@@ -836,7 +836,8 @@ describe("OperationBuilder", () => {
     expect(screen.getByRole("dialog", { name: "Add cleaning step" })).toHaveFocus();
     expect(screen.getByRole("status")).toHaveTextContent("Previewing changes…");
     expect(screen.getByRole("navigation", { name: "Operation catalog" })).toHaveAttribute("tabindex", "0");
-    expect(screen.getByRole("form", { name: "Operation settings" })).toHaveAttribute("tabindex", "0");
+    expect(screen.getByRole("form", { name: "Operation settings" })).not.toHaveAttribute("tabindex");
+    expect(screen.getByRole("group", { name: "Operation settings content" })).toHaveAttribute("tabindex", "0");
     expect(screen.getByRole("button", { name: "Close operation picker" })).toBeDisabled();
     expect(screen.getByRole("textbox", { name: "Search operations" })).toBeDisabled();
     expect(screen.getByText("Select columns", { selector: "strong" }).closest("button")).toBeDisabled();
@@ -876,6 +877,7 @@ describe("OperationBuilder", () => {
     rerender(<OperationBuilder {...props} />);
     expect(screen.getByRole("navigation", { name: "Operation catalog" })).not.toHaveAttribute("tabindex");
     expect(screen.getByRole("form", { name: "Operation settings" })).not.toHaveAttribute("tabindex");
+    expect(screen.getByRole("group", { name: "Operation settings content" })).not.toHaveAttribute("tabindex");
   });
 
   it("contains keyboard focus within the modal operation picker", () => {
