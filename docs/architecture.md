@@ -1839,6 +1839,9 @@ documented in the generated reference. An open column-actions popup consumes Esc
 summary before another Escape can reach the outer workbench shortcut.
 The operation picker initially focuses search when browsing, or settings when an operation is already selected.
 Subsequent form changes retain the user's focus choice; opening a preview does not reclaim focus from the host.
+Delete confirmation keeps keyboard focus on Cancel; canceling returns it to Delete step. Completing a locally focused
+Apply or Discard returns focus to Add step. Delayed cleaning-plan focus restoration stays bound to the same session
+and revision and yields to newer focus, including focus outside the webview.
 Code Preview keeps its labelled content in the tab order in both editable and read-only modes. Read-only buffers
 support keyboard navigation and selection while the editor's mutation guards remain active.
 

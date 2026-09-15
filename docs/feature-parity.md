@@ -471,6 +471,7 @@ Column search keeps arrow and page-key navigation aligned with the displayed res
 Small editor panes preserve room for the grid header and a row while the workbench scrolls around wrapped controls.
 Column search reveals and focuses its target within both the table and editor viewport, including when the same column
 is selected again, without replacing a later focus choice.
+Focused draft buttons return keyboard focus to Add step, and deletion confirmation retains focus through Cancel.
 Read-only Code Preview supports Tab entry and keyboard navigation through long programs while refusing edits.
 Numeric histogram arrows use the highlighted bin as their starting point after pointer hover.
 Staged viewing sorts retire rules invalidated by Rename, Drop, identity replacement or a semantic type change.

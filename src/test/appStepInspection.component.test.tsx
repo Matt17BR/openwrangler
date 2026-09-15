@@ -588,7 +588,11 @@ describe("App applied-step inspection", () => {
     await screen.findByLabelText("Selected applied-step inspection");
 
     postMessage.mockClear();
-    fireEvent.click(screen.getByRole("button", { name: "Delete step" }));
+    const deleteStep = screen.getByRole("button", { name: "Delete step" });
+    deleteStep.focus();
+    fireEvent.click(deleteStep);
+    expect(screen.getByRole("button", { name: "Cancel" })).toBe(deleteStep);
+    expect(deleteStep).toHaveFocus();
     expect(postMessage).not.toHaveBeenCalled();
     expect(screen.getByText("Delete this step and replay every later step?")).toBeVisible();
 
@@ -598,7 +602,11 @@ describe("App applied-step inspection", () => {
     expect(screen.getByRole("group", { name: "Confirm step deletion" })).toBeVisible();
     expect(screen.getByRole("cell", { name: "sales, row 201: changed from 10.5 to 11" })).toBeVisible();
 
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    const cancel = screen.getByRole("button", { name: "Cancel" });
+    cancel.focus();
+    fireEvent.click(cancel);
+    expect(screen.getByRole("button", { name: "Delete step" })).toBe(cancel);
+    expect(cancel).toHaveFocus();
     expect(screen.queryByRole("group", { name: "Confirm step deletion" })).toBeNull();
     postMessage.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "Delete step" }));

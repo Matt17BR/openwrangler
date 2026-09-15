@@ -21,6 +21,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Using a focused Apply or Discard button restores keyboard focus to Add step, and step deletion confirmation keeps focus on its Cancel control. Delayed restoration respects newer sessions and focus choices.
 - Opening a specific cleaning operation or editing a saved step places keyboard focus in its settings, avoiding a trip through the operation catalog.
 - Failed Python and R data-export cleanup no longer repeats rollback or duplicates its failure.
 - Editing saved value filters keeps raw values with different types separate, so removing Boolean `true` does not also remove the text `"true"`.
