@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 from collections import Counter
+from collections.abc import Iterator
 from copy import deepcopy
 from decimal import Decimal
 from math import nextafter
@@ -1735,6 +1736,72 @@ def test_polars_session_opens_pages_and_closes_a_literal_bracket_path(tmp_path: 
     assert manager.close_session(session_id, 0) == {"kind": "sessionClosed", "sessionId": session_id}
     assert session_id not in manager.sessions
     assert path.read_bytes() == source_bytes
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+def test_polars_page_bounds_boxed_strings_without_changing_source_queries(
+    monkeypatch: pytest.MonkeyPatch, lazy: bool
+) -> None:
+    exact = "🙂e\u0301\0" * 16_384
+    oversized = "x" * 262_144 + "TAIL"
+    source = pl.DataFrame(
+        {
+            "id": range(5),
+            "*": [oversized, exact, None, "", oversized],
+            "^a.*$": ["literal"] * 5,
+            "apple": ["u" * 262_144] * 5,
+        }
+    )
+    before = source.clone()
+    boxed_lengths: list[int | None] = []
+    boxed_columns: list[list[str]] = []
+    native_iter_rows = pl.DataFrame.iter_rows
+
+    def observe_rows(frame: pl.DataFrame, *args: Any, **kwargs: Any) -> Iterator[Any]:
+        boxed_columns.append(frame.columns)
+        for row in cast(Iterator[Any], native_iter_rows(frame, *args, **kwargs)):
+            if isinstance(row, dict) and "*" in row:
+                boxed_lengths.append(None if row["*"] is None else len(row["*"]))
+            yield row
+
+    monkeypatch.setattr(pl.DataFrame, "iter_rows", observe_rows)
+    engine = PolarsEngine()
+    try:
+        frame = engine.ensure_row_ids(source.lazy() if lazy else source, "bounded-text")
+        page = engine.page(frame, 1, 4, total_rows=5, column_projection=[(1, "star"), (2, "pattern")])
+
+        # These are actual iter_rows values before typed-cell normalization.
+        assert boxed_lengths == [65_536, None, 0, 65_537]
+        assert len(boxed_columns) == 1 and boxed_columns[0][1:] == ["*", "^a.*$"]
+        assert page["columnIds"] == ["star", "pattern"]
+        assert [row["rowNumber"] for row in page["rows"]] == [1, 2, 3, 4]
+        assert [row["id"].rsplit(":", 1)[-1] for row in page["rows"]] == ["1", "2", "3", "4"]
+        cells = [row["values"][0] for row in page["rows"]]
+        assert [cell["raw"] for cell in cells] == [exact, None, "", "x" * 65_537]
+        assert [cell["display"] for cell in cells] == [exact, "", "", "x" * 65_537]
+        assert [cell["kind"] for cell in cells] == ["string", "null", "string", "string"]
+        assert [row["values"][1]["raw"] for row in page["rows"]] == ["literal"] * 4
+
+        filtered = engine.apply_filter_model(
+            frame,
+            {
+                "filters": [
+                    {
+                        "column": "*",
+                        "type": "string",
+                        "predicates": [{"kind": "predicate", "operator": "endsWith", "value": "TAIL"}],
+                    }
+                ],
+                "sort": [{"column": "id", "direction": "asc", "nulls": "last"}],
+            },
+        )
+        safe = engine.page(filtered, 0, 2, total_rows=2, column_projection=[(0, "id")])
+        assert [row["values"][0]["raw"] for row in safe["rows"]] == [0, 4]
+        assert len(boxed_columns) == 2 and boxed_columns[-1][1:] == ["id"]
+        assert isinstance(frame, pl.LazyFrame) == isinstance(filtered, pl.LazyFrame) == lazy
+        assert source.schema == before.schema and source.equals(before)
+    finally:
+        engine.close()
 
 
 def test_lazy_polars_page_projects_before_the_terminal_collect(monkeypatch: pytest.MonkeyPatch) -> None:

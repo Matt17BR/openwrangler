@@ -22,6 +22,7 @@ from ..custom_code_scope import (
 )
 from ..export_target import ExportWriterPath
 from ..generated_helpers import select_generated_helpers
+from ..live_page_payload import LIVE_PAGE_TEXT_CHARACTER_LIMIT
 from ..operations import formula_scalar_value
 from ..pivot_longer import (
     PivotLongerContractError,
@@ -921,6 +922,13 @@ class PolarsEngine(DataFrameEngine):
                 total_rows = int(df.height)
         temporal_schema = sliced.schema
         sliced = _polars_prepare_temporal_cells(sliced, {column: temporal_schema[column] for column in columns})
+        text_expressions = [
+            _ow_polars_col(sliced, column).str.slice(0, LIVE_PAGE_TEXT_CHARACTER_LIMIT + 1).alias(column)
+            for column in columns
+            if temporal_schema[column] == pl.String
+        ]
+        if text_expressions:
+            sliced = sliced.with_columns(text_expressions)
         rows = []
         for row_number, row in enumerate(sliced.iter_rows(named=True), start=offset):
             rows.append(
