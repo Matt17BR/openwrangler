@@ -115,6 +115,7 @@ _Bring the cleaning function back into the notebook that opened the dataframe._
 
 DuckDB notebook relations and local PySpark DataFrames support viewing, filters, sorts and profiles, with the limits
 in the table below. Their notebook sessions do not offer cleaning or export.
+In [source builds](https://github.com/Matt17BR/openwrangler/blob/main/CONTRIBUTING.md#build-and-install-from-source),
 Polars live notebook LazyFrames and lazy Custom Code results retain their complete native output to keep row identities
 stable across pages. These results must fit memory, including old and new results retained during a cleaning preview.
 Unordered DuckDB notebook queries and file Custom Code results can associate row IDs with different values or repeat
