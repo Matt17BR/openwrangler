@@ -673,24 +673,30 @@ class DuckDBEngine(DataFrameEngine):
         # row identity, while this literal preserves direct zero-column paging.
         select_list = _identifier_list(terminal_columns) if terminal_columns else "1 AS __ow_page_placeholder"
         query = f"SELECT {select_list} FROM ow LIMIT {int(limit)} OFFSET {int(offset)}"
-        projections = {
-            column: (
-                (
-                    f"system.main.substring({_quote_ident(column)}, 1, {LIVE_PAGE_TEXT_CHARACTER_LIMIT + 1})",
+        projections: dict[str, tuple[str | None, bool]] = {}
+        for column in selected_columns:
+            expression = _quote_ident(column)
+            raw_type = types[column]
+            if raw_type == "VARCHAR":
+                projections[column] = (
+                    f"system.main.substring({expression}, 1, {LIVE_PAGE_TEXT_CHARACTER_LIMIT + 1})",
                     False,
                 )
-                if types[column] == "VARCHAR"
-                else _duckdb_query_output(_quote_ident(column), types[column])
-            )
-            for column in selected_columns
-        }
+            elif raw_type == "BLOB":
+                projections[column] = (
+                    f"system.main.array_slice({expression}, 1, {3 * (LIVE_PAGE_TEXT_CHARACTER_LIMIT // 4) + 1})",
+                    False,
+                )
+            else:
+                projections[column] = _duckdb_query_output(expression, raw_type)
         cardinality_positions = {
             column: len(terminal_columns) + index
             for index, column in enumerate(column for column in selected_columns if projections[column][1])
         }
         if any(output for output, _cardinality in projections.values()) or cardinality_positions:
             # Python fetch narrows timestamps, including nested values and map keys.
-            # Bound text with one overflow code point for the existing payload refusal.
+            # Keep one overflow code point or byte for the existing payload refusal.
+            # Base64 encodes each three bytes as four characters.
             # Prepare only the selected page; source values and ordering stay native.
             formatted = []
             for column in terminal_columns:
