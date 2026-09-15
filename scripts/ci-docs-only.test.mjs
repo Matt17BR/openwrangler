@@ -1895,9 +1895,20 @@ test("released Jupyter investigation targets preserve installed R calls and actu
       "packaged_editor_r_interactive"
     ]
   );
+  const remotePreparation = [
+    linux.steps.find((step) => step.uses?.startsWith("actions/setup-java@")),
+    linux.steps.find((step) => step.run?.startsWith("python -m pip install --no-deps ")),
+    linux.steps.find((step) => step.run === "npm run lock:remote-jupyter:check"),
+    linux.steps.find((step) => step.run === "npm run audit:remote-jupyter")
+  ];
+  for (const step of remotePreparation) {
+    assert.ok(step);
+    assert.equal(step.if, "${{ github.event_name != 'workflow_dispatch' || inputs.target != 'linux-python' }}");
+  }
   for (const step of linux.steps) {
     if (
       step.if === rOnly ||
+      remotePreparation.includes(step) ||
       step.id === "packaged_editor" ||
       step.uses?.startsWith("actions/upload-artifact@") ||
       step.run === "exit 1"
