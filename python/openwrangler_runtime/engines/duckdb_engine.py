@@ -477,8 +477,8 @@ class DuckDBEngine(DataFrameEngine):
             with self._tracked_connection() as connection:
                 matches = connection.execute(
                     "SELECT schema_name, table_name FROM system.main.duckdb_tables() "
-                    "WHERE NOT internal AND NOT temporary AND schema_name = ? AND table_name = ? LIMIT 2",
-                    [schema, table],
+                    f"WHERE NOT internal AND NOT temporary AND schema_name = {_sql_literal(schema)} "
+                    f"AND table_name = {_sql_literal(table)} LIMIT 2"
                 ).fetchall()
                 if matches != [(schema, table)]:
                     raise EngineError("The selected DuckDB base table is no longer available. Choose a table again.")

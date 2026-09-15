@@ -867,6 +867,110 @@ def test_stdio_server_opens_polars_excel_in_a_fresh_process(tmp_path: Path) -> N
     assert return_code == 0, output.stderr_tail()
 
 
+def test_stdio_database_open_does_not_attempt_optional_dataframe_imports(tmp_path: Path) -> None:
+    duckdb = pytest.importorskip("duckdb")
+    path = tmp_path / "cold.duckdb"
+    table = "records '\"\\ -- table"
+    sources = [
+        ("selected '\"\\ /* schema */", [("selected-one", 7), ("selected-two", 11), ("selected-three", 9)]),
+        ("decoy '\"\\ -- schema", [("decoy", 99)]),
+    ]
+
+    def identifier(name: str) -> str:
+        return '"' + name.replace('"', '""') + '"'
+
+    with duckdb.connect(str(path)) as connection:
+        for schema, rows in sources:
+            connection.execute(f"CREATE SCHEMA {identifier(schema)}")
+            connection.execute(f"CREATE TABLE {identifier(schema)}.{identifier(table)} (label VARCHAR, value INTEGER)")
+            connection.executemany(f"INSERT INTO {identifier(schema)}.{identifier(table)} VALUES (?, ?)", rows)
+    before = path.read_bytes()
+    program = "\n".join(
+        [
+            "import importlib.abc, json, sys, threading",
+            "optional = {'pandas', 'numpy', 'pyarrow'}",
+            "assert not optional.intersection(sys.modules)",
+            "attempts = set()",
+            "class ObserveOptionalImports(importlib.abc.MetaPathFinder):",
+            "    def find_spec(self, fullname, path=None, target=None):",
+            "        root = fullname.partition('.')[0]",
+            "        if root in optional:",
+            "            attempts.add((root, threading.current_thread().name))",
+            # Block the native import itself; DuckDB may swallow ImportError,
+            # so the parent separately asserts that no attempt was recorded.
+            "            raise ModuleNotFoundError('Optional dataframe import blocked by test')",
+            "sys.meta_path.insert(0, ObserveOptionalImports())",
+            "from openwrangler_runtime.server import main",
+            "try:",
+            "    result = main()",
+            "finally:",
+            "    print(json.dumps(sorted(attempts)), file=sys.stderr, flush=True)",
+            "raise SystemExit(result)",
+        ]
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-B", "-s", "-c", program],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        encoding="utf-8",
+    )
+    output = _ServerOutputPumps(process)
+    return_code: int | None = None
+    try:
+        for ordinal, (schema, expected_rows) in enumerate(sources):
+            session_id = f"cold-database-{ordinal}"
+            opened = _send_server_request(
+                process,
+                output,
+                f"open-{ordinal}",
+                {
+                    "kind": "openSession",
+                    "source": {
+                        "kind": "file",
+                        "path": str(path),
+                        "label": path.name,
+                        "importOptions": {"duckdbSchema": schema, "duckdbTable": table},
+                    },
+                    "backend": "duckdb",
+                    "mode": "viewing",
+                    "requestedSessionId": session_id,
+                    "pageSize": 20,
+                    "columnOffset": 0,
+                    "columnLimit": 16,
+                },
+                timeout=30.0,
+            )
+            assert opened["kind"] == "sessionOpened", opened
+            assert opened["metadata"]["mode"] == "viewing"
+            assert opened["metadata"]["shape"] == {"rows": len(expected_rows), "columns": 2}
+            assert [[cell["display"] for cell in row["values"]] for row in opened["page"]["rows"]] == [
+                [label, str(value)] for label, value in expected_rows
+            ]
+            closed = _send_server_request(
+                process,
+                output,
+                f"close-{ordinal}",
+                {"kind": "closeSession", "sessionId": session_id, "revision": 0},
+                timeout=30.0,
+            )
+            assert closed == {"kind": "sessionClosed", "sessionId": session_id}
+        assert process.stdin is not None
+        process.stdin.close()
+        return_code = process.wait(timeout=10)
+    finally:
+        if process.stdin is not None and not process.stdin.closed:
+            with suppress(BrokenPipeError):
+                process.stdin.close()
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
+        _join_and_close_server_output(process, output)
+    assert return_code == 0, output.stderr_tail()
+    assert path.read_bytes() == before
+    assert json.loads(output.stderr_tail()) == [], "A cold database open attempted optional dataframe imports."
+
+
 def test_stdio_server_prepares_backend_on_reader_thread_before_dispatch(monkeypatch) -> None:
     reader_thread = threading.current_thread()
     dispatched = threading.Event()

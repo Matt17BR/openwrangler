@@ -1129,6 +1129,8 @@ scope. They reuse the same SQL-plan, page and profile owners. Native spill files
 directory, removed after the connection closes; DuckDB's database-adjacent default is not used. External access is
 disabled. Only base tables are admitted; views and SQL editing are unsupported. Stored defaults and computed columns
 retain native behavior, so computed values may change between requests. This is not a snapshot transaction.
+Catalog admission quotes validated schema and table names through the existing SQL-literal owner. It avoids
+parameter binding that initializes optional Pandas, NumPy and PyArrow modules on a cold request worker.
 
 One viewer per database per Python runtime is supported because independent private spill paths conflict with DuckDB's
 shared database configuration. A second viewer is refused without disturbing the first. Ordinary database writers are
