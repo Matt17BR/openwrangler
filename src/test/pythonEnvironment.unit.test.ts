@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { SessionSource } from "../shared/protocol";
 import {
   automaticBackends,
+  backendImportCapabilityFailure,
   isFileDataBackend,
   isSupportedPythonVersion,
   requiredDependencies,
@@ -9,6 +10,23 @@ import {
 } from "../extension/pythonEnvironmentModel";
 
 describe("Python environment requirements", () => {
+  it("uses only DuckDB admission for a selected table regardless of the database filename", () => {
+    const source: SessionSource = {
+      kind: "file",
+      label: "database.xlsx",
+      path: "/tmp/database.xlsx",
+      importOptions: { duckdbSchema: "main", duckdbTable: "orders" }
+    };
+    expect(automaticBackends(source)).toEqual(["duckdb"]);
+    expect(backendImportCapabilityFailure("pandas", source)).toMatchObject({ option: "duckdbTable" });
+    expect(backendImportCapabilityFailure("polars", source)).toMatchObject({ option: "duckdbTable" });
+    expect(backendImportCapabilityFailure("duckdb", source)).toBeUndefined();
+    const discoverySource = { ...source, importOptions: undefined };
+    expect(backendImportCapabilityFailure("duckdb", discoverySource)).toBeUndefined();
+    const modules = ["duckdb", "fsspec", "pytz"];
+    expect(requiredDependencies("duckdb", source).map((item) => item.importModule)).toEqual(modules);
+    expect(requiredDependencies("duckdb", discoverySource).map((item) => item.importModule)).toEqual(modules);
+  });
   it("accepts exactly the supported Python minor range", () => {
     expect(isSupportedPythonVersion(3, 10)).toBe(true);
     expect(isSupportedPythonVersion(3, 14)).toBe(true);

@@ -3,6 +3,8 @@ from __future__ import annotations
 import glob
 import json
 import os
+import subprocess
+import sys
 import weakref
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
@@ -21,6 +23,7 @@ from duckdb.sqltypes import BIGINT, DOUBLE, TINYINT
 import __main__
 import openwrangler_runtime.engines.duckdb_engine as duckdb_runtime
 from openwrangler_runtime._column_binding import bind_step
+from openwrangler_runtime.duckdb_tables import list_duckdb_tables, validated_database_tables
 from openwrangler_runtime.engines.base import EngineError, typed_selection_value
 from openwrangler_runtime.engines.duckdb_engine import DuckDBEngine, DuckDBNotebookPlan, DuckDBSqlPlan
 from openwrangler_runtime.engines.registry import EngineRegistry
@@ -29,6 +32,291 @@ from openwrangler_runtime.generated_helpers import select_generated_helpers
 from openwrangler_runtime.lineage import derive_lineage, source_lineage
 from openwrangler_runtime.operations import operation_catalog, validate_step
 from openwrangler_runtime.session import SessionManager
+
+
+@pytest.fixture
+def database_file(tmp_path: Path) -> Path:
+    path = tmp_path / 'database " exact.no-standard-suffix'
+    with duckdb.connect(str(path)) as connection:
+        connection.execute('CREATE SCHEMA "schema "" exact"')
+        connection.execute(
+            'CREATE TABLE "schema "" exact"."table; exact" '
+            '(id INTEGER, "label\'exact" VARCHAR, ordinary INTEGER DEFAULT 42)'
+        )
+        connection.execute(
+            'INSERT INTO "schema "" exact"."table; exact"(id, "label\'exact") '
+            "VALUES (7, 'one'), (11, 'three'), (9, NULL)"
+        )
+        connection.execute("CREATE TABLE generated_values(id INTEGER, sampled DOUBLE GENERATED ALWAYS AS (random()))")
+        connection.execute("INSERT INTO generated_values(id) VALUES (1), (2)")
+        connection.execute('CREATE VIEW ordinary_view AS SELECT * FROM "schema "" exact"."table; exact"')
+        connection.execute("CHECKPOINT")
+    return path
+
+
+def test_duckdb_database_table_session_retains_quoted_source_and_forces_viewing(
+    database_file: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    install_conversion_guards(monkeypatch)
+    source = {
+        "kind": "file",
+        "path": str(database_file),
+        "label": database_file.name,
+        "importOptions": {"duckdbSchema": 'schema " exact', "duckdbTable": "table; exact"},
+    }
+    before = database_file.read_bytes()
+    manager = SessionManager(EngineRegistry((("duckdb", DuckDBEngine),)))
+    monkeypatch.setattr(
+        duckdb_runtime, "_connect", lambda: pytest.fail("Database reads must retain their own connection")
+    )
+    try:
+        opened = manager.open_session(source, backend="duckdb", mode="editing", page_size=2)
+        session_id = opened["metadata"]["sessionId"]
+        session = manager.sessions[session_id]
+        native = session.engine
+        assert isinstance(native, DuckDBEngine) and isinstance(session.original, DuckDBSqlPlan)
+        assert opened["metadata"]["mode"] == "viewing"
+        assert opened["metadata"]["capabilities"] == {
+            "editable": False,
+            "lazy": True,
+            "cancel": False,
+            "exportCsv": False,
+            "exportParquet": False,
+            "notebookInsert": False,
+            "supportedOperations": [],
+        }
+        assert [column["name"] for column in opened["metadata"]["schema"]] == ["id", "label'exact", "ordinary"]
+        assert [[cell["display"] for cell in row["values"]] for row in opened["page"]["rows"]] == [
+            ["7", "one", "42"],
+            ["11", "three", "42"],
+        ]
+        model = {"logic": "and", "filters": [], "sort": [{"column": "id", "direction": "desc", "nulls": "last"}]}
+        page = manager.get_page(session_id, 0, 0, 10, model)["page"]
+        assert [row["values"][0]["display"] for row in page["rows"]] == ["11", "9", "7"]
+        assert len({row["id"] for row in page["rows"]}) == 3
+        summary = manager.get_summary(session_id, 0, model, ["c:source:0"])["summaries"][0]
+        assert summary["numeric"]["min"] == 7 and summary["numeric"]["max"] == 11
+        assert summary["numeric"]["sum"] == 27
+        with pytest.raises(EngineError, match="Conversion Error"):
+            native._terminal_rows(session.original, "SELECT CAST('invalid' AS INTEGER) FROM ow LIMIT 1")
+        assert native.shape(session.original) == {"rows": 3, "columns": 3}
+        with native._tracked_connection() as connection:
+            assert connection.execute(
+                "SELECT current_setting('enable_external_access'), current_setting('autoload_known_extensions'), "
+                "current_setting('autoinstall_known_extensions'), current_setting('enable_external_file_cache')"
+            ).fetchone() == (False, False, False, False)
+            with pytest.raises(duckdb.PermissionException, match="disabled"):
+                connection.execute("SELECT * FROM read_csv(?)", [str(tmp_path / "external.csv")]).fetchall()
+        with pytest.raises(EngineError, match="viewing-only"):
+            manager.preview_step(
+                session_id, 0, step("cloneColumn", column={"id": "c:source:0", "name": "id"}, newName="copy"), 0, 10
+            )
+        with pytest.raises(EngineError, match="viewing-only"):
+            manager.apply_draft(session_id, 0, 0, 10)
+        with pytest.raises(EngineError, match="viewing-only"):
+            manager.export_data(session_id, 0, str(tmp_path / "output.csv"), export_options("csv"))
+        with pytest.raises(EngineError, match="viewing-only"):
+            native.compile_plan([])
+        with pytest.raises(EngineError, match="cannot be cloned"):
+            manager.open_session(source, backend="duckdb", clone_from={"sessionId": session_id, "revision": 0})
+        assert list(manager.sessions) == [session_id]
+        assert native._database_temporary is not None
+        temporary = Path(native._database_temporary.name)
+        assert temporary.exists() and temporary.parent != database_file.parent
+        manager.close_session(session_id, 0)
+        assert not temporary.exists() and not native._active_connections
+        assert not (tmp_path / "output.csv").exists()
+    finally:
+        manager.close_all()
+    assert database_file.read_bytes() == before
+
+
+def test_duckdb_database_query_fetch_and_close_are_serialized(database_file: Path) -> None:
+    engine = DuckDBEngine()
+    frame = engine.read_file(str(database_file), {"duckdbSchema": "main", "duckdbTable": "generated_values"})
+    first = engine._terminal_rows(frame, "SELECT * FROM ow ORDER BY id")
+    second = engine._terminal_rows(frame, "SELECT * FROM ow ORDER BY id")
+    assert [row[0] for row in first] == [1, 2] == [row[0] for row in second]
+    assert first != second and all(0 <= row[1] < 1 for row in first + second)
+    entered, attempted = Event(), Event()
+
+    def hold_fetch() -> None:
+        with engine._tracked_connection() as connection:
+            connection.execute("SELECT 1 UNION ALL SELECT 2")
+            entered.set()
+            assert attempted.wait(5)
+            assert not engine._closed
+            assert connection.fetchall() == [(1,), (2,)]
+
+    def close_after_fetch() -> None:
+        assert entered.wait(5)
+        assert not engine._database_query_lock.acquire(blocking=False)
+        attempted.set()
+        engine.close()
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            read = pool.submit(hold_fetch)
+            close = pool.submit(close_after_fetch)
+            read.result(timeout=10)
+            close.result(timeout=10)
+        assert engine._closed and not engine._active_connections
+        with pytest.raises(EngineError, match="closed"):
+            engine.shape(frame)
+    finally:
+        engine.close()
+
+
+def test_duckdb_database_second_viewer_refuses_without_retiring_first(database_file: Path) -> None:
+    before = database_file.read_bytes()
+    first, second, reopened = DuckDBEngine(), DuckDBEngine(), DuckDBEngine()
+    first_options = {"duckdbSchema": "main", "duckdbTable": "generated_values"}
+    second_options = {"duckdbSchema": 'schema " exact', "duckdbTable": "table; exact"}
+    try:
+        frame = first.read_file(str(database_file), first_options)
+        with pytest.raises(EngineError, match="Close the existing table viewer") as failure:
+            second.read_file(str(database_file), second_options)
+        assert isinstance(failure.value.__cause__, duckdb.ConnectionException)
+        assert second._closed and second._database_temporary is not None
+        assert not Path(second._database_temporary.name).exists()
+        assert first.shape(frame) == {"rows": 2, "columns": 2}
+        first.close()
+        assert first._database_temporary is not None and not Path(first._database_temporary.name).exists()
+        next_frame = reopened.read_file(str(database_file), second_options)
+        assert reopened._terminal_rows(next_frame, "SELECT id, ordinary FROM ow ORDER BY id") == [
+            (7, 42),
+            (9, 42),
+            (11, 42),
+        ]
+    finally:
+        first.close()
+        second.close()
+        reopened.close()
+    assert reopened._database_temporary is not None and not Path(reopened._database_temporary.name).exists()
+    assert database_file.read_bytes() == before
+
+
+def test_duckdb_database_discovery_and_failed_selection_release_reader(
+    database_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    before = database_file.read_bytes()
+    expected = [{"schema": "main", "name": "generated_values"}, {"schema": 'schema " exact', "name": "table; exact"}]
+    with monkeypatch.context() as discovery_patch:
+        discovery_patch.setattr(
+            duckdb_runtime,
+            "TemporaryDirectory",
+            lambda **_kwargs: pytest.fail("Discovery must not allocate spill storage"),
+        )
+        discovery = DuckDBEngine()
+        try:
+            assert discovery.list_database_tables(str(database_file)) == expected
+            assert discovery._database_temporary is None
+            with discovery._tracked_connection() as connection:
+                assert connection.execute("SELECT current_setting('temp_directory')").fetchone() == ("",)
+        finally:
+            discovery.close()
+    cli = subprocess.run(
+        [sys.executable, "-B", "-m", "openwrangler_runtime.duckdb_tables", "--source", str(database_file)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert json.loads(cli.stdout) == expected and cli.stderr == ""
+    engine = DuckDBEngine()
+    try:
+        with pytest.raises(EngineError, match="base table is no longer available"):
+            engine.read_file(str(database_file), {"duckdbSchema": "main", "duckdbTable": "ordinary_view"})
+        assert engine._closed and engine._database_temporary is not None
+        assert not Path(engine._database_temporary.name).exists()
+    finally:
+        engine.close()
+    writer = subprocess.run(
+        [sys.executable, "-B", "-c", "import duckdb,sys; c=duckdb.connect(sys.argv[1]); c.close()", str(database_file)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert writer.stdout == writer.stderr == "" and database_file.read_bytes() == before
+    empty = tmp_path / "empty"
+    duckdb.connect(str(empty)).close()
+    assert list_duckdb_tables(empty) == []
+    assert validated_database_tables([("same", "name"), ("other", "name"), ("😀", "x" * 1024)]) == [
+        {"schema": "same", "name": "name"},
+        {"schema": "other", "name": "name"},
+        {"schema": "😀", "name": "x" * 1024},
+    ]
+    absent = tmp_path / "does-not-exist"
+    failed = DuckDBEngine()
+    with pytest.raises(EngineError, match="read-only"):
+        failed.list_database_tables(str(absent))
+    assert failed._closed and not absent.exists() and failed._database_temporary is None
+    oversized = tmp_path / "oversized-name"
+    with duckdb.connect(str(oversized)) as connection:
+        connection.execute(f'CREATE TABLE "{"v" * 1_024}"(value INTEGER)')
+        connection.execute(f'CREATE SCHEMA "{"é" * 20_000}"')
+        connection.execute(f'CREATE TABLE "{"é" * 20_000}"."{"😀" * 20_000}"(value INTEGER)')
+    decode = duckdb_runtime.validated_database_tables
+
+    def bounded_decode(rows: list[tuple[Any, ...]]) -> list[dict[str, str]]:
+        assert rows == [("main", "v" * 1_024), ("é" * 1_025, "😀" * 1_025)]
+        return decode(rows)
+
+    monkeypatch.setattr(duckdb_runtime, "validated_database_tables", bounded_decode)
+    with pytest.raises(ValueError, match="invalid schema or table name"):
+        list_duckdb_tables(oversized)
+
+
+def test_duckdb_database_read_only_wal_recovery_preserves_both_files(database_file: Path) -> None:
+    writer = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            "import duckdb,os,sys; c=duckdb.connect(sys.argv[1]); "
+            "c.execute('INSERT INTO generated_values(id) VALUES (3)'); os._exit(0)",
+            str(database_file),
+        ],
+        check=True,
+        capture_output=True,
+        timeout=15,
+    )
+    assert writer.stdout == writer.stderr == b""
+    wal = Path(str(database_file) + ".wal")
+    before = (database_file.read_bytes(), wal.read_bytes())
+    engine = DuckDBEngine()
+    try:
+        frame = engine.read_file(str(database_file), {"duckdbSchema": "main", "duckdbTable": "generated_values"})
+        assert engine._terminal_rows(frame, "SELECT id FROM ow ORDER BY id") == [(1,), (2,), (3,)]
+        blocked = subprocess.run(
+            [sys.executable, "-B", "-c", "import duckdb,sys; duckdb.connect(sys.argv[1]).close()", str(database_file)],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert blocked.returncode != 0 and "lock" in blocked.stderr.lower()
+    finally:
+        engine.close()
+    assert (database_file.read_bytes(), wal.read_bytes()) == before
+
+
+@pytest.mark.parametrize(
+    "rows,message",
+    [
+        ([("main", "same"), ("main", "same")], "duplicate"),
+        ([("main", str(i)) for i in range(4097)], "too many"),
+        ([("main", "x" * 1025)], "invalid"),
+        ([("main", "\ud800")], "invalid"),
+        ([("main", "a\0b")], "invalid"),
+        ([("main", "")], "invalid"),
+        ([("main", f"{i:04d}" + "😀" * 1020) for i in range(17)], "too much"),
+        ([("main", f"{i:04d}" + "\x01" * 1020) for i in range(44)], "too large"),
+    ],
+)
+def test_duckdb_database_discovery_bounds(rows: list[tuple[str, str]], message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        validated_database_tables(rows)
 
 
 def test_duckdb_extract_struct_fields_preserves_literal_names_and_current_input(tmp_path: Path) -> None:

@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import type { DataBackend, SessionSource } from "../shared/protocol";
+import { isDuckDBTableSource } from "../shared/protocol";
 
 export type FileDataBackend = Extract<DataBackend, "pandas" | "polars" | "duckdb">;
 
@@ -84,7 +85,7 @@ const PYTHON_RUNTIME_DEPENDENCIES: Readonly<Record<PythonRuntimeDependencyId, Re
 // END GENERATED PYTHON RUNTIME DEPENDENCIES
 
 export interface BackendImportCapabilityFailure {
-  option: "delimiter" | "encoding" | "quoteChar";
+  option: "delimiter" | "encoding" | "quoteChar" | "duckdbTable";
   message: string;
   detail: string;
 }
@@ -94,6 +95,7 @@ export function isFileDataBackend(backend: DataBackend): backend is FileDataBack
 }
 
 export function automaticBackends(source: SessionSource): FileDataBackend[] {
+  if (isDuckDBTableSource(source)) return ["duckdb"];
   const extension = source.path?.split(".").pop()?.toLowerCase();
   const encoding = source.importOptions?.encoding?.toLowerCase();
   if (encoding === "utf8-lossy") return ["pandas"];
@@ -109,6 +111,12 @@ export function backendImportCapabilityFailure(
   backend: FileDataBackend,
   source: SessionSource
 ): BackendImportCapabilityFailure | undefined {
+  if (isDuckDBTableSource(source) && backend !== "duckdb")
+    return {
+      option: "duckdbTable",
+      message: "A selected DuckDB database table requires the DuckDB backend.",
+      detail: "Use Open Wrangler: Open DuckDB Table to choose a database table for viewing."
+    };
   if (!isDelimitedFile(source)) return undefined;
   const encoding = source.importOptions?.encoding?.toLowerCase();
   if ((encoding === "utf-16le" || encoding === "utf-16be") && backend !== "pandas") {

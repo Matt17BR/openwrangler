@@ -12,6 +12,7 @@ import {
   dataBackendLabel,
   formatSessionRowCount,
   isExactGridPage,
+  isDuckDBTableSource,
   supportsViewingCapability
 } from "../shared/protocol";
 import {
@@ -2311,7 +2312,9 @@ export function App() {
                   </span>
                 </details>
               )}
-              {metadata.source.kind === "file" && isSwitchableFileBackend(metadata.backend) ? (
+              {metadata.source.kind === "file" &&
+              !isDuckDBTableSource(metadata.source) &&
+              isSwitchableFileBackend(metadata.backend) ? (
                 <button
                   type="button"
                   className="sessionBadge backendBadge backendButton"

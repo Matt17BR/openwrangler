@@ -134,14 +134,19 @@ describes supported frame classes, operations and export limits.
 
 ## Supported dataframes
 
-| Dataframe or source                       | View    | Cleaning and generated code         | Data export                |
-| ----------------------------------------- | ------- | ----------------------------------- | -------------------------- |
-| Pandas files and live dataframes          | Yes     | Pandas Python                       | CSV / Parquet              |
-| Polars files and live dataframes          | Yes     | Polars Python                       | CSV / Parquet              |
-| DuckDB files (experimental)               | Yes     | Supported operations, DuckDB Python | CSV / Parquet              |
-| DuckDB notebook relations                 | Yes     | Unavailable                         | Unavailable                |
-| Local PySpark Classic / Connect notebooks | Bounded | Unavailable                         | Unavailable                |
-| R base data.frame, tibble, data.table     | Yes     | Supported operations, native R      | CSV / Parquet, with limits |
+Use **Open Wrangler: Open DuckDB Table** to choose a local database and explore one base table with the grid,
+filters and profiles. Close its viewer before opening another table from that database or writing to the database.
+Views, SQL editing, cleaning and exports are unavailable for this entry point. Computed columns can change between queries.
+
+| Dataframe or source                               | View    | Cleaning and generated code         | Data export                |
+| ------------------------------------------------- | ------- | ----------------------------------- | -------------------------- |
+| Pandas files and live dataframes                  | Yes     | Pandas Python                       | CSV / Parquet              |
+| Polars files and live dataframes                  | Yes     | Polars Python                       | CSV / Parquet              |
+| DuckDB CSV / TSV / Parquet / JSONL (experimental) | Yes     | Supported operations, DuckDB Python | CSV / Parquet              |
+| DuckDB database tables (experimental)             | Yes     | Unavailable                         | Unavailable                |
+| DuckDB notebook relations                         | Yes     | Unavailable                         | Unavailable                |
+| Local PySpark Classic / Connect notebooks         | Bounded | Unavailable                         | Unavailable                |
+| R base data.frame, tibble, data.table             | Yes     | Supported operations, native R      | CSV / Parquet, with limits |
 
 PySpark uses an existing local batch session. Open Wrangler does not install or configure Spark; streaming dataframes
 and remote or authenticated clusters are unsupported.

@@ -15,7 +15,7 @@ import type {
   SessionBoundRequest,
   TransformStep
 } from "../shared/protocol";
-import { isSessionBoundRequest } from "../shared/protocol";
+import { isDuckDBTableSource, isSessionBoundRequest } from "../shared/protocol";
 import { sessionModeAction } from "../shared/sessionMode";
 import type { GridViewState } from "../shared/viewState";
 import {
@@ -170,6 +170,8 @@ export class SessionCoordinator implements vscode.Disposable {
         return response;
       },
       captureActiveFilePlan: () => this.captureActiveFilePlan(delegate),
+      discoverDuckDBTables: (source, options) =>
+        delegate.discoverDuckDBTables?.(source, options) ?? Promise.resolve(undefined),
       installFileDependencies: (source, backend, options) =>
         delegate.installFileDependencies?.(source, backend, options) ?? Promise.resolve(false),
       onDidReplaceRuntime: (listener) =>
@@ -799,6 +801,14 @@ export class SessionCoordinator implements vscode.Disposable {
       return protocolError(
         "invalid_import_source",
         "File options and the dataframe engine can be changed only for the same open file.",
+        true,
+        session.publicId
+      );
+    }
+    if (isDuckDBTableSource(session.openRequest.source) || isDuckDBTableSource(source)) {
+      return protocolError(
+        "unsupported_import_source",
+        "DuckDB tables keep their selected database, table and engine. Close this viewer and use Open DuckDB Table to choose another table.",
         true,
         session.publicId
       );

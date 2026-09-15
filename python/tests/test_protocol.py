@@ -276,6 +276,53 @@ def test_open_session_accepts_strict_import_options(import_options: object, file
     assert decode_envelope(envelope)[2]["source"]["importOptions"] == import_options
 
 
+def test_open_session_accepts_exact_duckdb_table_names_on_any_file_suffix() -> None:
+    options = {"duckdbSchema": 'quoted " schema', "duckdbTable": "💠" * 1024}
+    envelope = _open_session_envelope_with_import_options(options, "database")
+    request = envelope["request"]
+    assert isinstance(request, dict)
+    request.update(backend="duckdb", mode="editing")
+    assert decode_envelope(envelope)[2]["source"]["importOptions"] == options
+    request["source"]["importOptions"] = {"duckdbSchema": " ", "duckdbTable": " "}
+    assert decode_envelope(envelope)[2]["source"]["importOptions"] == {"duckdbSchema": " ", "duckdbTable": " "}
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"importOptions": {"duckdbSchema": "main"}},
+        {"importOptions": {"duckdbTable": "orders"}},
+        *[
+            {"importOptions": {"duckdbSchema": "main", "duckdbTable": name}}
+            for name in ("", "x" * 1025, "\0", "\ud800", None, 1)
+        ],
+        {"importOptions": {"duckdbSchema": "main", "duckdbTable": "orders", "delimiter": ","}},
+        {"importOptions": {"duckdbSchema": "main", "duckdbTable": "orders", "sheetName": "orders"}},
+        {"path": ""},
+        {"kind": "notebookVariable"},
+    ],
+)
+def test_open_session_rejects_malformed_duckdb_table_sources(change: dict[str, Any]) -> None:
+    envelope = _open_session_envelope_with_import_options({"duckdbSchema": "main", "duckdbTable": "orders"}, "database")
+    request = envelope["request"]
+    assert isinstance(request, dict)
+    request["backend"] = "duckdb"
+    request["source"].update(change)
+    with pytest.raises(ProtocolError):
+        decode_envelope(envelope)
+
+
+@pytest.mark.parametrize("backend", [None, "pandas", "polars", "pyspark"])
+def test_open_session_requires_explicit_duckdb_backend_for_database_table(backend: str | None) -> None:
+    envelope = _open_session_envelope_with_import_options({"duckdbSchema": "main", "duckdbTable": "orders"}, "database")
+    request = envelope["request"]
+    assert isinstance(request, dict)
+    if backend is not None:
+        request["backend"] = backend
+    with pytest.raises(ProtocolError):
+        decode_envelope(envelope)
+
+
 def test_open_session_normalizes_integral_json_sheet_indices() -> None:
     envelope = _open_session_envelope_with_import_options({"sheetIndex": 1.0}, "sample.xlsx")
 

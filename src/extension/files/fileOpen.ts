@@ -6,6 +6,7 @@ import { OpenWranglerPanel } from "../webviewPanel";
 import { getSetting } from "../configuration";
 import { confirmedFileConfiguration } from "./confirmedFileConfigurations";
 import { detectImportOptions } from "./importOptions";
+import { captureSessionSourceProtection, confirmSessionSourceProtection } from "./safeFileExport";
 
 const CUSTOM_EDITOR_ID = "openWrangler.viewer";
 type FileDataBackend = Extract<DataBackend, "polars" | "duckdb" | "pandas">;
@@ -53,6 +54,142 @@ export class OpenWranglerCustomEditorProvider implements vscode.CustomReadonlyEd
 }
 
 export const registerFileCommands = (context: vscode.ExtensionContext, bridge: OpenWranglerBridge): void => {
+  const databaseOpens = new Set<vscode.CancellationTokenSource>();
+  context.subscriptions.push({
+    dispose: () => {
+      for (const attempt of databaseOpens) attempt.cancel();
+    }
+  });
+  context.subscriptions.push(
+    vscode.commands.registerCommand("openWrangler.openDuckDBTable", async () => {
+      if (!vscode.workspace.isTrusted) {
+        await vscode.window.showInformationMessage("Trust this workspace before opening a DuckDB database.");
+        return;
+      }
+      const attempt = new vscode.CancellationTokenSource();
+      const token = attempt.token;
+      databaseOpens.add(attempt);
+      try {
+        const files = await vscode.window.showOpenDialog({
+          title: "Open DuckDB Table",
+          canSelectMany: false,
+          canSelectFolders: false,
+          canSelectFiles: true
+        });
+        const selected = files?.[0];
+        if (!selected || token.isCancellationRequested) return;
+        if (selected.scheme !== "file") {
+          await vscode.window.showWarningMessage("Choose a local DuckDB database file.");
+          return;
+        }
+        if (!(await validateRegularFileTarget(selected, token))) return;
+        const protection = await captureSessionSourceProtection([selected]);
+        if (!protection.available) {
+          await vscode.window.showWarningMessage("Could not identify this database file. Choose it again.");
+          return;
+        }
+        const source = fileSource(selected);
+        const discovered = await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: "Reading DuckDB tables",
+            cancellable: true
+          },
+          async (_progress, cancellation) => {
+            const subscription = cancellation.onCancellationRequested(() => attempt.cancel());
+            try {
+              return await bridge.discoverDuckDBTables?.(source, { cancellation: token });
+            } finally {
+              subscription.dispose();
+            }
+          }
+        );
+        if (token.isCancellationRequested || !discovered) return;
+        if ("kind" in discovered) {
+          await vscode.window.showErrorMessage(discovered.message);
+          return;
+        }
+        const current = async (): Promise<boolean> => {
+          const confirmed = await confirmSessionSourceProtection(protection);
+          return confirmed.available && discovered.isCurrent() && !token.isCancellationRequested;
+        };
+        if (!(await current())) {
+          await vscode.window.showWarningMessage(
+            "The database file or Python runtime changed. Choose the database again."
+          );
+          return;
+        }
+        if (discovered.tables.length === 0) {
+          await vscode.window.showInformationMessage(
+            "This DuckDB database has no user tables. Views are not supported."
+          );
+          return;
+        }
+        const choices = discovered.tables.map((table) => ({
+          label: table.name,
+          description: `Schema: ${JSON.stringify(table.schema)}`,
+          table
+        }));
+        const choice = await vscode.window.showQuickPick(
+          choices,
+          {
+            title: "Open DuckDB Table",
+            placeHolder: "Choose a table. Database writers are blocked until the viewer closes.",
+            matchOnDescription: true
+          },
+          token
+        );
+        if (!choice || token.isCancellationRequested) return;
+        if (!(await current())) {
+          await vscode.window.showWarningMessage(
+            "The database file or Python runtime changed. Choose the database again."
+          );
+          return;
+        }
+        const selectedSource: SessionSource = {
+          ...source,
+          importOptions: { duckdbSchema: choice.table.schema, duckdbTable: choice.table.name }
+        };
+        let initialOpenComplete = false;
+        const scopedBridge: OpenWranglerBridge = {
+          ...bridge,
+          request: async (request, options) => {
+            if (request.kind !== "openSession" || initialOpenComplete) return bridge.request(request, options);
+            if (
+              request.source.kind !== "file" ||
+              request.source.path !== selectedSource.path ||
+              request.source.uri !== selectedSource.uri ||
+              request.source.importOptions?.duckdbSchema !== selectedSource.importOptions?.duckdbSchema ||
+              request.source.importOptions?.duckdbTable !== selectedSource.importOptions?.duckdbTable ||
+              !(await current())
+            )
+              return {
+                kind: "error",
+                code: "duckdb_selection_changed",
+                recoverable: true,
+                message: "The database file or Python runtime changed. Choose the database again."
+              };
+            const response = await bridge.request(request, {
+              ...options,
+              cancellation: {
+                get isCancellationRequested() {
+                  return !discovered.isCurrent() || Boolean(options?.cancellation?.isCancellationRequested);
+                },
+                onCancellationRequested: (listener) =>
+                  options?.cancellation?.onCancellationRequested(listener) ?? { dispose: () => undefined }
+              }
+            });
+            if (response.kind === "sessionOpened") initialOpenComplete = true;
+            return response;
+          }
+        };
+        OpenWranglerPanel.create(context, scopedBridge, selectedSource, "duckdb", "duckdb", "viewing");
+      } finally {
+        databaseOpens.delete(attempt);
+        attempt.dispose();
+      }
+    })
+  );
   context.subscriptions.push(
     vscode.commands.registerCommand("openWrangler.openFileWithPlan", async () => {
       const captured = bridge.captureActiveFilePlan?.();
@@ -225,6 +362,13 @@ const validateFileTarget = async (
     return false;
   }
 
+  return validateRegularFileTarget(uri, cancellation);
+};
+
+const validateRegularFileTarget = async (
+  uri: vscode.Uri,
+  cancellation?: vscode.CancellationToken
+): Promise<boolean> => {
   try {
     const stat = await vscode.workspace.fs.stat(uri);
     if (cancellation?.isCancellationRequested) return false;

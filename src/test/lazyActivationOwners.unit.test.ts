@@ -208,6 +208,7 @@ vi.mock("../extension/files/fileOpen", () => ({
       "openWrangler.changeImportOptions",
       "openWrangler.openFile",
       "openWrangler.openPath",
+      "openWrangler.openDuckDBTable",
       "openWrangler.openFileWithPlan"
     ]);
   })
@@ -535,7 +536,7 @@ describe("lazy activation owners", () => {
     expect(active.diagnosticsForTesting().rDiscoveryStarted).toBe(true);
   });
 
-  it.each(["editor resolution", "file command", "plan command"])(
+  it.each(["editor resolution", "file command", "plan command", "database command"])(
     "retains its provider through first %s",
     async (trigger) => {
       active = createOwners();
@@ -548,6 +549,12 @@ describe("lazy activation owners", () => {
 
       expect(owners.pythonConstructed).not.toHaveBeenCalled();
       if (trigger === "file command") await host.executeCommand("openWrangler.openFile", document);
+      if (trigger === "database command") {
+        await expect(host.executeCommand("openWrangler.openDuckDBTable")).resolves.toEqual({
+          id: "openWrangler.openDuckDBTable",
+          args: []
+        });
+      }
       if (trigger === "plan command") {
         await expect(host.executeCommand("openWrangler.openFileWithPlan")).resolves.toEqual({
           id: "openWrangler.openFileWithPlan",

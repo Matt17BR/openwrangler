@@ -37,6 +37,7 @@ from .session_result import ResponsePayloadError as ResponsePayloadError
 from .session_source import (
     SessionSource,
     SourceChangedError,
+    is_duckdb_table_source,
     resolve_notebook_variable,
 )
 from .version import __version__
@@ -421,6 +422,8 @@ class SessionManager:
             source_kind = str(source.get("kind", ""))
             if clone_from is None:
                 engine = self._engine_for_source(source, backend)
+                if is_duckdb_table_source(source) and engine.name != "duckdb":
+                    raise EngineError("DuckDB database tables require the DuckDB backend.")
                 engine.validate_runtime()
                 if source_kind not in engine.capabilities.source_kinds:
                     raise EngineError(f"The {engine.name} backend does not support {source_kind or 'unknown'} sources.")
@@ -444,6 +447,8 @@ class SessionManager:
                 source_session = self._session(clone_session_id)
                 with self._exclusive_session_read(source_session):
                     self._assert_revision(source_session, clone_revision)
+                    if is_duckdb_table_source(source_session.source.metadata):
+                        raise EngineError("DuckDB database table sessions cannot be cloned for editing.")
                     if not source_session.source.matches_public_source(source):
                         raise EngineError("The clone source no longer matches the confirmed runtime source.")
                     if backend not in {None, source_session.backend}:
@@ -503,7 +508,10 @@ class SessionManager:
                 revision=0,
                 mode=(
                     "viewing"
-                    if (not engine.capabilities.supports_editing or (engine.name == "duckdb" and source_kind != "file"))
+                    if (
+                        not engine.capabilities.supports_editing
+                        or (engine.name == "duckdb" and (source_kind != "file" or is_duckdb_table_source(source)))
+                    )
                     else mode or ("editing" if source.get("kind") == "file" else "viewing")
                 ),
                 access=SessionRequestAdmission(),
@@ -1844,6 +1852,10 @@ class SessionManager:
 
     def _assert_editable(self, session: Session) -> None:
         if session.mode != "editing":
+            if is_duckdb_table_source(session.source.metadata):
+                raise EngineError(
+                    "DuckDB database table sessions are viewing-only; cleaning and exports are unavailable."
+                )
             raise EngineError("This session is in viewing mode. Change it to editing before adding steps.")
         if not session.engine.capabilities.supports_editing:
             raise EngineError(f"The {session.backend} backend does not support editing.")
@@ -1866,7 +1878,9 @@ class SessionManager:
     def _capabilities(self, session: Session) -> dict[str, bool | list[str]]:
         source_kind = session.source.kind
         engine_capabilities = session.engine.capabilities
-        source_supports_editing = not (session.backend == "duckdb" and source_kind != "file")
+        source_supports_editing = not (
+            session.backend == "duckdb" and (source_kind != "file" or is_duckdb_table_source(session.source.metadata))
+        )
         editable = session.mode == "editing" and engine_capabilities.supports_editing and source_supports_editing
         return {
             "editable": editable,

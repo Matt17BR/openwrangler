@@ -35,6 +35,42 @@ import {
 } from "./sessionReconfigurationTestFixtures";
 
 describe("SessionCoordinator file-session reconfiguration", () => {
+  it("refuses to reinterpret a selected database table as an ordinary data file", async () => {
+    const source = { ...initialSource, importOptions: { duckdbSchema: "main", duckdbTable: "orders" } };
+    const coordinator = new SessionCoordinator();
+    const confirmed = {
+      ...metadataFor({ runtimeId: "database-reader", source, backend: "duckdb" }),
+      mode: "viewing" as const,
+      capabilities: {
+        ...capabilities(),
+        editable: false,
+        exportCsv: false,
+        exportParquet: false,
+        supportedOperations: []
+      }
+    };
+    const request = vi.fn(async (message: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (message.kind === "openSession") return openedFor(message, confirmed);
+      if (message.kind === "closeSession") return { kind: "sessionClosed", sessionId: message.sessionId };
+      throw new Error(`Unexpected request: ${message.kind}`);
+    });
+    const bridge = coordinator.createBridge({ request });
+    try {
+      const opened = await bridge.request({ ...openRequest(source), backend: "duckdb", mode: "viewing" });
+      if (opened.kind !== "sessionOpened") throw new Error("Expected database viewer.");
+      const before = coordinator.activeSession();
+      request.mockClear();
+      const response = await bridge.reconfigureFileSession!(opened.metadata.sessionId, 0, initialSource, {
+        backendPreference: "pandas"
+      });
+      expect(response).toMatchObject({ kind: "error", code: "unsupported_import_source" });
+      expect(request).not.toHaveBeenCalled();
+      expect(coordinator.activeSession()).toEqual(before);
+    } finally {
+      coordinator.dispose();
+    }
+  });
+
   it.each(["publish", "rollback"])(
     "keeps source identity with the runtime selected by file reconfiguration %s",
     async (outcome) => {

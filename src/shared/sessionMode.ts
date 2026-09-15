@@ -1,4 +1,4 @@
-import type { SessionMetadata, SessionMode } from "./protocol";
+import { isDuckDBTableSource, type SessionMetadata, type SessionMode } from "./protocol";
 
 export interface SessionModeAction {
   target: SessionMode;
@@ -58,6 +58,9 @@ export function sessionModeDescription(metadata: SessionMetadata): string {
   if (metadata.backend === "duckdb" && metadata.source.kind === "notebookVariable") {
     return "Open Wrangler supports read-only exploration of live DuckDB notebook relations. Cleaning steps, code insertion, and data export are not available. Filters and sorts change only the current view.";
   }
+  if (isDuckDBTableSource(metadata.source)) {
+    return "Explore this DuckDB table through a read-only connection. Close this table before writing to its database or opening another table from it. Cleaning steps, generated code, and data export are not available. Computed columns may change between queries.";
+  }
   if (metadata.source.kind === "notebookOutput") {
     return "This is a saved notebook snapshot, not a live dataframe. Rerun the cell and open its live variable to build a cleaning plan.";
   }
@@ -82,6 +85,9 @@ export function cleaningUnavailableReason(metadata: SessionMetadata): string {
   if (metadata.backend === "duckdb" && metadata.source.kind === "notebookVariable") {
     return "Live DuckDB notebook relations are viewing only in Open Wrangler; cleaning steps are not available.";
   }
+  if (isDuckDBTableSource(metadata.source)) {
+    return "DuckDB database tables are viewing only in Open Wrangler; cleaning steps are not available.";
+  }
   if (metadata.source.kind === "notebookOutput") {
     return "Saved notebook snapshots are viewing only. Rerun the cell and open its live variable to add cleaning steps.";
   }
@@ -104,6 +110,7 @@ function viewingModeBlockedReason(metadata: SessionMetadata): string | undefined
 function isPermanentlyReadOnly(metadata: SessionMetadata): boolean {
   return (
     metadata.backend === "pyspark" ||
+    isDuckDBTableSource(metadata.source) ||
     (metadata.backend === "duckdb" && metadata.source.kind === "notebookVariable") ||
     metadata.source.kind === "notebookOutput"
   );

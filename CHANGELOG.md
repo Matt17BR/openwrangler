@@ -6,6 +6,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Added
 
+- Open DuckDB Table opens one local database table for read-only browsing, filters and profiles. Close the viewer before switching tables in that database or writing to it; views, cleaning and exports remain unavailable.
 - Explode List expands one Polars List column into rows, preserving child types and repeating the other columns. Empty or missing lists retain one row.
 - Open Another File with This Plan reuses confirmed built-in steps on a compatible file in Pandas, Polars, or DuckDB, keeping a separate editable session and preserving both sources.
 - Extract Struct Fields copies selected scalar fields into new columns in Polars editing sessions and DuckDB file sessions, preserving the parent column and rows.

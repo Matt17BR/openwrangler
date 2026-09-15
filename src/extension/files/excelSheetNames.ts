@@ -1,10 +1,12 @@
-import { execFile } from "node:child_process";
 import * as path from "node:path";
-import { promisify } from "node:util";
 import type { DataBackend } from "../../shared/protocol";
 import { buildPythonProcessEnvironment } from "../pythonProcessEnvironment";
+import {
+  executePythonMetadataProcess,
+  type PythonMetadataExecutor,
+  type PythonMetadataProcessOptions
+} from "./pythonMetadataProcess";
 
-const execFileAsync = promisify(execFile);
 const EXCEL_SHEET_DISCOVERY_TIMEOUT_MS = 15_000;
 const EXCEL_SHEET_DISCOVERY_OUTPUT_BYTES = 256 * 1024;
 const MAX_EXCEL_SHEETS = 4_096;
@@ -19,31 +21,12 @@ export interface ExcelSheetDiscoveryRequest {
   readonly signal?: AbortSignal;
 }
 
-export interface ExcelSheetDiscoveryProcessOptions {
-  readonly cwd: string;
-  readonly env: NodeJS.ProcessEnv;
-  readonly encoding: "utf8";
-  readonly maxBuffer: number;
-  readonly shell: false;
-  readonly signal?: AbortSignal;
-  readonly timeout: number;
-  readonly windowsHide: true;
-}
-
-export type ExcelSheetDiscoveryExecutor = (
-  executable: string,
-  arguments_: readonly string[],
-  options: ExcelSheetDiscoveryProcessOptions
-) => Promise<{ stdout: string }>;
-
-const defaultExecutor: ExcelSheetDiscoveryExecutor = async (executable, arguments_, options) => {
-  const result = await execFileAsync(executable, [...arguments_], options);
-  return { stdout: result.stdout };
-};
+export type ExcelSheetDiscoveryProcessOptions = PythonMetadataProcessOptions;
+export type ExcelSheetDiscoveryExecutor = PythonMetadataExecutor;
 
 export async function discoverExcelSheetNames(
   request: ExcelSheetDiscoveryRequest,
-  execute: ExcelSheetDiscoveryExecutor = defaultExecutor
+  execute: ExcelSheetDiscoveryExecutor = executePythonMetadataProcess
 ): Promise<readonly string[]> {
   if (request.backend !== "pandas" && request.backend !== "polars") {
     throw new Error(`${request.backend} does not support Excel worksheet discovery.`);

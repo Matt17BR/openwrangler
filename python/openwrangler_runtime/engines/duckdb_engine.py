@@ -11,6 +11,7 @@ from glob import escape as escape_glob
 from inspect import getsource
 from math import inf, isfinite, isinf, isnan, nextafter
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from textwrap import indent
 from threading import RLock
 from typing import Any
@@ -23,6 +24,12 @@ from ..custom_code_scope import (
     custom_code_prelude_lines,
     custom_code_step_lines,
     execute_custom_code,
+)
+from ..duckdb_tables import (
+    MAX_DATABASE_NAME_CHARACTERS,
+    MAX_DATABASE_TABLES,
+    validate_database_name,
+    validated_database_tables,
 )
 from ..export_target import ExportWriterPath
 from ..generated_helpers import select_generated_helpers
@@ -289,8 +296,9 @@ class DuckDBEngine(DataFrameEngine):
     Session frames retain only immutable SQL and schema metadata. Native
     DuckDBPyRelation objects exist inside one bounded connection scope and are
     released before that connection closes. Every terminal read replays the
-    self-contained SQL on a fresh connection, so file-backed sessions can
-    profile and page in parallel without sharing a cursor or file owner.
+    self-contained SQL on a fresh connection for delimited and columnar files.
+    Database tables instead retain one private read-only connection and
+    serialize each complete native query and fetch scope.
     """
 
     name = "duckdb"
@@ -310,6 +318,9 @@ class DuckDBEngine(DataFrameEngine):
         self._closed = False
         self._empty_source_frame: DuckDBSqlPlan | None = None
         self._notebook_relation_owners: list[_DuckDBNotebookRelationOwner] = []
+        self._database_query_lock = RLock()
+        self._database_connection: Any | None = None
+        self._database_temporary: TemporaryDirectory[str] | None = None
 
     def detect(self, value: Any) -> bool:
         if isinstance(value, (DuckDBSqlPlan, DuckDBNotebookPlan)):
@@ -382,18 +393,112 @@ class DuckDBEngine(DataFrameEngine):
                 continue
 
     def close(self) -> None:
-        with self._lifecycle_lock:
-            if self._closed:
-                return
-            self._closed = True
-            self._empty_source_frame = None
-            owners = list(self._notebook_relation_owners)
-            self._notebook_relation_owners.clear()
+        # A database connection owns one cursor; close follows the full query
+        # and fetch scope. Interrupt deliberately does not acquire this lock.
+        with self._database_query_lock:
+            with self._lifecycle_lock:
+                if self._closed:
+                    return
+                self._closed = True
+                self._empty_source_frame = None
+                owners = list(self._notebook_relation_owners)
+                self._notebook_relation_owners.clear()
+            try:
+                if self._database_connection is not None:
+                    self._database_connection.close()
+            finally:
+                if self._database_temporary is not None:
+                    self._database_temporary.cleanup()
         for owner in owners:
             owner.close()
 
+    def _open_database(self, path: str, *, allow_spill: bool = True) -> None:
+        import duckdb
+
+        with self._database_query_lock:
+            with self._lifecycle_lock:
+                if self._closed:
+                    raise EngineError("The DuckDB engine is closed.")
+                if self._database_connection is not None:
+                    raise EngineError("This DuckDB engine already owns a database reader.")
+            if allow_spill:
+                self._database_temporary = TemporaryDirectory(prefix="open-wrangler-duckdb-")
+            try:
+                self._database_connection = duckdb.connect(
+                    path,
+                    read_only=True,
+                    config={
+                        "enable_external_access": False,
+                        "autoinstall_known_extensions": False,
+                        "autoload_known_extensions": False,
+                        "enable_external_file_cache": False,
+                        "preserve_insertion_order": True,
+                        "temp_directory": self._database_temporary.name if self._database_temporary is not None else "",
+                    },
+                )
+                self._database_connection.execute("SET TimeZone = 'UTC'")
+            except Exception as error:
+                self.close()
+                if isinstance(error, duckdb.ConnectionException) and (
+                    "same database file with a different configuration than existing connections" in str(error)
+                ):
+                    raise EngineError(
+                        "DuckDB already has an incompatible connection to this database in the Python runtime. "
+                        "Close the existing table viewer or database connection, then try again."
+                    ) from error
+                raise EngineError(f"DuckDB could not open the database read-only: {error}") from error
+
+    def list_database_tables(self, path: str) -> list[dict[str, str]]:
+        self._open_database(path, allow_spill=False)
+        try:
+            with self._tracked_connection() as connection:
+                rows = connection.execute(
+                    f"SELECT system.main.left(schema_name, {MAX_DATABASE_NAME_CHARACTERS + 1}) AS schema_name, "
+                    f"system.main.left(table_name, {MAX_DATABASE_NAME_CHARACTERS + 1}) AS table_name "
+                    "FROM system.main.duckdb_tables() "
+                    "WHERE NOT internal AND NOT temporary ORDER BY schema_name, table_name "
+                    f"LIMIT {MAX_DATABASE_TABLES + 1}"
+                ).fetchall()
+            return validated_database_tables(rows)
+        except Exception:
+            self.close()
+            raise
+
+    def _read_database_table(self, path: str, options: Mapping[str, Any]) -> DuckDBSqlPlan:
+        if set(options) != {"duckdbSchema", "duckdbTable"}:
+            raise EngineError("DuckDB database input requires only duckdbSchema and duckdbTable.")
+        try:
+            schema = validate_database_name(options["duckdbSchema"])
+            table = validate_database_name(options["duckdbTable"])
+        except ValueError as error:
+            raise EngineError(str(error)) from error
+        self._open_database(path)
+        try:
+            with self._tracked_connection() as connection:
+                matches = connection.execute(
+                    "SELECT schema_name, table_name FROM system.main.duckdb_tables() "
+                    "WHERE NOT internal AND NOT temporary AND schema_name = ? AND table_name = ? LIMIT 2",
+                    [schema, table],
+                ).fetchall()
+                if matches != [(schema, table)]:
+                    raise EngineError("The selected DuckDB base table is no longer available. Choose a table again.")
+            return self._relation_from_sql(f"SELECT * FROM {_quote_ident(schema)}.{_quote_ident(table)}")
+        except Exception:
+            self.close()
+            raise
+
+    def is_lazy(self, frame: Any, source: Mapping[str, Any]) -> bool:
+        return self._database_connection is not None or super().is_lazy(frame, source)
+
+    def _assert_cleaning_supported(self) -> None:
+        if self._database_connection is not None:
+            raise EngineError("DuckDB database tables are viewing-only; cleaning code and exports are unavailable.")
+
     def read_file(self, path: str, options: Mapping[str, Any] | None = None) -> Any:
         options = options or {}
+        if "duckdbSchema" in options or "duckdbTable" in options:
+            return self._read_database_table(path, options)
+        self._assert_cleaning_supported()
         extension = Path(path).suffix.lower()
         try:
             with self._tracked_connection() as connection:
@@ -965,6 +1070,7 @@ class DuckDBEngine(DataFrameEngine):
         return values, len(rows) > limit
 
     def apply_transform(self, frame: Any, step: Mapping[str, Any]) -> Any:
+        self._assert_cleaning_supported()
         frame = self.normalize(frame)
         kind = str(step["kind"])
         params = step["params"]
@@ -1416,6 +1522,7 @@ class DuckDBEngine(DataFrameEngine):
             raise EngineError("Pivot-longer columns must have one exactly compatible DuckDB type.")
 
     def compile_plan(self, steps: Iterable[Mapping[str, Any]], *, function_name: str = "clean_data") -> str:
+        self._assert_cleaning_supported()
         plan = list(steps)
         self._validate_by_example_date_examples(plan)
         if plan and all(step["kind"] == "renameColumn" for step in plan):
@@ -1470,6 +1577,7 @@ class DuckDBEngine(DataFrameEngine):
         path: str | os.PathLike[str],
         options: ExportOptions,
     ) -> None:
+        self._assert_cleaning_supported()
         normalized = self.validate_export_options(options)
         format_name = normalized["format"]
         frame = self.normalize(frame)
@@ -1732,6 +1840,19 @@ class DuckDBEngine(DataFrameEngine):
 
     @contextmanager
     def _tracked_connection(self) -> Iterator[Any]:
+        if self._database_connection is not None:
+            with self._database_query_lock:
+                with self._lifecycle_lock:
+                    if self._closed:
+                        raise EngineError("The DuckDB engine is closed.")
+                    connection = self._database_connection
+                    self._active_connections.add(connection)
+                try:
+                    yield connection
+                finally:
+                    with self._lifecycle_lock:
+                        self._active_connections.discard(connection)
+            return
         with self._lifecycle_lock:
             if self._closed:
                 raise EngineError("The DuckDB engine is closed.")

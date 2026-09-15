@@ -12,6 +12,7 @@ import type {
   SessionOpenedResponse,
   SessionSource
 } from "../shared/protocol";
+import { isDuckDBTableSource } from "../shared/protocol";
 import {
   isRecoveryViewContextId,
   RECOVERY_VIEW_CONTEXT_PREFIX,
@@ -1217,6 +1218,7 @@ export class OpenWranglerPanel {
       this.disposed ||
       generation !== this.openAttemptGeneration ||
       this.source.kind !== "file" ||
+      isDuckDBTableSource(this.source) ||
       !this.sessionId ||
       !this.snapshot ||
       !this.bridge.reconfigureFileSession
@@ -2248,7 +2250,7 @@ function withoutDatasetStats(metadata: SessionMetadata): SessionMetadata {
 }
 
 function canChangeImportOptions(source: SessionSource): boolean {
-  if (source.kind !== "file") return false;
+  if (source.kind !== "file" || isDuckDBTableSource(source)) return false;
   const extension = path.extname(source.path ?? source.uri ?? "").toLowerCase();
   return extension === ".csv" || extension === ".tsv" || extension === ".xlsx" || extension === ".xls";
 }

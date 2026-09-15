@@ -87,6 +87,17 @@ file format and import options. This happens before the native read; a read erro
 **Open Wrangler: Open File Path** reads the configured default and creates a fresh panel, including after a failed
 open. Restoring a custom editor instead preserves its previously confirmed backend.
 
+**Open DuckDB Table** resolves a local regular file, its resource-scoped Python interpreter and a bounded native
+base-table catalog before asking for a table. Discovery closes its reader before the picker opens. The file source
+retains only the exact `duckdbSchema` and `duckdbTable` import options, with both required and other import options
+excluded. Each name contains 1 to 1024 Unicode scalar values without NUL; names are not trimmed. A real file path and
+the DuckDB backend are required regardless of filename suffix. The picker admits at most 4096 entries and 65536 UTF-8
+name bytes within a 256 KiB response. Trust, source identity, cancellation and the captured interpreter are rechecked
+before dispatch. Ordinary import reconfiguration, backend switching and plan reuse exclude this viewing-only subtype.
+The existing persistence key includes both names; runtime recovery reopens the exact selected table.
+Discovery bounds each native name projection before transferring it to Python and disables disk spill, so a killed
+metadata helper owns no temporary directory. Native catalog work can still exceed the accepted response size.
+
 **Open Another File with This Plan** captures one confirmed, draft-free Pandas, Polars or DuckDB file plan before
 the picker opens. It excludes Custom Code and requires unique, non-empty original column names. The host retains
 the validated original file schema through ordinary edits, refreshing it on source/runtime replacement. This receipt
@@ -1110,10 +1121,24 @@ calculation order, whole-gap limits and source-order restoration. Constructing t
 
 ### DuckDB
 
-DuckDB file sessions retain a connection-free native SQL plan plus immutable column and type metadata. Each request
+DuckDB CSV, TSV, Parquet and JSONL sessions retain a connection-free native SQL plan plus immutable column and type metadata. Each request
 creates and closes its own hardened connection, and any `DuckDBPyRelation` is dereferenced before that connection
 closes. DuckDB never converts through Pandas, Polars, or Arrow, and extension auto-install, autoload, and external-file
 caching remain disabled.
+
+Database-table sessions retain one read-only connection in their engine and serialize each full query and fetch
+scope. They reuse the same SQL-plan, page and profile owners. Native spill files belong to a private temporary
+directory, removed after the connection closes; DuckDB's database-adjacent default is not used. External access is
+disabled. Only base tables are admitted; views and SQL editing are unsupported. Stored defaults and computed columns
+retain native behavior, so computed values may change between requests. This is not a snapshot transaction.
+
+One viewer per database per Python runtime is supported because independent private spill paths conflict with DuckDB's
+shared database configuration. A second viewer is refused without disturbing the first. Ordinary database writers are
+excluded while the reader is open. Close waits for the active query/fetch scope and then releases the connection and
+owned temporary directory once. Initial-open cancellation retains the existing late-result cleanup path; it does not
+promise immediate native preemption. Main-file identity is checked before and after reads even without a known suffix.
+Read-only recovery of a native WAL is supported without changing its bytes. Metadata checks are not a database snapshot
+or protection against every same-size in-place change. Cleaning, code generation, export and cloning are unavailable.
 
 DuckDB viewing counts, profiles, value-choice search, filter predicates, row identities and timestamp display
 resolve their own calculations from the built-in catalog. Shared missing-value and interpolation finite checks use
@@ -1238,8 +1263,8 @@ Other native result types, explicit floating or Decimal operands, division, powe
 paths. BIGNUM addition and subtraction also retain native behavior.
 
 CSV, TSV, JSONL, and Parquet file sessions support native viewing and all catalog operations in both live and
-generated code. DuckDB file editing remains experimental. Excel and database browsing are not supported. A live
-notebook `DuckDBPyRelation` is the sole relation-retention exception. Its exact user-owned relation is serialized on
+generated code. DuckDB file editing remains experimental; Excel is unsupported. Database tables retain the read-only
+connection described above. A live notebook `DuckDBPyRelation` retains the exact user-owned relation, serialized on
 its originating connection, is viewing-only, and is released without closing or mutating the user's relation.
 The runtime keeps both notebook source kinds in viewing mode even when a caller requests editing.
 Each terminal request removes its temporary query view after consuming the results, including when the query fails,
@@ -1733,6 +1758,13 @@ changing its open attempt invalidates pre-write authorization and reopening; an 
 its existing process settlement and environment-validation ownership. The global install command still uses the most
 recent missing target.
 Custom code is trusted arbitrary code in the selected environment, not a sandbox.
+
+Excel sheet discovery, DuckDB table discovery and trusted Pickle conversion hold a read lease on their captured Python
+environment. Dependency installation cannot start while these helpers may still use its packages. Metadata helpers
+retain the lease through process closure, including cancellation and failed execution. Their existing timeout and
+output limit request forceful termination; early cancellation rejection also terminates a surviving helper through
+the shared process-stop owner. An unconfirmed close keeps the lease held. This coordinates Open Wrangler's own package
+writes; it cannot prevent another application from changing the environment.
 
 Python dependency status inspects the selected environment without creating an absent installation journal.
 It still locks and validates an existing journal, cleans owned abandoned temporary markers, and blocks use when

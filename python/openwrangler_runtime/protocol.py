@@ -282,6 +282,8 @@ def decode_request(value: Any) -> dict[str, Any]:
         request = dict(request)
         request["source"] = decoded_source
         backend = request.get("backend")
+        if "duckdbSchema" in decoded_source.get("importOptions", {}) and backend != "duckdb":
+            raise ProtocolError("DuckDB database tables require the duckdb backend.")
         if "backend" in request and (
             not isinstance(backend, str) or backend not in {"pandas", "polars", "duckdb", "pyspark"}
         ):
@@ -670,10 +672,35 @@ def _is_non_negative_integer(value: Any) -> bool:
 
 def _validate_import_options(value: Any, source: Mapping[str, Any]) -> dict[str, Any]:
     options = _mapping(value, "source.importOptions")
-    allowed = {"delimiter", "encoding", "quoteChar", "hasHeader", "lineEnding", "sheetName", "sheetIndex"}
+    allowed = {
+        "delimiter",
+        "encoding",
+        "quoteChar",
+        "hasHeader",
+        "lineEnding",
+        "sheetName",
+        "sheetIndex",
+        "duckdbSchema",
+        "duckdbTable",
+    }
     unexpected = set(options) - allowed
     if unexpected:
         raise ProtocolError(f"source.importOptions contains unknown fields: {', '.join(sorted(unexpected))}")
+
+    if {"duckdbSchema", "duckdbTable"} & options.keys():
+        if set(options) != {"duckdbSchema", "duckdbTable"} or any(
+            not isinstance(name, str)
+            or not 1 <= len(name) <= 1024
+            or any(character == "\0" or 0xD800 <= ord(character) <= 0xDFFF for character in name)
+            for name in options.values()
+        ):
+            raise ProtocolError(
+                "DuckDB import options require only duckdbSchema and duckdbTable, "
+                "each 1 to 1024 Unicode scalar values without NUL."
+            )
+        if source.get("kind") != "file" or not isinstance(source.get("path"), str) or not source["path"]:
+            raise ProtocolError("DuckDB database tables require a file source with a non-empty path.")
+        return dict(options)
 
     for field in ("delimiter", "quoteChar"):
         if field in options and (

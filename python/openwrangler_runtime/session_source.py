@@ -23,6 +23,15 @@ class LiveSourceInvalidatedError(SourceChangedError):
         super().__init__(message)
 
 
+def is_duckdb_table_source(source: Mapping[str, Any]) -> bool:
+    options = source.get("importOptions")
+    return (
+        source.get("kind") == "file"
+        and isinstance(options, Mapping)
+        and ("duckdbSchema" in options or "duckdbTable" in options)
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _SourceFingerprint:
     requested_path: str
@@ -153,7 +162,9 @@ class SessionSource:
         path = source.get("path")
         if not path:
             return None
-        if Path(str(path)).suffix.lower() not in engine.capabilities.lazy_file_extensions:
+        if not (engine.name == "duckdb" and is_duckdb_table_source(source)) and (
+            Path(str(path)).suffix.lower() not in engine.capabilities.lazy_file_extensions
+        ):
             return None
         try:
             return cls._fingerprint_path(str(path))

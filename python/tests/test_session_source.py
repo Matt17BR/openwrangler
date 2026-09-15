@@ -54,6 +54,19 @@ def test_capture_versions_only_lazy_files_and_pins_the_resolved_read_path(tmp_pa
         lazy.validate(engine("polars", lazy_extensions=frozenset({".csv"})))
 
 
+def test_database_table_source_versions_files_without_a_known_suffix(tmp_path: Path) -> None:
+    path = tmp_path / "database"
+    path.write_bytes(b"original owned fixture")
+    metadata = {**file_source(path), "importOptions": {"duckdbSchema": "main", "duckdbTable": "orders"}}
+    source = SessionSource.capture("database", metadata, engine("duckdb"))
+    assert source.matches_public_source(metadata)
+    assert source.resolved_metadata == {**metadata, "path": str(path.resolve())}
+    path.replace(tmp_path / "old-database")
+    path.write_bytes(b"changed owned fixture")
+    with pytest.raises(SourceChangedError, match="Reopen"):
+        source.validate(engine("duckdb"))
+
+
 def test_lazy_version_detects_replacement_and_preserves_backend_failure_as_cause(tmp_path: Path) -> None:
     path = tmp_path / "orders.csv"
     path.write_text("value\n1\n", encoding="utf-8")

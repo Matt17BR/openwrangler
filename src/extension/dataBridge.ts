@@ -14,6 +14,7 @@ import type { SessionPresentation } from "../shared/sessionRecovery";
 export type { SessionPresentation } from "../shared/sessionRecovery";
 import type { SessionOpenProgressStage } from "../shared/sessionOpenProgress";
 import type { ExportSourceProtection } from "./files/safeFileExport";
+import type { DuckDBTableName } from "./files/duckdbTableNames";
 
 export interface CancellationTokenLike {
   readonly isCancellationRequested: boolean;
@@ -99,12 +100,22 @@ export interface FilePlanOpenContext {
   readonly bridge: OpenWranglerBridge;
 }
 
+export interface DuckDBTableDiscovery {
+  readonly tables: readonly DuckDBTableName[];
+  /** The interpreter selection and discovery attempt remain available for the initial open. */
+  isCurrent(): boolean;
+}
+
 export interface OpenWranglerBridge {
   request(request: OpenWranglerRequest, options?: BridgeRequestOptions): Promise<OpenWranglerResponse>;
   /** Retains a liveness check for the exact Python process and selection owning a file session. */
   captureFileSessionOwner?(sessionId: string): (() => boolean) | undefined;
   /** Pins the active confirmed file plan and returns its initial-open bridge, or an eligibility diagnostic. */
   captureActiveFilePlan?(): FilePlanOpenContext | ErrorResponse;
+  discoverDuckDBTables?(
+    source: SessionSource,
+    options?: BridgeRequestOptions
+  ): Promise<DuckDBTableDiscovery | ErrorResponse | undefined>;
   /** Rechecks a failed file open and confirms any installation for that source. True permits a fresh normal open. */
   installFileDependencies?(
     source: SessionSource,

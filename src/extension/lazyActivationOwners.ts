@@ -29,6 +29,7 @@ const FILE_COMMANDS = [
   "openWrangler.changeImportOptions",
   "openWrangler.openFile",
   "openWrangler.openPath",
+  "openWrangler.openDuckDBTable",
   "openWrangler.openFileWithPlan"
 ] as const;
 const PICKLE_COMMANDS = ["openWrangler.convertTrustedPickle"] as const;
