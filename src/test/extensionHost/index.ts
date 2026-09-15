@@ -16940,7 +16940,9 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
           .flatMap((group) => group.tabs)
           .filter(
             (tab) =>
-              !previousTabs.has(tab) && isOpenWranglerSessionTab(tab) && tab.label === "Open Wrangler: sample.duckdb"
+              !previousTabs.has(tab) &&
+              isOpenWranglerSessionTab(tab) &&
+              tab.label === 'Open Wrangler: "selected schema"."$(add)" (sample.duckdb)'
           );
       const picker = workbench.locator(".quick-input-widget:visible").filter({ hasText: "Open DuckDB Table" }).last();
       const failures: unknown[] = [];
@@ -17007,6 +17009,13 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
         assert.ok(app, "The selected database session must own the rendered grid.");
         const loadedRows = app.getByRole("status", { name: "Loaded rows" });
         await loadedRows.filter({ hasText: /^Rows 1 to 3 of 3$/u }).waitFor({ state: "visible", timeout: 10_000 });
+        const displayLabel = '"selected schema"."$(add)" (sample.duckdb)';
+        const heading = app.getByText(displayLabel, { exact: true });
+        await heading.waitFor({ state: "visible", timeout: 10_000 });
+        assert.equal(await heading.getAttribute("title", { timeout: 10_000 }), displayLabel);
+        await app
+          .getByRole("grid", { name: `Data grid for ${displayLabel}`, exact: true })
+          .waitFor({ state: "visible", timeout: 10_000 });
         assert.deepEqual(await app.locator('td[data-grid-column="0"]').allInnerTexts(), [
           "selected-one",
           "selected-two",

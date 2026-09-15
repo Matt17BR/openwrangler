@@ -31,6 +31,11 @@ export function isDuckDBTableSource(source: SessionSource): boolean {
   );
 }
 
+export function sourceDisplayLabel(source: SessionSource): string {
+  if (!isDuckDBTableSource(source)) return source.label;
+  return `${JSON.stringify(source.importOptions?.duckdbSchema)}.${JSON.stringify(source.importOptions?.duckdbTable)} (${source.label})`;
+}
+
 /** Omitted viewing capabilities retain the original supported default. */
 export function supportsViewingCapability(
   capabilities: SourceCapabilities | undefined,

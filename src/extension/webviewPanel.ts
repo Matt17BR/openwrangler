@@ -12,7 +12,7 @@ import type {
   SessionOpenedResponse,
   SessionSource
 } from "../shared/protocol";
-import { isDuckDBTableSource } from "../shared/protocol";
+import { isDuckDBTableSource, sourceDisplayLabel } from "../shared/protocol";
 import {
   isRecoveryViewContextId,
   RECOVERY_VIEW_CONTEXT_PREFIX,
@@ -413,7 +413,7 @@ export class OpenWranglerPanel {
   ): OpenWranglerPanel {
     const panel = vscode.window.createWebviewPanel(
       "openWrangler.session",
-      `Open Wrangler: ${source.label}`,
+      `Open Wrangler: ${sourceDisplayLabel(source)}`,
       vscode.ViewColumn.Active,
       {
         enableScripts: true,

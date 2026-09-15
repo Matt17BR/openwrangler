@@ -10,7 +10,7 @@ import type {
   LiveGridPage,
   SessionMetadata
 } from "../../shared/protocol";
-import { liveGridLogicalRowExtent, liveGridPageHasMore } from "../../shared/protocol";
+import { liveGridLogicalRowExtent, liveGridPageHasMore, sourceDisplayLabel } from "../../shared/protocol";
 import type { SortDirection, SortRule } from "../../shared/filterModel";
 import {
   countViewColumnNames,
@@ -960,7 +960,7 @@ export function DataGrid({
             WebkitUserSelect: "none"
           }}
           aria-busy={busy || projecting}
-          aria-label={`Data grid for ${metadata.source.label}`}
+          aria-label={`Data grid for ${sourceDisplayLabel(metadata.source)}`}
           aria-describedby={gridSelectionInstructionsId}
           aria-multiselectable="true"
           aria-rowcount={page.totalRows === null ? -1 : page.totalRows + 1}
