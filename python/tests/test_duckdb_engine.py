@@ -36,7 +36,8 @@ from openwrangler_runtime.session import SessionManager
 
 @pytest.fixture
 def database_file(tmp_path: Path) -> Path:
-    path = tmp_path / 'database " exact.no-standard-suffix'
+    quote = "'" if os.name == "nt" else '"'
+    path = tmp_path / f"database {quote} exact.no-standard-suffix"
     with duckdb.connect(str(path)) as connection:
         connection.execute('CREATE SCHEMA "schema "" exact"')
         connection.execute(
