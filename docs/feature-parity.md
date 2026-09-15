@@ -499,6 +499,8 @@ The operation catalog search exposes its accessible name before and after enteri
 Moving or removing a focused form row, or clearing unavailable selections, keeps keyboard focus inside the operation dialog.
 Column search keeps arrow and page-key navigation aligned with the displayed results when cleaning changes the schema.
 Small editor panes preserve room for the grid header and a row while the workbench scrolls around wrapped controls.
+Column profiles and filters stay beside the grid, or below it in narrow panes, without covering the selected cell.
+The stacked layout shows fewer rows and scrolls to reach longer filter forms.
 Column search reveals and focuses its target within both the table and editor viewport, including when the same column
 is selected again, without replacing a later focus choice.
 Focused draft buttons return keyboard focus to Add step, and deletion confirmation retains focus through Cancel.

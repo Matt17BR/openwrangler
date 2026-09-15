@@ -1948,6 +1948,8 @@ focus from another control.
 
 The grid's existing header measurement reserves space for its compact header, one row and the native scrollbar.
 The profiles panel scrolls within the workspace's height; its contents do not determine that height.
+It shares the layout with the grid instead of covering it. At narrow widths it sits below the grid, retaining the
+measured header and row minimum; shorter editors use the existing outer scroll area.
 The workbench can scroll vertically when wrapped controls need more space than a small editor provides. An owned
 column reveal also exposes its header and current row in that outer viewport, preserving the grid's inner scroll
 position. Selecting the current column again also restores focus to its cell. Later focus choices and window blur

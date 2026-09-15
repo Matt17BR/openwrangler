@@ -1,17 +1,6 @@
 @media (max-width: 1100px) {
   .layout.sidePanelOpen {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .sidebar {
-    bottom: 0;
-    box-shadow: -8px 0 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.35));
-    max-width: min(88vw, 360px);
-    position: absolute;
-    right: 0;
-    top: 0;
-    width: 100%;
-    z-index: 20;
+    grid-template-columns: minmax(0, 1fr) 360px;
   }
 
   .toolbar {
@@ -58,6 +47,16 @@
 }
 
 @media (max-width: 620px) {
+  .layout.sidePanelOpen {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(180px, 40vh);
+  }
+
+  .sidebar {
+    border-left: 0;
+    border-top: 1px solid var(--vscode-panel-border);
+  }
+
   .toolbar {
     align-items: stretch;
     flex-direction: column;

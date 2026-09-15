@@ -2304,9 +2304,137 @@ async function verifyFilterKeyboardWorkflow(browser) {
     return active.contains(document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2));
   });
   if (!openerVisible) throw new Error("Closing the compact filter drawer restored an obscured opener.");
+
+  await page.setViewportSize({ width: 1280, height: 760 });
+  const profilesToggle = page.getByRole("button", { name: "Column profiles and filters" });
+  await profilesToggle.focus();
+  await page.keyboard.press("Enter");
+  const columnTab = page.getByRole("tab", { name: "Column", exact: true });
+  await columnTab.focus();
+  await page.keyboard.press("Enter");
+  const salesResize = page.getByRole("button", { name: "Resize sales column", exact: true });
+  await salesResize.focus();
+  await page.keyboard.press("End");
+
+  const columnSearch = page.getByRole("combobox", { name: "Column", exact: true });
+  for (const viewport of [
+    { width: 1280, height: 760 },
+    { width: 800, height: 600 },
+    { width: 621, height: 600 },
+    { width: 620, height: 600 },
+    { width: 320, height: 300 }
+  ]) {
+    await page.setViewportSize(viewport);
+    await columnSearch.fill("sales");
+    await columnSearch.press("Enter");
+    for (const [column, index] of [
+      ["sales", "2"],
+      ["active", "3"]
+    ]) {
+      if (column === "active") await page.keyboard.press("ArrowRight");
+      await page.waitForFunction((index) => document.activeElement?.matches(`td[data-grid-column="${index}"]`), index);
+      await page.getByRole("heading", { name: column, exact: true }).waitFor();
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+      const exposure = await page.evaluate((index) => {
+        const cell = document.activeElement;
+        const header = document.querySelector(`th[data-grid-column="${index}"]`);
+        const scroller = document.querySelector('[data-testid="data-grid-scroller"]');
+        const rowHeader = cell?.closest("tr")?.querySelector('[role="rowheader"]');
+        const sidebar = document.querySelector(".sidebar");
+        const gridShell = document.querySelector(".gridShell");
+        if (
+          !cell?.matches(`td[data-grid-column="${index}"]`) ||
+          !header ||
+          !scroller ||
+          !rowHeader ||
+          !sidebar ||
+          !gridShell
+        ) {
+          return null;
+        }
+        const scrollerBounds = scroller.getBoundingClientRect();
+        const headerBounds = header.getBoundingClientRect();
+        const cellBounds = cell.getBoundingClientRect();
+        const sidebarBounds = sidebar.getBoundingClientRect();
+        const gridBounds = gridShell.getBoundingClientRect();
+        const laneLeft = Math.max(0, scrollerBounds.left, rowHeader.getBoundingClientRect().right);
+        const laneRight = Math.min(innerWidth, scrollerBounds.left + scroller.clientWidth);
+        const viewportTop = Math.max(0, scrollerBounds.top);
+        const viewportBottom = Math.min(innerHeight, scrollerBounds.top + scroller.clientHeight);
+        const exposed = (element, bounds) => {
+          const left = Math.max(laneLeft, bounds.left);
+          const right = Math.min(laneRight, bounds.right);
+          const width = right - left;
+          return (
+            width > 2 &&
+            width >= Math.min(bounds.width, laneRight - laneLeft) - 2 &&
+            bounds.top >= viewportTop - 1 &&
+            bounds.bottom <= viewportBottom + 1 &&
+            [left + 1, (left + right) / 2, right - 1].every((x) =>
+              element.contains(document.elementFromPoint(x, bounds.top + bounds.height / 2))
+            )
+          );
+        };
+        const overlapWidth =
+          Math.min(sidebarBounds.right, gridBounds.right) - Math.max(sidebarBounds.left, gridBounds.left);
+        const overlapHeight =
+          Math.min(sidebarBounds.bottom, gridBounds.bottom) - Math.max(sidebarBounds.top, gridBounds.top);
+        return {
+          cellExposed: exposed(cell, cellBounds) && cellBounds.top >= headerBounds.bottom - 1,
+          headerExposed: exposed(header, headerBounds),
+          panelOverlapsGrid: overlapWidth > 1 && overlapHeight > 1,
+          laneLeft,
+          laneRight,
+          cell: { left: cellBounds.left, right: cellBounds.right, top: cellBounds.top, bottom: cellBounds.bottom },
+          header: { top: headerBounds.top, bottom: headerBounds.bottom },
+          viewportTop,
+          viewportBottom
+        };
+      }, index);
+      if (
+        viewport.width === 621 &&
+        column === "sales" &&
+        exposure &&
+        exposure.cell.right - exposure.cell.left <= exposure.laneRight - exposure.laneLeft
+      ) {
+        throw new Error("The selected-column check requires a column wider than the available data lane.");
+      }
+      if (!exposure?.cellExposed || !exposure.headerExposed || exposure.panelOverlapsGrid) {
+        throw new Error(
+          `Keyboard-selected ${column} and its header were obscured by the profile panel at ${viewport.width}x${viewport.height}: ${JSON.stringify(exposure)}.`
+        );
+      }
+    }
+  }
+  await close.focus();
+  await page.keyboard.press("Tab");
+  const shortPanelFocus = await page.evaluate(() => {
+    const active = document.activeElement;
+    const bounds = active.getBoundingClientRect();
+    return (
+      Boolean(active.closest(".sidebar")) &&
+      active.contains(document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2))
+    );
+  });
+  if (!shortPanelFocus) throw new Error("The short profile panel did not expose its keyboard-focused control.");
+  await page.keyboard.press("Escape");
+  await page.getByRole("complementary", { name: "Column profiles and filters" }).waitFor({ state: "detached" });
+  await page.waitForFunction(
+    () => document.activeElement === document.querySelector('button[aria-label="Column profiles and filters"]'),
+    undefined,
+    { timeout: 2_000 }
+  );
+  const restoredProfilesToggle = await profilesToggle.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    return (
+      document.activeElement === element &&
+      element.contains(document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2))
+    );
+  });
+  if (!restoredProfilesToggle) throw new Error("Escape from the short profile panel did not expose its exact opener.");
   await page.close();
   console.log(
-    "Filter, sort, independent drawer scrolling, compact actions, and drawer-focus keyboard workflow verified."
+    "Filter, sort, drawer scrolling, selected column/header exposure, compact actions, and drawer-focus keyboard workflow verified."
   );
 }
 
