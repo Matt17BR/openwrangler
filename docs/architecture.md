@@ -1160,6 +1160,12 @@ the same native functions in live and generated code. Expressions in the caller'
 declared function bindings; Open Wrangler does not change the caller's search path, macros or connection to compute
 its statistics.
 
+Page queries limit selected top-level `VARCHAR` values to 65,537 Unicode code points before Python fetch, in the
+outer projection after `LIMIT`/`OFFSET`. Values within the 65,536-code-point text limit remain exact. The extra
+code point keeps oversized values invalid for the existing live-page and saved-notebook validators; no shortened
+cell is published. Source values, filters, sorts, profiles and exports remain unchanged. This does not bound native
+query memory, aggregate page allocation, BLOBs or nested values.
+
 Top-level `TIMESTAMP_NS` cells use native text projection before Python can narrow their values. One SQL display
 expression serves bounded pages, grouped choices and profile extrema; counts, grouping and ordering use the original
 timestamps. Choice search uses the same display text and accepts either `T` or a space between the date and time.

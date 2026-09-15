@@ -33,6 +33,7 @@ from ..duckdb_tables import (
 )
 from ..export_target import ExportWriterPath
 from ..generated_helpers import select_generated_helpers
+from ..live_page_payload import LIVE_PAGE_TEXT_CHARACTER_LIMIT
 from ..operations import formula_scalar_value
 from ..pivot_longer import (
     PivotLongerContractError,
@@ -672,13 +673,24 @@ class DuckDBEngine(DataFrameEngine):
         # row identity, while this literal preserves direct zero-column paging.
         select_list = _identifier_list(terminal_columns) if terminal_columns else "1 AS __ow_page_placeholder"
         query = f"SELECT {select_list} FROM ow LIMIT {int(limit)} OFFSET {int(offset)}"
-        projections = {column: _duckdb_query_output(_quote_ident(column), types[column]) for column in selected_columns}
+        projections = {
+            column: (
+                (
+                    f"system.main.substring({_quote_ident(column)}, 1, {LIVE_PAGE_TEXT_CHARACTER_LIMIT + 1})",
+                    False,
+                )
+                if types[column] == "VARCHAR"
+                else _duckdb_query_output(_quote_ident(column), types[column])
+            )
+            for column in selected_columns
+        }
         cardinality_positions = {
             column: len(terminal_columns) + index
             for index, column in enumerate(column for column in selected_columns if projections[column][1])
         }
         if any(output for output, _cardinality in projections.values()) or cardinality_positions:
             # Python fetch narrows timestamps, including nested values and map keys.
+            # Bound text with one overflow code point for the existing payload refusal.
             # Prepare only the selected page; source values and ordering stay native.
             formatted = []
             for column in terminal_columns:

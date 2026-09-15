@@ -2493,6 +2493,63 @@ def test_duckdb_rejects_case_fold_ambiguous_source_columns() -> None:
         engine.validate_column_addressability(ambiguous)
 
 
+def test_duckdb_page_bounds_fetched_varchar_without_changing_source_queries(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = DuckDBEngine()
+    exact = "🙂e\u0301\0" * 16_384
+    fetched: list[list[tuple[Any, ...]]] = []
+    queries: list[str] = []
+    native_execute_rows = duckdb_runtime._execute_rows
+
+    def observe_fetch(connection: Any, source_sql: str, query: str) -> list[tuple[Any, ...]]:
+        records = native_execute_rows(connection, source_sql, query)
+        fetched.append(records)
+        queries.append(query)
+        return records
+
+    monkeypatch.setattr(duckdb_runtime, "_execute_rows", observe_fetch)
+    try:
+        source = engine._relation_from_sql(
+            'SELECT id, value AS "text "" exact", repeat(\'u\', 262144) AS unselected FROM (VALUES '
+            "(0, repeat('x', 262144) || 'TAIL'), "
+            "(1, repeat('🙂é' || chr(0), 16384)), (2, NULL::VARCHAR), (3, ''), "
+            "(4, repeat('x', 262144) || 'TAIL')) source(id, value)"
+        )
+        frame = engine.ensure_row_ids(source, "bounded-text")
+        page = engine.page(frame, 1, 4, total_rows=5, column_projection=[(1, "stable:text")])
+
+        # Inspect native fetch output before normalize_cell can change it.
+        assert [[None if row[1] is None else len(row[1]) for row in batch] for batch in fetched] == [
+            [65_536, None, 0, 65_537]
+        ]
+        assert len(queries) == 1 and "unselected" not in queries[0]
+        assert page["columnIds"] == ["stable:text"]
+        assert [row["rowNumber"] for row in page["rows"]] == [1, 2, 3, 4]
+        cells = [row["values"][0] for row in page["rows"]]
+        assert [cell["raw"] for cell in cells] == [exact, None, "", "x" * 65_537]
+        assert [cell["display"] for cell in cells] == [exact, "", "", "x" * 65_537]
+        assert [cell["kind"] for cell in cells] == ["string", "null", "string", "string"]
+
+        filtered = engine.apply_filter_model(
+            frame,
+            {
+                "filters": [
+                    {
+                        "column": 'text " exact',
+                        "type": "string",
+                        "predicates": [{"kind": "predicate", "operator": "endsWith", "value": "TAIL"}],
+                    }
+                ],
+                "sort": [{"column": "id", "direction": "asc", "nulls": "last"}],
+            },
+        )
+        safe = engine.page(filtered, 0, 2, total_rows=2, column_projection=[(0, "stable:id")])
+        assert [row["values"][0]["raw"] for row in safe["rows"]] == [0, 4]
+        assert len(queries) == 2 and '"text "" exact"' not in queries[-1] and "unselected" not in queries[-1]
+        assert engine._terminal_scalar(source, 'SELECT length("text "" exact") FROM ow WHERE id = 4') == 262_148
+    finally:
+        engine.close()
+
+
 @pytest.mark.parametrize("container", ["scalar", "list", "union-map"])
 def test_duckdb_page_uses_an_explicit_terminal_projection(monkeypatch: pytest.MonkeyPatch, container: str) -> None:
     engine = DuckDBEngine()
