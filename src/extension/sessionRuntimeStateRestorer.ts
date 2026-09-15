@@ -1,5 +1,12 @@
 import { isDeepStrictEqual } from "node:util";
-import type { ColumnSchema, FilterModel, PageResponse, SessionBoundRequest, SessionMetadata } from "../shared/protocol";
+import type {
+  ColumnSchema,
+  FilterModel,
+  OpenWranglerResponse,
+  PageResponse,
+  SessionBoundRequest,
+  SessionMetadata
+} from "../shared/protocol";
 import { emptyGridViewState, type GridViewState, type PersistedViewingState } from "../shared/viewState";
 import {
   DetachedBridgeRequestError,
@@ -14,6 +21,25 @@ import type { SessionSourceProtection } from "./files/safeFileExport";
 const PYSPARK_VIEWPORT_RESTORE_PAGE_LIMIT = 16;
 
 export class RuntimeStateRestoreError extends Error {}
+
+function cleaningRestoreError(
+  message: string,
+  response: OpenWranglerResponse,
+  mismatch: string | undefined
+): RuntimeStateRestoreError {
+  if (response.kind !== "error" || mismatch !== undefined) return new RuntimeStateRestoreError(message);
+  let cause = "";
+  let characters = 0;
+  for (const character of response.message) {
+    if (characters === 1_024) {
+      cause += "...[truncated]";
+      break;
+    }
+    cause += character;
+    characters += 1;
+  }
+  return new RuntimeStateRestoreError(cause ? `${message} ${cause}` : message);
+}
 
 export interface DraftBaseView {
   readonly filterModel: FilterModel;
@@ -89,7 +115,7 @@ export class SessionRuntimeStateRestorer {
     const draftBaseViewChangeEpoch = session.draftBaseView?.viewChangeEpoch ?? currentViewChangeEpoch;
     session.draftPresentation = undefined;
     session.draftBaseView = undefined;
-    for (const step of cleaning.steps) {
+    for (const [index, step] of cleaning.steps.entries()) {
       assertCurrent?.();
       const previewRequest: SessionBoundRequest = {
         kind: "previewStep",
@@ -103,11 +129,13 @@ export class SessionRuntimeStateRestorer {
       };
       const preview = await session.delegate.request(previewRequest, confirmedViewOptions(session, options));
       assertCurrent?.();
-      if (
-        preview.kind !== "stepPreview" ||
-        responseMismatch(previewRequest, preview, session.runtimeId) !== undefined
-      ) {
-        throw new RuntimeStateRestoreError("Open Wrangler could not replay a cleaning step.");
+      const previewMismatch = responseMismatch(previewRequest, preview, session.runtimeId);
+      if (preview.kind !== "stepPreview" || previewMismatch !== undefined) {
+        throw cleaningRestoreError(
+          `Open Wrangler could not replay cleaning step ${index + 1}.`,
+          preview,
+          previewMismatch
+        );
       }
       session.runtimeRevision = preview.revision;
       session.metadata = preview.metadata;
@@ -123,8 +151,13 @@ export class SessionRuntimeStateRestorer {
       };
       const applied = await session.delegate.request(applyRequest, confirmedViewOptions(session, options));
       assertCurrent?.();
-      if (applied.kind !== "planUpdated" || responseMismatch(applyRequest, applied, session.runtimeId) !== undefined) {
-        throw new RuntimeStateRestoreError("Open Wrangler could not apply a replayed cleaning step.");
+      const applyMismatch = responseMismatch(applyRequest, applied, session.runtimeId);
+      if (applied.kind !== "planUpdated" || applyMismatch !== undefined) {
+        throw cleaningRestoreError(
+          `Open Wrangler could not apply replayed cleaning step ${index + 1}.`,
+          applied,
+          applyMismatch
+        );
       }
       session.runtimeRevision = applied.revision;
       session.metadata = applied.metadata;
@@ -159,11 +192,13 @@ export class SessionRuntimeStateRestorer {
       };
       const preview = await session.delegate.request(previewRequest, confirmedViewOptions(session, options));
       assertCurrent?.();
-      if (
-        preview.kind !== "stepPreview" ||
-        responseMismatch(previewRequest, preview, session.runtimeId) !== undefined
-      ) {
-        throw new RuntimeStateRestoreError("Open Wrangler could not restore the draft cleaning step.");
+      const previewMismatch = responseMismatch(previewRequest, preview, session.runtimeId);
+      if (preview.kind !== "stepPreview" || previewMismatch !== undefined) {
+        throw cleaningRestoreError(
+          "Open Wrangler could not restore the draft cleaning step.",
+          preview,
+          previewMismatch
+        );
       }
       session.runtimeRevision = preview.revision;
       session.metadata = preview.metadata;
@@ -346,7 +381,7 @@ export class SessionRuntimeStateRestorer {
     assertCurrent?.();
     const mismatch = responseMismatch(request, response, session.runtimeId, session.metadata.schema);
     if (mismatch) {
-      throw new RuntimeStateRestoreError(`Open Wrangler could not validate the saved draft view: ${mismatch}`);
+      throw new RuntimeStateRestoreError("Open Wrangler could not validate the saved draft view.");
     }
     if (response.kind === "error") return;
     if (response.kind !== "page") {

@@ -190,6 +190,9 @@ execution retains its settlement barrier before candidate cleanup.
 Initial saved-plan and view restoration checks coordinator availability, cancellation and the captured source around
 each replayed request. Retirement stops further restoration and original-data fallback; detached execution settles
 before the unpublished runtime is closed.
+Cleaning replay failures identify the preview or apply request position, or the draft being restored, and include
+up to 1,024 Unicode characters of a correlated runtime error message. Saved-plan failure and reset prompts retain
+that context. Uncorrelated response content, traceback details and arbitrary thrown errors are not included.
 
 Python page reads stage the viewing query, shapes and bounded cache under the existing foreground-read lock. The
 previous view remains authoritative until page construction, metadata, source validation and the owning engine's
