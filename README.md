@@ -81,7 +81,7 @@ cleaning plan.
 
 ## Review and revise your steps
 
-Choose an applied step in **Cleaning Steps** to inspect its changes, then return to the confirmed data. You can edit
+Choose an applied step in **Cleaning Steps** to inspect its changes, then choose **Current view** to return. You can edit
 or delete earlier steps, or use **Undo** and **Redo**. Changing an earlier step replays the later steps so the result
 and generated code follow the updated plan.
 

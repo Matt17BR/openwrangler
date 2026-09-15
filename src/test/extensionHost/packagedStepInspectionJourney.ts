@@ -81,7 +81,7 @@ export function createPackagedStepInspectionJourney({
     await waitFor(
       () => testing.activeSession()?.stepInspection === undefined,
       10_000,
-      "Original Data to clear the selected applied-step inspection"
+      "Current view to clear the selected applied-step inspection"
     );
     await waitForSettledViewState(testing, "the confirmed packaged-editor view after clearing step selection");
 

@@ -12637,7 +12637,7 @@ async function assertPackagedCommittedPlanScene(
   assert.equal(await app.getByRole("region", { name: "Draft review" }).count(), 0);
   const steps = sidebar.getByRole("tree", { name: /Cleaning Steps/u }).first();
   await steps
-    .getByRole("treeitem", { name: /Original data/u })
+    .getByRole("treeitem", { name: /Current view/u })
     .first()
     .waitFor({ state: "visible", timeout: 10_000 });
   await steps
@@ -13674,7 +13674,7 @@ async function assertPackagedSidebarOverviewScene(
   await filters
     .getByRole("treeitem", { name: /^market, Priority 2 · Descending · nulls last/u })
     .waitFor({ state: "visible", timeout: 10_000 });
-  for (const expected of [/Original data/u, /1\. Uppercase/u, /Draft · Formula column/u]) {
+  for (const expected of [/Current view/u, /1\. Uppercase/u, /Draft · Formula column/u]) {
     await steps.getByRole("treeitem", { name: expected }).first().waitFor({ state: "visible", timeout: 10_000 });
   }
   await assertPackagedProductSidebarGeometry(sidebar);
@@ -13703,7 +13703,7 @@ async function assertPackagedAppliedStepInspectionScene(
   await filters
     .getByRole("treeitem", { name: /Filters and sorts paused, Inspecting an applied step/u })
     .waitFor({ state: "visible", timeout: 10_000 });
-  for (const expected of [/Original data/u, /1\. Uppercase/u, /2\. Formula column, Selected · latest applied step/u]) {
+  for (const expected of [/Current view/u, /1\. Uppercase/u, /2\. Formula column, Selected · latest applied step/u]) {
     await steps.getByRole("treeitem", { name: expected }).first().waitFor({ state: "visible", timeout: 10_000 });
   }
   await assertPackagedProductSidebarGeometry(sidebar);
@@ -13831,7 +13831,7 @@ async function assertPackagedExploreScene(
     state: "visible",
     timeout: 10_000
   });
-  await stepsTree.getByRole("treeitem", { name: /Original data/u }).waitFor({
+  await stepsTree.getByRole("treeitem", { name: /Current view/u }).waitFor({
     state: "visible",
     timeout: 10_000
   });
@@ -13945,7 +13945,7 @@ async function assertPackagedWorkflowScene(
     state: "visible",
     timeout: 10_000
   });
-  for (const expected of [/Original data/u, /1\. Uppercase/u, /Draft · Formula column/u]) {
+  for (const expected of [/Current view/u, /1\. Uppercase/u, /Draft · Formula column/u]) {
     await steps.getByRole("treeitem", { name: expected }).first().waitFor({ state: "visible", timeout: 10_000 });
   }
   await assertPackagedProductSidebarGeometry(sidebar);

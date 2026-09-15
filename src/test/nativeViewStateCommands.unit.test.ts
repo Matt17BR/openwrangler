@@ -539,6 +539,18 @@ describe("native state and presentation commands", () => {
 
   it("routes cleaning-step selection through the exact active session and rejects stale steps", async () => {
     const registered = register(noDraftSnapshot());
+    for (const active of [snapshotWithDraft(), noDraftSnapshot()]) {
+      registered.setActiveSession(active);
+      const steps = treeChildren("openWrangler.cleaningSteps");
+      expect(steps[0]).toMatchObject({
+        label: "Current view",
+        description: "Selected",
+        tooltip: "Current view: Selected",
+        accessibilityInformation: { label: "Current view, Selected" },
+        command: { command: "openWrangler.selectStep", title: "Show current view", arguments: [] }
+      });
+      expect(steps.some((node) => node.label.startsWith("Draft ·"))).toBe(Boolean(active.metadata.draftStep));
+    }
 
     await command("openWrangler.selectStep")(appliedStep.id);
     expect(nativeMocks.sendEditorActionForSession).toHaveBeenCalledWith({
@@ -1110,7 +1122,7 @@ describe("native state and presentation commands", () => {
     expect(treeChildren("openWrangler.filters").map(nodePresentation)).toEqual([
       ["No filters or sorts", "Current view"]
     ]);
-    expect(treeChildren("openWrangler.cleaningSteps").map(nodePresentation)).toEqual([["Original data", "Selected"]]);
+    expect(treeChildren("openWrangler.cleaningSteps").map(nodePresentation)).toEqual([["Current view", "Selected"]]);
 
     const provider = nativeMocks.webviewViewProviders.get("openWrangler.codePreview");
     if (!provider) throw new Error("Expected the Code Preview provider to be registered.");
