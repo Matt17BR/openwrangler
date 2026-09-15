@@ -18,6 +18,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Activating the already-selected Filters / Sorts tab keeps unfinished form input and staged sorts.
 - Failed cleaning-plan restoration shows the replay step and runtime reason before offering to reset saved work.
 - Polars treats column names such as `*` and `^a.*$` literally in viewing, cleaning and generated code instead of selecting other columns.
 - R notebook discovery and runtime commands work when user functions share names with their implementation helpers.

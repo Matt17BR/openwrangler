@@ -1414,7 +1414,7 @@ describe("App progressive profiling and view correlation", () => {
   });
 
   it.each(["header", "tab", "keyboard tab"] as const)(
-    "starts a fresh default-values form when the open column is requested again through %s",
+    "starts a fresh default-values form through the header or a tab transition: %s",
     (entry) => {
       const model: FilterModel = {
         filters: [
@@ -1453,8 +1453,11 @@ describe("App progressive profiling and view correlation", () => {
       expect(requestsOfKind("getColumnValues")).toHaveLength(2);
 
       if (entry === "header") openCityFilter();
-      else if (entry === "tab") selectInsightsView("Filters / Sorts");
-      else fireEvent.keyDown(screen.getByRole("tab", { name: "Filters / Sorts" }), { key: "End" });
+      else {
+        selectInsightsView("Column");
+        if (entry === "tab") selectInsightsView("Filters / Sorts");
+        else fireEvent.keyDown(screen.getByRole("tab", { name: "Column" }), { key: "End" });
+      }
       expect(requestsOfKind("getColumnValues")).toHaveLength(3);
       const reopened = requestsOfKind("getColumnValues").at(-1)!;
       expect(reopened).toMatchObject({ column: "city", limit: 100 });
