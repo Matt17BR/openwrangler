@@ -1122,7 +1122,7 @@ export async function exerciseReleasedRCoreEditingCatalog(
     "undoing the native R Drop Columns step"
   );
 
-  recordAcceptanceProgress(`${phase}:editing:select-preview-apply-inspect-undo`);
+  recordAcceptanceProgress(`${phase}:editing:select-preview-apply-undo`);
   const appliedSelection = await previewReleasedRSelect(testing, workbench, sessionId, ["score", "row_id", "label"]);
   app = appliedSelection.app;
   await app
@@ -1144,39 +1144,6 @@ export async function exerciseReleasedRCoreEditingCatalog(
     },
     30_000,
     "applying the native R Select Columns step"
-  );
-  await releasedRSessionApp(
-    workbench,
-    testing,
-    sessionId,
-    "The applied R Select Columns step must be acknowledged before inspection."
-  );
-  await vscode.commands.executeCommand("openWrangler.selectStep", appliedSelection.stepId);
-  await waitFor(
-    () => testing.activeSession()?.stepInspection?.stepId === appliedSelection.stepId,
-    30_000,
-    "the applied native R Select Columns inspection"
-  );
-  const selectInspection = testing.activeSession()?.stepInspection;
-  assert.ok(selectInspection, "Selecting the applied R Select Columns step must publish its inspection.");
-  const selectedColumnIds = new Set(selectInspection.outputSchema.map((column) => column.id));
-  assert.deepEqual(
-    selectInspection.diff.removedColumns,
-    selectInspection.inputSchema.filter((column) => !selectedColumnIds.has(column.id)).map((column) => column.name)
-  );
-  assert.deepEqual(
-    selectInspection.outputSchema.map((column) => column.name),
-    ["score", "row_id", "label"]
-  );
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the inspected R Select Columns session");
-  await app
-    .getByRole("region", { name: "Selected applied-step inspection" })
-    .getByRole("button", { name: "Show confirmed data", exact: true })
-    .click();
-  await waitFor(
-    () => testing.activeSession()?.stepInspection === undefined,
-    10_000,
-    "returning from the native R Select Columns inspection"
   );
   app = await releasedRSessionApp(workbench, testing, sessionId, "the R Select Columns session before undo");
   await app.getByRole("button", { name: "Undo", exact: true }).click();
