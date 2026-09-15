@@ -133,6 +133,15 @@ export const operationCatalog: readonly OperationCatalogItem[] = Object.freeze([
     optional: Object.freeze([])
   }),
   Object.freeze({
+    kind: "explodeList",
+    title: "Explode List",
+    description: "Expand one Polars List column into rows while repeating the other columns.",
+    group: "Rows / order",
+    icon: "table",
+    required: Object.freeze(["column"]),
+    optional: Object.freeze([])
+  }),
+  Object.freeze({
     kind: "castColumn",
     title: "Convert type",
     description: "Convert values to a supported deterministic type.",

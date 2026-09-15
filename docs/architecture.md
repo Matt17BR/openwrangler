@@ -351,8 +351,8 @@ disallowed, type/name-mismatched, colliding, or private row-identity references 
 parameters are listed in the generated [transformation reference](reference.md#transformation-operations).
 
 Session capabilities explicitly list supported operations. Polars editing sources and DuckDB file editing support
-Extract Struct Fields; Pandas, native R and viewing-only engines do not. Older capability responses without this
-list retain the existing operations but cannot enable Extract Struct Fields.
+Extract Struct Fields; only Polars editing sources support Explode List. Pandas, native R and viewing-only engines
+support neither operation. Older capability responses without this list cannot enable either operation.
 
 Extract Struct Fields appends 1 to 64 named direct scalar fields from one genuine native Struct. It preserves the
 parent, row order, row identities and native child types, including nulls inherited from a missing parent. Field and
@@ -364,6 +364,23 @@ field names and scalar types, including on empty or all-null inputs. Text, integ
 Datetime, Duration and Binary fields are supported. Child containers, Polars Object, Time and Null fields, and
 unrecognized native types are refused. The append uses native expressions and adds no row-growth policy or input scan
 for field admission. Ordinary result validation and transport bounds still apply.
+
+Explode List expands one current native Polars List column by one level, preserving its exact child dtype and
+source-row/child order. Sibling values repeat, and empty or null outer lists each keep one row with a null child value. Inner empty
+lists and Struct children retain their native values. Fixed-size Array, text and Object columns are refused;
+Object leaves inside the selected List's nested List, Array or Struct dtype are also refused before collection.
+The live owner removes the inherited private row identity, and Session assigns fresh identities in the step's
+namespace. The diff reports the original rows removed and the expanded rows added. Visible column lineage is retained.
+The shared helper used by generated code preserves all caller columns
+and rechecks the selected column's current dtype.
+
+Lazy input is collected once within the Explode helper. The helper counts `max(list length, 1)` for each retained
+row using UInt64 arithmetic and refuses output above 2,147,483,647 rows before constructing the expansion. This is
+an output-capacity ceiling, not a memory bound; admission itself must retain the complete input. Eager input returns
+an eager result. Lazy input returns lazy expansion over the retained frame, allowing later reads to project and slice
+the output without rereading that input. Counts, pages and exports may each execute expansion again. A later Select
+Columns step cannot prune the original admission scan. Preview retains the draft and Apply promotes it; replay can
+evaluate earlier steps again. These rules do not promise one source evaluation for an entire Session request.
 
 By Example date synthesis uses Python's current locale. Before live execution or code generation, Polars and DuckDB
 check programs containing full or abbreviated month names (`%B` or `%b`) against every retained example using their
@@ -1050,8 +1067,9 @@ remain identity functions. Viewing keeps its projected reads and does not run Cu
 
 Eager and lazy Polars paths remain Polars-native and never call `to_pandas()`. Lazy file viewing projects before
 collection and transports only bounded terminal results. One-hot encoding and multi-label binarization are explicit
-cleaning exceptions: each materializes the complete lazy frame in Polars to derive its dynamic output columns. They do
-not convert through another dataframe engine. Viewing, all catalog operations, profiling, generated code, and
+cleaning exceptions: each materializes the complete lazy frame in Polars to derive its dynamic output columns.
+Explode List likewise retains the complete input for its growth check, while keeping lazy output lazy as described
+above. These operations do not convert through another dataframe engine. Viewing, all catalog operations, profiling, generated code, and
 supported exports stay in Polars. PyArrow is optional and limited to native dependency preparation where the Polars
 Excel reader requires it; it is not a transport conversion path.
 
@@ -1246,7 +1264,7 @@ process.
 
 Native R sessions operate directly on R `data.frame`, tibble, and `data.table` frames. IRkernel, exact official
 R-terminal, and owned `Rscript` transports share the same native frame contract and supported cleaning operations,
-including generated R. Extract Struct Fields is unavailable for R. The runtime never routes an R frame through Python.
+including generated R. Extract Struct Fields and Explode List are unavailable for R. The runtime never routes an R frame through Python.
 [Feature parity](feature-parity.md#native-r-support) defines support and limitations for each entry path.
 
 #### Frame and source ownership

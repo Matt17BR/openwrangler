@@ -224,6 +224,7 @@ function savedReferencePolicy(step: TransformStep): SavedReferencePolicy {
     case "renameColumn":
     case "cloneColumn":
     case "extractStructFields":
+    case "explodeList":
     case "castColumn":
     case "textLength":
     case "multiLabelBinarize":
@@ -426,6 +427,13 @@ function savedOperationTypeError(
         return "This form cannot preserve the saved condition operand exactly. Recreate the condition with text or Boolean comparison values.";
       return undefined;
     }
+    case "explodeList":
+      return incompatibleReferenceType(
+        [{ label: "List column", reference: step.params.column }],
+        columnsById,
+        operationColumnTypes(step.kind),
+        "list expansion requires a List column"
+      );
     case "extractStructFields":
       return !isTransformStep(step)
         ? "This form cannot preserve the saved field and output names. Use 1 to 64 unique, nonempty single-line names within the UTF-8 limit."

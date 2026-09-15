@@ -60,6 +60,7 @@ export type TransformStep =
   | RenameColumnTransformStep
   | CloneColumnTransformStep
   | ExtractStructFieldsTransformStep
+  | ExplodeListTransformStep
   | CastColumnTransformStep
   | FormulaTransformStep
   | ConditionalColumnTransformStep
@@ -102,6 +103,7 @@ export type OperationKind =
   | "renameColumn"
   | "cloneColumn"
   | "extractStructFields"
+  | "explodeList"
   | "castColumn"
   | "formula"
   | "conditionalColumn"
@@ -253,6 +255,11 @@ export type ExtractStructFieldsTransformStep = TransformStepTemplate & {
  * An exact nonempty Unicode name of at most 1024 UTF-8 bytes, without NUL, CR or LF. Whitespace, punctuation and case are literal.
  */
 export type ExtractStructFieldName = string;
+export type ExplodeListTransformStep = TransformStepTemplate & {
+  kind: "explodeList";
+  params: ExplodeListParams;
+  [k: string]: unknown;
+};
 export type CastColumnTransformStep = TransformStepTemplate & {
   kind: "castColumn";
   params: CastColumnParams;
@@ -747,6 +754,9 @@ export interface ExtractStructFieldsParams {
 export interface ExtractStructField {
   field: ExtractStructFieldName;
   newColumn: ExtractStructFieldName;
+}
+export interface ExplodeListParams {
+  column: ColumnReference;
 }
 export interface CastColumnParams {
   column: ColumnReference;

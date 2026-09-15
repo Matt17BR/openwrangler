@@ -623,7 +623,7 @@ def test_capabilities_remain_exact_for_current_engines(tmp_path, monkeypatch) ->
     )
 
     all_operations = [item["kind"] for item in operation_catalog()]
-    pandas_operations = [kind for kind in all_operations if kind != "extractStructFields"]
+    pandas_operations = [kind for kind in all_operations if kind not in {"extractStructFields", "explodeList"}]
     assert pandas["metadata"]["capabilities"] == {
         "editable": True,
         "supportedOperations": pandas_operations,

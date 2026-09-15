@@ -11,7 +11,8 @@ import type {
   OneHotEncodeTransformStep,
   OpenWranglerRequest,
   PivotLongerTransformStep,
-  PivotWiderTransformStep
+  PivotWiderTransformStep,
+  TransformStep
 } from "../shared/protocol";
 import {
   SessionRuntimeStateRestorer,
@@ -43,7 +44,7 @@ describe("canonical R kernel bridge", () => {
       const response = await bridge.request({ kind: "initialize" });
       if (response.kind !== "initialized") throw new Error("Native R bridge did not initialize.");
       const operations = response.capabilities.supportedOperations ?? [];
-      const rOperations = operationKinds.filter((kind) => kind !== "extractStructFields");
+      const rOperations = operationKinds.filter((kind) => kind !== "extractStructFields" && kind !== "explodeList");
       expect(operations).toEqual(rOperations);
       expect(operationCatalog.map(({ kind }) => kind)).toEqual(operationKinds);
       await expect(catalogKindsFromDirectRContract()).resolves.toEqual(rOperations);
@@ -53,7 +54,14 @@ describe("canonical R kernel bridge", () => {
     }
   });
 
-  it("refuses Struct extraction before native R transport and preserves the session", async () => {
+  it.each([
+    {
+      id: "fields",
+      kind: "extractStructFields",
+      params: { column: { id: "r:c:0", name: "value" }, fields: [{ field: "a", newColumn: "out" }] }
+    },
+    { id: "explode", kind: "explodeList", params: { column: { id: "r:c:0", name: "value" } } }
+  ] satisfies TransformStep[])("refuses $kind before native R transport and preserves the session", async (step) => {
     const transport = fakeTransport(frameContract());
     const bridge = createBridge(transport);
     try {
@@ -69,11 +77,7 @@ describe("canonical R kernel bridge", () => {
           limit: 1,
           columnOffset: 0,
           columnLimit: 8,
-          step: {
-            id: "fields",
-            kind: "extractStructFields",
-            params: { column: { id: "r:c:0", name: "value" }, fields: [{ field: "a", newColumn: "out" }] }
-          }
+          step
         })
       ).resolves.toMatchObject({ kind: "error", code: "unsupported_operation", sessionId });
       expect(transport.previewStep).not.toHaveBeenCalled();

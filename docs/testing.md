@@ -162,6 +162,9 @@ Use the existing owners to choose a focused source check:
   Extract Struct Fields uses the Polars and DuckDB owners for native types, exact names, current-input refusals and
   full generated programs. The session binding owner checks appended identities, history and native Parquet export;
   shared operation/form tests check request bounds and engine availability.
+  Explode List uses the same Polars and session owners for retained-input admission, exact child types, fresh row
+  identities, history and generated-code agreement. Object refusal tests use dtype metadata on safe frames; do not
+  construct unsupported Object-containing native lists whose cleanup can panic inside Polars.
   [Operation edges](../python/tests/test_operation_edges.py),
   [Fill Missing](../python/tests/test_fill_missing.py) and the existing operation-specific owners compare complete
   live and generated results, types and indexes. [Session transactions](../python/tests/test_session_transactions.py)

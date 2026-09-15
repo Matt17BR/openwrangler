@@ -10,6 +10,7 @@ const when = { id: "c:when", name: "when" } as const;
 const units = { id: "c:units", name: "units" } as const;
 const profit = { id: "c:profit", name: "profit" } as const;
 const address = { id: "c:address", name: "address" } as const;
+const items = { id: "c:items", name: " ^a.*$ 城市 " } as const;
 
 const schema = [
   column(city, 0, "string", "String"),
@@ -17,7 +18,8 @@ const schema = [
   column(when, 2, "datetime", "Datetime"),
   column(units, 3, "integer", "Int64"),
   column(profit, 4, "float", "Float64"),
-  column(address, 5, "struct", "Struct")
+  column(address, 5, "struct", "Struct"),
+  column(items, 6, "list", "List(Int64)")
 ] satisfies ColumnSchema[];
 
 const emptyFilterModel: FilterModel = { filters: [], sort: [] };
@@ -44,6 +46,7 @@ type ParamsCase<Kind extends OperationKind> = {
 type ParamsCases = { [Kind in OperationKind]: ParamsCase<Kind> };
 
 const validCases: ParamsCases = {
+  explodeList: { kind: "explodeList", fields: [["column", items.id]], expected: { column: items } },
   sortRows: {
     kind: "sortRows",
     fields: [
@@ -465,6 +468,12 @@ describe("buildParams", () => {
         testCase.savedFilterModel
       )
     ).toEqual(testCase.expected);
+  });
+
+  it("refuses a non-List column before expansion preview", () => {
+    expect(() => buildParams("explodeList", form([["column", city.id]]), emptyFilterModel, schema)).toThrow(
+      "Choose a List column"
+    );
   });
 
   it("refuses incomplete field pairs and a non-Struct parent before preview", () => {

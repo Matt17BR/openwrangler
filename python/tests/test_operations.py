@@ -58,7 +58,7 @@ def bound_step(step_id: str, kind: str, **params):
 
 def test_operation_registry_is_complete_and_validation_is_strict():
     catalog = operation_catalog()
-    assert len(catalog) == 36
+    assert len(catalog) == 37
     assert {item["kind"] for item in catalog} >= {
         "sortRows",
         "fillMissingValues",
@@ -68,6 +68,7 @@ def test_operation_registry_is_complete_and_validation_is_strict():
         "markDuplicates",
         "conditionalColumn",
         "extractStructFields",
+        "explodeList",
         "byExample",
         "customCode",
     }
@@ -90,6 +91,21 @@ def test_operation_registry_is_complete_and_validation_is_strict():
             value=True,
             newColumn="result",
         )
+
+
+def test_explode_list_requires_one_public_column_reference() -> None:
+    reference = public_ref("c:source:1", "*")
+    assert step("explode", "explodeList", column=reference)["params"] == {"column": reference}
+    for params in (
+        {},
+        {"column": "*"},
+        {"column": reference, "recursive": True},
+        {"column": public_ref("c:source:1", PRIVATE_COLUMN)},
+    ):
+        with pytest.raises(OperationError):
+            step("invalid", "explodeList", **params)
+    with pytest.raises(EngineError, match="compile"):
+        PandasEngine().compile_plan([bound_step("explode", "explodeList", column=bound_ref("c:source:0", "items", 0))])
 
 
 def test_extract_struct_fields_preserves_exact_names_and_bounds_the_ordered_outputs() -> None:

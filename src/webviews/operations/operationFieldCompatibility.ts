@@ -4,6 +4,7 @@ export const numericColumnTypes: ReadonlySet<ColumnType> = new Set(["integer", "
 export const textColumnTypes: ReadonlySet<ColumnType> = new Set(["string"]);
 export const datetimeColumnTypes: ReadonlySet<ColumnType> = new Set(["date", "datetime"]);
 const structColumnTypes: ReadonlySet<ColumnType> = new Set(["struct"]);
+const listColumnTypes: ReadonlySet<ColumnType> = new Set(["list"]);
 export const portableScalarColumnTypes: ReadonlySet<ColumnType> = new Set([
   "string",
   "integer",
@@ -41,6 +42,7 @@ export type TypeRestrictedOperationKind = Extract<
   OperationKind,
   | "formula"
   | "extractStructFields"
+  | "explodeList"
   | "textLength"
   | "oneHotEncode"
   | "multiLabelBinarize"
@@ -91,6 +93,8 @@ export function operationColumnTypes(kind: TypeRestrictedOperationKind): Readonl
   switch (kind) {
     case "extractStructFields":
       return structColumnTypes;
+    case "explodeList":
+      return listColumnTypes;
     case "formula":
     case "denseRank":
     case "minMaxScale":

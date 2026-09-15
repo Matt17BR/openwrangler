@@ -89,6 +89,13 @@
       "icon": "symbol-field"
     },
     {
+      "kind": "explodeList",
+      "title": "Explode List",
+      "description": "Expand one Polars List column into rows while repeating the other columns.",
+      "group": "Rows / order",
+      "icon": "table"
+    },
+    {
       "kind": "castColumn",
       "title": "Convert type",
       "description": "Convert values to a supported deterministic type.",
@@ -990,6 +997,7 @@
         "renameColumn",
         "cloneColumn",
         "extractStructFields",
+        "explodeList",
         "castColumn",
         "formula",
         "conditionalColumn",
@@ -1291,6 +1299,12 @@
           "description": "Ordered direct scalar fields with unique field names and unique output names. Native output collision rules also apply."
         }
       }
+    },
+    "ExplodeListParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column"],
+      "properties": { "column": { "$ref": "#/definitions/ColumnReference" } }
     },
     "CastColumnParams": {
       "type": "object",
@@ -1791,6 +1805,7 @@
         { "$ref": "#/definitions/RenameColumnTransformStep" },
         { "$ref": "#/definitions/CloneColumnTransformStep" },
         { "$ref": "#/definitions/ExtractStructFieldsTransformStep" },
+        { "$ref": "#/definitions/ExplodeListTransformStep" },
         { "$ref": "#/definitions/CastColumnTransformStep" },
         { "$ref": "#/definitions/FormulaTransformStep" },
         { "$ref": "#/definitions/ConditionalColumnTransformStep" },
@@ -1940,6 +1955,18 @@
           "properties": {
             "kind": { "const": "extractStructFields" },
             "params": { "$ref": "#/definitions/ExtractStructFieldsParams" }
+          }
+        }
+      ]
+    },
+    "ExplodeListTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": {
+            "kind": { "const": "explodeList" },
+            "params": { "$ref": "#/definitions/ExplodeListParams" }
           }
         }
       ]

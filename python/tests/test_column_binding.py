@@ -87,6 +87,21 @@ def test_split_text_columns_binds_one_source_and_rejects_all_output_collisions_a
         bind_step({**public, "params": {**public["params"], "newColumns": ["first", "duplicate"]}}, SCHEMA, LINEAGE)
 
 
+def test_explode_list_binds_exact_identity_and_requires_the_list_family() -> None:
+    schema = [{"name": "items", "type": "list"}, {"name": "items", "type": "string"}]
+    lineage = [ref("c:source:0", "items"), ref("c:source:1", "items")]
+    public = step("explodeList", column=lineage[0])
+    assert bind_step(public, schema, lineage)["params"]["column"] == {**lineage[0], "position": 0}
+    assert public["params"]["column"] == lineage[0]
+    for reference, message in (
+        (lineage[1], "type mismatch"),
+        (ref("c:source:0", "old"), "name mismatch"),
+        (ref("c:source:99", "items"), "Unknown or stale"),
+    ):
+        with pytest.raises(ColumnBindingError, match=message):
+            bind_step(step("explodeList", column=reference), schema, lineage)
+
+
 def test_extract_struct_fields_binds_the_exact_parent_and_all_fresh_outputs() -> None:
     schema = [{"name": "record", "type": "struct"}, {"name": "record", "type": "string"}]
     lineage = [{"id": "c:source:0", "name": "record"}, {"id": "c:source:1", "name": "record"}]

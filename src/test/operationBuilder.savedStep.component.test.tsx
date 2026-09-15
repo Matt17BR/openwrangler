@@ -112,6 +112,47 @@ const compatibleSavedSteps = [
 ] satisfies TransformStep[];
 
 describe("OperationBuilder saved-step forms", () => {
+  it("selects only List columns and round-trips the exact saved expansion reference", () => {
+    const first = {
+      id: "c:first-list",
+      name: "other",
+      position: 3,
+      rawType: "List(Int64)",
+      type: "list",
+      nullable: true
+    } as const;
+    const selected = { ...first, id: "c:second-list", name: " ^a.*$ 城市 ", position: 4 };
+    const inputSchema = [...columns, first, selected];
+    const initialStep: TransformStep = {
+      id: "saved-explode",
+      kind: "explodeList",
+      params: { column: { id: selected.id, name: selected.name } }
+    };
+    const source: SessionMetadata = {
+      ...metadata,
+      capabilities: { ...metadata.capabilities, supportedOperations: ["explodeList"] }
+    };
+    const onPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={source}
+        filterModel={source.filterModel}
+        initialStep={initialStep}
+        editInputSchema={inputSchema}
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+    const selector = screen.getByRole("combobox", { name: "List column" }) as HTMLSelectElement;
+    expect(Array.from(selector.options, (option) => option.value)).toEqual([first.id, selected.id]);
+    expect(selector).toHaveValue(selected.id);
+    expect(screen.getByText(/Empty or null lists keep one row with a missing value/)).toBeVisible();
+    expect(screen.getByText(/Fixed-size Array columns are unsupported/)).toBeVisible();
+    expect(screen.getByText(/For lazy dataframes, preview first reads the entire input into memory/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledExactlyOnceWith(initialStep, initialStep.id);
+  });
+
   it("round-trips exact Struct field rows and refuses unrepresentable saved names", () => {
     const struct = {
       id: "c:struct",
