@@ -4,7 +4,7 @@ import {
   DependencyGuardCommandTimeoutError,
   DependencyGuardProtocolError
 } from "./dependencyInstaller";
-import { probeDependencies, type DependencyProbe, type PythonEnvironment } from "./pythonEnvironment";
+import type { DependencyProbe, PythonEnvironment } from "./pythonEnvironment";
 import type { PythonDependency } from "./pythonEnvironmentModel";
 import { isFullyQualifiedPythonPath } from "./pythonPath";
 
@@ -48,7 +48,7 @@ export interface DependencyProbeRegistryDiagnostics {
 }
 
 type DependencyProbeLauncher = (
-  executable: string,
+  environment: PythonEnvironment,
   dependencies: readonly PythonDependency[]
 ) => Promise<DependencyProbe>;
 
@@ -59,7 +59,7 @@ export class PythonDependencyProbeRegistry {
 
   constructor(
     private readonly unavailable: (packageEnvironmentKey: string) => boolean,
-    private readonly launch: DependencyProbeLauncher = probeDependencies
+    private readonly launch: DependencyProbeLauncher
   ) {}
 
   get isEmpty(): boolean {
@@ -136,7 +136,7 @@ export class PythonDependencyProbeRegistry {
     const promise = Promise.resolve()
       .then(() => {
         if (detached()) throw new DetachedDependencyProbeError();
-        return this.launch(environment.executable, dependencies);
+        return this.launch(environment, dependencies);
       })
       .then(
         (result) => {

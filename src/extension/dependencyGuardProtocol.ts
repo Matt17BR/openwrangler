@@ -62,6 +62,12 @@ export type DependencyGuardStatus =
       readonly token: string;
     };
 
+export interface DependencyGuardProbe {
+  readonly protocol: typeof DEPENDENCY_GUARD_PROTOCOL;
+  readonly kind: "probe";
+  readonly supported: readonly boolean[];
+}
+
 export interface DependencyGuardValidation {
   readonly protocol: typeof DEPENDENCY_GUARD_PROTOCOL;
   readonly kind: "validated";
@@ -112,6 +118,23 @@ export function decodeDependencyGuardStatus(frame: Record<string, unknown>): Dep
     return { protocol: DEPENDENCY_GUARD_PROTOCOL, kind: "status", state: "dirty", token: frame.token };
   }
   throw new DependencyGuardProtocolError("status", "the helper published an inconsistent status state/token pair");
+}
+
+export function decodeDependencyGuardProbe(
+  frame: Record<string, unknown>,
+  expectedCount: number
+): DependencyGuardProbe {
+  requireExactFrameKeys(frame, ["protocol", "kind", "supported"], "probe");
+  if (
+    frame.protocol !== DEPENDENCY_GUARD_PROTOCOL ||
+    frame.kind !== "probe" ||
+    !Array.isArray(frame.supported) ||
+    frame.supported.length !== expectedCount ||
+    frame.supported.some((supported: unknown) => typeof supported !== "boolean")
+  ) {
+    throw new DependencyGuardProtocolError("probe", "the helper published an invalid dependency availability result");
+  }
+  return { protocol: DEPENDENCY_GUARD_PROTOCOL, kind: "probe", supported: [...frame.supported] };
 }
 
 export function decodeDependencyGuardValidation(

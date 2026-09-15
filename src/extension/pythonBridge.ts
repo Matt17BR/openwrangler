@@ -32,6 +32,7 @@ import {
   PythonEnvironmentResolutionSupersededError,
   isPythonEnvironmentResolutionTerminalError,
   requiredDependencies,
+  probeDependencies,
   resolvePythonEnvironment,
   type PythonEnvironment,
   type PythonEnvironmentSelectionChangeEvent
@@ -255,7 +256,8 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private readonly environmentSelections = new Map<string, EnvironmentSelection>();
   private readonly trustedPicklePreflights = new WeakMap<TrustedPicklePythonPreflight, TrustedPicklePreflightOwner>();
   private readonly dependencyProbes = new PythonDependencyProbeRegistry(
-    (packageEnvironmentKey) => this.disposed || this.dependencyMutations.has(packageEnvironmentKey)
+    (packageEnvironmentKey) => this.disposed || this.dependencyMutations.has(packageEnvironmentKey),
+    (environment, dependencies) => probeDependencies(environment, dependencies, this.dependencyGuardHelperPath())
   );
   private readonly dependencyGuardStatusFlights = new Map<string, DependencyGuardStatusFlight>();
   private activeDependencyGuardCommands:

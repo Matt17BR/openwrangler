@@ -56,6 +56,89 @@ def _write_distribution_version(metadata: Path, dependency: dict[str, object], v
     importlib.invalidate_caches()
 
 
+@pytest.fixture
+def probe_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    root = tmp_path / "selected-environment"
+    root.mkdir()
+    executable = root / "python"
+    executable.write_bytes(b"unexecuted fixture image")
+    monkeypatch.setattr(sys, "executable", str(executable))
+    monkeypatch.setattr(sys, "prefix", str(root))
+    return dependency_guard._actual_environment()
+
+
+@pytest.mark.parametrize("existing_journal", [False, True])
+def test_probe_preserves_partial_result_order_without_touching_installation_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    probe_environment: dict[str, object],
+    existing_journal: bool,
+) -> None:
+    dependency = exact_dependency()
+    _install_owned_distribution(tmp_path, monkeypatch, dependency, "2026.7.0")
+    journal = Path(str(probe_environment["packageRoot"])) / dependency_guard.JOURNAL_NAME
+    retained = journal / "retained-state"
+    if existing_journal:
+        journal.mkdir()
+        retained.write_bytes(b"unchanged recovery state")
+    missing = {**dependency, "importModule": "ow_missing", "distribution": "ow-missing"}
+    last = {**missing, "importModule": "ow_missing_last", "distribution": "ow-missing-last"}
+    frames: list[dict[str, object]] = []
+    monkeypatch.setattr(dependency_guard, "_emit", frames.append)
+    monkeypatch.setattr(dependency_guard, "_run_pip", lambda *_args: pytest.fail("Discovery attempted installation"))
+    request = dependency_guard._normalize_request(
+        "probe",
+        {
+            "protocol": dependency_guard.PROTOCOL,
+            "kind": "probe",
+            "environment": probe_environment,
+            "dependencies": [missing, dependency, last],
+        },
+    )
+    assert dependency_guard._run_probe(request) == 0
+    assert frames == [{"protocol": dependency_guard.PROTOCOL, "kind": "probe", "supported": [False, True, False]}]
+    assert journal.exists() is existing_journal
+    if existing_journal:
+        assert list(journal.iterdir()) == [retained]
+        assert retained.read_bytes() == b"unchanged recovery state"
+
+
+@pytest.mark.parametrize("replacement_time", ["before", "during-import"])
+def test_probe_refuses_a_changed_environment_before_publishing_availability(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    probe_environment: dict[str, object],
+    replacement_time: str,
+) -> None:
+    dependency = exact_dependency()
+    metadata = _install_owned_distribution(tmp_path, monkeypatch, dependency, "2026.7.0")
+    executable = Path(str(probe_environment["executable"]))
+    module = metadata.parent.parent / f"{dependency['importModule']}.py"
+    if replacement_time == "before":
+        executable.write_bytes(b"changed fixture image")
+    else:
+        module.write_text(
+            f"from pathlib import Path\nPath({str(executable)!r}).write_bytes(b'changed fixture image')\n",
+            encoding="utf-8",
+        )
+    frames: list[dict[str, object]] = []
+    monkeypatch.setattr(dependency_guard, "_emit", frames.append)
+    with pytest.raises(dependency_guard.GuardError, match="environment_changed"):
+        request = dependency_guard._normalize_request(
+            "probe",
+            {
+                "protocol": dependency_guard.PROTOCOL,
+                "kind": "probe",
+                "environment": probe_environment,
+                "dependencies": [dependency],
+            },
+        )
+        dependency_guard._run_probe(request)
+    assert executable.read_bytes() == b"changed fixture image"
+    assert frames == []
+    assert not (Path(str(probe_environment["packageRoot"])) / dependency_guard.JOURNAL_NAME).exists()
+
+
 def test_exact_dependency_normalization_requires_matching_install_and_probe_versions() -> None:
     dependency = exact_dependency()
     assert dependency_guard._normalize_dependency(dependency, code="invalid_request") == dependency
@@ -237,6 +320,7 @@ def test_module_identity_distinguishes_directory_contents_from_replacement(
 def test_dependency_validation_fails_closed_without_pep440_authority(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    probe_environment: dict[str, object],
 ) -> None:
     dependency = json.loads((ROOT / "fixtures" / "dependency-version-contract.json").read_text(encoding="utf-8"))[
         "dependency"
@@ -245,3 +329,17 @@ def test_dependency_validation_fails_closed_without_pep440_authority(
     monkeypatch.setattr(dependency_guard, "_pep440_specifier", lambda _specifier: (_ for _ in ()).throw(ImportError()))
     with pytest.raises(dependency_guard.GuardError, match="validation_failed"):
         dependency_guard._validate_dependencies([dependency])
+    frames: list[dict[str, object]] = []
+    monkeypatch.setattr(dependency_guard, "_emit", frames.append)
+    request = dependency_guard._normalize_request(
+        "probe",
+        {
+            "protocol": dependency_guard.PROTOCOL,
+            "kind": "probe",
+            "environment": probe_environment,
+            "dependencies": [dependency],
+        },
+    )
+    assert dependency_guard._run_probe(request) == 0
+    assert frames == [{"protocol": dependency_guard.PROTOCOL, "kind": "probe", "supported": [False]}]
+    assert not (Path(str(probe_environment["packageRoot"])) / dependency_guard.JOURNAL_NAME).exists()

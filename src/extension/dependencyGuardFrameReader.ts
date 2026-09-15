@@ -2,7 +2,7 @@ import { TextDecoder } from "node:util";
 
 export const DEPENDENCY_GUARD_MAX_FRAME_BYTES = 65_536;
 
-export type DependencyGuardMode = "install" | "status" | "validate";
+export type DependencyGuardMode = "install" | "status" | "validate" | "probe";
 
 export class DependencyGuardProtocolError extends Error {
   constructor(
