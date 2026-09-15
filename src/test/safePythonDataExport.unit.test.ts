@@ -282,6 +282,49 @@ describe("host-owned Python data export", () => {
     await expectFixturePreserved();
   });
 
+  it("attempts cleanup once when removing a logical-error temporary fails", async () => {
+    const removeFailure = Object.assign(new Error("injected temporary removal failure"), { code: "EACCES" });
+    const remove = vi.fn(async (_target: string) => {
+      throw removeFailure;
+    });
+    const fileSystem = { ...createNodeAtomicExportFileSystem(), remove };
+    let runtimeTarget: string | undefined;
+
+    const failure = await captureFailure(() =>
+      exportPythonDataSafely({
+        request: exportRequest(destinationPath),
+        source,
+        beginTransaction: (options) => beginAtomicFileTransaction({ ...options, fileSystem }),
+        dispatch: async (request) => {
+          runtimeTarget = request.path;
+          await writeFile(request.path, "partial export");
+          return {
+            kind: "error",
+            code: "runtime_error",
+            message: "injected runtime error",
+            recoverable: true,
+            sessionId: request.sessionId
+          };
+        }
+      })
+    );
+
+    expect(runtimeTarget).toBeDefined();
+    expect(remove).toHaveBeenCalledExactlyOnceWith(runtimeTarget);
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).message).toBe(
+      "The atomic file transaction could not be rolled back completely."
+    );
+    expect((failure as AggregateError).errors).toHaveLength(1);
+    expect((failure as AggregateError).errors[0]).toBe(removeFailure);
+    expect(await readFile(runtimeTarget!, "utf8")).toBe("partial export");
+    expect(await readFile(sourcePath, "utf8")).toBe(SOURCE_BYTES);
+    expect(await readFile(destinationPath, "utf8")).toBe(PRIOR_DESTINATION_BYTES);
+    expect((await readdir(directory)).filter((entry) => entry.startsWith(".openwrangler-"))).toEqual([
+      path.basename(runtimeTarget!)
+    ]);
+  });
+
   it("preserves the source and prior destination after an atomic commit failure", async () => {
     const commitFailure = new Error("injected atomic commit failure");
     const base = createNodeAtomicExportFileSystem();

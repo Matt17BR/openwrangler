@@ -123,18 +123,18 @@ export class RKernelDataExport {
       });
       const output = transaction;
       if (this.disposed || this.sessions.get(request.sessionId) !== session) {
-        await transaction.rollback();
         settled = true;
+        await transaction.rollback();
         return unknownSessionError(request.sessionId);
       }
       if (session.invalidated || expectedGeneration !== this.kernelGeneration) {
-        await transaction.rollback();
         settled = true;
+        await transaction.rollback();
         return kernelChangedError(request.sessionId);
       }
       if (session.revision !== expectedRevision) {
-        await transaction.rollback();
         settled = true;
+        await transaction.rollback();
         return staleResponseError(request.sessionId);
       }
       const result = await writer.call(
@@ -150,18 +150,18 @@ export class RKernelDataExport {
       );
 
       if (this.disposed || this.sessions.get(request.sessionId) !== session) {
-        await transaction.rollback();
         settled = true;
+        await transaction.rollback();
         return unknownSessionError(request.sessionId);
       }
       if (session.invalidated || expectedGeneration !== this.kernelGeneration) {
-        await transaction.rollback();
         settled = true;
+        await transaction.rollback();
         return kernelChangedError(request.sessionId);
       }
       if (session.revision !== expectedRevision) {
-        await transaction.rollback();
         settled = true;
+        await transaction.rollback();
         return staleResponseError(request.sessionId);
       }
       assertRExportResult(result, request.sessionId, expectedRevision, format, expectedRows, expectedColumns);

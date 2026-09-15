@@ -362,46 +362,80 @@ describe("R kernel data export", () => {
     expect(diagnostics).not.toHaveBeenCalled();
   });
 
-  it("rolls back instead of publishing when the R runtime generation changes during export", async () => {
-    const contract = frameContract();
-    const lateResult = deferred<{
-      sessionId: string;
-      revision: number;
-      format: "csv";
-      rows: number;
-      columns: number;
-    }>();
-    const transport = {
-      ...fakeTransport(contract),
-      exportData: vi.fn<NonNullable<RKernelBridgeTransport["exportData"]>>(async () => lateResult.promise)
-    };
-    const atomic = fakeAtomicTransaction();
-    const bridge = createBridge(transport, undefined, undefined, undefined, {
-      beginTransaction: vi.fn(async () => atomic.transaction)
-    });
-    await bridge.request(documentOpenRequest("editing"));
+  it.each([
+    { checkpoint: "after writer", cleanupFails: false },
+    { checkpoint: "before writer", cleanupFails: true },
+    { checkpoint: "after writer", cleanupFails: true }
+  ])(
+    "settles R export once after generation changes $checkpoint (cleanupFails=$cleanupFails)",
+    async ({ checkpoint, cleanupFails }) => {
+      const contract = frameContract();
+      const lateResult = deferred<{
+        sessionId: string;
+        revision: number;
+        format: "csv";
+        rows: number;
+        columns: number;
+      }>();
+      const transport = {
+        ...fakeTransport(contract),
+        exportData: vi.fn<NonNullable<RKernelBridgeTransport["exportData"]>>(async () => lateResult.promise)
+      };
+      const atomic = fakeAtomicTransaction();
+      const cleanupFailure = new Error("injected temporary cleanup failure");
+      if (cleanupFails) atomic.rollback.mockRejectedValue(cleanupFailure);
+      const bridge = createBridge(transport, undefined, undefined, undefined, {
+        beginTransaction: vi.fn(async () => {
+          if (checkpoint === "before writer") transport.invalidate();
+          return atomic.transaction;
+        })
+      });
+      await bridge.request(documentOpenRequest("editing"));
 
-    const pending = bridge.request({
-      kind: "exportData",
-      sessionId,
-      revision: 0,
-      path: "/workspace/out.csv",
-      options: rCsvExportOptions
-    });
-    await vi.waitFor(() => expect(transport.exportData).toHaveBeenCalledOnce());
-    transport.invalidate();
-    lateResult.resolve({
-      sessionId,
-      revision: 0,
-      format: "csv",
-      rows: 1,
-      columns: 8
-    });
+      const pending = bridge.request({
+        kind: "exportData",
+        sessionId,
+        revision: 0,
+        path: "/workspace/out.csv",
+        options: rCsvExportOptions
+      });
+      const settlement = pending.then(
+        (response) => ({ kind: "response" as const, response }),
+        (error: unknown) => ({ kind: "failure" as const, error })
+      );
+      const result = {
+        sessionId,
+        revision: 0,
+        format: "csv" as const,
+        rows: 1,
+        columns: 8
+      };
+      try {
+        if (checkpoint === "after writer") {
+          await vi.waitFor(() => expect(transport.exportData).toHaveBeenCalledOnce());
+          transport.invalidate();
+          lateResult.resolve(result);
+        }
 
-    await expect(pending).resolves.toMatchObject({ kind: "error", code: "r_kernel_changed" });
-    expect(atomic.rollback).toHaveBeenCalledOnce();
-    expect(atomic.commit).not.toHaveBeenCalled();
-  });
+        const outcome = await settlement;
+        expect(atomic.rollback).toHaveBeenCalledOnce();
+        expect(atomic.commit).not.toHaveBeenCalled();
+        expect(atomic.abandon).not.toHaveBeenCalled();
+        expect(transport.exportData).toHaveBeenCalledTimes(checkpoint === "before writer" ? 0 : 1);
+        expect(transport.close).not.toHaveBeenCalled();
+        expect(transport.dispose).not.toHaveBeenCalled();
+        if (cleanupFails) {
+          expect(outcome.kind).toBe("failure");
+          if (outcome.kind === "failure") expect(outcome.error).toBe(cleanupFailure);
+        } else {
+          expect(outcome).toMatchObject({ kind: "response", response: { kind: "error", code: "r_kernel_changed" } });
+        }
+      } finally {
+        lateResult.resolve(result);
+        await settlement;
+      }
+    }
+  );
 
   it("rolls back an R export whose pinned revision changes before the writer returns", async () => {
     const source = frameContract();
