@@ -12,6 +12,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 - History inspection controls ignore stale clicks after switching dataframes or changing the plan.
 - Python runtime commands and troubleshooting guidance clarify that clearing the workspace override leaves User and Remote settings unchanged.
+- Edit Latest Step explains whether a dataframe in Viewing mode supports cleaning.
 
 ## [2.6.0] - 2026-09-16
 

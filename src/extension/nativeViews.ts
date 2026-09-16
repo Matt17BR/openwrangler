@@ -940,9 +940,11 @@ function registerNativeViewsTransactional(
       const snapshot = coordinator.activeSession();
       if (!snapshot || !canEditLatestStep(snapshot.metadata)) {
         void vscode.window.showInformationMessage(
-          snapshot?.metadata.draftStep
-            ? "Apply or discard the current draft before editing the latest step."
-            : "Apply a cleaning step before editing the latest step."
+          snapshot?.metadata.mode === "viewing"
+            ? cleaningUnavailableReason(snapshot.metadata)
+            : snapshot?.metadata.draftStep
+              ? "Apply or discard the current draft before editing the latest step."
+              : "Apply a cleaning step before editing the latest step."
         );
         return;
       }

@@ -760,6 +760,44 @@ describe("native state and presentation commands", () => {
     });
   });
 
+  it.each([
+    ["pyspark", false, "Live PySpark dataframes are viewing only in Open Wrangler; cleaning steps are not available."],
+    ["polars", true, "Switch to Editing in the dataframe toolbar to add cleaning steps."]
+  ] as const)(
+    "explains why a Viewing %s session cannot edit its latest step",
+    async (backend, notebookInsert, reason) => {
+      const active = exportableSnapshot("viewing-session", "frame", 0);
+      active.code = "";
+      active.metadata = {
+        ...active.metadata,
+        backend,
+        mode: "viewing",
+        source: {
+          kind: "notebookVariable",
+          label: "frame",
+          variableName: "frame",
+          uri: "file:///workspace/frame.ipynb"
+        },
+        steps: [],
+        capabilities: {
+          ...active.metadata.capabilities,
+          editable: false,
+          exportCsv: false,
+          exportParquet: false,
+          notebookInsert,
+          supportedOperations: notebookInsert ? ["renameColumn"] : []
+        }
+      };
+      register(active);
+
+      await command("openWrangler.editLatestStep")();
+
+      expect(nativeMocks.showInformationMessage).toHaveBeenCalledExactlyOnceWith(reason);
+      expect(nativeMocks.sendEditorActionForSession).not.toHaveBeenCalled();
+      expect(nativeMocks.sendEditorAction).not.toHaveBeenCalled();
+    }
+  );
+
   it("routes selected-step edit and confirmed delete through the exact active session", async () => {
     const registered = register(noDraftSnapshot());
     const stepNode = treeChildren("openWrangler.cleaningSteps").find(
