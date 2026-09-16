@@ -623,7 +623,6 @@ Min-max Scale computes exact integer and decimal offsets before converting them 
 Float32 and float64 ranges that overflow on subtraction use wider or scaled operands; ordinary ranges retain their
 precision, including subnormal values. Live execution and standalone generated code use equivalent arithmetic in
 the owning engine. Pandas and Polars each share one helper between live execution and generated programs.
-These helpers and Polars Round avoid module-level type imports that would replace a notebook binding named `Any`.
 
 Python linear interpolation preserves equal finite nonzero anchors after validating the coordinate weight.
 At a binary64 weight of exactly one half, two zero or subnormal double anchors use their exact sum before the
@@ -877,8 +876,9 @@ Missing-power identities, noninteger Sparse fills and Boolean-only operations re
 Explicit floating-point and Decimal arithmetic, division, negative or fractional powers, modulo and By Example
 keep their existing paths. Live Formula and generated code share the same validation.
 
-Arrow-backed Formula preserves successful native results and types. Integer repairs accept 8-64-bit native NumPy,
-built-in Pandas nullable or Arrow integer columns; Sparse and arbitrary extension types are excluded.
+Arrow-backed Formula preserves the values and types of successful native operations and earlier repairs, including
+empty and all-null results. Integer repairs accept 8-64-bit native NumPy, built-in Pandas nullable or Arrow integer
+columns; Sparse and arbitrary extension types are excluded.
 Live execution and generated code use one repair implementation, called only after native arithmetic fails.
 The generated repair stays local to the Formula result helper so it adds no notebook-global binding.
 
@@ -889,15 +889,14 @@ UInt64 result. The additional path requires nonnegative values throughout both s
 paired with the other operand's null; it does not take magnitudes or infer per-row signs. Preparation failures,
 negative exponents and remaining overflows retain the original refusal. UInt64 exponent columns retain their
 existing repair path. Only selected operands and results gain temporary storage; the UInt64 attempt adds two native
-casts and one checked power, with no extrema scan. Successful native and Int64 results, including empty and all-null
-results, keep their types.
+casts and one checked power, with no extrema scan.
 
 After native power fails, a signed Arrow integer column and an exact positive scalar exponent below 2^64 can use
 checked UInt64 power. Even exponents take checked magnitudes after widening to Int64; odd exponents require
 nonnegative values through a safe unsigned cast. These repaired results must fit UInt64. If that attempt also fails
 for an odd exponent from 2^63+1 through 2^64-1, one native min/max scan may admit a column containing only -1, 0, 1
 and null, with at least one -1. Those values are unchanged by the power and return as Int64. Other failed domains
-retain the original refusal. Native successes and existing nonnegative, empty and all-null repairs retain their types.
+retain the original refusal.
 The added power path scans only the selected column and uses no per-row Python arithmetic.
 Other exponent and operand families keep their existing paths.
 
@@ -919,28 +918,26 @@ After existing native and eligible repairs fail, signed integer addition may use
 intermediate; fixed-width integer multiplication uses Decimal256. Both require at least one Arrow column and return
 Int64 if the complete result fits, or UInt64 otherwise. The added addition path accepts signed 8-64-bit columns and
 an eligible signed companion column or exact Int64-range literal. Multiplication retains its signed/unsigned operand
-rules. Successful native types and earlier UInt64 repairs stay unchanged. True overflow and columns needing both
-negative results and values above Int64 maximum retain the original refusal. Only selected operands gain temporary
-storage. Boolean, Sparse, arbitrary extension, floating and Decimal operands remain on their existing paths.
+rules. True overflow and columns needing both negative results and values above Int64 maximum retain the original
+refusal. Only selected operands gain temporary storage. Boolean, Sparse, arbitrary extension, floating and Decimal
+operands remain on their existing paths.
 
 Selected Decimal128 operands may widen to Decimal256 for add, subtract, multiply and divide, retaining each operand's
 precision and scale. Native arithmetic determines the result type.
 
 When native multiplication refuses two Decimal128 `(38, 38)` columns, Formula returns exact Decimal256 `(76, 76)`
-products. Safe widening precedes public Arrow views of the integer coefficients. Native grouped multiplication combines
-exactly two coefficients per source row; their product fits 76 digits. A final view restores scale 76, and positional
-sorting restores row order. Either null operand produces null; empty inputs retain the output type. This path adds
-temporary Decimal256 buffers, positional row identifiers and two aggregate entries per row. It preserves source values
-and indexes, and does not extend other Decimal precision, scale or input-width combinations.
+products. Either null operand produces null; empty inputs retain the output type. Source values, indexes and row order
+are preserved. This path adds temporary Decimal256 buffers, positional row identifiers and two aggregate entries per
+row. It does not extend other Decimal precision, scale or input-width combinations. The
+[operation-edge tests](../python/tests/test_operation_edges.py) check live and generated results.
 
 After a Decimal256 capacity failure, adding or subtracting the exact integer literal 0, or multiplying or dividing
 by 1, preserves the column's values. Multiplication and division by -1 use native checked negation. These repairs also
 accept native TypeError refusals for negative-scale
 Decimal256 operands whose full declared capacity cannot fit the 76-digit scale-zero intermediate described below.
 All retain the declared precision, scale and nulls. The identity result wraps the unchanged immutable Arrow storage
-in an independent Pandas array, so assigning to the result cannot change the source. Successful native and existing
-rescale results retain their types. Live and generated Formula apply the same policy; By Example
-remains unchanged.
+in an independent Pandas array, so assigning to the result cannot change the source. Live and generated Formula apply
+the same policy; By Example remains unchanged.
 
 After native add, subtract, multiply or divide fails on a selected negative-scale Arrow Decimal operand `(p, s)`,
 Formula may rescale that operand exactly to Decimal256 `(p-s, 0)` when its full declared capacity fits 76 digits.
