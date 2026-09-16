@@ -4,6 +4,10 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ## [Unreleased]
 
+### Fixed
+
+- History inspection controls ignore stale clicks after switching dataframes or changing the plan.
+
 ## [2.6.0] - 2026-09-16
 
 ### Added

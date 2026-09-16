@@ -548,7 +548,11 @@ describe("native state and presentation commands", () => {
         description: "Selected",
         tooltip: "Current view: Selected",
         accessibilityInformation: { label: "Current view, Selected" },
-        command: { command: "openWrangler.selectStep", title: "Show current view", arguments: [] }
+        command: {
+          command: "openWrangler.selectStep",
+          title: "Show current view",
+          arguments: [{ cleaningStepHandle: { sessionId: "session", revision: 0, stepId: null } }]
+        }
       });
       expect(steps.some((node) => node.label.startsWith("Draft ·"))).toBe(Boolean(active.metadata.draftStep));
     }
@@ -582,6 +586,79 @@ describe("native state and presentation commands", () => {
     expect(nativeMocks.showInformationMessage).toHaveBeenCalledWith(
       "Open the active dataframe editor before selecting a cleaning step."
     );
+  });
+
+  it.each(["session", "revision"] as const)("refuses retained inspection rows after a %s change", async (change) => {
+    const original = exportableSnapshot("original", "original.csv", 0);
+    original.stepInspectionActive = true;
+    const registered = register(original);
+    const inspectionRows = () => {
+      const steps = treeChildren("openWrangler.cleaningSteps");
+      return [
+        steps.find((node) => (node.cleaningStepHandle as { stepId?: unknown } | undefined)?.stepId === appliedStep.id),
+        steps.find((node) => node.label === "Current view"),
+        treeChildren("openWrangler.filters").find((node) => node.label === "Filters and sorts paused")
+      ];
+    };
+    const oldRows = inspectionRows();
+    const oldRow = oldRows[0];
+    expect(oldRow).toBeDefined();
+
+    await command("openWrangler.editSelectedStep")(oldRow);
+    expect(nativeMocks.sendEditorActionForSession).toHaveBeenCalledWith({
+      action: "editStep",
+      stepId: appliedStep.id,
+      expectedSessionId: "original",
+      expectedRevision: 0
+    });
+    nativeMocks.sendEditorActionForSession.mockClear();
+
+    const replacement =
+      change === "session"
+        ? exportableSnapshot("replacement", "replacement.csv", 0)
+        : exportableSnapshot("original", "original.csv", 1);
+    replacement.stepInspectionActive = true;
+    expect(replacement.metadata.steps[0]?.id).toBe(original.metadata.steps[0]?.id);
+    registered.setActiveSession(replacement);
+
+    await command("openWrangler.editSelectedStep")(oldRow);
+    expect(nativeMocks.sendEditorActionForSession).not.toHaveBeenCalled();
+
+    for (const row of oldRows) {
+      const action = row?.command as { command: string; arguments: unknown[] };
+      await command(action.command)(...action.arguments);
+    }
+    expect(nativeMocks.sendEditorActionForSession).not.toHaveBeenCalled();
+    expect(registered.clearActiveStepInspection).not.toHaveBeenCalled();
+
+    for (const [index, row] of inspectionRows().entries()) {
+      const action = row?.command as { command: string; arguments: unknown[] };
+      await command(action.command)(...action.arguments);
+      expect(nativeMocks.sendEditorActionForSession).toHaveBeenLastCalledWith({
+        action: "selectStep",
+        expectedSessionId: replacement.sessionId,
+        expectedRevision: replacement.metadata.revision,
+        ...(index === 0 ? { stepId: appliedStep.id } : {})
+      });
+    }
+    expect(nativeMocks.sendEditorActionForSession).toHaveBeenCalledTimes(3);
+    expect(registered.clearActiveStepInspection).toHaveBeenCalledTimes(2);
+  });
+
+  it("refuses malformed bound inspection targets without returning to the current view", async () => {
+    const registered = register(noDraftSnapshot());
+    for (const target of [
+      null,
+      {},
+      { cleaningStepHandle: null },
+      { cleaningStepHandle: { sessionId: "session", revision: 0 } },
+      { cleaningStepHandle: { sessionId: "session", revision: 0, stepId: 1 } },
+      { cleaningStepHandle: { sessionId: "session", revision: "0", stepId: null } }
+    ]) {
+      await command("openWrangler.selectStep")(target);
+    }
+    expect(nativeMocks.sendEditorActionForSession).not.toHaveBeenCalled();
+    expect(registered.clearActiveStepInspection).not.toHaveBeenCalled();
   });
 
   it("shows and dispatches only operations advertised by the active dataframe", async () => {
@@ -910,7 +987,7 @@ describe("native state and presentation commands", () => {
     expect(inspectionNodes[0]?.command).toEqual({
       command: "openWrangler.selectStep",
       title: "Return to current view",
-      arguments: []
+      arguments: [{ cleaningStepHandle: { sessionId: "session", revision: 0, stepId: null } }]
     });
     for (const node of inspectionNodes.slice(1)) {
       expect(node.command).toBeUndefined();

@@ -523,6 +523,7 @@ Focused draft buttons return keyboard focus to Add step, and deletion confirmati
 Read-only Code Preview supports Tab entry and keyboard navigation through long programs while refusing edits.
 Code Preview identifies a completed applied-step inspection above the code, including in the default docked panel. Copy and script
 export use the displayed code, including manual edits; cleaned-data export still uses the committed plan.
+History inspection controls ignore stale clicks after switching dataframes or changing the plan.
 Numeric histogram arrows use the highlighted bin as their starting point after pointer hover.
 Staged viewing sorts retire rules invalidated by Rename, Drop, identity replacement or a semantic type change.
 Unaffected staged rules remain, and Undo does not restore a rule already retired from the draft.

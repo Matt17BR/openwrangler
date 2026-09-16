@@ -1747,6 +1747,10 @@ Ordinary viewing changes and returning to Current view do not release it. Replac
 temporarily retain both pairs. DuckDB plans retain their immutable Custom checkpoints; later inspection windows read
 those same rows without re-executing the Custom result.
 
+Native step-inspection and return-to-current-view rows carry their originating session and revision. Their commands
+refuse stale or malformed handles before changing inspection. Public `selectStep` calls with a bare step ID still
+address the active session; omitting the argument returns that session to its current view.
+
 Saved notebook capture rejects source columns in the private row-identity namespace before constructing its schema
 and page, using the same admission check as live sessions.
 Automatic inline upgrades use this bounded snapshot owner directly, with a 256-column limit checked before requesting

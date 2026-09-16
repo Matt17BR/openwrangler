@@ -194,7 +194,7 @@ interface ViewSortHandle {
 interface CleaningStepHandle {
   readonly sessionId: string;
   readonly revision: number;
-  readonly stepId: string;
+  readonly stepId: string | null;
 }
 
 type ViewSortTargetResolution =
@@ -1021,7 +1021,7 @@ function registerNativeViewsTransactional(
         );
       }
     }),
-    registerCommand("openWrangler.selectStep", async (stepId?: unknown) => {
+    registerCommand("openWrangler.selectStep", async (target?: unknown) => {
       const snapshot = coordinator.activeSession();
       if (!snapshot) {
         void vscode.window.showInformationMessage(
@@ -1029,20 +1029,26 @@ function registerNativeViewsTransactional(
         );
         return;
       }
+      const handle =
+        target === undefined || typeof target === "string"
+          ? { sessionId: snapshot.sessionId, revision: snapshot.metadata.revision, stepId: target ?? null }
+          : selectedCleaningStepHandle(target);
       if (
-        stepId !== undefined &&
-        (typeof stepId !== "string" || !snapshot.metadata.steps.some((step) => step.id === stepId))
+        !handle ||
+        handle.sessionId !== snapshot.sessionId ||
+        handle.revision !== snapshot.metadata.revision ||
+        (handle.stepId !== null && !snapshot.metadata.steps.some((step) => step.id === handle.stepId))
       ) {
         void vscode.window.showWarningMessage("That cleaning step is no longer available in the active dataframe.");
         return;
       }
-      if (stepId === undefined) coordinator.clearActiveStepInspection();
+      if (handle.stepId === null) coordinator.clearActiveStepInspection();
       if (
         !(await OpenWranglerPanel.sendEditorActionForSession({
           action: "selectStep",
           expectedSessionId: snapshot.sessionId,
           expectedRevision: snapshot.metadata.revision,
-          ...(stepId ? { stepId } : {})
+          ...(handle.stepId !== null ? { stepId: handle.stepId } : {})
         }))
       ) {
         void vscode.window.showInformationMessage("Open the active dataframe editor before selecting a cleaning step.");
@@ -1445,7 +1451,7 @@ function cleaningStepNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
     new ViewNode("Current view", stepInspection ? "Show current view" : "Selected", "database", {
       command: "openWrangler.selectStep",
       title: "Show current view",
-      arguments: []
+      arguments: [{ cleaningStepHandle: { sessionId: snapshot.sessionId, revision: metadata.revision, stepId: null } }]
     })
   ];
   nodes.push(
@@ -1453,6 +1459,11 @@ function cleaningStepNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
       const operation = operationByKind(step.kind);
       const isLatest = index === metadata.steps.length - 1;
       const selected = stepInspection?.stepId === step.id;
+      const handle: CleaningStepHandle = {
+        sessionId: snapshot.sessionId,
+        revision: metadata.revision,
+        stepId: step.id
+      };
       return new ViewNode(
         `${index + 1}. ${operation.title}`,
         selected
@@ -1464,12 +1475,12 @@ function cleaningStepNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
         {
           command: "openWrangler.selectStep",
           title: `Inspect ${operation.title}`,
-          arguments: [step.id]
+          arguments: [{ cleaningStepHandle: handle }]
         },
         isLatest && !metadata.draftStep ? "openWrangler.latestCleaningStep" : "openWrangler.cleaningStep",
         undefined,
         undefined,
-        { sessionId: snapshot.sessionId, revision: metadata.revision, stepId: step.id }
+        handle
       );
     })
   );
@@ -1600,7 +1611,15 @@ function filterNodes(
       new ViewNode("Filters and sorts paused", "Inspecting an applied step", "lock", {
         command: "openWrangler.selectStep",
         title: "Return to current view",
-        arguments: []
+        arguments: [
+          {
+            cleaningStepHandle: {
+              sessionId: snapshot.sessionId,
+              revision: snapshot.metadata.revision,
+              stepId: null
+            }
+          }
+        ]
       }),
       ...filters,
       ...sorts
@@ -1713,7 +1732,9 @@ function selectedCleaningStepHandle(value: unknown): CleaningStepHandle | undefi
   const handle = (value as { cleaningStepHandle?: unknown }).cleaningStepHandle;
   if (!handle || typeof handle !== "object") return undefined;
   const { sessionId, revision, stepId } = handle as Record<string, unknown>;
-  return typeof sessionId === "string" && Number.isSafeInteger(revision) && typeof stepId === "string"
+  return typeof sessionId === "string" &&
+    Number.isSafeInteger(revision) &&
+    (typeof stepId === "string" || stepId === null)
     ? { sessionId, revision: Number(revision), stepId }
     : undefined;
 }
