@@ -140,7 +140,7 @@ describe("SummaryPanel", () => {
   });
 
   it("keeps exact profiles quiet while labeling a sampled distribution", () => {
-    renderSummary({ selectedColumnId: "c:1" });
+    renderSummary({ selectedColumnId: "c:1", summaries: [{ ...numericSummary, totalCount: 14 }] });
 
     expect(screen.getByRole("tabpanel", { name: "Column" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "sales" })).toBeInTheDocument();
@@ -148,10 +148,7 @@ describe("SummaryPanel", () => {
     expect(screen.getByText("Float64")).toBeInTheDocument();
     expect(screen.queryByText("Exact statistics")).not.toBeInTheDocument();
     expect(screen.queryByText("Exact distribution")).not.toBeInTheDocument();
-    expect(screen.getByText("Distribution based on a sample")).toHaveAttribute(
-      "title",
-      "The chart uses a sample. The statistics above it use all visible rows."
-    );
+    expect(screen.getByText("Approximate distribution uses 3 sample values from 11 non-missing values.")).toBeVisible();
     expect(screen.getByText("Null").nextElementSibling).toHaveTextContent("1");
     expect(screen.getByText("NaN").nextElementSibling).toHaveTextContent("2");
     expect(screen.getByText("Min").nextElementSibling).toHaveTextContent("10");
@@ -180,15 +177,15 @@ describe("SummaryPanel", () => {
       type: "float",
       rawType: "Float64",
       totalCount: totalRows,
-      nullCount: 0,
-      nanCount: 0,
+      nullCount: 10,
+      nanCount: 7,
       topValues: [],
       numeric: { min: 1, max: 3, mean: 2 },
       visualization: {
         kind: "numeric",
         bins: [
           { min: 1, max: 2, count: 60_000 },
-          { min: 2, max: 3, count: 40_000 }
+          { min: 2, max: 3, count: 39_999 }
         ],
         sampled: true
       }
@@ -202,6 +199,9 @@ describe("SummaryPanel", () => {
       onApplyFilterModel: vi.fn()
     });
 
+    expect(
+      screen.getByText("Approximate distribution uses 99,999 sample values from 4,000,000 non-missing values.")
+    ).toBeVisible();
     expect(screen.getByText("Distinct").nextElementSibling).toHaveTextContent("n/a");
     expect(screen.queryByText("Distinct 0")).not.toBeInTheDocument();
     const numericPercent = screen.getByRole("button", { name: "%" });
@@ -217,20 +217,20 @@ describe("SummaryPanel", () => {
       type: "string",
       rawType: "String",
       totalCount: totalRows,
-      nullCount: 0,
+      nullCount: 17,
       nanCount: 0,
       text: { emptyCount: 0, minLength: 5, maxLength: 6, meanLength: 5.5 },
       topValues: [
         { value: "Berlin", count: 60_000 },
-        { value: "Milan", count: 40_000 }
+        { value: "Milan", count: 30_000 }
       ],
       visualization: {
         kind: "categorical",
         categories: [
           { value: "Berlin", count: 60_000 },
-          { value: "Milan", count: 40_000 }
+          { value: "Milan", count: 30_000 }
         ],
-        otherCount: 0,
+        otherCount: 10_000,
         sampled: true
       }
     };
@@ -244,6 +244,9 @@ describe("SummaryPanel", () => {
 
     expect(screen.getByText("Distinct").nextElementSibling).toHaveTextContent("n/a");
     expect(screen.queryByText("Distinct 0")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("Approximate distribution uses 100,000 sample values from 4,000,000 non-missing values.")
+    ).toBeVisible();
     const categoricalPercent = screen.getByRole("button", { name: "%" });
     expect(categoricalPercent).not.toHaveAttribute("title");
     expect(categoricalPercent).not.toHaveAttribute("aria-description");

@@ -23,6 +23,7 @@ import {
   formatProfilePercent,
   formatProfileValue,
   profileDistributionDenominator,
+  sampledDistributionDescription,
   type ProfileValueMode
 } from "../profileValueMode";
 
@@ -261,12 +262,7 @@ function SelectedColumnSummary({
       ) : (
         <>
           {summary.visualization?.sampled && (
-            <div
-              className="summarySampleNotice"
-              title="The chart uses a sample. The statistics above it use all visible rows."
-            >
-              Distribution based on a sample
-            </div>
+            <div className="summarySampleNotice">{sampledDistributionDescription(summary)}</div>
           )}
 
           <dl className="summaryStatGrid">

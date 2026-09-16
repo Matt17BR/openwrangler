@@ -534,6 +534,9 @@ In narrow panes, the source name and actions share toolbar rows when space allow
 Column profiles and filters stay beside the grid, or below it in narrow panes, without covering the selected cell.
 Selecting an uncalculated statistic in native Summary opens the Dataset view and requests its counts. Failed requests
 show their error with an explicit retry instead of continuing to display a profiling indicator.
+R honors the header-profile opening preference, as local Python engines do; PySpark still starts with profiles off.
+Sampled distributions show the sample count used and the full non-missing population.
+Compact categorical headers group every value outside their three displayed categories into Other.
 Expanded header profiles align their statistics dividers and center complete chart groups across the visible columns.
 Mixed chart types can increase header height; the existing compact mode preserves space in short editors.
 The stacked layout shows fewer rows and scrolls to reach longer filter forms.

@@ -82,7 +82,11 @@ export function createReleasedRGridJourney({
     const profiles = app.getByRole("button", { name: "Header profiles", exact: true });
     await profiles.waitFor({ state: "visible", timeout: 10_000 });
     assert.equal(await profiles.isEnabled(), true);
-    assert.equal(await profiles.getAttribute("aria-pressed"), "false", "R header profiles must start off.");
+    assert.equal(
+      await profiles.getAttribute("aria-pressed"),
+      "true",
+      "R header profiles must honor the enabled insights-on-open preference."
+    );
     let columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
     await columnSearch.fill(scoreColumn.name);
     await app
@@ -100,6 +104,16 @@ export function createReleasedRGridJourney({
     );
 
     app = await releasedRSessionApp(workbench, testing, sessionId, "the selected native R score profile");
+    await waitForLocatorText(
+      app.locator('th[data-column="score"] .exactSummaryStats'),
+      (text) =>
+        /Missing\s*0/u.test(text) &&
+        /Distinct\s*1,205/u.test(text) &&
+        /Min\s*1\b/u.test(text) &&
+        /Max\s*1,205/u.test(text),
+      10_000,
+      "the native R score header profile to complete without toggling profiles on"
+    );
     const profileToggle = app.getByRole("button", { name: "Column profiles and filters", exact: true });
     await profileToggle.waitFor({ state: "visible", timeout: 10_000 });
     assert.equal(await profileToggle.isEnabled(), true);

@@ -18,6 +18,8 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- R header profiles honor the opening preference. Sampled charts identify the sample count used and full non-missing population.
+- Compact categorical headers include all omitted categories in Other.
 - R terminal commands honor bracketed paste, preventing radian from interpreting private command fragments as global assignments.
 - An open notebook no longer hides the action to discover dataframes in an existing R terminal.
 - R row sorting and reduction accept native row-name changes, including ordinary CSV-derived frames; zero-column generated reductions match live execution.

@@ -153,7 +153,9 @@ Use the existing owners to choose a focused source check:
   [operation forms](../src/test/operationBuilder.component.test.tsx),
   [progressive profiling](../src/test/appProgressiveProfiling.component.test.tsx) and
   [profiling lifecycle](../src/test/progressiveProfilingLifecycle.unit.test.tsx) own drafts, request correlation and
-  query caches. [Grid clipboard](../src/test/gridClipboard.unit.test.ts) and
+  query caches. The R opening preference is checked both enabled and disabled; immediate Undo and Redo retain
+  the non-cancellable profiling quiet-period assertions. The existing installed R grid journey also waits for its
+  visible score header profile without enabling it manually. [Grid clipboard](../src/test/gridClipboard.unit.test.ts) and
   [renderer lifecycle](../src/test/rendererPresentationLifecycle.unit.test.tsx) own focus and acknowledgement ordering.
   Browser acceptance supplies native layout and interaction evidence.
 - **Python dependency admission:** [native package provenance](../src/test/pythonDependencyPep440.unit.test.ts)
