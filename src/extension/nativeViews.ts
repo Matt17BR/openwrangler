@@ -176,7 +176,10 @@ class ViewNode extends vscode.TreeItem {
   ) {
     super(label, vscode.TreeItemCollapsibleState.None);
     this.description = description;
-    this.iconPath = new vscode.ThemeIcon(icon);
+    this.iconPath = new vscode.ThemeIcon(
+      icon,
+      icon === "warning" || icon === "error" ? undefined : new vscode.ThemeColor("icon.foreground")
+    );
     this.command = command;
     this.contextValue = contextValue;
     const detail = disabledReason ? `${description}. ${disabledReason}` : description;

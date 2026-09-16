@@ -88,8 +88,15 @@ vi.mock("vscode", () => {
     ) {}
   }
 
-  class ThemeIcon {
+  class ThemeColor {
     constructor(readonly id: string) {}
+  }
+
+  class ThemeIcon {
+    constructor(
+      readonly id: string,
+      readonly color?: ThemeColor
+    ) {}
   }
 
   class Uri {
@@ -139,6 +146,7 @@ vi.mock("vscode", () => {
     TreeItem,
     TreeItemCollapsibleState: { None: 0 },
     ThemeIcon,
+    ThemeColor,
     Uri,
     ViewColumn: { Active: 1 },
     ProgressLocation: { Notification: 15 },
