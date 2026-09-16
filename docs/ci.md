@@ -64,6 +64,8 @@ On code changes, lint and type checking run after the direct script contracts, s
 
 The scope-only job uses Node and Git without installing npm dependencies or restoring the npm cache.
 `scripts/ci-docs-only.mjs` permits the omissions below. All admitted files must be regular and non-executable.
+Unless explicitly allowed below, omissions require modifications to existing files; additions, deletions, moves
+and mode changes require full checks. The runtime-source exceptions allow additions only.
 The allowed Markdown paths are `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `AGENTS.md` and `docs/**/*.md`.
 Modifications to existing Markdown files qualify on their own or with the permitted source edits below.
 Markdown additions and removals, and JSON additions, modifications and removals under `docs/performance/**`, qualify
@@ -76,27 +78,25 @@ Required-document, generated-reference and release-document checks still run and
 - Python may be omitted for additions or edits to `.R` files under `r/openwrangler_runtime/` or `r/tests/`; edits to
   existing top-level `src/test/extensionHost/*.ts`, `scripts/editor-acceptance.mjs` or
   `scripts/editor-acceptance-artifact.test.mjs` files; and modifications to allowed Markdown files.
-  The installed-harness edits retain all R and Windows execution. Added or nested harness files
+  The installed-harness edits retain all R and Windows execution. Nested harness files
   and other scripts are outside this permission.
 - The Python worker may also be omitted for modifications to existing files under `src/webviews/` and the existing
   `src/test/progressiveProfilingLifecycle.unit.test.tsx` owner, optionally with the allowed component-test and Markdown
   edits. Platform R jobs, Source and packaged smoke remain required; their numeric source step follows the next scope.
-  Additions, deletions, renames and mode changes remain outside this permission.
 - The Python worker may also be omitted for modifications to existing `docs/images/**/*.png` files, alone or with other
   edits already permitted to omit Python. Python source tests do not consume these images. Such diffs keep
-  `docs_only=false` and retain Source, R, Windows and installed-editor execution. Image additions, deletions, renames,
-  mode changes and other image paths remain outside this permission. Screenshot changes still require
+  `docs_only=false` and retain Source, R, Windows and installed-editor execution. Other image paths remain outside
+  this permission. Screenshot changes still require
   [local browser acceptance](testing.md#direct-source-checks); this omission does not qualify their visual content.
 - The Linux R workers, platform R numeric source step and Windows filesystem and process job may also be omitted for modifications to existing
   `src/webviews/` files, optionally with the allowed component-test and Markdown edits. This additional omission does
-  not extend to the lifecycle unit test, installed harness, scripts or runtime source. Additions, deletions, renames
-  and mode changes retain execution.
+  not extend to the lifecycle unit test, installed harness, scripts or runtime source.
   Both platform R jobs still run their cleanup, package and installed-editor checks.
 - The same Python, Linux R source, platform numeric source and Windows source omissions apply to modifications of
   the existing `src/extension/nativeViews.ts`, `src/extension/nativeViewsExportOptions.ts`,
   `src/test/nativeViewStateCommands.unit.test.ts`, `src/test/nativeViewExportCommands.unit.test.ts`,
   `src/extension/files/importOptions.ts`, `src/test/importOptions.unit.test.ts` and
-  `src/test/webviewPanel.unit.test.ts` files, alone or with other edits eligible for those omissions. Additions, deletions, renames, mode changes and other host
+  `src/test/webviewPanel.unit.test.ts` files, alone or with other edits eligible for those omissions. Other host
   files remain outside this permission. Source still runs both TypeScript programs, its full Vitest suite and the Node
   script checks; package verification and installed VS Code and R journeys remain required.
 - R source and installed-editor execution may be omitted for additions or edits to `.py` files under
@@ -106,15 +106,14 @@ Required-document, generated-reference and release-document checks still run and
   files, or `python/tests/test_operation_edges.py`, `test_operations.py`, `test_session_transactions.py`, `test_duckdb_engine.py`,
   `test_split_text_columns.py`, `test_pandas_engine.py` and `test_filter_logic.py`, optionally with the allowed Markdown
   edits. Each owner qualifies independently.
-  Documentation-only changes do not set this omission flag. Additions,
-  deletions, renames, mode changes and other inputs keep native Spark execution required.
+  Documentation-only changes do not set this omission flag. Other inputs keep native Spark execution required.
 - Only the macOS and Windows editor steps may be omitted when at least one of the existing
   `r/tests/kernel_agent.R` or `r/tests/frame_contract.R` files is modified, optionally with the allowed Markdown edits.
-  Both Linux shards and platform source, artifact-cleanup, package and harness checks remain required. Additions,
-  deletions, renames, mode changes and any other edited file require editor execution.
+  Both Linux shards and platform source, artifact-cleanup, package and harness checks remain required.
+  Any other edited file requires editor execution.
 - Python, R and Windows execution may be omitted for edits to existing top-level `src/test/*.component.test.tsx`
   files, optionally with the allowed Markdown edits. Source still runs these component tests; the native and installed
-  harnesses do not consume them. Component additions, nested tests, unit/cross tests and shared fixtures are outside
+  harnesses do not consume them. Nested tests, unit/cross tests and shared fixtures are outside
   this permission.
 - Python, R and Windows execution may also be omitted for edits to the existing release-policy scripts and tests,
   `scripts/capture-screenshots.mjs`, `scripts/capture-screenshots-readiness.mjs` and `scripts/ci-docs-only.test.mjs`, enumerated in

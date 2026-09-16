@@ -500,29 +500,21 @@ test("proves added regular Python source only for native R", async (context) => 
   }
 });
 
-test("omits Linux R source work for the grid accessibility change while keeping installed R journeys", (context) => {
-  const files = [
-    "src/webviews/grid/DataGrid.tsx",
-    "src/test/dataGridClipboard.component.test.tsx",
-    "src/test/dataGridSelection.component.test.tsx",
-    "src/test/webview.component.test.tsx",
-    "docs/accessibility.md",
-    "CHANGELOG.md"
-  ];
-  const cwd = repository(context, files);
-  for (const file of files) write(cwd, file);
-  const env = merge(cwd);
-  const proof = proveRuntimeOmissions({ cwd, env });
-  assert.equal(proof.rRuntimeOmittable, true);
-  assert.equal(proof.rOmittable, false);
-  assert.equal(proof.rEditorOmittable, false);
-  assert.equal(proof.pythonOmittable, true);
-  assert.equal(proof.docsOnly, false);
-});
-
 test("proves Python omissions with selective native R source checks", async (context) => {
   const cases = [
     { added: [], modified: [screenshot], checkCli: true },
+    {
+      added: [],
+      modified: [
+        "src/webviews/grid/DataGrid.tsx",
+        "src/test/dataGridClipboard.component.test.tsx",
+        "src/test/dataGridSelection.component.test.tsx",
+        "src/test/webview.component.test.tsx",
+        "docs/accessibility.md",
+        "CHANGELOG.md"
+      ],
+      runtimeOmittable: true
+    },
     {
       added: [],
       modified: [
