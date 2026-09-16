@@ -21,6 +21,7 @@ export type CodePreviewHostMessage =
       readonly code: string;
       readonly editable: boolean;
       readonly runtimeIdentity: RuntimeIdentity | null;
+      readonly inspection: { readonly stepIndex: number; readonly stepCount: number } | null;
     }
   | {
       readonly kind: "codeSnapshotRequest";
@@ -65,7 +66,16 @@ export function isCodePreviewHostMessage(value: unknown): value is CodePreviewHo
     return true;
   }
   if (
-    !hasExactKeys(value, ["kind", "bufferId", "bufferVersion", "bufferInvalid", "code", "editable", "runtimeIdentity"])
+    !hasExactKeys(value, [
+      "kind",
+      "bufferId",
+      "bufferVersion",
+      "bufferInvalid",
+      "code",
+      "editable",
+      "runtimeIdentity",
+      "inspection"
+    ])
   ) {
     return false;
   }
@@ -81,6 +91,21 @@ export function isCodePreviewHostMessage(value: unknown): value is CodePreviewHo
     return false;
   }
   if (value.runtimeIdentity !== null && !isRuntimeIdentity(value.runtimeIdentity)) return false;
+  if (value.inspection !== null) {
+    if (
+      !hasExactKeys(value.inspection, ["stepIndex", "stepCount"]) ||
+      typeof value.inspection.stepIndex !== "number" ||
+      typeof value.inspection.stepCount !== "number" ||
+      !Number.isSafeInteger(value.inspection.stepIndex) ||
+      !Number.isSafeInteger(value.inspection.stepCount) ||
+      value.inspection.stepIndex < 0 ||
+      value.inspection.stepCount <= value.inspection.stepIndex ||
+      value.bufferInvalid ||
+      !value.code ||
+      !value.runtimeIdentity?.codeDialect
+    )
+      return false;
+  }
   return !value.editable || (value.runtimeIdentity !== null && value.runtimeIdentity.codeDialect !== null);
 }
 

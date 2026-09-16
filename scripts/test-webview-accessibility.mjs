@@ -434,6 +434,7 @@ async function verifyCodePreviewOrigin(browser) {
       new MessageEvent("message", {
         data: {
           kind: "codePreview",
+          inspection: null,
           bufferId: "00000000-0000-4000-8000-000000000001",
           bufferVersion: 0,
           bufferInvalid: false,
@@ -459,6 +460,7 @@ async function verifyCodePreviewOrigin(browser) {
       new MessageEvent("message", {
         data: {
           kind: "codePreview",
+          inspection: null,
           bufferId: "00000000-0000-4000-8000-000000000001",
           bufferVersion: 0,
           bufferInvalid: false,
@@ -483,6 +485,7 @@ async function verifyCodePreviewOrigin(browser) {
       new MessageEvent("message", {
         data: {
           kind: "codePreview",
+          inspection: null,
           bufferId: "00000000-0000-4000-8000-000000000001",
           bufferVersion: 0,
           bufferInvalid: false,
@@ -511,6 +514,7 @@ async function verifyCodePreviewOrigin(browser) {
       new MessageEvent("message", {
         data: {
           kind: "codePreview",
+          inspection: null,
           bufferId: "00000000-0000-4000-8000-000000000001",
           bufferVersion: 0,
           bufferInvalid: false,
@@ -571,6 +575,7 @@ async function verifyCodePreviewOrigin(browser) {
       new MessageEvent("message", {
         data: {
           kind: "codePreview",
+          inspection: null,
           bufferId: "00000000-0000-4000-8000-000000000001",
           bufferVersion: 0,
           bufferInvalid: false,
@@ -613,6 +618,7 @@ async function verifyCodePreviewOrigin(browser) {
       new MessageEvent("message", {
         data: {
           kind: "codePreview",
+          inspection: { stepIndex: 1, stepCount: 3 },
           bufferId: "00000000-0000-4000-8000-000000000001",
           bufferVersion: 0,
           bufferInvalid: false,
@@ -645,8 +651,40 @@ async function verifyCodePreviewOrigin(browser) {
   if ((await content.getAttribute("aria-label")) !== "Editable generated Python code preview") {
     throw new Error("Code preview did not restore its generated Python label.");
   }
+  const scope = page.locator("[data-code-scope]");
+  if (!(await scope.isVisible()) || (await scope.textContent()) !== "Python · Inspecting step 2 of 3") {
+    throw new Error("Code preview did not render its completed inspection scope above the editor.");
+  }
+  for (const [width, height] of [
+    [1280, 420],
+    [620, 220],
+    [320, 160]
+  ]) {
+    await page.setViewportSize({ width, height });
+    const layout = await page.evaluate(() => {
+      const scope = document.querySelector("[data-code-scope]").getBoundingClientRect();
+      const editor = document.querySelector(".cm-editor").getBoundingClientRect();
+      return {
+        scopeFits: scope.left >= 0 && scope.right <= innerWidth && scope.top >= 0,
+        editorFits: editor.top >= scope.bottom && editor.height > 0 && editor.bottom <= innerHeight,
+        pageFits: document.documentElement.scrollHeight <= innerHeight
+      };
+    });
+    if (!layout.scopeFits || !layout.editorFits || !layout.pageFits) {
+      throw new Error(`Code preview scope/editor overflow at ${width}x${height}: ${JSON.stringify(layout)}.`);
+    }
+  }
+  await content.focus();
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Tab");
+  if (!(await content.evaluate((element) => document.activeElement === element))) {
+    throw new Error("Inspection scope prevented keyboard entry to Code Preview.");
+  }
+  if ((await content.textContent()) !== pandasCode.replaceAll("\n", "")) {
+    throw new Error("Inspection scope changed the generated code document.");
+  }
   await page.close();
-  console.log("Code-preview identity, parser, host origin, and read-only behavior verified.");
+  console.log("Code-preview identity, inspection scope, parser, host origin, and read-only behavior verified.");
 }
 
 async function verifyCompactDraftReview(browser) {

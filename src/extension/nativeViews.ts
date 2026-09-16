@@ -459,6 +459,8 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       this.displayedCode = CODE_PREVIEW_INVALID_PLACEHOLDER;
     }
     const runtimeIdentity = this.snapshot ? runtimeIdentityForSessionMetadata(this.snapshot.metadata) : null;
+    const language = codeDialectLanguageLabel(runtimeIdentity?.codeDialect ?? null);
+    const inspection = this.snapshot?.stepInspection;
     const message: CodePreviewHostMessage = {
       kind: "codePreview",
       bufferId: this.bufferId,
@@ -466,14 +468,13 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       bufferInvalid: this.bufferInvalid,
       code: this.displayedCode,
       editable: isEditableCodePreview(this.snapshot),
-      runtimeIdentity
+      runtimeIdentity,
+      inspection:
+        language && inspection && this.snapshot?.code && !this.bufferInvalid
+          ? { stepIndex: inspection.stepIndex, stepCount: this.snapshot.metadata.steps.length }
+          : null
     };
-    const language = codeDialectLanguageLabel(message.runtimeIdentity?.codeDialect ?? null);
-    const inspection = this.snapshot?.stepInspection;
-    this.view.description =
-      language && inspection && this.snapshot?.code && !this.bufferInvalid
-        ? `${language} · Inspecting step ${inspection.stepIndex + 1} of ${this.snapshot.metadata.steps.length}`
-        : language;
+    this.view.description = language;
     void this.view.webview.postMessage(message);
   }
 

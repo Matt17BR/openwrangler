@@ -521,7 +521,7 @@ Column search reveals and focuses its target within both the table and editor vi
 is selected again, without replacing a later focus choice.
 Focused draft buttons return keyboard focus to Add step, and deletion confirmation retains focus through Cancel.
 Read-only Code Preview supports Tab entry and keyboard navigation through long programs while refusing edits.
-Code Preview identifies a completed applied-step inspection beside its language. Copy and script
+Code Preview identifies a completed applied-step inspection above the code, including in the default docked panel. Copy and script
 export use the displayed code, including manual edits; cleaned-data export still uses the committed plan.
 Numeric histogram arrows use the highlighted bin as their starting point after pointer hover.
 Staged viewing sorts retire rules invalidated by Rename, Drop, identity replacement or a semantic type change.

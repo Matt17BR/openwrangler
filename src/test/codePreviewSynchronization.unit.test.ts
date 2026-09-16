@@ -3,6 +3,7 @@ import { EditorView } from "@codemirror/view";
 import { beforeAll, expect, it, vi } from "vitest";
 import { CODE_PREVIEW_EDIT_DEBOUNCE_MS, CODE_PREVIEW_MAX_UTF8_BYTES } from "../shared/codePreviewLimits";
 import {
+  appliedStep,
   command,
   nativeMocks,
   noDraftSnapshot,
@@ -11,6 +12,7 @@ import {
   rNotebookSnapshot,
   uncancelledViewToken
 } from "./nativeViews.testFixtures";
+import { stepInspectionResponse } from "./sessionCoordinatorTestFixtures";
 
 import * as safeFileExport from "../extension/files/safeFileExport";
 
@@ -35,7 +37,23 @@ it("reconstructs CRLF and bare-CR edits and flushes crossed snapshots across rec
   const initialSnapshot = noDraftSnapshot();
   initialSnapshot.code = "def clean_data(df):\r\n    return df\r\n";
   const initialCanonicalCode = "def clean_data(df):\n    return df\n";
-  const registered = register(initialSnapshot);
+  initialSnapshot.metadata.steps.push({ ...appliedStep, id: "second" });
+  initialSnapshot.stepInspectionActive = true;
+  initialSnapshot.stepInspection = stepInspectionResponse(
+    {
+      kind: "inspectStep",
+      sessionId: initialSnapshot.sessionId,
+      revision: initialSnapshot.metadata.revision,
+      stepId: appliedStep.id,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 16
+    },
+    0,
+    initialCanonicalCode
+  );
+  const registered = register({ ...initialSnapshot, stepInspection: undefined });
   const provider = nativeMocks.webviewViewProviders.get("openWrangler.codePreview");
   if (!provider) throw new Error("Expected the Code Preview provider to be registered.");
 
@@ -118,10 +136,13 @@ it("reconstructs CRLF and bare-CR edits and flushes crossed snapshots across rec
 
   try {
     let firstPage = await mountPage();
+    expect(document.querySelector<HTMLElement>("[data-code-scope]")?.hidden).toBe(true);
+    registered.setActiveSession(initialSnapshot);
     const initialPreview = webviewMessages.at(-1) as CodePreviewEnvelope;
     expect(initialPreview).toMatchObject({ kind: "codePreview", bufferInvalid: false });
     expect(initialPreview.code).toBe(initialCanonicalCode);
     expect(firstPage.editor.state.doc.toString()).toBe(initialCanonicalCode);
+    expect(document.querySelector("[data-code-scope]")?.textContent).toBe("Python · Inspecting step 1 of 2");
 
     provider.resolveWebviewView(
       {
@@ -220,6 +241,7 @@ it("reconstructs CRLF and bare-CR edits and flushes crossed snapshots across rec
     writeText.mockClear();
     await expect(command("openWrangler.copyCode")()).resolves.toBe(latestCode);
     expect(writeText).toHaveBeenCalledWith(latestCode);
+    expect(document.querySelector("[data-code-scope]")?.textContent).toBe("Python · Inspecting step 1 of 2");
 
     const staleCode = `${latestCode}# stale session edit\n`;
     const staleStart = hostMessages.length;
@@ -252,6 +274,7 @@ it("reconstructs CRLF and bare-CR edits and flushes crossed snapshots across rec
     const secondPage = await mountPage();
     expect(secondPage.editor).not.toBe(firstPage.editor);
     expect(secondPage.editor.state.doc.toString()).toBe(replacementCanonicalCode);
+    expect(document.querySelector<HTMLElement>("[data-code-scope]")?.hidden).toBe(true);
     expect(undo(secondPage.editor)).toBe(false);
 
     const terminalCode = "clean_data <- function(df) {\n  # terminal valid edit\n  df\n}\n";
@@ -484,6 +507,7 @@ interface CodePreviewEnvelope {
   readonly bufferId: string;
   readonly bufferVersion: number;
   readonly bufferInvalid: boolean;
+  readonly inspection: null | { readonly stepIndex: number; readonly stepCount: number };
   readonly code: string;
 }
 
@@ -500,6 +524,7 @@ function codePreviewMessage(
 } {
   return {
     kind: "codePreview",
+    inspection: null,
     bufferId,
     bufferVersion: 0,
     bufferInvalid: false,

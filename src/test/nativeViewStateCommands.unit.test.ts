@@ -1150,6 +1150,7 @@ describe("native state and presentation commands", () => {
     receive?.({ kind: "ready" });
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
+      inspection: null,
       bufferId: expect.any(String),
       bufferVersion: 0,
       bufferInvalid: false,
@@ -1162,6 +1163,7 @@ describe("native state and presentation commands", () => {
       }
     });
     expect(codePreviewView.description).toBe("Python");
+    expect(posted.at(-1)).toMatchObject({ inspection: null });
     const readOnlyBufferId = (posted.at(-1) as { bufferId: string }).bufferId;
 
     receive?.({
@@ -1174,6 +1176,7 @@ describe("native state and presentation commands", () => {
     receive?.({ kind: "ready" });
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
+      inspection: null,
       bufferId: readOnlyBufferId,
       bufferVersion: 0,
       bufferInvalid: false,
@@ -1216,6 +1219,7 @@ describe("native state and presentation commands", () => {
     expect(treeChildren("openWrangler.operations").every((node) => node.command !== undefined)).toBe(true);
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
+      inspection: null,
       bufferId: expect.any(String),
       bufferVersion: 0,
       bufferInvalid: false,
@@ -1228,9 +1232,11 @@ describe("native state and presentation commands", () => {
       }
     });
     expect(codePreviewView.description).toBe("Python");
+    expect(posted.at(-1)).toMatchObject({ inspection: null });
     const pendingInspection = { ...editable, stepInspectionActive: true };
     registered.setActiveSession(pendingInspection);
     expect(codePreviewView.description).toBe("Python");
+    expect(posted.at(-1)).toMatchObject({ inspection: null });
     expect(posted.at(-1)).toMatchObject({ code: editable.code });
     const inspection = stepInspectionResponse(
       {
@@ -1248,7 +1254,7 @@ describe("native state and presentation commands", () => {
     );
     const inspected = { ...pendingInspection, code: inspection.code, stepInspection: inspection };
     registered.setActiveSession(inspected);
-    expect(codePreviewView.description).toBe("Python · Inspecting step 1 of 2");
+    expect(posted.at(-1)).toMatchObject({ inspection: { stepIndex: 0, stepCount: 2 } });
     expect(posted.at(-1)).toMatchObject({ code: inspection.code });
     const editableBufferId = (posted.at(-1) as { bufferId: string }).bufferId;
 
@@ -1320,7 +1326,7 @@ describe("native state and presentation commands", () => {
     await expect(crossingCopy).resolves.toBe(crossingCode);
     receive?.({ kind: "ready" });
     expect(posted.at(-1)).toMatchObject({ bufferVersion: 2, code: crossingCode });
-    expect(codePreviewView.description).toBe("Python · Inspecting step 1 of 2");
+    expect(posted.at(-1)).toMatchObject({ inspection: { stepIndex: 0, stepCount: 2 } });
 
     const currentAfterDisagreement = `${crossingCode}# current edit\n`;
     const disagreeingCopy = command("openWrangler.copyCode")();
@@ -1371,6 +1377,7 @@ describe("native state and presentation commands", () => {
     receive?.({ kind: "ready" });
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
+      inspection: null,
       bufferId: expect.any(String),
       bufferVersion: 0,
       bufferInvalid: false,
@@ -1383,6 +1390,7 @@ describe("native state and presentation commands", () => {
       }
     });
     expect(codePreviewView.description).toBe("R");
+    expect(posted.at(-1)).toMatchObject({ inspection: null });
     const rInspected = {
       ...rEditable,
       metadata: { ...rEditable.metadata, steps: editable.metadata.steps },
@@ -1390,21 +1398,25 @@ describe("native state and presentation commands", () => {
       stepInspection: { ...inspection, stepId: "second", stepIndex: 1, code: rEditable.code }
     };
     registered.setActiveSession(rInspected);
-    expect(codePreviewView.description).toBe("R · Inspecting step 2 of 2");
+    expect(posted.at(-1)).toMatchObject({ inspection: { stepIndex: 1, stepCount: 2 } });
     registered.setActiveSession(rEditable);
     expect(codePreviewView.description).toBe("R");
+    expect(posted.at(-1)).toMatchObject({ inspection: null });
     expect(posted.at(-1)).toMatchObject({ code: rEditable.code });
     registered.setActiveSession(rInspected);
     const rBuffer = posted.at(-1) as { bufferId: string; bufferVersion: number };
     receive?.({ kind: "codeChangedInvalid", bufferId: rBuffer.bufferId, baseVersion: rBuffer.bufferVersion });
     receive?.({ kind: "ready" });
     expect(codePreviewView.description).toBe("R");
+    expect(posted.at(-1)).toMatchObject({ inspection: null });
     expect(posted.at(-1)).toMatchObject({ bufferInvalid: true });
     registered.setActiveSession({ ...rInspected, code: "\ud800" });
     expect(codePreviewView.description).toBe("R");
+    expect(posted.at(-1)).toMatchObject({ inspection: null });
     expect(posted.at(-1)).toMatchObject({ bufferInvalid: true });
     registered.setActiveSession({ ...rInspected, code: "" });
     expect(codePreviewView.description).toBe("R");
+    expect(posted.at(-1)).toMatchObject({ inspection: null });
     expect(posted.at(-1)).toMatchObject({ bufferInvalid: false, editable: false });
 
     const viewingOnly = noDraftSnapshot();
@@ -1413,6 +1425,7 @@ describe("native state and presentation commands", () => {
     registered.setActiveSession(viewingOnly);
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
+      inspection: null,
       bufferId: expect.any(String),
       bufferVersion: 0,
       bufferInvalid: false,
