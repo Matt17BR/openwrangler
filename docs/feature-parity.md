@@ -623,7 +623,7 @@ limits below. Support labels describe the qualification commitment for each entr
 | IRkernel notebook in desktop VS Code                | Stable since 2.5.0 on Linux, macOS and Windows; exact notebook, kernel and variable ownership | Copy, save, notebook insertion, CSV and Parquet        |
 | Active terminal managed by the official R extension | Preview on Linux; exact terminal and process ownership                                        | Copy, save, CSV and Parquet; no document for insertion |
 | Managed `.R`, `.Rmd` or `.qmd` document             | Preview on Linux and macOS; exact document/version and owned R process                        | Copy, save, source-document insertion, CSV and Parquet |
-| Local CSV, TSV, Parquet, JSONL or Excel file        | Preview on Linux, macOS and Windows; exact file/options and owned R process                            | Copy, save, CSV and Parquet; no document insertion     |
+| Local CSV, TSV, Parquet, JSONL or Excel file        | Preview on Linux, macOS and Windows; exact file/options and owned R process                   | Copy, save, CSV and Parquet; no document insertion     |
 | IRkernel notebook in Cursor on Linux                | Experimental editor compatibility with narrower coverage                                      | Only the capabilities of its documented execution path |
 
 The [architecture](architecture.md#native-r) defines frame, precision, source and transport guarantees.

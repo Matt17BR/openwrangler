@@ -1384,21 +1384,16 @@ namespace OpenWrangler.Acceptance
 }
 '@
 
-if ($CompileTo) {
-    try {
+try {
+    # Resolve the built-in module directly; inherited module search paths can delay discovery.
+    Import-Module -Name ($PSHOME + "\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1") -ErrorAction Stop
+    if ($CompileTo) {
         if (-not [IO.Path]::IsPathRooted($CompileTo)) {
             throw [ArgumentException]::new("The supervisor output path must be absolute.")
         }
         Add-Type -TypeDefinition $nativeSource -Language CSharp -OutputAssembly $CompileTo -OutputType ConsoleApplication -ErrorAction Stop
         [Environment]::Exit(0)
     }
-    catch {
-        [Console]::Error.WriteLine("OPEN_WRANGLER_WINDOWS_SUPERVISOR_ERROR:bootstrap")
-        [Environment]::Exit(125)
-    }
-}
-
-try {
     Add-Type -TypeDefinition $nativeSource -Language CSharp -ErrorAction Stop
 }
 catch {

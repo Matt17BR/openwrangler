@@ -1468,7 +1468,8 @@ bounded binary R requests through the supervisor; stdin closure, target exit or 
 including descendants. A blocked child writer cannot block lease-loss detection. Cleanup removes the private root only
 after the supervisor reports the exact job-empty token and closes. Forced supervisor termination without that receipt
 preserves the root and reports unconfirmed cleanup. The supervisor compiles its bundled C# owner through Windows
-PowerShell `Add-Type`; policy or compilation failure stops opening with a diagnostic. An initial startup failure keeps
+PowerShell `Add-Type`, after loading its built-in Utility module directly from `$PSHOME` so inherited module search
+paths do not delay startup. Policy or compilation failure stops opening with a diagnostic. An initial startup failure keeps
 its cause through cleanup; only an established runtime publishes invalidation. This file path does not enable
 Windows document or terminal execution.
 
