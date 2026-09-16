@@ -703,6 +703,10 @@ Pandas literal Split limits tokenization to the selected field or requested outp
 It preserves the selected index, empty fields and null results, discarding one possible remainder.
 The remainder can still contain a large tail; input conversion, copied source columns and outputs retain their existing costs.
 
+Native NumPy int64 profile sums reuse the existing conservative overflow bound before summing without Python-value
+boxing; unproven integer cases retain exact widening. Native StringDtype missing counts use its declared null or NaN
+sentinel and native missing mask. Object columns and Series subclasses retain their existing classification.
+
 Integer profiles retain exact extrema and sums when floating-point approximations overflow. Each approximate statistic
 is attempted independently; unavailable statistics and histograms are omitted. Native value counting remains first.
 If Pandas cannot build its count index for object-stored ordinary Python integers, native factorization supplies exact

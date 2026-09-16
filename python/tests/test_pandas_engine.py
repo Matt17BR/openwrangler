@@ -1195,6 +1195,35 @@ def test_pandas_summaries_separate_nan_from_other_missing_values():
     assert (summaries["datetime"]["nullCount"], summaries["datetime"]["nanCount"]) == (1, 0)
 
 
+@pytest.mark.parametrize("storage", ["python", "pyarrow"])
+@pytest.mark.parametrize("missing_kind", ["null", "nan"])
+def test_pandas_string_profiles_count_native_missing_sentinels_without_boxing(
+    monkeypatch: pytest.MonkeyPatch, storage: str, missing_kind: str
+) -> None:
+    missing_value = pd.NA if missing_kind == "null" else np.nan
+    try:
+        dtype = pd.StringDtype(storage=storage, na_value=missing_value)
+    except TypeError:
+        if missing_kind == "nan":
+            pytest.skip("This Pandas version does not support a NaN StringDtype sentinel")
+        dtype = pd.StringDtype(storage=storage)
+    source = pd.DataFrame({"value": pd.Series(["", "nan", "None", "abc", None, pd.NA, np.nan], dtype=dtype)})
+    before = source.copy(deep=True)
+    engine = PandasEngine()
+    expected = engine.summaries(source)
+    assert (expected[0]["nullCount"], expected[0]["nanCount"]) == ((3, 0) if missing_kind == "null" else (0, 3))
+
+    def reject_scalar_mask(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("StringDtype profile counts must use their native missing mask")
+
+    monkeypatch.setattr(pandas_engine_module, "_scalar_mask", reject_scalar_mask)
+    assert engine.summaries(source) == expected
+    assert engine.missing_count(source, 0) == 3
+    empty = engine.summaries(source.iloc[:0])[0]
+    assert (empty["nullCount"], empty["nanCount"]) == (0, 0)
+    pd.testing.assert_frame_equal(source, before)
+
+
 @pytest.mark.parametrize("use_inf_as_na", [False, True])
 @pytest.mark.filterwarnings("ignore:use_inf_as_na option is deprecated:FutureWarning")
 def test_pandas_native_missing_counts_agree_with_filter_and_fill(use_inf_as_na: bool) -> None:
