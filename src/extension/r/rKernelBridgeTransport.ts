@@ -18,6 +18,7 @@ export interface RKernelBridgeTransport {
   readonly onDidInvalidateKernel: vscode.Event<void>;
   open(variableName: string, page: RKernelPageWindow, options?: RKernelRequestOptions): Promise<RKernelOpenResult>;
   getPage(sessionId: string, page: RKernelPageWindow, options?: RKernelRequestOptions): Promise<RFramePageContract>;
+  listExcelSheets?(sessionId: string, options?: RKernelRequestOptions): Promise<readonly string[]>;
   getSummary(
     sessionId: string,
     columns: readonly RKernelColumnReference[],

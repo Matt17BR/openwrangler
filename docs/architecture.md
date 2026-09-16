@@ -24,7 +24,7 @@ describes the durable ownership and safety boundaries. It intentionally leaves o
 - `protocol/openwrangler.v4.schema.json` is the canonical coordinator-facing request and response schema. Its
   generator emits five checked-in artifacts: TypeScript protocol types, TypeScript operation catalog, TypeScript
   limits, Python operation catalog, and Python limits. It does not generate the full Python runtime protocol. Native R
-  has a separate private transport v14 and frame contract v5, which `RKernelBridge` adapts to and from coordinator
+  has a separate private transport v15 and frame contract v5, which `RKernelBridge` adapts to and from coordinator
   protocol v4.
 
 Native tree views, Code Preview and file custom editors keep their original lazy provider registrations until shutdown.
@@ -103,7 +103,7 @@ retain their concrete backend and logical Auto preference on restore; they do no
 **Open Wrangler: Open File Path** reads the configured default and creates a fresh panel, including after a failed
 open. Restoring a custom editor instead preserves its previously confirmed backend.
 
-R selection opens a local CSV or TSV through an owned `Rscript` process on Linux or macOS. Choosing between R and a Python engine opens a separate panel with that engine's own saved plan, if any;
+R selection opens local CSV, TSV, Parquet, JSONL/NDJSON or Excel files through an owned `Rscript` process on Linux or macOS. Choosing between R and a Python engine opens a separate panel with that engine's own saved plan, if any;
 it does not translate the original panel's steps or discard its state. The host carries the exact file, session and
 revision through the picker and cancels an unhanded runtime when that owner retires. R file import-options changes
 also open a separate session because the native process is bound to its original source and options.
@@ -1453,13 +1453,16 @@ R-terminal, and owned `Rscript` transports share the same native frame contract 
 including generated R. Extract Struct Fields and Explode List are unavailable for R. The runtime never routes an R frame through Python.
 [Feature parity](feature-parity.md#native-r-support) defines support and limitations for each entry path.
 
-#### CSV and TSV files
+#### Local files
 
 A file owner captures the exact local path, URI, import options and resource-scoped Rscript executable before launch.
 It checks Workspace Trust, supported platform and format before creating its lazy bridge. Its private process holds
 the loaded base `data.frame`; no notebook, document or terminal binding is fabricated. Recovery reuses the captured
 descriptor and executable in a fresh process and rechecks trust. File sessions offer copy/save of generated R and
-native exports, with no document insertion target.
+native exports, with no document insertion target. The private descriptor identifies the format and its exact options;
+Excel retains either a sheet name or a zero-based sheet index. Live and generated loading use the same native helper.
+
+#### CSV and TSV files
 
 The native loader uses `scan()` and `type.convert(numerals = "no.loss")`. The same helper is emitted into generated
 code, which reads the source again when executed. Input is strict UTF-8 with double-quote escaping, LF/CRLF records,
@@ -1474,6 +1477,41 @@ frame is loaded into R memory before the bounded page/capture path. First editin
 can allocate additional complete vectors or frames. This is an eager native reader, without a page-sized memory
 guarantee. Reopening, recovery and generated code reread the current file, matching ordinary eager-source behavior.
 Source and destination identity checks still protect the input from exports.
+
+#### Parquet, JSONL and Excel files
+
+Parquet input uses `nanoparquet` 0.5.1 or newer. It admits flat Boolean, text, floating-point, signed integer and Date
+columns, with reader-preserved factor metadata. Integer64 input also requires `bit64`. Unannotated INT64 values must
+have magnitude below 2^53 because the reader otherwise converts them through a lossy double. Native integer/date
+missing sentinels require null-count evidence; absent statistics do not establish that a missing value was a source null.
+Unsigned integers must fit the corresponding native signed integer or integer64 range; wrapped or missing-sentinel
+results are refused. Decimal, binary, nested, local-time and INT96 fields are refused before conversion.
+UTC-adjusted millisecond and microsecond timestamps require magnitude below 2^51 ticks and a tick round trip.
+They load in UTC; named timezone metadata is not restored. Reader-preserved durations require the same tick bound and
+a consistent seconds/milliseconds/microseconds/nanoseconds scale. Duration-containing files need a second full native
+read to verify their raw ticks, adding I/O and temporary frame allocation. Other files use one data read.
+
+JSONL/NDJSON input uses `jsonlite` and admits flat object records with one scalar type per column. Missing keys and
+JSON null become missing values; field order follows first occurrence. Blank lines are skipped. Numeric token text
+is retained before decoding, preserving negative zero and exact integer64 values. Large integers require `bit64` and
+cannot share a column with floating-point or negative-zero literals. Duplicate keys, nested or mixed scalar values, invalid Unicode,
+NUL, overflowing numbers and underflow to zero are refused rather than silently changed.
+
+Excel input uses `readxl` 1.4.5 or newer and the selected `.xls` or `.xlsx` worksheet. Per-cell reading checks every
+value before assembling scalar columns, avoiding inference from only the first rows. Duplicate and empty headers
+remain intact. Mixed cell types are refused. Dates load in UTC at millisecond precision. The reader uses stored
+formula results without evaluating formulas; absent cached values, blank cells and ordinary error cells become
+missing. Whitespace-only XLSX text also becomes missing; surrounding whitespace on nonempty text is retained.
+These are native spreadsheet-reader semantics, not preservation of workbook formulas, formatting or error objects.
+The existing worksheet picker obtains exact sheet names from the managed session's retained file descriptor through
+its request queue. It keeps the existing 15-second deadline, 4096-name and 65536-byte limits, with source, revision,
+trust and owner checks before and after discovery. Choosing a sheet opens a separate source-bound session. Only a
+current recoverable native runtime or missing-package error permits manual sheet entry; stale or malformed metadata
+is refused. The private native transport is version 15; the public protocol is unchanged.
+
+All formats load the complete native frame before serving bounded pages. Recovery and generated code reread the
+source; exports keep the existing separate-destination and source-protection checks. Optional reader dependencies
+are checked by the emitted loader itself, so live and generated failures give the same installation guidance.
 
 #### Frame and source ownership
 

@@ -24,7 +24,17 @@ export const LOCK_PROTOCOL = "openwrangler-native-r-dependency-lock-v2";
 export const LOCK_RESOLVER_VERSION = "2";
 export const LOCK_PURPOSE = "native-r-contract";
 export const LOCK_ROOTS = Object.freeze({
-  runtime: Object.freeze(["jsonlite", "tibble", "readr", "dplyr", "data.table", "bit64", "rlang", "nanoparquet"]),
+  runtime: Object.freeze([
+    "jsonlite",
+    "tibble",
+    "readr",
+    "dplyr",
+    "data.table",
+    "bit64",
+    "rlang",
+    "nanoparquet",
+    "readxl"
+  ]),
   fixtures: Object.freeze(["collapse"])
 });
 export const NATIVE_R_CANDIDATE_PACKAGE_SPECS = Object.freeze(

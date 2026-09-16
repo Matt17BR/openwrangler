@@ -1,5 +1,5 @@
 openwrangler_r_kernel_agent <- local({
-  transport_version <- 14L
+  transport_version <- 15L
   maximum_identifier_bytes <- 128L
   maximum_name_bytes <- 1024L
   maximum_variable_name_bytes <- 1024L
@@ -7753,14 +7753,282 @@ openwrangler_r_kernel_agent <- local({
     }, warning = function(warning) base::stop(base::conditionMessage(warning), call. = FALSE))
   }
 
+  load_parquet_source <- function(path) {
+    if (!base::requireNamespace("nanoparquet", quietly = TRUE) || utils::packageVersion("nanoparquet") < "0.5.1") {
+      base::stop("R Parquet input requires nanoparquet 0.5.1 or newer. Run install.packages('nanoparquet') in the selected R runtime, then reopen the file.", call. = FALSE)
+    }
+    metadata <- nanoparquet::read_parquet_metadata(path)
+    schema <- metadata$schema
+    if (base::nrow(schema) < 1L || base::is.na(schema$num_children[[1L]]) ||
+        schema$num_children[[1L]] != base::nrow(schema) - 1L ||
+        base::any(!base::is.na(schema$num_children[-1L])) ||
+        base::any(!schema$repetition_type[-1L] %in% c("REQUIRED", "OPTIONAL"))) {
+      base::stop("R Parquet input requires flat scalar columns; nested and repeated fields are unsupported", call. = FALSE)
+    }
+    fields <- schema[-1L, , drop = FALSE]
+    kinds <- base::vapply(base::seq_len(base::nrow(fields)), function(index) {
+      physical <- fields$type[[index]]
+      logical <- fields$logical_type[[index]]
+      annotation <- if (base::is.null(logical)) "" else logical$type
+      converted <- fields$converted_type[[index]]
+      if (base::identical(annotation, "STRING") || (annotation == "" && base::identical(converted, "UTF8"))) {
+        if (physical == "BYTE_ARRAY") return("text")
+      } else if (base::identical(annotation, "DATE") || (annotation == "" && base::identical(converted, "DATE"))) {
+        if (physical == "INT32") return("date")
+      } else if (base::identical(annotation, "TIMESTAMP")) {
+        if (physical == "INT64" && base::isTRUE(logical$is_adjusted_to_utc) && logical$unit %in% c("MILLIS", "MICROS")) return(base::paste0("timestamp-", logical$unit))
+      } else if (base::identical(annotation, "INT")) {
+        if (physical %in% c("INT32", "INT64")) return(base::paste0(if (base::isTRUE(logical$is_signed)) "" else "u", base::tolower(physical)))
+      } else if (annotation == "" && base::is.na(converted)) {
+        if (physical %in% c("BOOLEAN", "INT32", "INT64", "FLOAT", "DOUBLE")) return(base::tolower(physical))
+      }
+      base::stop(base::sprintf("R Parquet column %d has an unsupported or lossy type (%s); decimal, binary, local/nanosecond timestamps and INT96 are not admitted", index, physical), call. = FALSE)
+    }, character(1L), USE.NAMES = FALSE)
+    needs_integer64 <- base::any(kinds %in% c("int64", "uint64"))
+    if (needs_integer64 && !base::requireNamespace("bit64", quietly = TRUE)) base::stop("R Parquet integer64 input requires bit64. Run install.packages('bit64') in the selected R runtime, then reopen the file.", call. = FALSE)
+    result <- nanoparquet::read_parquet(path, options = nanoparquet::parquet_options(
+      class = "data.frame", read_int64_type = if (needs_integer64) "integer64" else "double", use_arrow_metadata = TRUE
+    ))
+    if (!base::identical(base::names(result), fields$name) || base::nrow(result) != metadata$file_meta_data$num_rows[[1L]]) {
+      base::stop("R Parquet reader changed the source schema or row count", call. = FALSE)
+    }
+    durations <- base::which(base::vapply(result, base::inherits, logical(1L), "difftime"))
+    # nanoparquet 0.5.1 column selection can misalign nullable duration values; read complete rows before retaining these columns.
+    raw_durations <- if (base::length(durations)) nanoparquet::read_parquet(path,
+      options = nanoparquet::parquet_options(class = "data.frame", read_int64_type = "double", use_arrow_metadata = FALSE))[durations] else NULL
+    for (index in base::seq_along(result)) {
+      value <- result[[index]]
+      kind <- kinds[[index]]
+      if (kind %in% c("int32", "int64", "uint32", "uint64", "date")) {
+        # R integer minima are missing sentinels. Require evidence that missing values are actual Parquet nulls.
+        missing <- base::sum(base::is.na(value))
+        if (missing > 0) {
+          counts <- metadata$column_chunks$null_count[metadata$column_chunks$column == index - 1L]
+          expected <- if (fields$repetition_type[[index]] == "REQUIRED") 0 else if (base::length(counts) && !base::anyNA(counts)) base::sum(counts) else NA_real_
+          if (base::is.na(expected) || missing != expected) base::stop(base::sprintf("R Parquet column %d cannot distinguish native integer/date missing sentinels from source values", index), call. = FALSE)
+        }
+      }
+      if (kind %in% c("uint32", "uint64") && base::any(value < 0, na.rm = TRUE)) base::stop(base::sprintf("R Parquet column %d contains unsigned values outside the native signed integer range", index), call. = FALSE)
+      if (kind %in% c("int64", "uint64")) {
+        if (base::inherits(value, "difftime")) {
+          # Check the raw duration ticks without decoding Arrow metadata ourselves.
+          ticks <- raw_durations[[base::match(index, durations)]]
+          seconds <- base::as.double(value, units = "secs")
+          scales <- c(1, 1000, 1000000, 1000000000)
+          matches <- base::vapply(scales, function(scale) base::all(base::round(seconds * scale) == ticks & ticks / scale == seconds, na.rm = TRUE), logical(1L))
+          if (!base::identical(base::is.na(ticks), base::is.na(seconds)) ||
+              base::any(!base::is.na(ticks) & (!base::is.finite(ticks) | base::abs(ticks) >= 2251799813685248 | ticks != base::trunc(ticks))) ||
+              !base::any(matches) || (base::any(ticks != 0, na.rm = TRUE) && base::sum(matches) != 1L)) base::stop(base::sprintf("R Parquet column %d contains duration ticks outside the exact native reader range", index), call. = FALSE)
+        } else if (!base::inherits(value, "integer64")) {
+          # nanoparquet 0.5.1 reads unannotated INT64 as double even with its integer64 option.
+          if (base::any(!base::is.na(value) & (!base::is.finite(value) | base::abs(value) >= 9007199254740992 | value != base::trunc(value)))) base::stop(base::sprintf("R Parquet column %d contains INT64 values outside the reader's exact integer range", index), call. = FALSE)
+          result[[index]] <- bit64::as.integer64(value)
+        }
+      } else if (kind == "date") {
+        result[[index]] <- base::structure(base::as.double(value), class = "Date")
+      } else if (base::startsWith(kind, "timestamp-")) {
+        scale <- if (kind == "timestamp-MILLIS") 1000 else 1000000
+        seconds <- base::as.double(value)
+        ticks <- seconds * scale
+        # The strict tick bound leaves enough double precision to recover the original integer ticks.
+        if (base::any(!base::is.na(seconds) & (!base::is.finite(seconds) | base::abs(ticks) >= 2251799813685248 | base::round(ticks) / scale != seconds))) base::stop(base::sprintf("R Parquet column %d contains timestamps outside the exact millisecond/microsecond reader range", index), call. = FALSE)
+        result[[index]] <- base::structure(seconds, class = c("POSIXct", "POSIXt"), tzone = "UTC")
+      }
+    }
+    result
+  }
+
+  load_jsonl_source <- function(path) {
+    if (!base::requireNamespace("jsonlite", quietly = TRUE)) {
+      base::stop("R JSONL input requires jsonlite. Run install.packages('jsonlite') in the selected R runtime, then reopen the file.", call. = FALSE)
+    }
+    connection <- base::file(path, open = "rt", encoding = "UTF-8")
+    base::on.exit(base::close(connection), add = TRUE)
+    chunks <- list()
+    line_number <- 0
+    repeat {
+      lines <- base::withCallingHandlers(base::readLines(connection, n = 1024L, warn = FALSE),
+        warning = function(warning) base::stop(base::conditionMessage(warning), call. = FALSE))
+      if (!base::length(lines)) break
+      line_positions <- base::which(base::nzchar(base::trimws(lines)))
+      text <- lines[line_positions]
+      if (!base::length(text)) {
+        line_number <- line_number + base::length(lines)
+        next
+      }
+      escapes <- base::gsub(r"{\\\\}", "", text, perl = TRUE)
+      invalid <- !base::validUTF8(text) | !base::grepl("^[[:space:]]*\\{", text) |
+        base::grepl(r"{\\[uU]0000|\\u[dD][89aAbB][0-9a-fA-F]{2}(?!\\u[dD][c-fC-F][0-9a-fA-F]{2})|(?<!\\u[dD][89aAbB][0-9a-fA-F]{2})\\u[dD][c-fC-F][0-9a-fA-F]{2}}", escapes, perl = TRUE)
+      if (base::any(invalid)) base::stop(base::sprintf("JSONL line %.0f must be a JSON object with valid Unicode and no NUL text", line_number + line_positions[[base::which(invalid)[[1L]]]]), call. = FALSE)
+      invalid_block <- function() {
+        invalid <- base::which(!base::vapply(text, jsonlite::validate, logical(1L)))
+        position <- if (base::length(invalid)) invalid[[1L]] else 1L
+        base::stop(base::sprintf("JSONL line %.0f is not one valid JSON object", line_number + line_positions[[position]]), call. = FALSE)
+      }
+      records <- base::tryCatch(jsonlite::fromJSON(base::paste0("[", base::paste(text, collapse = ","), "]"), simplifyVector = FALSE), error = function(error) invalid_block())
+      if (base::length(records) != base::length(text)) invalid_block()
+      tokens <- base::regmatches(text, base::gregexpr(r"{"(?:[^"\\]|\\.)*"|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?}", text, perl = TRUE))
+      records <- base::lapply(base::seq_along(records), function(index) {
+        record <- records[[index]]
+        if (!base::is.list(record) || base::anyDuplicated(base::names(record))) {
+          base::stop(base::sprintf("JSONL line %.0f has duplicate or unsupported fields", line_number + line_positions[[index]]), call. = FALSE)
+        }
+        kinds <- base::vapply(record, base::typeof, character(1L), USE.NAMES = FALSE)
+        if (base::any(!kinds %in% c("NULL", "integer", "double", "character", "logical") | (kinds != "NULL" & base::lengths(record) != 1L))) base::stop(base::sprintf("JSONL line %.0f contains nested values; native R requires scalar columns", line_number + line_positions[[index]]), call. = FALSE)
+        kinds[kinds == "NULL"] <- "missing"
+        kinds[kinds %in% c("integer", "double")] <- "number"
+        # Retain numeric lexemes before JSON parsing can round integers or erase negative zero.
+        numbers <- tokens[[index]][!base::startsWith(tokens[[index]], '"')]
+        numeric_fields <- base::which(kinds == "number")
+        if (base::length(numbers) != base::length(numeric_fields)) base::stop("JSONL contains an unsupported numeric literal", call. = FALSE)
+        record[numeric_fields] <- numbers
+        base::attr(record, "json_kinds") <- kinds
+        record
+      })
+      names <- base::unique(base::unlist(base::lapply(records, base::names), use.names = FALSE))
+      positions <- base::lapply(records, function(record) base::match(names, base::names(record)))
+      kind_rows <- base::lapply(base::seq_along(records), function(row) {
+        kinds <- base::attr(records[[row]], "json_kinds")[positions[[row]]]
+        kinds[base::is.na(kinds)] <- "missing"
+        kinds
+      })
+      kind_matrix <- base::do.call(base::rbind, kind_rows)
+      value_matrix <- base::do.call(base::rbind, base::lapply(base::seq_along(records), function(row) {
+        values <- records[[row]][positions[[row]]]
+        values[kind_rows[[row]] == "missing"] <- list(NA)
+        values
+      }))
+      chunk_kinds <- character(base::length(names))
+      chunk <- base::lapply(base::seq_along(names), function(column) {
+        kinds <- kind_matrix[, column]
+        present <- base::unique(kinds[kinds != "missing"])
+        if (base::length(present) > 1L) base::stop("JSONL column contains mixed scalar types; native R requires one scalar type per column", call. = FALSE)
+        chunk_kinds[[column]] <<- if (base::length(present)) present else "missing"
+        base::unlist(value_matrix[, column], use.names = FALSE)
+      })
+      chunks[[base::length(chunks) + 1L]] <- base::structure(chunk, names = names, json_kinds = chunk_kinds, rows = base::length(records))
+      line_number <- line_number + base::length(lines)
+    }
+    row_count <- base::sum(base::vapply(chunks, base::attr, integer(1L), "rows"))
+    names <- base::unique(base::unlist(base::lapply(chunks, base::names), use.names = FALSE))
+    columns <- base::lapply(names, function(name) {
+      positions <- base::vapply(chunks, function(chunk) base::match(name, base::names(chunk)), integer(1L))
+      kinds <- base::vapply(base::seq_along(chunks), function(index) {
+        if (base::is.na(positions[[index]])) "missing" else base::attr(chunks[[index]], "json_kinds")[[positions[[index]]]]
+      }, character(1L))
+      present <- base::unique(kinds[kinds != "missing"])
+      if (base::length(present) > 1L) base::stop("JSONL column contains mixed scalar types; native R requires one scalar type per column", call. = FALSE)
+      if (!base::length(present)) return(base::rep(NA, row_count))
+      values <- base::unlist(base::lapply(base::seq_along(chunks), function(index) {
+        if (base::is.na(positions[[index]])) base::rep(NA, base::attr(chunks[[index]], "rows")) else chunks[[index]][[positions[[index]]]]
+      }), use.names = FALSE)
+      if (present != "number") return(values)
+      text <- values
+      numbers <- base::as.double(text)
+      if (base::any(!base::is.finite(numbers) & !base::is.na(text))) base::stop("JSONL number is outside the finite native R range", call. = FALSE)
+      if (base::any(numbers == 0 & !base::grepl("^-?0(\\.0+)?([eE][+-]?[0-9]+)?$", text), na.rm = TRUE)) base::stop("JSONL number underflows the native R range", call. = FALSE)
+      integer_text <- base::is.na(text) | base::grepl("^-?[0-9]+$", text)
+      if (base::any(integer_text & base::abs(numbers) > 9007199254740991, na.rm = TRUE)) {
+        if (!base::all(integer_text) || base::any(text == "-0", na.rm = TRUE)) base::stop("JSONL cannot mix large exact integers with floating-point values or negative zero in one native R column", call. = FALSE)
+        if (!base::requireNamespace("bit64", quietly = TRUE)) base::stop("R JSONL integer64 input requires bit64. Run install.packages('bit64') in the selected R runtime, then reopen the file.", call. = FALSE)
+        integers <- base::suppressWarnings(bit64::as.integer64(text))
+        canonical <- base::sub("^-0$", "0", text)
+        if (base::any((base::is.na(integers) | base::as.character(integers) != canonical) & !base::is.na(text))) base::stop("JSONL integer cannot be represented exactly as native integer64", call. = FALSE)
+        return(integers)
+      }
+      if (base::all(integer_text) && !base::any(text == "-0", na.rm = TRUE) &&
+          base::all(numbers >= -.Machine$integer.max & numbers <= .Machine$integer.max, na.rm = TRUE)) return(base::as.integer(numbers))
+      numbers
+    })
+    base::structure(columns, names = if (base::is.null(names)) character() else names, class = "data.frame", row.names = base::.set_row_names(row_count))
+  }
+
+  excel_sheet_names <- function(path) {
+    if (!base::requireNamespace("readxl", quietly = TRUE) || utils::packageVersion("readxl") < "1.4.5") {
+      base::stop("R Excel input requires readxl 1.4.5 or newer. Run install.packages('readxl') in the selected R runtime, then reopen the file.", call. = FALSE)
+    }
+    sheets <- readxl::excel_sheets(path)
+    if (!base::is.character(sheets) || !base::length(sheets) || base::length(sheets) > 4096L ||
+        base::anyNA(sheets) || base::any(!base::validUTF8(sheets)) || base::any(!base::nzchar(sheets)) ||
+        base::anyDuplicated(sheets) || base::sum(base::nchar(sheets, type = "bytes")) > 65536L ||
+        base::any(base::vapply(sheets, function(name) base::sum(1L + (base::utf8ToInt(name) > 65535L)), integer(1L)) > 1024L)) {
+      base::stop("Excel sheet names exceed the supported metadata bounds", call. = FALSE)
+    }
+    sheets
+  }
+
+  load_excel_source <- function(path, sheet = 1) {
+    sheets <- excel_sheet_names(path)
+    if (base::is.character(sheet)) {
+      if (base::length(sheet) != 1L || base::is.na(sheet) || !sheet %in% sheets) base::stop("The selected Excel sheet is unavailable", call. = FALSE)
+    } else if (!base::is.numeric(sheet) || base::length(sheet) != 1L || base::is.na(sheet) || sheet < 1 || sheet > base::length(sheets) || sheet != base::floor(sheet)) {
+      base::stop("The selected Excel sheet index is unavailable", call. = FALSE)
+    }
+    cells <- base::withCallingHandlers(
+      readxl::read_excel(path, sheet = sheet, col_types = "list", na = "", trim_ws = FALSE,
+        progress = FALSE, .name_repair = "minimal"),
+      warning = function(warning) base::stop(base::conditionMessage(warning), call. = FALSE)
+    )
+    columns <- base::lapply(base::seq_along(cells), function(position) {
+      values <- cells[[position]]
+      kinds <- base::vapply(values, function(value) {
+        if (base::length(value) != 1L || base::is.list(value)) base::stop("Excel contains an unsupported cell", call. = FALSE)
+        if (base::is.na(value)) return("missing")
+        if (base::identical(base::class(value), c("POSIXct", "POSIXt"))) return("datetime")
+        if (base::is.object(value)) base::stop("Excel contains an unsupported cell class", call. = FALSE)
+        if (base::is.numeric(value)) return("number")
+        if (base::is.logical(value)) return("logical")
+        if (base::is.character(value)) return("text")
+        base::stop("Excel contains an unsupported cell type", call. = FALSE)
+      }, character(1L), USE.NAMES = FALSE)
+      present <- base::unique(kinds[kinds != "missing"])
+      if (base::length(present) > 1L) base::stop(base::sprintf("Excel column %d contains mixed cell types; native R requires one scalar type per column", position), call. = FALSE)
+      if (!base::length(present)) return(base::rep(NA, base::length(values)))
+      if (present == "text") return(base::vapply(values, function(value) if (base::is.na(value)) NA_character_ else value, character(1L), USE.NAMES = FALSE))
+      if (present == "logical") return(base::vapply(values, function(value) if (base::is.na(value)) NA else value, logical(1L), USE.NAMES = FALSE))
+      numbers <- base::vapply(values, function(value) if (base::is.na(value)) NA_real_ else base::as.double(value), double(1L), USE.NAMES = FALSE)
+      if (present == "datetime") return(base::structure(numbers, class = c("POSIXct", "POSIXt"), tzone = "UTC"))
+      numbers
+    })
+    base::structure(columns, names = base::names(cells), class = "data.frame", row.names = base::.set_row_names(base::nrow(cells)))
+  }
+
   validate_file_source <- function(source) {
-    source <- exact_record(source, c("path", "header", "delimiter"), "file source")
+    source <- exact_record(source, c("path", "format"), "file source", c("header", "delimiter", "sheetName", "sheetIndex"))
     source$path <- bounded_text(source$path, "file source.path", 65536L)
-    if (!startsWith(source$path, "/") || grepl("[\r\n]", source$path)) abort("invalid_source", "R CSV requires an absolute local path")
-    if (!is.logical(source$header) || length(source$header) != 1L || is.na(source$header)) abort("invalid_source", "R CSV header must be logical")
-    source$delimiter <- bounded_text(source$delimiter, "file source.delimiter", 1L)
-    if (nchar(source$delimiter, type = "bytes") != 1L || source$delimiter %in% c("\r", "\n", "\"")) abort("invalid_source", "R CSV requires a single-byte delimiter other than a quote or record ending")
+    if (!startsWith(source$path, "/") || grepl("[\r\n]", source$path)) abort("invalid_source", "R files require an absolute local path")
+    source$format <- bounded_text(source$format, "file source.format", 16L)
+    if (identical(source$format, "csv")) {
+      source <- exact_record(source, c("path", "format", "header", "delimiter"), "CSV file source")
+      if (!is.logical(source$header) || length(source$header) != 1L || is.na(source$header)) abort("invalid_source", "R CSV header must be logical")
+      source$delimiter <- bounded_text(source$delimiter, "file source.delimiter", 1L)
+      if (nchar(source$delimiter, type = "bytes") != 1L || source$delimiter %in% c("\r", "\n", "\"")) abort("invalid_source", "R CSV requires a single-byte delimiter other than a quote or record ending")
+    } else if (source$format %in% c("parquet", "jsonl")) {
+      source <- exact_record(source, c("path", "format"), "file source")
+    } else if (identical(source$format, "excel")) {
+      if (identical("sheetName" %in% names(source), "sheetIndex" %in% names(source))) abort("invalid_source", "R Excel requires exactly one sheet name or index")
+      if ("sheetName" %in% names(source)) {
+        source <- exact_record(source, c("path", "format", "sheetName"), "Excel file source")
+        source$sheetName <- bounded_text(source$sheetName, "file source.sheetName", 65536L)
+        if (identical(source$sheetName, "")) abort("invalid_source", "R Excel sheet name must not be empty")
+      } else {
+        source <- exact_record(source, c("path", "format", "sheetIndex"), "Excel file source")
+        source$sheetIndex <- whole_number(source$sheetIndex, "file source.sheetIndex", 9007199254740991)
+      }
+    } else {
+      abort("invalid_source", "R file format is unsupported")
+    }
     source
+  }
+
+  load_file_source <- function(source) {
+    source <- validate_file_source(source)
+    switch(source$format,
+      csv = load_csv_source(source$path, source$header, source$delimiter),
+      parquet = load_parquet_source(source$path),
+      jsonl = load_jsonl_source(source$path),
+      excel = load_excel_source(source$path, if ("sheetName" %in% names(source)) source$sheetName else source$sheetIndex + 1)
+    )
   }
 
   compile_plan <- function(variable_name, bound_plan, frame_contract, file_source = NULL) {
@@ -7774,6 +8042,25 @@ openwrangler_r_kernel_agent <- local({
       "open_wrangler_result_2"
     } else {
       "open_wrangler_result"
+    }
+    file_read_lines <- if (is.null(file_source)) NULL else {
+      reader_name <- paste0(".ow_read_", file_source$format)
+      reader <- switch(file_source$format, csv = load_csv_source, parquet = load_parquet_source,
+        jsonl = load_jsonl_source, excel = load_excel_source)
+      arguments <- r_string(file_source$path)
+      if (identical(file_source$format, "csv")) {
+        arguments <- sprintf("%s, header = %s, delimiter = %s", arguments, if (file_source$header) "TRUE" else "FALSE", r_string(file_source$delimiter))
+      } else if (identical(file_source$format, "excel")) {
+        sheet <- if ("sheetName" %in% names(file_source)) r_string(file_source$sheetName) else sprintf("%.0f", file_source$sheetIndex + 1)
+        arguments <- sprintf("%s, sheet = %s", arguments, sheet)
+      }
+      c(
+        if (identical(file_source$format, "excel")) paste0("  excel_sheet_names <- ", paste(deparse(excel_sheet_names, width.cutoff = 100L), collapse = "\n")),
+        paste0("  ", reader_name, " <- ", paste(deparse(reader, width.cutoff = 100L), collapse = "\n")),
+        sprintf("  .ow_source <- %s(%s)", reader_name, arguments),
+        sprintf("  base::rm(%s)", reader_name),
+        if (identical(file_source$format, "excel")) "  base::rm(excel_sheet_names)"
+      )
     }
     lines <- c(
       "base::evalq({",
@@ -7793,11 +8080,7 @@ openwrangler_r_kernel_agent <- local({
         "  .ow_source <- base::get(%s, envir = .ow_source_environment, inherits = FALSE)",
         r_string(variable_name)
       )
-      ) else c(
-        paste0("  .ow_read_csv <- ", paste(deparse(load_csv_source, width.cutoff = 100L), collapse = "\n")),
-        sprintf("  .ow_source <- .ow_read_csv(%s, header = %s, delimiter = %s)", r_string(file_source$path), if (file_source$header) "TRUE" else "FALSE", r_string(file_source$delimiter)),
-        "  base::rm(.ow_read_csv)"
-      ),
+      ) else file_read_lines,
       sprintf(
         "  if (base::exists(%1$s, envir = .ow_source_environment, inherits = FALSE) && base::bindingIsActive(%1$s, .ow_source_environment)) base::stop(\"Open Wrangler generated R does not accept an active result binding\", call. = FALSE)",
         r_string(result_name)
@@ -10032,6 +10315,21 @@ openwrangler_r_kernel_agent <- local({
         return(response)
       }
 
+      if (identical(kind, "listExcelSheets")) {
+        payload <- exact_record(request$payload, c("sessionId"), "request.payload")
+        session_id <- identifier(payload$sessionId, "request.payload.sessionId")
+        if (!exists(session_id, envir = sessions, inherits = FALSE)) {
+          abort("unknown_session", "The requested R session is no longer available", TRUE)
+        }
+        if (is.null(file_source) || !identical(file_source$format, "excel")) {
+          abort("invalid_source", "Excel sheet discovery requires the retained Excel file source")
+        }
+        sheets <- tryCatch(excel_sheet_names(file_source$path),
+          error = function(error) abort("runtime_error", diagnostic_message(error, "Excel sheet discovery failed"), TRUE))
+        return(list(transportVersion = transport_version, requestId = request_id,
+          kind = "excelSheets", sessionId = session_id, sheets = I(sheets)))
+      }
+
       if (identical(kind, "getPage")) {
         payload <- exact_record(request$payload, c("sessionId", "page"), "request.payload")
         session_id <- identifier(payload$sessionId, "request.payload.sessionId")
@@ -10721,5 +11019,5 @@ openwrangler_r_kernel_agent <- local({
     list(dispatch_json = dispatch_json, dispose = export_lifecycle$dispose)
   }
 
-  list(new_agent = new_agent, load_csv_source = load_csv_source, validate_file_source = validate_file_source, transport_version = transport_version)
+  list(new_agent = new_agent, load_csv_source = load_csv_source, load_file_source = load_file_source, validate_file_source = validate_file_source, transport_version = transport_version)
 })

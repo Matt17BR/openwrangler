@@ -54,6 +54,38 @@ afterEach(() => {
 });
 
 describe("native R kernel runtime bundle", () => {
+  it("correlates bounded Excel worksheet metadata without accepting a caller-supplied path", () => {
+    const request = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: summaryRequestId,
+      kind: "listExcelSheets",
+      payload: { sessionId }
+    } as const;
+    expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
+    expect(() =>
+      encodeRKernelRequest({ ...request, payload: { sessionId, path: "/other.xlsx" } } as unknown as RKernelRequest)
+    ).toThrow("invalid fields");
+    const response = { ...request, kind: "excelSheets", sessionId, sheets: [" Overview ", "销售", "2024"] };
+    const { payload: _payload, ...envelope } = response;
+    expect(decodeRKernelResponseJson(JSON.stringify(envelope), summaryRequestId)).toMatchObject({
+      kind: "excelSheets",
+      sessionId,
+      sheets: [" Overview ", "销售", "2024"]
+    });
+    expect(() => decodeRKernelResponseJson(JSON.stringify(envelope), pageRequestId)).toThrow("mis-correlated");
+    for (const sheets of [
+      [],
+      ["same", "same"],
+      ["x".repeat(1025)],
+      Array.from({ length: 4097 }, (_, index) => String(index))
+    ]) {
+      expect(() => decodeRKernelResponseJson(JSON.stringify({ ...envelope, sheets }), summaryRequestId)).toThrow();
+    }
+    expect(() =>
+      decodeRKernelResponseJson(JSON.stringify({ ...envelope, path: "/other.xlsx" }), summaryRequestId)
+    ).toThrow("invalid fields");
+  });
+
   it("retains explicit conditional null arms and refuses malformed or oversized unused arms", () => {
     const step = {
       id: "condition",

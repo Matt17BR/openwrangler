@@ -108,8 +108,6 @@ describe("confirmed file configurations", () => {
       backend: "r",
       preference: "r"
     },
-    { label: "R Parquet", resource: "file:///workspace/orders.parquet", backend: "r", preference: "r" },
-    { label: "R Excel", resource: "file:///workspace/orders.xlsx", backend: "r", preference: "r" },
     {
       label: "mixed import options",
       resource: "file:///workspace/orders.csv",
@@ -141,6 +139,41 @@ describe("confirmed file configurations", () => {
     });
     expect(confirmedFileConfiguration(workspaceState, uri)).toBeUndefined();
   });
+
+  it.each([
+    { extension: "parquet", importOptions: undefined, preference: "auto" as const },
+    { extension: "jsonl", importOptions: undefined, preference: "r" as const },
+    { extension: "ndjson", importOptions: undefined, preference: "auto" as const },
+    { extension: "xlsx", importOptions: { sheetName: "  " }, preference: "r" as const },
+    { extension: "xls", importOptions: { sheetIndex: 2 }, preference: "auto" as const }
+  ])(
+    "restores R $extension with $preference preference under the same plan key",
+    async ({ extension, importOptions, preference }) => {
+      const workspaceState = new MemoryMemento();
+      const uri = vscode.Uri.file(`/workspace/orders.${extension}`);
+      const source = {
+        kind: "file" as const,
+        label: `orders.${extension}`,
+        path: uri.fsPath,
+        uri: uri.toString(),
+        ...(importOptions ? { importOptions } : {})
+      };
+      await rememberConfirmedFileConfiguration(workspaceState, uri, importOptions, "r", preference);
+      const restored = confirmedFileConfiguration(workspaceState, uri);
+      expect(restored).toEqual({
+        backend: "r",
+        backendPreference: preference,
+        ...(importOptions ? { importOptions } : {})
+      });
+      expect(
+        persistenceKey(
+          { ...source, ...(restored?.importOptions ? { importOptions: restored.importOptions } : {}) },
+          "r"
+        )
+      ).toBe(persistenceKey(source, "r"));
+      expect(persistenceKey(source, "r")).not.toBe(persistenceKey(source, "polars"));
+    }
+  );
 
   it.each(["cr", "lf"] as const)(
     "round-trips explicit %s record intent without changing registry version",

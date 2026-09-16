@@ -147,7 +147,7 @@ local({
   environment$.ow_csv_source <- load_csv(path)
   file_agent <- openwrangler_r_kernel_agent$new_agent(
     openwrangler_r_frame_contract, environment,
-    file_source = list(path = path, header = TRUE, delimiter = ",")
+    file_source = list(path = path, format = "csv", header = TRUE, delimiter = ",")
   )
   on.exit(file_agent$dispose(), add = TRUE)
   opened <- dispatch_with(file_agent, "openSession", list(sessionId = session_id, variableName = ".ow_csv_source", page = page_window()))
@@ -165,6 +165,147 @@ local({
   assert_identical(ls(generated, all.names = TRUE), "open_wrangler_result", "Generated CSV leaked loader bindings")
   assert_identical(environment$.ow_csv_source, cases[[1L]]$expected, "CSV cleaning mutated loaded source")
   assert_identical(readBin(path, "raw", 1024L), charToRaw(cases[[1L]]$text), "Generated CSV changed source bytes")
+})
+
+local({
+  # Synthetic fixtures: pyarrow scalar Parquet and openpyxl homogeneous sheets, with explicit cached formula cells.
+  root <- tempfile("ow-file-loaders-")
+  dir.create(root)
+  on.exit(unlink(root, recursive = TRUE), add = TRUE)
+  load_file <- openwrangler_r_kernel_agent$load_file_source
+  stopifnot(is.function(load_file), requireNamespace("readxl", quietly = TRUE), requireNamespace("nanoparquet", quietly = TRUE))
+  check_file <- function(descriptor, expected) {
+    bytes <- readBin(descriptor$path, "raw", file.size(descriptor$path))
+    connections <- getAllConnections()
+    loaded <- load_file(descriptor)
+    assert_identical(loaded, expected, "Native file reader lost source values, types, names or nulls")
+    environment <- new.env(parent = baseenv())
+    environment$.ow_csv_source <- loaded
+    file_agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, environment, file_source = descriptor)
+    on.exit(file_agent$dispose(), add = TRUE)
+    opened <- dispatch_with(file_agent, "openSession", list(sessionId = session_id, variableName = ".ow_csv_source", page = page_window()))
+    assert_identical(opened$kind, "page", "Native file session failed to open")
+    sheets <- dispatch_with(file_agent, "listExcelSheets", list(sessionId = session_id))
+    if (identical(descriptor$format, "excel")) {
+      assert_identical(sheets$kind, "excelSheets", "Native Excel metadata failed")
+      assert_identical(sheets$sessionId, session_id, "Excel metadata changed session ownership")
+      assert_identical(unlist(sheets$sheets, use.names = FALSE), readxl::excel_sheets(descriptor$path), "Native Excel metadata changed exact sheet names")
+      unavailable <- dispatch_with(file_agent, "listExcelSheets", list(sessionId = rename_session_id))
+      assert_identical(unavailable$code, "unknown_session", "Excel metadata accepted a different session")
+    } else {
+      assert_identical(sheets$code, "invalid_source", "Excel metadata accepted a non-Excel file")
+    }
+    preview <- dispatch_with(file_agent, "previewStep", list(
+      sessionId = session_id, revision = 0L, page = page_window(),
+      step = list(id = "file-clone", kind = "cloneColumn", params = list(column = list(id = "r:c:0", name = names(expected)[[1L]]), newName = "copied"))
+    ))
+    assert_identical(preview$kind, "stepPreview", "Native file cleaning failed to preview")
+    applied <- dispatch_with(file_agent, "applyDraft", list(sessionId = session_id, revision = preview$revision, page = page_window()))
+    assert_identical(applied$action, "apply", "Native file cleaning failed to apply")
+    expected$copied <- expected[[1L]]
+    generated <- new.env(parent = baseenv())
+    eval(parse(text = applied$code), envir = generated)
+    assert_identical(generated$open_wrangler_result, expected, "Generated file load/cleaning differs from expected native output")
+    assert_identical(ls(generated, all.names = TRUE), "open_wrangler_result", "Generated file program leaked loader bindings")
+    exported <- dispatch_with(file_agent, "exportData", list(sessionId = session_id, revision = applied$revision, exportId = export_id, options = parquet_export_options))
+    assert_identical(exported$kind, "dataExported", "Native file result failed to export")
+    chunk <- dispatch_with(file_agent, "readDataExport", list(sessionId = session_id, revision = applied$revision, exportId = export_id, offset = 0L, limit = 65536L))
+    assert_identical(chunk$bytes, exported$bytes, "Tiny native file export was truncated")
+    output <- file.path(root, "export.parquet")
+    writeBin(jsonlite::base64_dec(chunk$data), output)
+    assert_identical(load_file(list(path = output, format = "parquet")), expected, "Export/reopen differs from generated file cleaning")
+    assert_identical(environment$.ow_csv_source, loaded, "Native file cleaning mutated its captured source")
+    assert_identical(readBin(descriptor$path, "raw", length(bytes) + 1L), bytes, "Native/generated file cleaning modified source bytes")
+    file_agent$dispose()
+    on.exit(NULL)
+    assert_identical(getAllConnections(), connections, "Native file workflow retained a connection")
+  }
+  json_path <- file.path(root, "sample.ndjson")
+  writeLines(c('{"id":1,"text":"  é  ","flag":true,"amount":1.5}', '', '{"id":2,"text":"","flag":false}', '{"id":3,"text":null,"amount":2.5}'), json_path, useBytes = TRUE)
+  check_file(list(path = json_path, format = "jsonl"), data.frame(id = 1:3, text = c("  é  ", "", NA), flag = c(TRUE, FALSE, NA), amount = c(1.5, NA, 2.5)))
+  parquet_path <- normalizePath("fixtures/r-file-input.parquet")
+  check_file(list(path = parquet_path, format = "parquet"), data.frame(
+    id = bit64::as.integer64(c("1", NA, "9007199254740991")), text = c("  é  ", "", NA), flag = c(TRUE, FALSE, NA), amount = c(2.5, NaN, NA),
+    at = structure(c(1789569600.123456, (2^51 - 1) / 1e6, NA), class = c("POSIXct", "POSIXt"), tzone = "UTC"), date = as.Date(c("2026-09-16", NA, "2000-01-01")),
+    unsigned32 = c(0L, .Machine$integer.max, NA_integer_), unsigned64 = bit64::as.integer64(c("0", "9223372036854775807", NA))
+  ))
+  excel_path <- normalizePath("fixtures/r-file-input.xlsx")
+  excel <- structure(list(c(1, 2, 3), c("  é  ", "NA", NA), c(TRUE, FALSE, NA), c(2.5, NA, -0.5),
+    structure(c(1789561800.123, NA, 946684800), class = c("POSIXct", "POSIXt"), tzone = "UTC"),
+    c(1, 4, 7), c(2, 5, 8), c(3, 6, 9)), names = c("id", "text", "flag", "amount", "at", "same", "same", ""), class = "data.frame", row.names = .set_row_names(3L))
+  check_file(list(path = excel_path, format = "excel", sheetName = " values é "), excel)
+  assert_identical(load_file(list(path = excel_path, format = "excel", sheetIndex = 0L)), excel, "Excel zero-based sheet index changed the selected source")
+  # Metadata reads the retained file afresh without replacing the already captured dataframe.
+  metadata_path <- file.path(root, "metadata.xlsx")
+  file.copy(excel_path, metadata_path)
+  metadata_environment <- new.env(parent = baseenv())
+  metadata_environment$.ow_csv_source <- excel
+  metadata_agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, metadata_environment,
+    file_source = list(path = metadata_path, format = "excel", sheetIndex = 0L))
+  on.exit(metadata_agent$dispose(), add = TRUE)
+  stopifnot(identical(dispatch_with(metadata_agent, "openSession", list(sessionId = session_id, variableName = ".ow_csv_source", page = page_window()))$kind, "page"))
+  unlink(metadata_path)
+  unavailable <- dispatch_with(metadata_agent, "listExcelSheets", list(sessionId = session_id))
+  assert_identical(unavailable$code, "runtime_error", "Unavailable Excel metadata lost its native diagnostic")
+  assert_identical(unavailable$recoverable, TRUE, "Ordinary Excel metadata failure disabled manual selection")
+  assert_identical(dispatch_with(metadata_agent, "getPage", list(sessionId = session_id, page = page_window()))$kind, "page", "Metadata failure replaced the captured frame")
+  file.copy(excel_path, metadata_path)
+  assert_identical(unlist(dispatch_with(metadata_agent, "listExcelSheets", list(sessionId = session_id))$sheets, use.names = FALSE), c(" values é ", "mixed", "cached"), "Excel metadata did not read the current retained file")
+  dispatch_with(metadata_agent, "closeSession", list(sessionId = session_id))
+  assert_identical(dispatch_with(metadata_agent, "listExcelSheets", list(sessionId = session_id))$code, "unknown_session", "Excel metadata outlived its session")
+  legacy_path <- file.path(root, "legacy.xls")
+  writeBin(memDecompress(jsonlite::base64_dec(paste(readLines("fixtures/legacy.xls.gz.base64"), collapse = "")), type = "gzip"), legacy_path)
+  check_file(list(path = legacy_path, format = "excel", sheetName = "second"), data.frame(name = c("second", "résumé"), value = c(2, 3), active = c(FALSE, TRUE)))
+  cached <- load_file(list(path = excel_path, format = "excel", sheetName = "cached"))
+  assert_identical(cached, data.frame(true_zero = 0, cached_zero = 0, cached_three = 3, uncached = NA, error = NA, whitespace = NA), "Excel cached values, zero, errors or blank semantics changed")
+  for (sheet in list(list(sheetName = "mixed"), list(sheetName = "missing"), list(sheetIndex = 99L))) {
+    error <- tryCatch(load_file(c(list(path = excel_path, format = "excel"), sheet)), error = identity)
+    stopifnot(inherits(error, "error"))
+  }
+  for (name in c("r-file-int64-boundary.parquet", "r-file-int32-sentinel.parquet", "r-file-timestamp-boundary.parquet", "r-file-uint32-overflow.parquet", "r-file-uint64-overflow.parquet")) {
+    path <- normalizePath(file.path("fixtures", name))
+    bytes <- readBin(path, "raw", file.size(path))
+    error <- tryCatch(load_file(list(path = path, format = "parquet")), error = identity)
+    stopifnot(inherits(error, "error"))
+    assert_identical(readBin(path, "raw", length(bytes) + 1L), bytes, "Refused Parquet changed source bytes")
+  }
+  for (text in c('{"x":9007199254740993}\n{"x":null}', '{"x":-0}\n{"x":-0.0}', '{"x":"\\ud800\\udc00"}\n{"x":"literal\\\\u0000"}', '{"":1}\n{}')) {
+    writeLines(text, json_path, useBytes = TRUE)
+    value <- load_file(list(path = json_path, format = "jsonl"))
+    if (startsWith(text, '{"x":9007')) assert_identical(as.character(value$x), c("9007199254740993", NA), "JSONL rounded an exact integer64")
+    if (startsWith(text, '{"x":-0}')) assert_identical(1 / value$x, c(-Inf, -Inf), "JSONL lost negative zero")
+    if (startsWith(text, '{"x":"')) assert_identical(value$x, c("𐀀", "literal\\u0000"), "JSONL changed valid Unicode or literal escape text")
+    if (startsWith(text, '{"":')) assert_identical(value[[1L]], c(1L, NA_integer_), "JSONL lost an empty field name or absent field")
+  }
+  for (text in c('{"x":1e309}', '{"x":1e-999}', '{"x":-9223372036854775808}', '{"x":9007199254740993}\n{"x":1.5}', '{"x":9007199254740993}\n{"x":-0}', '{"x":1}\n{"x":"1"}', '{"x":[1]}', '{"x":{}}', '{"x":1,"x":2}', '{"x":"\\u0000"}', '{"x":"\\ud800"}', '{"x":"\\udc00"}', '[1]', '{"x":1} trailing')) {
+    writeLines(text, json_path, useBytes = TRUE)
+    connections <- getAllConnections()
+    error <- tryCatch(load_file(list(path = json_path, format = "jsonl")), error = identity)
+    stopifnot(inherits(error, "error"))
+    assert_identical(getAllConnections(), connections, "Refused JSONL retained a connection")
+  }
+  duration_path <- file.path(root, "duration.parquet")
+  duration <- data.frame(id = 1:3, elapsed = as.difftime(c(3600, NA, 7200), units = "secs"), label = factor(c("b", NA, "a"), levels = c("a", "b", "unused")))
+  nanoparquet::write_parquet(duration, duration_path)
+  check_file(list(path = duration_path, format = "parquet"), duration)
+  for (ticks in list(c(-(2^51 - 1), NA, 2^51 - 1), c(-(2^51), NA, 2^51), c(2^51 + 1, NA, 2^51 + 2))) {
+    frame <- data.frame(elapsed = as.difftime(ticks / 1e9, units = "secs"))
+    nanoparquet::write_parquet(frame, duration_path)
+    actual <- tryCatch(load_file(list(path = duration_path, format = "parquet")), error = identity)
+    if (all(abs(ticks) < 2^51, na.rm = TRUE)) assert_identical(actual, frame, "Exact duration tick boundary lost precision") else stopifnot(inherits(actual, "error"))
+  }
+  writeLines(c('{"id":1,"label":"a","all":null}', sprintf('{"id":%d}', 2:1024), '{"new":3,"id":1025,"label":"b"}', '{}'), json_path)
+  assert_identical(load_file(list(path = json_path, format = "jsonl")), data.frame(id = c(1:1025, NA_integer_), label = c("a", rep(NA_character_, 1023L), "b", NA_character_), all = rep(NA, 1026L), new = c(rep(NA_integer_, 1024L), 3L, NA_integer_)), "JSONL batch boundaries changed first-seen fields, reordered keys or missing values")
+  for (last in c('{"x":-0}', '{"x":"text"}')) {
+    writeLines(c('{"x":9007199254740993}', rep('{}', 1023L), last), json_path)
+    stopifnot(inherits(tryCatch(load_file(list(path = json_path, format = "jsonl")), error = identity), "error"))
+  }
+  # Native writer controls protect empty/all-null input and R-export factor metadata without extra binary fixtures.
+  for (frame in list(data.frame(id = integer(), label = character()), data.frame(id = c(NA_integer_, NA_integer_), label = c(NA_character_, NA_character_)), data.frame(id = 1:3, label = factor(c("b", NA, "a"), levels = c("a", "b", "unused"))))) {
+    path <- file.path(root, "native.parquet")
+    nanoparquet::write_parquet(frame, path)
+    assert_identical(load_file(list(path = path, format = "parquet")), frame, "Native Parquet empty/null/factor metadata changed")
+  }
 })
 
 source("r/tests/kernel_agent_viewing.R", local = FALSE)
@@ -8298,7 +8439,7 @@ formula_datetime_s3_isolation_child <- function(frame_contract_path, kernel_expo
     request_number <<- request_number + 1L
     encoded <- jsonlite::toJSON(
       list(
-        transportVersion = 14L,
+        transportVersion = 15L,
         requestId = sprintf("11111111-1111-4111-8111-%012d", request_number),
         kind = kind,
         payload = payload
@@ -9065,7 +9206,7 @@ categorical_attributed_metadata_s3_child <- function(frame_contract_path, kernel
     request_number <<- request_number + 1L
     request <- jsonlite::toJSON(
       list(
-        transportVersion = 14L,
+        transportVersion = 15L,
         requestId = sprintf("99999999-9999-4999-8999-%012d", request_number),
         kind = kind,
         payload = payload
@@ -9412,7 +9553,7 @@ categorical_ascii_locale_child <- function(frame_contract_path, kernel_exports_p
     request_number <<- request_number + 1L
     encoded <- as.character(jsonlite::toJSON(
       list(
-        transportVersion = 14L,
+        transportVersion = 15L,
         requestId = sprintf("11111111-1111-4111-8111-%012d", request_number),
         kind = kind,
         payload = payload
@@ -9507,7 +9648,7 @@ categorical_ascii_locale_child <- function(frame_contract_path, kernel_exports_p
   on.exit(malformed_agent$dispose(), add = TRUE)
   malformed_request <- jsonlite::toJSON(
     list(
-      transportVersion = 14L,
+      transportVersion = 15L,
       requestId = "22222222-2222-4222-8222-222222222222",
       kind = "openSession",
       payload = list(
@@ -12015,7 +12156,7 @@ by_example_utf8_locale_child <- function(frame_contract_path, kernel_exports_pat
   dispatch <- function(kind, payload) {
     request <- jsonlite::toJSON(
       list(
-        transportVersion = 14L,
+        transportVersion = 15L,
         requestId = "acdcacdc-acdc-4cdc-8cdc-acdcacdcacdc",
         kind = kind,
         payload = payload
@@ -12292,7 +12433,7 @@ by_example_s3_isolation_child <- function(frame_contract_path, kernel_exports_pa
   dispatch <- function(kind, payload) {
     request <- jsonlite::toJSON(
       list(
-        transportVersion = 14L,
+        transportVersion = 15L,
         requestId = "f1f1f1f1-f1f1-41f1-81f1-f1f1f1f1f1f1",
         kind = kind,
         payload = payload
@@ -12894,7 +13035,7 @@ assert_identical(
 program_null_request_id <- "b6b6b6b6-b6b6-46b6-86b6-b6b6b6b6b6b6"
 program_null_request <- as.character(jsonlite::toJSON(
   list(
-    transportVersion = 14L,
+    transportVersion = 15L,
     requestId = program_null_request_id,
     kind = "previewStep",
     payload = list(
@@ -12971,7 +13112,7 @@ negative_zero_step$params$examples[[1L]]$output <- 0L
 negative_zero_step$params$examples[[2L]]$output <- 0L
 negative_zero_request <- jsonlite::toJSON(
   list(
-    transportVersion = 14L,
+    transportVersion = 15L,
     requestId = "b8b8b8b8-b8b8-48b8-88b8-b8b8b8b8b8b8",
     kind = "previewStep",
     payload = list(
@@ -13140,7 +13281,7 @@ for (case in structural_negative_zero_cases) {
   step$params$program <- case$program
   request <- as.character(jsonlite::toJSON(
     list(
-      transportVersion = 14L,
+      transportVersion = 15L,
       requestId = case$request_id,
       kind = "previewStep",
       payload = list(
@@ -13178,7 +13319,7 @@ for (case in structural_negative_zero_cases) {
 nul_step <- adversarial_valid_step("by-example-nul", "nul-safe")
 nul_request <- jsonlite::toJSON(
   list(
-    transportVersion = 14L,
+    transportVersion = 15L,
     requestId = "b7b7b7b7-b7b7-47b7-87b7-b7b7b7b7b7b7",
     kind = "previewStep",
     payload = list(

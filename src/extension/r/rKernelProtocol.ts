@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { validateExcelSheetNames } from "../files/excelSheetNames";
 import {
   decodeRFramePage,
   R_FRAME_CONTRACT_VERSION,
@@ -32,7 +33,7 @@ import {
   isTransformStep
 } from "../../shared/protocolValidation";
 
-export const R_KERNEL_TRANSPORT_VERSION = 14 as const;
+export const R_KERNEL_TRANSPORT_VERSION = 15 as const;
 export const R_KERNEL_MAX_REQUEST_BYTES = 16 * 1_024 * 1_024;
 export const R_KERNEL_MAX_RESPONSE_BYTES = 17 * 1_024 * 1_024;
 export const R_KERNEL_EXPORT_CHUNK_BYTES = 1 * 1_024 * 1_024;
@@ -629,6 +630,12 @@ export type RKernelRequest =
   | Readonly<{
       transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
       requestId: string;
+      kind: "listExcelSheets";
+      payload: Readonly<{ sessionId: string }>;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
       kind: "openSession";
       payload: Readonly<{
         sessionId: string;
@@ -768,6 +775,13 @@ export type RKernelRequest =
     }>;
 
 export type RKernelResponse =
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "excelSheets";
+      sessionId: string;
+      sheets: readonly string[];
+    }>
   | Readonly<{
       transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
       requestId: string;
@@ -941,6 +955,17 @@ export function decodeRKernelResponseJson(
   }
   if (!isRecord(value)) fail("R kernel response must be an object.");
   const kind = value.kind;
+  if (kind === "excelSheets") {
+    const record = exactRecord(value, ["transportVersion", "requestId", "kind", "sessionId", "sheets"]);
+    validateEnvelope(record, expected);
+    return Object.freeze({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: expected,
+      kind: "excelSheets" as const,
+      sessionId: identifier(record.sessionId, "response.sessionId"),
+      sheets: Object.freeze(validateExcelSheetNames(record.sheets))
+    });
+  }
   if (kind === "page") {
     const record = exactRecord(
       value,
@@ -1304,6 +1329,11 @@ function validateRequest(request: RKernelRequest): void {
   const record = exactRecord(request, ["transportVersion", "requestId", "kind", "payload"], "R kernel request");
   if (record.transportVersion !== R_KERNEL_TRANSPORT_VERSION) fail("R kernel request version is unsupported.");
   identifier(record.requestId, "request.requestId");
+  if (record.kind === "listExcelSheets") {
+    const payload = exactRecord(record.payload, ["sessionId"], "R kernel Excel-sheet payload");
+    identifier(payload.sessionId, "request.payload.sessionId");
+    return;
+  }
   if (record.kind === "openSession") {
     const payload = exactRecord(
       record.payload,

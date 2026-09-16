@@ -117,7 +117,7 @@ local({
     before <- serialize(sources[[variable]], NULL, version = 3L)
     agent <- openwrangler_r_kernel_agent$new_agent(
       openwrangler_r_frame_contract, sources,
-      file_source = if (case$file) list(path = file_path, header = TRUE, delimiter = ",") else NULL
+      file_source = if (case$file) list(path = file_path, format = "csv", header = TRUE, delimiter = ",") else NULL
     )
     on.exit(agent$dispose(), add = TRUE)
     session <- "01020304-0102-4102-8102-010203040506"
@@ -291,7 +291,7 @@ for (case in custom_decoder_cases) {
 
 nul_request <- jsonlite::toJSON(
   list(
-    transportVersion = 14L,
+    transportVersion = 15L,
     requestId = request_id,
     kind = "previewStep",
     payload = list(
@@ -1320,7 +1320,7 @@ writeLines(c(
   "source_environment$source_frame <- source_frame",
   "agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, source_environment)",
   "page <- list(rowOffset = 0L, rowLimit = 100L, columnOffset = 0L, columnLimit = 100L, view = list(filters = I(list()), sorts = I(list())))",
-  "dispatch <- function(kind, payload) { request <- jsonlite::toJSON(list(transportVersion = 14L, requestId = '11111111-1111-4111-8111-111111111111', kind = kind, payload = payload), auto_unbox = TRUE, null = 'null'); jsonlite::fromJSON(agent$dispatch_json(as.character(request)), simplifyVector = FALSE) }",
+  "dispatch <- function(kind, payload) { request <- jsonlite::toJSON(list(transportVersion = 15L, requestId = '11111111-1111-4111-8111-111111111111', kind = kind, payload = payload), auto_unbox = TRUE, null = 'null'); jsonlite::fromJSON(agent$dispatch_json(as.character(request)), simplifyVector = FALSE) }",
   "session_id <- '22222222-2222-4222-8222-222222222222'",
   "opened <- dispatch('openSession', list(sessionId = session_id, variableName = 'source_frame', page = page))",
   "if (!identical(opened$kind, 'page')) stop('S3-poison source did not open', call. = FALSE)",

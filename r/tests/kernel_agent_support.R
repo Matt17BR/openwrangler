@@ -218,7 +218,7 @@ empty_view <- function() list(filters = I(list()), sorts = I(list()))
 
 dispatch_with <- function(target_agent, kind, payload, id = request_id) {
   encoded <- jsonlite::toJSON(
-    list(transportVersion = 14L, requestId = id, kind = kind, payload = payload),
+    list(transportVersion = 15L, requestId = id, kind = kind, payload = payload),
     auto_unbox = TRUE,
     digits = 17L,
     null = "null",

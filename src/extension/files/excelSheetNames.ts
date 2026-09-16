@@ -7,7 +7,7 @@ import {
   type PythonMetadataProcessOptions
 } from "./pythonMetadataProcess";
 
-const EXCEL_SHEET_DISCOVERY_TIMEOUT_MS = 15_000;
+export const EXCEL_SHEET_DISCOVERY_TIMEOUT_MS = 15_000;
 const EXCEL_SHEET_DISCOVERY_OUTPUT_BYTES = 256 * 1024;
 const MAX_EXCEL_SHEETS = 4_096;
 const MAX_EXCEL_SHEET_NAME_CHARACTERS = 1_024;
@@ -62,10 +62,14 @@ export function decodeExcelSheetNames(value: string): readonly string[] {
   try {
     decoded = JSON.parse(value);
   } catch {
-    throw new Error("The Python runtime returned malformed Excel worksheet metadata.");
+    throw new Error("The runtime returned malformed Excel worksheet metadata.");
   }
+  return validateExcelSheetNames(decoded);
+}
+
+export function validateExcelSheetNames(decoded: unknown): readonly string[] {
   if (!Array.isArray(decoded) || decoded.length < 1 || decoded.length > MAX_EXCEL_SHEETS) {
-    throw new Error("The Python runtime returned an invalid Excel worksheet count.");
+    throw new Error("The runtime returned an invalid Excel worksheet count.");
   }
 
   let totalBytes = 0;
@@ -73,14 +77,14 @@ export function decodeExcelSheetNames(value: string): readonly string[] {
   const seen = new Set<string>();
   for (const value of decoded) {
     if (typeof value !== "string" || value.length < 1 || value.length > MAX_EXCEL_SHEET_NAME_CHARACTERS) {
-      throw new Error("The Python runtime returned an invalid Excel worksheet name.");
+      throw new Error("The runtime returned an invalid Excel worksheet name.");
     }
     totalBytes += Buffer.byteLength(value, "utf8");
     if (totalBytes > MAX_EXCEL_SHEET_NAME_BYTES) {
-      throw new Error("The Python runtime returned too much Excel worksheet-name data.");
+      throw new Error("The runtime returned too much Excel worksheet-name data.");
     }
     if (seen.has(value)) {
-      throw new Error("The Python runtime returned duplicate Excel worksheet names.");
+      throw new Error("The runtime returned duplicate Excel worksheet names.");
     }
     seen.add(value);
     names.push(value);

@@ -396,7 +396,7 @@ const fileSource = (uri: vscode.Uri, importOptions?: SessionSource["importOption
   label: path.basename(uri.fsPath),
   path: uri.fsPath,
   uri: uri.toString(),
-  importOptions
+  ...(importOptions ? { importOptions } : {})
 });
 
 const fileDataBackends = new Set<FileDataBackend>(["polars", "duckdb", "pandas", "r"]);
