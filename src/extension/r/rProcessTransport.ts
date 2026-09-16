@@ -66,18 +66,25 @@ export interface RProcessVariableDiscovery {
   readonly truncated: boolean;
 }
 
-export interface RProcessSessionTransportOptions {
+export interface RProcessFileSource {
+  readonly path: string;
+  readonly header: boolean;
+  readonly delimiter: string;
+}
+
+export type RProcessSessionTransportOptions = {
   /** Directory containing frame_contract.R, kernel_exports.R, kernel_agent.R, and process_agent.R. */
   readonly runtimeRoot: string;
-  /** Exact plain-R source, or separately parsed literate-document R cells. */
-  readonly documentText: string | readonly string[];
   /** Absolute resolver-confirmed executable; never searched relative to the workspace. */
   readonly rscriptPath: string;
   /** Origin directory used for the document's relative file references. */
   readonly workingDirectory: string;
   readonly temporaryParent?: string;
   readonly createId?: () => string;
-}
+} & (
+  | { readonly documentText: string | readonly string[]; readonly fileSource?: never }
+  | { readonly fileSource: RProcessFileSource; readonly documentText?: never }
+);
 
 interface OwnedProcess {
   readonly child: ChildProcessWithoutNullStreams;
@@ -110,7 +117,7 @@ interface ScheduledRequest {
 }
 
 /**
- * Long-lived native-R transport for one immutable plain-R document capture.
+ * Long-lived native-R transport for one captured document or eagerly loaded CSV/TSV source.
  *
  * Protocol responses are atomically published in a private mailbox rather than
  * written to stdout. User code can therefore print freely, spawn noisy child
@@ -119,6 +126,7 @@ interface ScheduledRequest {
 export class RProcessSessionTransport implements RKernelBridgeTransport {
   private readonly createId: () => string;
   private readonly documentTexts: readonly string[];
+  private readonly fileSource: RProcessFileSource | undefined;
   private readonly invalidatedEmitter = new vscode.EventEmitter<void>();
   readonly onDidInvalidateKernel = this.invalidatedEmitter.event;
 
@@ -136,7 +144,26 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
 
   constructor(private readonly options: RProcessSessionTransportOptions) {
     this.createId = options.createId ?? randomUUID;
-    const documentTexts = typeof options.documentText === "string" ? [options.documentText] : options.documentText;
+    const documentTexts =
+      typeof options.documentText === "string" ? [options.documentText] : (options.documentText ?? []);
+    if (options.fileSource !== undefined) {
+      const source = options.fileSource;
+      if (
+        options.documentText !== undefined ||
+        Object.keys(source).sort().join(",") !== "delimiter,header,path" ||
+        typeof source.path !== "string" ||
+        !path.isAbsolute(source.path) ||
+        hasUnpairedSurrogate(source.path) ||
+        /[\0\r\n]/u.test(source.path) ||
+        typeof source.header !== "boolean" ||
+        typeof source.delimiter !== "string" ||
+        !/^[\t\x20-\x21\x23-\x7e]$/u.test(source.delimiter)
+      )
+        throw new TypeError("The R CSV/TSV source descriptor is invalid.");
+      this.fileSource = Object.freeze({ ...source });
+      if (Buffer.byteLength(JSON.stringify(this.fileSource), "utf8") > 65_536)
+        throw new RangeError("The R file source descriptor is too large.");
+    }
     if (!path.isAbsolute(options.runtimeRoot)) {
       throw new TypeError("The R process runtime root must be absolute.");
     }
@@ -146,7 +173,11 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
     if (!path.isAbsolute(options.workingDirectory)) {
       throw new TypeError("The R document working directory must be absolute.");
     }
-    if (!Array.isArray(documentTexts) || documentTexts.length === 0 || documentTexts.length > MAX_DOCUMENT_UNITS) {
+    if (
+      !Array.isArray(documentTexts) ||
+      (!this.fileSource && documentTexts.length === 0) ||
+      documentTexts.length > MAX_DOCUMENT_UNITS
+    ) {
       throw new RangeError(`The R document must contain between 1 and ${MAX_DOCUMENT_UNITS} source units.`);
     }
     let documentBytes = 0;
@@ -201,7 +232,14 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
     this.assertWorkspaceTrusted();
     const sessionId = options.requestedSessionId ?? this.createId();
     this.assertSessionIdentityAvailable(sessionId);
-    const request = this.request("openSession", { sessionId, variableName, page });
+    const request = this.request("openSession", {
+      sessionId,
+      variableName,
+      page,
+      ...(options.cloneFrom
+        ? { cloneFromSessionId: options.cloneFrom.sessionId, cloneFromRevision: options.cloneFrom.revision }
+        : {})
+    });
     encodeRKernelRequest(request);
     this.openingSessions.add(sessionId);
 
@@ -727,6 +765,13 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
       for (let index = 0; index < this.documentTexts.length; index += 1) {
         const documentPath = path.join(documentRoot, `${index.toString().padStart(8, "0")}.R`);
         await writeFile(documentPath, this.documentTexts[index]!, { encoding: "utf8", flag: "wx", mode: 0o400 });
+      }
+      if (this.fileSource) {
+        await writeFile(path.join(documentRoot, "file-source.json"), JSON.stringify(this.fileSource), {
+          encoding: "utf8",
+          flag: "wx",
+          mode: 0o400
+        });
       }
       await mkdir(responseRoot, { mode: 0o700 });
       await mkdir(exportRoot, { mode: 0o700 });

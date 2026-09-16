@@ -115,13 +115,25 @@ export function withHostSessionIdentity(request: OpenSessionRequest, createId: (
   return request.requestedSessionId ? request : { ...request, requestedSessionId: createId() };
 }
 
-export function validateOpenRequest(request: OpenSessionRequest): ErrorResponse | undefined {
+export function validateOpenRequest(
+  request: OpenSessionRequest,
+  fileSource?: SessionSource
+): ErrorResponse | undefined {
   const sessionId = request.requestedSessionId;
+  if (fileSource && !isDeepStrictEqual(request.source, fileSource)) {
+    return errorResponse(
+      "r_file_source_changed",
+      "The R file source or import options changed. Open it in a new session.",
+      true,
+      sessionId
+    );
+  }
   if (
-    (request.source.kind !== "notebookVariable" &&
+    !fileSource &&
+    ((request.source.kind !== "notebookVariable" &&
       request.source.kind !== "documentVariable" &&
       request.source.kind !== "rInteractiveVariable") ||
-    !request.source.variableName
+      !request.source.variableName)
   ) {
     return errorResponse(
       "unsupported_source",
@@ -131,7 +143,7 @@ export function validateOpenRequest(request: OpenSessionRequest): ErrorResponse 
     );
   }
   if (request.backend !== undefined && request.backend !== "r") {
-    return errorResponse("unsupported_backend", "An R notebook session requires the R backend.", true, sessionId);
+    return errorResponse("unsupported_backend", "An R session requires the R backend.", true, sessionId);
   }
   if (typeof sessionId !== "string" || sessionId.length === 0) {
     return errorResponse(
@@ -256,18 +268,25 @@ export function rCapabilitiesForSource(
 
 export function rExportProtectedSourceUris(source: SessionSource): readonly vscode.Uri[] {
   if (source.kind === "rInteractiveVariable") return [];
-  if ((source.kind !== "documentVariable" && source.kind !== "notebookVariable") || !source.uri) {
-    throw new TypeError("R data export requires an originating R notebook or document URI.");
+  if (
+    (source.kind !== "file" && source.kind !== "documentVariable" && source.kind !== "notebookVariable") ||
+    !source.uri
+  ) {
+    throw new TypeError("R data export requires an originating local source URI.");
   }
   const uri = vscode.Uri.parse(source.uri, true);
   if (uri.scheme === "file" && uri.fsPath) return [uri];
   if (source.kind === "notebookVariable" && uri.scheme === "untitled") return [];
-  throw new TypeError("R data export requires a local R notebook or document source.");
+  throw new TypeError("R data export requires a local source.");
 }
 
 export function isExportableRSource(source: SessionSource): boolean {
   if (source.kind === "rInteractiveVariable") return true;
-  if ((source.kind !== "documentVariable" && source.kind !== "notebookVariable") || !source.uri) return false;
+  if (
+    (source.kind !== "file" && source.kind !== "documentVariable" && source.kind !== "notebookVariable") ||
+    !source.uri
+  )
+    return false;
   try {
     const uri = vscode.Uri.parse(source.uri, true);
     // The public export request currently retains only a filesystem path, not

@@ -153,7 +153,8 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
             (candidate.mode === undefined || candidate.mode === "viewing"))) &&
         (candidate.backend !== "r" ||
           (isRecord(candidate.source) &&
-            (candidate.source.kind === "notebookVariable" ||
+            (candidate.source.kind === "file" ||
+              candidate.source.kind === "notebookVariable" ||
               candidate.source.kind === "documentVariable" ||
               candidate.source.kind === "rInteractiveVariable"))) &&
         (!isRecord(candidate.source) ||
@@ -499,7 +500,8 @@ function isSessionMetadata(value: unknown): value is SessionMetadata {
       (isRecord(candidate.source) && candidate.source.kind === "notebookVariable" && candidate.mode === "viewing")) &&
     (candidate.backend !== "r" ||
       (isRecord(candidate.source) &&
-        (candidate.source.kind === "notebookVariable" ||
+        (candidate.source.kind === "file" ||
+          candidate.source.kind === "notebookVariable" ||
           candidate.source.kind === "documentVariable" ||
           candidate.source.kind === "rInteractiveVariable"))) &&
     (!isRecord(candidate.source) || candidate.source.kind !== "rInteractiveVariable" || candidate.backend === "r") &&
@@ -545,7 +547,7 @@ function isSessionMetadata(value: unknown): value is SessionMetadata {
   );
 }
 
-function isSessionSource(value: unknown): value is SessionSource {
+export function isSessionSource(value: unknown): value is SessionSource {
   const candidate = exactRecord(
     value,
     ["kind", "label"],

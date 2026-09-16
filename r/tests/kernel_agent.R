@@ -82,6 +82,91 @@ if (identical(selected_kernel_agent_case, "numeric-portability")) {
 
 if (identical(selected_kernel_agent_case, "lifecycle-and-structure")) {
 kernel_agent_case_run_count <- kernel_agent_case_run_count + 1L
+local({
+  root <- tempfile("ow-csv-loader-")
+  dir.create(root)
+  on.exit(unlink(root, recursive = TRUE), add = TRUE)
+  load_csv <- openwrangler_r_kernel_agent$load_csv_source
+  stopifnot(is.function(load_csv))
+  cases <- list(
+    list(text = "id,value,flag\n1,2.5,TRUE\n2,NA,FALSE\n", expected = data.frame(id = 1:2, value = c(2.5, NA_real_), flag = c(TRUE, FALSE))),
+    list(text = "id,flag\n9007199254740992,true\n9007199254740993,false\n", expected = data.frame(id = c("9007199254740992", "9007199254740993"), flag = c("true", "false"))),
+    list(text = "same,same,\n1,2,3", expected = structure(list(1L, 2L, 3L), names = c("same", "same", ""), row.names = 1L, class = "data.frame")),
+    list(text = "1,alpha\n2,beta", header = FALSE, expected = data.frame(V1 = 1:2, V2 = c("alpha", "beta"))),
+    list(text = "id\tlabel\n1\tZürich\n2\t\"two\nlines\"\n", delimiter = "\t", expected = data.frame(id = 1:2, label = c("Zürich", "two\nlines"))),
+    list(text = "\ufeffid,label\r\n1,😀\r\n", expected = data.frame(id = 1L, label = "😀")),
+    list(text = "\"first\nname\",value\n1,x\n", expected = structure(list(1L, "x"), names = c("first\nname", "value"), row.names = 1L, class = "data.frame")),
+    list(text = "id,value", expected = data.frame(id = logical(), value = logical())),
+    list(text = "id,value\n\n1,\n2,\"NA\"\n3,\"\"\n4, \n5,text\n", expected = data.frame(id = 1:5, value = c(NA_character_, NA_character_, NA_character_, " ", "text"))),
+    list(text = "id;value\n1;2\n2;3", delimiter = ";", expected = data.frame(id = 1:2, value = 2:3)),
+    list(text = paste0("id,value\n", paste0(1:8, ",x", collapse = "\n")), expected = data.frame(id = 1:8, value = rep("x", 8)))
+  )
+  cases <- c(cases, list(
+    list(text = "\"one,two\",\"double\"\"quote\"\n", header = FALSE, expected = data.frame(V1 = "one,two", V2 = 'double"quote')),
+    list(text = "\ufeff1,x\n2,y", header = FALSE, expected = data.frame(V1 = 1:2, V2 = c("x", "y")))
+  ))
+  cases <- c(cases, list(
+    list(text = "\n \n\nid,label\n1,alpha\n", expected = data.frame(id = 1L, label = "alpha")),
+    list(text = "\n\n1,alpha\n", header = FALSE, expected = data.frame(V1 = 1L, V2 = "alpha")),
+    list(text = "\n \n1,alpha\n2,beta", header = FALSE, expected = data.frame(V1 = 1:2, V2 = c("alpha", "beta"))),
+    list(text = "a\tb\n\t\n\t", delimiter = "\t", expected = data.frame(a = c(NA, NA), b = c(NA, NA))),
+    list(text = "\t\n\t", header = FALSE, delimiter = "\t", expected = data.frame(V1 = c(NA, NA), V2 = c(NA, NA)))
+  ))
+  for (index in seq_along(cases)) {
+    case <- cases[[index]]
+    path <- file.path(root, sprintf("accepted-%d.csv", index))
+    bytes <- charToRaw(enc2utf8(case$text))
+    writeBin(bytes, path)
+    connections <- getAllConnections()
+    actual <- load_csv(path, if (is.null(case$header)) TRUE else case$header, if (is.null(case$delimiter)) "," else case$delimiter)
+    assert_identical(getAllConnections(), connections, "CSV accepted input retained a connection")
+    assert_identical(actual, case$expected, sprintf("CSV accepted case %d lost native values/types/names", index))
+    assert_identical(readBin(path, "raw", length(bytes) + 1L), bytes, "CSV loader changed source bytes")
+  }
+  rejected <- list(
+    raw(), charToRaw("\n\n"), charToRaw("a,b\n1\n"), charToRaw("a,b\n1,2,3\n"),
+    charToRaw("a,b\n1,x\n \n2,y\n"),
+    charToRaw("a,b\n1,\"unfinished\n"), c(charToRaw("a,b\n1,"), as.raw(0L), charToRaw("x\n")),
+    c(charToRaw("a,b\n1,"), as.raw(255L), charToRaw("\n")),
+    c(charToRaw(paste0("a,b\n", paste0(1:8, ",x\n", collapse = ""), "9,")), as.raw(255L), charToRaw("\n")),
+    charToRaw(paste0("a,b\n", paste0(1:8, ",x\n", collapse = ""), "9,x,extra\n"))
+  )
+  rejected <- c(rejected, list(charToRaw('"unclosed,header\n1,x\n'), charToRaw('a,b\n1,"unclosed'), charToRaw('a,b\n1,"unclosed\n2,x\n')))
+  for (index in seq_along(rejected)) {
+    path <- file.path(root, sprintf("refused-%d.csv", index))
+    bytes <- rejected[[index]]
+    writeBin(bytes, path)
+    connections <- getAllConnections()
+    error <- tryCatch({ load_csv(path); NULL }, error = identity)
+    assert_identical(getAllConnections(), connections, "CSV refused input retained a connection")
+    if (!inherits(error, "error")) stop(sprintf("CSV refused case %d unexpectedly accepted", index), call. = FALSE)
+    assert_identical(readBin(path, "raw", length(bytes) + 1L), bytes, "Refused CSV changed source bytes")
+  }
+  path <- file.path(root, "accepted-1.csv")
+  environment <- new.env(parent = baseenv())
+  environment$.ow_csv_source <- load_csv(path)
+  file_agent <- openwrangler_r_kernel_agent$new_agent(
+    openwrangler_r_frame_contract, environment,
+    file_source = list(path = path, header = TRUE, delimiter = ",")
+  )
+  on.exit(file_agent$dispose(), add = TRUE)
+  opened <- dispatch_with(file_agent, "openSession", list(sessionId = session_id, variableName = ".ow_csv_source", page = page_window()))
+  assert_identical(opened$kind, "page", "CSV session did not open")
+  preview <- dispatch_with(file_agent, "previewStep", list(
+    sessionId = session_id, revision = 0L, page = page_window(),
+    step = list(id = "csv-clone", kind = "cloneColumn", params = list(column = list(id = "r:c:0", name = "id"), newName = "copied"))
+  ))
+  assert_identical(preview$kind, "stepPreview", "CSV cleaning did not preview")
+  generated <- new.env(parent = baseenv())
+  eval(parse(text = preview$code), envir = generated)
+  expected <- cases[[1L]]$expected
+  expected$copied <- 1:2
+  assert_identical(generated$open_wrangler_result, expected, "Generated CSV loader/cleaning changed expected native output")
+  assert_identical(ls(generated, all.names = TRUE), "open_wrangler_result", "Generated CSV leaked loader bindings")
+  assert_identical(environment$.ow_csv_source, cases[[1L]]$expected, "CSV cleaning mutated loaded source")
+  assert_identical(readBin(path, "raw", 1024L), charToRaw(cases[[1L]]$text), "Generated CSV changed source bytes")
+})
+
 source("r/tests/kernel_agent_viewing.R", local = FALSE)
 rename_preview <- dispatch(
   "previewStep",

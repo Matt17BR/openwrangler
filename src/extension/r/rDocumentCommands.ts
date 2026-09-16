@@ -1,11 +1,10 @@
 import * as path from "node:path";
-import { accessSync, constants as fsConstants, statSync } from "node:fs";
 import * as vscode from "vscode";
 import { formatQuickPickName } from "../quickPickName";
 import type { SessionSource } from "../../shared/protocol";
-import { getSetting, runtimeRequestTimeoutMs } from "../configuration";
+import { runtimeRequestTimeoutMs } from "../configuration";
 import { DetachedBridgeRequestError } from "../dataBridge";
-import { resolveExecutableCommand } from "../pythonPath";
+import { configuredRscriptPath } from "./rscriptPath";
 import { type TextDocumentSessionOrigin, SessionCoordinator } from "../sessionCoordinator";
 import { OpenWranglerPanel, restoreEditorGroupAfterQuickPick } from "../webviewPanel";
 import { prepareRDocumentSource, rDocumentKind, rDocumentLabel } from "./rDocumentSource";
@@ -487,21 +486,6 @@ function isSoleOpenTextDocument(document: vscode.TextDocument): boolean {
   const serialized = document.uri.toString();
   const matches = vscode.workspace.textDocuments.filter((candidate) => candidate.uri.toString() === serialized);
   return matches.length === 1 && matches[0] === document;
-}
-
-function configuredRscriptPath(resource: vscode.Uri): string | undefined {
-  const configured = getSetting<string>("rscriptPath", "", resource).trim() || "Rscript";
-  return resolveExecutableCommand(configured, process.env, isExecutableFile);
-}
-
-function isExecutableFile(candidate: string): boolean {
-  try {
-    if (!statSync(candidate).isFile()) return false;
-    accessSync(candidate, fsConstants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function rDocumentQuickPickItem(variable: RProcessVariableDescriptor, fileName: string): RDocumentQuickPickItem {

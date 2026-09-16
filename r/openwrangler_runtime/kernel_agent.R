@@ -7729,7 +7729,42 @@ openwrangler_r_kernel_agent <- local({
     )
   }
 
-  compile_plan <- function(variable_name, bound_plan, frame_contract) {
+  load_csv_source <- function(path, header = TRUE, delimiter = ",") {
+    connection <- base::file(path, open = "rt")
+    base::on.exit(base::close(connection), add = TRUE)
+    base::withCallingHandlers({
+      repeat {
+        position <- base::seek(connection, rw = "read")
+        first <- base::scan(connection, what = character(), nlines = 1L, sep = delimiter,
+          quote = "\"", quiet = TRUE, strip.white = TRUE, blank.lines.skip = TRUE,
+          na.strings = character(), comment.char = "", encoding = "UTF-8")
+        if (base::length(first)) break
+        if (base::seek(connection, rw = "read") == position) base::stop("CSV has no header or records", call. = FALSE)
+      }
+      if (!header) base::seek(connection, where = position, origin = "start", rw = "read")
+      columns <- base::scan(connection, what = base::rep(base::list(""), base::length(first)),
+        sep = delimiter, quote = "\"", quiet = TRUE, fill = FALSE, multi.line = FALSE,
+        strip.white = FALSE, blank.lines.skip = TRUE, na.strings = c("", "NA"),
+        comment.char = "", encoding = "UTF-8", allowEscapes = FALSE, skipNul = FALSE)
+      names <- if (header) first else base::paste0("V", base::seq_along(first))
+      if (!base::all(base::validUTF8(names))) base::stop("CSV header is not valid UTF-8", call. = FALSE)
+      for (column in columns) if (!base::all(base::validUTF8(column))) base::stop("CSV text is not valid UTF-8", call. = FALSE)
+      columns <- base::lapply(columns, utils::type.convert, as.is = TRUE, numerals = "no.loss", na.strings = character())
+      base::structure(columns, names = names, class = "data.frame", row.names = base::.set_row_names(base::length(columns[[1L]])))
+    }, warning = function(warning) base::stop(base::conditionMessage(warning), call. = FALSE))
+  }
+
+  validate_file_source <- function(source) {
+    source <- exact_record(source, c("path", "header", "delimiter"), "file source")
+    source$path <- bounded_text(source$path, "file source.path", 65536L)
+    if (!startsWith(source$path, "/") || grepl("[\r\n]", source$path)) abort("invalid_source", "R CSV requires an absolute local path")
+    if (!is.logical(source$header) || length(source$header) != 1L || is.na(source$header)) abort("invalid_source", "R CSV header must be logical")
+    source$delimiter <- bounded_text(source$delimiter, "file source.delimiter", 1L)
+    if (nchar(source$delimiter, type = "bytes") != 1L || source$delimiter %in% c("\r", "\n", "\"")) abort("invalid_source", "R CSV requires a single-byte delimiter other than a quote or record ending")
+    source
+  }
+
+  compile_plan <- function(variable_name, bound_plan, frame_contract, file_source = NULL) {
     if (length(bound_plan) == 0L) return("")
     maximum_columns <- frame_contract$limits$columns
     maximum_factor_levels <- frame_contract$limits$factorLevels
@@ -7746,6 +7781,7 @@ openwrangler_r_kernel_agent <- local({
       sprintf("  .ow_publication_name <- %s", r_string(result_name)),
       "  if (base::exists(.ow_publication_name, envir = .ow_caller_environment, inherits = FALSE) && base::bindingIsActive(.ow_publication_name, .ow_caller_environment)) base::stop(\"Open Wrangler generated R does not accept an active result binding\", call. = FALSE)",
       "  .ow_generated_result <- base::evalq({",
+      if (is.null(file_source)) c(
       sprintf(
         "  if (!base::exists(%s, envir = .ow_source_environment, inherits = FALSE)) base::stop(\"Open Wrangler source variable is unavailable\", call. = FALSE)",
         r_string(variable_name)
@@ -7757,6 +7793,11 @@ openwrangler_r_kernel_agent <- local({
       sprintf(
         "  .ow_source <- base::get(%s, envir = .ow_source_environment, inherits = FALSE)",
         r_string(variable_name)
+      )
+      ) else c(
+        paste0("  .ow_read_csv <- ", paste(deparse(load_csv_source, width.cutoff = 100L), collapse = "\n")),
+        sprintf("  .ow_source <- .ow_read_csv(%s, header = %s, delimiter = %s)", r_string(file_source$path), if (file_source$header) "TRUE" else "FALSE", r_string(file_source$delimiter)),
+        "  base::rm(.ow_read_csv)"
       ),
       sprintf(
         "  if (base::exists(%1$s, envir = .ow_source_environment, inherits = FALSE) && base::bindingIsActive(%1$s, .ow_source_environment)) base::stop(\"Open Wrangler generated R does not accept an active result binding\", call. = FALSE)",
@@ -9849,12 +9890,14 @@ openwrangler_r_kernel_agent <- local({
       code = compile_plan(
         session$variableName,
         session$boundPlan,
-        frame_contract
+        frame_contract,
+        session$fileSource
       )
     )
   }
 
-  new_agent <- function(frame_contract, source_environment = .GlobalEnv, export_root = NULL) {
+  new_agent <- function(frame_contract, source_environment = .GlobalEnv, export_root = NULL, file_source = NULL) {
+    if (!is.null(file_source)) file_source <- validate_file_source(file_source)
     if (
       !is.list(frame_contract) ||
         !is.list(frame_contract$limits)
@@ -9901,6 +9944,9 @@ openwrangler_r_kernel_agent <- local({
           "request.payload.variableName",
           maximum_variable_name_bytes
         )
+        if (!is.null(file_source) && !identical(variable_name, ".ow_csv_source")) {
+          abort("invalid_source", "The managed CSV source binding cannot change")
+        }
         if (identical(variable_name, "")) {
           abort("invalid_request", "request.payload.variableName may not be empty")
         }
@@ -9954,6 +10000,7 @@ openwrangler_r_kernel_agent <- local({
         result <- materialize(frame_contract, source_capture, page)
         session <- list(
           variableName = variable_name,
+          fileSource = file_source,
           source = source_capture,
           original = NULL,
           committed = NULL,
@@ -10179,7 +10226,8 @@ openwrangler_r_kernel_agent <- local({
               kind = step$kind,
               params = list(code = step$params$code)
             ))),
-            frame_contract
+            frame_contract,
+            session$fileSource
           )
         } else {
           NULL
@@ -10227,7 +10275,8 @@ openwrangler_r_kernel_agent <- local({
           code = if (!is.null(preflight_custom_code)) preflight_custom_code else compile_plan(
             candidate$variableName,
             candidate_bound_plan,
-            frame_contract
+            frame_contract,
+            candidate$fileSource
           )
         )
         if (!is.null(effective_view)) response$effectiveView <- effective_view
@@ -10295,7 +10344,8 @@ openwrangler_r_kernel_agent <- local({
             code = compile_plan(
               session$variableName,
               utils::head(session$boundPlan, step_index),
-              frame_contract
+              frame_contract,
+              session$fileSource
             )
           ))
         }
@@ -10667,5 +10717,5 @@ openwrangler_r_kernel_agent <- local({
     list(dispatch_json = dispatch_json, dispose = export_lifecycle$dispose)
   }
 
-  list(new_agent = new_agent, transport_version = transport_version)
+  list(new_agent = new_agent, load_csv_source = load_csv_source, validate_file_source = validate_file_source, transport_version = transport_version)
 })

@@ -422,13 +422,29 @@ describe("protocol-v4 request validation", () => {
         request: { ...request, mode: "editing" }
       })
     ).toBe(true);
-    expect(isOpenWranglerRequest({ ...request, source: metadata.source })).toBe(false);
+    expect(isOpenWranglerRequest({ ...request, source: metadata.source })).toBe(true);
+    const fileSource = {
+      kind: "file" as const,
+      label: "frame.csv",
+      path: "/workspace/frame.csv",
+      uri: "file:///workspace/frame.csv"
+    };
+    const fileOpened = { ...opened, metadata: { ...rMetadata, source: fileSource } };
+    expect(isOpenWranglerResponse(fileOpened)).toBe(true);
+    expect(validateTransportSchema({ protocolVersion: 4, requestId: "r-file-opened", response: fileOpened })).toBe(
+      true
+    );
+    expect(
+      validateTransportSchema({
+        protocolVersion: 4,
+        requestId: "r-file",
+        request: { ...request, source: fileSource },
+        priority: "interactive"
+      })
+    ).toBe(true);
     expect(isOpenWranglerResponse(opened)).toBe(true);
     expect(validateTransportSchema({ protocolVersion: 4, requestId: "r-open", response: opened })).toBe(true);
-    for (const invalidSource of [
-      { kind: "file" as const, label: "frame.csv", path: "/workspace/frame.csv" },
-      { kind: "notebookOutput" as const, label: "saved R output" }
-    ]) {
+    for (const invalidSource of [{ kind: "notebookOutput" as const, label: "saved R output" }]) {
       const invalidOpened = { ...opened, metadata: { ...rMetadata, source: invalidSource } };
       expect(isOpenWranglerResponse(invalidOpened)).toBe(false);
       expect(

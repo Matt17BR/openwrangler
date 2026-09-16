@@ -5,7 +5,8 @@ import {
   PROTOCOL_VERSION,
   type OpenSessionRequest,
   type OpenWranglerRequest,
-  type OpenWranglerResponse
+  type OpenWranglerResponse,
+  type SessionSource
 } from "../../shared/protocol";
 import { DetachedBridgeRequestError, type BridgeRequestOptions, type OpenWranglerBridge } from "../dataBridge";
 import { runtimeRequestTimeoutMs } from "../configuration";
@@ -103,7 +104,8 @@ export class RKernelBridge implements OpenWranglerBridge {
     diagnosticSink?: (message: string) => void,
     private readonly verifiedVariable?: RNotebookVariableDescriptor,
     fileOperations: RKernelBridgeFileOperations = {},
-    private readonly createRecoveryDelegate?: () => Promise<RKernelBridge>
+    private readonly createRecoveryDelegate?: () => Promise<RKernelBridge>,
+    private readonly fileSource?: SessionSource
   ) {
     this.supportsVerifiedRuntimeRecoveryDelegate = createRecoveryDelegate !== undefined;
     this.transport = transport;
@@ -131,7 +133,7 @@ export class RKernelBridge implements OpenWranglerBridge {
     dispose(): Promise<void>;
   }> {
     if (this.disposed || !this.createRecoveryDelegate) {
-      throw new Error("The verified R notebook source cannot create a replacement runtime delegate.");
+      throw new Error("The R source cannot create a replacement runtime delegate.");
     }
     const delegate = await this.createRecoveryDelegate();
     return {
@@ -207,7 +209,7 @@ export class RKernelBridge implements OpenWranglerBridge {
   }
 
   private async openSession(request: OpenSessionRequest, options: BridgeRequestOptions): Promise<OpenWranglerResponse> {
-    const invalid = validateOpenRequest(request);
+    const invalid = validateOpenRequest(request, this.fileSource);
     if (invalid) return invalid;
     const sessionId = request.requestedSessionId as string;
     const cloneSource = request.cloneFrom ? this.sessions.get(request.cloneFrom.sessionId) : undefined;
@@ -247,7 +249,7 @@ export class RKernelBridge implements OpenWranglerBridge {
     const generation = this.kernelGeneration;
     try {
       const result = await this.transport.open(
-        request.source.variableName as string,
+        this.fileSource ? ".ow_csv_source" : (request.source.variableName as string),
         pageWindow(0, request.pageSize, request.columnOffset, request.columnLimit, emptyRViewQuery()),
         transportOptions(options, sessionId, request.cloneFrom)
       );

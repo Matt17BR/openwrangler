@@ -111,8 +111,15 @@ if (!requireNamespace("rlang", quietly = TRUE)) {
 
 initialize <- function() {
   source_names <- sort(list.files(document_root, all.files = TRUE, no.. = TRUE), method = "radix")
+  file_source <- NULL
+  if (identical(source_names, "file-source.json")) {
+    descriptor_path <- file.path(document_root, "file-source.json")
+    if (is.na(file.size(descriptor_path)) || file.size(descriptor_path) > 65536L) stop("The R file descriptor is too large.", call. = FALSE)
+    file_source <- jsonlite::fromJSON(descriptor_path, simplifyVector = FALSE)
+    source_names <- character()
+  }
   if (
-    length(source_names) < 1L ||
+    (is.null(file_source) && length(source_names) < 1L) ||
       length(source_names) > maximum_source_units ||
       any(!grepl("^[0-9]{8}\\.R$", source_names, perl = TRUE))
   ) {
@@ -166,7 +173,11 @@ initialize <- function() {
 
   frame_contract <- get("openwrangler_r_frame_contract", envir = runtime_environment, inherits = FALSE)
   kernel_agent <- get("openwrangler_r_kernel_agent", envir = runtime_environment, inherits = FALSE)
-  agent <- kernel_agent$new_agent(frame_contract, document_environment, export_root)
+  if (!is.null(file_source)) {
+    file_source <- kernel_agent$validate_file_source(file_source)
+    document_environment$.ow_csv_source <- kernel_agent$load_csv_source(file_source$path, file_source$header, file_source$delimiter)
+  }
+  agent <- kernel_agent$new_agent(frame_contract, document_environment, export_root, file_source)
 
   names <- sort(ls(envir = document_environment, all.names = TRUE, sorted = FALSE), method = "radix")
   truncated <- length(names) > maximum_scanned_bindings

@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   discovery: vi.fn(),
   transportDispose: vi.fn(async () => undefined),
   transportOptions: [] as unknown[],
+  bridgeOptions: [] as unknown[][],
   transportConstructorError: undefined as Error | undefined,
   bridgeDispose: vi.fn(async () => undefined),
   panelCreate: vi.fn(),
@@ -122,6 +123,9 @@ vi.mock("../extension/r/rProcessTransport", () => ({
 
 vi.mock("../extension/r/rKernelBridge", () => ({
   RKernelBridge: class {
+    constructor(...args: unknown[]) {
+      mocks.bridgeOptions.push(args);
+    }
     dispose = mocks.bridgeDispose;
   }
 }));
@@ -132,6 +136,7 @@ vi.mock("../extension/webviewPanel", () => ({
 }));
 
 import * as vscode from "vscode";
+import { createRFileBridge, supportsRFileExecution } from "../extension/r/rFileSource";
 import {
   OPEN_LITERATE_DOCUMENT_CURSOR_COMMAND,
   OPEN_R_DOCUMENT_COMMAND,
@@ -163,6 +168,7 @@ describe("R document command", () => {
     mocks.transportOptions.length = 0;
     mocks.transportConstructorError = undefined;
     mocks.bridgeDispose.mockClear();
+    mocks.bridgeOptions.length = 0;
     mocks.panelCreate.mockReset();
     mocks.restoreEditorGroupAfterQuickPick.mockReset();
     mocks.restoreEditorGroupAfterQuickPick.mockResolvedValue(undefined);
@@ -173,6 +179,59 @@ describe("R document command", () => {
     mocks.getCommands.mockReset();
     mocks.getCommands.mockResolvedValue([]);
     mocks.reticulateCells = true;
+  });
+
+  it("prepares an exact lazy CSV/TSV file owner and pins its runtime and source through recovery", async () => {
+    const context = { asAbsolutePath: (part: string) => `/extension/${part}` } as unknown as ExtensionContext;
+    const source = {
+      kind: "file" as const,
+      label: "orders.tsv",
+      path: "/workspace/orders.tsv",
+      uri: "file:///workspace/orders.tsv",
+      importOptions: { hasHeader: false }
+    };
+    createRFileBridge(context, source);
+    expect(mocks.discovery).not.toHaveBeenCalled();
+    expect(mocks.transportOptions[0]).toMatchObject({
+      fileSource: { path: source.path, header: false, delimiter: "\t" },
+      rscriptPath: "/usr/bin/Rscript",
+      workingDirectory: "/workspace"
+    });
+    expect(mocks.transportOptions[0]).not.toHaveProperty("documentText");
+    source.importOptions.hasHeader = true;
+    mocks.resolveExecutable.mockReturnValue("/different/Rscript");
+    const recovery = mocks.bridgeOptions[0]?.[6] as () => Promise<unknown>;
+    await recovery();
+    expect(mocks.transportOptions[1]).toEqual(mocks.transportOptions[0]);
+    expect(mocks.bridgeOptions[1]?.[7]).toMatchObject({ ...source, importOptions: { hasHeader: false } });
+    expect(mocks.resolveExecutable).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses unsupported native file options and trust before constructing a process owner", () => {
+    const context = { asAbsolutePath: (part: string) => `/extension/${part}` } as unknown as ExtensionContext;
+    const source = {
+      kind: "file" as const,
+      label: "orders.csv",
+      path: "/workspace/orders.csv",
+      uri: "file:///workspace/orders.csv"
+    };
+    expect(supportsRFileExecution("linux")).toBe(true);
+    expect(supportsRFileExecution("darwin")).toBe(true);
+    expect(supportsRFileExecution("win32")).toBe(false);
+    for (const importOptions of [
+      { encoding: "utf8-lossy" },
+      { quoteChar: "'" },
+      { lineEnding: "cr" as const },
+      { sheetIndex: 0 }
+    ]) {
+      expect(() => createRFileBridge(context, { ...source, importOptions })).toThrow();
+    }
+    expect(() => createRFileBridge(context, { ...source, uri: "file:///workspace/other.csv" })).toThrow(
+      "matching local"
+    );
+    mocks.trusted = false;
+    expect(() => createRFileBridge(context, source)).toThrow("Trust this workspace");
+    expect(mocks.transportOptions).toEqual([]);
   });
 
   it("disposes the first real R-document command when the grouped second registration throws", () => {
