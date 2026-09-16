@@ -1591,15 +1591,12 @@ async function verifySessionModeDisclosure(browser) {
     return control;
   });
   try {
-    await page.getByTestId("data-grid-scroller").evaluate((scroller) => {
-      scroller.scrollLeft = 20 * Number(document.body.dataset.defaultColumnWidth);
-      scroller.dispatchEvent(new Event("scroll"));
-    });
+    const scrollDistance = await page.evaluate(() => 20 * Number(document.body.dataset.defaultColumnWidth));
+    await page.getByTestId("data-grid-scroller").hover();
+    await page.mouse.wheel(scrollDistance, 0);
     await page.waitForFunction((control) => control.state.pages.length === 1, projection);
-    await page.getByTestId("data-grid-scroller").evaluate((scroller) => {
-      scroller.scrollLeft = 0;
-      scroller.dispatchEvent(new Event("scroll"));
-    });
+    await page.getByTestId("data-grid-scroller").hover();
+    await page.mouse.wheel(-scrollDistance, 0);
     await page.locator('th[data-grid-column="0"]').waitFor();
     if ((await runtimeRequestCount(page, "getPage")) !== 1 || !(await undo.isDisabled())) {
       throw new Error("The newer visible column range did not retain its pending projection.");
