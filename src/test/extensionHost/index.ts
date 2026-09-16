@@ -6465,7 +6465,9 @@ async function probeReleasedNotebookToolbarOverflow(workbench: Page): Promise<Re
       // pointer that opened a menu cannot also invoke an action.
       await workbench.waitForTimeout(150);
       await menuContainer.waitFor({ state: "visible", timeout: 2_000 });
-      assert.equal(await visibleMenus.count(), 1, "The More Actions button must open exactly one workbench menu.");
+      const menuCount = await visibleMenus.count();
+      if (menuCount === 0) throw new Error("The notebook overflow menu disappeared during discovery.");
+      assert.equal(menuCount, 1, "The More Actions button must open exactly one workbench menu.");
       openedMenu = (await menuContainer.elementHandle()) ?? undefined;
       assert.ok(openedMenu, "The exact opened notebook overflow menu must remain addressable.");
 
