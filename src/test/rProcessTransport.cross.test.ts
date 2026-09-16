@@ -1,6 +1,18 @@
 import { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, unlink, utimes, writeFile } from "node:fs/promises";
+import {
+  cp,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  unlink,
+  utimes,
+  writeFile
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1695,48 +1707,59 @@ not_a_frame <- matrix(1:4, nrow = 2L)
     }
   });
 
-  it("parses Unicode source and request text under a non-UTF-8 process locale", async () => {
-    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-process-unicode-test-"));
-    const previousLocale = process.env.LC_ALL;
-    process.env.LC_ALL = "C";
-    const transport = new RProcessSessionTransport({
-      runtimeRoot,
-      rscriptPath,
-      temporaryParent,
-      workingDirectory: temporaryParent,
-      documentText: 'cafe_frame <- data.frame(label = c("München", "Zürich"), stringsAsFactors = FALSE)\n'
-    });
-    try {
-      const discovery = await transport.discoverVariables({ timeoutMs: 10_000 });
-      expect(discovery.variables).toEqual([{ backend: "r", dataframeFlavor: "r.data.frame", name: "cafe_frame" }]);
-      const sessionId = randomUUID();
-      const opened = await transport.open("cafe_frame", pageWindow(), {
-        requestedSessionId: sessionId,
-        timeoutMs: 10_000
+  it.each([
+    { locale: "C", runtimeDirectory: "runtime" },
+    { locale: process.platform === "linux" ? "C.UTF-8" : undefined, runtimeDirectory: "runtime-\u2028😀" }
+  ])(
+    "parses Unicode source and request text with $runtimeDirectory ($locale)",
+    async ({ locale, runtimeDirectory }) => {
+      const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-process-unicode-test-"));
+      const controlledRuntime = resolve(temporaryParent, runtimeDirectory);
+      const processParent = resolve(temporaryParent, "processes");
+      await cp(runtimeRoot, controlledRuntime, { recursive: true });
+      await mkdir(processParent);
+      const previousLocale = process.env.LC_ALL;
+      if (locale !== undefined) process.env.LC_ALL = locale;
+      const transport = new RProcessSessionTransport({
+        runtimeRoot: controlledRuntime,
+        rscriptPath,
+        temporaryParent: processParent,
+        workingDirectory: temporaryParent,
+        documentText: 'cafe_frame <- data.frame(label = c("München", "Zürich"), stringsAsFactors = FALSE)\n'
       });
-      expect(opened.page.page.rows[0]?.values[0]?.raw).toBe("München");
-      const values = await transport.getColumnValues(
-        sessionId,
-        { id: "r:c:0", name: "label" },
-        { filters: [], sorts: [] },
-        "Mü",
-        20,
-        { timeoutMs: 10_000 }
-      );
-      expect(values).toMatchObject({
-        column: "label",
-        values: [{ value: "München", count: 1 }],
-        hasMore: false
-      });
-      await transport.close(sessionId, { timeoutMs: 10_000 });
-      expect(await readdir(temporaryParent)).toEqual([]);
-    } finally {
-      await transport.dispose().catch(() => undefined);
-      if (previousLocale === undefined) delete process.env.LC_ALL;
-      else process.env.LC_ALL = previousLocale;
-      await rm(temporaryParent, { recursive: true, force: true });
-    }
-  }, 30_000);
+      try {
+        const discovery = await transport.discoverVariables({ timeoutMs: 10_000 });
+        expect(discovery.variables).toEqual([{ backend: "r", dataframeFlavor: "r.data.frame", name: "cafe_frame" }]);
+        const sessionId = randomUUID();
+        const opened = await transport.open("cafe_frame", pageWindow(), {
+          requestedSessionId: sessionId,
+          timeoutMs: 10_000
+        });
+        expect(opened.page.page.rows[0]?.values[0]?.raw).toBe("München");
+        const values = await transport.getColumnValues(
+          sessionId,
+          { id: "r:c:0", name: "label" },
+          { filters: [], sorts: [] },
+          "Mü",
+          20,
+          { timeoutMs: 10_000 }
+        );
+        expect(values).toMatchObject({
+          column: "label",
+          values: [{ value: "München", count: 1 }],
+          hasMore: false
+        });
+        await transport.close(sessionId, { timeoutMs: 10_000 });
+        expect(await readdir(processParent)).toEqual([]);
+      } finally {
+        await transport.dispose().catch(() => undefined);
+        if (previousLocale === undefined) delete process.env.LC_ALL;
+        else process.env.LC_ALL = previousLocale;
+        await rm(temporaryParent, { recursive: true, force: true });
+      }
+    },
+    30_000
+  );
 
   it("terminates the exact owned child and removes native temporary files during interrupted execution", async () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-process-dispose-test-"));

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import * as path from "node:path";
+import { rStringExpression } from "./rCode";
 import { R_KERNEL_TRANSPORT_VERSION } from "./rKernelProtocol";
 import { buildRDependencyPreflightCode, R_DEPENDENCY_FAILURE_CLASS } from "./rDependencyRequirements";
 import { readRRuntimeFiles } from "./rKernelRuntimeBundle";
@@ -163,16 +164,13 @@ function wrapWithCorrelatedFailure(operation: string, requestId: string, respons
 }
 
 function rString(value: string): string {
-  if (value.includes("\0")) throw new TypeError("R code cannot contain a NUL path component.");
-  const quote = (text: string): string =>
-    JSON.stringify(text).replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029");
-  const literal = quote(value);
+  const literal = rStringExpression(value);
   // Leave room for surrounding R syntax below macOS's 1024-byte canonical line limit.
   if (Buffer.byteLength(literal, "utf8") <= 768) return literal;
   const characters = Array.from(value);
   const chunks: string[] = [];
-  for (let offset = 0; offset < characters.length; offset += 128) {
-    chunks.push(quote(characters.slice(offset, offset + 128).join("")));
+  for (let offset = 0; offset < characters.length; offset += 64) {
+    chunks.push(rStringExpression(characters.slice(offset, offset + 64).join("")));
   }
   return `base::paste0(\n${chunks.join(",\n")}\n)`;
 }

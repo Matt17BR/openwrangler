@@ -10,6 +10,7 @@ import type { ColumnSummary, ExportOptions, ValueCount } from "../../shared/prot
 import { DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS } from "../configuration";
 import { DetachedBridgeRequestError, type DetachedBridgeRequestReason } from "../dataBridge";
 import { KernelRequestCancelledError, withKernelTimeout } from "../notebooks/kernelLifecycle";
+import { rStringExpression } from "./rCode";
 import { buildRDependencyPreflightCode, R_DEPENDENCY_FAILURE_CLASS } from "./rDependencyRequirements";
 import type { RKernelBridgeTransport } from "./rKernelBridgeTransport";
 import {
@@ -1058,13 +1059,13 @@ function buildRProcessBootstrapCode(processAgent: string, readyPath: string): st
 base::local({
   base::tryCatch({
 ${buildRDependencyPreflightCode("selected Rscript")}
-    base::sys.source(${rString(processAgent)}, envir = base::globalenv(), keep.source = FALSE)
+    base::sys.source(${rStringExpression(processAgent)}, envir = base::globalenv(), keep.source = FALSE)
   }, error = function(.__ow_error) {
-    if (!base::inherits(.__ow_error, ${rString(R_DEPENDENCY_FAILURE_CLASS)})) base::stop(.__ow_error)
-    .__ow_ready_path <- ${rString(readyPath)}
+    if (!base::inherits(.__ow_error, ${rStringExpression(R_DEPENDENCY_FAILURE_CLASS)})) base::stop(.__ow_error)
+    .__ow_ready_path <- ${rStringExpression(readyPath)}
     .__ow_temporary <- base::paste0(.__ow_ready_path, ".dependency-", base::Sys.getpid(), ".tmp")
     .__ow_payload <- base::paste0(
-      ${rString(payloadPrefix)},
+      ${rStringExpression(payloadPrefix)},
       base::encodeString(base::conditionMessage(.__ow_error), quote = '"'),
       "}"
     )
@@ -1076,11 +1077,6 @@ ${buildRDependencyPreflightCode("selected Rscript")}
   })
 })
 `;
-}
-
-function rString(value: string): string {
-  if (value.includes("\0")) throw new TypeError("R code cannot contain a NUL path component.");
-  return JSON.stringify(value).replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029");
 }
 
 function windowsPowerShellPath(): string {

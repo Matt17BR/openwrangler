@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionContext, TextDocument, TextEditor } from "vscode";
 import type { SessionCoordinator } from "../extension/sessionCoordinator";
+import { rStringExpression } from "../extension/r/rCode";
 import type { LiterateDocumentVariableProviders } from "../extension/r/rDocumentCommands";
 
 type CommandHandler = (resource?: unknown) => Promise<unknown>;
@@ -599,9 +600,10 @@ describe("R document command", () => {
   });
 
   it("runs an R Markdown Python chunk through reticulate without fabricating an Interactive cell", async () => {
+    const chunk = 'label = "\u0001😀"\norders = make_frame()\n';
     const document = rDocument(
       "/workspace/orders.Rmd",
-      "---\ntitle: Reticulate\n---\n\n```{python}\norders = make_frame()\n```\n"
+      `---\ntitle: Reticulate\n---\n\n\`\`\`{python}\n${chunk}\`\`\`\n`
     );
     const editor = textEditor(document, 5);
     mocks.textDocuments.push(document);
@@ -619,8 +621,28 @@ describe("R document command", () => {
     expect(providers.r.runLiterateChunkAndOpen).toHaveBeenCalledWith(
       expect.anything(),
       providers.rSession,
-      'reticulate::repl_python(quiet = TRUE, input = "orders = make_frame()\\n")'
+      `reticulate::repl_python(quiet = TRUE, input = ${rStringExpression(chunk)})`
     );
+  });
+
+  it.each([
+    { chunk: `label = "${"\u0001😀".repeat(Math.ceil((1_024 * 1_024) / 5))}"\n`, diagnostic: "1 MiB" },
+    { chunk: 'label = "\0"\n', diagnostic: "valid Unicode without NUL" }
+  ])("refuses a reticulate chunk before quoting or running it ($diagnostic)", async ({ chunk, diagnostic }) => {
+    const document = rDocument("/workspace/orders.Rmd", `\`\`\`{python}\n${chunk}\`\`\`\n`);
+    mocks.textDocuments.push(document);
+    mocks.activeEditor = textEditor(document, 1);
+    mocks.getCommands.mockResolvedValue(["r.runSelection"]);
+    const providers = literateProviders();
+    providers.r.captureActiveSession.mockReturnValue(providers.rSession);
+    register(coordinatorMock(), providers.value);
+
+    await expect(cursorCommand()()).resolves.toBe(false);
+
+    expect(providers.r.runLiterateChunkAndOpen.mock.calls.length).toBe(0);
+    expect(mocks.showErrorMessage).toHaveBeenCalledWith(expect.stringContaining(diagnostic));
+    expect(providers.python.runLiterateChunkAndOpen).not.toHaveBeenCalled();
+    expect(mocks.executeCommand).not.toHaveBeenCalled();
   });
 
   it("runs only the cursor-owned Quarto R chunk through the official Quarto command", async () => {

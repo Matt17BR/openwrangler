@@ -1982,7 +1982,11 @@ indeterminate: Open Wrangler does not retry, roll it back, or claim success agai
 R terminal sessions apply the equivalent rule to the exact terminal object and process ID. Direct active-R opens
 capture that terminal before cleaning up a previous transport; changing terminals requires a new open action.
 Terminal dispatch is one correlated R expression with short physical lines, so a new terminal can accept it before
-R changes its input mode. Long path literals remain escaped and are split into bounded string expressions.
+R changes its input mode. Long paths are split into bounded string expressions. Process and terminal paths and
+reticulate chunk text share an R string emitter that preserves exact Unicode, including control characters next to
+supplementary characters; NUL and unpaired surrogates are refused. JSON mailbox transport remains separate.
+Paths must also be representable in the selected R process's filesystem encoding. Reticulate rejects source over the
+existing 1 MiB R evaluation limit before quoting and checks the resulting wrapped code against that same limit.
 R and Quarto document commands retain the exact editor, document, version, URI, selection, parsed chunk, and resolved
 executor across every activation, discovery, picker, execution, and focus-restoration await.
 
