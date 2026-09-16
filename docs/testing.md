@@ -295,8 +295,9 @@ comparisons through interpreted and compiled programs. Frame, kernel, decoder an
 primitive values, public mutations and correlated transport. Frame capture checks the factor-level count limit;
 kernel mutation checks use fewer, longer levels to exercise the full response byte limit.
 The existing frame profiling owner checks complete numeric bin membership and bounded categorical counts, including
-filtered populations, both sampled fallback limits and sparse columns that remain exact. The R decoder owner verifies
-exact large histograms without requiring unavailable numeric distinct counts.
+filtered populations, both sampled fallback limits and sparse columns that remain exact. It also checks bounded exact
+numeric distinct counts, integer64 identity, duration signed zero and abandonment at the cardinality limit. The R
+decoder owner verifies exact large histograms while allowing omitted statistics above their bounds.
 Formula transport keeps integer and maximum finite double samples; intermediate exact powers and their neighboring
 values belong to the encoder and native numeric-portability owners.
 Min-max scale's adjacent integer64 and missing-value results belong to the native kernel's live and generated-code

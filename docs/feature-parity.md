@@ -670,8 +670,8 @@ semantics. An active R terminal has no source document for generated-code insert
 Sessions honor the opening and ordinary request timeout settings; invalid values use defaults and fractions round
 upward to whole milliseconds. Exports retain their separate 30-minute default. Large R profiles count every finite
 value in numeric histograms and retain exact categorical counts within the [documented memory bounds](architecture.md#viewing-and-profiling).
-Larger categorical distributions and duplicate estimates label their sampled population. Large numeric medians and
-general numeric distinct counts remain unavailable. An oversized page returns a request error; a smaller page remains
+Larger categorical distributions and duplicate estimates label their sampled population. Large numeric columns retain
+exact distinct counts through 10,000 values; higher cardinalities and large numeric medians remain unavailable. An oversized page returns a request error; a smaller page remains
 available without restarting the standalone runtime.
 
 The [generated reference](reference.md#transformation-operations) lists the complete operation set and parameters.

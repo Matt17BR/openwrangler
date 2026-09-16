@@ -2359,6 +2359,8 @@ openwrangler_r_frame_contract <- local({
     numeric_finite_minimum <- Inf
     numeric_finite_maximum <- -Inf
     numeric_bin_values <- NULL
+    numeric_distinct_values <- numeric()
+    numeric_distinct_zero_signs <- numeric()
     numeric_finite_count <- 0
     numeric_mean <- 0
     numeric_exact_mean <- if (kind %in% c("integer", "double", "difftime")) exact_mean_new() else NULL
@@ -2476,6 +2478,20 @@ openwrangler_r_frame_contract <- local({
           }
         } else if (kind %in% c("integer", "integer64", "double", "difftime")) {
           values <- numeric_profile_values(chunk, semantics, present_indices)
+          identity_values <- if (kind == "integer64" &&
+              (!is.null(numeric_distinct_values) || length(numeric_bin_values) < maximum_histogram_bins)) {
+            profile_value_keys(present, semantics, seq_along(present))
+          } else values
+          if (!is.null(numeric_distinct_values)) {
+            # The temporary union adds only this scan chunk to the retained bound.
+            numeric_distinct_values <- unique(c(numeric_distinct_values, identity_values))
+            # Duration keys preserve signed zero; ordinary double keys merge it.
+            if (kind == "difftime") {
+              numeric_distinct_zero_signs <- unique(c(numeric_distinct_zero_signs, 1 / values[values == 0]))
+            }
+            distinct_count <- length(numeric_distinct_values) + max(0L, length(numeric_distinct_zero_signs) - 1L)
+            if (distinct_count > maximum_column_value_distinct_matches) numeric_distinct_values <- NULL
+          }
           chunk_minimum <- suppressWarnings(min(values))
           chunk_maximum <- suppressWarnings(max(values))
           if (is.null(numeric_minimum) || chunk_minimum < numeric_minimum) numeric_minimum <- chunk_minimum
@@ -2486,7 +2502,7 @@ openwrangler_r_frame_contract <- local({
             numeric_finite_minimum <- min(numeric_finite_minimum, min(finite_values))
             numeric_finite_maximum <- max(numeric_finite_maximum, max(finite_values))
             if (length(numeric_bin_values) < maximum_histogram_bins) {
-              bin_values <- if (kind == "integer64") profile_value_keys(present, semantics, seq_along(present)) else finite_values
+              bin_values <- if (kind == "integer64") identity_values else finite_values
               numeric_bin_values <- utils::head(unique(c(numeric_bin_values, unique(bin_values))), maximum_histogram_bins)
             }
             if (kind != "integer64") numeric_exact_mean <- exact_mean_add(finite_values, numeric_exact_mean)
@@ -2624,6 +2640,10 @@ openwrangler_r_frame_contract <- local({
       }
     )
     if (!large_population || kind == "logical" || exact_text_counts) summary$distinctCount <- counts$distinctCount
+    if (large_population && kind %in% c("integer", "integer64", "double", "difftime") &&
+        !is.null(numeric_distinct_values)) {
+      summary$distinctCount <- as.integer(length(numeric_distinct_values) + max(0L, length(numeric_distinct_zero_signs) - 1L))
+    }
 
     if (kind %in% c("integer", "integer64", "double", "difftime")) {
       numeric <- list()
