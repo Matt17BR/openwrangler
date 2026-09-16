@@ -67,7 +67,7 @@ thead:has(.categoryMiniChart > :nth-child(4)) {
 }
 
 thead:has(.sampledLabel) {
-  --header-sampled-space: 14px;
+  --header-sampled-space: 36px;
 }
 
 .columnInsight.compact > .summaryDistribution {
