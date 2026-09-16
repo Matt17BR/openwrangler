@@ -530,10 +530,10 @@ Unaffected staged rules remain, and Undo does not restore a rule already retired
 Redo re-executes the latest undone command in editing-capable Python and native R sessions. Multiple Undos retain
 their command order; a new committed branch clears them. History lasts only for the current runtime session,
 including renderer remounts, and ends on close or recovery. Custom Code can produce a different result when re-executed.
-Pandas, Polars and native R reuse one input/output pair while inspecting a step whose prefix includes Custom Code.
+Pandas, Polars, DuckDB and native R reuse one input/output pair while inspecting a step whose prefix includes Custom Code.
 Paging and changing visible columns preserve that inspected result. The first inspection can differ from the original
-Apply. The pair requires full-frame memory and lasts until another step is inspected, the revision changes, the source is invalidated,
-or the session closes. DuckDB retains the [query-identity limitation](#sessions-and-generated-code) described above.
+Apply. Retention can hold full frames and, for DuckDB, private native checkpoints. The pair lasts until another step is
+inspected, the revision changes, the source is invalidated, or the session closes.
 Successful history changes close saved-step editors so reopening a step uses its current input schema. Failed
 changes and ordinary new-operation forms retain typed input.
 Earlier-step edits and deletions remove viewing filters and sorts made incompatible by the resulting schema while
@@ -737,10 +737,9 @@ output.
 
 DuckDB file imports support CSV, TSV, Parquet, and JSONL. A multibyte quote character is incompatible and fails
 before runtime startup. CSV export is UTF-8 with single-byte delimiter and quote syntax. DuckDB rejects schemas whose
-identifiers differ only by case. Notebook `DuckDBPyRelation` values retain the user's relation for serialized viewing
-only; closing releases Open Wrangler's reference and never closes the user's connection.
-
-Notebook queries also have the [lazy-source ordering limitation](#sessions-and-generated-code).
+identifiers differ only by case. Notebook `DuckDBPyRelation` values are captured on their explicitly selected originating
+connection for serialized viewing only. Closing releases Open Wrangler's references and never closes the user's
+connection. See the [capture requirements and costs](#sessions-and-generated-code).
 
 **Open Wrangler: Open DuckDB Table** chooses a local database and one base table without SQL. It supports viewing,
 filters, sorts and profiles through a retained read-only connection. Multiple tables from the same database can stay
