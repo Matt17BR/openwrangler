@@ -558,6 +558,9 @@ Each engine shares its scalar preparation between live filters and generated cod
 Polars Enum equality compares text labels without casting an unknown label into the closed category domain.
 An absent label matches no rows; inequality retains present rows. Selected-value filters omit labels outside that
 domain and retain their explicit null flags. Source columns and ordered comparisons keep the declared Enum ordering.
+In-range integer predicate operands and wholly valid integer selections resolve through the declared category labels,
+avoiding deprecated numeric casts in live and generated filters. Membership preserves native Series inference first.
+Other operands retain native cast behavior, including version-dependent refusals; source columns are not converted.
 
 Pandas object duration counts and present-value filters share exact integer comparison keys, measured in attoseconds.
 The existing unit registry supplies fixed NumPy scales and multipliers; source scalars and dtype remain unchanged.
