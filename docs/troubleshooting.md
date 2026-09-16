@@ -63,8 +63,8 @@ The two recovery commands have different purposes:
 
 **Safe recovery.** For missing packages, review the interpreter and requirements in the installation dialog before
 confirming. You can instead install the listed requirements with your normal environment manager, using that same
-interpreter. Then select that interpreter with **Open Wrangler: Change Runtime** or
-[the Python extension](#open-wrangler-cannot-select-a-python-interpreter), and reopen the source.
+interpreter. Then run **Open Wrangler: Change Runtime** and re-enter that executable path, even if it has not changed,
+to clear cached dependency checks. Reopen the source.
 For an interrupted change, wait for any package manager still using the
 environment to finish, repair that environment with its normal tooling if necessary, and run **Open Wrangler:
 Revalidate Runtime Dependencies**. If the command cannot find an exact recovery target, reopen the affected source
