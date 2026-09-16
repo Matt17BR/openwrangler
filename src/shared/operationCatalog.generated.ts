@@ -127,7 +127,7 @@ export const operationCatalog: readonly OperationCatalogItem[] = Object.freeze([
     kind: "extractStructFields",
     title: "Extract Struct Fields",
     description:
-      "Append selected scalar fields from a Polars Struct or flat native R record column, retaining the parent and rows.",
+      "Append selected scalar fields from Polars or DuckDB Structs or flat native R records, retaining the parent and rows.",
     group: "Columns / types",
     icon: "symbol-field",
     required: Object.freeze(["column", "fields"]),

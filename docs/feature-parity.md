@@ -625,13 +625,13 @@ limits below. Support labels describe the qualification commitment for each entr
 | IRkernel notebook in desktop VS Code                | Stable since 2.5.0 on Linux, macOS and Windows; exact notebook, kernel and variable ownership | Copy, save, notebook insertion, CSV and Parquet        |
 | Active terminal managed by the official R extension | Preview on Linux; exact terminal and process ownership                                        | Copy, save, CSV and Parquet; no document for insertion |
 | Managed `.R`, `.Rmd` or `.qmd` document             | Preview on Linux and macOS; exact document/version and owned R process                        | Copy, save, source-document insertion, CSV and Parquet |
-| Local CSV, TSV, Parquet, JSONL or Excel file        | Preview on Linux, macOS and Windows; exact file/options and owned R process                   | Copy, save, CSV and Parquet; no document insertion     |
+| Local CSV, TSV, Parquet, JSONL or Excel file        | Preview in 2.6 on Linux, macOS and Windows; exact file/options and owned R process             | Copy, save, CSV and Parquet; no document insertion     |
 | IRkernel notebook in Cursor on Linux                | Experimental editor compatibility with narrower coverage                                      | Only the capabilities of its documented execution path |
 
 The [architecture](architecture.md#native-r) defines frame, precision, source and transport guarantees.
 [Testing](testing.md#native-r-editor-dependencies) identifies the native and installed checks for each path.
 
-Local R files use a base `data.frame` with the existing R cleaning operations. File sessions can restore saved plans;
+In **2.6**, local R files use a base `data.frame` with the existing R cleaning operations. File sessions can restore saved plans;
 live R notebook, document and terminal sessions do not use workspace persistence.
 Select R explicitly in the engine picker or `openWrangler.defaultBackend`, or let Auto select R when no compatible
 Python interpreter or file engine is available. Switching between R and Python opens a separate session and retains the original plan.
@@ -676,7 +676,7 @@ are refused. IRkernel works across the supported desktop platforms; direct `.R`,
 limited to macOS and Linux. Literate support runs selected lexical R cells, without promising document-render
 semantics. An active R terminal has no source document for generated-code insertion.
 
-Ordinary list columns can contain atomic vectors of one native type, including factors, temporal values and integer64.
+In **2.6**, ordinary list columns can contain atomic vectors of one native type, including factors, temporal values and integer64.
 Typed empty vectors retain their type; `list()` is an untyped empty value and outer `NULL` is missing. Flat named records
 with the same scalar fields appear as Struct columns, even when field order differs. Missing fields, `NULL` field
 values, mixed element types and recursive containers are refused. Atomic element names remain intact.
@@ -701,7 +701,7 @@ available without restarting the standalone runtime.
 
 The [generated reference](reference.md#transformation-operations) lists the complete operation set and parameters.
 Custom Code can call installed packages such as `dplyr`, `data.table` and `collapse`, and return a supported base
-`data.frame`, tibble or `data.table` even when the input uses another admitted class. Preview, history, profiling,
+`data.frame`, tibble or `data.table`. In **2.6**, the result can change between these frame classes. Preview, history, profiling,
 export and generated code retain that result's class. Grouped objects, unsupported attributes and cell classes still
 require an explicit conversion. Missing packages and failed code leave the confirmed result available.
 Custom Code can create the first column of a supported zero-column source, with inspection, Undo and Redo. Drop
