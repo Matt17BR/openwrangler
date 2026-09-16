@@ -1682,7 +1682,13 @@ unit or integer64 precision loss is refused. Integer64-to-integer retains intege
 
 Standalone generated plans run in a fresh `baseenv()`-parented implementation environment and validate the source
 before copying. Formula, Format Datetime and categorical helpers avoid caller-defined operator or S3 dispatch.
-Custom Code retains ordinary R dispatch. Publication rejects active bindings before/after evaluation and before
+Custom Code retains ordinary R dispatch and may call packages installed in its captured R environment. Its result may
+change between admitted base `data.frame`, tibble and `data.table` classes, with the existing normalization of readr
+frames. Output class, column, identity, metadata and allocation validation still precede publication. The original
+source flavor remains immutable; the active result, committed state and retained step inputs carry their own flavors
+through Preview, replacement, Apply, Discard, Undo, Redo and inspection. Built-in steps preserve their input flavor.
+Generated code prepares data.table append primitives when a Custom Code result first needs them.
+Publication rejects active bindings before/after evaluation and before
 assignment; an original named `open_wrangler_result` is preserved and output uses `open_wrangler_result_2`.
 Inspection replays only the selected prefix and transfers code/input/output separately; the host restores exact retained
 schemas before publishing bounded pages. Redo revalidates the expected next step and fresh result instead of assuming

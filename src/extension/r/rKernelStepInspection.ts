@@ -65,6 +65,9 @@ export class RKernelStepInspection {
     if (!inputKeyColumnIds) throw new Error("The R bridge is missing applied-step input key metadata.");
     const inputRowNames = session.planInputRowNames[stepIndex];
     if (inputRowNames === undefined) throw new Error("The R bridge is missing applied-step input row-name metadata.");
+    const inputDataframeFlavor = session.planInputDataframeFlavors[stepIndex];
+    if (inputDataframeFlavor === undefined)
+      throw new Error("The R bridge is missing applied-step input dataframe flavor.");
     const inputCustomRowIdentities = session.planInputCustomRowIdentities[stepIndex];
     const appliedStep = session.steps[stepIndex] as RTransformStep;
     const outputSchema =
@@ -99,6 +102,11 @@ export class RKernelStepInspection {
       session.planInputRowNames[stepIndex + 1] ??
       (stepIndex === session.steps.length - 1 ? session.committedRowNames : undefined);
     if (outputRowNames === undefined) throw new Error("The R bridge is missing applied-step output row-name metadata.");
+    const outputDataframeFlavor =
+      session.planInputDataframeFlavors[stepIndex + 1] ??
+      (stepIndex === session.steps.length - 1 ? session.committedDataframeFlavor : undefined);
+    if (outputDataframeFlavor === undefined)
+      throw new Error("The R bridge is missing applied-step output dataframe flavor.");
     const expectedRevision = session.revision;
     const page = pageWindow(
       request.offset,
@@ -138,7 +146,9 @@ export class RKernelStepInspection {
         inputIdentityRows,
         inputKeyColumnIds,
         inputRowNames,
-        emptyRViewQuery()
+        emptyRViewQuery(),
+        undefined,
+        inputDataframeFlavor
       );
       assertCustomDerivedRowIdentities(result.inputPage, inputCustomRowIdentities, emptyRViewQuery());
       assertMutationContract(
@@ -150,7 +160,9 @@ export class RKernelStepInspection {
         outputIdentityRows,
         outputKeyColumnIds,
         outputRowNames,
-        emptyRViewQuery()
+        emptyRViewQuery(),
+        undefined,
+        outputDataframeFlavor
       );
       assertCustomDerivedRowIdentities(result.outputPage, outputCustomRowIdentities, emptyRViewQuery());
       if (

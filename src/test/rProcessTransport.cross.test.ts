@@ -579,7 +579,7 @@ describe.skipIf(!enabled)("plain R process transport", () => {
         {
           id: "custom-process-step",
           kind: "customCode",
-          params: { code: "result <- df\n" }
+          params: { code: "result <- tibble::as_tibble(df)\n" }
         },
         pageWindow(),
         customOpened.page.schema
@@ -587,14 +587,18 @@ describe.skipIf(!enabled)("plain R process transport", () => {
       expect(custom).toMatchObject({
         revision: 1,
         effectiveView: { filters: [], sorts: [] },
-        page: { shape: { rows: 4, columns: 1 } }
+        page: { dataframeFlavor: "r.tibble", shape: { rows: 4, columns: 1 } }
       });
-      await transport.applyDraft(customSessionId, custom.revision, pageWindow());
-      await transport.undoStep(customSessionId, 2, pageWindow());
+      await expect(transport.applyDraft(customSessionId, custom.revision, pageWindow())).resolves.toMatchObject({
+        page: { dataframeFlavor: "r.tibble" }
+      });
+      await expect(transport.undoStep(customSessionId, 2, pageWindow())).resolves.toMatchObject({
+        page: { dataframeFlavor: "r.data.frame" }
+      });
       const redoneCustom = await transport.redoStep(
         customSessionId,
         3,
-        { id: "custom-process-step", kind: "customCode", params: { code: "result <- df\n" } },
+        { id: "custom-process-step", kind: "customCode", params: { code: "result <- tibble::as_tibble(df)\n" } },
         pageWindow(),
         customOpened.page.schema
       );
@@ -603,7 +607,7 @@ describe.skipIf(!enabled)("plain R process transport", () => {
         transport.redoStep(
           customSessionId,
           4,
-          { id: "custom-process-step", kind: "customCode", params: { code: "result <- df\n" } },
+          { id: "custom-process-step", kind: "customCode", params: { code: "result <- tibble::as_tibble(df)\n" } },
           pageWindow(),
           customOpened.page.schema
         )

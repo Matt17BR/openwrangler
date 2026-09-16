@@ -88,6 +88,117 @@ local({
   invisible(dispatch_with(local_agent, "closeSession", list(sessionId = session)))
 })
 
+# Real package calls may move between the already admitted frame classes.
+local({
+  source_frame <- data.frame(id = 1:3, x = c(2L, NA_integer_, 6L))
+  file_path <- tempfile(fileext = ".csv")
+  writeLines(c("id,x", "1,2", "2,", "3,6"), file_path)
+  on.exit(unlink(file_path), add = TRUE)
+  file_bytes <- readBin(file_path, "raw", 1024L)
+  cases <- list(
+    list(label = "file-dplyr", file = TRUE, source = source_frame,
+      code = "result <- dplyr::ungroup(dplyr::mutate(dplyr::group_by(tibble::as_tibble(df), id), plus = x + 1L))", flavor = "r.tibble"),
+    list(label = "file-data-table", file = TRUE, source = source_frame,
+      code = "data.table::setDT(df); data.table::set(df, j = 'plus', value = df$x + 1L); data.table::setkeyv(df, 'id'); result <- df",
+      flavor = "r.data.table", keyed = TRUE),
+    list(label = "file-collapse", file = TRUE, source = source_frame,
+      code = "result <- collapse::qDT(collapse::ftransform(df, plus = x + 1L))", flavor = "r.data.table"),
+    list(label = "tibble-dplyr", file = FALSE, source = tibble::as_tibble(source_frame),
+      code = "result <- dplyr::mutate(df, plus = x + 1L)", flavor = "r.tibble"),
+    list(label = "data-table-base", file = FALSE, source = data.table::as.data.table(source_frame),
+      code = "data.table::set(df, j = 'plus', value = df$x + 1L); result <- base::as.data.frame(df)", flavor = "r.data.frame"),
+    list(label = "collapse-base", file = FALSE, source = collapse::qTBL(source_frame),
+      code = "result <- collapse::qDF(collapse::ftransform(df, plus = x + 1L))", flavor = "r.data.frame")
+  )
+  for (case in cases) local({
+    sources <- new.env(parent = baseenv())
+    variable <- if (case$file) ".ow_csv_source" else "package_frame"
+    sources[[variable]] <- if (case$file) openwrangler_r_kernel_agent$load_csv_source(file_path) else case$source
+    before <- serialize(sources[[variable]], NULL, version = 3L)
+    agent <- openwrangler_r_kernel_agent$new_agent(
+      openwrangler_r_frame_contract, sources,
+      file_source = if (case$file) list(path = file_path, header = TRUE, delimiter = ",") else NULL
+    )
+    on.exit(agent$dispose(), add = TRUE)
+    session <- "01020304-0102-4102-8102-010203040506"
+    call <- function(kind, payload) dispatch_with(agent, kind, payload)
+    opened <- call("openSession", list(sessionId = session, variableName = variable, page = page_window()))
+    assert_identical(opened$kind, "page", paste(case$label, "did not open"))
+    step <- custom_step(case$label, case$code)
+    preview_at <- function(revision) call("previewStep", list(
+      sessionId = session, revision = revision, step = step, page = page_window()
+    ))
+    preview <- preview_at(0L)
+    assert_identical(preview$kind, "stepPreview", paste(case$label, "did not preview"))
+    assert_identical(preview$page$dataframeFlavor, case$flavor, paste(case$label, "lost output flavor"))
+    expected_classes <- switch(case$flavor, "r.tibble" = c("tbl_df", "tbl", "data.frame"),
+      "r.data.table" = c("data.table", "data.frame"), "data.frame")
+    assert_identical(unlist(preview$page$frameSemantics$classes), expected_classes, paste(case$label, "lost class metadata"))
+    assert_identical(unlist(preview$page$frameSemantics$keyColumnIds), if (isTRUE(case$keyed)) "r:c:0" else NULL,
+      paste(case$label, "lost key metadata"))
+    assert_identical(vapply(preview$page$schema, `[[`, character(1L), "id"),
+      c("r:c:0", "r:c:1", paste0("c:step:", case$label, ":0")), paste(case$label, "changed column identities"))
+    assert_identical(vapply(preview$page$page$rows, `[[`, character(1L), "id"),
+      paste0("r:r:", 3:5), paste(case$label, "did not refresh row identities"))
+    discarded <- call("discardDraft", list(sessionId = session, revision = 1L, page = page_window()))
+    assert_identical(discarded$page, opened$page, paste(case$label, "discard did not restore source"))
+    preview <- preview_at(2L)
+    applied <- call("applyDraft", list(sessionId = session, revision = 3L, page = page_window()))
+    assert_identical(applied$page, preview$page, paste(case$label, "apply changed output"))
+    for (side in c("input", "output")) {
+      inspected <- call("inspectStepPage", list(sessionId = session, revision = 4L,
+        stepId = step$id, side = side, page = page_window()))
+      assert_identical(inspected$kind, "stepInspectionPage", paste(case$label, side, "inspection failed"))
+      expected <- if (side == "input") opened$page else applied$page
+      expected$schema <- NULL
+      assert_identical(inspected$page, expected, paste(case$label, side, "inspection changed frame"))
+    }
+    summary <- call("getSummary", list(sessionId = session,
+      columns = I(list(list(id = paste0("c:step:", case$label, ":0"), name = "plus"))),
+      view = list(filters = I(list()), sorts = I(list()))))
+    assert_identical(summary$summaries[[1L]]$nullCount, 1L, paste(case$label, "profile lost nulls"))
+    assert_identical(summary$summaries[[1L]]$numeric$min, 3L, paste(case$label, "profile changed minimum"))
+    generated <- new.env(parent = baseenv())
+    if (!case$file) generated[[variable]] <- unserialize(before)
+    eval(parse(text = applied$code), envir = generated)
+    expected <- source_frame
+    expected$plus <- c(3L, NA_integer_, 7L)
+    assert_identical(class(generated$open_wrangler_result), expected_classes, paste(case$label, "generated class differs"))
+    assert_identical(as.data.frame(generated$open_wrangler_result), expected, paste(case$label, "generated values differ"))
+    if (!case$file) assert_identical(serialize(generated[[variable]], NULL, version = 3L), before,
+      paste(case$label, "generated execution mutated source"))
+    exported <- call("exportData", list(sessionId = session, revision = 4L, exportId = export_id, options = csv_export_options))
+    assert_identical(exported$kind, "dataExported", paste(case$label, "export failed"))
+    chunk <- call("readDataExport", list(sessionId = session, revision = 4L, exportId = export_id, offset = 0L, limit = 1024L))
+    actual_csv <- read.csv(text = rawToChar(jsonlite::base64_dec(chunk$data)), check.names = FALSE)
+    assert_identical(actual_csv, expected, paste(case$label, "exported values differ"))
+    for (failure in c("result <- openwrangler_missing_test_package::transform(df)",
+      "data.table::setDT(df); data.table::set(df, j = 'x', value = rep.int(999L, nrow(df))); stop('owned failure')")) {
+      failed <- call("previewStep", list(sessionId = session, revision = 4L,
+        step = custom_step("package-failure", failure), page = page_window()))
+      assert_identical(failed$kind, "error", paste(case$label, "failed code was accepted"))
+      assert_identical(failed$recoverable, TRUE, paste(case$label, "failure was not recoverable"))
+      recovered <- call("getPage", list(sessionId = session, page = page_window()))
+      assert_identical(recovered$page, applied$page, paste(case$label, "failure changed committed frame"))
+    }
+    undone <- call("undoStep", list(sessionId = session, revision = 4L, page = page_window()))
+    assert_identical(undone$page, opened$page, paste(case$label, "undo did not restore source"))
+    redone <- call("redoStep", list(sessionId = session, revision = 5L, expectedStepId = step$id, page = page_window()))
+    assert_identical(redone$page, applied$page, paste(case$label, "redo changed output"))
+    if (case$flavor == "r.data.table") {
+      appended <- call("previewStep", list(sessionId = session, revision = 6L, page = page_window(),
+        step = formula_step("package-append", "add", "next_value", left_position = 2L, left_name = "x", value = 2L)))
+      assert_identical(appended$kind, "stepPreview", paste(case$label, "Formula append failed"))
+      eval(parse(text = appended$code), envir = generated)
+      expected$next_value <- c(4L, NA_integer_, 8L)
+      assert_identical(class(generated$open_wrangler_result), expected_classes, paste(case$label, "generated append changed class"))
+      assert_identical(as.data.frame(generated$open_wrangler_result), expected, paste(case$label, "generated append differs"))
+    }
+    assert_identical(serialize(sources[[variable]], NULL, version = 3L), before, paste(case$label, "mutated source"))
+    assert_identical(readBin(file_path, "raw", 1024L), file_bytes, paste(case$label, "changed source file"))
+  })
+})
+
 zero_column_sources <- list(
   data.frame(row.names = c("row-a", "row-b", "row-c")),
   tibble::tibble(.rows = 0L),
@@ -209,7 +320,7 @@ custom_output_error_cases <- list(
   ),
   list(label = "non-frame Custom Code result", code = "result <- 1:3"),
   list(label = "zero-column Custom Code result", code = "result <- df[, FALSE, drop = FALSE]"),
-  list(label = "cross-flavor Custom Code result", code = "result <- tibble::as_tibble(df)"),
+  list(label = "grouped Custom Code result", code = "result <- dplyr::group_by(tibble::as_tibble(df), row_id)"),
   list(
     label = "private-name Custom Code result",
     code = paste(

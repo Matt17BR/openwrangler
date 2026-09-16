@@ -158,6 +158,9 @@ it requires an installed Rscript and does not need Python. The **Open Wrangler R
 Rscript path. Choosing R from a Python session opens a separate tab and
 preserves the existing steps. Changing an R file's import options also opens a separate session.
 
+Custom Code can call installed R packages such as `dplyr`, `data.table` and `collapse`, and return a supported
+base `data.frame`, tibble or `data.table`, including a change of frame class.
+
 R terminal sessions on Linux and managed `.R`, `.Rmd` and `.qmd` documents on Linux/macOS are **Preview**.
 Cursor support is **experimental**. The [native R support guide](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#native-r-support)
 describes supported frame classes, operations and export limits.

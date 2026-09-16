@@ -675,6 +675,10 @@ exact distinct counts through 10,000 values; higher cardinalities and large nume
 available without restarting the standalone runtime.
 
 The [generated reference](reference.md#transformation-operations) lists the complete operation set and parameters.
+Custom Code can call installed packages such as `dplyr`, `data.table` and `collapse`, and return a supported base
+`data.frame`, tibble or `data.table` even when the input uses another admitted class. Preview, history, profiling,
+export and generated code retain that result's class. Grouped objects, unsupported attributes and cell classes still
+require an explicit conversion. Missing packages and failed code leave the confirmed result available.
 Custom Code can create the first column of a supported zero-column source, with inspection, Undo and Redo. Drop
 Missing Rows and Drop Duplicates may retain an empty schema; Custom Code output still requires a column.
 Sorting and reducing rows work with ordinary `read.csv` inputs, preserving native row-name behavior. Active

@@ -55,7 +55,8 @@ export const R_BRIDGE_CAPABILITIES: SourceCapabilities = Object.freeze({
 export interface RBridgeSession {
   readonly sessionId: string;
   readonly source: SessionSource;
-  readonly dataframeFlavor: RDataframeFlavor;
+  readonly sourceDataframeFlavor: RDataframeFlavor;
+  dataframeFlavor: RDataframeFlavor;
   /** Original source row count and initial row-identity domain. */
   readonly sourceRows: number;
   readonly sourceSchema: readonly ColumnSchema[];
@@ -75,6 +76,7 @@ export interface RBridgeSession {
   committedIdentityRows: number;
   committedKeyColumnIds: readonly string[];
   committedRowNames: RFramePageContract["frameSemantics"]["rowNames"];
+  committedDataframeFlavor: RDataframeFlavor;
   committedCustomRowIdentities: RCustomRowIdentityConstraint | undefined;
   filterModel: FilterModel;
   rows: number;
@@ -89,6 +91,7 @@ export interface RBridgeSession {
   planInputIdentityRows: readonly number[];
   planInputKeyColumnIds: readonly (readonly string[])[];
   planInputRowNames: readonly RFramePageContract["frameSemantics"]["rowNames"][];
+  planInputDataframeFlavors: readonly RDataframeFlavor[];
   planInputCustomRowIdentities: readonly (RCustomRowIdentityConstraint | undefined)[];
   draftStep?: RTransformStep;
   draftReplacesStepId?: string;
@@ -98,6 +101,7 @@ export interface RBridgeSession {
   draftInputIdentityRows?: number;
   draftInputKeyColumnIds?: readonly string[];
   draftInputRowNames?: RFramePageContract["frameSemantics"]["rowNames"];
+  draftInputDataframeFlavor?: RDataframeFlavor;
   draftInputCustomRowIdentities: RCustomRowIdentityConstraint | undefined;
   draftBaseFilterModel?: FilterModel;
   draftBaseViewChangeEpoch?: number;
@@ -180,6 +184,7 @@ export function sessionFromContract(
   return {
     sessionId,
     source: copySource(source),
+    sourceDataframeFlavor: contract.dataframeFlavor,
     dataframeFlavor: contract.dataframeFlavor,
     sourceRows: contract.shape.rows,
     sourceSchema: schema,
@@ -193,6 +198,7 @@ export function sessionFromContract(
     committedIdentityRows: contract.shape.rows,
     committedKeyColumnIds: Object.freeze([...contract.frameSemantics.keyColumnIds]),
     committedRowNames: contract.frameSemantics.rowNames,
+    committedDataframeFlavor: contract.dataframeFlavor,
     committedCustomRowIdentities: undefined,
     schema,
     rSchema: contract.schema,
@@ -213,6 +219,7 @@ export function sessionFromContract(
     planInputIdentityRows: Object.freeze([]),
     planInputKeyColumnIds: Object.freeze([]),
     planInputRowNames: Object.freeze([]),
+    planInputDataframeFlavors: Object.freeze([]),
     planInputCustomRowIdentities: Object.freeze([]),
     draftInputCustomRowIdentities: undefined,
     viewChangeEpoch: 0,
@@ -340,14 +347,15 @@ export function assertSessionContract(
   expectedIdentityRows: number,
   expectedKeyColumnIds: readonly string[],
   expectedRowNames: RFramePageContract["frameSemantics"]["rowNames"],
-  view: RKernelViewQuery
+  view: RKernelViewQuery,
+  expectedDataframeFlavor: RDataframeFlavor = session.dataframeFlavor
 ): void {
   const resolvedColumnOffset = Math.min(request.columnOffset, expectedSchema.length);
   const expectedColumnIds = expectedSchema
     .slice(resolvedColumnOffset, resolvedColumnOffset + request.columnLimit)
     .map((column) => column.id);
   const mismatches = [
-    contract.dataframeFlavor === session.dataframeFlavor ? undefined : "dataframe flavor",
+    contract.dataframeFlavor === expectedDataframeFlavor ? undefined : "dataframe flavor",
     contract.shape.rows === expectedIdentityRows ? undefined : "row-identity domain",
     contract.shape.columns === expectedSchema.length ? undefined : "column count",
     contract.frameSemantics.rowNames === expectedRowNames ? undefined : "row-name semantics",
@@ -376,7 +384,8 @@ export function assertMutationContract(
   expectedKeyColumnIds: readonly string[],
   expectedRowNames: RFramePageContract["frameSemantics"]["rowNames"],
   view: RKernelViewQuery,
-  dynamicNullability?: Readonly<{ columnId: string; mode: "mayAdd" | "mayRemove" }>
+  dynamicNullability?: Readonly<{ columnId: string; mode: "mayAdd" | "mayRemove" }>,
+  expectedDataframeFlavor: RDataframeFlavor = session.dataframeFlavor
 ): void {
   if (dynamicNullability === undefined) {
     assertSessionContract(
@@ -388,7 +397,8 @@ export function assertMutationContract(
       expectedIdentityRows,
       expectedKeyColumnIds,
       expectedRowNames,
-      view
+      view,
+      expectedDataframeFlavor
     );
     return;
   }
@@ -418,7 +428,8 @@ export function assertMutationContract(
     expectedIdentityRows,
     expectedKeyColumnIds,
     expectedRowNames,
-    view
+    view,
+    expectedDataframeFlavor
   );
 }
 
@@ -431,6 +442,7 @@ export function clearDraft(session: RBridgeSession): void {
   session.draftInputIdentityRows = undefined;
   session.draftInputKeyColumnIds = undefined;
   session.draftInputRowNames = undefined;
+  session.draftInputDataframeFlavor = undefined;
   session.draftInputCustomRowIdentities = undefined;
   session.draftBaseFilterModel = undefined;
   session.draftBaseViewChangeEpoch = undefined;
