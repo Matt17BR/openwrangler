@@ -179,9 +179,9 @@ Use the existing owners to choose a focused source check:
   Native R exports belong in the [frame owner's](../r/tests/frame_contract.R) `capture-and-export` case and the
   [kernel owner's](../r/tests/kernel_agent.R) `group-pivot-and-export` case. Retain refusal before writer opening,
   destination/source preservation, bounded conversion and lazy-streaming assertions in these existing owners.
-  Native CSV/TSV, Parquet, JSONL and Excel loading and generated-code agreement belong to that kernel owner's
-  `lifecycle-and-structure` case. CSV cases cover encoding boundaries, strict/lossy decoding, configured quoting,
-  CR records, headerless first-record retention, source preservation and temporary-file cleanup.
+  Native CSV/TSV loading and generated-code agreement belong to that kernel owner's `csv-import` case. It covers
+  encoding boundaries, strict/lossy decoding, configured quoting, CR records, headerless first-record retention,
+  source preservation and temporary-file cleanup. Parquet, JSONL and Excel remain in `lifecycle-and-structure`.
   Small synthetic cross-writer fixtures cover reader precision and sheet identity;
   the native dependency locks include readxl for this owner.
   The [managed process owner](../src/test/rProcessTransport.cross.test.ts) checks actual file loading, editing,
@@ -673,19 +673,21 @@ including those three focused notebook selectors; omitting the purpose retains t
 Artifact acquisition refuses an existing destination and verifies the file it created. Failed partial archives remain
 under the caller's existing private-root cleanup owner. A replaced file or directory withholds cleanup.
 
-The macOS and Windows R jobs first run `kernel:numeric-portability`, subject to the
-[renderer source omission](ci.md#pull-requests). It is the same case included in the canonical Linux kernel suite
-and owns the platform-sensitive mean, decimal parsing, selection and generated-literal assertions
-in `r/tests/kernel_agent_numeric_portability.R`. Broad operation, export, cold-process and dataframe-class matrices
+The macOS and Windows R jobs first run `kernel:numeric-portability` and `kernel:csv-import`, subject to the
+[renderer source omission](ci.md#pull-requests). Each case also runs once in the canonical Linux kernel suite.
+Numeric portability owns the platform-sensitive mean, decimal parsing, selection and generated-literal assertions
+in `r/tests/kernel_agent_numeric_portability.R`; CSV import checks the platform's actual text conversion and native
+reader using the same CSV cases described above. Broad operation, export, cold-process and dataframe-class matrices
 remain in their existing source cases.
 
-This focused case runs in one R process through the warning-strict wrapper, with a two-minute limit and bounded
-output. Its synthetic fixtures and operations do not launch subprocesses; ordinary direct-child execution is sufficient
-and does not qualify general process-tree cleanup. Preparation uses the existing private-library owner with pinned
-jsonlite and bit64 roots, including version and namespace checks. The separate export case requires nanoparquet;
-numeric preparation skips the empty supplemental package install. Any preparation or test failure retains
-the private root; successful preparation and child exit permit its removal. The subsequent installed-editor journey
-keeps its separate environment, nanoparquet dependency and lifetime. The separate R 4.4 qualification remains unchanged.
+The two focused cases run serially in separate R processes through the warning-strict wrapper, each with a two-minute
+limit and bounded output. Their synthetic fixtures and operations do not launch subprocesses; ordinary direct-child
+execution is sufficient and does not qualify general process-tree cleanup. Both reuse one preparation by the existing
+private-library owner with pinned jsonlite and bit64 roots, including version and namespace checks. The separate
+export case requires nanoparquet; source preparation skips the empty supplemental package install. Any preparation
+or test failure retains the private root; successful preparation and both child exits permit its removal.
+The subsequent installed-editor journey keeps its separate environment, nanoparquet dependency and lifetime.
+The separate R 4.4 qualification remains unchanged.
 
 The macOS default is `platform-lifecycle`. It keeps a paging round trip, the Mark Duplicates form, compact
 column reveal and focus, and Rename inspection, Edit, Undo/Redo, all-row exports, source

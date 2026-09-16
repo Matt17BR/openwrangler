@@ -25,7 +25,7 @@ on:
         type: boolean
         default: false
       omit_source:
-        description: Omit native numeric portability for proven selected host and renderer edits
+        description: Omit native numeric and CSV source checks for proven selected host and renderer edits
         type: boolean
         default: false
     outputs:
@@ -322,7 +322,7 @@ jobs:
         name: Check native R artifact cleanup
         run: npx --no-install vitest run --environment node src/test/rPrivateArtifactBoundary.unit.test.ts
       - &r_source_contracts
-        name: Check native R numeric portability
+        name: Check native R numeric and CSV portability
         if: ${{ !inputs.omit_source }}
         shell: node {0}
         env:
@@ -367,20 +367,22 @@ jobs:
             const phases = createRContractPhases({
               environment, r: prepared.rExecutable, rscript: prepared.dependencyProbe.input.executable
             });
-            const [phase] = selectRContractPhases(phases, { kind: "phase", id: "kernel:numeric-portability" });
-            const startedAt = performance.now();
-            // This trusted arithmetic case never starts child processes. Broad process tests stay in native R CI.
-            const output = execFileSync(phase.command, phase.args, {
-              env: phase.environment,
-              encoding: "utf8",
-              timeout: phase.timeoutMs,
-              killSignal: "SIGKILL",
-              maxBuffer: 2 * 1024 * 1024,
-              stdio: ["ignore", "pipe", "pipe"]
-            });
-            console.log(output);
-            console.log(`Numeric portability passed in ${((performance.now() - startedAt) / 1000).toFixed(1)} s.`);
-            // Preparation and the exact R child have succeeded; any earlier failure retains this root.
+            // These trusted cases never start child processes. Broad process tests stay in native R CI.
+            for (const id of ["kernel:numeric-portability", "kernel:csv-import"]) {
+              const [phase] = selectRContractPhases(phases, { kind: "phase", id });
+              const startedAt = performance.now();
+              const output = execFileSync(phase.command, phase.args, {
+                env: phase.environment,
+                encoding: "utf8",
+                timeout: phase.timeoutMs,
+                killSignal: "SIGKILL",
+                maxBuffer: 2 * 1024 * 1024,
+                stdio: ["ignore", "pipe", "pipe"]
+              });
+              console.log(output);
+              console.log(`${id} passed in ${((performance.now() - startedAt) / 1000).toFixed(1)} s.`);
+            }
+            // Preparation and both exact R children have succeeded; any earlier failure retains this root.
             removeEditorAcceptancePrivateRoot(receipt, { processTreeVerifiedStopped: true, privatePathsVerified: true });
           })().catch((error) => {
             console.error(error);
@@ -390,7 +392,7 @@ jobs:
         name: Record omitted R source check
         if: ${{ inputs.omit_source }}
         shell: bash
-        run: echo 'Native R numeric portability and its private source preparation omitted for proven selected host and renderer edits; no fresh numeric-portability execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
+        run: echo 'Native R numeric and CSV portability and their private source preparation omitted for proven selected host and renderer edits; no fresh numeric or CSV source execution is claimed.' >> "$GITHUB_STEP_SUMMARY"
       - run: python -m pip install --upgrade pip
       - run: python -m pip install jupyter-client
       - run: npm run clean && npm run build && npm run package:prepared -- --out openwrangler.vsix

@@ -1,6 +1,7 @@
 source("r/tests/kernel_agent_support.R", local = FALSE)
 kernel_agent_cases <- c(
   "numeric-portability",
+  "csv-import",
   "lifecycle-and-structure",
   "text-fill-and-cast",
   "rows-numeric-datetime-and-by-example",
@@ -80,7 +81,7 @@ if (identical(selected_kernel_agent_case, "numeric-portability")) {
   agent$dispose()
 }
 
-if (identical(selected_kernel_agent_case, "lifecycle-and-structure")) {
+if (identical(selected_kernel_agent_case, "csv-import")) {
 kernel_agent_case_run_count <- kernel_agent_case_run_count + 1L
 local({
   root <- tempfile("ow-csv-loader-")
@@ -231,6 +232,11 @@ local({
   assert_identical(environment$.ow_csv_source, cases[[1L]]$expected, "CSV cleaning mutated loaded source")
   assert_identical(readBin(path, "raw", 1024L), charToRaw(cases[[1L]]$text), "Generated CSV changed source bytes")
 })
+agent$dispose()
+}
+
+if (identical(selected_kernel_agent_case, "lifecycle-and-structure")) {
+kernel_agent_case_run_count <- kernel_agent_case_run_count + 1L
 
 local({
   # Synthetic fixtures: pyarrow scalar Parquet and openpyxl homogeneous sheets, with explicit cached formula cells.
