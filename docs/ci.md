@@ -255,6 +255,8 @@ The `macos-r` and `windows-r` jobs run the existing private R artifact filesyste
 R dependencies or editor preparation. These exercise real file cleanup and refusal of replaced files and directories
 on each platform without launching R or an editor. The macOS job also runs the existing native process cancellation
 owner through default helper preparation, before private R dependency installation or editor preparation.
+Windows runs the existing supervisor native owner before dependency preparation, including production binary R input
+and PowerShell source startup. The installed Windows journey also opens the shared native CSV editing/export case.
 Unless the source omission applies, the released-Jupyter jobs then run the canonical `kernel:numeric-portability`
 and `kernel:csv-import` source cases with the same private jsonlite and bit64 dependencies before opening the editor.
 Parquet dependencies remain with the separate export and editor owners.

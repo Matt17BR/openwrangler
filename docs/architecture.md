@@ -103,7 +103,7 @@ retain their concrete backend and logical Auto preference on restore; they do no
 **Open Wrangler: Open File Path** reads the configured default and creates a fresh panel, including after a failed
 open. Restoring a custom editor instead preserves its previously confirmed backend.
 
-R selection opens local CSV, TSV, Parquet, JSONL/NDJSON or Excel files through an owned `Rscript` process on Linux or macOS. Choosing between R and a Python engine opens a separate panel with that engine's own saved plan, if any;
+R selection opens local CSV, TSV, Parquet, JSONL/NDJSON or Excel files through an owned `Rscript` process on Linux, macOS or Windows. Choosing between R and a Python engine opens a separate panel with that engine's own saved plan, if any;
 it does not translate the original panel's steps or discard its state. The host carries the exact file, session and
 revision through the picker and cancels an unhanded runtime when that owner retires. R file import-options changes
 also open a separate session because the native process is bound to its original source and options.
@@ -1461,6 +1461,16 @@ the loaded base `data.frame`; no notebook, document or terminal binding is fabri
 descriptor and executable in a fresh process and rechecks trust. File sessions offer copy/save of generated R and
 native exports, with no document insertion target. The private descriptor identifies the format and its exact options;
 Excel retains either a sheet name or a zero-based sheet index. Live and generated loading use the same native helper.
+
+On Windows, the bundled PowerShell supervisor creates `Rscript` suspended, assigns it to a private Job Object with
+kill-on-close, then resumes it. Only the selected stdin/stdout/stderr handles cross into the child. The host relays
+bounded binary R requests through the supervisor; stdin closure, target exit or a failed pipe retires the entire job,
+including descendants. A blocked child writer cannot block lease-loss detection. Cleanup removes the private root only
+after the supervisor reports the exact job-empty token and closes. Forced supervisor termination without that receipt
+preserves the root and reports unconfirmed cleanup. The supervisor compiles its bundled C# owner through Windows
+PowerShell `Add-Type`; policy or compilation failure stops opening with a diagnostic. An initial startup failure keeps
+its cause through cleanup; only an established runtime publishes invalidation. This file path does not enable
+Windows document or terminal execution.
 
 #### CSV and TSV files
 

@@ -28,6 +28,8 @@ Support four execution paths with distinct owners:
   and Quarto use the same process for supported R cells, without attaching to or replacing their render processes.
 - A local file session owns a private `Rscript` process bound to the exact file, format, import options and executable.
   It shares the managed process transport with documents but has no source-code document or live variable to execute.
+  Windows file sessions use an owned Job Object to contain R and descendants; document execution remains Linux/macOS.
+  The bundled supervisor also owns the existing Windows acceptance processes, so containment has one implementation.
 
 Do not retarget asynchronous work to whichever editor, kernel or terminal becomes active later. Recovery must verify
 its replacement and retain the original operation's outcome; abandoning an await does not establish that native work

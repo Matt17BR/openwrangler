@@ -5,15 +5,13 @@ import { isSessionSource } from "../../shared/protocolValidation";
 import { FileBackendUnavailableError } from "../dataBridge";
 import { RKernelBridge } from "./rKernelBridge";
 import { RProcessSessionTransport, supportsRCsvImportOptions, type RProcessFileSource } from "./rProcessTransport";
-import { configuredRscriptPath, supportsRscriptExecution } from "./rscriptPath";
+import { configuredRscriptPath, supportsRFileExecution } from "./rscriptPath";
 
 /** Creates a lazy, exact-file native R owner; the coordinator owns opening and replay. */
 export function createRFileBridge(context: vscode.ExtensionContext, source: SessionSource): RKernelBridge {
   if (!vscode.workspace.isTrusted) throw new Error("Trust this workspace before opening a file with R.");
-  if (!supportsRscriptExecution())
-    throw new FileBackendUnavailableError(
-      "Opening files with native R is supported on Linux and macOS. R notebooks remain available on Windows."
-    );
+  if (!supportsRFileExecution())
+    throw new FileBackendUnavailableError("Opening files with native R is supported on Linux, macOS and Windows.");
   if (
     !isSessionSource(source) ||
     source.kind !== "file" ||

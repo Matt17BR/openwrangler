@@ -8048,7 +8048,12 @@ openwrangler_r_kernel_agent <- local({
   validate_file_source <- function(source) {
     source <- exact_record(source, c("path", "format"), "file source", c("header", "delimiter", "encoding", "quoteChar", "sheetName", "sheetIndex"))
     source$path <- bounded_text(source$path, "file source.path", 65536L)
-    if (!startsWith(source$path, "/") || grepl("[\r\n]", source$path)) abort("invalid_source", "R files require an absolute local path")
+    absolute <- if (.Platform$OS.type == "windows") {
+      grepl("^[A-Za-z]:[/\\\\]", source$path, perl = TRUE) ||
+        (grepl("^[/\\\\]{2}[^/\\\\]+[/\\\\][^/\\\\]+(?:[/\\\\]|$)", source$path, perl = TRUE) &&
+          !grepl("^[/\\\\]{2}[?.][/\\\\]", source$path, perl = TRUE))
+    } else startsWith(source$path, "/")
+    if (!absolute || grepl("[\r\n]", source$path)) abort("invalid_source", "R files require an absolute local path")
     source$format <- bounded_text(source$format, "file source.format", 16L)
     if (identical(source$format, "csv")) {
       source <- exact_record(source, c("path", "format", "header", "delimiter", "encoding", "quoteChar"), "CSV file source")

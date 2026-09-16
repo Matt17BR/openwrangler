@@ -6,7 +6,7 @@ param(
 
 <#
 .SYNOPSIS
-  Runs one editor acceptance process tree inside a private Windows Job Object.
+  Runs one owned process tree inside a private Windows Job Object.
 
 .DESCRIPTION
   This helper is intentionally a small, Windows-only process supervisor. Its
@@ -27,6 +27,11 @@ param(
 
     {"protocol":1,"command":"terminate"}
 
+  Native R uses the optional "inputMode":"r-binary" launch field. Subsequent
+  input is the existing length-prefixed R request transport, relayed to a private
+  child pipe. EOF retires the job even while the child is not reading. In this
+  mode, target exit also retires any remaining descendants.
+
   The supervisor emits no frame contents, paths, arguments, environment values,
   or exception text. The target owns stdout/stderr. After the Job Object is empty,
   the supervisor emits the caller's unforgeable attestation token on stderr and
@@ -42,6 +47,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
+using Microsoft.Win32.SafeHandles;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -303,6 +309,7 @@ namespace OpenWrangler.Acceptance
         internal List<string> Arguments;
         internal Dictionary<string, string> Environment;
         internal string AttestationToken;
+        internal bool RBinaryInput;
     }
 
     internal static class Protocol
@@ -316,9 +323,14 @@ namespace OpenWrangler.Acceptance
         internal static LaunchRequest ParseLaunch(string frame)
         {
             Dictionary<string, object> root = RequireObject(StrictJsonParser.Parse(frame));
-            RequireExactKeys(root, new string[] {
+            bool rBinaryInput = root.ContainsKey("inputMode");
+            RequireExactKeys(root, rBinaryInput ? new string[] {
+                "protocol", "command", "executable", "args", "cwd", "environment", "attestationToken", "inputMode"
+            } : new string[] {
                 "protocol", "command", "executable", "args", "cwd", "environment", "attestationToken"
             });
+            if (rBinaryInput && !string.Equals(RequireString(root["inputMode"]), "r-binary", StringComparison.Ordinal))
+                throw new ProtocolFailure();
             RequireProtocol(root["protocol"]);
             if (!string.Equals(RequireString(root["command"]), "launch", StringComparison.Ordinal))
                 throw new ProtocolFailure();
@@ -362,6 +374,7 @@ namespace OpenWrangler.Acceptance
             request.Arguments = arguments;
             request.Environment = environment;
             request.AttestationToken = attestationToken;
+            request.RBinaryInput = rBinaryInput;
             if (WindowsCommandLine.Build(request).Length > MaximumCommandLineCharacters)
                 throw new ProtocolFailure();
             return request;
@@ -563,6 +576,42 @@ namespace OpenWrangler.Acceptance
             }
         }
 
+        internal byte[] ReadRFrame(Func<bool> canAccept)
+        {
+            int first = ReadByte();
+            if (first < 0) return null;
+            if (!canAccept()) throw new ProtocolFailure();
+            byte[] header = new byte[4];
+            header[0] = (byte)first;
+            ReadExact(header, 1, 3);
+            uint length = ((uint)header[0] << 24) | ((uint)header[1] << 16) |
+                          ((uint)header[2] << 8) | header[3];
+            // The R envelope is a UUID, LF, and at most 16 MiB of JSON.
+            if (length < 37 || length > 16 * 1024 * 1024 + 37) throw new ProtocolFailure();
+            byte[] frame = new byte[4 + (int)length];
+            Buffer.BlockCopy(header, 0, frame, 0, 4);
+            ReadExact(frame, 4, (int)length);
+            return frame;
+        }
+
+        private void ReadExact(byte[] target, int offset, int count)
+        {
+            while (count > 0)
+            {
+                if (readOffset >= readLength)
+                {
+                    readLength = stream.Read(readBuffer, 0, readBuffer.Length);
+                    readOffset = 0;
+                    if (readLength == 0) throw new ProtocolFailure();
+                }
+                int copied = Math.Min(count, readLength - readOffset);
+                Buffer.BlockCopy(readBuffer, readOffset, target, offset, copied);
+                readOffset += copied;
+                offset += copied;
+                count -= copied;
+            }
+        }
+
         private int ReadByte()
         {
             if (readOffset >= readLength)
@@ -624,11 +673,26 @@ namespace OpenWrangler.Acceptance
         private bool disposed;
         private bool targetExitCaptured;
         private uint targetExitCode;
+        private Stream targetInput;
 
-        private NativeJob(IntPtr job, IntPtr process)
+        private NativeJob(IntPtr job, IntPtr process, Stream input)
         {
             jobHandle = job;
             processHandle = process;
+            targetInput = input;
+        }
+
+        internal Stream TakeTargetInput()
+        {
+            Stream input = targetInput;
+            targetInput = null;
+            return input;
+        }
+
+        internal bool TargetExited()
+        {
+            CaptureTargetExit(false);
+            return targetExitCaptured;
         }
 
         internal static NativeJob Launch(LaunchRequest request)
@@ -637,6 +701,7 @@ namespace OpenWrangler.Acceptance
             IntPtr process = IntPtr.Zero;
             IntPtr thread = IntPtr.Zero;
             IntPtr nullInput = IntPtr.Zero;
+            IntPtr inputWriter = IntPtr.Zero;
             IntPtr childOutput = IntPtr.Zero;
             IntPtr childError = IntPtr.Zero;
             IntPtr attributeList = IntPtr.Zero;
@@ -664,10 +729,20 @@ namespace OpenWrangler.Acceptance
                 SECURITY_ATTRIBUTES inheritable = new SECURITY_ATTRIBUTES();
                 inheritable.nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES));
                 inheritable.bInheritHandle = 1;
-                nullInput = CreateFileW(
-                    "NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, ref inheritable,
-                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, IntPtr.Zero);
-                RequireHandle(nullInput, "open-null");
+                if (request.RBinaryInput)
+                {
+                    if (!CreatePipe(out nullInput, out inputWriter, ref inheritable, 0))
+                        throw new NativeFailure("create-input-pipe");
+                    if (!SetHandleInformation(inputWriter, HANDLE_FLAG_INHERIT, 0))
+                        throw new NativeFailure("input-inheritance");
+                }
+                else
+                {
+                    nullInput = CreateFileW(
+                        "NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, ref inheritable,
+                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, IntPtr.Zero);
+                    RequireHandle(nullInput, "open-null");
+                }
 
                 IntPtr currentProcess = GetCurrentProcess();
                 IntPtr supervisorOutput = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -729,7 +804,15 @@ namespace OpenWrangler.Acceptance
 
                 CloseHandle(thread);
                 thread = IntPtr.Zero;
-                NativeJob result = new NativeJob(job, process);
+                Stream targetInput = null;
+                if (inputWriter != IntPtr.Zero)
+                {
+                    SafeFileHandle inputHandle = new SafeFileHandle(inputWriter, true);
+                    inputWriter = IntPtr.Zero;
+                    try { targetInput = new FileStream(inputHandle, FileAccess.Write, 4096, false); }
+                    catch { inputHandle.Dispose(); throw; }
+                }
+                NativeJob result = new NativeJob(job, process, targetInput);
                 job = IntPtr.Zero;
                 process = IntPtr.Zero;
                 return result;
@@ -752,6 +835,7 @@ namespace OpenWrangler.Acceptance
                 CloseIfValid(childError);
                 CloseIfValid(childOutput);
                 CloseIfValid(nullInput);
+                CloseIfValid(inputWriter);
                 CloseIfValid(job);
             }
         }
@@ -828,6 +912,7 @@ namespace OpenWrangler.Acceptance
             jobHandle = IntPtr.Zero;
             CloseIfValid(processHandle);
             processHandle = IntPtr.Zero;
+            if (targetInput != null) targetInput.Dispose();
         }
 
         private static void RequireHandle(IntPtr handle, string stage)
@@ -982,6 +1067,10 @@ namespace OpenWrangler.Acceptance
             uint flagsAndAttributes, IntPtr templateFile);
 
         [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool CreatePipe(out IntPtr read, out IntPtr write,
+            ref SECURITY_ATTRIBUTES attributes, uint size);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool DuplicateHandle(
             IntPtr sourceProcess, IntPtr sourceHandle, IntPtr targetProcess,
             out IntPtr targetHandle, uint desiredAccess, bool inheritHandle, uint options);
@@ -1067,6 +1156,7 @@ namespace OpenWrangler.Acceptance
                 using (BlockingCollection<ControlEvent> controls =
                        new BlockingCollection<ControlEvent>(ControlQueueCapacity))
                 {
+                    if (request.RBinaryInput) return RunRInput(reader, job, request.AttestationToken);
                     Thread controlThread = new Thread(delegate()
                     {
                         try
@@ -1149,6 +1239,91 @@ namespace OpenWrangler.Acceptance
             }
         }
 
+        private static int RunRInput(BoundedFrameReader reader, NativeJob job, string token)
+        {
+            // Input/EOF detection must not block behind a child that has stopped
+            // consuming stdin. One bounded handoff separates the reader/writer.
+            using (BlockingCollection<byte[]> frames = new BlockingCollection<byte[]>(1))
+            {
+                int inputState = 0; // 0: reading, 1: exact EOF, 2: malformed input
+                int writeFailed = 0;
+                Stream targetInput = job.TakeTargetInput();
+                Thread writer = new Thread(delegate()
+                {
+                    try
+                    {
+                        foreach (byte[] frame in frames.GetConsumingEnumerable())
+                        {
+                            targetInput.Write(frame, 0, frame.Length);
+                            targetInput.Flush();
+                        }
+                    }
+                    catch { Interlocked.Exchange(ref writeFailed, 1); }
+                    finally
+                    {
+                        try { targetInput.Dispose(); }
+                        catch { Interlocked.Exchange(ref writeFailed, 1); }
+                    }
+                });
+                writer.IsBackground = true;
+                writer.Name = "OpenWranglerRInputWriter";
+                writer.Start();
+                Thread input = new Thread(delegate()
+                {
+                    try
+                    {
+                        while (true)
+                        {
+                            byte[] frame = reader.ReadRFrame(() => frames.Count == 0);
+                            if (frame == null)
+                            {
+                                Interlocked.CompareExchange(ref inputState, 1, 0);
+                                return;
+                            }
+                            if (!frames.TryAdd(frame)) throw new ProtocolFailure();
+                        }
+                    }
+                    catch { Interlocked.Exchange(ref inputState, 2); }
+                });
+                input.IsBackground = true;
+                input.Name = "OpenWranglerRInputReader";
+                input.Start();
+                bool terminating = false;
+                uint terminationStarted = 0;
+                try
+                {
+                    while (true)
+                    {
+                        int state = Interlocked.CompareExchange(ref inputState, 0, 0);
+                        if (state == 2) throw new ProtocolFailure();
+                        if (!terminating && (state == 1 || job.TargetExited() ||
+                            Interlocked.CompareExchange(ref writeFailed, 0, 0) != 0))
+                        {
+                            job.Terminate(LeaseLostExitCode);
+                            terminating = true;
+                            terminationStarted = unchecked((uint)Environment.TickCount);
+                        }
+                        if (job.ActiveProcessCount() == 0)
+                        {
+                            WriteJobEmptyAttestation(token);
+                            return job.TargetExitCode();
+                        }
+                        if (terminating && unchecked((uint)Environment.TickCount - terminationStarted) >
+                            (uint)TerminationDeadlineMilliseconds)
+                            throw new NativeFailure("termination-timeout");
+                        Thread.Sleep(PollMilliseconds);
+                    }
+                }
+                finally
+                {
+                    frames.CompleteAdding();
+                    // The writer owns its pipe until the outstanding write
+                    // settles. Job disposal kills its readers; never join a
+                    // blocked writer before retiring that job.
+                }
+            }
+        }
+
         private static bool IsKnownNativeStage(string stage)
         {
             switch (stage)
@@ -1158,6 +1333,8 @@ namespace OpenWrangler.Acceptance
                 case "create-job":
                 case "configure-job":
                 case "open-null":
+                case "create-input-pipe":
+                case "input-inheritance":
                 case "output-handle":
                 case "error-handle":
                 case "duplicate-output":

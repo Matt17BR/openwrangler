@@ -141,7 +141,7 @@ vi.mock("../extension/webviewPanel", () => ({
 import * as vscode from "vscode";
 import { createRFileBridge } from "../extension/r/rFileSource";
 import { FileBackendUnavailableError } from "../extension/dataBridge";
-import { supportsRscriptExecution } from "../extension/r/rscriptPath";
+import { supportsRFileExecution, supportsRscriptExecution } from "../extension/r/rscriptPath";
 import {
   OPEN_LITERATE_DOCUMENT_CURSOR_COMMAND,
   OPEN_R_DOCUMENT_COMMAND,
@@ -277,6 +277,10 @@ describe("R document command", () => {
     expect(supportsRscriptExecution("linux")).toBe(true);
     expect(supportsRscriptExecution("darwin")).toBe(true);
     expect(supportsRscriptExecution("win32")).toBe(false);
+    expect(supportsRFileExecution("linux")).toBe(true);
+    expect(supportsRFileExecution("darwin")).toBe(true);
+    expect(supportsRFileExecution("win32")).toBe(true);
+    expect(supportsRFileExecution("freebsd")).toBe(false);
     for (const importOptions of [{ encoding: "unknown" }, { quoteChar: "§" }, { delimiter: "§" }]) {
       expect(() => createRFileBridge(context, { ...source, importOptions })).toThrow(FileBackendUnavailableError);
     }
@@ -938,6 +942,10 @@ describe("R document command", () => {
     expect(supportsRscriptExecution("linux")).toBe(true);
     expect(supportsRscriptExecution("darwin")).toBe(true);
     expect(supportsRscriptExecution("win32")).toBe(false);
+    expect(supportsRFileExecution("linux")).toBe(true);
+    expect(supportsRFileExecution("darwin")).toBe(true);
+    expect(supportsRFileExecution("win32")).toBe(true);
+    expect(supportsRFileExecution("freebsd")).toBe(false);
     expect(supportsRscriptExecution("freebsd")).toBe(false);
   });
 

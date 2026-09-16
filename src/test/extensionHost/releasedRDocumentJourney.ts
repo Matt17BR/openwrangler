@@ -107,7 +107,7 @@ export function createReleasedRDocumentJourney({
     testing: TestApi,
     workbench: Page,
     directory: string,
-    includeCsvFile = false
+    entry: "document" | "document-and-file" | "file" = "document"
   ): Promise<void> {
     recordAcceptanceProgress("jupyter-r:document:create");
     assert.equal(vscode.workspace.isTrusted, true, "Running a plain R file requires the trusted packaged workspace.");
@@ -135,310 +135,310 @@ export function createReleasedRDocumentJourney({
     let decoyDocument: vscode.TextDocument | undefined;
     try {
       await configuration.update("rscriptPath", exactRscript, vscode.ConfigurationTarget.Workspace);
-      recordAcceptanceProgress(
-        [
-          "jupyter-r:document:auto-save",
-          `default=${autoSaveInspection?.defaultValue ?? "unset"}`,
-          `global=${autoSaveInspection?.globalValue ?? "unset"}`,
-          `workspace=${autoSaveInspection?.workspaceValue ?? "unset"}`,
-          `resolved=${resolvedAutoSave}`
-        ].join(":")
-      );
-      if (resolvedAutoSave !== "off") {
-        await filesConfiguration.update("autoSave", "off", vscode.ConfigurationTarget.Workspace);
-      }
-      sourceDocument = await vscode.workspace.openTextDocument(fixture.sourceUri);
-      const sourceTextBefore = sourceDocument.getText();
-      const sourceVersionBefore = sourceDocument.version;
-      await vscode.window.showTextDocument(sourceDocument, { preview: false, viewColumn: vscode.ViewColumn.One });
-      assert.equal(vscode.window.activeTextEditor?.document, sourceDocument);
+      if (entry !== "file") {
+        recordAcceptanceProgress(
+          [
+            "jupyter-r:document:auto-save",
+            `default=${autoSaveInspection?.defaultValue ?? "unset"}`,
+            `global=${autoSaveInspection?.globalValue ?? "unset"}`,
+            `workspace=${autoSaveInspection?.workspaceValue ?? "unset"}`,
+            `resolved=${resolvedAutoSave}`
+          ].join(":")
+        );
+        if (resolvedAutoSave !== "off") {
+          await filesConfiguration.update("autoSave", "off", vscode.ConfigurationTarget.Workspace);
+        }
+        sourceDocument = await vscode.workspace.openTextDocument(fixture.sourceUri);
+        const sourceTextBefore = sourceDocument.getText();
+        const sourceVersionBefore = sourceDocument.version;
+        await vscode.window.showTextDocument(sourceDocument, { preview: false, viewColumn: vscode.ViewColumn.One });
+        assert.equal(vscode.window.activeTextEditor?.document, sourceDocument);
 
-      recordAcceptanceProgress("jupyter-r:document:first-run");
-      await invokeReleasedRDocumentVariable(workbench, fixture.sourceUri, "orders_frame", true);
-      const opened = await waitForReleasedRDocumentSession(
-        workbench,
-        testing,
-        sourceDocument,
-        "orders_frame",
-        "the data.frame opened from a real R source file"
-      );
-      assert.deepEqual(opened.metadata.shape, { rows: 240, columns: 4 });
-      assert.deepEqual(
-        opened.metadata.schema.map((column) => column.name),
-        ["row_id", "group", "score", "label"]
-      );
-      assert.deepEqual(opened.metadata.capabilities, {
-        editable: true,
-        lazy: false,
-        cancel: false,
-        exportCsv: true,
-        exportParquet: true,
-        filter: true,
-        sort: true,
-        profile: true,
-        columnValues: true,
-        supportedOperations: RELEASED_R_SUPPORTED_OPERATIONS,
-        notebookInsert: false,
-        documentInsert: true
-      });
-      const firstProcessId = readReleasedRDocumentProcessId(fixture.processIdPath);
-      assert.equal(
-        acceptanceProcessIsAlive(firstProcessId),
-        true,
-        "The exact R source process must own the open session."
-      );
-      const processRoots = releasedRProcessRoots().filter((root) => !initialProcessRoots.includes(root));
-      assert.equal(processRoots.length, 1, "The plain R session must own one private process root.");
-      const processRoot = processRoots[0]!;
+        recordAcceptanceProgress("jupyter-r:document:first-run");
+        await invokeReleasedRDocumentVariable(workbench, fixture.sourceUri, "orders_frame", true);
+        const opened = await waitForReleasedRDocumentSession(
+          workbench,
+          testing,
+          sourceDocument,
+          "orders_frame",
+          "the data.frame opened from a real R source file"
+        );
+        assert.deepEqual(opened.metadata.shape, { rows: 240, columns: 4 });
+        assert.deepEqual(
+          opened.metadata.schema.map((column) => column.name),
+          ["row_id", "group", "score", "label"]
+        );
+        assert.deepEqual(opened.metadata.capabilities, {
+          editable: true,
+          lazy: false,
+          cancel: false,
+          exportCsv: true,
+          exportParquet: true,
+          filter: true,
+          sort: true,
+          profile: true,
+          columnValues: true,
+          supportedOperations: RELEASED_R_SUPPORTED_OPERATIONS,
+          notebookInsert: false,
+          documentInsert: true
+        });
+        const firstProcessId = readReleasedRDocumentProcessId(fixture.processIdPath);
+        assert.equal(
+          acceptanceProcessIsAlive(firstProcessId),
+          true,
+          "The exact R source process must own the open session."
+        );
+        const processRoots = releasedRProcessRoots().filter((root) => !initialProcessRoots.includes(root));
+        assert.equal(processRoots.length, 1, "The plain R session must own one private process root.");
+        const processRoot = processRoots[0]!;
 
-      await exerciseReleasedRDocumentGrid(testing, workbench, opened.sessionId);
-      let app = await releasedRSessionApp(workbench, testing, opened.sessionId, "the editable plain R session");
-      const previewed = await previewReleasedRRename(
-        testing,
-        workbench,
-        app,
-        opened.sessionId,
-        "row_id",
-        "record_id",
-        undefined,
-        "orders_frame"
-      );
-      app = previewed.app;
-      await app
-        .getByRole("region", { name: "Draft review" })
-        .getByRole("button", { name: "Apply step", exact: true })
-        .click();
-      await waitFor(
-        () => {
-          const active = testing.activeSession();
-          const step = active?.metadata.steps[0];
-          return (
-            active?.sessionId === opened.sessionId &&
-            active.metadata.draftStep === undefined &&
-            active.metadata.steps.length === 1 &&
-            step?.kind === "renameColumn" &&
-            step.id === previewed.stepId &&
-            step.params.column.name === "row_id" &&
-            step.params.newName === "record_id" &&
-            active.metadata.schema[0]?.name === "record_id"
-          );
-        },
-        30_000,
-        "applying the plain R rename"
-      );
-      app = await releasedRSessionApp(
-        workbench,
-        testing,
-        opened.sessionId,
-        "the applied plain R session before export"
-      );
-      const applied = testing.activeSession();
-      assert.ok(applied, "The applied plain R rename must retain its session.");
-      const generatedCode = applied.code ?? "";
-      assertReleasedRGeneratedCode(generatedCode, "record_id", "orders_frame");
-      assert.equal(applied.metadata.capabilities.documentInsert, true);
-      assert.equal(applied.metadata.capabilities.notebookInsert, false);
-      assert.equal(applied.metadata.capabilities.exportCsv, true);
-      assert.equal(applied.metadata.capabilities.exportParquet, true);
-
-      recordAcceptanceProgress("jupyter-r:document:export-cleaned-csv");
-      await app.getByRole("button", { name: "Export", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
-      const exportDirectory = mkdtempSync(path.join(tmpdir(), "openwrangler-r-document-export-"));
-      const exportPath = path.join(exportDirectory, "orders-cleaned.csv");
-      const parquetExportPath = path.join(exportDirectory, "orders-cleaned.parquet");
-      try {
-        await exportCleanedDataThroughWorkbench(app, workbench, exportPath);
-        await waitFor(() => existsSync(exportPath), 30_000, "the cleaned R CSV export to appear");
-        assertExactBytes(
-          readFileSync(exportPath),
-          releasedRDocumentCleanedCsv(),
-          "The public R export command must write every cleaned row and the renamed schema."
+        await exerciseReleasedRDocumentGrid(testing, workbench, opened.sessionId);
+        let app = await releasedRSessionApp(workbench, testing, opened.sessionId, "the editable plain R session");
+        const previewed = await previewReleasedRRename(
+          testing,
+          workbench,
+          app,
+          opened.sessionId,
+          "row_id",
+          "record_id",
+          undefined,
+          "orders_frame"
+        );
+        app = previewed.app;
+        await app
+          .getByRole("region", { name: "Draft review" })
+          .getByRole("button", { name: "Apply step", exact: true })
+          .click();
+        await waitFor(
+          () => {
+            const active = testing.activeSession();
+            const step = active?.metadata.steps[0];
+            return (
+              active?.sessionId === opened.sessionId &&
+              active.metadata.draftStep === undefined &&
+              active.metadata.steps.length === 1 &&
+              step?.kind === "renameColumn" &&
+              step.id === previewed.stepId &&
+              step.params.column.name === "row_id" &&
+              step.params.newName === "record_id" &&
+              active.metadata.schema[0]?.name === "record_id"
+            );
+          },
+          30_000,
+          "applying the plain R rename"
         );
         app = await releasedRSessionApp(
           workbench,
           testing,
           opened.sessionId,
-          "the applied plain R session after CSV export"
+          "the applied plain R session before export"
         );
-        await exportCleanedDataThroughWorkbench(app, workbench, parquetExportPath, "parquet");
-        await waitFor(() => existsSync(parquetExportPath), 30_000, "the cleaned R Parquet export to appear");
-        assertParquetFile(parquetExportPath, "The public R document export");
-        assert.deepEqual(
-          readdirSync(exportDirectory).sort(),
-          [path.basename(exportPath), path.basename(parquetExportPath)].sort(),
-          "R document exports must not retain sibling temporary files."
-        );
-        const privateExportRoot = path.join(processRoot, "exports");
-        const cleanedExports = readdirSync(privateExportRoot, { withFileTypes: true });
-        assert.equal(cleanedExports.length, 2, "Each R export must leave only its scrubbed private artifact.");
-        for (const entry of cleanedExports) {
-          assert.match(entry.name, /^\.openwrangler-cleanup-[A-Za-z0-9]+$/u);
-          assert.equal(entry.isDirectory(), true, "Private export cleanup must use an owned directory.");
-          const cleanupDirectory = path.join(privateExportRoot, entry.name);
-          assert.deepEqual(readdirSync(cleanupDirectory), ["artifact"]);
-          const artifactPath = path.join(cleanupDirectory, "artifact");
-          const artifact = lstatSync(artifactPath);
-          assert.equal(artifact.isFile(), true, "The scrubbed export artifact must be a regular file.");
-          assert.equal(artifact.nlink, 1, "The scrubbed export artifact must not have another link.");
-          assert.equal(artifact.size, 0, "Private R export bytes must be scrubbed.");
-        }
-        assert.equal(sourceDocument.getText(), sourceTextBefore, "Export must not edit the open R source document.");
-        assert.equal(
-          sourceDocument.version,
-          sourceVersionBefore,
-          "Export must not change the R source document version."
-        );
-        assert.equal(sourceDocument.isDirty, false, "Export must leave the R source document clean.");
-        assertReleasedRDocumentFixtureUnchanged(fixture);
-      } finally {
-        cleanupAcceptanceTemporaryDirectory(exportDirectory);
-      }
+        const applied = testing.activeSession();
+        assert.ok(applied, "The applied plain R rename must retain its session.");
+        const generatedCode = applied.code ?? "";
+        assertReleasedRGeneratedCode(generatedCode, "record_id", "orders_frame");
+        assert.equal(applied.metadata.capabilities.documentInsert, true);
+        assert.equal(applied.metadata.capabilities.notebookInsert, false);
+        assert.equal(applied.metadata.capabilities.exportCsv, true);
+        assert.equal(applied.metadata.capabilities.exportParquet, true);
 
-      recordAcceptanceProgress("jupyter-r:document:insert-with-decoy-active");
-      const insertionSourceDocument = sourceDocument;
-      const insertionSourceVersion = insertionSourceDocument.version;
-      const insertionSourceText = insertionSourceDocument.getText();
-      recordAcceptanceProgress("jupyter-r:document:insert:open-decoy");
-      decoyDocument = await vscode.workspace.openTextDocument(fixture.decoyUri);
-      recordAcceptanceProgress("jupyter-r:document:insert:decoy-opened");
-      const decoyTextBefore = decoyDocument.getText();
-      await vscode.window.showTextDocument(decoyDocument, { preview: false, viewColumn: vscode.ViewColumn.Beside });
-      recordAcceptanceProgress("jupyter-r:document:insert:decoy-shown");
-      assert.equal(
-        vscode.window.activeTextEditor?.document,
-        decoyDocument,
-        "The insertion journey must keep an unrelated R document active."
-      );
-      assert.equal(insertionSourceDocument.version, insertionSourceVersion);
-      assert.equal(insertionSourceDocument.getText(), insertionSourceText);
-      testing.setActiveSession(opened.sessionId);
-      recordAcceptanceProgress("jupyter-r:document:insert:session-active");
-      const insertionSession = testing.activeSession();
-      assert.equal(insertionSession?.sessionId, opened.sessionId);
-      assert.equal(insertionSession.metadata.capabilities.documentInsert, true);
-      assert.equal(insertionSession.metadata.capabilities.notebookInsert, false);
-      const insertion = vscode.commands.executeCommand<boolean>("openWrangler.insertRDocumentCode");
-      recordAcceptanceProgress("jupyter-r:document:insert:dispatched");
-      const pendingInsertionReceipt = setTimeout(() => {
+        recordAcceptanceProgress("jupyter-r:document:export-cleaned-csv");
+        await app.getByRole("button", { name: "Export", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+        const exportDirectory = mkdtempSync(path.join(tmpdir(), "openwrangler-r-document-export-"));
+        const exportPath = path.join(exportDirectory, "orders-cleaned.csv");
+        const parquetExportPath = path.join(exportDirectory, "orders-cleaned.parquet");
+        try {
+          await exportCleanedDataThroughWorkbench(app, workbench, exportPath);
+          await waitFor(() => existsSync(exportPath), 30_000, "the cleaned R CSV export to appear");
+          assertExactBytes(
+            readFileSync(exportPath),
+            releasedRDocumentCleanedCsv(),
+            "The public R export command must write every cleaned row and the renamed schema."
+          );
+          app = await releasedRSessionApp(
+            workbench,
+            testing,
+            opened.sessionId,
+            "the applied plain R session after CSV export"
+          );
+          await exportCleanedDataThroughWorkbench(app, workbench, parquetExportPath, "parquet");
+          await waitFor(() => existsSync(parquetExportPath), 30_000, "the cleaned R Parquet export to appear");
+          assertParquetFile(parquetExportPath, "The public R document export");
+          assert.deepEqual(
+            readdirSync(exportDirectory).sort(),
+            [path.basename(exportPath), path.basename(parquetExportPath)].sort(),
+            "R document exports must not retain sibling temporary files."
+          );
+          const privateExportRoot = path.join(processRoot, "exports");
+          const cleanedExports = readdirSync(privateExportRoot, { withFileTypes: true });
+          assert.equal(cleanedExports.length, 2, "Each R export must leave only its scrubbed private artifact.");
+          for (const entry of cleanedExports) {
+            assert.match(entry.name, /^\.openwrangler-cleanup-[A-Za-z0-9]+$/u);
+            assert.equal(entry.isDirectory(), true, "Private export cleanup must use an owned directory.");
+            const cleanupDirectory = path.join(privateExportRoot, entry.name);
+            assert.deepEqual(readdirSync(cleanupDirectory), ["artifact"]);
+            const artifactPath = path.join(cleanupDirectory, "artifact");
+            const artifact = lstatSync(artifactPath);
+            assert.equal(artifact.isFile(), true, "The scrubbed export artifact must be a regular file.");
+            assert.equal(artifact.nlink, 1, "The scrubbed export artifact must not have another link.");
+            assert.equal(artifact.size, 0, "Private R export bytes must be scrubbed.");
+          }
+          assert.equal(sourceDocument.getText(), sourceTextBefore, "Export must not edit the open R source document.");
+          assert.equal(
+            sourceDocument.version,
+            sourceVersionBefore,
+            "Export must not change the R source document version."
+          );
+          assert.equal(sourceDocument.isDirty, false, "Export must leave the R source document clean.");
+          assertReleasedRDocumentFixtureUnchanged(fixture);
+        } finally {
+          cleanupAcceptanceTemporaryDirectory(exportDirectory);
+        }
+
+        recordAcceptanceProgress("jupyter-r:document:insert-with-decoy-active");
+        const insertionSourceDocument = sourceDocument;
+        const insertionSourceVersion = insertionSourceDocument.version;
+        const insertionSourceText = insertionSourceDocument.getText();
+        recordAcceptanceProgress("jupyter-r:document:insert:open-decoy");
+        decoyDocument = await vscode.workspace.openTextDocument(fixture.decoyUri);
+        recordAcceptanceProgress("jupyter-r:document:insert:decoy-opened");
+        const decoyTextBefore = decoyDocument.getText();
+        await vscode.window.showTextDocument(decoyDocument, { preview: false, viewColumn: vscode.ViewColumn.Beside });
+        recordAcceptanceProgress("jupyter-r:document:insert:decoy-shown");
+        assert.equal(
+          vscode.window.activeTextEditor?.document,
+          decoyDocument,
+          "The insertion journey must keep an unrelated R document active."
+        );
+        assert.equal(insertionSourceDocument.version, insertionSourceVersion);
+        assert.equal(insertionSourceDocument.getText(), insertionSourceText);
+        testing.setActiveSession(opened.sessionId);
+        recordAcceptanceProgress("jupyter-r:document:insert:session-active");
+        const insertionSession = testing.activeSession();
+        assert.equal(insertionSession?.sessionId, opened.sessionId);
+        assert.equal(insertionSession.metadata.capabilities.documentInsert, true);
+        assert.equal(insertionSession.metadata.capabilities.notebookInsert, false);
+        const insertion = vscode.commands.executeCommand<boolean>("openWrangler.insertRDocumentCode");
+        recordAcceptanceProgress("jupyter-r:document:insert:dispatched");
+        const pendingInsertionReceipt = setTimeout(() => {
+          recordAcceptanceProgress(
+            [
+              "jupyter-r:document:insert:pending",
+              `status=${testing.notebookInsertionStatus() ?? "unset"}`,
+              `versionDelta=${insertionSourceDocument.version - insertionSourceVersion}`,
+              `textChanged=${insertionSourceDocument.getText() !== insertionSourceText}`,
+              `documentInsert=${testing.activeSession()?.metadata.capabilities.documentInsert === true}`
+            ].join(":")
+          );
+        }, 5_000);
+        let inserted: boolean | undefined;
+        try {
+          inserted = await withBoundedAcceptancePromise(insertion, 30_000, "plain R generated-code insertion");
+        } finally {
+          clearTimeout(pendingInsertionReceipt);
+        }
         recordAcceptanceProgress(
           [
-            "jupyter-r:document:insert:pending",
+            "jupyter-r:document:insert:completed",
             `status=${testing.notebookInsertionStatus() ?? "unset"}`,
             `versionDelta=${insertionSourceDocument.version - insertionSourceVersion}`,
-            `textChanged=${insertionSourceDocument.getText() !== insertionSourceText}`,
-            `documentInsert=${testing.activeSession()?.metadata.capabilities.documentInsert === true}`
+            `textChanged=${insertionSourceDocument.getText() !== insertionSourceText}`
           ].join(":")
         );
-      }, 5_000);
-      let inserted: boolean | undefined;
-      try {
-        inserted = await withBoundedAcceptancePromise(insertion, 30_000, "plain R generated-code insertion");
-      } finally {
-        clearTimeout(pendingInsertionReceipt);
+        assert.equal(inserted, true, "Generated R must insert into its exact source document.");
+        assert.equal(testing.notebookInsertionStatus(), "applied");
+        recordAcceptanceProgress("jupyter-r:document:insert:verify-active-decoy");
+        assert.equal(vscode.window.activeTextEditor?.document, decoyDocument);
+        assert.equal(decoyDocument.getText(), decoyTextBefore, "The active decoy R file must not change.");
+        assert.equal(decoyDocument.isDirty, false, "The active decoy R file must remain clean.");
+        recordAcceptanceProgress("jupyter-r:document:insert:verify-disk-unchanged");
+        assertReleasedRDocumentFixtureUnchanged(fixture);
+        recordAcceptanceProgress("jupyter-r:document:insert:verify-source-edit");
+        await waitFor(
+          () => {
+            assertReleasedRDocumentFixtureUnchanged(fixture);
+            return sourceDocument?.isDirty === true;
+          },
+          5_000,
+          "the generated R source edit to become dirty"
+        );
+        assert.equal(sourceDocument.isDirty, true, "Generated R insertion must remain an unsaved source edit.");
+        assert.ok(sourceDocument.version > sourceVersionBefore);
+        assert.ok(
+          sourceDocument.getText().includes(generatedCode.trimEnd()),
+          "The exact in-memory source must contain the generated cleaning code."
+        );
+        assert.equal(
+          sourceDocument.getText().split(generatedCode.trimEnd()).length - 1,
+          1,
+          "Generated R must be inserted exactly once."
+        );
+        assert.equal(sourceDocument.getText().startsWith(sourceTextBefore), true);
+        assertReleasedRDocumentFixtureUnchanged(fixture);
+
+        recordAcceptanceProgress("jupyter-r:document:undo-from-retained-panel");
+        await app.getByRole("button", { name: "Undo", exact: true }).click();
+        await waitFor(
+          () => {
+            const active = testing.activeSession();
+            return (
+              active?.sessionId === opened.sessionId &&
+              active.metadata.steps.length === 0 &&
+              active.metadata.draftStep === undefined &&
+              active.metadata.schema[0]?.name === "row_id" &&
+              (active.code ?? "") === ""
+            );
+          },
+          30_000,
+          "undoing the plain R rename"
+        );
+        assert.ok(
+          sourceDocument.getText().includes(generatedCode.trimEnd()),
+          "Undoing the session plan must not rewrite the user's unsaved R document."
+        );
+
+        recordAcceptanceProgress("jupyter-r:document:first-close");
+        await disposePackagedSessionPanel(testing, opened.sessionId, "the first plain R session");
+        await waitFor(
+          () => !acceptanceProcessIsAlive(firstProcessId),
+          10_000,
+          "the first private plain R process to stop"
+        );
+        await waitFor(
+          () => isDeepStrictEqual(releasedRProcessRoots(), initialProcessRoots),
+          10_000,
+          "the first private plain R process root to be removed"
+        );
+        assert.equal(testing.diagnostics().sessionCount, 0);
+
+        recordAcceptanceProgress("jupyter-r:document:rerun-unsaved-source");
+        await vscode.window.showTextDocument(sourceDocument, { preview: false, viewColumn: vscode.ViewColumn.One });
+        assert.equal(vscode.window.activeTextEditor?.document, sourceDocument);
+        await invokeReleasedRDocumentVariable(workbench, fixture.sourceUri, "open_wrangler_result", false);
+        const rerun = await waitForReleasedRDocumentSession(
+          workbench,
+          testing,
+          sourceDocument,
+          "open_wrangler_result",
+          "the generated result opened after rerunning the unsaved R source"
+        );
+        assert.equal(rerun.metadata.schema[0]?.name, "record_id");
+        assert.deepEqual(rerun.metadata.shape, { rows: 240, columns: 4 });
+        const rerunPage = await assertReleasedSessionPage(testing, rerun, "1", "jupyter-r-document-rerun-page");
+        assert.equal(rerunPage.metadata.schema[0]?.name, "record_id");
+        const secondProcessId = readReleasedRDocumentProcessId(fixture.processIdPath);
+        assert.equal(acceptanceProcessIsAlive(secondProcessId), true);
+        await disposePackagedSessionPanel(testing, rerun.sessionId, "the rerun plain R session");
+        await waitFor(
+          () => !acceptanceProcessIsAlive(secondProcessId),
+          10_000,
+          "the rerun private plain R process to stop"
+        );
+        assert.equal(testing.diagnostics().sessionCount, 0);
+        assertReleasedRDocumentFixtureUnchanged(fixture);
+        assert.equal(sourceDocument.isDirty, true, "The generated source edit must still be unsaved before cleanup.");
       }
-      recordAcceptanceProgress(
-        [
-          "jupyter-r:document:insert:completed",
-          `status=${testing.notebookInsertionStatus() ?? "unset"}`,
-          `versionDelta=${insertionSourceDocument.version - insertionSourceVersion}`,
-          `textChanged=${insertionSourceDocument.getText() !== insertionSourceText}`
-        ].join(":")
-      );
-      assert.equal(inserted, true, "Generated R must insert into its exact source document.");
-      assert.equal(testing.notebookInsertionStatus(), "applied");
-      recordAcceptanceProgress("jupyter-r:document:insert:verify-active-decoy");
-      assert.equal(vscode.window.activeTextEditor?.document, decoyDocument);
-      assert.equal(decoyDocument.getText(), decoyTextBefore, "The active decoy R file must not change.");
-      assert.equal(decoyDocument.isDirty, false, "The active decoy R file must remain clean.");
-      recordAcceptanceProgress("jupyter-r:document:insert:verify-disk-unchanged");
-      assertReleasedRDocumentFixtureUnchanged(fixture);
-      recordAcceptanceProgress("jupyter-r:document:insert:verify-source-edit");
-      await waitFor(
-        () => {
-          assertReleasedRDocumentFixtureUnchanged(fixture);
-          return sourceDocument?.isDirty === true;
-        },
-        5_000,
-        "the generated R source edit to become dirty"
-      );
-      assert.equal(sourceDocument.isDirty, true, "Generated R insertion must remain an unsaved source edit.");
-      assert.ok(sourceDocument.version > sourceVersionBefore);
-      assert.ok(
-        sourceDocument.getText().includes(generatedCode.trimEnd()),
-        "The exact in-memory source must contain the generated cleaning code."
-      );
-      assert.equal(
-        sourceDocument.getText().split(generatedCode.trimEnd()).length - 1,
-        1,
-        "Generated R must be inserted exactly once."
-      );
-      assert.equal(sourceDocument.getText().startsWith(sourceTextBefore), true);
-      assertReleasedRDocumentFixtureUnchanged(fixture);
-
-      recordAcceptanceProgress("jupyter-r:document:undo-from-retained-panel");
-      await app.getByRole("button", { name: "Undo", exact: true }).click();
-      await waitFor(
-        () => {
-          const active = testing.activeSession();
-          return (
-            active?.sessionId === opened.sessionId &&
-            active.metadata.steps.length === 0 &&
-            active.metadata.draftStep === undefined &&
-            active.metadata.schema[0]?.name === "row_id" &&
-            (active.code ?? "") === ""
-          );
-        },
-        30_000,
-        "undoing the plain R rename"
-      );
-      assert.ok(
-        sourceDocument.getText().includes(generatedCode.trimEnd()),
-        "Undoing the session plan must not rewrite the user's unsaved R document."
-      );
-
-      recordAcceptanceProgress("jupyter-r:document:first-close");
-      await disposePackagedSessionPanel(testing, opened.sessionId, "the first plain R session");
-      await waitFor(
-        () => !acceptanceProcessIsAlive(firstProcessId),
-        10_000,
-        "the first private plain R process to stop"
-      );
-      await waitFor(
-        () => isDeepStrictEqual(releasedRProcessRoots(), initialProcessRoots),
-        10_000,
-        "the first private plain R process root to be removed"
-      );
-      assert.equal(testing.diagnostics().sessionCount, 0);
-
-      recordAcceptanceProgress("jupyter-r:document:rerun-unsaved-source");
-      await vscode.window.showTextDocument(sourceDocument, { preview: false, viewColumn: vscode.ViewColumn.One });
-      assert.equal(vscode.window.activeTextEditor?.document, sourceDocument);
-      await invokeReleasedRDocumentVariable(workbench, fixture.sourceUri, "open_wrangler_result", false);
-      const rerun = await waitForReleasedRDocumentSession(
-        workbench,
-        testing,
-        sourceDocument,
-        "open_wrangler_result",
-        "the generated result opened after rerunning the unsaved R source"
-      );
-      assert.equal(rerun.metadata.schema[0]?.name, "record_id");
-      assert.deepEqual(rerun.metadata.shape, { rows: 240, columns: 4 });
-      const rerunPage = await assertReleasedSessionPage(testing, rerun, "1", "jupyter-r-document-rerun-page");
-      assert.equal(rerunPage.metadata.schema[0]?.name, "record_id");
-      const secondProcessId = readReleasedRDocumentProcessId(fixture.processIdPath);
-      assert.equal(acceptanceProcessIsAlive(secondProcessId), true);
-      await disposePackagedSessionPanel(testing, rerun.sessionId, "the rerun plain R session");
-      await waitFor(
-        () => !acceptanceProcessIsAlive(secondProcessId),
-        10_000,
-        "the rerun private plain R process to stop"
-      );
-      assert.equal(testing.diagnostics().sessionCount, 0);
-      assertReleasedRDocumentFixtureUnchanged(fixture);
-      assert.equal(sourceDocument.isDirty, true, "The generated source edit must still be unsaved before cleanup.");
-
-      if (includeCsvFile) {
-        assert.equal(process.platform, "darwin", "The CSV tail belongs to the existing macOS platform lifecycle.");
+      if (entry !== "document") {
         recordAcceptanceProgress("jupyter-r:file:start");
         const csvPath = path.join(path.dirname(fixture.sourceUri.fsPath), "orders.csv");
         const csvUri = vscode.Uri.file(csvPath);
@@ -448,7 +448,7 @@ export function createReleasedRDocumentJourney({
         await waitFor(
           () => isDeepStrictEqual(releasedRProcessRoots(), initialProcessRoots),
           10_000,
-          "the document process roots to settle before opening CSV"
+          "the managed process roots to settle before opening CSV"
         );
         const csvExportDirectory = mkdtempSync(path.join(tmpdir(), "openwrangler-file-export-"));
         try {
@@ -627,7 +627,7 @@ export function createReleasedRDocumentJourney({
           );
         }
         assertReleasedRDocumentFixtureUnchanged(fixture);
-        if (resolvedAutoSave !== "off") {
+        if (entry !== "file" && resolvedAutoSave !== "off") {
           await filesConfiguration.update("autoSave", originalAutoSave, vscode.ConfigurationTarget.Workspace);
         }
       }

@@ -173,7 +173,7 @@ function controlledCompilerChild(pid, captureOutput = false) {
 test(
   "the real Windows Job Object supervisor contains, terminates, and rejects malformed control",
   { skip: process.platform !== "win32", timeout: 420_000 },
-  async () => {
+  async (t) => {
     const privateParent = join(tmpdir(), "ow");
     await mkdir(privateParent, { recursive: true, mode: 0o700 });
     const privateRoot = await mkdtemp(join(privateParent, "x-"));
@@ -258,6 +258,26 @@ test(
         { platform: "win32", timeoutMs: 30_000, ...commandCleanup }
       );
       assert.deepEqual(malformed, { stdout: "malformed-frame-rejected", stderr: "" });
+
+      const binary = await runBoundedEditorCommand(
+        {
+          executable: process.execPath,
+          args: [
+            "-e",
+            `(${windowsRBinaryControls.toString()})().catch(error => { console.error(error); process.exitCode = 1; });`,
+            supervisor.executable,
+            join(import.meta.dirname, "../r/openwrangler_runtime/windows-job-supervisor.ps1")
+          ],
+          environment,
+          label: "Windows native R binary input and source supervisor ownership"
+        },
+        { platform: "win32", timeoutMs: 60_000, ...commandCleanup }
+      );
+      const binaryResult = JSON.parse(binary.stdout);
+      assert.equal(binaryResult.passed, 8);
+      assert.ok(binaryResult.sourceStartupMs > 0);
+      assert.ok(binaryResult.compilerChildren >= 1);
+      t.diagnostic(JSON.stringify(binaryResult));
     } catch (error) {
       if (editorProcessTreeMayBeLive(error)) cleanupIsSafe = false;
       throw error;
@@ -275,4 +295,214 @@ function processIsRunning(pid) {
     if (error?.code === "ESRCH") return false;
     throw error;
   }
+}
+
+// Runs inside the existing outer Job so a failed ownership assertion cannot leak
+// fixture children. Each inner supervisor still has its own private lease/job.
+async function windowsRBinaryControls() {
+  const { default: assert } = await import("node:assert/strict");
+  const { spawn } = await import("node:child_process");
+  const { randomUUID } = await import("node:crypto");
+  const { join } = await import("node:path");
+  const { setTimeout: delay } = await import("node:timers/promises");
+  const executable = process.argv[1];
+  const source = process.argv[2];
+  const powerShell = join(
+    process.env.SYSTEMROOT ?? process.env.SystemRoot,
+    "System32",
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe"
+  );
+  const sourceArguments = ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", source];
+  const alive = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      if (error.code === "ESRCH") return false;
+      throw error;
+    }
+  };
+  const frame = (payload) => {
+    const body = Buffer.concat([Buffer.from(`${randomUUID()}\n`), payload]);
+    const header = Buffer.alloc(4);
+    header.writeUInt32BE(body.length);
+    return Buffer.concat([header, body]);
+  };
+  function launch(code, useSource = false, firstFrame) {
+    const token = randomUUID();
+    const child = spawn(useSource ? powerShell : executable, useSource ? sourceArguments : [], {
+      env: process.env,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true
+    });
+    child.stdin.on("error", () => undefined);
+    let stdout = "",
+      stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    const closed = new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", (code, signal) => resolve({ code, signal, stdout, stderr }));
+    });
+    const launchLine = Buffer.from(
+      JSON.stringify({
+        protocol: 1,
+        command: "launch",
+        executable: process.execPath,
+        args: ["-e", code],
+        cwd: process.cwd(),
+        environment: process.env,
+        attestationToken: token,
+        inputMode: "r-binary"
+      }) + "\n"
+    );
+    child.stdin.write(firstFrame ? Buffer.concat([launchLine, firstFrame]) : launchLine);
+    return { child, closed, token, output: () => stdout };
+  }
+  async function ready(owned) {
+    const deadline = Date.now() + 10_000;
+    while (!owned.output().includes("\n")) {
+      assert.ok(Date.now() < deadline, "fixture target did not start");
+      await delay(10);
+    }
+    return JSON.parse(owned.output().split("\n")[0]);
+  }
+  async function settled(owned, attested = true) {
+    const result = await owned.closed;
+    assert.equal(result.stderr.includes(`OPEN_WRANGLER_WINDOWS_JOB_EMPTY:${owned.token}\n`), attested);
+    return result;
+  }
+  const binary = frame(Buffer.from([0, 1, 10, 13, 255]));
+  const echo = `let bytes = Buffer.alloc(0); process.stdin.on('data', chunk => { bytes = Buffer.concat([bytes, chunk]); if (bytes.length >= ${binary.length}) { process.stdout.write(bytes.toString('base64')); process.exit(0); } });`;
+  const coalesced = launch(echo, false, binary);
+  const echoed = await settled(coalesced);
+  assert.equal(echoed.code, 0);
+  assert.equal(echoed.stdout, binary.toString("base64"));
+
+  // Writer failure caused by owned termination must not suppress Job-empty evidence.
+  const tree =
+    "const {spawn} = require('node:child_process'); const nested=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore',detached:true}); nested.unref(); console.log(JSON.stringify({pid:process.pid, descendant:nested.pid})); setInterval(()=>{},1000);";
+  const large = frame(Buffer.alloc(16 * 1024 * 1024));
+  const blocked = launch(tree);
+  const blockedPids = await ready(blocked);
+  blocked.child.stdin.end(large);
+  await settled(blocked);
+  assert.equal(alive(blockedPids.pid), false);
+  assert.equal(alive(blockedPids.descendant), false);
+
+  const exiting = launch(tree.replace("setInterval(()=>{},1000);", "setTimeout(()=>process.exit(0),500);"));
+  const exitingPids = await ready(exiting);
+  exiting.child.stdin.write(large);
+  await settled(exiting);
+  assert.equal(alive(exitingPids.pid), false);
+  assert.equal(alive(exitingPids.descendant), false);
+
+  for (const invalid of [Buffer.from([0, 0]), Buffer.from([1, 0, 0, 38])]) {
+    const refused = launch(tree);
+    const pids = await ready(refused);
+    refused.child.stdin.end(invalid);
+    const result = await settled(refused, false);
+    assert.equal(result.code, 125);
+    assert.match(result.stderr, /SUPERVISOR_ERROR:protocol/);
+    assert.equal(alive(pids.pid), false);
+    assert.equal(alive(pids.descendant), false);
+  }
+
+  const sentinel = launch(tree);
+  const sentinelPids = await ready(sentinel);
+  const killed = launch(tree);
+  const killedPids = await ready(killed);
+  killed.child.kill("SIGKILL");
+  await settled(killed, false);
+  const deadline = Date.now() + 5_000;
+  while (alive(killedPids.pid) || alive(killedPids.descendant)) {
+    assert.ok(Date.now() < deadline, "killed supervisor left a fixture descendant");
+    await delay(10);
+  }
+  assert.equal(alive(sentinelPids.pid), true);
+  assert.equal(alive(sentinelPids.descendant), true);
+  sentinel.child.stdin.end();
+  await settled(sentinel);
+
+  const started = performance.now();
+  const sourceOwned = launch(tree, true);
+  const sourcePids = await ready(sourceOwned);
+  const sourceStartupMs = performance.now() - started;
+  sourceOwned.child.stdin.end(large);
+  await settled(sourceOwned);
+  assert.equal(alive(sourcePids.pid), false);
+  assert.equal(alive(sourcePids.descendant), false);
+  // Closing the lease during compilation must not start an unowned lasting target.
+  const duringCompilation = launch(tree, true);
+  duringCompilation.child.stdin.end();
+  await settled(duringCompilation);
+
+  // Observe compilation before killing the exact source helper. The outer Job
+  // stays alive until assertions finish, so it cannot hide compiler lifetime.
+  const observerCode = `
+$ErrorActionPreference = 'Stop'
+Register-WmiEvent -Class Win32_ProcessStartTrace -SourceIdentifier owSourceCompiler | Out-Null
+[Console]::WriteLine('{"ready":true}')
+$ownerId = [int][Console]::ReadLine()
+$owner = [Diagnostics.Process]::GetProcessById($ownerId)
+$deadline = [DateTime]::UtcNow.AddSeconds(10)
+$children = @()
+try {
+  do {
+    $event = Wait-Event -SourceIdentifier owSourceCompiler -Timeout 1
+    if ($null -eq $event) { continue }
+    $created = $event.SourceEventArgs.NewEvent
+    Remove-Event -EventIdentifier $event.EventIdentifier
+    if ($created.ParentProcessID -eq $ownerId -and ($created.ProcessName -eq 'csc.exe' -or $created.ProcessName -eq 'cvtres.exe')) {
+      $children = @($created)
+      break
+    }
+  } while ([DateTime]::UtcNow -lt $deadline)
+  if ($children.Count -eq 0) { throw 'No source compiler child was observed.' }
+  if ($owner.HasExited) { throw 'Source helper exited before compiler observation.' }
+  $owner.Kill()
+} finally {
+  Unregister-Event -SourceIdentifier owSourceCompiler
+}
+$started = [DateTime]::UtcNow
+$deadline = $started.AddSeconds(5)
+do {
+  $remaining = @($children | Where-Object { Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue })
+  if ($remaining.Count -eq 0) { break }
+  Start-Sleep -Milliseconds 10
+} while ([DateTime]::UtcNow -lt $deadline)
+if ($remaining.Count -gt 0) { throw 'Compiler child outlived the source helper settlement bound.' }
+[Console]::WriteLine((@{ compilerChildren=$children.Count; compilerExitMs=([DateTime]::UtcNow-$started).TotalMilliseconds } | ConvertTo-Json -Compress))
+`;
+  const observer = spawn(powerShell, ["-NoProfile", "-NonInteractive", "-Command", observerCode], {
+    env: process.env,
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true
+  });
+  let observation = "",
+    observationError = "";
+  observer.stdout.on("data", (chunk) => {
+    observation += chunk;
+  });
+  observer.stderr.on("data", (chunk) => {
+    observationError += chunk;
+  });
+  const observed = new Promise((resolve, reject) => {
+    observer.once("error", reject);
+    observer.once("close", (code) => resolve(code));
+  });
+  await ready({ output: () => observation });
+  const killedSource = launch(tree, true);
+  observer.stdin.end(`${killedSource.child.pid}\n`);
+  assert.equal(await observed, 0, observationError);
+  await settled(killedSource, false);
+  assert.equal(killedSource.output(), "", "R target must not run before source compilation finishes");
+  const compiler = JSON.parse(observation.trim().split(/\r?\n/).at(-1));
+  process.stdout.write(JSON.stringify({ passed: 8, sourceStartupMs, ...compiler }));
 }

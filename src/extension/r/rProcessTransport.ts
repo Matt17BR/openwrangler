@@ -51,6 +51,8 @@ const RESPONSE_POLL_MS = 10;
 const GRACEFUL_STOP_MS = 2_000;
 const TERMINATION_STOP_MS = 1_000;
 const FORCED_STOP_MS = 2_000;
+// The native supervisor has ten seconds to attest Job termination, plus one poll/pipe margin.
+const WINDOWS_JOB_STOP_MS = 10_250;
 const PROCESS_GROUP_POLL_MS = 25;
 const MAX_RETIRED_SESSION_IDS = 1_024;
 const EXPORT_CHUNK_BYTES = 1 * 1_024 * 1_024;
@@ -115,6 +117,7 @@ interface OwnedProcess {
   closeState?: ProcessClose;
   spawnError?: Error;
   stopPromise?: Promise<void>;
+  windowsJob?: { readonly token: string; attested: boolean; failure?: string };
 }
 
 interface ProcessClose {
@@ -805,7 +808,10 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
       access(path.join(runtimeRoot, "frame_contract.R"), fsConstants.R_OK),
       access(path.join(runtimeRoot, "kernel_exports.R"), fsConstants.R_OK),
       access(path.join(runtimeRoot, "kernel_agent.R"), fsConstants.R_OK),
-      access(processAgent, fsConstants.R_OK)
+      access(processAgent, fsConstants.R_OK),
+      ...(process.platform === "win32"
+        ? [access(path.join(runtimeRoot, "windows-job-supervisor.ps1"), fsConstants.R_OK)]
+        : [])
     ]);
     this.assertActive();
 
@@ -815,6 +821,7 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
     const documentRoot = path.join(root, "documents");
     const exportRoot = path.join(root, "exports");
     let owned: OwnedProcess | undefined;
+    let ready = false;
     try {
       await chmod(root, 0o700);
       await mkdir(documentRoot, { mode: 0o700 });
@@ -835,35 +842,78 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
       this.assertWorkspaceTrusted();
 
       const processBootstrap = buildRProcessBootstrapCode(processAgent, path.join(responseRoot, "ready.json"));
-      const child = spawn(this.options.rscriptPath, ["--vanilla", "-e", processBootstrap], {
-        cwd: this.options.workingDirectory,
-        detached: process.platform !== "win32",
-        windowsHide: true,
-        stdio: ["pipe", "pipe", "pipe"],
-        env: {
-          ...process.env,
-          TMPDIR: root,
-          TMP: root,
-          TEMP: root,
-          OPEN_WRANGLER_R_RUNTIME_ROOT: runtimeRoot,
-          OPEN_WRANGLER_R_DOCUMENT_ROOT: documentRoot,
-          OPEN_WRANGLER_R_RESPONSE_ROOT: responseRoot,
-          OPEN_WRANGLER_R_EXPORT_ROOT: exportRoot
+      const environment = {
+        ...process.env,
+        TMPDIR: root,
+        TMP: root,
+        TEMP: root,
+        OPEN_WRANGLER_R_RUNTIME_ROOT: runtimeRoot,
+        OPEN_WRANGLER_R_DOCUMENT_ROOT: documentRoot,
+        OPEN_WRANGLER_R_RESPONSE_ROOT: responseRoot,
+        OPEN_WRANGLER_R_EXPORT_ROOT: exportRoot
+      };
+      const arguments_ = ["--vanilla", "-e", processBootstrap];
+      const windowsJob = process.platform === "win32" ? { token: randomUUID(), attested: false } : undefined;
+      const launchFrame = windowsJob
+        ? Buffer.from(
+            JSON.stringify({
+              protocol: 1,
+              command: "launch",
+              executable: this.options.rscriptPath,
+              args: arguments_,
+              cwd: this.options.workingDirectory,
+              environment,
+              attestationToken: windowsJob.token,
+              inputMode: "r-binary"
+            }) + "\n",
+            "utf8"
+          )
+        : undefined;
+      if (launchFrame && launchFrame.byteLength > 256 * 1024)
+        throw new Error("The native R process launch configuration exceeds the Windows supervisor limit.");
+      const child = spawn(
+        windowsJob ? windowsPowerShellPath() : this.options.rscriptPath,
+        windowsJob
+          ? [
+              "-NoLogo",
+              "-NoProfile",
+              "-NonInteractive",
+              "-ExecutionPolicy",
+              "Bypass",
+              "-File",
+              path.join(runtimeRoot, "windows-job-supervisor.ps1")
+            ]
+          : arguments_,
+        {
+          cwd: this.options.workingDirectory,
+          detached: process.platform !== "win32",
+          windowsHide: true,
+          stdio: ["pipe", "pipe", "pipe"],
+          env: environment
         }
-      });
+      );
       child.stdout.on("data", () => undefined);
-      child.stderr.on("data", () => undefined);
-
-      owned = createOwnedProcess(child, root, responseRoot, exportRoot, (error) => {
-        if (!this.stopping) {
-          this.publishInvalidation(error);
-          void stopOwnedProcess(owned as OwnedProcess).catch(() => undefined);
-        }
-      });
+      owned = createOwnedProcess(
+        child,
+        root,
+        responseRoot,
+        exportRoot,
+        (error) => {
+          if (!this.stopping) {
+            // Before readiness, the pending open owns the startup error. There is
+            // no established runtime whose invalidation could replace that cause.
+            if (ready) this.publishInvalidation(error);
+            void stopOwnedProcess(owned as OwnedProcess).catch(() => undefined);
+          }
+        },
+        windowsJob
+      );
       this.owned = owned;
+      if (launchFrame) await writeProcessInput(child, launchFrame);
       const readyPayload = await waitForResponse(owned, path.join(responseRoot, "ready.json"), MAX_READY_BYTES);
       const discovery = decodeReadyPayload(readyPayload);
       this.assertActive();
+      ready = true;
       return Object.freeze({ owned, discovery });
     } catch (error) {
       this.stopping = true;
@@ -1033,18 +1083,39 @@ function rString(value: string): string {
   return JSON.stringify(value).replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029");
 }
 
+function windowsPowerShellPath(): string {
+  const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? process.env.WINDIR ?? "C:\\Windows";
+  if (!path.win32.isAbsolute(systemRoot)) throw new Error("Windows did not provide an absolute system directory.");
+  return path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+}
+
 function createOwnedProcess(
   child: ChildProcessWithoutNullStreams,
   root: string,
   responseRoot: string,
   exportRoot: string,
-  onUnexpectedClose: (error: Error) => void
+  onUnexpectedClose: (error: Error) => void,
+  windowsJob?: OwnedProcess["windowsJob"]
 ): OwnedProcess {
   let resolveClosed!: (value: ProcessClose) => void;
   const closed = new Promise<ProcessClose>((resolve) => {
     resolveClosed = resolve;
   });
-  const owned: OwnedProcess = { child, root, responseRoot, exportRoot, closed, rootCleanupSafe: true };
+  const owned: OwnedProcess = { child, root, responseRoot, exportRoot, closed, rootCleanupSafe: true, windowsJob };
+  const attestation = windowsJob && Buffer.from(`OPEN_WRANGLER_WINDOWS_JOB_EMPTY:${windowsJob.token}\n`, "ascii");
+  let stderrTail = Buffer.alloc(0);
+  child.stderr.on("data", (chunk: Buffer) => {
+    if (!windowsJob || !attestation) return;
+    const observation = Buffer.concat([stderrTail, chunk]);
+    if (observation.includes(attestation)) windowsJob.attested = true;
+    // Discard arbitrary R output. Only fixed supervisor codes become diagnostics.
+    const code =
+      /OPEN_WRANGLER_WINDOWS_SUPERVISOR_ERROR:(bootstrap|platform|wrapper|protocol|create-process|assign-job|resume-process|create-job|configure-job|termination-timeout)\r?\n/u.exec(
+        observation.toString("utf8")
+      )?.[1];
+    if (code) windowsJob.failure = code;
+    stderrTail = Buffer.from(observation.subarray(-128));
+  });
   // Write callbacks settle writes; queued stream errors can outlive shutdown.
   child.stdin.on("error", () => undefined);
   child.on("error", (error) => {
@@ -1056,9 +1127,10 @@ function createOwnedProcess(
       onUnexpectedClose(processClosedError(owned));
     }
   });
-  child.once("exit", (code, signal) => {
+  child.once(windowsJob ? "close" : "exit", (code, signal) => {
     if (owned.closeState) return;
     const state = Object.freeze({ code, signal });
+    if (windowsJob && !windowsJob.attested) owned.rootCleanupSafe = false;
     owned.closeState = state;
     resolveClosed(state);
     child.stdout.destroy();
@@ -1080,6 +1152,10 @@ async function writeRequestFrame(
   const header = Buffer.allocUnsafe(4);
   header.writeUInt32BE(envelope.byteLength, 0);
   const frame = Buffer.concat([header, envelope]);
+  await writeProcessInput(child, frame);
+}
+
+async function writeProcessInput(child: ChildProcessWithoutNullStreams, frame: Buffer): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     child.stdin.write(frame, (error) => {
       if (error) reject(error);
@@ -1172,22 +1248,27 @@ async function stopOwnedProcessOnce(owned: OwnedProcess): Promise<void> {
     await stopOwnedPosixProcessGroup(owned);
     return;
   }
-  // Node does not expose a Job Object for ordinary extension-host children.
-  // On Windows this confirms the exact Rscript child. stdout/stderr are
-  // destroyed on exit so an independently backgrounded user process cannot
-  // keep the extension-host pipe alive.
-  if (owned.closeState) return;
-  if (await waitForClose(owned, GRACEFUL_STOP_MS)) return;
-  let killError: unknown;
-  try {
-    if (!owned.child.kill("SIGKILL")) killError = new Error("the operating system rejected forced termination");
-  } catch (error) {
-    killError = error;
+  if (owned.spawnError && owned.child.pid === undefined) return;
+  if (!owned.closeState && !(await waitForClose(owned, WINDOWS_JOB_STOP_MS))) {
+    try {
+      owned.child.kill("SIGKILL");
+    } catch {
+      // Positive Job-empty evidence is still required below.
+    }
+    if (!(await waitForClose(owned, FORCED_STOP_MS))) {
+      owned.rootCleanupSafe = false;
+      owned.child.stdout.destroy();
+      owned.child.stderr.destroy();
+      throw new Error("Open Wrangler could not confirm that its Windows R supervisor exited.");
+    }
   }
-  if (await waitForClose(owned, FORCED_STOP_MS)) return;
-  throw new Error(
-    `Open Wrangler could not confirm that its R process exited${killError ? ` (${String(killError)})` : ""}.`
-  );
+  if (!owned.windowsJob?.attested) {
+    owned.rootCleanupSafe = false;
+    const cause = owned.windowsJob?.failure ? `${processClosedError(owned).message} ` : "";
+    throw new Error(
+      `${cause}Open Wrangler could not confirm that its Windows R process tree stopped. Its private files were retained.`
+    );
+  }
 }
 
 async function stopOwnedPosixProcessGroup(owned: OwnedProcess): Promise<void> {
@@ -1242,6 +1323,16 @@ async function waitForClose(owned: OwnedProcess, timeoutMs: number): Promise<boo
 }
 
 function processClosedError(owned: OwnedProcess): Error {
+  if (owned.windowsJob?.failure) {
+    const stage = owned.windowsJob.failure;
+    if (stage === "bootstrap")
+      return new Error(
+        "Windows PowerShell could not compile the native R process supervisor. Check whether local policy permits PowerShell Add-Type."
+      );
+    if (["create-process", "assign-job", "resume-process"].includes(stage))
+      return new Error(`The Windows process supervisor could not launch or contain Rscript (${stage}).`);
+    return new Error(`The Windows native R process supervisor failed (${stage}).`);
+  }
   if (owned.spawnError) return new Error(`Open Wrangler could not start Rscript: ${owned.spawnError.message}`);
   const detail = owned.closeState?.signal
     ? `signal ${owned.closeState.signal}`

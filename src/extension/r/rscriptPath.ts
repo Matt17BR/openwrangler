@@ -7,6 +7,10 @@ export function supportsRscriptExecution(platform: NodeJS.Platform = process.pla
   return platform === "linux" || platform === "darwin";
 }
 
+export function supportsRFileExecution(platform: NodeJS.Platform = process.platform): boolean {
+  return supportsRscriptExecution(platform) || platform === "win32";
+}
+
 export function configuredRscriptPath(resource: vscode.Uri): string | undefined {
   const configured = getSetting<string>("rscriptPath", "", resource).trim() || "Rscript";
   return resolveExecutableCommand(configured, process.env, isExecutableFile);

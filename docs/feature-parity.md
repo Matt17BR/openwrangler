@@ -623,7 +623,7 @@ limits below. Support labels describe the qualification commitment for each entr
 | IRkernel notebook in desktop VS Code                | Stable since 2.5.0 on Linux, macOS and Windows; exact notebook, kernel and variable ownership | Copy, save, notebook insertion, CSV and Parquet        |
 | Active terminal managed by the official R extension | Preview on Linux; exact terminal and process ownership                                        | Copy, save, CSV and Parquet; no document for insertion |
 | Managed `.R`, `.Rmd` or `.qmd` document             | Preview on Linux and macOS; exact document/version and owned R process                        | Copy, save, source-document insertion, CSV and Parquet |
-| Local CSV, TSV, Parquet, JSONL or Excel file        | Preview on Linux and macOS; exact file/options and owned R process                            | Copy, save, CSV and Parquet; no document insertion     |
+| Local CSV, TSV, Parquet, JSONL or Excel file        | Preview on Linux, macOS and Windows; exact file/options and owned R process                            | Copy, save, CSV and Parquet; no document insertion     |
 | IRkernel notebook in Cursor on Linux                | Experimental editor compatibility with narrower coverage                                      | Only the capabilities of its documented execution path |
 
 The [architecture](architecture.md#native-r) defines frame, precision, source and transport guarantees.
@@ -642,12 +642,12 @@ missing; dates and integers that would lose precision stay text. R loads the ful
 bounded pages, and editing can require additional copies. It needs Rscript, not Python. Parquet and JSONL/NDJSON
 also admit flat scalar data; Excel opens the selected worksheet. Parquet requires `nanoparquet`, Excel requires
 `readxl`, and large integer input requires `bit64`. The [reader contract](architecture.md#parquet-jsonl-and-excel-files)
-describes type and precision limits, spreadsheet missing-value rules and eager loading. Windows file execution
-remains unavailable.
+describes type and precision limits, spreadsheet missing-value rules and eager loading.
 Installed CSV workflows have been verified in desktop VS Code on Linux and macOS. The
 [macOS check](https://github.com/Matt17BR/openwrangler/actions/runs/35094083555/job/104787104263) covers native cells,
 Rename Preview/Apply, generated R, protected all-row CSV export and session/process cleanup. Local R file support is
-Preview; this evidence does not qualify Windows file execution or every parser option.
+Preview. Windows uses the same CSV journey and native Job Object controls; its hosted verification must pass before release.
+Parser options beyond this reader contract remain unsupported.
 
 ### First stable R notebook scope
 

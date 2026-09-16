@@ -457,6 +457,13 @@ jobs:
           if (!nzchar(output)) stop("GITHUB_OUTPUT is not available.")
           cat(sprintf("executable=%s\nversion=%s\n", executable, version), file = output, append = TRUE)
       - run: npm ci --ignore-scripts
+      - name: Native Windows R process ownership
+        run: node --test scripts/windows-job-supervisor.native.test.mjs
+      - name: Windows R startup diagnostic
+        run: node node_modules/vitest/vitest.mjs run src/test/rProcessTransport.cross.test.ts -t "fixed Windows bootstrap diagnostic" --maxWorkers=1
+        env:
+          OPEN_WRANGLER_R_CONTRACT_TESTS: "1"
+          RSCRIPT: ${{ steps.rscript.outputs.executable }}
       - *r_private_artifact_contracts
       - *r_source_contracts
       - *r_source_omission

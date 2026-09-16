@@ -293,6 +293,10 @@ contracts fail on unexpected warnings even if they handle a later error. Preserv
 The Windows supervisor owner also checks preparation deadlines, shared callers and both compiler-settlement windows
 with controlled children and native timers on every platform. These controls preserve process ownership and unsafe-root
 retention; the Windows-only case separately qualifies actual Job Object containment and termination.
+The supervisor is bundled at `r/openwrangler_runtime/windows-job-supervisor.ps1` and shared with native R file sessions.
+Its existing native owner also checks binary requests (including NUL), malformed framing, blocked stdin with host EOF,
+direct target exit, helper death, an unrelated surviving session, and source-based PowerShell startup/cancellation.
+These controls require actual Windows; a skipped Linux run establishes no Windows behavior.
 
 The [complete R catalog](../r/tests/complete_catalog_contract.R) compares native live and complete generated frames,
 including source and metadata preservation. Numeric portability uses independent binary64 references and raw-bit
@@ -694,7 +698,7 @@ column reveal and focus, and Rename inspection, Edit, Undo/Redo, all-row exports
 refusal, Save, clipboard and source-bound notebook insertion. Its editing sequence ends after verifying Rename Redo,
 followed by source integrity checks and session disposal. The additional Undo after Redo runs in Linux
 core to prepare for Drop Columns. The macOS profile also retains all three collapse-frame opens,
-direct-document execution and kernel restart/recovery. Its managed-document stage also opens the existing 240-row,
+direct-document execution and kernel restart/recovery. The macOS managed-document stage and Windows file-only stage open the same existing 240-row,
 four-column CSV through the public file command with temporary R selection, checks default-on header statistics, native cells and Rename
 Preview/Apply, the full rendered generated code's exact file read, all-row CSV export and source-destination refusal.
 It restores the setting, preserves fixture bytes and checks session/private-process-root cleanup. It uses the existing

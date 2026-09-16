@@ -152,7 +152,7 @@ CSV export is available; Parquet export requires `nanoparquet` and has type and 
 
 _Preview grouped R results alongside the cleaning history and generated R code._
 
-Local R file support is **Preview**. On Linux/macOS, choose R from the dataframe engine picker to open CSV, TSV,
+Local R file support is **Preview**. On Linux, macOS and Windows, choose R from the dataframe engine picker to open CSV, TSV,
 Parquet, JSONL/NDJSON or an Excel worksheet, or set `openWrangler.defaultBackend` to `r` before opening a file.
 Auto also tries R when no compatible Python interpreter or file engine is available. An explicit Python engine choice
 or a file-read error does not switch to R. CSV/TSV import options include UTF-16 and single-byte encodings,

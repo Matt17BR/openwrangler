@@ -143,7 +143,9 @@ const EDITOR_COMMAND_RESOURCE_FAILURE_CODE = "EDITOR_COMMAND_RESOURCE_RELEASE_FA
 const EDITOR_DOWNLOAD_HELPER_PATH = fileURLToPath(new URL("./download-editor.mjs", import.meta.url));
 const DEFAULT_PACKAGED_VSCODE_EXECUTABLE = "/usr/share/code/code";
 const DEFAULT_PACKAGED_VSCODE_CLI = "/usr/share/code/bin/code";
-const WINDOWS_JOB_SUPERVISOR_PATH = fileURLToPath(new URL("./windows-job-supervisor.ps1", import.meta.url));
+const WINDOWS_JOB_SUPERVISOR_PATH = fileURLToPath(
+  new URL("../r/openwrangler_runtime/windows-job-supervisor.ps1", import.meta.url)
+);
 const WINDOWS_JOB_OWNERSHIP = Symbol("openWranglerWindowsJobOwnership");
 const WINDOWS_JOB_CAPTURE_STDERR = Symbol("openWranglerWindowsJobCaptureStderr");
 const EDITOR_PROCESS_TREE_UNVERIFIED_CODE = "EDITOR_PROCESS_TREE_UNVERIFIED";

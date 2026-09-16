@@ -861,7 +861,7 @@
             "r"
           ],
           "default": "auto",
-          "description": "Default file engine. Auto selects the first available Python engine in Polars, DuckDB, then Pandas order, subject to file-format and import-option support. If no compatible Python interpreter or engine is available, Auto tries R for supported files. Explicit Python engine choices, broken configured interpreter paths and unexpected environment errors do not select R. R opens local CSV, TSV, Parquet, JSONL/NDJSON and Excel files natively on Linux and macOS using Rscript, with format-specific limits and optional packages. It does not fall back to Python for unsupported files. Auto does not switch engines after a file-read error. Open DuckDB Table always uses DuckDB."
+          "description": "Default file engine. Auto selects the first available Python engine in Polars, DuckDB, then Pandas order, subject to file-format and import-option support. If no compatible Python interpreter or engine is available, Auto tries R for supported files. Explicit Python engine choices, broken configured interpreter paths and unexpected environment errors do not select R. R opens local CSV, TSV, Parquet, JSONL/NDJSON and Excel files natively on Linux, macOS and Windows using Rscript, with format-specific limits and optional packages. It does not fall back to Python for unsupported files. Auto does not switch engines after a file-read error. Open DuckDB Table always uses DuckDB."
         },
         "openWrangler.fileStartMode": {
           "type": "string",
@@ -975,7 +975,7 @@
         "openWrangler.rscriptPath": {
           "type": "string",
           "default": "",
-          "description": "Optional Rscript executable used for native R local files and .R, .Rmd, and .qmd documents on macOS or Linux. When empty, Open Wrangler resolves Rscript from PATH."
+          "description": "Optional Rscript executable used for native R local files on Linux, macOS and Windows, and .R, .Rmd, and .qmd documents on macOS or Linux. When empty, Open Wrangler resolves Rscript from PATH."
         },
         "openWrangler.sessionOpenTimeoutMs": {
           "type": "number",

@@ -14,6 +14,7 @@ import { isOpenWranglerResponse } from "../shared/protocolValidation";
 import { RProcessSessionTransport, type RProcessFileSource } from "../extension/r/rProcessTransport";
 import type { RKernelPageWindow } from "../extension/r/rKernelProtocol";
 import { rCsvExportOptions, rExportOptions } from "./rExportTestOptions";
+import { rKernelOpenRequest } from "./rKernelBridgeTestFixtures";
 
 const enabled = process.env.OPEN_WRANGLER_R_CONTRACT_TESTS === "1";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -21,6 +22,86 @@ const runtimeRoot = resolve(root, "r/openwrangler_runtime");
 const rscriptPath = process.env.RSCRIPT ?? "Rscript";
 
 describe.skipIf(!enabled)("plain R process transport", () => {
+  it.skipIf(process.platform !== "win32")(
+    "preserves the fixed Windows bootstrap diagnostic through public file opening",
+    async () => {
+      const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-bootstrap-diagnostic-"));
+      const controlledRuntime = resolve(temporaryParent, "runtime");
+      const processParent = resolve(temporaryParent, "processes");
+      await mkdir(controlledRuntime);
+      await mkdir(processParent);
+      for (const file of ["frame_contract.R", "kernel_exports.R", "kernel_agent.R", "process_agent.R"])
+        await writeFile(resolve(controlledRuntime, file), await readFile(resolve(runtimeRoot, file)));
+      await writeFile(
+        resolve(controlledRuntime, "windows-job-supervisor.ps1"),
+        '[Console]::Error.WriteLine("OPEN_WRANGLER_WINDOWS_SUPERVISOR_ERROR:bootstrap"); exit 125'
+      );
+      const filePath = resolve(temporaryParent, "source.csv");
+      await writeFile(filePath, "value\n1\n");
+      const source = {
+        kind: "file" as const,
+        path: filePath,
+        uri: vscode.Uri.file(filePath).toString(),
+        label: "source.csv"
+      };
+      const transport = new RProcessSessionTransport({
+        runtimeRoot: controlledRuntime,
+        rscriptPath,
+        temporaryParent: processParent,
+        workingDirectory: temporaryParent,
+        fileSource: { path: filePath, format: "csv", header: true, delimiter: ",", encoding: "utf-8", quoteChar: '"' }
+      });
+      const context = {
+        extension: { packageJSON: { version: "2.6.0" } },
+        subscriptions: []
+      } as unknown as vscode.ExtensionContext;
+      const bridge = new RKernelBridge(
+        context,
+        transport,
+        randomUUID,
+        () => undefined,
+        undefined,
+        {},
+        undefined,
+        source
+      );
+      try {
+        await expect(bridge.request({ ...rKernelOpenRequest(), source, backend: "r" })).rejects.toThrow(
+          /Windows PowerShell could not compile.*private files were retained/u
+        );
+        expect(await readdir(processParent)).toHaveLength(1);
+        expect(await readFile(filePath, "utf8")).toBe("value\n1\n");
+      } finally {
+        await expect(bridge.dispose()).rejects.toThrow("private files were retained");
+        // The controlled script never launches R or another child and its exact process has closed.
+        await rm(temporaryParent, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it("retains an initial process exit diagnostic through the public bridge", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-startup-diagnostic-"));
+    const transport = new RProcessSessionTransport({
+      runtimeRoot,
+      rscriptPath,
+      temporaryParent,
+      workingDirectory: temporaryParent,
+      documentText: "base::quit(save = 'no', status = 7L)"
+    });
+    const context = {
+      extension: { packageJSON: { version: "2.6.0" } },
+      subscriptions: []
+    } as unknown as vscode.ExtensionContext;
+    const bridge = new RKernelBridge(context, transport, randomUUID, () => undefined);
+    try {
+      await expect(bridge.request(rKernelOpenRequest())).rejects.toThrow("stopped unexpectedly (exit 7)");
+      expect(await readdir(temporaryParent)).toEqual([]);
+    } finally {
+      await bridge.dispose();
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  });
+
   it("validates exact file descriptors before acquiring a process", async () => {
     const options = { runtimeRoot, rscriptPath: resolve("/selected/Rscript"), workingDirectory: root };
     const sourcePath = resolve(root, "orders.data");
@@ -67,12 +148,12 @@ describe.skipIf(!enabled)("plain R process transport", () => {
 
   it("opens a genuine TSV source, preserves its original through clone/replay/export, and closes before reopening", async () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-file-test-"));
-    const filePath = resolve(temporaryParent, "orders.tsv");
+    const filePath = resolve(temporaryParent, "orders café.tsv");
     const bytes = 'id\tlabel\n9007199254740992\tone\n9007199254740993\t"two\nlines"\n3\t';
     await writeFile(filePath, bytes, "utf8");
     const source = {
       kind: "file" as const,
-      label: "orders.tsv",
+      label: "orders café.tsv",
       path: filePath,
       uri: vscode.Uri.file(filePath).toString(),
       importOptions: { delimiter: "\t", hasHeader: true }
@@ -191,7 +272,7 @@ describe.skipIf(!enabled)("plain R process transport", () => {
       expect(await readFile(filePath, "utf8")).toBe(bytes);
       await bridge.request({ kind: "closeSession", sessionId, revision: applied.metadata.revision });
       await bridge.dispose();
-      expect(await readdir(temporaryParent)).toEqual(["orders.tsv"]);
+      expect(await readdir(temporaryParent)).toEqual(["orders café.tsv"]);
       const reopened = new RProcessSessionTransport(options);
       try {
         const result = await reopened.open(".ow_csv_source", pageWindow());
@@ -205,7 +286,7 @@ describe.skipIf(!enabled)("plain R process transport", () => {
       } finally {
         await reopened.dispose();
       }
-      expect(await readdir(temporaryParent)).toEqual(["orders.tsv"]);
+      expect(await readdir(temporaryParent)).toEqual(["orders café.tsv"]);
       expect(await readFile(filePath, "utf8")).toBe(bytes);
     } finally {
       await bridge.dispose();
