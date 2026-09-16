@@ -117,7 +117,7 @@ local({
     before <- serialize(sources[[variable]], NULL, version = 3L)
     agent <- openwrangler_r_kernel_agent$new_agent(
       openwrangler_r_frame_contract, sources,
-      file_source = if (case$file) list(path = file_path, header = TRUE, delimiter = ",") else NULL
+      file_source = if (case$file) list(path = file_path, format = "csv", header = TRUE, delimiter = ",") else NULL
     )
     on.exit(agent$dispose(), add = TRUE)
     session <- "01020304-0102-4102-8102-010203040506"
