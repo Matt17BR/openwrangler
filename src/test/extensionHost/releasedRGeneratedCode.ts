@@ -32,7 +32,12 @@ export type ReleasedRCategoricalGeneratedExpectation =
       stepId: string;
     }>;
 
-export function assertReleasedRGeneratedSourceBoundary(code: string, variableName = "orders_frame"): void {
+type ReleasedRGeneratedSource = string | Readonly<{ path: string; header: boolean; delimiter: string }>;
+
+export function assertReleasedRGeneratedSourceBoundary(
+  code: string,
+  source: ReleasedRGeneratedSource = "orders_frame"
+): void {
   assertCodePreviewDocumentChecks(code, [
     { stage: "released-r:source-boundary:prefix", passed: /^base::evalq\(\{/u.test(code) },
     {
@@ -40,10 +45,16 @@ export function assertReleasedRGeneratedSourceBoundary(code: string, variableNam
       passed: code.includes(".ow_generated_result <- base::evalq({")
     },
     {
-      stage: "released-r:source-boundary:caller-read",
-      passed: code.includes(
-        `base::get(${JSON.stringify(variableName)}, envir = .ow_source_environment, inherits = FALSE)`
-      )
+      stage:
+        typeof source === "string" ? "released-r:source-boundary:caller-read" : "released-r:source-boundary:file-read",
+      passed:
+        typeof source === "string"
+          ? code.includes(`base::get(${JSON.stringify(source)}, envir = .ow_source_environment, inherits = FALSE)`)
+          : code.includes(".ow_read_csv <- function") &&
+            code.includes(
+              `.ow_source <- .ow_read_csv(${JSON.stringify(source.path)}, header = ${source.header ? "TRUE" : "FALSE"}, delimiter = ${JSON.stringify(source.delimiter)})`
+            ) &&
+            !code.includes(".ow_source <- base::get(")
     },
     {
       stage: "released-r:source-boundary:caller-environment",
@@ -96,8 +107,12 @@ export function assertReleasedRRowReductionGeneratedCode(
   assertReleasedROnly(code);
 }
 
-export function assertReleasedRGeneratedCode(code: string, newName: string, variableName = "orders_frame"): void {
-  assertReleasedRGeneratedSourceBoundary(code, variableName);
+export function assertReleasedRGeneratedCode(
+  code: string,
+  newName: string,
+  source: ReleasedRGeneratedSource = "orders_frame"
+): void {
+  assertReleasedRGeneratedSourceBoundary(code, source);
   assert.ok(code.includes(JSON.stringify(newName)), `Generated R code must contain ${JSON.stringify(newName)}.`);
   assertReleasedROnly(code);
 }

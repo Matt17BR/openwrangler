@@ -666,7 +666,12 @@ column reveal and focus, and Rename inspection, Edit, Undo/Redo, all-row exports
 refusal, Save, clipboard and source-bound notebook insertion. Its editing sequence ends after verifying Rename Redo,
 followed by source integrity checks and session disposal. The additional Undo after Redo runs in Linux
 core to prepare for Drop Columns. The macOS profile also retains all three collapse-frame opens,
-direct-document execution and kernel restart/recovery. The Linux core catalog retains the Dense Rank form,
+direct-document execution and kernel restart/recovery. Its managed-document stage also opens the existing 240-row,
+four-column CSV through the public file command with temporary R selection, checks native cells and Rename
+Preview/Apply, the full rendered generated code's exact file read, all-row CSV export and source-destination refusal.
+It restores the setting, preserves fixture bytes and checks session/private-process-root cleanup. This adds no
+profile, preparation dependency or deadline; its added macOS cost must be measured in the original hosted run.
+The Linux core catalog retains the Dense Rank form,
 Preview/Apply/Undo and three direct page samples for exact ranks, missing cells and row identities. The macOS profile
 does not check the Dense Rank form and its native nullable integer result together. Both paths restore the first column
 before Rename. The native kernel owner checks all original Mark Duplicates columns, and the real-process owner checks

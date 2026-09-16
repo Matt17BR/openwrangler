@@ -71,7 +71,12 @@ interface ReleasedRJupyterExtensionJourneyDependencies {
     phase: "jupyter-r" | "jupyter-r-remote",
     coverage: ReleasedRAcceptanceCoverageProfile
   ) => Promise<void>;
-  readonly exerciseReleasedRDocumentJourney: (testing: TestApi, workbench: Page, directory: string) => Promise<void>;
+  readonly exerciseReleasedRDocumentJourney: (
+    testing: TestApi,
+    workbench: Page,
+    directory: string,
+    includeCsvFile?: boolean
+  ) => Promise<void>;
   readonly exerciseReleasedREditingCoverage: (
     testing: TestApi,
     workbench: Page,
@@ -325,7 +330,7 @@ export function createReleasedRJupyterExtensionJourney({
           "The ordinary macOS R gate requires the product's direct-document transport."
         );
         recordReleasedRAcceptanceSection(phase, coverage, "document", "start");
-        await exerciseReleasedRDocumentJourney(testing, workbench, directory);
+        await exerciseReleasedRDocumentJourney(testing, workbench, directory, coverage.name === "platform-lifecycle");
         assert.equal(testing.diagnostics().sessionCount, 0, "The plain R journey must release its private processes.");
         recordReleasedRAcceptanceSection(phase, coverage, "document", "complete");
       }
