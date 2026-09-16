@@ -22,6 +22,36 @@ import {
 describe("native state and presentation commands", () => {
   beforeEach(resetNativeViewMocks);
 
+  it("does not defer Open Source File until another dataframe becomes active", async () => {
+    const registered = register(exportableSnapshot("original", "original.csv", 1));
+    registered.setActiveSession(undefined);
+
+    const action = command("openWrangler.openSourceFile")();
+    const immediateMessages = nativeMocks.showInformationMessage.mock.calls.slice();
+    registered.setActiveSession(exportableSnapshot("later", "later.csv", 1));
+    await action;
+
+    expect(nativeMocks.executeCommand).not.toHaveBeenCalledWith("vscode.open", expect.anything());
+    expect(immediateMessages).toEqual([["The active Open Wrangler session has no reopenable source."]]);
+  });
+
+  it("opens the source captured when Open Source File starts", async () => {
+    const registered = register(exportableSnapshot("original", "original.csv", 1));
+
+    const action = command("openWrangler.openSourceFile")();
+    registered.setActiveSession(exportableSnapshot("later", "later.csv", 1));
+    await action;
+
+    expect(nativeMocks.executeCommand).toHaveBeenCalledWith(
+      "vscode.open",
+      expect.objectContaining({ scheme: "file", fsPath: "/workspace/original.csv" })
+    );
+    expect(nativeMocks.executeCommand).not.toHaveBeenCalledWith(
+      "vscode.open",
+      expect.objectContaining({ fsPath: "/workspace/later.csv" })
+    );
+  });
+
   it("serializes context writes and settles rollback after deferred and rejected writes", async () => {
     nativeMocks.registrationFailure = "command:openWrangler.openSourceFile";
     const active = snapshotWithDraft();

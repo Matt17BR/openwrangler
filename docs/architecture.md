@@ -45,6 +45,8 @@ changing the reveal setting, or deactivating the panel does not settle an in-fli
 
 The extension host is the authority at every boundary. A webview cannot select a different source, session, kernel,
 terminal, or export destination by supplying an identifier the host did not issue and retain.
+Open Source File captures the currently active session. With no active session or reopenable source, it reports
+immediately.
 
 ## Sources, sessions, and data flow
 

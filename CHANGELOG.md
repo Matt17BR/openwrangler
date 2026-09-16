@@ -13,6 +13,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Open Source File reports immediately when no dataframe is active, avoiding unexpected navigation when another dataframe opens.
 - Cleaning plan actions wrap in very narrow editor panes so Redo remains fully visible.
 - Cleaning Steps avoids unrelated refreshes when viewing filters, column selection or profiles change.
 - Native Summary marks absent dataset statistics as not calculated yet and explains where to request them.

@@ -1252,7 +1252,7 @@ function registerNativeViewsTransactional(
 
   context.subscriptions.push(
     registerCommand("openWrangler.openSourceFile", async () => {
-      const snapshot = coordinator.activeSession() ?? (await waitForActiveSession(coordinator, 30_000));
+      const snapshot = coordinator.activeSession();
       const source = snapshot ? sourceUri(snapshot) : undefined;
       if (!source) {
         void vscode.window.showInformationMessage("The active Open Wrangler session has no reopenable source.");
@@ -1308,28 +1308,6 @@ function withNativeCleanupFailures(primary: unknown, cleanupFailures: readonly u
 
 function nativeFailures(error: unknown): unknown[] {
   return error instanceof AggregateError ? error.errors.flatMap(nativeFailures) : [error];
-}
-
-async function waitForActiveSession(
-  coordinator: SessionCoordinator,
-  timeoutMs: number
-): Promise<ActiveSessionSnapshot | undefined> {
-  const current = coordinator.activeSession();
-  if (current) return current;
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (snapshot: ActiveSessionSnapshot | undefined) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      subscription.dispose();
-      resolve(snapshot);
-    };
-    const subscription = coordinator.onDidChangeActiveSession((snapshot) => {
-      if (snapshot) finish(snapshot);
-    });
-    const timeout = setTimeout(() => finish(undefined), timeoutMs);
-  });
 }
 
 export function sourceUri(snapshot: ActiveSessionSnapshot): vscode.Uri | undefined {
