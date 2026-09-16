@@ -13,6 +13,7 @@ import type {
   BridgeRequestOptions,
   CancellationTokenLike,
   DuckDBTableDiscovery,
+  FileAutoFallback,
   OpenWranglerBridge
 } from "./dataBridge";
 import { getSetting } from "./configuration";
@@ -32,6 +33,7 @@ import {
 import {
   automaticBackends,
   PythonEnvironmentApiBroker,
+  PythonEnvironmentUnavailableError,
   PythonEnvironmentResolutionCancelledError,
   PythonEnvironmentResolutionDisposedError,
   PythonEnvironmentResolutionSupersededError,
@@ -87,10 +89,11 @@ interface EnvironmentSelection {
   readonly epoch: number;
   readonly resource: vscode.Uri | undefined;
   readonly workspaceFolder: vscode.WorkspaceFolder | undefined;
-  readonly promise: Promise<PythonEnvironment>;
-  readonly resolutionController: AbortController;
+  promise: Promise<PythonEnvironment>;
+  resolutionController: AbortController;
   readonly dependencyKeys: Set<string>;
   resolvedEnvironment?: PythonEnvironment;
+  retryable?: boolean;
 }
 
 export interface TrustedPicklePythonPreflight {
@@ -790,6 +793,52 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
 
   async installMissingDependencies(): Promise<boolean> {
     return this.beginDependencyInstallation();
+  }
+
+  async prepareFileAutoFallback(
+    source: SessionSource,
+    options: BridgeRequestOptions = {}
+  ): Promise<FileAutoFallback | ErrorResponse | undefined> {
+    if (source.kind !== "file") return undefined;
+    if (this.disposed) throw new PythonEnvironmentResolutionDisposedError();
+    if (options.cancellation?.isCancellationRequested) throw new PythonEnvironmentResolutionCancelledError();
+    const resource = sourceResource(source);
+    const release = this.retainRuntime(this.runtimeSlot(pythonSelectionScope(resource).key));
+    const selection = this.environmentSelection(resource);
+    const current = (): boolean =>
+      !this.disposed &&
+      vscode.workspace.isTrusted &&
+      !options.cancellation?.isCancellationRequested &&
+      this.isCurrentEnvironmentSelection(selection);
+    let cancellation: vscode.Disposable | undefined;
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      cancellation = options.cancellation?.onCancellationRequested(() =>
+        reject(new PythonEnvironmentResolutionCancelledError())
+      );
+      if (options.cancellation?.isCancellationRequested) reject(new PythonEnvironmentResolutionCancelledError());
+    });
+    // A caller can stop waiting without cancelling another open's shared selection.
+    // Retain the scope until the underlying preparation has actually settled.
+    const preparation = this.prepareRequestForDispatch({
+      kind: "openSession",
+      source,
+      pageSize: 1,
+      columnOffset: 0,
+      columnLimit: 1
+    }).finally(release);
+    try {
+      const prepared = await Promise.race([preparation, cancelled]);
+      if (!current()) return this.runtimeSelectionChangedError();
+      if (prepared.request.kind !== "error") return undefined;
+      if (prepared.request.code !== "missing_dependencies") return prepared.request;
+      return { isCurrent: current };
+    } catch (error) {
+      if (!(error instanceof PythonEnvironmentUnavailableError)) throw error;
+      if (!current()) return this.runtimeSelectionChangedError();
+      return { isCurrent: () => current() && !selection.resolvedEnvironment };
+    } finally {
+      cancellation?.dispose();
+    }
   }
 
   async installFileDependencies(
@@ -2151,7 +2200,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private environmentSelection(resource?: vscode.Uri): EnvironmentSelection {
     const scope = pythonSelectionScope(resource);
     const existing = this.environmentSelections.get(scope.key);
-    if (existing) return existing;
+    if (existing && !existing.retryable) return existing;
 
     const resolutionController = new AbortController();
     const owner: { selection?: EnvironmentSelection } = {};
@@ -2165,7 +2214,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
           owner.selection?.epoch === (this.selectionEpochs.get(scope.key) ?? 0)),
       isTrusted: () => vscode.workspace.isTrusted
     });
-    const selection: EnvironmentSelection = {
+    const selection: EnvironmentSelection = existing ?? {
       key: scope.key,
       epoch: this.selectionEpochs.get(scope.key) ?? 0,
       resource,
@@ -2174,6 +2223,9 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       resolutionController,
       dependencyKeys: new Set()
     };
+    selection.promise = promise;
+    selection.resolutionController = resolutionController;
+    selection.retryable = false;
     owner.selection = selection;
     this.environmentSelections.set(scope.key, selection);
     armed = true;
@@ -2185,7 +2237,10 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       },
       () => {
         if (this.environmentSelections.get(scope.key) === selection) {
-          this.environmentSelections.delete(scope.key);
+          // Retry an unresolved selection without retiring another open's absence
+          // receipt. Real selection changes and normal scope eviction still retire it.
+          if (resolutionController.signal.aborted) this.environmentSelections.delete(scope.key);
+          else selection.retryable = true;
           this.trimInactiveScopes();
         }
       }

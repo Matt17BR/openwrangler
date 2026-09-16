@@ -88,12 +88,22 @@ payload weight, and keyed by both row and column projection. A view, source, pla
 invalidates incompatible entries.
 
 File Auto selection chooses the first available backend in Polars, DuckDB, then Pandas order, restricted by the
-file format and import options. This happens before the native read; a read error does not trigger another engine.
+file format and import options. Fresh Auto opens preflight the resource's Python selection and package availability
+before creating a panel, reusing the existing environment/runtime preparation cache. If unconfigured discovery finds
+no supported Python executable, or none of the compatible file engines has its required packages, the host tries R
+for a supported native file. Broken configured Python paths, trust/cancellation/timeouts, malformed probes, unexpected resolver
+errors and source validation failures do not authorize this fallback. A native R compatibility or missing-executable
+refusal retains the ordinary Python dependency-repair panel. This happens before the native read; a read error does
+not trigger another engine.
+
+The Auto handoff captures the logical Python selection owner and rechecks it after resolving R. Another unresolved
+failed lookup does not retire that owner; a newly resolved Python environment or actual selection invalidation does.
+Cancelling one preflight detaches that caller while shared preparation settles for other callers. Confirmed R sessions
+retain their concrete backend and logical Auto preference on restore; they do not repeat Python selection.
 **Open Wrangler: Open File Path** reads the configured default and creates a fresh panel, including after a failed
 open. Restoring a custom editor instead preserves its previously confirmed backend.
 
-Explicit R selection opens a local CSV or TSV through an owned `Rscript` process on Linux or macOS. Auto remains
-Python-only. Choosing between R and a Python engine opens a separate panel with that engine's own saved plan, if any;
+R selection opens a local CSV or TSV through an owned `Rscript` process on Linux or macOS. Choosing between R and a Python engine opens a separate panel with that engine's own saved plan, if any;
 it does not translate the original panel's steps or discard its state. The host carries the exact file, session and
 revision through the picker and cancels an unhanded runtime when that owner retires. R file import-options changes
 also open a separate session because the native process is bound to its original source and options.

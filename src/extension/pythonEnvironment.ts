@@ -37,6 +37,11 @@ export abstract class PythonEnvironmentResolutionTerminalError extends Error {
   abstract readonly code: string;
 }
 
+/** Unconfigured discovery exhausted every candidate without selecting an interpreter. */
+export class PythonEnvironmentUnavailableError extends Error {}
+
+class PythonCandidateUnavailableError extends Error {}
+
 export class PythonEnvironmentResolutionTimeoutError extends PythonEnvironmentResolutionTerminalError {
   readonly code = "python_environment_resolution_timeout";
 
@@ -438,6 +443,7 @@ export async function resolvePythonEnvironment(
 
   const broker = apiBroker ?? new PythonEnvironmentApiBroker();
   const ownsBroker = apiBroker === undefined;
+  const failures: unknown[] = [];
   try {
     const executable = await broker.resolveSelectedExecutable(resource, attempt);
     if (executable) {
@@ -445,6 +451,7 @@ export async function resolvePythonEnvironment(
         return await probeEnvironment(executable, "pythonExtension", attempt);
       } catch (error) {
         if (isPythonEnvironmentResolutionTerminalError(error)) throw error;
+        failures.push(error);
         // Fall through to system interpreters. Diagnostics are surfaced if every candidate fails.
       }
     }
@@ -473,18 +480,23 @@ export async function resolvePythonEnvironment(
       }`
     );
   }
-  const failures: string[] = [];
   for (const candidate of candidates) {
     attempt.assertActive();
     try {
       return await probeEnvironment(candidate.executable, "system", attempt, candidate.arguments);
     } catch (error) {
       if (isPythonEnvironmentResolutionTerminalError(error)) throw error;
-      failures.push(error instanceof Error ? error.message : String(error));
+      failures.push(error);
     }
   }
   attempt.assertActive();
-  throw new Error(`No compatible Python 3.10-3.14 interpreter was found. ${failures.join(" ")}`);
+  const message = `No compatible Python 3.10-3.14 interpreter was found. ${failures
+    .map((error) => (error instanceof Error ? error.message : String(error)))
+    .join(" ")}`;
+  if (failures.every((error) => error instanceof PythonCandidateUnavailableError)) {
+    throw new PythonEnvironmentUnavailableError(message);
+  }
+  throw new Error(message);
 }
 
 export interface WindowsPythonDiscoveryOptions {
@@ -661,7 +673,7 @@ async function probeEnvironment(
     attempt.platform
   );
   if (!resolvedExecutable) {
-    throw new Error(`${executable} could not be resolved to an absolute executable.`);
+    throw new PythonCandidateUnavailableError(`${executable} could not be resolved to an absolute executable.`);
   }
   const initial = await executeEnvironmentProbe(resolvedExecutable, processEnvironment, attempt, launcherArguments);
   const reportedExecutable = platformPath(attempt.platform).normalize(initial.executable);
@@ -674,7 +686,7 @@ async function probeEnvironment(
   const { version, executableIdentity, packageRoot, packageRootIdentity } = result;
   const [major, minor, patch] = version;
   if (!isSupportedPythonVersion(major, minor)) {
-    throw new Error(
+    throw new PythonCandidateUnavailableError(
       `${reportedExecutable} is Python ${major}.${minor}.${patch}; Open Wrangler requires Python 3.10-3.14.`
     );
   }
@@ -733,7 +745,11 @@ async function executeEnvironmentProbe(
     stdout = result.stdout.trim();
   } catch (error) {
     if (isPythonEnvironmentResolutionTerminalError(error)) throw error;
-    throw new Error(`${executable} could not be started: ${error instanceof Error ? error.message : String(error)}`);
+    const message = `${executable} could not be started: ${error instanceof Error ? error.message : String(error)}`;
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      throw new PythonCandidateUnavailableError(message);
+    }
+    throw new Error(message);
   }
   attempt.assertActive();
   return decodePythonEnvironmentProbeOutput(stdout, attempt.platform);

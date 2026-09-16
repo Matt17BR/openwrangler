@@ -170,6 +170,8 @@ export class SessionCoordinator implements vscode.Disposable {
         return response;
       },
       captureActiveFilePlan: () => this.captureActiveFilePlan(delegate),
+      prepareFileAutoFallback: (source, options) =>
+        delegate.prepareFileAutoFallback?.(source, options) ?? Promise.resolve(undefined),
       discoverDuckDBTables: (source, options) =>
         delegate.discoverDuckDBTables?.(source, options) ?? Promise.resolve(undefined),
       installFileDependencies: (source, backend, options) =>

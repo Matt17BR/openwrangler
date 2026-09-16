@@ -11,6 +11,8 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Changed
 
+- Auto can open supported local files in R when no compatible Python interpreter or file engine is available.
+
 - Data sources groups file opening and discovered Python/R dataframes; Operations contains the cleaning catalog.
 - Formula steps show their saved output names in Cleaning Steps tooltips and accessible names.
 - Applied-step inspection collapses paused viewing filters into a disclosure, with full rules available on demand.

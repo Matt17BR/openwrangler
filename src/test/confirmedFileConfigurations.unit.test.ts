@@ -58,37 +58,43 @@ describe("confirmed file configurations", () => {
     expect(persistenceKey(reloadedSource, "polars")).not.toBe(persistenceKey(confirmedSource, "pandas"));
   });
 
-  it.each(["csv", "tsv"])("retains explicit local R %s configuration under its own plan key", async (extension) => {
-    const workspaceState = new MemoryMemento();
-    const uri = vscode.Uri.file(`/workspace/orders.${extension}`);
-    const importOptions = {
-      delimiter: extension === "tsv" ? "\t" : ",",
-      encoding: "utf-8",
-      quoteChar: '"',
-      hasHeader: true
-    };
-    await rememberConfirmedFileConfiguration(workspaceState, uri, importOptions, "r", "r");
-    const restored = confirmedFileConfiguration(workspaceState, uri);
-    expect(restored).toEqual({ backend: "r", backendPreference: "r", importOptions });
-    const source = {
-      kind: "file" as const,
-      label: `orders.${extension}`,
-      path: uri.fsPath,
-      uri: uri.toString(),
-      importOptions
-    };
-    expect(persistenceKey({ ...source, importOptions: restored?.importOptions }, "r")).toBe(
-      persistenceKey(source, "r")
-    );
-    expect(persistenceKey(source, "r")).not.toBe(persistenceKey(source, "polars"));
-    expect(workspaceState.get(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY)).toEqual({
-      version: 2,
-      entries: [{ uri: uri.toString(), backend: "r", backendPreference: "r", importOptions }]
-    });
-  });
+  it.each([
+    ["csv", "r"],
+    ["tsv", "r"],
+    ["csv", "auto"]
+  ] as const)(
+    "retains local R %s configuration with %s preference under its own plan key",
+    async (extension, preference) => {
+      const workspaceState = new MemoryMemento();
+      const uri = vscode.Uri.file(`/workspace/orders.${extension}`);
+      const importOptions = {
+        delimiter: extension === "tsv" ? "\t" : ",",
+        encoding: "utf-8",
+        quoteChar: '"',
+        hasHeader: true
+      };
+      await rememberConfirmedFileConfiguration(workspaceState, uri, importOptions, "r", preference);
+      const restored = confirmedFileConfiguration(workspaceState, uri);
+      expect(restored).toEqual({ backend: "r", backendPreference: preference, importOptions });
+      const source = {
+        kind: "file" as const,
+        label: `orders.${extension}`,
+        path: uri.fsPath,
+        uri: uri.toString(),
+        importOptions
+      };
+      expect(persistenceKey({ ...source, importOptions: restored?.importOptions }, "r")).toBe(
+        persistenceKey(source, "r")
+      );
+      expect(persistenceKey(source, "r")).not.toBe(persistenceKey(source, "polars"));
+      expect(workspaceState.get(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY)).toEqual({
+        version: 2,
+        entries: [{ uri: uri.toString(), backend: "r", backendPreference: preference, importOptions }]
+      });
+    }
+  );
 
   it.each([
-    { label: "automatic R", resource: "file:///workspace/orders.csv", backend: "r", preference: "auto" },
     { label: "mismatched R preference", resource: "file:///workspace/orders.csv", backend: "polars", preference: "r" },
     {
       label: "mismatched Python preference",

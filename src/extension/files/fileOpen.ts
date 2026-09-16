@@ -2,7 +2,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 import type { DataBackend, SessionSource } from "../../shared/protocol";
 import { isSessionSource } from "../../shared/protocolValidation";
-import type { OpenWranglerBridge } from "../dataBridge";
+import { FileBackendUnavailableError, type CancellationTokenLike, type OpenWranglerBridge } from "../dataBridge";
 import { OpenWranglerPanel } from "../webviewPanel";
 import { getSetting } from "../configuration";
 import { formatQuickPickName } from "../quickPickName";
@@ -18,11 +18,31 @@ async function selectFileBridge(
   source: SessionSource,
   backend: FileDataBackend | undefined,
   pythonBridge: OpenWranglerBridge,
-  createRBridge: RFileBridgeFactory | undefined
-): Promise<OpenWranglerBridge> {
-  if (backend !== "r") return pythonBridge;
+  createRBridge: RFileBridgeFactory | undefined,
+  cancellation?: CancellationTokenLike
+): Promise<{ bridge: OpenWranglerBridge; backend: FileDataBackend | undefined; isCurrent(): boolean }> {
+  const current = (): boolean => vscode.workspace.isTrusted && !cancellation?.isCancellationRequested;
+  const preflight =
+    backend === undefined && createRBridge
+      ? await pythonBridge.prepareFileAutoFallback?.(source, { cancellation })
+      : undefined;
+  const fallback = preflight && !("kind" in preflight) ? preflight : undefined;
+  if (backend !== "r" && !fallback)
+    return { bridge: pythonBridge, backend, isCurrent: () => !cancellation?.isCancellationRequested };
+  if (!current() || (fallback && !fallback.isCurrent()))
+    throw new Error("The file runtime selection changed. Open the file again.");
   if (!createRBridge) throw new Error("Native R file opening is unavailable in this extension host.");
-  return createRBridge(source);
+  try {
+    return {
+      bridge: await createRBridge(source),
+      backend: "r",
+      isCurrent: () => current() && (!fallback || fallback.isCurrent())
+    };
+  } catch (error) {
+    if (fallback && error instanceof FileBackendUnavailableError)
+      return { bridge: pythonBridge, backend, isCurrent: () => current() && fallback.isCurrent() };
+    throw error;
+  }
 }
 
 export class OpenWranglerCustomEditorProvider implements vscode.CustomReadonlyEditorProvider {
@@ -57,22 +77,24 @@ export class OpenWranglerCustomEditorProvider implements vscode.CustomReadonlyEd
     const source = fileSource(document.uri, importOptions);
     const configuredBackend = getConfiguredBackend();
     const backend = confirmed?.backend ?? backendPin(configuredBackend);
-    let selectedBridge: OpenWranglerBridge | undefined;
+    let selected: Awaited<ReturnType<typeof selectFileBridge>> | undefined;
     let handedOff = false;
     try {
-      selectedBridge = await selectFileBridge(
+      selected = await selectFileBridge(
         source,
         backend as FileDataBackend | undefined,
         this.bridge,
-        this.createRBridge
+        this.createRBridge,
+        token
       );
       if (token.isCancellationRequested) return;
+      if (!selected.isCurrent()) throw new Error("The file runtime selection changed. Open the file again.");
       new OpenWranglerPanel(
         webviewPanel,
         this.context,
-        selectedBridge,
+        selected.bridge,
         source,
-        backend,
+        selected.backend,
         true,
         confirmed?.backendPreference ?? configuredBackend
       );
@@ -83,7 +105,7 @@ export class OpenWranglerCustomEditorProvider implements vscode.CustomReadonlyEd
         webviewPanel.dispose();
       }
     } finally {
-      if (!handedOff && backend === "r") selectedBridge?.onIdle?.();
+      if (!handedOff && selected && selected.bridge !== this.bridge) selected.bridge.onIdle?.();
     }
   }
 }
@@ -99,17 +121,23 @@ export const registerFileCommands = (
     isCurrent: () => boolean = () => true
   ): Promise<void> => {
     if (!isCurrent()) return;
-    let selectedBridge: OpenWranglerBridge | undefined;
+    let selected: Awaited<ReturnType<typeof selectFileBridge>> | undefined;
     let handedOff = false;
     try {
-      selectedBridge = await selectFileBridge(source, backendPin(backendPreference), bridge, createRBridge);
+      selected = await selectFileBridge(source, backendPin(backendPreference), bridge, createRBridge, {
+        get isCancellationRequested() {
+          return !isCurrent();
+        },
+        onCancellationRequested: () => ({ dispose: () => undefined })
+      });
       if (!isCurrent()) return;
-      OpenWranglerPanel.create(context, selectedBridge, source, backendPin(backendPreference), backendPreference);
+      if (!selected.isCurrent()) throw new Error("The file runtime selection changed. Open the file again.");
+      OpenWranglerPanel.create(context, selected.bridge, source, selected.backend, backendPreference);
       handedOff = true;
     } catch (error) {
       if (isCurrent()) await vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
     } finally {
-      if (!handedOff && backendPreference === "r") selectedBridge?.onIdle?.();
+      if (!handedOff && selected && selected.bridge !== bridge) selected.bridge.onIdle?.();
     }
   };
   context.subscriptions.push(

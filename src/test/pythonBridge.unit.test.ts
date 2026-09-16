@@ -3686,6 +3686,155 @@ describe("PythonBridge environment resource selection", () => {
     expect(result.isCurrent()).toBe(false);
   });
 
+  it("permits Auto's R fallback only after every compatible Python dependency probe fails", async () => {
+    const { bridge, internals } = createEnvironmentHarness();
+    const source: SessionSource = {
+      kind: "file",
+      label: "data.xlsx",
+      path: testPythonExecutablePath("/data/data.xlsx")
+    };
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
+    vi.mocked(pythonEnvironment.probeDependencies).mockImplementation(async (_environment, dependencies) => ({
+      missing: dependencies.map((dependency) => dependency.installSpec)
+    }));
+    const result = await bridge.prepareFileAutoFallback(source);
+    if (!result || "kind" in result) throw new Error("Expected an absence receipt");
+    expect(result.isCurrent()).toBe(true);
+    expect(vi.mocked(pythonEnvironment.probeDependencies).mock.calls[0]?.[0]).toBe(environment);
+    expect(vi.mocked(pythonEnvironment.probeDependencies).mock.calls.map((call) => call[1])).toEqual([
+      requiredDependencies("polars", source),
+      requiredDependencies("pandas", source)
+    ]);
+    expect(internals.spawnProcess).not.toHaveBeenCalled();
+    await bridge.prepareFileAutoFallback(source);
+    expect(result.isCurrent()).toBe(true);
+    bridge.clearRuntimeSelection();
+    expect(result.isCurrent()).toBe(false);
+  });
+
+  it("does not permit R fallback when a compatible Python engine is available", async () => {
+    const { bridge, internals } = createEnvironmentHarness();
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [] });
+    await expect(
+      bridge.prepareFileAutoFallback({ kind: "file", label: "data.csv", path: "/data/data.csv" })
+    ).resolves.toBeUndefined();
+    expect(pythonEnvironment.probeDependencies).toHaveBeenCalledOnce();
+    expect(internals.spawnProcess).not.toHaveBeenCalled();
+  });
+
+  it("does not classify a failed dependency probe as engine absence", async () => {
+    const { bridge, internals } = createEnvironmentHarness();
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
+    const failure = new Error("Invalid dependency probe response");
+    vi.mocked(pythonEnvironment.probeDependencies).mockRejectedValueOnce(failure);
+    await expect(
+      bridge.prepareFileAutoFallback({ kind: "file", label: "data.csv", path: "/data/data.csv" })
+    ).rejects.toBe(failure);
+    expect(internals.spawnProcess).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("re-probes interpreter absence (selection cleared: %s)", async (cleared) => {
+    const { bridge, internals } = createEnvironmentHarness();
+    const source: SessionSource = { kind: "file", label: "data.csv", path: "/data/data.csv" };
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment)
+      .mockRejectedValueOnce(
+        new pythonEnvironment.PythonEnvironmentUnavailableError("No compatible Python interpreter")
+      )
+      .mockResolvedValueOnce(environment);
+    const result = await bridge.prepareFileAutoFallback(source);
+    if (!result || "kind" in result) throw new Error("Expected an interpreter absence receipt");
+    expect(result.isCurrent()).toBe(true);
+    if (cleared) {
+      bridge.clearRuntimeSelection();
+      expect(result.isCurrent()).toBe(false);
+    }
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [] });
+    await expect(bridge.prepareFileAutoFallback(source)).resolves.toBeUndefined();
+    expect(result.isCurrent()).toBe(false);
+    expect(pythonEnvironment.resolvePythonEnvironment).toHaveBeenCalledTimes(2);
+    expect(internals.spawnProcess).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    "keeps a pending R handoff current through another failed Auto lookup (unexpected: %s)",
+    async (unexpected) => {
+      const { bridge, internals } = createEnvironmentHarness();
+      const source: SessionSource = { kind: "file", label: "data.csv", path: "/data/data.csv" };
+      const absent = new pythonEnvironment.PythonEnvironmentUnavailableError("No compatible Python interpreter");
+      const retryFailure = unexpected ? new Error("Python environment probe did not return valid JSON") : absent;
+      vi.mocked(pythonEnvironment.resolvePythonEnvironment)
+        .mockRejectedValueOnce(absent)
+        .mockRejectedValueOnce(retryFailure);
+      const first = await bridge.prepareFileAutoFallback(source);
+      if (!first || "kind" in first) throw new Error("Expected an interpreter absence receipt");
+      const second = bridge.prepareFileAutoFallback(source);
+      if (unexpected) await expect(second).rejects.toBe(retryFailure);
+      else {
+        const receipt = await second;
+        if (!receipt || "kind" in receipt) throw new Error("Expected the second absence receipt");
+        expect(receipt.isCurrent()).toBe(true);
+      }
+      // The first command is still awaiting its source-pinned R factory.
+      expect(first.isCurrent()).toBe(true);
+      expect(pythonEnvironment.resolvePythonEnvironment).toHaveBeenCalledTimes(2);
+      expect(internals.spawnProcess).not.toHaveBeenCalled();
+      bridge.clearRuntimeSelection();
+      expect(first.isCurrent()).toBe(false);
+    }
+  );
+
+  it("cancels only one Auto preflight while another open awaits the same Python selection", async () => {
+    const { bridge } = createEnvironmentHarness();
+    const pending = deferred<typeof environment>();
+    const cancellation = new vscode.CancellationTokenSource();
+    let signal: AbortSignal | undefined;
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockImplementation(
+      (_context, _resource, _broker, control) => {
+        signal = control?.signal;
+        const selectionSignal = signal;
+        return new Promise((resolve, reject) => {
+          selectionSignal?.addEventListener("abort", () => reject(selectionSignal.reason), { once: true });
+          void pending.promise.then(resolve, reject);
+        });
+      }
+    );
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [] });
+    const source: SessionSource = { kind: "file", label: "data.csv", path: "/data/data.csv" };
+    const first = bridge.prepareFileAutoFallback(source, { cancellation: cancellation.token });
+    const second = bridge.prepareFileAutoFallback(source);
+    void second.catch(() => undefined);
+    try {
+      cancellation.cancel();
+      await expect(first).rejects.toBeInstanceOf(pythonEnvironment.PythonEnvironmentResolutionCancelledError);
+      expect(signal?.aborted).toBe(false);
+      expect(pythonEnvironment.probeDependencies).not.toHaveBeenCalled();
+      pending.resolve(environment);
+      await expect(second).resolves.toBeUndefined();
+      expect(pythonEnvironment.resolvePythonEnvironment).toHaveBeenCalledOnce();
+      expect(pythonEnvironment.probeDependencies).toHaveBeenCalledOnce();
+    } finally {
+      pending.resolve(environment);
+      cancellation.dispose();
+      await second.catch(() => undefined);
+    }
+  });
+
+  it.each([
+    new pythonEnvironment.PythonEnvironmentResolutionTimeoutError(),
+    new pythonEnvironment.PythonEnvironmentResolutionWorkspaceTrustError(),
+    new pythonEnvironment.PythonEnvironmentResolutionCancelledError(),
+    new Error("Configured Python failed to report its executable")
+  ])("preserves terminal or unexpected preflight failure: $message", async (failure) => {
+    const { bridge, internals } = createEnvironmentHarness();
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockRejectedValueOnce(failure);
+    await expect(
+      bridge.prepareFileAutoFallback({ kind: "file", label: "data.csv", path: "/data/data.csv" })
+    ).rejects.toBe(failure);
+    expect(pythonEnvironment.probeDependencies).not.toHaveBeenCalled();
+    expect(internals.spawnProcess).not.toHaveBeenCalled();
+  });
+
   it("retains the ordinary missing-dependency diagnostic without launching DuckDB discovery", async () => {
     const { bridge } = createEnvironmentHarness();
     const source: SessionSource = {

@@ -447,6 +447,11 @@ diagnostics and direct-child temporary-directory ownership/cleanup. They no long
 Source tests and the scenario descriptions above define ownership; actual installed qualification requires the
 specified profile, platform and immutable artifact under the rules below.
 
+Fresh file Auto selection is covered by the existing file-command, custom-editor, Python resolver, PythonBridge and
+coordinator owners. They distinguish absent interpreters/packages from malformed probes, explicit pins, cancellation
+and stale selections. Concurrent opens keep independent cancellation and exact runtime handoffs; confirmed R restores
+keep their selected backend. Installed native R file opening remains with the existing R file journey.
+
 ## Pull-request CI
 
 See [CI](ci.md#pull-requests) for required jobs, platform coverage and the proof that permits selected checks to be
