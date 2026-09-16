@@ -44,6 +44,7 @@
   box-sizing: border-box;
   display: grid;
   gap: 2px;
+  grid-template-columns: minmax(0, 1fr);
   min-block-size: calc(var(--header-distribution-size, 36px) + var(--header-sampled-space, 0px));
   min-width: 0;
   overflow: clip;
@@ -83,6 +84,9 @@ thead:has(.sampledLabel) {
   color: var(--vscode-charts-yellow, #cca700);
   font-size: 9px;
   letter-spacing: 0.04em;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   text-transform: uppercase;
 }
 
@@ -164,6 +168,12 @@ thead:has(.sampledLabel) {
   gap: 7px;
   min-width: 0;
   white-space: normal;
+}
+
+.miniChartLegend > * {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .booleanMiniChart.interactive .miniChartLegend {
