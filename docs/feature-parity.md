@@ -519,6 +519,10 @@ Unaffected staged rules remain, and Undo does not restore a rule already retired
 Redo re-executes the latest undone command in editing-capable Python and native R sessions. Multiple Undos retain
 their command order; a new committed branch clears them. History lasts only for the current runtime session,
 including renderer remounts, and ends on close or recovery. Custom Code can produce a different result when re-executed.
+Pandas, Polars and native R reuse one input/output pair while inspecting a step whose prefix includes Custom Code.
+Paging and changing visible columns preserve that inspected result. The first inspection can differ from the original
+Apply. The pair requires full-frame memory and lasts until another step is inspected, the revision changes, the source is invalidated,
+or the session closes. DuckDB retains the [query-identity limitation](#sessions-and-generated-code) described above.
 Successful history changes close saved-step editors so reopening a step uses its current input schema. Failed
 changes and ordinary new-operation forms retain typed input.
 Earlier-step edits and deletions remove viewing filters and sorts made incompatible by the resulting schema while

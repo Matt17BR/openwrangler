@@ -1706,8 +1706,19 @@ and values or aggregates cross the runtime boundary only as bounded samples or f
 dataset-statistics requests retry once after cancellation, capacity refusal or a bridge failure while their view and
 demand remain current. Other errors are reported without an automatic retry. Fresh profiling demand can request them
 again. A recoverable session error does not itself imply that repeating the request can succeed. Applied-step
-inspection is also bounded, read-only, and ephemeral; it replays only the selected prefix and never changes the live
-plan or revision.
+inspection returns bounded pages and replays only the selected prefix without changing the live plan or revision.
+If that prefix includes Custom Code, Python and native R retain one inspected input/output pair for the selected
+step and revision. Later row and column windows reuse the pair, so they do not execute Custom Code again. The first
+inspection can still differ from the original Apply. Ordinary prefixes remain uncached.
+
+The retained pair contains full native frames and must fit memory; page limits do not bound its size. A successful
+inspection of another step replaces it, and a revision change, source invalidation or session close releases it.
+Runtime response construction must succeed before replacing the pair. Failed mutations preserve the previous valid
+pair, except when its source has become invalid. Native R publishes after its own preflight; it has no acknowledgement
+of a later host rejection. Step-info requests contain only metadata and do not replace the pair.
+Ordinary viewing changes and returning to Current view do not release it. Replacement and mutation rollback can
+temporarily retain both pairs. DuckDB retains lazy relations here, so its documented query-identity limitation still
+applies; this retention does not materialize a DuckDB query.
 
 Saved notebook capture rejects source columns in the private row-identity namespace before constructing its schema
 and page, using the same admission check as live sessions.

@@ -116,6 +116,18 @@ class _SparkConfirmedView:
     revision: int
 
 
+@dataclass(frozen=True, slots=True)
+class _StepInspectionBoundary:
+    revision: int
+    step_id: str
+    before: Any
+    after: Any
+    before_shape: SessionDataShape
+    after_shape: SessionDataShape
+    before_schema: list[dict[str, Any]]
+    after_schema: list[dict[str, Any]]
+
+
 @dataclass
 class Session:
     session_id: str
@@ -157,6 +169,7 @@ class Session:
     access: SessionRequestAdmission
     disposed: bool = False
     spark_confirmed_view: _SparkConfirmedView | None = None
+    inspection_boundary: _StepInspectionBoundary | None = None
 
     @property
     def display_frame(self) -> Any:
@@ -183,6 +196,7 @@ class Session:
             return
         self.disposed = True
         self.spark_confirmed_view = None
+        self.inspection_boundary = None
         self.view_generation += 1
         self.clear_page_cache()
         self.source.release()
@@ -200,6 +214,7 @@ class Session:
     def invalidate_source_view(self) -> None:
         with self.access.invalidation():
             self.spark_confirmed_view = None
+            self.inspection_boundary = None
             self.clear_page_cache()
 
 
@@ -237,6 +252,7 @@ class _SessionMutationSnapshot:
     view_change_epoch: int
     last_applied_view_restore: _AppliedViewRestore | None
     revision: int
+    inspection_boundary: _StepInspectionBoundary | None
 
     @classmethod
     def capture(cls, session: Session) -> _SessionMutationSnapshot:
@@ -273,6 +289,7 @@ class _SessionMutationSnapshot:
             view_change_epoch=session.view_change_epoch,
             last_applied_view_restore=deepcopy(session.last_applied_view_restore),
             revision=session.revision,
+            inspection_boundary=session.inspection_boundary,
         )
 
     def restore(self, session: Session) -> None:
@@ -306,6 +323,7 @@ class _SessionMutationSnapshot:
         session.view_change_epoch = self.view_change_epoch
         session.last_applied_view_restore = self.last_applied_view_restore
         session.revision = self.revision
+        session.inspection_boundary = self.inspection_boundary
 
 
 class SessionManager:
@@ -823,6 +841,7 @@ class SessionManager:
             session.draft_schema = draft_schema
             session.replace_step_id = replace_step_id
             session.revision += 1
+            session.inspection_boundary = None
             reconciled_filter_model = reconcile_view_filter_model(
                 session.filter_model,
                 draft_schema,
@@ -902,7 +921,7 @@ class SessionManager:
         column_offset: int = 0,
         column_limit: int = MAX_COLUMN_LIMIT,
     ) -> dict[str, Any]:
-        """Reconstruct one applied step's boundary without publishing session state."""
+        """Read one applied step's boundary without changing the live plan or revision."""
         session = self._session(session_id)
         with session.access.shared(), self._validated_source_read(session):
             self._assert_revision(session, revision)
@@ -918,10 +937,24 @@ class SessionManager:
             generated_code = compile_plan_with_limits(
                 session.engine, session.bound_plan[: step_index + 1], source=session.source.metadata
             )
-            before, _, before_shape, before_raw_schema = self._replay(session, session.bound_plan[:step_index])
-            after = self._apply_transform_with_row_ids(session, before, bound_step, before_shape)
-            after_shape = session.engine.shape(after)
-            after_raw_schema = self._schema_after_transform(session.engine.schema(after), bound_step)
+            retain_boundary = any(step["kind"] == "customCode" for step in session.bound_plan[: step_index + 1])
+            boundary = session.inspection_boundary
+            if boundary is None or boundary.revision != revision or boundary.step_id != step_id:
+                before, _, before_shape, before_raw_schema = self._replay(session, session.bound_plan[:step_index])
+                after = self._apply_transform_with_row_ids(session, before, bound_step, before_shape)
+                boundary = _StepInspectionBoundary(
+                    revision=revision,
+                    step_id=step_id,
+                    before=before,
+                    after=after,
+                    before_shape=before_shape,
+                    after_shape=session.engine.shape(after),
+                    before_schema=before_raw_schema,
+                    after_schema=self._schema_after_transform(session.engine.schema(after), bound_step),
+                )
+            before, after = boundary.before, boundary.after
+            before_shape, after_shape = boundary.before_shape, boundary.after_shape
+            before_raw_schema, after_raw_schema = boundary.before_schema, boundary.after_schema
 
             input_schema = deepcopy(session.plan_input_schemas[step_index])
             output_schema = (
@@ -994,6 +1027,9 @@ class SessionManager:
                 "Request fewer rows or columns.",
                 maximum_size=MAX_STRICT_RESPONSE_PAYLOAD_BYTES,
             )
+            # Custom Code may produce a different result on replay. Keep only
+            # this validated boundary, independent of ordinary view/page caches.
+            session.inspection_boundary = boundary if retain_boundary else None
             return response
 
     def apply_draft(
@@ -1627,6 +1663,7 @@ class SessionManager:
             previous_schema,
         )
         session.revision += 1
+        session.inspection_boundary = None
         if reuse_filtered and reconciled_filter_model == session.filter_model:
             # Apply promotes the exact draft frame that already owns this
             # filtered view. Retain it while still invalidating revision-bound
