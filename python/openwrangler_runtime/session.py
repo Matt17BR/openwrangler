@@ -1486,7 +1486,18 @@ class SessionManager:
     def _filtered(self, session: Session, filter_model: Mapping[str, Any]) -> Any:
         model = self._normalize_filter_model(filter_model)
         if model != session.filter_model:
-            self._refresh_filtered(session, model)
+            known_shape = (
+                session.filtered_shape.copy()
+                if session.source.kind == "file"
+                and session.backend in {"polars", "duckdb"}
+                and session.display_frame is session.original
+                and not is_duckdb_table_source(session.source.metadata)
+                and bool(model.get("filters"))
+                and session.filtered_shape["rows"] is not None
+                and {**model, "sort": []} == {**session.filter_model, "sort": []}
+                else None
+            )
+            self._refresh_filtered(session, model, known_shape=known_shape)
             session.view_change_epoch += 1
         return session.filtered
 
@@ -1499,7 +1510,13 @@ class SessionManager:
             return session.display_frame
         return session.engine.apply_filter_model(session.display_frame, model)
 
-    def _refresh_filtered(self, session: Session, filter_model: Mapping[str, Any]) -> None:
+    def _refresh_filtered(
+        self,
+        session: Session,
+        filter_model: Mapping[str, Any],
+        *,
+        known_shape: SessionDataShape | None = None,
+    ) -> None:
         model = self._normalize_filter_model(filter_model)
         has_filters = bool(model.get("filters"))
         has_sort = bool(model.get("sort"))
@@ -1508,7 +1525,12 @@ class SessionManager:
             filtered_shape = session.display_shape
         else:
             filtered = session.engine.apply_filter_model(session.display_frame, model)
-            filtered_shape = session.engine.shape(filtered) if has_filters else session.display_shape
+            if not has_filters:
+                filtered_shape = session.display_shape
+            elif known_shape is not None:
+                filtered_shape = known_shape
+            else:
+                filtered_shape = session.engine.shape(filtered)
 
         session.filtered = filtered
         session.filter_model = model

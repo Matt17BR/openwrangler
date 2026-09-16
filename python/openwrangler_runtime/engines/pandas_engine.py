@@ -5638,7 +5638,11 @@ def _pandas_exact_decimal_sum(series: Any) -> Decimal:
 
 
 def _pandas_profile_numeric_sum(series: Any, semantic_type: str) -> Any:
+    import pandas as pd
+
     if semantic_type == "integer":
+        if type(series) is pd.Series and _pandas_native_int64_sum_is_safe(series):
+            return series.sum()
         return _pandas_widen_integer(series).sum()
     if semantic_type != "decimal":
         return series.sum()
@@ -6858,12 +6862,17 @@ def _pandas_numeric_visualization(series: Any, max_bins: int = 20) -> dict[str, 
 
 
 def _missing_value_counts(series: Any) -> tuple[int, int]:
-    # NumPy-backed Pandas dtypes have unambiguous missing-value storage. Avoid
-    # boxing every scalar twice for the common numeric and temporal cases;
-    # extension and object dtypes still need the exact scalar fallback below.
+    # NumPy-backed and StringDtype values have unambiguous missing storage.
+    # Other extension and object dtypes retain exact scalar classification.
     import numpy as np
+    import pandas as pd
 
     dtype = series.dtype
+    if type(series) is pd.Series and isinstance(dtype, pd.StringDtype):
+        if dtype.na_value is pd.NA:
+            return int(series.isna().sum()), 0
+        if _is_nan_value(dtype.na_value):
+            return 0, int(series.isna().sum())
     if isinstance(dtype, np.dtype):
         if dtype.kind in {"i", "u", "b"}:
             return 0, 0

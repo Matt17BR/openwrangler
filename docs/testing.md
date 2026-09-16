@@ -123,131 +123,100 @@ disclosure and failed preview. Busy forms retain keyboard scrolling without focu
 The filter keyboard owner also checks selected-column/profile agreement and hit visibility of the focused cell and
 header with the panel open at 1280px, 800px, 621px, 620px and a short 320px viewport. A column wider than the available
 data lane must expose that lane; the panel must not cover the grid, and its short-layout controls retain Tab/Escape access.
+The inspection workflow checks Enter on the paused-filter disclosure, retained disabled rules and focus on entry and
+return. Focus moves from a filter control being hidden to the disclosure and leaves unrelated controls alone.
+The mode-help owner checks compact toolbar containment with a long source label, keyboard disclosure and Spark's
+viewing-only ordering help, while retaining its blocked mode transition and projection-gated Undo checks.
 
 Use the existing owners to choose a focused source check:
 
-- **Applied-step inspection:** [Python inspection](../python/tests/test_step_inspection.py) checks Custom-backed row
-  identity across windows, failed publication, source invalidation and retained-frame release. The
-  [native R transport owner](../src/test/rKernelTransport.cross.test.ts) checks the actual producer and decoder with
-  the host diff, including a no-op Fill after changing Custom output. Keep these cases in the existing owners;
-  ordinary deterministic inspection remains uncached.
-- **Value and profile actions:** [filter panel](../src/test/filterPanel.component.test.tsx) and
-  [filter summaries](../src/test/filterSummary.component.test.tsx) check exact, unavailable and raw-compatible choices,
-  keyboard behavior and removal of saved selections. The response validator checks the same three states in value
-  lists and profiles. Native producer cases belong in the existing typed-cell and engine owners below; preserve
-  profile and lazy-query bounds when adding selection metadata.
+- **Applied-step inspection:** [Python inspection](../python/tests/test_step_inspection.py) and
+  [native R transport](../src/test/rKernelTransport.cross.test.ts) check retained Custom input/output pairs, host diffs,
+  failed publication and cleanup. Ordinary deterministic inspection remains uncached.
+- **Value and profile actions:** [filter panel](../src/test/filterPanel.component.test.tsx),
+  [filter summaries](../src/test/filterSummary.component.test.tsx) and the response validator own exact, unavailable
+  and raw-compatible selections. Native value production belongs in the typed-cell and engine owners below;
+  selection metadata must preserve their profile and lazy-query bounds.
 - **Publication, recovery and persistence:** [response commitment](../src/test/sessionResponseCommitter.unit.test.ts),
   [coordinator persistence](../src/test/sessionCoordinator.persistence.unit.test.ts),
   [runtime restoration](../src/test/sessionRuntimeStateRestorer.unit.test.ts) and
-  [panel publication](../src/test/webviewPanel.unit.test.ts) check confirmed state, queued or stale responses,
-  failed saves, replay and exact session/renderer retirement. [Plan rewrites](../src/test/sessionCoordinator.planRewrite.unit.test.ts)
-  check schema-compatible viewing restoration and the choice between a draft's saved view and a newer accepted view.
-  Initial saved-plan restoration stops further dispatch
-  and fallback when its opening owner retires. Protocol admission and source lifetime rules remain in
-  [Architecture](architecture.md#protocol-and-publication) and its linked runtime owners.
-  File-plan reuse uses the same coordinator persistence owner for private publication, stale origins, alias refusal,
-  failed replay and cancellation. The [persistence store](../src/test/sessionPersistenceStore.unit.test.ts) checks raw
-  target absence and failed-save rollback; [file commands](../src/test/fileOpen.unit.test.ts) check capture before the
-  picker and pinned engine/import settings. Operation semantics remain in the native/generated-code owners.
+  [panel publication](../src/test/webviewPanel.unit.test.ts) own confirmed state, stale responses, failed saves,
+  replay and retirement. [Plan rewrites](../src/test/sessionCoordinator.planRewrite.unit.test.ts) own viewing-state
+  restoration. Initial restoration must stop dispatch and fallback when its opening owner retires.
+  File-plan reuse uses coordinator persistence, the [persistence store](../src/test/sessionPersistenceStore.unit.test.ts)
+  and [file commands](../src/test/fileOpen.unit.test.ts) for private target publication, captured picker ownership,
+  engine/import settings and failure restoration. Native operation semantics stay in their engine owners.
+  See [protocol and publication](architecture.md#protocol-and-publication) for the live contract.
 - **UI state and interactions:** [App draft state](../src/test/appDraftState.component.test.tsx),
   [operation forms](../src/test/operationBuilder.component.test.tsx),
   [progressive profiling](../src/test/appProgressiveProfiling.component.test.tsx) and
-  [profiling lifecycle](../src/test/progressiveProfilingLifecycle.unit.test.tsx) check retained input, explicit repair,
-  request correlation and effective-query cache ownership. [Grid clipboard](../src/test/gridClipboard.unit.test.ts)
-  and [renderer lifecycle](../src/test/rendererPresentationLifecycle.unit.test.tsx) own focus and acknowledgement
-  ordering. Browser acceptance supplies the native layout and interaction evidence.
+  [profiling lifecycle](../src/test/progressiveProfilingLifecycle.unit.test.tsx) own drafts, request correlation and
+  query caches. [Grid clipboard](../src/test/gridClipboard.unit.test.ts) and
+  [renderer lifecycle](../src/test/rendererPresentationLifecycle.unit.test.tsx) own focus and acknowledgement ordering.
+  Browser acceptance supplies native layout and interaction evidence.
 - **Python dependency admission:** [native package provenance](../src/test/pythonDependencyPep440.unit.test.ts)
-  exercises the shared guard through discovery, including version bounds and actual file/ancestor substitution.
-  [Guard checks](../python/tests/test_dependency_guard_exact_version.py) cover partial availability, unavailable packaging and
-  journal isolation. [Process ownership](../src/test/dependencyInstaller.unit.test.ts) and
-  [probe caching](../src/test/pythonDependencyState.unit.test.ts) check timeout termination, settlement and stale results.
+  checks the real version and file-origin guard through discovery.
+  [Guard checks](../python/tests/test_dependency_guard_exact_version.py) own availability and journal isolation;
+  [process ownership](../src/test/dependencyInstaller.unit.test.ts) and
+  [probe caching](../src/test/pythonDependencyState.unit.test.ts) own termination, settlement and stale results.
 - **Import and export boundaries:** [import detection](../src/test/importDetection.unit.test.ts) and
-  [import options](../src/test/importOptions.unit.test.ts) own the bounded sample, decoding and dialect intent.
-  Import options also check native prompt handoff, accepted values, validation, cancellation and disposal. The
-  installed file-reconfiguration journey checks actual keyboard focus through the same public prompts.
-  [Native reader adaptation](../python/tests/test_empty_delimited_files.py) and the engine owners below check actual
-  file rows, types, options and source bytes. [Pinned native exports](../python/tests/test_configurable_export.py) and
-  [safe file export](../src/test/safeFileExport.unit.test.ts) use real files to check separate destinations, identity
-  changes and cleanup. [R private artifacts](../src/test/rPrivateArtifactBoundary.unit.test.ts) check real reads,
-  quarantine and zero-byte cleanup. Metadata identity checks do not detect every same-size content change.
-  The R substitution and [Windows export-pin](../python/tests/test_export_target.py) symlink cases attempt real
-  symlink creation; a recognized Windows setup refusal reports a skip rather than a passing protection check.
+  [import options](../src/test/importOptions.unit.test.ts) own bounded samples, dialects and native prompts.
+  The installed file-reconfiguration journey supplies actual keyboard-focus evidence.
+  [Native reader adaptation](../python/tests/test_empty_delimited_files.py) and the engine owners check native rows,
+  types and source preservation. [Pinned exports](../python/tests/test_configurable_export.py),
+  [safe file export](../src/test/safeFileExport.unit.test.ts) and
+  [R private artifacts](../src/test/rPrivateArtifactBoundary.unit.test.ts) own separate destinations, identity,
+  cleanup and native readback. Metadata identity does not detect every same-size content change. R substitution and
+  [Windows export-pin](../python/tests/test_export_target.py) cases attempt real symlinks; a recognized Windows setup
+  refusal is a skip, not passing protection evidence.
   Native R exports belong in the [frame owner's](../r/tests/frame_contract.R) `capture-and-export` case and the
-  [kernel owner's](../r/tests/kernel_agent.R) `group-pivot-and-export` case. These and the configurable-export owner
-  check native CSV/Parquet readback, format refusal and recovery, and source/session preservation. Keep refusal before
-  writer opening, destination preservation, bounded conversion and lazy streaming assertions in their existing owners.
-  DuckDB database-table cases in the existing engine and SessionSource owners check exact selection, bounded catalog
-  reads, native WAL/source preservation, query/fetch serialization, shared reader lifetime, changed-source admission,
-  writer refusal and cleanup. Catalog discovery also runs while a retained reader remains open.
-  The existing file-command, PythonBridge and discovery-adapter owners cover picker cancellation, captured interpreter
-  selection and dependency admission. The bridge and metadata-process cases retain package-write exclusion through
-  cancellation and actual child closure for both Excel and DuckDB discovery. Protocol, panel and coordinator owners reject invalid selectors and ordinary
-  file reconfiguration; the App and mode-control owners check viewing-only actions. These source checks do not qualify
-  an installed cross-platform database journey. The generic file-input journey separately exercises the registered
-  database command, both real pickers, literal icon-like table labels and native name search, exact schema/table
-  selection, rendered rows and filtering, then closes its reader and checks unchanged source bytes. It reuses the
-  existing fixture child and adds no native lock or spill matrix.
-  The existing import-options owner checks the common name representation once. File, R document, direct/cached R
-  terminal and notebook picker owners check displayed names while retaining original selections and live-tree labels.
+  [kernel owner's](../r/tests/kernel_agent.R) `group-pivot-and-export` case. Retain refusal before writer opening,
+  destination/source preservation, bounded conversion and lazy-streaming assertions in these existing owners.
+  DuckDB engine and SessionSource tests own database selection, native WAL/source preservation, query serialization,
+  shared reader lifetime and writer refusal. File-command, PythonBridge and discovery-adapter tests own picker,
+  interpreter and dependency admission, including package-write exclusion through actual child closure.
+  These source checks do not qualify installed cross-platform database behavior. The generic file-input journey
+  exercises the registered command, real pickers, rendered rows and filtering, then closes the reader and checks
+  source bytes. It adds no separate native lock or spill matrix.
+  Import-options tests own the common name representation; file, R document, terminal and notebook picker tests
+  preserve original selections and live-tree labels.
 - **Python engines and generated programs:** [Pandas](../python/tests/test_pandas_engine.py),
   [Polars](../python/tests/test_polars_engine.py) and [DuckDB](../python/tests/test_duckdb_engine.py) own native profiles,
-  queries, source preservation and engine-specific evaluation bounds. The Polars owner also checks literal column
-  names across projected views, profiles, shared cleaning helpers and complete generated programs.
-  It checks one full native capture at live LazyFrame admission and Custom result acceptance, followed by
-  bounded page/profile results. A deterministic rotating callback checks adjacent and projected page identities,
-  tied viewing sorts, clone ownership, rollback, history and generated Custom results. The Custom refusal control also
-  checks actual zero-column callback results after capture in Preview and complete generated code. The same admission
-  owner rejects reserved names before capture and checks the actual captured schema when a callback disables native
-  validation. Its native dtype controls
-  preserve Object references, nulls, signed zero, nested values and Enum domains. Ordinary file scans and saved MIME
-  captures retain their separate lazy/bounded owners; sequential whole-column copy uses the same stable page reads.
-  DuckDB's existing engine owner checks once-evaluated notebook and Custom results, exact native types, stored row
-  identities, connection affinity, generated programs and checkpoint release. The shared Custom inspection fixture
-  also runs on DuckDB, including response rejection, retained inspection storage and source invalidation.
-  Notebook command and KernelBridge owners check explicit connection selection against the pinned kernel; the
-  executed-result owner checks automatic inline snapshots through the bounded MIME path without opening a Session.
-  The [session binding owner](../python/tests/test_session_column_binding.py) covers apply/history and source identities.
-  Extract Struct Fields uses the Polars and DuckDB owners for native types, exact names, current-input refusals and
-  full generated programs. The session binding owner checks appended identities, history and native Parquet export;
-  shared operation/form tests check request bounds and engine availability.
-  Explode List uses the same Polars and session owners for retained-input admission, exact child types, fresh row
-  identities, history and generated-code agreement. Object refusal tests use dtype metadata on safe frames; do not
-  construct unsupported Object-containing native lists whose cleanup can panic inside Polars.
-  [Operation edges](../python/tests/test_operation_edges.py),
-  [Fill Missing](../python/tests/test_fill_missing.py) and the existing operation-specific owners compare complete
-  live and generated results, types and indexes. [Session transactions](../python/tests/test_session_transactions.py)
-  cover public Preview/Apply, history, refusal/correction, export and replay. Keep individual numeric, dtype and
-  collision cases in those tests; supported behavior belongs in [engine boundaries](architecture.md#engine-boundaries-and-capabilities).
-  [Typed cells](../python/tests/test_typed_cells.py) checks bounded pages, profiles and value choices against native
-  storage, including precision, missing values and live/generated selection agreement. [Filter logic](../python/tests/test_filter_logic.py)
-  owns cross-engine duration filters under a changed notebook Decimal context and native-tick comparisons with an
-  independent rational oracle. Engine-specific precision and lazy-query checks stay with the engine owners above.
-  Expected missing Sparse duration inputs use contiguous slices because native fill-aware row taking can corrupt
-  multiplied `NaT` values on older supported NumPy versions.
-  Zero-unit refusal uses metadata with native access forbidden; tests do not execute zero-unit arrays.
+  queries, captures, exact types, source preservation and evaluation bounds. Keep capture, clone and checkpoint
+  lifetime checks here; ordinary file scans and saved MIME captures retain their separate lazy/bounded contracts.
+  Notebook command and KernelBridge tests own connection selection; executed-result tests own bounded inline MIME
+  capture without opening a Session.
+  [Session binding](../python/tests/test_session_column_binding.py) owns column and row identities through history,
+  replay and export. [Operation edges](../python/tests/test_operation_edges.py),
+  [Fill Missing](../python/tests/test_fill_missing.py) and operation-specific tests compare complete live and generated
+  results, types and indexes. [Session transactions](../python/tests/test_session_transactions.py) own public
+  Preview/Apply, refusal, recovery and replay. New operations also need shared request/form checks for bounds and
+  engine availability. Supported behavior belongs in [engine boundaries](architecture.md#engine-boundaries-and-capabilities).
+  [Typed cells](../python/tests/test_typed_cells.py) owns bounded pages, profiles and choices against native storage;
+  [filter logic](../python/tests/test_filter_logic.py) owns cross-engine duration comparisons with an independent oracle.
+  Engine-specific precision and lazy-query checks stay with the engine owners.
+  Keep unsafe native fixtures out of these tests: inspect dtype metadata on safe frames instead of constructing
+  unsupported Object-containing Polars lists whose cleanup can panic. Use contiguous slices for expected missing
+  Sparse durations because native fill-aware row taking can corrupt multiplied `NaT` values on supported older NumPy.
+  The Sparse zero-unit refusal fixture uses metadata with native array access forbidden; keep its guard ahead of
+  native conversion.
 - **Generated source and Custom Code:** [helper selection](../python/tests/test_generated_helpers.py),
   [output columns](../python/tests/test_generated_output_columns.py),
   [Custom Code scope](../python/tests/test_custom_code_scope.py) and [session plans](../python/tests/test_session_plan.py)
-  check complete executable programs, source-library and caller isolation, stable output binding, native result
-  admission and emitted-byte limits. Adding an operation or helper requires live/generated agreement in every
-  editing engine that supports it; a generated-text assertion alone is insufficient.
-- **Notebook and process boundaries:** kernel, bridge and transport owners check correlated bounded framing,
-  cancellation, execution settlement and cleanup of the original source owner. Native R
-  [discovery](../src/test/rNotebookVariableDiscovery.unit.test.ts) and
-  [kernel transport](../src/test/rKernelTransport.cross.test.ts) also execute with conflicting caller functions,
-  preserving user bindings through discovery, requests and cleanup. The existing native kernel phase runs these
-  cases and the [kernel dependency checks](../src/test/rKernelTransport.unit.test.ts) with its selected R executable.
-  Those files do not probe for R during ordinary unit runs; their native cases run only in this explicit tier. The
-  [response-framing owner](../python/tests/test_response_framing.py) checks canonical bytes and size limits.
-  The [stdio server owner](../python/tests/test_server_protocol.py) opens quoted DuckDB database tables in a fresh
-  process, checking exact selection, source preservation and close without attempted optional dataframe imports.
-  Its synthetic error control checks result release after publication, pending removal, callback settlement and
-  cycle collection while input remains open; it does not measure native allocation or RSS.
-  Existing stdio and notebook error journeys also exercise unformattable Custom Code exceptions, preserving a
-  correlated response, rollback, source ownership and subsequent page/close requests. Mapper controls retain
-  classification, diagnostic budgets and lifecycle interrupts without retrying the failed formatter.
-  Live protocol admission and saved-output normalization are separate contracts; legacy display compatibility does
-  not admit an obsolete live runtime. See [notebook provenance](architecture.md#notebook-kernel-terminal-and-document-provenance)
+  own complete executable programs, caller isolation, output binding, native admission and emitted-byte limits.
+  An operation or helper change requires live/generated agreement in every editing engine that supports it;
+  generated-text assertions alone are insufficient.
+- **Notebook and process boundaries:** kernel, bridge and transport owners check bounded correlated framing,
+  cancellation, settlement and cleanup of the original source. Native R
+  [discovery](../src/test/rNotebookVariableDiscovery.unit.test.ts),
+  [kernel transport](../src/test/rKernelTransport.cross.test.ts) and
+  [kernel dependency checks](../src/test/rKernelTransport.unit.test.ts) run with the explicit native kernel phase's
+  selected R executable. Their native cases do not probe for R during ordinary unit runs.
+  [Response framing](../python/tests/test_response_framing.py) owns canonical bytes and size limits;
+  [stdio server](../python/tests/test_server_protocol.py) tests exercise the real fresh process and runtime lifecycle.
+  Synthetic reference-release controls do not measure native allocation or RSS.
+  Live protocol admission and saved-output compatibility are separate contracts; legacy display support does not
+  admit an obsolete live runtime. See [notebook provenance](architecture.md#notebook-kernel-terminal-and-document-provenance)
   and [bounded transport](architecture.md#schemas-and-bounded-transport).
 
 The existing kernel-runtime bootstrap owner executes generated Python to check fresh import, same-source reuse,
@@ -314,11 +283,18 @@ primitive values, public mutations and correlated transport. Frame capture check
 kernel mutation checks use fewer, longer levels to exercise the full response byte limit.
 Formula transport keeps integer and maximum finite double samples; intermediate exact powers and their neighboring
 values belong to the encoder and native numeric-portability owners.
+Min-max scale's adjacent integer64 and missing-value results belong to the native kernel's live and generated-code
+owner. The text-replacement transport chain also checks factor-to-character inspection and Undo restoration.
+The same native transport owner checks row-name modes after row subsetting, including zero-column generated results;
+ordinary R dataframe equality alone does not distinguish automatic from explicit row names.
 Edits confined to `r/tests/kernel_agent.R` and `r/tests/frame_contract.R`, with permitted Markdown, may omit the hosted
 macOS and Windows editor steps. Source, package and harness checks remain required; see the exact [CI scope](ci.md#pull-requests).
 Linux interactive transport controls use a real PTY;
 portable parser controls retain one-expression and physical-line byte bounds. Operation semantics and arithmetic policy belong in
 [the native R architecture contract](architecture.md#native-r); do not repeat the catalog in installed UI journeys.
+The [interactive transport owner](../src/test/rInteractiveSessionTransport.unit.test.ts) checks plain and bracketed
+dispatch against the same captured terminal, including startup and follow-up requests. These source controls and
+the plain-R installed journey do not by themselves qualify radian's parser or terminal interaction.
 
 Linux R phase supervision needs the selected repository Python 3.10 to 3.14 standard library and kernel pidfd support,
 but no Python dataframe packages. Capability checks precede phase launch; signaling verifies the exact phase marker
@@ -383,8 +359,11 @@ session-scoped row IDs. Individual operations and native arithmetic remain in th
 BIFF worksheet names are qualified through the real Polars and Pandas import-options pickers; direct configured-import
 cases retain zero-based worksheet indexes.
 
-Ordinary installed R actions, picker acquisition, Explorer and editor-title file launches, and completed import-option
-changes observe the exact session/revision and committed renderer receipt without forcing another panel publication.
+Ordinary installed R actions, picker acquisition, Explorer and editor-title file launches, completed import-option
+changes, and public Apply/Undo actions in gallery captures observe the exact session/revision and committed renderer
+receipt without forcing another panel publication.
+Cached Python and R row-click journeys expand Data sources; cleaning captures expand Operations. Both use the existing
+native view providers, and source selections retain their exact notebook or terminal handles.
 Once acquired, Add and Edit operation dialogs retain their physical node, frame, session and revision through an
 opaque test marker. A new publication for the same dialog can continue configuration; a replacement dialog or changed
 revision cannot satisfy the old locator. Mutation-result assertions still require the exact acknowledged publication.

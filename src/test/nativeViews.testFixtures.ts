@@ -88,8 +88,15 @@ vi.mock("vscode", () => {
     ) {}
   }
 
-  class ThemeIcon {
+  class ThemeColor {
     constructor(readonly id: string) {}
+  }
+
+  class ThemeIcon {
+    constructor(
+      readonly id: string,
+      readonly color?: ThemeColor
+    ) {}
   }
 
   class Uri {
@@ -139,6 +146,7 @@ vi.mock("vscode", () => {
     TreeItem,
     TreeItemCollapsibleState: { None: 0 },
     ThemeIcon,
+    ThemeColor,
     Uri,
     ViewColumn: { Active: 1 },
     ProgressLocation: { Notification: 15 },
@@ -318,6 +326,7 @@ function register(
   } as unknown as ExtensionContext;
   const nativeViews = registerNativeViews(context, coordinator, pythonVariables, rVariables);
   for (const id of [
+    "openWrangler.dataSources",
     "openWrangler.operations",
     "openWrangler.summary",
     "openWrangler.filters",

@@ -6,6 +6,24 @@
   position: relative;
 }
 
+.viewFilterDisclosure {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.viewFilterDisclosure > summary {
+  background: var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-editor-background));
+  border-bottom: 1px solid var(--vscode-panel-border);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 5px 8px;
+}
+
+.viewFilterDisclosure > summary:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -2px;
+}
+
 .viewFilterBar {
   background: var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-editor-background));
   border-bottom: 1px solid var(--vscode-panel-border);

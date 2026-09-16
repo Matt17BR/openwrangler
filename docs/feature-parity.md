@@ -54,6 +54,12 @@ cleaning, export, and recovery flows, but not the full VS Code qualification mat
 Supported Python dependencies installed as hard links are recognized within the existing
 [version and module-origin checks](architecture.md#trust-source-integrity-and-export).
 
+Runtime selection commands change only the workspace Python override. User and Remote `openWrangler.pythonPath`
+values remain unchanged.
+Missing-package errors identify the Python executable, version and selection source. **Install required packages**
+opens the existing confirmation for that environment. After a failed file-engine change, a successful installation
+retries the requested engine while the original confirmed view remains available.
+
 ## Files and exports
 
 File inputs include CSV, TSV, Parquet, `.xls` and `.xlsx` workbooks, and `.jsonl` and `.ndjson` aliases.
@@ -162,8 +168,12 @@ Syntax errors refer to the entered code's lines.
 Discovery selections remain bound to their originating Python kernel until the initial session opens. Direct active-R
 opens likewise retain the terminal selected when the command starts. Replacing either runtime before that open
 completes requires a new open action.
-With no notebook open, the Operations view offers **Start R and show dataframes…** after the R terminal closes.
+Data sources lists cached Python and R dataframes and keeps **Open a data file** available while a dataframe is open.
+Operations contains the cleaning catalog for the active dataframe.
+With no notebook open, Data sources offers **Start R and show dataframes…** after the R terminal closes.
 R terminal discovery can start before R's first prompt; short command lines avoid truncation by terminal startup input.
+Terminal commands honor vscode-R's `r.bracketedPaste` setting. Enable it when using radian so multiline commands
+arrive as one expression. Canceling a request stops waiting; R may still be running that work.
 
 Canceling file-editor or Code Preview resolution stops deferred setup without replacing an existing view, including
 during loading or file preflight.
@@ -195,6 +205,9 @@ inputs and output bounds.
 Find and Replace uses the selected engine's native regex syntax. In regex replacements, `$1` inserts the first
 capture group in Polars; Pandas, DuckDB and R use `\1`. With regular expressions off, replacement text is literal.
 Extract regex group uses its separate portable pattern subset.
+DuckDB's Lowercase, Uppercase, Capitalize, Strip, Split, Find and Replace, and Split Text into Columns use built-in
+text functions even when generated code runs on a connection with caller-defined functions of the same names.
+Functions deliberately used by the input relation retain their caller-defined behavior.
 
 Dense Rank appends ranks from a numeric column without reordering rows. For `[20, 10, 20, missing]`, ascending ranks
 are `[2, 1, 2, missing]`; descending ranks are `[1, 2, 1, missing]`. It ranks the cleaning input independently of viewing
@@ -515,15 +528,28 @@ The operation catalog search exposes its accessible name before and after enteri
 Moving or removing a focused form row, or clearing unavailable selections, keeps keyboard focus inside the operation dialog.
 Column search keeps arrow and page-key navigation aligned with the displayed results when cleaning changes the schema.
 Small editor panes preserve room for the grid header and a row while the workbench scrolls around wrapped controls.
+In narrow panes, the source name and actions share toolbar rows when space allows.
 Column profiles and filters stay beside the grid, or below it in narrow panes, without covering the selected cell.
+Selecting an uncalculated statistic in native Summary opens the Dataset view and requests its counts. Failed requests
+show their error with an explicit retry instead of continuing to display a profiling indicator.
+Expanded header profiles align their statistics dividers and center complete chart groups across the visible columns.
+Mixed chart types can increase header height; the existing compact mode preserves space in short editors.
 The stacked layout shows fewer rows and scrolls to reach longer filter forms.
+During applied-step inspection, **Viewing filters paused** expands to reveal the retained rules. Clearing inspection
+restores the full viewing-filter bar.
 Column search reveals and focuses its target within both the table and editor viewport, including when the same column
 is selected again, without replacing a later focus choice.
 Focused draft buttons return keyboard focus to Add step, and deletion confirmation retains focus through Cancel.
 Read-only Code Preview supports Tab entry and keyboard navigation through long programs while refusing edits.
 Code Preview identifies a completed applied-step inspection above the code, including in the default docked panel. Copy and script
 export use the displayed code, including manual edits; cleaned-data export still uses the committed plan.
+History inspection controls ignore stale clicks after switching dataframes or changing the plan.
+Formula steps expose their saved output names in Cleaning Steps tooltips and accessible names, including after later
+Rename or Drop steps.
 Numeric histogram arrows use the highlighted bin as their starting point after pointer hover.
+Integer-bin clicks use whole-number bounds and include the final upper edge. Filtering from rounded large-integer
+histograms is unavailable; use explicit column filters or exact value choices. Their hover and keyboard descriptions
+remain available.
 Staged viewing sorts retire rules invalidated by Rename, Drop, identity replacement or a semantic type change.
 Unaffected staged rules remain, and Undo does not restore a rule already retired from the draft.
 
@@ -626,7 +652,8 @@ a request error; a smaller page remains available without restarting the standal
 
 The [generated reference](reference.md#transformation-operations) lists the complete operation set and parameters.
 Custom Code can create the first column of a supported zero-column source, with inspection, Undo and Redo. Drop
-Missing Rows and Drop Duplicates may retain an empty schema; Custom Code output still requires a column. Active
+Missing Rows and Drop Duplicates may retain an empty schema; Custom Code output still requires a column.
+Sorting and reducing rows work with ordinary `read.csv` inputs, preserving native row-name behavior. Active
 `data.table` keys restrict in-place changes. Fill interpolation requires ordinary numeric or temporal coordinates
 and does not accept integer64 coordinates. Formula accepts exactly representable large integer literals and refuses
 inexact neighbors; ordinary R arithmetic limits still apply. Integer and integer64 aggregate outputs retain their

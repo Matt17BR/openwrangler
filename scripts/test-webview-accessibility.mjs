@@ -1378,7 +1378,8 @@ async function verifySessionModeDisclosure(browser) {
   await page.emulateMedia({ forcedColors: "active" });
   await page.goto(pathToFileURL(resolve(harnessDir, "wide-view.html")).href, { waitUntil: "load" });
   await page.getByText("wide.csv", { exact: true }).waitFor();
-  await page.evaluate(() => {
+  const sourceLabel = "regional_orders_with_adjustments_for_europe_asia_and_the_americas_current_quarter";
+  await page.evaluate((label) => {
     const payload = globalThis.openWranglerSessionPayload;
     if (!payload || payload.kind !== "sessionOpened") {
       throw new Error("The live Editing disclosure fixture did not expose its source session payload.");
@@ -1393,7 +1394,7 @@ async function verifySessionModeDisclosure(browser) {
       latestStepInputSchema: payload.metadata.schema,
       source: {
         kind: "notebookVariable",
-        label: "live_orders",
+        label,
         variableName: "live_orders",
         uri: "file:///workspace/live-orders.ipynb"
       },
@@ -1421,7 +1422,7 @@ async function verifySessionModeDisclosure(browser) {
         origin: globalThis.location.origin
       })
     );
-  });
+  }, sourceLabel);
 
   const reverseAction = page.getByRole("button", { name: "Switch to Viewing", exact: true });
   await reverseAction.waitFor();
@@ -1432,35 +1433,72 @@ async function verifySessionModeDisclosure(browser) {
     throw new Error("The live Editing disclosure fixture did not expose its blocked reverse transition.");
   }
 
-  await page.locator('[data-session-badge="mode"]').click();
+  const modeSummary = page.locator('[data-session-badge="mode"]');
+  await modeSummary.click();
   const modeHelp = page.locator(".sessionModeHelpText");
   await modeHelp.waitFor({ state: "visible" });
-  const layout = await modeHelp.evaluate((help) => {
-    const bounds = help.getBoundingClientRect();
-    const toolbar = help.closest(".toolbarActions")?.getBoundingClientRect();
-    return {
-      left: bounds.left,
-      right: bounds.right,
-      width: bounds.width,
-      viewportWidth: window.innerWidth,
-      withinToolbar: Boolean(toolbar && bounds.left >= toolbar.left - 1 && bounds.right <= toolbar.right + 1),
-      documentOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-      text: help.textContent?.trim() ?? ""
-    };
-  });
-  if (
-    layout.left < -1 ||
-    layout.right > layout.viewportWidth + 1 ||
-    layout.width <= 0 ||
-    !layout.withinToolbar ||
-    layout.documentOverflow > 1 ||
-    !layout.text.includes("Open Wrangler keeps the source unchanged") ||
-    !layout.text.includes("Undo the applied step")
-  ) {
-    throw new Error(
-      `The opened live Editing explanation escaped the 700px forced-colors toolbar: ${JSON.stringify(layout)}.`
-    );
+  for (const width of [700, 620]) {
+    await page.setViewportSize({ width, height: 760 });
+    if (width === 620) {
+      await modeSummary.focus();
+      await page.keyboard.press("Enter");
+      await modeHelp.waitFor({ state: "hidden" });
+      await page.keyboard.press("Enter");
+      await modeHelp.waitFor({ state: "visible" });
+      if (!(await modeSummary.evaluate(isActiveTab))) {
+        throw new Error("Compact live-mode help lost keyboard focus while toggling.");
+      }
+    }
+    const layout = await modeHelp.evaluate((help) => {
+      const bounds = help.getBoundingClientRect();
+      const toolbar = help.closest(".toolbar")?.getBoundingClientRect();
+      const source = document.querySelector(".toolbarIdentity strong");
+      const sourceBounds = source?.getBoundingClientRect();
+      return {
+        left: bounds.left,
+        right: bounds.right,
+        width: bounds.width,
+        viewportWidth: window.innerWidth,
+        withinToolbar: Boolean(
+          toolbar &&
+          bounds.left >= toolbar.left - 1 &&
+          bounds.right <= toolbar.right + 1 &&
+          bounds.top >= toolbar.top - 1 &&
+          bounds.bottom <= toolbar.bottom + 1
+        ),
+        sourceContained: Boolean(
+          toolbar &&
+          sourceBounds &&
+          sourceBounds.width > 0 &&
+          sourceBounds.height > 0 &&
+          sourceBounds.left >= toolbar.left - 1 &&
+          sourceBounds.right <= toolbar.right + 1
+        ),
+        sourceText: source?.textContent,
+        sourceTitle: source?.getAttribute("title"),
+        documentOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        text: help.textContent?.trim() ?? ""
+      };
+    });
+    if (
+      layout.left < -1 ||
+      layout.right > layout.viewportWidth + 1 ||
+      layout.width <= 0 ||
+      !layout.withinToolbar ||
+      !layout.sourceContained ||
+      layout.sourceText !== sourceLabel ||
+      layout.sourceTitle !== sourceLabel ||
+      layout.documentOverflow > 1 ||
+      !layout.text.includes("Open Wrangler keeps the source unchanged") ||
+      !layout.text.includes("Undo the applied step") ||
+      !(await reverseAction.isDisabled())
+    ) {
+      throw new Error(
+        `The opened live Editing explanation or source escaped the ${width}px forced-colors toolbar: ${JSON.stringify(layout)}.`
+      );
+    }
   }
+  await page.setViewportSize({ width: 700, height: 760 });
   await page.emulateMedia({ forcedColors: "none" });
   await page.addScriptTag({ path: axePath });
   await scanPageAccessibility(page, "wide-view.html (700px blocked reverse-mode explanation)");
@@ -1530,7 +1568,82 @@ async function verifySessionModeDisclosure(browser) {
     await projection.dispose();
     await page.close();
   }
-  console.log("Live Editing disclosure and continuous Undo gating through corrective projection verified.");
+  const sparkPage = await browser.newPage();
+  sparkPage.setDefaultTimeout(15_000);
+  sparkPage.setDefaultNavigationTimeout(15_000);
+  try {
+    await sparkPage.setViewportSize({ width: 620, height: 760 });
+    await sparkPage.goto(pathToFileURL(resolve(harnessDir, "wide-view.html")).href, { waitUntil: "load" });
+    await sparkPage.getByText("wide.csv", { exact: true }).waitFor();
+    await sparkPage.evaluate(() => {
+      const payload = globalThis.openWranglerSessionPayload;
+      payload.metadata = {
+        ...payload.metadata,
+        backend: "pyspark",
+        mode: "viewing",
+        source: {
+          kind: "notebookVariable",
+          label: "spark_orders",
+          variableName: "spark_orders",
+          uri: "file:///workspace/orders.ipynb"
+        },
+        capabilities: {
+          editable: false,
+          lazy: false,
+          cancel: false,
+          exportCsv: false,
+          exportParquet: false,
+          notebookInsert: false
+        },
+        steps: [],
+        filterModel: { filters: [], sort: [] }
+      };
+      globalThis.dispatchEvent(new MessageEvent("message", { data: payload, origin: globalThis.location.origin }));
+    });
+    const ordering = sparkPage.locator('[data-session-badge="ordering"]');
+    await ordering.waitFor();
+    if (
+      (await sparkPage.getByRole("button", { name: "Export", exact: true }).count()) !== 0 ||
+      (await sparkPage.locator("[data-session-mode-action]").count()) !== 0 ||
+      (await sparkPage.locator('[data-session-badge="mode"]').textContent())?.trim() !== "Viewing only"
+    ) {
+      throw new Error("The compact Spark fixture did not retain its viewing-only/no-export capabilities.");
+    }
+    await ordering.focus();
+    await sparkPage.keyboard.press("Enter");
+    const orderingHelp = sparkPage.locator(".orderingHelpText");
+    await orderingHelp.waitFor({ state: "visible" });
+    const layout = await orderingHelp.evaluate((help) => {
+      const bounds = help.getBoundingClientRect();
+      const toolbar = help.closest(".toolbar").getBoundingClientRect();
+      return {
+        contained:
+          bounds.width > 0 &&
+          bounds.height > 0 &&
+          bounds.left >= toolbar.left - 1 &&
+          bounds.right <= toolbar.right + 1 &&
+          bounds.top >= toolbar.top - 1 &&
+          bounds.bottom <= toolbar.bottom + 1,
+        documentOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        text: help.textContent ?? ""
+      };
+    });
+    if (
+      !layout.contained ||
+      layout.documentOverflow > 1 ||
+      !layout.text.includes("Spark does not guarantee source order")
+    ) {
+      throw new Error(`Compact Spark ordering help escaped the toolbar: ${JSON.stringify(layout)}.`);
+    }
+    await sparkPage.keyboard.press("Enter");
+    await orderingHelp.waitFor({ state: "hidden" });
+    if (!(await ordering.evaluate(isActiveTab))) throw new Error("Spark ordering help lost its summary focus.");
+  } finally {
+    await sparkPage.close();
+  }
+  console.log(
+    "Live Editing disclosure, compact Spark ordering help and continuous Undo gating through corrective projection verified."
+  );
 }
 
 async function verifyShortGridProfileResponsiveness(browser) {
@@ -1872,19 +1985,44 @@ async function verifyAppliedPlanToolbarLayout(browser) {
     { harness: "applied-plan.html", width: 1280, label: "wide" },
     { harness: "applied-plan.html", width: 620, label: "narrow" },
     { harness: "applied-plan.html", width: 320, label: "compact" },
+    { harness: "applied-plan.html", width: 312, height: 486, label: "installed narrow pane", narrowEditor: true },
     { harness: "applied-plan-dark-zoom-200.html", width: 1280, label: "200% zoom" },
     { harness: "applied-plan.html", width: 620, label: "forced colors", forcedColors: true }
   ];
 
-  for (const { harness, width, label, forcedColors = false } of cases) {
+  for (const { harness, width, height = 760, label, forcedColors = false, narrowEditor = false } of cases) {
     console.log(`Applied-plan toolbar checking: ${harness} (${label}).`);
     const page = await browser.newPage();
-    await page.setViewportSize({ width, height: 760 });
+    await page.setViewportSize({ width, height });
     if (forcedColors) await page.emulateMedia({ forcedColors: "active" });
     await page.goto(pathToFileURL(resolve(harnessDir, harness)).href, { waitUntil: "load" });
 
     const plan = page.getByRole("group", { name: "Cleaning plan" });
     await plan.waitFor();
+    if (narrowEditor) {
+      await page.addStyleTag({
+        content:
+          ':root { --vscode-font-family: system-ui, Ubuntu, "Droid Sans", sans-serif; } body { padding: 0 20px; font-size: 13px; }'
+      });
+      await page.evaluate(() => {
+        const payload = window.openWranglerSessionPayload;
+        // This is a presentation state, not a simulated Undo response.
+        payload.metadata.canRedo = true;
+        window.dispatchEvent(
+          new MessageEvent("message", {
+            origin: location.origin,
+            data: {
+              kind: "sessionOpened",
+              metadata: payload.metadata,
+              page: payload.page,
+              summaries: [],
+              offeredViewContextId: "snapshot:accessibility-fixture"
+            }
+          })
+        );
+      });
+      await page.waitForFunction(() => !document.querySelector(".toolbarPlan button:last-child").disabled);
+    }
     if ((await page.locator(".cleaningBar").count()) !== 0) {
       throw new Error(`${harness} (${label}) retained the obsolete second cleaning-plan bar.`);
     }
@@ -1892,7 +2030,7 @@ async function verifyAppliedPlanToolbarLayout(browser) {
       throw new Error(`${harness} (${label}) did not place the named cleaning-plan group in the primary toolbar.`);
     }
     await plan.getByText("1 applied step", { exact: true }).waitFor();
-    for (const name of ["Edit latest", "Undo"]) {
+    for (const name of ["Edit latest", "Undo", ...(narrowEditor ? ["Redo"] : [])]) {
       const actions = plan.getByRole("button", { name, exact: true });
       if ((await actions.count()) !== 1 || !(await actions.isEnabled())) {
         throw new Error(`${harness} (${label}) did not expose one enabled ${name} action.`);
@@ -1970,8 +2108,15 @@ async function verifyAppliedPlanToolbarLayout(browser) {
     const addIndex = layout.actionLabels.indexOf("Add step");
     const editIndex = layout.actionLabels.indexOf("Edit latest");
     const undoIndex = layout.actionLabels.indexOf("Undo");
+    const redoIndex = layout.actionLabels.indexOf("Redo");
     const exportIndex = layout.actionLabels.indexOf("Export");
-    if (!(addIndex >= 0 && addIndex < editIndex && editIndex < undoIndex && undoIndex < exportIndex)) {
+    if (!(
+      addIndex >= 0 &&
+      addIndex < editIndex &&
+      editIndex < undoIndex &&
+      undoIndex < redoIndex &&
+      redoIndex < exportIndex
+    )) {
       throw new Error(
         `${harness} (${label}) exposed an unexpected cleaning-plan tab order: ${layout.actionLabels.join(", ")}.`
       );
@@ -1985,6 +2130,7 @@ async function verifyAppliedPlanToolbarLayout(browser) {
     for (const [name, target] of [
       ["Edit latest", editLatest],
       ["Undo", undo],
+      ...(narrowEditor ? [["Redo", plan.getByRole("button", { name: "Redo", exact: true })]] : []),
       ["Export", exportData]
     ]) {
       await page.keyboard.press("Tab");
@@ -2168,9 +2314,37 @@ async function verifyStepInspectionWorkflow(browser) {
     throw new Error("Applied-step inspection did not expose an accessible added-cell diff state.");
   }
 
+  const filterBar = page.getByRole("region", { name: "Viewing filters" });
+  const disclosure = page.locator(".viewFilterDisclosure");
+  const summary = disclosure.locator("summary");
+  const expectedRules = [
+    'Remove equals "Berlin" filter from city',
+    'Remove equals "Milan" filter from city',
+    'Remove contains "i" filter from city'
+  ];
   const pageRequestsBeforeClear = await runtimeRequestCount(page, "getPage");
-  const showConfirmed = page.getByRole("button", { name: "Show confirmed data" });
-  await showConfirmed.focus();
+  if ((await disclosure.evaluate((element) => element.open)) || (await filterBar.isVisible())) {
+    throw new Error("Applied-step inspection did not initially collapse its retained viewing filters.");
+  }
+  await summary.focus();
+  await page.keyboard.press("Enter");
+  await filterBar.waitFor();
+  const pausedRules = await filterBar
+    .locator("[data-view-filter-rule]")
+    .evaluateAll((buttons) =>
+      buttons.map((button) => ({ label: button.getAttribute("aria-label"), disabled: button.disabled }))
+    );
+  if (
+    JSON.stringify(pausedRules.map((rule) => rule.label)) !== JSON.stringify(expectedRules) ||
+    pausedRules.some((rule) => !rule.disabled) ||
+    !(await summary.evaluate(isActiveTab))
+  ) {
+    throw new Error(
+      `Viewing-filter disclosure lost its rules, disabled state or keyboard focus: ${JSON.stringify(pausedRules)}.`
+    );
+  }
+  await page.keyboard.press("Enter");
+  await filterBar.waitFor({ state: "hidden" });
   await page.keyboard.press("Escape");
   await inspection.waitFor({ state: "detached" });
   await page.waitForFunction(() =>
@@ -2193,9 +2367,66 @@ async function verifyStepInspectionWorkflow(browser) {
   if ((await page.locator("[data-diff-state]").count()) !== 0) {
     throw new Error("Clearing applied-step inspection left diff annotations in the confirmed grid.");
   }
+  const restoredRules = await filterBar
+    .locator("[data-view-filter-rule]")
+    .evaluateAll((buttons) =>
+      buttons.map((button) => ({ label: button.getAttribute("aria-label"), disabled: button.disabled }))
+    );
+  if (
+    (await summary.isVisible()) ||
+    !(await filterBar.evaluate(isActiveTab)) ||
+    JSON.stringify(restoredRules.map((rule) => rule.label)) !== JSON.stringify(expectedRules) ||
+    restoredRules.some((rule) => rule.disabled)
+  ) {
+    throw new Error("Clearing inspection did not restore the full active filter bar and its owned focus.");
+  }
+
+  await page.goto(pathToFileURL(resolve(harnessDir, "applied-plan.html")).href, { waitUntil: "load" });
+  await filterBar.waitFor();
+  await page.bringToFront();
+  await page.waitForFunction(() => document.hasFocus());
+  for (const name of ["Clear filters", "Add step"]) {
+    const target = page.getByRole("button", { name, exact: true });
+    await target.focus();
+    if (!(await target.evaluate(isActiveTab))) throw new Error(`Could not focus ${name} before inspection.`);
+    const previousInspections = await runtimeRequestCount(page, "inspectStep");
+    const previousPages = await runtimeRequestCount(page, "getPage");
+    await page.evaluate(() => {
+      const { sessionId, revision, steps } = window.openWranglerSessionPayload.metadata;
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: {
+            kind: "editorAction",
+            action: "selectStep",
+            expectedSessionId: sessionId,
+            expectedRevision: revision,
+            stepId: steps[0].id
+          },
+          origin: location.origin
+        })
+      );
+    });
+    await waitForRuntimeRequestCount(page, "inspectStep", previousInspections + 1);
+    await page.getByText("Loading selected-step inspection…", { exact: true }).waitFor();
+    const expectedFocus = name === "Clear filters" ? summary : target;
+    if (!(await expectedFocus.evaluate(isActiveTab)) || (await filterBar.isVisible())) {
+      throw new Error(`Pending inspection did not preserve focus ownership from ${name}.`);
+    }
+    await page.keyboard.press("Escape");
+    await filterBar.waitFor();
+    const restoredFocus = name === "Clear filters" ? filterBar : target;
+    if (!(await restoredFocus.evaluate(isActiveTab)) || (await summary.isVisible())) {
+      throw new Error(`Clearing pending inspection did not restore focus ownership from ${name}.`);
+    }
+    if ((await runtimeRequestCount(page, "getPage")) !== previousPages) {
+      throw new Error("Inspection disclosure or focus transitions submitted a viewing-filter request.");
+    }
+  }
 
   await page.close();
-  console.log("Applied-step diff, Escape clear, and local confirmed-grid restoration verified.");
+  console.log(
+    "Applied-step diff, paused-filter disclosure, owned focus and local confirmed-grid restoration verified."
+  );
 }
 
 async function verifyFilterKeyboardWorkflow(browser) {

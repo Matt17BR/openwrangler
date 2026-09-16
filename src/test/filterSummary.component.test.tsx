@@ -603,6 +603,99 @@ describe("SummaryPanel", () => {
     expect(screen.getByRole("button", { name: "%" })).not.toHaveAttribute("title");
   });
 
+  it("selects integer histogram bins with whole-number bounds and an inclusive final edge", () => {
+    const onApply = vi.fn();
+    const integerMetadata: SessionMetadata = {
+      ...metadata,
+      schema: metadata.schema.map((column) =>
+        column.id === "c:1" ? { ...column, type: "integer", rawType: "Int64" } : column
+      )
+    };
+    renderSummary({
+      metadataValue: integerMetadata,
+      selectedColumnId: "c:1",
+      summaries: [
+        {
+          ...numericSummary,
+          type: "integer",
+          rawType: "Int64",
+          visualization: {
+            kind: "numeric",
+            bins: Array.from({ length: 20 }, (_, index) => ({
+              min: 999_999 * (index / 20),
+              max: 999_999 * ((index + 1) / 20),
+              count: 50_000
+            }))
+          }
+        }
+      ],
+      onApplyFilterModel: onApply
+    });
+    const histogram = screen.getByRole("button", { name: /lower bound included, upper bound excluded/u });
+    for (let index = 0; index < 3; index += 1) fireEvent.keyDown(histogram, { key: "ArrowRight" });
+    fireEvent.click(histogram);
+    expect(onApply.mock.lastCall?.[0].filters[0].predicates).toEqual([
+      { kind: "predicate", operator: "gte", value: 150_000 },
+      { kind: "predicate", operator: "lt", value: 200_000 }
+    ]);
+    fireEvent.keyDown(histogram, { key: "End" });
+    fireEvent.keyDown(histogram, { key: "Enter" });
+    expect(onApply.mock.lastCall?.[0].filters[0].predicates).toEqual([
+      { kind: "predicate", operator: "gte", value: 950_000 },
+      { kind: "predicate", operator: "lte", value: 999_999 }
+    ]);
+  });
+
+  it.each([2 ** 53, -(2 ** 53), 1e21])(
+    "keeps integer histogram descriptions accessible but refuses rounded bounds at %s",
+    (bound) => {
+      const onApply = vi.fn();
+      renderSummary({
+        metadataValue: {
+          ...metadata,
+          schema: metadata.schema.map((column) =>
+            column.id === "c:1" ? { ...column, type: "integer", rawType: "Int64" } : column
+          )
+        },
+        selectedColumnId: "c:1",
+        summaries: [
+          {
+            ...numericSummary,
+            type: "integer",
+            rawType: "Int64",
+            visualization: {
+              kind: "numeric",
+              bins:
+                bound < 0
+                  ? [
+                      { min: bound, max: -1, count: 2 },
+                      { min: -1, max: 0, count: 1 }
+                    ]
+                  : [
+                      { min: 0, max: 1, count: 1 },
+                      { min: 1, max: bound, count: 2 }
+                    ]
+            }
+          }
+        ],
+        onApplyFilterModel: onApply
+      });
+      const histogram = screen.getByRole("button", { name: /lower bound included, upper bound excluded/u });
+      expect(histogram).toHaveAttribute("aria-disabled", "true");
+      expect(histogram).toHaveAttribute("aria-description", expect.stringContaining("rounded large-integer"));
+      expect(histogram).toHaveAttribute("title", histogram.getAttribute("aria-description"));
+      expect(histogram).not.toBeDisabled();
+      act(() => histogram.focus());
+      fireEvent.click(histogram);
+      fireEvent.keyDown(histogram, { key: "End" });
+      expect(histogram).toHaveAccessibleName(/both bounds included/u);
+      expect(histogram).toHaveFocus();
+      fireEvent.keyDown(histogram, { key: "Enter" });
+      fireEvent.keyDown(histogram, { key: " " });
+      expect(onApply).not.toHaveBeenCalled();
+    }
+  );
+
   it("uses non-overlapping numeric bin filters and makes the final upper edge inclusive", () => {
     const onApply = vi.fn();
     const Harness = () => {
@@ -977,6 +1070,21 @@ describe("SummaryPanel", () => {
         schemaById={new Map(withoutStats.schema.map((column) => [column.id, column]))}
         selectedColumnId="c:1"
         activeView="dataset"
+        onSelectView={() => undefined}
+      />
+    );
+    expect(screen.getByText("Dataset statistics have not been calculated.")).toBeInTheDocument();
+    expect(screen.queryByText("Profiling dataset statistics...")).not.toBeInTheDocument();
+    expect(screen.queryByText("Exact statistics")).not.toBeInTheDocument();
+
+    rerender(
+      <SummaryPanel
+        metadata={withoutStats}
+        summaries={[]}
+        schemaById={new Map(withoutStats.schema.map((column) => [column.id, column]))}
+        selectedColumnId="c:1"
+        activeView="dataset"
+        statsPending
         onSelectView={() => undefined}
       />
     );

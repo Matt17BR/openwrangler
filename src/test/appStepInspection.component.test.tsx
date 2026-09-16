@@ -403,9 +403,20 @@ describe("App applied-step inspection", () => {
   });
 
   it("keeps the confirmed view untouched while selecting, paging, and clearing an applied step", async () => {
+    const filteredMetadata: SessionMetadata = {
+      ...metadata,
+      filterModel: {
+        ...metadata.filterModel,
+        filters: [
+          { column: "city", type: "string", predicates: [{ kind: "predicate", operator: "contains", value: "i" }] }
+        ]
+      }
+    };
     render(<App />);
-    dispatch({ kind: "sessionOpened", metadata, page: confirmedPage, summaries: [] });
+    dispatch({ kind: "sessionOpened", metadata: filteredMetadata, page: confirmedPage, summaries: [] });
     await screen.findByRole("cell", { name: "10.5" });
+    const filterRegion = screen.getByRole("region", { name: "Viewing filters" });
+    const filterRule = screen.getByRole("button", { name: 'Remove contains "i" filter from city' });
     postMessage.mockClear();
 
     dispatch({ kind: "editorAction", action: "selectStep", stepId: step.id });
@@ -420,6 +431,11 @@ describe("App applied-step inspection", () => {
     expect(screen.getByText("Loading selected-step inspection…")).toBeVisible();
     expect(screen.getByRole("button", { name: "Filters paused during inspection" })).toBeDisabled();
     expect(screen.queryByRole("cell", { name: "10.5" })).toBeNull();
+    const disclosure = screen.getByText("Viewing filters paused").closest("details")!;
+    expect(disclosure.open).toBe(false);
+    fireEvent.click(screen.getByText("Viewing filters paused"));
+    expect(filterRegion).toBeVisible();
+    expect(filterRule).toBeDisabled();
 
     dispatch({
       kind: "editorAction",
@@ -435,6 +451,8 @@ describe("App applied-step inspection", () => {
     dispatch(inspectionResult(step.id, 0, inspection()));
 
     expect(await screen.findByLabelText("Selected applied-step inspection")).toBeVisible();
+    expect(disclosure.open).toBe(true);
+    expect(screen.getByRole("region", { name: "Viewing filters" })).toBe(filterRegion);
     expect(screen.getByRole("cell", { name: "sales, row 1: changed from 10.5 to 11" })).toHaveAttribute(
       "data-diff-state",
       "changed"
@@ -459,6 +477,7 @@ describe("App applied-step inspection", () => {
     expect(screen.getByText("Loading selected-step inspection…")).toBeVisible();
     dispatch(inspectionResult(step.id, 200, inspection(200)));
     expect(await screen.findByRole("cell", { name: "sales, row 201: changed from 10.5 to 11" })).toBeVisible();
+    expect(disclosure.open).toBe(true);
 
     postMessage.mockClear();
     fireEvent.keyDown(screen.getByRole("main"), { key: "Escape" });
@@ -467,6 +486,13 @@ describe("App applied-step inspection", () => {
     expect(screen.getByRole("cell", { name: "10.5" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Column profiles and filters" })).toBeEnabled();
     expect(runtimeRequests("getPage")).toHaveLength(0);
+    expect(screen.getByText("Viewing filters paused")).not.toBeVisible();
+    expect(screen.getByRole("region", { name: "Viewing filters" })).toBe(filterRegion);
+    expect(filterRule).toBeEnabled();
+    fireEvent.click(filterRule);
+    expect(onlyRuntimeRequest("getPage")).toMatchObject({
+      filterModel: { ...filteredMetadata.filterModel, filters: [] }
+    });
   });
 
   it("keeps inspection failures local and ignores a superseded result", async () => {
@@ -475,13 +501,25 @@ describe("App applied-step inspection", () => {
       kind: "dropColumns",
       params: { columns: [{ id: "c:city", name: "city" }] }
     };
-    const withTwoSteps = { ...metadata, steps: [step, secondStep] };
+    const withTwoSteps: SessionMetadata = {
+      ...metadata,
+      steps: [step, secondStep],
+      filterModel: {
+        ...metadata.filterModel,
+        filters: [
+          { column: "city", type: "string", predicates: [{ kind: "predicate", operator: "contains", value: "i" }] }
+        ]
+      }
+    };
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata: withTwoSteps, page: confirmedPage, summaries: [] });
     await screen.findByRole("cell", { name: "10.5" });
 
     dispatch({ kind: "editorAction", action: "selectStep", stepId: step.id });
+    const disclosure = screen.getByText("Viewing filters paused").closest("details")!;
+    fireEvent.click(screen.getByText("Viewing filters paused"));
     dispatch({ kind: "editorAction", action: "selectStep", stepId: secondStep.id });
+    expect(disclosure.open).toBe(true);
     dispatch(inspectionResult(step.id, 0, inspection()));
     expect(screen.getByText(/Loading Drop columns/u)).toBeVisible();
 
@@ -497,9 +535,12 @@ describe("App applied-step inspection", () => {
     expect(screen.queryByText("Opening session...")).toBeNull();
     expect(screen.queryByRole("cell", { name: "10.5" })).toBeNull();
     expect(screen.getByRole("button", { name: "Filters paused during inspection" })).toBeDisabled();
+    expect(disclosure.open).toBe(true);
+    expect(screen.getByRole("button", { name: 'Remove contains "i" filter from city' })).toBeDisabled();
 
     fireEvent.click(screen.getByRole("button", { name: "Show confirmed data" }));
     expect(screen.getByRole("cell", { name: "10.5" })).toBeVisible();
+    expect(screen.getByRole("button", { name: 'Remove contains "i" filter from city' })).toBeEnabled();
   });
 
   it("edits an inspected earlier step against its inspected input schema and stable ID", async () => {

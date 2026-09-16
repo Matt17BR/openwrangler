@@ -27,7 +27,7 @@ interface ReleasedPythonQuartoDocumentJourneyDependencies {
     workbench: Page,
     sourceDocument: vscode.TextDocument
   ) => Promise<void>;
-  readonly arrangePackagedProductSidebar: (workbench: Page, scene: "operation-catalog") => Promise<Locator>;
+  readonly arrangePackagedProductSidebar: (workbench: Page, scene: "data-sources") => Promise<Locator>;
   readonly assertExactOpenNotebookDocument: (notebook: vscode.NotebookDocument, checkpoint: string) => void;
   readonly assertReleasedSessionPage: (
     testing: TestApi,
@@ -357,15 +357,15 @@ export function createReleasedPythonQuartoDocumentJourney({
       await disposePackagedSessionPanel(testing, active.sessionId, "the Python Quarto Pandas session");
       assert.equal(testing.diagnostics().sessionCount, 0);
       await showExactReleasedNotebook(interactive);
-      const sidebar = await arrangePackagedProductSidebar(workbench, "operation-catalog");
-      const operations = sidebar.getByRole("tree", { name: /Operations/u }).first();
-      const liveFrame = operations.getByRole("treeitem", { name: new RegExp(`^${fixture.variableName}\\b`, "u") });
+      const sidebar = await arrangePackagedProductSidebar(workbench, "data-sources");
+      const sources = sidebar.getByRole("tree", { name: /Data sources/u }).first();
+      const liveFrame = sources.getByRole("treeitem", { name: new RegExp(`^${fixture.variableName}\\b`, "u") });
       await liveFrame.waitFor({ state: "visible", timeout: 90_000 });
       assert.match((await liveFrame.innerText()).replace(/\s+/gu, " "), /Pandas · DataFrame/u);
       assert.equal(
-        await operations.getByRole("treeitem", { name: new RegExp(`^${fixture.sentinelName}\\b`, "u") }).count(),
+        await sources.getByRole("treeitem", { name: new RegExp(`^${fixture.sentinelName}\\b`, "u") }).count(),
         0,
-        "Operations must not list a dataframe from the later Python Quarto chunk."
+        "Data sources must not list a dataframe from the later Python Quarto chunk."
       );
 
       recordAcceptanceProgress(`${checkpoint}:cleanup`);

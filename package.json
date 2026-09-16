@@ -172,6 +172,7 @@
     "onCommand:openWrangler.openSettings",
     "onCommand:openWrangler.reportIssue",
     "onCustomEditor:openWrangler.viewer",
+    "onView:openWrangler.dataSources",
     "onView:openWrangler.operations",
     "onView:openWrangler.summary",
     "onView:openWrangler.filters",
@@ -328,7 +329,7 @@
       },
       {
         "command": "openWrangler.clearRuntime",
-        "title": "Open Wrangler: Clear Runtime Override"
+        "title": "Open Wrangler: Clear Workspace Runtime Override"
       },
       {
         "command": "openWrangler.installRuntimeDependencies",
@@ -492,6 +493,10 @@
     "views": {
       "openWrangler": [
         {
+          "id": "openWrangler.dataSources",
+          "name": "Data sources"
+        },
+        {
           "id": "openWrangler.operations",
           "name": "Operations"
         },
@@ -518,7 +523,7 @@
     },
     "viewsWelcome": [
       {
-        "view": "openWrangler.operations",
+        "view": "openWrangler.dataSources",
         "contents": "Open a data file or a dataframe already running in Python or R.\n[Open a data file](command:openWrangler.openPath)\n[Refresh R dataframes](command:openWrangler.refreshRInteractiveVariables)"
       }
     ],
@@ -751,7 +756,7 @@
       "view/title": [
         {
           "command": "openWrangler.refreshLiveDataframes",
-          "when": "view == openWrangler.operations",
+          "when": "view == openWrangler.dataSources",
           "group": "navigation@1"
         },
         {

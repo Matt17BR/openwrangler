@@ -616,6 +616,60 @@ describe("canonical R kernel bridge", () => {
     await bridge.dispose();
   });
 
+  it("admits native row names using the full result when viewing filters hide every row", async () => {
+    const source = frameContract();
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    try {
+      await bridge.request(openRequest("editing"));
+      const page: RFramePageContract = {
+        ...source,
+        frameSemantics: { ...source.frameSemantics, rowNames: "explicit" },
+        page: { ...source.page, totalRows: 0, rows: [] }
+      };
+      transport.queuePreview({
+        sessionId,
+        revision: 1,
+        page,
+        diff: { ...renameDiff(), truncated: true },
+        code: "owned sort"
+      });
+      const step: TransformStep = {
+        id: "sort",
+        kind: "sortRows",
+        params: {
+          rules: [{ column: { id: "r:c:0", name: "value" }, direction: "asc", nulls: "last" }]
+        }
+      };
+      const view: ConfirmedView = {
+        filterModel: {
+          filters: [
+            { column: "value", type: "float", predicates: [{ kind: "predicate", operator: "gt", value: 100 }] }
+          ],
+          sort: []
+        },
+        viewChangeEpoch: 1
+      };
+      await expect(
+        bridge.request({ ...planRequest("applyDraft", 0), kind: "previewStep", step }, { confirmedView: view })
+      ).resolves.toMatchObject({
+        kind: "stepPreview",
+        metadata: {
+          shape: { rows: 1, columns: 8 },
+          filteredShape: { rows: 0, columns: 8 },
+          draftStep: step
+        }
+      });
+      transport.applyDraft.mockResolvedValueOnce({ sessionId, revision: 2, action: "apply", page, code: "owned sort" });
+      await expect(bridge.request(planRequest("applyDraft", 1), { confirmedView: view })).resolves.toMatchObject({
+        kind: "planUpdated",
+        metadata: { steps: [step] }
+      });
+    } finally {
+      await bridge.dispose();
+    }
+  });
+
   it("publishes arbitrary custom R schemas with name-pooled lineage and exact code persistence", async () => {
     const source = frameContract();
     const step: CustomCodeTransformStep = {

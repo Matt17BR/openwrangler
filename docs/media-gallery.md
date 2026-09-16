@@ -18,8 +18,9 @@ The workbench places the grid, column summaries, detailed profiles, and editor c
 
 <a href="images/readme/gallery/sidebar-overview.png"><img alt="Operations, Summary, Filters and Sorts, and Cleaning Steps beside a dataframe draft" src="images/readme/gallery/sidebar-overview.png" width="960"></a>
 
-Operations, dataset health, viewing state, and cleaning history appear beside the grid. Filters and sorts remain
-separate from applied cleaning steps.
+Native views hold operation shortcuts, summary, viewing state and cleaning history beside the grid. The column-profile
+panel opens beside the grid or below it at narrow widths. Open sidebars and Code Preview reduce the data area, so smaller
+windows require scrolling or panel resizing. Viewing filters and sorts remain separate from cleaning steps.
 
 ## File entry points
 
@@ -70,16 +71,15 @@ for very wide dataframes.
 
 ## Cleaning drafts and history
 
-<table>
-  <tr>
-    <td width="50%"><a href="images/readme/gallery/operation-catalog.png"><img alt="The grouped Open Wrangler cleaning-operation catalog" src="images/readme/gallery/operation-catalog.png" width="960"></a></td>
-    <td width="50%"><a href="images/readme/gallery/operation-configuration.png"><img alt="Filling missing revenue values with the mean for each market and segment" src="images/readme/gallery/operation-configuration-detail.png" width="510"></a></td>
-  </tr>
-  <tr>
-    <td>Search or browse operations, including multi-output literal splitting, portable regular-expression extraction, deterministic Pivot longer and Pivot wider, custom code, and transformations inferred from examples.</td>
-    <td>Choose methods that fit the column type, including statistics by group, interpolation, ordered fills, and same-row fallbacks.</td>
-  </tr>
-</table>
+<a href="images/readme/gallery/operation-catalog.png"><img alt="The grouped Open Wrangler cleaning-operation catalog" src="images/readme/gallery/operation-catalog.png" width="960"></a>
+
+Search or browse operations, including text splitting, regular-expression extraction, Pivot longer and Pivot wider,
+custom code, and transformations inferred from examples.
+
+<a href="images/readme/gallery/operation-configuration.png"><img alt="Filling missing revenue values with the mean for each market and segment, using the full dialog width" src="images/readme/gallery/operation-configuration-detail.png" width="780"></a>
+
+Configure the selected operation at full dialog width. **Choose operation** restores the catalog without clearing
+unfinished fields.
 
 <a href="images/readme/workflow.png"><img alt="A Polars formula draft with ordered viewing sorts, highlighted added values, Apply and Discard, and generated code" src="images/readme/workflow.png" width="960"></a>
 
@@ -97,9 +97,10 @@ are available before a step joins the plan.
   </tr>
 </table>
 
-<a href="images/readme/gallery/applied-step-inspection.png"><img alt="Inspecting an applied Formula column step with history controls visible" src="images/readme/gallery/applied-step-inspection-detail.png" width="960"></a>
+<a href="images/readme/gallery/applied-step-inspection.png"><img alt="Applied Formula-step inspection with projected_revenue highlighted, Edit and Delete controls, and Code Preview labeled Inspecting step 2 of 2" src="images/readme/gallery/applied-step-inspection-detail.png" width="960"></a>
 
-Select any applied step to inspect that point in history, then return to confirmed data without changing the plan.
+Inspect an applied step’s changes and scoped code, then edit or delete that step or return to confirmed data.
+Copy or save the displayed code; cleaned-data export uses all applied steps and excludes viewing filters and sorts.
 
 <table>
   <tr>

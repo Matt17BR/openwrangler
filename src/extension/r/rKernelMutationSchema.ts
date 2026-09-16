@@ -276,9 +276,16 @@ export type RCustomRowIdentityConstraint = Readonly<{
 
 export function rowNamesAfterRStep(
   input: RFramePageContract["frameSemantics"]["rowNames"],
-  step: RPreviewTransformStep
+  step: RPreviewTransformStep,
+  flavor: RFramePageContract["dataframeFlavor"],
+  outputRows: number
 ): RFramePageContract["frameSemantics"]["rowNames"] {
-  return step.kind === "groupBy" || step.kind === "pivotLonger" || step.kind === "pivotWider" ? "positional" : input;
+  if (step.kind === "groupBy" || step.kind === "pivotLonger" || step.kind === "pivotWider") return "positional";
+  if (outputRows > 0 && (step.kind === "sortRows" || isRRowReductionStep(step))) {
+    return flavor === "r.data.frame" ? "explicit" : "positional";
+  }
+  // Empty derived captures retain the input mode because R has no surviving row names.
+  return input;
 }
 
 export function schemaAfterRStep(

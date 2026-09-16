@@ -31,9 +31,12 @@ interpreter must be Python 3.10 through 3.14 and must be available where the ext
 
 **Safe recovery.** Use one of these paths, then retry the source:
 
-- Run **Open Wrangler: Change Runtime** and enter the executable path for the intended interpreter.
-- Select the intended environment with **Python: Select Interpreter**, then run **Open Wrangler: Clear Runtime
-  Override** so the Python extension selection can take effect.
+- Run **Open Wrangler: Change Runtime** and enter the executable path for this workspace.
+- To use **Python: Select Interpreter** for this workspace, set `"openWrangler.pythonPath": ""` in Workspace settings
+  JSON, then select the intended Python environment. This keeps User and Remote settings unchanged.
+
+**Open Wrangler: Clear Workspace Runtime Override** removes the workspace entry instead. A User or Remote
+`openWrangler.pythonPath` value can then apply again. Leaving the **Change Runtime** input empty has the same effect.
 
 For a remote workspace, choose an interpreter on the remote host. Changing the runtime affects the next Open Wrangler
 request; it does not install packages into that environment.
@@ -60,8 +63,9 @@ The two recovery commands have different purposes:
 
 **Safe recovery.** For missing packages, review the interpreter and requirements in the installation dialog before
 confirming. You can instead install the listed requirements with your normal environment manager, using that same
-interpreter. Then reselect it with **Open Wrangler: Change Runtime**, or clear the override if you rely on the Python
-extension selection, and reopen the source. For an interrupted change, wait for any package manager still using the
+interpreter. Then run **Open Wrangler: Change Runtime** and re-enter that executable path, even if it has not changed,
+to clear cached dependency checks. Reopen the source.
+For an interrupted change, wait for any package manager still using the
 environment to finish, repair that environment with its normal tooling if necessary, and run **Open Wrangler:
 Revalidate Runtime Dependencies**. If the command cannot find an exact recovery target, reopen the affected source
 and try again. Do not remove Open Wrangler state or recovery markers manually.

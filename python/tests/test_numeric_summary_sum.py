@@ -7,6 +7,7 @@ import pandas as pd
 import polars as pl
 import pytest
 
+from openwrangler_runtime.engines import pandas_engine as pandas_runtime
 from openwrangler_runtime.engines.duckdb_engine import DuckDBEngine
 from openwrangler_runtime.engines.pandas_engine import PandasEngine
 from openwrangler_runtime.engines.polars_engine import PolarsEngine
@@ -46,6 +47,23 @@ def test_pandas_sum_excludes_null_nan_and_preserves_wide_integer_and_decimal_val
         "isNaN": False,
     }
     assert summaries["missing"] == {"sum": 0.0}
+
+
+@pytest.mark.parametrize("values", [[1, -2, 2**40], [2**63 - 1, 2**63 - 1], [-(2**63), -(2**63)]])
+def test_pandas_integer_profile_sum_avoids_boxing_only_with_proven_native_bounds(
+    monkeypatch: pytest.MonkeyPatch, values: list[int]
+) -> None:
+    source = pd.DataFrame({"value": pd.Series(values, dtype="int64")})
+    before = source.copy(deep=True)
+    if values == [1, -2, 2**40]:
+
+        def reject_boxing(_series: object) -> None:
+            raise AssertionError("A bounded native int64 profile sum must not box every input value")
+
+        monkeypatch.setattr(pandas_runtime, "_pandas_widen_integer", reject_boxing)
+    summary = PandasEngine().summaries(source)[0]
+    assert_integer_sum(summary["numeric"], str(sum(values)))
+    pd.testing.assert_frame_equal(source, before)
 
 
 def test_pandas_sum_is_unavailable_for_included_nonfinite_or_overflowing_decimals() -> None:

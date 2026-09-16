@@ -37,14 +37,16 @@ describe("R interactive variable model", () => {
   });
 
   it("describes idle official and non-R terminals without retaining variables", () => {
-    expect(idleRLiveVariableSnapshot({ name: "R" }, true)).toEqual({
+    expect(idleRLiveVariableSnapshot({ name: "R session" }, true)).toEqual({
       state: "idle",
-      terminalLabel: "R",
+      action: "refresh",
+      terminalLabel: "R session",
       message: "Dataframes appear here after the R prompt returns.",
       variables: []
     });
     expect(idleRLiveVariableSnapshot({ name: "shell" }, false)).toEqual({
       state: "idle",
+      action: "start",
       terminalLabel: "R session",
       message: "Select the R terminal that owns the dataframe first.",
       variables: []
@@ -54,6 +56,7 @@ describe("R interactive variable model", () => {
   it("keeps watcher fallback guidance bound to the selected R terminal", () => {
     expect(watcherFallbackRLiveVariableSnapshot({ name: "R Interactive" })).toEqual({
       state: "idle",
+      action: "refresh",
       terminalLabel: "R Interactive",
       message: "Choose Refresh R dataframes.",
       variables: []

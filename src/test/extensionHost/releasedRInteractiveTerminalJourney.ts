@@ -14,14 +14,14 @@ type ReleasedRInteractiveActiveSession = NonNullable<ReturnType<TestApi["activeS
 interface ReleasedRInteractiveTerminalJourneyDependencies {
   readonly GRID_COLUMN_WINDOW: Readonly<{ columnOffset: number; columnLimit: number }>;
   readonly SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS: number;
-  readonly arrangePackagedProductSidebar: (workbench: Page, scene: "operation-catalog") => Promise<Locator>;
+  readonly arrangePackagedProductSidebar: (workbench: Page, scene: "data-sources") => Promise<Locator>;
   readonly assertReleasedRInteractiveProfileEditingAndExport: (
     testing: TestApi,
     workbench: Page,
     sessionId: string,
     directory: string
   ) => Promise<void>;
-  readonly assertReleasedRInteractiveRows: (operations: Locator) => Promise<void>;
+  readonly assertReleasedRInteractiveRows: (sources: Locator) => Promise<void>;
   readonly assertReleasedSessionPage: (
     testing: TestApi,
     active: ReleasedRInteractiveActiveSession,
@@ -109,22 +109,22 @@ export function createReleasedRInteractiveTerminalJourney({
       await seedReleasedRInteractiveFrames(sourceTerminal, directory, 2_400_001, "first");
       recordAcceptanceProgress("jupyter-r:interactive:first-terminal:seeded");
       assert.equal(vscode.window.activeTerminal, sourceTerminal, "Discovery must stay on the exact active R terminal.");
-      let sidebar = await arrangePackagedProductSidebar(workbench, "operation-catalog");
-      let operations = sidebar.getByRole("tree", { name: /Operations/u }).first();
-      await assertReleasedRInteractiveRows(operations);
+      let sidebar = await arrangePackagedProductSidebar(workbench, "data-sources");
+      let sources = sidebar.getByRole("tree", { name: /Data sources/u }).first();
+      await assertReleasedRInteractiveRows(sources);
       assert.deepEqual(
         releasedRInteractiveMailboxRoots(),
         initialMailboxes,
         "Automatic vscode-R workspace discovery must not bootstrap the native terminal bridge."
       );
       sourceTerminal.sendText("callback_orders <- data.frame(id = 1:3)", true);
-      await operations
+      await sources
         .getByRole("treeitem", { name: /^callback_orders\b/u })
         .waitFor({ state: "visible", timeout: 30_000 });
       assert.deepEqual(
         releasedRInteractiveMailboxRoots(),
         initialMailboxes,
-        "A later user expression must still update Operations without an Open Wrangler terminal bootstrap."
+        "A later user expression must still update Data sources without an Open Wrangler terminal bootstrap."
       );
       recordAcceptanceProgress("jupyter-r:interactive:first-terminal:discovery-complete");
 
@@ -137,13 +137,13 @@ export function createReleasedRInteractiveTerminalJourney({
       );
       assert.equal(
         await pollAcceptanceCondition(
-          async () => (await operations.getByRole("treeitem", { name: /^base_orders\b/u }).count()) === 0,
+          async () => (await sources.getByRole("treeitem", { name: /^base_orders\b/u }).count()) === 0,
           { timeoutMs: 10_000, intervalMs: 50 }
         ),
         true,
-        "Closing the terminal must invalidate its cached Operations rows."
+        "Closing the terminal must invalidate its cached Data sources rows."
       );
-      await operations
+      await sources
         .getByRole("treeitem", { name: /^Start R and show dataframes\b/u })
         .waitFor({ state: "visible", timeout: 10_000 });
       assert.deepEqual(releasedRInteractiveMailboxRoots(), initialMailboxes);
@@ -156,9 +156,9 @@ export function createReleasedRInteractiveTerminalJourney({
       recordAcceptanceProgress("jupyter-r:interactive:replacement-terminal:seeded");
       assert.equal(vscode.window.activeTerminal, replacementTerminal, "The replacement R terminal must be active.");
 
-      sidebar = await arrangePackagedProductSidebar(workbench, "operation-catalog");
-      operations = sidebar.getByRole("tree", { name: /Operations/u }).first();
-      await assertReleasedRInteractiveRows(operations);
+      sidebar = await arrangePackagedProductSidebar(workbench, "data-sources");
+      sources = sidebar.getByRole("tree", { name: /Data sources/u }).first();
+      await assertReleasedRInteractiveRows(sources);
       assert.deepEqual(releasedRInteractiveMailboxRoots(), initialMailboxes);
       recordAcceptanceProgress("jupyter-r:interactive:open-base-frame");
       await invokeReleasedRInteractiveTitleAction(workbench, directory, "base_orders");
@@ -178,7 +178,7 @@ export function createReleasedRInteractiveTerminalJourney({
           );
         },
         SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-        "the base data.frame selected from Operations to open",
+        "the base data.frame selected through the R title action and picker to open",
         () => JSON.stringify(testing.diagnostics())
       );
       const opened = testing.activeSession();

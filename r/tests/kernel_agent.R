@@ -5372,7 +5372,7 @@ if (requireNamespace("bit64", quietly = TRUE)) {
   invisible(dispatch("closeSession", list(sessionId = numeric_integer64_session_id)))
 }
 
-assert_generated_scale_flavor <- function(session_id, variable_name, source) {
+assert_generated_scale_flavor <- function(session_id, variable_name, source, expected = c(0, 0.5, 1)) {
   source_before <- if (inherits(source, "data.table")) {
     data.table::copy(source)
   } else {
@@ -5394,6 +5394,22 @@ assert_generated_scale_flavor <- function(session_id, variable_name, source) {
     )
   )
   assert_identical(preview$kind, "stepPreview", sprintf("%s did not preview R Min-max scale", variable_name))
+  assert_identical(preview$page$schema[[3L]]$rawType, "double", "live R Min-max did not return doubles")
+  assert_identical(preview$page$schema[[3L]]$type, "float", "live R Min-max returned the wrong column type")
+  assert_identical(preview$page$schema[[3L]]$nullable, TRUE, "live R Min-max lost possible missing values")
+  scaled_cells <- lapply(preview$page$page$rows, function(row) row$values[[3L]])
+  assert_identical(
+    vapply(scaled_cells, `[[`, character(1L), "kind", USE.NAMES = FALSE),
+    ifelse(is.na(expected), "null", "number"),
+    sprintf("live %s Min-max changed typed values", variable_name)
+  )
+  assert_identical(
+    vapply(scaled_cells, function(cell) {
+      if (identical(cell$kind, "null")) NA_real_ else as.numeric(cell$raw)
+    }, numeric(1L), USE.NAMES = FALSE),
+    expected,
+    sprintf("live %s Min-max changed values", variable_name)
+  )
   applied <- dispatch(
     "applyDraft",
     list(sessionId = session_id, revision = 1L, page = page_window())
@@ -5402,7 +5418,7 @@ assert_generated_scale_flavor <- function(session_id, variable_name, source) {
   eval(parse(text = applied$code), envir = .GlobalEnv)
   generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
   assert_identical(class(generated), class(source), sprintf("generated %s Min-max changed dataframe flavor", variable_name))
-  assert_identical(generated$scaled, c(0, 0.5, 1), sprintf("generated %s Min-max changed values", variable_name))
+  assert_identical(generated$scaled, expected, sprintf("generated %s Min-max changed values", variable_name))
   assert_identical(generated$marker, source_before$marker, sprintf("generated %s Min-max changed row order", variable_name))
   assert_identical(get(variable_name, envir = .GlobalEnv), source_before, sprintf("generated %s Min-max mutated source", variable_name))
   assert_identical(get(variable_name, envir = source_environment), source_before, sprintf("live %s Min-max mutated source", variable_name))
@@ -5416,9 +5432,10 @@ scale_generated_integer64_code <- assert_generated_scale_flavor(
   scale_session_id,
   "scale_generated_integer64",
   tibble::tibble(
-    value = bit64::as.integer64(c("0", "5", "10")),
-    marker = c("a", "b", "c")
-  )
+    value = bit64::as.integer64(c("9007199254740992", "9007199254740993", "9007199254740994", NA_character_)),
+    marker = c("a", "b", "c", "d")
+  ),
+  expected = c(0, 0.5, 1, NA_real_)
 )
 assert_generated_scale_flavor(
   scale_tibble_session_id,

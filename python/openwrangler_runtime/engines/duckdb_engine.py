@@ -3004,11 +3004,13 @@ class DuckDBEngine(DataFrameEngine):
             if not params.get("regex", False) and params["find"] == "":
                 replacement = _sql_literal(params["replacement"])
                 expression = (
-                    f"CASE WHEN {value} = '' THEN {replacement} ELSE {replacement} || "
-                    f"array_to_string(string_split({value}, ''), {replacement}) || {replacement} END"
+                    f"CASE WHEN {value} = '' THEN {replacement} ELSE "
+                    f'system.main."||"(system.main."||"({replacement}, '
+                    f"system.main.list_aggr(system.main.string_split({value}, ''), 'string_agg', {replacement})), "
+                    f"{replacement}) END"
                 )
             else:
-                function = "regexp_replace" if params.get("regex", False) else "replace"
+                function = "system.main.regexp_replace" if params.get("regex", False) else "system.main.replace"
                 suffix = ", 'g'" if params.get("regex", False) else ""
                 expression = (
                     f"{function}({value}, {_sql_literal(params['find'])}, "
@@ -3016,15 +3018,21 @@ class DuckDBEngine(DataFrameEngine):
                 )
         elif kind == "stripText":
             characters = params.get("characters") or DEFAULT_STRIP_CHARACTERS
-            expression = f"trim({value}, {_sql_literal(characters)})"
+            expression = f"system.main.trim({value}, {_sql_literal(characters)})"
         elif kind == "splitText":
-            expression = f"string_split({value}, {_sql_literal(params['delimiter'])})[{int(params['index']) + 1}]"
+            expression = (
+                f"system.main.list_extract(system.main.string_split({value}, {_sql_literal(params['delimiter'])}), "
+                f"{int(params['index']) + 1})"
+            )
         elif kind == "capitalizeText":
-            expression = f"upper(substr({value}, 1, 1)) || lower(substr({value}, 2))"
+            expression = (
+                f'system.main."||"(system.main.upper(system.main.substr({value}, 1, 1)), '
+                f"system.main.lower(system.main.substr({value}, 2)))"
+            )
         elif kind == "lowerText":
-            expression = f"lower({value})"
+            expression = f"system.main.lower({value})"
         else:
-            expression = f"upper({value})"
+            expression = f"system.main.upper({value})"
         return self._assign(frame, target, expression)
 
     def _split_text_columns(self, frame: Any, params: Mapping[str, Any]) -> Any:
@@ -3034,7 +3042,9 @@ class DuckDBEngine(DataFrameEngine):
         delimiter = _sql_literal(params["delimiter"])
         result = frame
         for index, name in enumerate(output_names, start=1):
-            result = self._assign(result, name, f"string_split({value}, {delimiter})[{index}]")
+            result = self._assign(
+                result, name, f"system.main.list_extract(system.main.string_split({value}, {delimiter}), {index})"
+            )
         return result
 
     def _dense_rank(self, frame: Any, column: str, direction: str, target: str) -> Any:
@@ -5799,36 +5809,40 @@ def _ow_text(df, kind, params):
             replacement = _ow_literal(params["replacement"])
             expression = (
                 "CASE WHEN " + value + " = '' THEN " + replacement
-                + " ELSE " + replacement + " || array_to_string(string_split("
-                + value + ", ''), " + replacement + ") || " + replacement + " END"
+                + ' ELSE system.main."||"(system.main."||"(' + replacement
+                + ", system.main.list_aggr(system.main.string_split("
+                + value + ", ''), 'string_agg', " + replacement + ")), " + replacement + ") END"
             )
         elif params.get("regex", False):
             expression = (
-                "regexp_replace(" + value + ", " + _ow_literal(params["find"])
+                "system.main.regexp_replace(" + value + ", " + _ow_literal(params["find"])
                 + ", " + _ow_literal(params["replacement"]) + ", 'g')"
             )
         else:
             expression = (
-                "replace(" + value + ", " + _ow_literal(params["find"])
+                "system.main.replace(" + value + ", " + _ow_literal(params["find"])
                 + ", " + _ow_literal(params["replacement"]) + ")"
             )
     elif kind == "stripText":
         expression = (
-            "trim(" + value + ")"
+            "system.main.trim(" + value + ")"
             if params.get("characters") is None
-            else "trim(" + value + ", " + _ow_literal(params["characters"]) + ")"
+            else "system.main.trim(" + value + ", " + _ow_literal(params["characters"]) + ")"
         )
     elif kind == "splitText":
         expression = (
-            "string_split(" + value + ", " + _ow_literal(params["delimiter"])
-            + ")[" + str(params["index"] + 1) + "]"
+            "system.main.list_extract(system.main.string_split(" + value + ", " + _ow_literal(params["delimiter"])
+            + "), " + str(params["index"] + 1) + ")"
         )
     elif kind == "capitalizeText":
-        expression = "upper(substr(" + value + ", 1, 1)) || lower(substr(" + value + ", 2))"
+        expression = (
+            'system.main."||"(system.main.upper(system.main.substr(' + value
+            + ", 1, 1)), system.main.lower(system.main.substr(" + value + ", 2)))"
+        )
     elif kind == "lowerText":
-        expression = "lower(" + value + ")"
+        expression = "system.main.lower(" + value + ")"
     else:
-        expression = "upper(" + value + ")"
+        expression = "system.main.upper(" + value + ")"
     return _ow_assign(df, target, expression)
 
 
@@ -5855,7 +5869,10 @@ def _ow_split_text_columns(df, params):
     value = "CAST(" + _ow_ident(params["column"]) + " AS VARCHAR)"
     delimiter = _ow_literal(params["delimiter"])
     for index, name in enumerate(output_names, start=1):
-        df = _ow_assign(df, name, "string_split(" + value + ", " + delimiter + ")[" + str(index) + "]")
+        df = _ow_assign(
+            df, name, "system.main.list_extract(system.main.string_split(" + value + ", " + delimiter
+            + "), " + str(index) + ")"
+        )
     return df
 
 

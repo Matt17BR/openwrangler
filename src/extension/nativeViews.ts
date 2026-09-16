@@ -37,7 +37,7 @@ import { insertGeneratedRDocumentCode } from "./r/rDocumentInsertion";
 import type { NotebookLiveVariableProvider, NotebookLiveVariableSnapshot } from "./notebooks/pythonInteractiveCommands";
 import type { RLiveVariableProvider, RLiveVariableSnapshot } from "./r/rInteractiveCommands";
 
-type ViewKind = "operations" | "summary" | "filters" | "steps";
+type ViewKind = "dataSources" | "operations" | "summary" | "filters" | "steps";
 type ViewSortAction = "moveUp" | "moveDown" | "remove";
 export type ViewSortDispatchStatus =
   | "sent"
@@ -67,6 +67,7 @@ class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vsc
   private readonly subscriptions: vscode.Disposable[] = [this.changeEmitter];
   private snapshot: ActiveSessionSnapshot | undefined;
   private sortRegistryContext: string;
+  private cleaningStepsContext: string | undefined;
   private readonly sortTargets = new Map<string, ViewSortTarget>();
   private readonly sortTokens = new Map<string, string>();
   private disposed = false;
@@ -80,25 +81,31 @@ class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vsc
     private readonly rVariables?: RLiveVariableProvider
   ) {
     this.snapshot = coordinator.activeSession();
-    this.sortRegistryContext = viewSortRegistryContext(this.snapshot);
+    this.sortRegistryContext = this.kind === "filters" ? viewSortRegistryContext(this.snapshot) : "";
+    this.cleaningStepsContext = this.kind === "steps" ? cleaningStepsContext(this.snapshot) : undefined;
     try {
       this.subscriptions.push(
         coordinator.onDidChangeActiveSession((snapshot) => {
           this.snapshot = snapshot;
-          const nextContext = viewSortRegistryContext(snapshot);
           if (this.kind === "filters") {
+            const nextContext = viewSortRegistryContext(snapshot);
             if (nextContext === this.sortRegistryContext) return;
             this.sortRegistryContext = nextContext;
             this.sortTargets.clear();
             this.sortTokens.clear();
           }
+          if (this.kind === "steps") {
+            const nextStepsContext = cleaningStepsContext(snapshot);
+            if (nextStepsContext === this.cleaningStepsContext) return;
+            this.cleaningStepsContext = nextStepsContext;
+          }
           this.changeEmitter.fire(undefined);
         })
       );
-      if (this.kind === "operations" && this.notebookVariables) {
+      if (this.kind === "dataSources" && this.notebookVariables) {
         this.subscriptions.push(this.notebookVariables.onDidChangeVariables(() => this.changeEmitter.fire(undefined)));
       }
-      if (this.kind === "operations" && this.rVariables) {
+      if (this.kind === "dataSources" && this.rVariables) {
         this.subscriptions.push(this.rVariables.onDidChangeVariables(() => this.changeEmitter.fire(undefined)));
       }
     } catch (error) {
@@ -115,9 +122,10 @@ class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vsc
   }
 
   getChildren(): ViewNode[] {
-    if (this.kind === "operations") {
-      return operationNodes(this.snapshot?.metadata, this.notebookVariables?.snapshot(), this.rVariables?.snapshot());
+    if (this.kind === "dataSources") {
+      return dataSourceNodes(this.notebookVariables?.snapshot(), this.rVariables?.snapshot());
     }
+    if (this.kind === "operations") return operationNodes(this.snapshot?.metadata);
     if (!this.snapshot) return [new ViewNode("No active dataframe", "Open a data file or notebook variable", "info")];
     if (this.kind === "summary") return summaryNodes(this.snapshot);
     if (this.kind === "filters") {
@@ -169,7 +177,10 @@ class ViewNode extends vscode.TreeItem {
   ) {
     super(label, vscode.TreeItemCollapsibleState.None);
     this.description = description;
-    this.iconPath = new vscode.ThemeIcon(icon);
+    this.iconPath = new vscode.ThemeIcon(
+      icon,
+      icon === "warning" || icon === "error" ? undefined : new vscode.ThemeColor("icon.foreground")
+    );
     this.command = command;
     this.contextValue = contextValue;
     const detail = disabledReason ? `${description}. ${disabledReason}` : description;
@@ -194,7 +205,7 @@ interface ViewSortHandle {
 interface CleaningStepHandle {
   readonly sessionId: string;
   readonly revision: number;
-  readonly stepId: string;
+  readonly stepId: string | null;
 }
 
 type ViewSortTargetResolution =
@@ -621,7 +632,11 @@ export interface NativeViewsTestController {
 }
 
 export type NativeTreeViewId =
-  "openWrangler.operations" | "openWrangler.summary" | "openWrangler.filters" | "openWrangler.cleaningSteps";
+  | "openWrangler.dataSources"
+  | "openWrangler.operations"
+  | "openWrangler.summary"
+  | "openWrangler.filters"
+  | "openWrangler.cleaningSteps";
 
 export interface NativeViewsOwner extends NativeViewsTestController {
   treeProvider(id: NativeTreeViewId): vscode.TreeDataProvider<vscode.TreeItem>;
@@ -766,9 +781,10 @@ function registerNativeViewsTransactional(
   const contextSubscription = retain(coordinator.onDidChangeActiveSession((snapshot) => planContexts.update(snapshot)));
   const filterProvider = retain(new OpenWranglerTreeProvider("filters", coordinator));
   const providers = {
-    "openWrangler.operations": retain(
-      new OpenWranglerTreeProvider("operations", coordinator, notebookVariables, rVariables)
+    "openWrangler.dataSources": retain(
+      new OpenWranglerTreeProvider("dataSources", coordinator, notebookVariables, rVariables)
     ),
+    "openWrangler.operations": retain(new OpenWranglerTreeProvider("operations", coordinator)),
     "openWrangler.summary": retain(new OpenWranglerTreeProvider("summary", coordinator)),
     "openWrangler.filters": filterProvider,
     "openWrangler.cleaningSteps": retain(new OpenWranglerTreeProvider("steps", coordinator))
@@ -906,6 +922,31 @@ function registerNativeViewsTransactional(
     registerCommand("openWrangler.moveViewSortUp", (node?: unknown) => runViewSortAction(node, "moveUp")),
     registerCommand("openWrangler.moveViewSortDown", (node?: unknown) => runViewSortAction(node, "moveDown")),
     registerCommand("openWrangler.removeViewSort", (node?: unknown) => runViewSortAction(node, "remove")),
+    registerCommand("openWrangler.internal.openDatasetSummary", async (sessionId: unknown, revision: unknown) => {
+      const snapshot = coordinator.activeSession();
+      if (
+        typeof sessionId !== "string" ||
+        !Number.isInteger(revision) ||
+        !snapshot ||
+        snapshot.sessionId !== sessionId ||
+        snapshot.metadata.revision !== revision ||
+        !supportsViewingCapability(snapshot.metadata.capabilities, "profile")
+      ) {
+        void vscode.window.showInformationMessage("Select dataset statistics from the current dataframe's Summary.");
+        return;
+      }
+      if (
+        !(await OpenWranglerPanel.sendEditorActionForSession({
+          action: "openDatasetSummary",
+          expectedSessionId: snapshot.sessionId,
+          expectedRevision: snapshot.metadata.revision
+        }))
+      ) {
+        void vscode.window.showInformationMessage(
+          "Open this dataframe's editor before calculating dataset statistics."
+        );
+      }
+    }),
     registerCommand("openWrangler.startOperation", async (kind?: OperationKind) => {
       if (kind !== undefined && !operationCatalog.some((operation) => operation.kind === kind)) return;
       const snapshot = coordinator.activeSession();
@@ -940,9 +981,11 @@ function registerNativeViewsTransactional(
       const snapshot = coordinator.activeSession();
       if (!snapshot || !canEditLatestStep(snapshot.metadata)) {
         void vscode.window.showInformationMessage(
-          snapshot?.metadata.draftStep
-            ? "Apply or discard the current draft before editing the latest step."
-            : "Apply a cleaning step before editing the latest step."
+          snapshot?.metadata.mode === "viewing"
+            ? cleaningUnavailableReason(snapshot.metadata)
+            : snapshot?.metadata.draftStep
+              ? "Apply or discard the current draft before editing the latest step."
+              : "Apply a cleaning step before editing the latest step."
         );
         return;
       }
@@ -1021,7 +1064,7 @@ function registerNativeViewsTransactional(
         );
       }
     }),
-    registerCommand("openWrangler.selectStep", async (stepId?: unknown) => {
+    registerCommand("openWrangler.selectStep", async (target?: unknown) => {
       const snapshot = coordinator.activeSession();
       if (!snapshot) {
         void vscode.window.showInformationMessage(
@@ -1029,20 +1072,26 @@ function registerNativeViewsTransactional(
         );
         return;
       }
+      const handle =
+        target === undefined || typeof target === "string"
+          ? { sessionId: snapshot.sessionId, revision: snapshot.metadata.revision, stepId: target ?? null }
+          : selectedCleaningStepHandle(target);
       if (
-        stepId !== undefined &&
-        (typeof stepId !== "string" || !snapshot.metadata.steps.some((step) => step.id === stepId))
+        !handle ||
+        handle.sessionId !== snapshot.sessionId ||
+        handle.revision !== snapshot.metadata.revision ||
+        (handle.stepId !== null && !snapshot.metadata.steps.some((step) => step.id === handle.stepId))
       ) {
         void vscode.window.showWarningMessage("That cleaning step is no longer available in the active dataframe.");
         return;
       }
-      if (stepId === undefined) coordinator.clearActiveStepInspection();
+      if (handle.stepId === null) coordinator.clearActiveStepInspection();
       if (
         !(await OpenWranglerPanel.sendEditorActionForSession({
           action: "selectStep",
           expectedSessionId: snapshot.sessionId,
           expectedRevision: snapshot.metadata.revision,
-          ...(stepId ? { stepId } : {})
+          ...(handle.stepId !== null ? { stepId: handle.stepId } : {})
         }))
       ) {
         void vscode.window.showInformationMessage("Open the active dataframe editor before selecting a cleaning step.");
@@ -1237,7 +1286,7 @@ function registerNativeViewsTransactional(
 
   context.subscriptions.push(
     registerCommand("openWrangler.openSourceFile", async () => {
-      const snapshot = coordinator.activeSession() ?? (await waitForActiveSession(coordinator, 30_000));
+      const snapshot = coordinator.activeSession();
       const source = snapshot ? sourceUri(snapshot) : undefined;
       if (!source) {
         void vscode.window.showInformationMessage("The active Open Wrangler session has no reopenable source.");
@@ -1295,28 +1344,6 @@ function nativeFailures(error: unknown): unknown[] {
   return error instanceof AggregateError ? error.errors.flatMap(nativeFailures) : [error];
 }
 
-async function waitForActiveSession(
-  coordinator: SessionCoordinator,
-  timeoutMs: number
-): Promise<ActiveSessionSnapshot | undefined> {
-  const current = coordinator.activeSession();
-  if (current) return current;
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (snapshot: ActiveSessionSnapshot | undefined) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      subscription.dispose();
-      resolve(snapshot);
-    };
-    const subscription = coordinator.onDidChangeActiveSession((snapshot) => {
-      if (snapshot) finish(snapshot);
-    });
-    const timeout = setTimeout(() => finish(undefined), timeoutMs);
-  });
-}
-
 export function sourceUri(snapshot: ActiveSessionSnapshot): vscode.Uri | undefined {
   const source = snapshot.metadata.source;
   if (source.uri) {
@@ -1329,46 +1356,43 @@ export function sourceUri(snapshot: ActiveSessionSnapshot): vscode.Uri | undefin
   return source.path ? vscode.Uri.file(source.path) : undefined;
 }
 
-function operationNodes(
-  metadata: SessionMetadata | undefined,
+function dataSourceNodes(
   notebookVariables: NotebookLiveVariableSnapshot | undefined,
   rVariables: RLiveVariableSnapshot | undefined
 ): ViewNode[] {
-  const liveVariables = [
+  return [
     ...notebookLiveVariableNodes(notebookVariables),
-    ...rLiveVariableNodes(notebookVariables && rVariables?.state === "idle" ? undefined : rVariables)
+    ...rLiveVariableNodes(
+      notebookVariables && rVariables?.state === "idle" && rVariables.action === "start" ? undefined : rVariables
+    ),
+    new ViewNode("Open a data file", "Choose CSV, Parquet, Excel, or JSONL", "folder-opened", {
+      command: "openWrangler.openPath",
+      title: "Open a data file"
+    })
   ];
-  if (!metadata) {
-    return [
-      ...liveVariables,
-      new ViewNode("Open a data file", "Choose CSV, Parquet, Excel, or JSONL", "folder-opened", {
-        command: "openWrangler.openPath",
-        title: "Open a data file"
-      })
-    ];
-  }
+}
+
+function operationNodes(metadata: SessionMetadata | undefined): ViewNode[] {
+  if (!metadata) return [new ViewNode("No active dataframe", "Open a source from Data sources", "info")];
   const editable = metadata.mode === "editing";
   const canStart = canStartOperation(metadata);
-  return [
-    ...liveVariables,
-    ...supportedOperationCatalog(metadata.capabilities).map(
-      (operation) =>
-        new ViewNode(
-          operation.title,
-          operation.group,
-          operation.icon,
-          canStart
-            ? {
-                command: "openWrangler.startOperation",
-                title: `Start ${operation.title}`,
-                arguments: [operation.kind]
-              }
-            : undefined,
-          undefined,
-          !editable || metadata.draftStep ? cleaningUnavailableReason(metadata) : undefined
-        )
-    )
-  ];
+  return supportedOperationCatalog(metadata.capabilities).map(
+    (operation) =>
+      new ViewNode(
+        operation.title,
+        operation.group,
+        operation.icon,
+        canStart
+          ? {
+              command: "openWrangler.startOperation",
+              title: `Start ${operation.title}`,
+              arguments: [operation.kind]
+            }
+          : undefined,
+        undefined,
+        !editable || metadata.draftStep ? cleaningUnavailableReason(metadata) : undefined
+      )
+  );
 }
 
 function notebookLiveVariableNodes(snapshot: NotebookLiveVariableSnapshot | undefined): ViewNode[] {
@@ -1399,7 +1423,7 @@ function notebookLiveVariableNodes(snapshot: NotebookLiveVariableSnapshot | unde
 function rLiveVariableNodes(snapshot: RLiveVariableSnapshot | undefined): ViewNode[] {
   if (!snapshot) return [];
   if (snapshot.state === "idle") {
-    const startsSession = snapshot.terminalLabel === "R session";
+    const startsSession = snapshot.action === "start";
     const label = startsSession ? "Start R and show dataframes…" : "Show R dataframes…";
     return [
       new ViewNode(label, snapshot.terminalLabel, "database", {
@@ -1439,13 +1463,29 @@ function rLiveVariableNodes(snapshot: RLiveVariableSnapshot | undefined): ViewNo
   ];
 }
 
+function cleaningStepsContext(snapshot: ActiveSessionSnapshot | undefined): string {
+  if (!snapshot) return "inactive";
+  const { metadata, stepInspection } = snapshot;
+  return JSON.stringify([
+    snapshot.sessionId,
+    metadata.revision,
+    stepInspection?.stepId ?? null,
+    metadata.draftStep?.kind ?? null,
+    metadata.steps.map((step) => [
+      step.id,
+      step.kind,
+      step.kind === "formula" && typeof step.params.newColumn === "string" ? step.params.newColumn : null
+    ])
+  ]);
+}
+
 function cleaningStepNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
   const { metadata, stepInspection } = snapshot;
   const nodes: ViewNode[] = [
     new ViewNode("Current view", stepInspection ? "Show current view" : "Selected", "database", {
       command: "openWrangler.selectStep",
       title: "Show current view",
-      arguments: []
+      arguments: [{ cleaningStepHandle: { sessionId: snapshot.sessionId, revision: metadata.revision, stepId: null } }]
     })
   ];
   nodes.push(
@@ -1453,7 +1493,12 @@ function cleaningStepNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
       const operation = operationByKind(step.kind);
       const isLatest = index === metadata.steps.length - 1;
       const selected = stepInspection?.stepId === step.id;
-      return new ViewNode(
+      const handle: CleaningStepHandle = {
+        sessionId: snapshot.sessionId,
+        revision: metadata.revision,
+        stepId: step.id
+      };
+      const node = new ViewNode(
         `${index + 1}. ${operation.title}`,
         selected
           ? `Selected · ${isLatest ? "latest applied step" : "applied"}`
@@ -1464,13 +1509,20 @@ function cleaningStepNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
         {
           command: "openWrangler.selectStep",
           title: `Inspect ${operation.title}`,
-          arguments: [step.id]
+          arguments: [{ cleaningStepHandle: handle }]
         },
         isLatest && !metadata.draftStep ? "openWrangler.latestCleaningStep" : "openWrangler.cleaningStep",
         undefined,
         undefined,
-        { sessionId: snapshot.sessionId, revision: metadata.revision, stepId: step.id }
+        handle
       );
+      if (step.kind === "formula" && typeof step.params.newColumn === "string") {
+        const outputName = step.params.newColumn;
+        const detail = `Output at this step: ${outputName} · ${node.description}`;
+        node.tooltip = `${index + 1}. ${operation.title}: ${detail}`;
+        node.accessibilityInformation = { label: `${index + 1}. ${operation.title}, ${detail}` };
+      }
+      return node;
     })
   );
   if (metadata.draftStep) {
@@ -1504,8 +1556,23 @@ function summaryNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
     nodes.push(new ViewNode("Profiles unavailable", "This dataframe does not support profiling", "info"));
     return nodes;
   }
+  const statsGuidance = stats ? undefined : "Select to calculate these statistics in the Dataset view.";
+  const statsCommand = stats
+    ? undefined
+    : {
+        command: "openWrangler.internal.openDatasetSummary",
+        title: "Calculate dataset statistics",
+        arguments: [snapshot.sessionId, metadata.revision]
+      };
   nodes.push(
-    new ViewNode("Missing cells", stats ? stats.missingCells.toLocaleString() : "Profiling…", "question"),
+    new ViewNode(
+      "Missing cells",
+      stats ? stats.missingCells.toLocaleString() : "Not calculated yet",
+      "question",
+      statsCommand,
+      undefined,
+      statsGuidance
+    ),
     new ViewNode(
       stats?.duplicateRowsSampleSize === undefined
         ? "Duplicate rows"
@@ -1514,8 +1581,11 @@ function summaryNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
         ? stats.duplicateRows === null
           ? "Unavailable for these column values"
           : stats.duplicateRows.toLocaleString()
-        : "Profiling…",
-      "copy"
+        : "Not calculated yet",
+      "copy",
+      statsCommand,
+      undefined,
+      statsGuidance
     )
   );
   return nodes;
@@ -1600,7 +1670,15 @@ function filterNodes(
       new ViewNode("Filters and sorts paused", "Inspecting an applied step", "lock", {
         command: "openWrangler.selectStep",
         title: "Return to current view",
-        arguments: []
+        arguments: [
+          {
+            cleaningStepHandle: {
+              sessionId: snapshot.sessionId,
+              revision: snapshot.metadata.revision,
+              stepId: null
+            }
+          }
+        ]
       }),
       ...filters,
       ...sorts
@@ -1713,7 +1791,9 @@ function selectedCleaningStepHandle(value: unknown): CleaningStepHandle | undefi
   const handle = (value as { cleaningStepHandle?: unknown }).cleaningStepHandle;
   if (!handle || typeof handle !== "object") return undefined;
   const { sessionId, revision, stepId } = handle as Record<string, unknown>;
-  return typeof sessionId === "string" && Number.isSafeInteger(revision) && typeof stepId === "string"
+  return typeof sessionId === "string" &&
+    Number.isSafeInteger(revision) &&
+    (typeof stepId === "string" || stepId === null)
     ? { sessionId, revision: Number(revision), stepId }
     : undefined;
 }

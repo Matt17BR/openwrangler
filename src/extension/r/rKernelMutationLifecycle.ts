@@ -185,7 +185,6 @@ export class RKernelMutationLifecycle {
     let view: RKernelViewQuery;
     let rStep: RKernelTransformStep;
     let retainedStep: RTransformStep;
-    let targetRowNames: RFramePageContract["frameSemantics"]["rowNames"];
     try {
       targetSchema =
         step.kind === "byExample" || step.kind === "customCode"
@@ -201,7 +200,6 @@ export class RKernelMutationLifecycle {
       }
       targetKeyColumnIds = keyColumnsAfterRStep(inputKeyColumnIds, targetSchema, step);
       rStep = rTransformStep(step, inputSchema);
-      targetRowNames = rowNamesAfterRStep(inputRowNames, step);
       nextFilterModel =
         step.kind === "customCode"
           ? copyFilterModel(currentView.filterModel)
@@ -273,7 +271,6 @@ export class RKernelMutationLifecycle {
         retainedStep = copyRTransformStep(step);
         targetSchema = dynamicCustomCodeSchema(inputSchema, step, result.page);
         targetKeyColumnIds = Object.freeze([...result.page.frameSemantics.keyColumnIds]);
-        targetRowNames = result.page.frameSemantics.rowNames;
         nextFilterModel = reconcileViewFilterModel(confirmed.filterModel, confirmed.schema, targetSchema, "id");
         const resolvedView = resolveViewQuery(nextFilterModel, targetSchema);
         if (!isDeepStrictEqual(resolvedView, effectiveView)) {
@@ -295,6 +292,10 @@ export class RKernelMutationLifecycle {
         retainedStep = copyRTransformStep(step);
       }
       const targetRows = rowCountAfterRStep(step, inputRows, result.diff);
+      const targetRowNames =
+        step.kind === "customCode"
+          ? result.page.frameSemantics.rowNames
+          : rowNamesAfterRStep(inputRowNames, step, confirmed.dataframeFlavor, targetRows);
       const targetIdentityRows = rowIdentityDomainAfterRStep(step, inputIdentityRows, targetRows);
       const targetCustomRowIdentities = customRowIdentityConstraintAfterRStep(
         step,

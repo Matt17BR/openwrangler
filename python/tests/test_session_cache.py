@@ -761,6 +761,115 @@ def test_filter_and_sort_changes_invalidate_pages_but_keep_total_rows_exact(tmp_
     assert engine.filter_calls == 2
 
 
+@pytest.mark.parametrize("backend", ["polars", "duckdb"])
+def test_file_sort_reuses_only_the_same_predicate_count(tmp_path, monkeypatch, backend: str) -> None:
+    manager = SessionManager()
+    try:
+        path = tmp_path / "values.parquet"
+        pl.DataFrame({"name": [f"row-{i}" for i in range(5)], "value": range(5), "binary": [b"x"] * 5}).write_parquet(
+            path
+        )
+        opened = manager.open_session(source(path), backend=backend, page_size=2)
+        sid = opened["metadata"]["sessionId"]
+        session = manager.sessions[sid]
+        shape = session.engine.shape
+        counted: list[Any] = []
+
+        def count(frame: Any) -> SessionDataShape:
+            counted.append(frame)
+            return shape(frame)
+
+        monkeypatch.setattr(session.engine, "shape", count)
+        model = greater_than(1)
+        filtered = manager.get_page(sid, 0, 0, 3, model)
+        identities = {row["values"][0]["display"]: row["id"] for row in filtered["page"]["rows"]}
+        descending = {**model, "sort": [{"column": "value", "direction": "desc", "nulls": "last"}]}
+        sorted_page = manager.get_page(sid, 0, 0, 2, descending, column_offset=0, column_limit=1)["page"]
+        assert len(counted) == 1
+        assert sorted_page["totalRows"] == 3
+        assert sorted_page["columnIds"] == ["c:source:0"]
+        assert [row["values"][0]["display"] for row in sorted_page["rows"]] == ["row-4", "row-3"]
+        assert [row["id"] for row in sorted_page["rows"]] == [identities["row-4"], identities["row-3"]]
+        assert [row["rowNumber"] for row in sorted_page["rows"]] == [0, 1]
+        old_frame, old_model, old_shape = session.filtered, session.filter_model, session.filtered_shape
+        old_cache = session.page_cache
+        old_generation, old_epoch = session.view_generation, session.view_change_epoch
+        with pytest.raises(EngineError, match="view sorting is unavailable for binary"):
+            manager.get_page(
+                sid, 0, 0, 2, {**model, "sort": [{"column": "binary", "direction": "asc", "nulls": "last"}]}
+            )
+        with monkeypatch.context() as patch:
+
+            def refuse_page(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+                raise EngineError("page refused after sorting")
+
+            patch.setattr(session.engine, "page", refuse_page)
+            with pytest.raises(EngineError, match="page refused after sorting"):
+                manager.get_page(sid, 0, 0, 2, model)
+        assert session.filtered is old_frame and session.filter_model is old_model
+        assert session.filtered_shape is old_shape and session.page_cache is old_cache
+        assert (session.view_generation, session.view_change_epoch) == (old_generation, old_epoch)
+        assert len(counted) == 1
+
+        # Replacing the displayed input must recount even with identical viewing predicates.
+        preview = manager.preview_step(sid, 0, formula_step("double"), 0, 2)
+        assert len(counted) == 3  # The new complete frame and its filtered view.
+        assert preview["metadata"]["filteredShape"] == {"rows": 3, "columns": 4}
+        draft_sorted = manager.get_page(sid, 1, 0, 2, model)
+        assert len(counted) == 4  # A transformed frame retains its ordinary count behavior.
+        assert draft_sorted["page"]["totalRows"] == 3
+        assert [row["values"][0]["display"] for row in draft_sorted["page"]["rows"]] == ["row-2", "row-3"]
+        discarded = manager.discard_draft(sid, 1, 0, 2)
+        assert len(counted) == 5
+        assert discarded["metadata"]["filteredShape"] == {"rows": 3, "columns": 3}
+
+        empty = greater_than(9)
+        assert manager.get_page(sid, 2, 0, 2, empty)["page"]["totalRows"] == 0
+        assert len(counted) == 6
+        empty_sorted = {**empty, "sort": descending["sort"]}
+        assert manager.get_page(sid, 2, 0, 2, empty_sorted)["page"]["rows"] == []
+        assert session.filtered_shape == {"rows": 0, "columns": 3}
+        assert len(counted) == 6
+        stat = path.stat()
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+        with pytest.raises(EngineError, match="changed or is no longer available"):
+            manager.get_page(sid, 2, 0, 2, empty)
+        assert not session.page_cache and len(counted) == 6
+    finally:
+        manager.close_all()
+
+
+@pytest.mark.parametrize("backend", ["polars", "pyspark"])
+def test_notebook_sort_recounts_even_with_a_known_filtered_total(monkeypatch, backend: str) -> None:
+    import __main__
+
+    frame = pl.DataFrame({"value": [1, 2, 3]}).lazy() if backend == "polars" else pd.DataFrame({"value": [1, 2, 3]})
+    monkeypatch.setattr(__main__, "sort_count_source", frame, raising=False)
+    manager = SessionManager() if backend == "polars" else live_notebook_manager()[0]
+    try:
+        opened = manager.open_session(
+            {"kind": "notebookVariable", "variableName": "sort_count_source"}, backend=backend, page_size=2
+        )
+        sid = opened["metadata"]["sessionId"]
+        engine = manager.sessions[sid].engine
+        shape = engine.shape
+        counted: list[Any] = []
+
+        def count(value: Any) -> SessionDataShape:
+            counted.append(value)
+            return shape(value)
+
+        monkeypatch.setattr(engine, "shape", count)
+        model = greater_than(1)
+        assert manager.get_page(sid, 0, 0, 2, model)["page"]["totalRows"] == 2
+        sorted_model = {**model, "sort": [{"column": "value", "direction": "desc", "nulls": "last"}]}
+        page = manager.get_page(sid, 0, 0, 2, sorted_model)["page"]
+        assert len(counted) == 2
+        assert [row["values"][0]["display"] for row in page["rows"]] == ["3", "2"]
+    finally:
+        manager.close_all()
+
+
 def test_view_queries_cannot_replace_the_confirmed_page_filter_before_preview(tmp_path, monkeypatch) -> None:
     manager, _ = counting_manager()
     opened = manager.open_session(source(write_values(tmp_path, 5)), backend="pandas", page_size=2)

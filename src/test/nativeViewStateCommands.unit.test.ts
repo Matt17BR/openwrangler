@@ -22,6 +22,36 @@ import {
 describe("native state and presentation commands", () => {
   beforeEach(resetNativeViewMocks);
 
+  it("does not defer Open Source File until another dataframe becomes active", async () => {
+    const registered = register(exportableSnapshot("original", "original.csv", 1));
+    registered.setActiveSession(undefined);
+
+    const action = command("openWrangler.openSourceFile")();
+    const immediateMessages = nativeMocks.showInformationMessage.mock.calls.slice();
+    registered.setActiveSession(exportableSnapshot("later", "later.csv", 1));
+    await action;
+
+    expect(nativeMocks.executeCommand).not.toHaveBeenCalledWith("vscode.open", expect.anything());
+    expect(immediateMessages).toEqual([["The active Open Wrangler session has no reopenable source."]]);
+  });
+
+  it("opens the source captured when Open Source File starts", async () => {
+    const registered = register(exportableSnapshot("original", "original.csv", 1));
+
+    const action = command("openWrangler.openSourceFile")();
+    registered.setActiveSession(exportableSnapshot("later", "later.csv", 1));
+    await action;
+
+    expect(nativeMocks.executeCommand).toHaveBeenCalledWith(
+      "vscode.open",
+      expect.objectContaining({ scheme: "file", fsPath: "/workspace/original.csv" })
+    );
+    expect(nativeMocks.executeCommand).not.toHaveBeenCalledWith(
+      "vscode.open",
+      expect.objectContaining({ fsPath: "/workspace/later.csv" })
+    );
+  });
+
   it("serializes context writes and settles rollback after deferred and rejected writes", async () => {
     nativeMocks.registrationFailure = "command:openWrangler.openSourceFile";
     const active = snapshotWithDraft();
@@ -170,6 +200,34 @@ describe("native state and presentation commands", () => {
     });
   });
 
+  it("opens dataset statistics only for the Summary row's displayed session and revision", async () => {
+    const initial = exportableSnapshot("session", "sample.csv", 0);
+    const registered = register(initial);
+    const rows = treeChildren("openWrangler.summary").slice(-2);
+    const action = rows[0]!.command as { command: string; arguments: unknown[] };
+    expect(action).toEqual({
+      command: "openWrangler.internal.openDatasetSummary",
+      title: "Calculate dataset statistics",
+      arguments: [initial.sessionId, initial.metadata.revision]
+    });
+    expect(rows[1]!.command).toEqual(action);
+    await command(action.command)(...action.arguments);
+    expect(nativeMocks.sendEditorActionForSession).toHaveBeenCalledExactlyOnceWith({
+      action: "openDatasetSummary",
+      expectedSessionId: initial.sessionId,
+      expectedRevision: initial.metadata.revision
+    });
+    nativeMocks.sendEditorActionForSession.mockClear();
+    registered.setActiveSession({
+      ...initial,
+      metadata: { ...initial.metadata, revision: initial.metadata.revision + 1 }
+    });
+    await command(action.command)(...action.arguments);
+    registered.setActiveSession(exportableSnapshot("other", "other.csv", initial.metadata.revision));
+    await command(action.command)(...action.arguments);
+    expect(nativeMocks.sendEditorActionForSession).not.toHaveBeenCalled();
+  });
+
   it("reuses only previously validated canonical generated source", () => {
     const validate = vi.spyOn(codePreviewLimits, "isCanonicalCodePreviewText");
     try {
@@ -253,12 +311,82 @@ describe("native state and presentation commands", () => {
     const registered = register(noDraftSnapshot());
     registered.setActiveSession(undefined);
 
-    expect(treeChildren("openWrangler.operations").map((node) => [node.label, node.command])).toEqual([
+    expect(treeChildren("openWrangler.operations").map(nodePresentation)).toEqual([
+      ["No active dataframe", "Open a source from Data sources"]
+    ]);
+    expect(treeChildren("openWrangler.dataSources").map((node) => [node.label, node.command])).toEqual([
       ["Open a data file", expect.objectContaining({ command: "openWrangler.openPath" })]
     ]);
+    registered.setActiveSession(noDraftSnapshot());
+    expect(treeChildren("openWrangler.operations").map((node) => node.label)).toContain("Rename column");
+    expect(
+      treeChildren("openWrangler.operations").every(
+        (node) => (node.command as { command: string }).command === "openWrangler.startOperation"
+      )
+    ).toBe(true);
+    expect(treeChildren("openWrangler.dataSources").map((node) => node.label)).toEqual(["Open a data file"]);
   });
 
-  it("shows cached variables from the exact active notebook in Operations", () => {
+  it("updates source discovery states without refreshing Operations and releases both subscriptions", () => {
+    let state: "loading" | "empty" | "error" = "loading";
+    const notebookListeners = new Set<() => unknown>();
+    const rListeners = new Set<() => unknown>();
+    const notebookProvider: NotebookLiveVariableProvider = {
+      onDidChangeVariables: (listener) => {
+        notebookListeners.add(listener);
+        return { dispose: () => notebookListeners.delete(listener) };
+      },
+      snapshot: () => ({ state, notebookLabel: "analysis.ipynb", message: `Notebook ${state}`, variables: [] }),
+      refreshFromCommand: async () => undefined,
+      dispose: () => undefined
+    };
+    const rProvider: RLiveVariableProvider = {
+      onDidChangeVariables: (listener) => {
+        rListeners.add(listener);
+        return { dispose: () => rListeners.delete(listener) };
+      },
+      startAutomaticDiscovery: () => undefined,
+      snapshot: () => ({ state, terminalLabel: "R", message: `R ${state}`, variables: [] }),
+      refreshFromCommand: async () => true,
+      shutdown: async () => undefined,
+      dispose: () => undefined
+    };
+    register(noDraftSnapshot(), undefined, undefined, notebookProvider, rProvider);
+    const sources = nativeMocks.treeDataProviders.get("openWrangler.dataSources")!;
+    const sourceChanges = vi.fn();
+    const operationChanges = vi.fn();
+    const operations = treeChildren("openWrangler.operations").map((node) => node.label);
+    expect(operations).toContain("Rename column");
+    sources.onDidChangeTreeData!(sourceChanges);
+    nativeMocks.treeDataProviders.get("openWrangler.operations")!.onDidChangeTreeData!(operationChanges);
+    expect(notebookListeners.size).toBe(1);
+    expect(rListeners.size).toBe(1);
+    for (state of ["loading", "empty", "error"] as const) {
+      for (const listener of [...notebookListeners, ...rListeners]) listener();
+      expect(treeChildren("openWrangler.dataSources").map((node) => [node.label, node.command])).toEqual([
+        [`Notebook ${state}`, undefined],
+        ["Refresh notebook dataframes", expect.objectContaining({ command: "openWrangler.refreshNotebookVariables" })],
+        ...(state === "loading"
+          ? []
+          : [
+              [
+                "Refresh R dataframes",
+                expect.objectContaining({ command: "openWrangler.refreshRInteractiveVariables" })
+              ]
+            ]),
+        [`R ${state}`, undefined],
+        ["Open a data file", expect.objectContaining({ command: "openWrangler.openPath" })]
+      ]);
+      expect(treeChildren("openWrangler.operations").map((node) => node.label)).toEqual(operations);
+    }
+    expect(sourceChanges).toHaveBeenCalledTimes(6);
+    expect(operationChanges).not.toHaveBeenCalled();
+    (sources as typeof sources & { dispose(): void }).dispose();
+    expect(notebookListeners.size).toBe(0);
+    expect(rListeners.size).toBe(0);
+  });
+
+  it("shows cached variables from the exact active notebook in Data sources", () => {
     const variableProvider: NotebookLiveVariableProvider = {
       onDidChangeVariables: () => ({ dispose: () => undefined }),
       snapshot: () => ({
@@ -280,7 +408,7 @@ describe("native state and presentation commands", () => {
     const registered = register(noDraftSnapshot(), undefined, undefined, variableProvider);
     registered.setActiveSession(undefined);
 
-    expect(treeChildren("openWrangler.operations").map((node) => [node.label, node.command])).toEqual([
+    expect(treeChildren("openWrangler.dataSources").map((node) => [node.label, node.command])).toEqual([
       [
         "orders",
         expect.objectContaining({
@@ -291,6 +419,11 @@ describe("native state and presentation commands", () => {
       ["Refresh notebook dataframes", expect.objectContaining({ command: "openWrangler.refreshNotebookVariables" })],
       ["Open a data file", expect.objectContaining({ command: "openWrangler.openPath" })]
     ]);
+    registered.setActiveSession(exportableSnapshot("different-file", "other.csv", 2));
+    expect(treeChildren("openWrangler.dataSources")[0]!.command).toMatchObject({
+      command: "openWrangler.openCachedNotebookVariable",
+      arguments: ["live-frame-handle"]
+    });
   });
 
   it("shows IRkernel dataframes without an unrelated terminal prompt and refreshes that notebook", async () => {
@@ -319,6 +452,7 @@ describe("native state and presentation commands", () => {
       startAutomaticDiscovery: () => undefined,
       snapshot: () => ({
         state: "idle",
+        action: "start",
         terminalLabel: "R session",
         message: "Start or select an R session.",
         variables: []
@@ -330,7 +464,7 @@ describe("native state and presentation commands", () => {
     const registered = register(noDraftSnapshot(), undefined, undefined, notebookProvider, terminalProvider);
     registered.setActiveSession(undefined);
 
-    expect(treeChildren("openWrangler.operations").map((node) => node.label)).toEqual([
+    expect(treeChildren("openWrangler.dataSources").map((node) => node.label)).toEqual([
       "orders_tbl",
       "Refresh notebook dataframes",
       "Open a data file"
@@ -377,7 +511,7 @@ describe("native state and presentation commands", () => {
     };
     register(noDraftSnapshot(), undefined, undefined, notebookProvider, terminalProvider);
 
-    expect(treeChildren("openWrangler.operations").map((node) => node.label)).toContain(
+    expect(treeChildren("openWrangler.dataSources").map((node) => node.label)).toContain(
       "Automatic notebook inspection is paused for the selected preview provider. Refresh to inspect it."
     );
     await command("openWrangler.refreshLiveDataframes")();
@@ -386,7 +520,7 @@ describe("native state and presentation commands", () => {
     expect(refreshTerminal).not.toHaveBeenCalled();
   });
 
-  it("routes the Operations refresh action to the active R terminal when no notebook is active", async () => {
+  it("routes the Data sources refresh action to the active R terminal when no notebook is active", async () => {
     const refreshTerminal = vi.fn(async () => true);
     const terminalProvider: RLiveVariableProvider = {
       onDidChangeVariables: () => ({ dispose: () => undefined }),
@@ -444,45 +578,51 @@ describe("native state and presentation commands", () => {
     const registered = register(noDraftSnapshot(), undefined, undefined, undefined, variableProvider);
     registered.setActiveSession(undefined);
 
-    expect(treeChildren("openWrangler.operations").map((node) => [node.label, node.description, node.command])).toEqual(
+    expect(
+      treeChildren("openWrangler.dataSources").map((node) => [node.label, node.description, node.command])
+    ).toEqual([
       [
-        [
-          "Refresh R dataframes",
-          "R · 2 loaded",
-          expect.objectContaining({ command: "openWrangler.refreshRInteractiveVariables" })
-        ],
-        [
-          "shots",
-          "R · tibble",
-          expect.objectContaining({
-            command: "openWrangler.openCachedRInteractiveVariable",
-            arguments: ["r-frame-handle"]
-          })
-        ],
-        [
-          "accounts",
-          "R · data.table",
-          expect.objectContaining({
-            command: "openWrangler.openCachedRInteractiveVariable",
-            arguments: ["r-table-handle"]
-          })
-        ],
-        [
-          "Open a data file",
-          "Choose CSV, Parquet, Excel, or JSONL",
-          expect.objectContaining({ command: "openWrangler.openPath" })
-        ]
+        "Refresh R dataframes",
+        "R · 2 loaded",
+        expect.objectContaining({ command: "openWrangler.refreshRInteractiveVariables" })
+      ],
+      [
+        "shots",
+        "R · tibble",
+        expect.objectContaining({
+          command: "openWrangler.openCachedRInteractiveVariable",
+          arguments: ["r-frame-handle"]
+        })
+      ],
+      [
+        "accounts",
+        "R · data.table",
+        expect.objectContaining({
+          command: "openWrangler.openCachedRInteractiveVariable",
+          arguments: ["r-table-handle"]
+        })
+      ],
+      [
+        "Open a data file",
+        "Choose CSV, Parquet, Excel, or JSONL",
+        expect.objectContaining({ command: "openWrangler.openPath" })
       ]
-    );
+    ]);
+    registered.setActiveSession(exportableSnapshot("different-file", "other.csv", 2));
+    expect(treeChildren("openWrangler.dataSources")[1]!.command).toMatchObject({
+      command: "openWrangler.openCachedRInteractiveVariable",
+      arguments: ["r-frame-handle"]
+    });
   });
 
-  it("puts an explicit R discovery action first while the active terminal has not been read", () => {
+  it.each(["R", "R session"])("keeps unread terminal %s discoverable alongside a notebook", (terminalLabel) => {
     const variableProvider: RLiveVariableProvider = {
       onDidChangeVariables: () => ({ dispose: () => undefined }),
       startAutomaticDiscovery: () => undefined,
       snapshot: () => ({
         state: "idle",
-        terminalLabel: "R",
+        action: "refresh",
+        terminalLabel,
         message: "Dataframes appear here after the R prompt returns.",
         variables: []
       }),
@@ -490,19 +630,44 @@ describe("native state and presentation commands", () => {
       shutdown: async () => undefined,
       dispose: () => undefined
     };
-    const registered = register(noDraftSnapshot(), undefined, undefined, undefined, variableProvider);
+    const notebookProvider: NotebookLiveVariableProvider = {
+      onDidChangeVariables: () => ({ dispose: () => undefined }),
+      snapshot: () => ({
+        state: "ready",
+        notebookLabel: "analysis.ipynb",
+        message: "Live dataframes",
+        variables: [{ handle: "notebook-owner", label: "orders", description: "Pandas", detail: "analysis.ipynb" }]
+      }),
+      refreshFromCommand: async () => undefined,
+      dispose: () => undefined
+    };
+    const registered = register(noDraftSnapshot(), undefined, undefined, notebookProvider, variableProvider);
     registered.setActiveSession(undefined);
 
-    expect(treeChildren("openWrangler.operations").map((node) => [node.label, node.description, node.command])).toEqual(
+    expect(
+      treeChildren("openWrangler.dataSources").map((node) => [node.label, node.description, node.command])
+    ).toEqual([
       [
-        ["Show R dataframes…", "R", expect.objectContaining({ command: "openWrangler.refreshRInteractiveVariables" })],
-        [
-          "Open a data file",
-          "Choose CSV, Parquet, Excel, or JSONL",
-          expect.objectContaining({ command: "openWrangler.openPath" })
-        ]
+        "orders",
+        "Pandas",
+        expect.objectContaining({ command: "openWrangler.openCachedNotebookVariable", arguments: ["notebook-owner"] })
+      ],
+      [
+        "Refresh notebook dataframes",
+        "analysis.ipynb",
+        expect.objectContaining({ command: "openWrangler.refreshNotebookVariables" })
+      ],
+      [
+        "Show R dataframes…",
+        terminalLabel,
+        expect.objectContaining({ command: "openWrangler.refreshRInteractiveVariables" })
+      ],
+      [
+        "Open a data file",
+        "Choose CSV, Parquet, Excel, or JSONL",
+        expect.objectContaining({ command: "openWrangler.openPath" })
       ]
-    );
+    ]);
   });
 
   it("offers one action that starts R after the previous terminal closed", () => {
@@ -511,6 +676,7 @@ describe("native state and presentation commands", () => {
       startAutomaticDiscovery: () => undefined,
       snapshot: () => ({
         state: "idle",
+        action: "start",
         terminalLabel: "R session",
         message: "The R terminal closed. Start or select another R session.",
         variables: []
@@ -522,20 +688,222 @@ describe("native state and presentation commands", () => {
     const registered = register(noDraftSnapshot(), undefined, undefined, undefined, variableProvider);
     registered.setActiveSession(undefined);
 
-    expect(treeChildren("openWrangler.operations").map((node) => [node.label, node.description, node.command])).toEqual(
+    expect(
+      treeChildren("openWrangler.dataSources").map((node) => [node.label, node.description, node.command])
+    ).toEqual([
       [
-        [
-          "Start R and show dataframes…",
-          "R session",
-          expect.objectContaining({ command: "openWrangler.openRInteractiveVariable" })
-        ],
-        [
-          "Open a data file",
-          "Choose CSV, Parquet, Excel, or JSONL",
-          expect.objectContaining({ command: "openWrangler.openPath" })
-        ]
+        "Start R and show dataframes…",
+        "R session",
+        expect.objectContaining({ command: "openWrangler.openRInteractiveVariable" })
+      ],
+      [
+        "Open a data file",
+        "Choose CSV, Parquet, Excel, or JSONL",
+        expect.objectContaining({ command: "openWrangler.openPath" })
       ]
-    );
+    ]);
+  });
+
+  it("keeps saved Formula outputs in native context after later Rename and Drop steps", () => {
+    const active = exportableSnapshot("formula-context", "sample.csv", 4);
+    const savedOutput = "  東京 *売上* [net]  ";
+    const latestOutput = "東京 *売上* [gross]";
+    const source = { id: "c:value", name: "value" };
+    active.metadata.steps = [
+      {
+        id: "formula",
+        kind: "formula",
+        params: { leftColumn: source, rightColumn: source, operator: "add", newColumn: savedOutput }
+      },
+      {
+        id: "rename",
+        kind: "renameColumn",
+        params: { column: { id: "c:step:formula:0", name: savedOutput }, newName: "retired" }
+      },
+      {
+        id: "drop",
+        kind: "dropColumns",
+        params: { columns: [{ id: "c:step:formula:0", name: "retired" }] }
+      },
+      {
+        id: "latest",
+        kind: "formula",
+        params: { leftColumn: source, rightColumn: source, operator: "add", newColumn: latestOutput }
+      }
+    ];
+    active.metadata.schema.push({
+      ...active.metadata.schema[0]!,
+      id: "c:step:latest:0",
+      name: latestOutput,
+      position: 1
+    });
+    active.metadata.shape.columns = 2;
+    active.metadata.filteredShape.columns = 2;
+    const registered = register(active);
+    const onRefresh = vi.fn();
+    const subscription = nativeMocks.treeDataProviders
+      .get("openWrangler.cleaningSteps")
+      ?.onDidChangeTreeData?.(onRefresh);
+
+    const steps = treeChildren("openWrangler.cleaningSteps");
+    expect(steps[1]).toMatchObject({
+      label: "1. Formula column",
+      description: "Applied",
+      tooltip: "1. Formula column: Output at this step:   東京 *売上* [net]   · Applied",
+      accessibilityInformation: { label: "1. Formula column, Output at this step:   東京 *売上* [net]   · Applied" }
+    });
+    expect(steps[4]).toMatchObject({
+      label: "4. Formula column",
+      description: "Latest applied step",
+      tooltip: "4. Formula column: Output at this step: 東京 *売上* [gross] · Latest applied step",
+      accessibilityInformation: {
+        label: "4. Formula column, Output at this step: 東京 *売上* [gross] · Latest applied step"
+      }
+    });
+
+    const firstFormula = active.metadata.steps[0]!;
+    if (firstFormula.kind === "formula") firstFormula.params.newColumn = "revised output";
+    registered.setActiveSession(active);
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+    expect(treeChildren("openWrangler.cleaningSteps")[1]?.tooltip).toContain("Output at this step: revised output");
+
+    active.metadata.steps.reverse();
+    registered.setActiveSession(active);
+    expect(onRefresh).toHaveBeenCalledTimes(2);
+    expect(treeChildren("openWrangler.cleaningSteps")[1]?.tooltip).toContain(latestOutput);
+
+    active.metadata.steps[0] = { id: "latest", kind: "dropMissingRows", params: {} };
+    registered.setActiveSession(active);
+    expect(onRefresh).toHaveBeenCalledTimes(3);
+    expect(treeChildren("openWrangler.cleaningSteps")[1]?.label).toBe("1. Drop missing rows");
+
+    active.metadata.steps[0]!.id = "replacement-step";
+    registered.setActiveSession(active);
+    expect(onRefresh).toHaveBeenCalledTimes(4);
+    expect(treeChildren("openWrangler.cleaningSteps")[1]?.cleaningStepHandle).toMatchObject({
+      stepId: "replacement-step"
+    });
+
+    active.metadata.steps.pop();
+    registered.setActiveSession(active);
+    expect(onRefresh).toHaveBeenCalledTimes(5);
+    expect(treeChildren("openWrangler.cleaningSteps")).toHaveLength(4);
+    subscription?.dispose();
+  });
+
+  it("keeps Cleaning Steps unchanged while fresh viewing and profiling snapshots update Summary", () => {
+    const initial = exportableSnapshot("session", "sample.csv", 0);
+    const registered = register(initial);
+    const onStepsRefresh = vi.fn();
+    const onSummaryRefresh = vi.fn();
+    const stepsSubscription = nativeMocks.treeDataProviders
+      .get("openWrangler.cleaningSteps")
+      ?.onDidChangeTreeData?.(onStepsRefresh);
+    const summarySubscription = nativeMocks.treeDataProviders
+      .get("openWrangler.summary")
+      ?.onDidChangeTreeData?.(onSummaryRefresh);
+    const initialRows = treeChildren("openWrangler.cleaningSteps");
+
+    const viewed = structuredClone(initial);
+    viewed.viewState.selectedColumnId = "c:value";
+    viewed.metadata.filteredShape.rows = 1;
+    viewed.viewState.filterModel = { filters: [], sort: [{ column: "value", direction: "desc", nulls: "last" }] };
+    viewed.metadata.filterModel = viewed.viewState.filterModel;
+    registered.setActiveSession(viewed);
+    expect(onStepsRefresh).not.toHaveBeenCalled();
+    expect(onSummaryRefresh).toHaveBeenCalledTimes(1);
+    expect(treeChildren("openWrangler.summary").map(nodePresentation)).toContainEqual(["Shape", "1 × 1"]);
+
+    const profiled = structuredClone(viewed);
+    profiled.metadata.stats = {
+      missingCells: 0,
+      missingRows: 0,
+      duplicateRows: 0,
+      missingValuesByColumn: [{ column: "value", count: 0 }]
+    };
+    profiled.metadata.schema[0]!.rawType = "Int32";
+    profiled.code = "# unchanged plan with refreshed code presentation";
+    profiled.stepInspectionActive = true;
+    registered.setActiveSession(profiled);
+    expect(onStepsRefresh).not.toHaveBeenCalled();
+    expect(onSummaryRefresh).toHaveBeenCalledTimes(2);
+    expect(treeChildren("openWrangler.cleaningSteps")).toEqual(initialRows);
+    expect(treeChildren("openWrangler.summary").map(nodePresentation)).toContainEqual(["Missing cells", "0"]);
+    stepsSubscription?.dispose();
+    summarySubscription?.dispose();
+  });
+
+  it("refreshes Cleaning Steps for draft and completed inspection transitions", () => {
+    const active = exportableSnapshot("session", "sample.csv", 0);
+    const registered = register(active);
+    const onRefresh = vi.fn();
+    const subscription = nativeMocks.treeDataProviders
+      .get("openWrangler.cleaningSteps")
+      ?.onDidChangeTreeData?.(onRefresh);
+
+    active.metadata.draftStep = { id: "draft", kind: "dropMissingRows", params: {} };
+    registered.setActiveSession(active);
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+    expect(treeChildren("openWrangler.cleaningSteps")[1]?.contextValue).toBe("openWrangler.cleaningStep");
+    expect(treeChildren("openWrangler.cleaningSteps").at(-1)?.label).toBe("Draft · Drop missing rows");
+
+    active.metadata.draftStep = {
+      id: "draft",
+      kind: "dropColumns",
+      params: { columns: [{ id: "c:value", name: "value" }] }
+    };
+    registered.setActiveSession(active);
+    expect(onRefresh).toHaveBeenCalledTimes(2);
+    expect(treeChildren("openWrangler.cleaningSteps").at(-1)?.label).toBe("Draft · Drop columns");
+
+    delete active.metadata.draftStep;
+    registered.setActiveSession(active);
+    expect(onRefresh).toHaveBeenCalledTimes(3);
+    expect(treeChildren("openWrangler.cleaningSteps")[1]?.contextValue).toBe("openWrangler.latestCleaningStep");
+
+    active.metadata.steps.push({ ...appliedStep, id: "second-step" });
+    registered.setActiveSession(active);
+    expect(onRefresh).toHaveBeenCalledTimes(4);
+    expect(treeChildren("openWrangler.cleaningSteps")).toHaveLength(3);
+
+    active.stepInspection = stepInspectionResponse({
+      kind: "inspectStep",
+      sessionId: active.sessionId,
+      revision: 0,
+      stepId: appliedStep.id,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 16
+    });
+    registered.setActiveSession(active);
+    expect(onRefresh).toHaveBeenCalledTimes(5);
+    expect(treeChildren("openWrangler.cleaningSteps").map(nodePresentation)).toEqual([
+      ["Current view", "Show current view"],
+      ["1. Drop missing rows", "Selected · applied"],
+      ["2. Drop missing rows", "Latest applied step"]
+    ]);
+
+    active.stepInspection.stepId = "second-step";
+    active.stepInspection.stepIndex = 1;
+    registered.setActiveSession(active);
+    expect(onRefresh).toHaveBeenCalledTimes(6);
+    expect(treeChildren("openWrangler.cleaningSteps")[2]?.description).toBe("Selected · latest applied step");
+
+    delete active.stepInspection;
+    registered.setActiveSession(active);
+    expect(onRefresh).toHaveBeenCalledTimes(7);
+    expect(treeChildren("openWrangler.cleaningSteps")[0]?.description).toBe("Selected");
+
+    registered.setActiveSession(undefined);
+    expect(onRefresh).toHaveBeenCalledTimes(8);
+    expect(treeChildren("openWrangler.cleaningSteps")[0]?.label).toBe("No active dataframe");
+    registered.setActiveSession(undefined);
+    expect(onRefresh).toHaveBeenCalledTimes(8);
+    registered.setActiveSession(active);
+    expect(onRefresh).toHaveBeenCalledTimes(9);
+    expect(treeChildren("openWrangler.cleaningSteps")).toHaveLength(3);
+    subscription?.dispose();
   });
 
   it("routes cleaning-step selection through the exact active session and rejects stale steps", async () => {
@@ -548,7 +916,11 @@ describe("native state and presentation commands", () => {
         description: "Selected",
         tooltip: "Current view: Selected",
         accessibilityInformation: { label: "Current view, Selected" },
-        command: { command: "openWrangler.selectStep", title: "Show current view", arguments: [] }
+        command: {
+          command: "openWrangler.selectStep",
+          title: "Show current view",
+          arguments: [{ cleaningStepHandle: { sessionId: "session", revision: 0, stepId: null } }]
+        }
       });
       expect(steps.some((node) => node.label.startsWith("Draft ·"))).toBe(Boolean(active.metadata.draftStep));
     }
@@ -582,6 +954,85 @@ describe("native state and presentation commands", () => {
     expect(nativeMocks.showInformationMessage).toHaveBeenCalledWith(
       "Open the active dataframe editor before selecting a cleaning step."
     );
+  });
+
+  it.each(["session", "revision"] as const)("refuses retained inspection rows after a %s change", async (change) => {
+    const original = exportableSnapshot("original", "original.csv", 0);
+    original.stepInspectionActive = true;
+    const registered = register(original);
+    const onRefresh = vi.fn();
+    const subscription = nativeMocks.treeDataProviders
+      .get("openWrangler.cleaningSteps")
+      ?.onDidChangeTreeData?.(onRefresh);
+    const inspectionRows = () => {
+      const steps = treeChildren("openWrangler.cleaningSteps");
+      return [
+        steps.find((node) => (node.cleaningStepHandle as { stepId?: unknown } | undefined)?.stepId === appliedStep.id),
+        steps.find((node) => node.label === "Current view"),
+        treeChildren("openWrangler.filters").find((node) => node.label === "Filters and sorts paused")
+      ];
+    };
+    const oldRows = inspectionRows();
+    const oldRow = oldRows[0];
+    expect(oldRow).toBeDefined();
+
+    await command("openWrangler.editSelectedStep")(oldRow);
+    expect(nativeMocks.sendEditorActionForSession).toHaveBeenCalledWith({
+      action: "editStep",
+      stepId: appliedStep.id,
+      expectedSessionId: "original",
+      expectedRevision: 0
+    });
+    nativeMocks.sendEditorActionForSession.mockClear();
+
+    const replacement =
+      change === "session"
+        ? exportableSnapshot("replacement", "replacement.csv", 0)
+        : exportableSnapshot("original", "original.csv", 1);
+    replacement.stepInspectionActive = true;
+    expect(replacement.metadata.steps[0]?.id).toBe(original.metadata.steps[0]?.id);
+    registered.setActiveSession(replacement);
+    expect(onRefresh).toHaveBeenCalledOnce();
+
+    await command("openWrangler.editSelectedStep")(oldRow);
+    expect(nativeMocks.sendEditorActionForSession).not.toHaveBeenCalled();
+
+    for (const row of oldRows) {
+      const action = row?.command as { command: string; arguments: unknown[] };
+      await command(action.command)(...action.arguments);
+    }
+    expect(nativeMocks.sendEditorActionForSession).not.toHaveBeenCalled();
+    expect(registered.clearActiveStepInspection).not.toHaveBeenCalled();
+
+    for (const [index, row] of inspectionRows().entries()) {
+      const action = row?.command as { command: string; arguments: unknown[] };
+      await command(action.command)(...action.arguments);
+      expect(nativeMocks.sendEditorActionForSession).toHaveBeenLastCalledWith({
+        action: "selectStep",
+        expectedSessionId: replacement.sessionId,
+        expectedRevision: replacement.metadata.revision,
+        ...(index === 0 ? { stepId: appliedStep.id } : {})
+      });
+    }
+    expect(nativeMocks.sendEditorActionForSession).toHaveBeenCalledTimes(3);
+    expect(registered.clearActiveStepInspection).toHaveBeenCalledTimes(2);
+    subscription?.dispose();
+  });
+
+  it("refuses malformed bound inspection targets without returning to the current view", async () => {
+    const registered = register(noDraftSnapshot());
+    for (const target of [
+      null,
+      {},
+      { cleaningStepHandle: null },
+      { cleaningStepHandle: { sessionId: "session", revision: 0 } },
+      { cleaningStepHandle: { sessionId: "session", revision: 0, stepId: 1 } },
+      { cleaningStepHandle: { sessionId: "session", revision: "0", stepId: null } }
+    ]) {
+      await command("openWrangler.selectStep")(target);
+    }
+    expect(nativeMocks.sendEditorActionForSession).not.toHaveBeenCalled();
+    expect(registered.clearActiveStepInspection).not.toHaveBeenCalled();
   });
 
   it("shows and dispatches only operations advertised by the active dataframe", async () => {
@@ -628,6 +1079,44 @@ describe("native state and presentation commands", () => {
       expectedRevision: 0
     });
   });
+
+  it.each([
+    ["pyspark", false, "Live PySpark dataframes are viewing only in Open Wrangler; cleaning steps are not available."],
+    ["polars", true, "Switch to Editing in the dataframe toolbar to add cleaning steps."]
+  ] as const)(
+    "explains why a Viewing %s session cannot edit its latest step",
+    async (backend, notebookInsert, reason) => {
+      const active = exportableSnapshot("viewing-session", "frame", 0);
+      active.code = "";
+      active.metadata = {
+        ...active.metadata,
+        backend,
+        mode: "viewing",
+        source: {
+          kind: "notebookVariable",
+          label: "frame",
+          variableName: "frame",
+          uri: "file:///workspace/frame.ipynb"
+        },
+        steps: [],
+        capabilities: {
+          ...active.metadata.capabilities,
+          editable: false,
+          exportCsv: false,
+          exportParquet: false,
+          notebookInsert,
+          supportedOperations: notebookInsert ? ["renameColumn"] : []
+        }
+      };
+      register(active);
+
+      await command("openWrangler.editLatestStep")();
+
+      expect(nativeMocks.showInformationMessage).toHaveBeenCalledExactlyOnceWith(reason);
+      expect(nativeMocks.sendEditorActionForSession).not.toHaveBeenCalled();
+      expect(nativeMocks.sendEditorAction).not.toHaveBeenCalled();
+    }
+  );
 
   it("routes selected-step edit and confirmed delete through the exact active session", async () => {
     const registered = register(noDraftSnapshot());
@@ -910,7 +1399,7 @@ describe("native state and presentation commands", () => {
     expect(inspectionNodes[0]?.command).toEqual({
       command: "openWrangler.selectStep",
       title: "Return to current view",
-      arguments: []
+      arguments: [{ cleaningStepHandle: { sessionId: "session", revision: 0, stepId: null } }]
     });
     for (const node of inspectionNodes.slice(1)) {
       expect(node.command).toBeUndefined();
@@ -1112,14 +1601,26 @@ describe("native state and presentation commands", () => {
         )
       )
     ).toBe(true);
-    expect(treeChildren("openWrangler.summary").map(nodePresentation)).toEqual([
+    const summaryRows = treeChildren("openWrangler.summary");
+    expect(summaryRows.map(nodePresentation)).toEqual([
       ["Saved sales preview", "Polars · viewing"],
       ["Shape", "4 × 3"],
       ["Columns", "3"],
       ["Selected column", "score"],
-      ["Missing cells", "Profiling…"],
-      ["Duplicate rows", "Profiling…"]
+      ["Missing cells", "Not calculated yet"],
+      ["Duplicate rows", "Not calculated yet"]
     ]);
+    for (const node of summaryRows.slice(-2)) {
+      const detail = "Not calculated yet. Select to calculate these statistics in the Dataset view.";
+      expect(node).toMatchObject({
+        tooltip: `${node.label}: ${detail}`,
+        accessibilityInformation: { label: `${node.label}, ${detail}` },
+        command: {
+          command: "openWrangler.internal.openDatasetSummary",
+          arguments: [savedOutput.sessionId, savedOutput.metadata.revision]
+        }
+      });
+    }
     expect(treeChildren("openWrangler.filters").map(nodePresentation)).toEqual([
       ["No filters or sorts", "Current view"]
     ]);

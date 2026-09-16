@@ -1002,7 +1002,7 @@ describe("App progressive profiling and view correlation", () => {
     });
   });
 
-  it("clears host-invalidated applied-step inspection locally without echoing the clear", () => {
+  it.each(["host", "dataset"] as const)("clears applied-step inspection from %s without stale profiling", (origin) => {
     const step = {
       id: "round-sales",
       kind: "roundNumber",
@@ -1021,10 +1021,22 @@ describe("App progressive profiling and view correlation", () => {
     expect(requestsOfKind("inspectStep")).toHaveLength(1);
 
     postMessage.mockClear();
-    dispatch({ kind: "stepInspectionCleared", resumeProfiling: true });
+    if (origin === "host") dispatch({ kind: "stepInspectionCleared", resumeProfiling: true });
+    else
+      dispatch({
+        kind: "editorAction",
+        action: "openDatasetSummary",
+        expectedSessionId: metadata.sessionId,
+        expectedRevision: metadata.revision
+      });
 
     expect(screen.queryByLabelText("Selected applied-step inspection")).not.toBeInTheDocument();
-    expect(postMessage).not.toHaveBeenCalledWith({ kind: "clearStepInspection" });
+    if (origin === "host") expect(postMessage).not.toHaveBeenCalledWith({ kind: "clearStepInspection" });
+    else {
+      expect(postMessage).toHaveBeenCalledWith({ kind: "clearStepInspection" });
+      expect(requestsOfKind("getDatasetStats")).toHaveLength(1);
+      expect(screen.getByRole("tab", { name: "Dataset" })).toHaveAttribute("aria-selected", "true");
+    }
   });
 
   it("accepts only the newest page across A to B to A and out-of-order completion", async () => {
@@ -1357,7 +1369,8 @@ describe("App progressive profiling and view correlation", () => {
       viewRequestId: viewId(oldStats),
       stats: emptyStats()
     });
-    expect(screen.getByText("Profiling dataset statistics...")).toBeInTheDocument();
+    expect(screen.queryByText("Profiling dataset statistics...")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Calculate dataset statistics" })).toBeDisabled();
 
     const sortedFilter = sortedPage.filterModel as FilterModel;
     dispatch({
@@ -1376,6 +1389,38 @@ describe("App progressive profiling and view correlation", () => {
       stats: emptyStats()
     });
     expect(await screen.findByText("No missing values.")).toBeInTheDocument();
+  });
+
+  it("opens Dataset from a bound native action without duplicate or stale demand", async () => {
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+    await screen.findByText("Berlin");
+    expect(requestsOfKind("getDatasetStats")).toHaveLength(0);
+    const action = {
+      kind: "editorAction" as const,
+      action: "openDatasetSummary" as const,
+      expectedSessionId: metadata.sessionId,
+      expectedRevision: metadata.revision
+    };
+    dispatch({ ...action, expectedSessionId: "other" });
+    dispatch({ ...action, expectedRevision: metadata.revision + 1 });
+    expect(requestsOfKind("getDatasetStats")).toHaveLength(0);
+    dispatch(action);
+    await waitFor(() => expect(requestsOfKind("getDatasetStats")).toHaveLength(1));
+    expect(screen.getByRole("tab", { name: "Dataset" })).toHaveAttribute("aria-selected", "true");
+    dispatch(action);
+    expect(requestsOfKind("getDatasetStats")).toHaveLength(1);
+    dispatch({
+      kind: "datasetStats",
+      revision: metadata.revision,
+      viewRequestId: viewId(onlyRequest("getDatasetStats")),
+      stats: { ...emptyStats(), duplicateRows: null }
+    });
+    expect(await screen.findByText("Unavailable for these column values")).toBeInTheDocument();
+    expect(screen.getByText("No missing values.")).toBeInTheDocument();
+    expect(screen.queryByText("Profiling dataset statistics...")).not.toBeInTheDocument();
+    dispatch(action);
+    expect(requestsOfKind("getDatasetStats")).toHaveLength(1);
   });
 
   it("accepts only the latest values search for a column", async () => {
@@ -1671,7 +1716,17 @@ describe("App progressive profiling and view correlation", () => {
     });
 
     expect(await screen.findByText(/Profile warning: Exact stats failed/)).toBeInTheDocument();
+    expect(screen.queryByText("Profiling dataset statistics...")).not.toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry dataset statistics" }));
+    expect(requestsOfKind("getDatasetStats")).toHaveLength(2);
+    expect(screen.getByText("Profiling dataset statistics...")).toBeInTheDocument();
+    const retry = requestsOfKind("getDatasetStats")[1]!;
+    expect(viewId(retry)).not.toBe(viewId(stats));
+    dispatch({ kind: "datasetStats", revision: metadata.revision, viewRequestId: viewId(retry), stats: emptyStats() });
+    expect(screen.queryByText("Profiling dataset statistics...")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Profile warning: Exact stats failed/)).not.toBeInTheDocument();
+    expect(screen.getByText("No missing values.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Close panel" }));
     expect(screen.queryByText(/Profile warning: Exact stats failed/)).not.toBeInTheDocument();
   });
@@ -2483,7 +2538,9 @@ function recoveryPacket(
 
 interface EditorActionMessage {
   kind: "editorAction";
-  action: "undoStep" | "openOperation" | "selectStep" | "openFilters";
+  action: "undoStep" | "openOperation" | "selectStep" | "openFilters" | "openDatasetSummary";
+  expectedSessionId?: string;
+  expectedRevision?: number;
   column?: string;
   operationKind?: "customCode";
   stepId?: string;

@@ -24,7 +24,7 @@ interface ReleasedRVariableDiscoveryDependencies {
     workbench: Page,
     notebook: vscode.NotebookDocument
   ) => Promise<Locator>;
-  readonly arrangePackagedProductSidebar: (workbench: Page, section: "operation-catalog") => Promise<Locator>;
+  readonly arrangePackagedProductSidebar: (workbench: Page, section: "data-sources") => Promise<Locator>;
   readonly assertReleasedSessionPage: (
     testing: TestApi,
     active: ReleasedRActiveSession,
@@ -89,8 +89,8 @@ export function createReleasedRVariableDiscovery({
     await consent.allow.click();
     await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
 
-    let sidebar = await arrangePackagedProductSidebar(workbench, "operation-catalog");
-    let operations = sidebar.getByRole("tree", { name: /Operations/u }).first();
+    let sidebar = await arrangePackagedProductSidebar(workbench, "data-sources");
+    let sources = sidebar.getByRole("tree", { name: /Data sources/u }).first();
     const variables: Array<readonly [string, string]> = [
       ["orders_frame", "data.frame"],
       ["orders_tibble", "tibble"],
@@ -101,19 +101,19 @@ export function createReleasedRVariableDiscovery({
     }
     const unsupportedVariables = coverage.focusedEditing === "none" ? ["collapse_grouped", "collapse_indexed"] : [];
     for (const [name, flavor] of variables) {
-      const row = operations.getByRole("treeitem", { name: new RegExp(`^${name}\\b`, "u") });
+      const row = sources.getByRole("treeitem", { name: new RegExp(`^${name}\\b`, "u") });
       await row.waitFor({ state: "visible", timeout: 90_000 });
       assert.match(
         (await row.innerText()).replace(/\s+/gu, " "),
         new RegExp(`${name}.*R · ${flavor}`, "u"),
-        `Operations must label ${name} with its native R dataframe flavor.`
+        `Data sources must label ${name} with its native R dataframe flavor.`
       );
     }
     for (const name of unsupportedVariables) {
       assert.equal(
-        await operations.getByRole("treeitem", { name: new RegExp(`^${name}\\b`, "u") }).count(),
+        await sources.getByRole("treeitem", { name: new RegExp(`^${name}\\b`, "u") }).count(),
         0,
-        `Operations must omit unsupported ${name}.`
+        `Data sources must omit unsupported ${name}.`
       );
     }
 
@@ -129,8 +129,8 @@ export function createReleasedRVariableDiscovery({
     let picker: Locator | undefined;
     try {
       if (screenshotOutput) {
-        sidebar = await arrangePackagedProductSidebar(workbench, "operation-catalog");
-        operations = sidebar.getByRole("tree", { name: /Operations/u }).first();
+        sidebar = await arrangePackagedProductSidebar(workbench, "data-sources");
+        sources = sidebar.getByRole("tree", { name: /Data sources/u }).first();
         await captureReleasedRJupyterOperations(workbench, sidebar, screenshotOutput);
       }
       picker = await activateReleasedNotebookVariableAction(workbench, notebook);
@@ -154,11 +154,11 @@ export function createReleasedRVariableDiscovery({
     } finally {
       await restoreOperationsWorkbench?.();
     }
-    sidebar = await arrangePackagedProductSidebar(workbench, "operation-catalog");
-    operations = sidebar.getByRole("tree", { name: /Operations/u }).first();
-    const ordersOperation = operations.getByRole("treeitem", { name: /^orders_frame\b/u });
-    await ordersOperation.waitFor({ state: "visible", timeout: 10_000 });
-    await ordersOperation.click();
+    sidebar = await arrangePackagedProductSidebar(workbench, "data-sources");
+    sources = sidebar.getByRole("tree", { name: /Data sources/u }).first();
+    const ordersSource = sources.getByRole("treeitem", { name: /^orders_frame\b/u });
+    await ordersSource.waitFor({ state: "visible", timeout: 10_000 });
+    await ordersSource.click();
     recordReleasedRAcceptanceSection(phase, coverage, "variable-discovery", "complete");
 
     const base = await waitForReleasedVariableSession(
@@ -173,7 +173,7 @@ export function createReleasedRVariableDiscovery({
         firstValue: "1",
         notebookInsert: true
       },
-      "the orders R data.frame opened from Operations"
+      "the orders R data.frame opened from Data sources"
     );
     await assertReleasedSessionPage(testing, base, "1", `${phase}-base-page`);
     assert.deepEqual(base.metadata.capabilities, {

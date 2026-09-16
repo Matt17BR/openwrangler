@@ -4,6 +4,33 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ## [Unreleased]
 
+### Changed
+
+- Data sources groups file opening and discovered Python/R dataframes; Operations contains the cleaning catalog.
+- Formula steps show their saved output names in Cleaning Steps tooltips and accessible names.
+- Applied-step inspection collapses paused viewing filters into a disclosure, with full rules available on demand.
+- Narrow editors let the source name share a toolbar row with actions, leaving more room for data.
+- Data export clarifies that it includes all applied steps and excludes viewing filters and sorts.
+
+### Fixed
+
+- R terminal commands honor bracketed paste, preventing radian from interpreting private command fragments as global assignments.
+- An open notebook no longer hides the action to discover dataframes in an existing R terminal.
+- R row sorting and reduction accept native row-name changes, including ordinary CSV-derived frames; zero-column generated reductions match live execution.
+- Ordinary sidebar icons use the theme's neutral icon color; warning and error icons retain their status colors.
+- Generated DuckDB text-cleaning steps preserve their built-in behavior when caller-defined functions use the same names.
+- Pandas profiles avoid per-value Python loops for bounded integer sums and native string missing counts.
+- Integer histogram bins create valid whole-number filters; rounded large-integer bins explain why filtering is unavailable.
+- Header profiles align statistics and chart groups across mixed column types; Add step keeps its icon beside its label.
+- Missing-package errors identify the selected Python environment and offer installation followed by retry of a failed engine change.
+- Open Source File reports immediately when no dataframe is active, avoiding unexpected navigation when another dataframe opens.
+- Cleaning plan actions wrap in very narrow editor panes so Redo remains fully visible.
+- Cleaning Steps avoids unrelated refreshes when viewing filters, column selection or profiles change.
+- Native Summary opens uncalculated dataset statistics directly; failed requests stop the profiling indicator and offer a retry.
+- History inspection controls ignore stale clicks after switching dataframes or changing the plan.
+- Python runtime commands and troubleshooting guidance clarify that clearing the workspace override leaves User and Remote settings unchanged.
+- Edit Latest Step explains whether a dataframe in Viewing mode supports cleaning.
+
 ## [2.6.0] - 2026-09-16
 
 ### Added

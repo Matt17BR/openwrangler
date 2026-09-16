@@ -58,12 +58,21 @@
   }
 
   .toolbar {
-    align-items: stretch;
-    flex-direction: column;
+    align-items: center;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: flex-start;
   }
 
   .toolbarActions {
-    justify-content: flex-start;
+    display: contents;
+  }
+
+  .toolbarIdentity {
+    flex: 1 1 15ch;
+    min-width: 0;
+    max-width: 100%;
   }
 
   .goToColumn {
@@ -89,6 +98,7 @@
     border-left: 0;
     border-top: 1px solid var(--vscode-panel-border);
     flex-basis: 100%;
+    flex-wrap: wrap;
     padding-left: 0;
     padding-top: 6px;
   }

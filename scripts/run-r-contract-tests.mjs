@@ -174,7 +174,7 @@ function vitestPhase(id, label, files, timeoutMs, { environment, node, vitest })
     id,
     label,
     command: node,
-    args: Object.freeze([vitest, "run", ...files, "--maxWorkers=1"]),
+    args: Object.freeze([vitest, "run", ...files, "--maxWorkers=1", "--reporter=verbose"]),
     environment,
     timeoutMs
   });

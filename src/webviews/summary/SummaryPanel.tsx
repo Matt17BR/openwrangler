@@ -5,6 +5,7 @@ import type { ColumnFilter, FilterModel } from "../../shared/filterModel";
 import {
   countViewColumnNames,
   isActiveColumnFilter,
+  numericHistogramFilterUnavailableReason,
   removeViewColumnFilter,
   replaceViewColumnFilter,
   supportsTypedViewComparison,
@@ -30,6 +31,10 @@ export type SummaryPanelView = "column" | "dataset" | "filters";
 interface SummaryPanelProps {
   metadata: SessionMetadata | undefined;
   summaries: ColumnSummary[];
+  statsPending?: boolean;
+  statsError?: string;
+  statsRequestDisabled?: boolean;
+  onRequestStats?(): void;
   schemaById: Map<string, ColumnSchema>;
   selectedColumnId?: string;
   activeView: SummaryPanelView;
@@ -52,6 +57,10 @@ const MAX_VISIBLE_EXACT_NUMERIC_CHARACTERS = 96;
 export function SummaryPanel({
   metadata,
   summaries,
+  statsPending = false,
+  statsError,
+  statsRequestDisabled = false,
+  onRequestStats,
   schemaById,
   selectedColumnId,
   activeView,
@@ -131,7 +140,13 @@ export function SummaryPanel({
           role="tabpanel"
           aria-labelledby={summaryTabId("dataset")}
         >
-          <DatasetSummary metadata={metadata} />
+          <DatasetSummary
+            metadata={metadata}
+            pending={statsPending}
+            error={statsError}
+            disabled={statsRequestDisabled}
+            onRequest={onRequestStats}
+          />
         </div>
       )}
     </section>
@@ -302,12 +317,19 @@ function SelectedColumnSummary({
                 visualization={numericVisualization}
                 valueMode={profileValueMode}
                 percentDenominator={distributionDenominator}
+                selectionDisabledReason={
+                  canFilter ? numericHistogramFilterUnavailableReason(schema, numericVisualization.bins) : undefined
+                }
                 onSelectBin={
                   canFilter
-                    ? (bin, index) =>
-                        applyProfileFilter(
-                          viewNumericBinFilter(schema, bin, index === numericVisualization.bins.length - 1)
-                        )
+                    ? (bin, index) => {
+                        const filter = viewNumericBinFilter(
+                          schema,
+                          bin,
+                          index === numericVisualization.bins.length - 1
+                        );
+                        if (filter) applyProfileFilter(filter);
+                      }
                     : undefined
                 }
               />
@@ -627,7 +649,19 @@ function TopValueRow({
   );
 }
 
-function DatasetSummary({ metadata }: { metadata: SessionMetadata | undefined }) {
+function DatasetSummary({
+  metadata,
+  pending,
+  error,
+  disabled,
+  onRequest
+}: {
+  metadata: SessionMetadata | undefined;
+  pending: boolean;
+  error?: string;
+  disabled: boolean;
+  onRequest?: () => void;
+}) {
   const stats = metadata?.stats;
   const missingByColumn = stats?.missingValuesByColumn.filter((item) => item.count > 0) ?? [];
   const missingMaximum =
@@ -653,9 +687,20 @@ function DatasetSummary({ metadata }: { metadata: SessionMetadata | undefined })
       </dl>
 
       {!stats ? (
-        <p className="summaryPlaceholder" role="status" aria-live="polite">
-          Profiling dataset statistics...
-        </p>
+        <div className="summaryPlaceholder">
+          <p role="status" aria-live="polite">
+            {pending
+              ? "Profiling dataset statistics..."
+              : error
+                ? `Dataset statistics failed: ${error}`
+                : "Dataset statistics have not been calculated."}
+          </p>
+          {!pending && onRequest && (
+            <button type="button" className="secondaryButton" disabled={disabled} onClick={onRequest}>
+              {error ? "Retry dataset statistics" : "Calculate dataset statistics"}
+            </button>
+          )}
+        </div>
       ) : (
         <>
           <dl className="summaryStatGrid">

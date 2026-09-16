@@ -694,7 +694,13 @@ export async function run(): Promise<void> {
   );
   assert.deepEqual(
     contributions.views?.openWrangler?.map((view) => view.id),
-    ["openWrangler.operations", "openWrangler.summary", "openWrangler.filters", "openWrangler.cleaningSteps"]
+    [
+      "openWrangler.dataSources",
+      "openWrangler.operations",
+      "openWrangler.summary",
+      "openWrangler.filters",
+      "openWrangler.cleaningSteps"
+    ]
   );
   assert.ok(contributions.configuration?.properties?.["openWrangler.fetchBlockSize"]);
   assert.ok(contributions.configuration?.properties?.["openWrangler.fetchColumnBlockSize"]);
@@ -2089,7 +2095,6 @@ const captureReleasedRNotebookGroupByDraft = createReleasedREditingMediaCapture(
   recordAcceptanceProgress,
   releasedJupyterScreenshotTheme,
   releasedRSessionApp,
-  requireFreshExactSessionPanelHydration,
   waitFor
 });
 
@@ -7340,7 +7345,7 @@ async function exercisePackagedPlatformSmoke(
   const activityAction = page.getByRole("tab", { name: /Open Wrangler/iu }).first();
   await activityAction.waitFor({ state: "visible", timeout: 10_000 });
   const sidebar = page.locator(".part.sidebar:visible");
-  for (const label of ["Operations", "Summary", "Filters / Sorts", "Cleaning Steps"]) {
+  for (const label of ["Data sources", "Operations", "Summary", "Filters / Sorts", "Cleaning Steps"]) {
     await sidebar.getByText(label, { exact: true }).first().waitFor({ state: "visible", timeout: 10_000 });
   }
   assert.equal(extension.isActive, true);
@@ -8831,7 +8836,7 @@ async function prepareReleasedRNotebookScreenshotWorkbench(
         return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
       }),
       PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT,
-      "The R notebook Operations scene requires the standard 1440 by 900 editor viewport."
+      "The R notebook Data sources scene requires the standard 1440 by 900 editor viewport."
     );
     const requiredCommands = ["notebook.cell.collapseCellInput", "notebook.cell.collapseCellOutput"] as const;
     const commands = new Set(await vscode.commands.getCommands(true));
@@ -8862,7 +8867,7 @@ async function prepareReleasedRNotebookScreenshotWorkbench(
             visible.start <= RELEASED_JUPYTER_R_SHOWCASE_CELL && visible.end > RELEASED_JUPYTER_R_SHOWCASE_CELL
         ),
       WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
-      "the public R notebook cell to be visible before Operations capture"
+      "the public R notebook cell to be visible before Data sources capture"
     );
     await workbench.waitForTimeout(600);
     await assertReleasedRPrivateNotebookContentHidden(workbench);
@@ -8880,7 +8885,7 @@ async function captureReleasedRJupyterOperations(
 ): Promise<void> {
   if (process.platform !== "linux") return;
   assert.equal(path.isAbsolute(outputDirectory), true, "R notebook screenshot output must be one absolute directory.");
-  const operations = sidebar.getByRole("tree", { name: /Operations/u }).first();
+  const sources = sidebar.getByRole("tree", { name: /Data sources/u }).first();
   const expected = [
     ["orders_frame", "R · data.frame"],
     ["orders_tibble", "R · tibble"],
@@ -8890,10 +8895,10 @@ async function captureReleasedRJupyterOperations(
     ["collapse_table", "R · data.table"]
   ] as const;
   for (const [name, typeLabel] of expected) {
-    const row = operations.getByRole("treeitem", { name: new RegExp(`^${name}\\b`, "u") }).first();
+    const row = sources.getByRole("treeitem", { name: new RegExp(`^${name}\\b`, "u") }).first();
     await row.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
     const label = (await row.innerText()).replace(/\s+/gu, " ");
-    assert.ok(label.includes(typeLabel), `R notebook Operations must label ${name} as ${typeLabel}.`);
+    assert.ok(label.includes(typeLabel), `R notebook Data sources must label ${name} as ${typeLabel}.`);
   }
   await assertPackagedProductSidebarGeometry(sidebar);
   await assertReleasedRPrivateNotebookContentHidden(workbench);
@@ -10928,17 +10933,13 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
       return {
         appOverflow: root.scrollWidth - root.clientWidth,
         toolbarOverflow: toolbar.scrollWidth - toolbar.clientWidth,
-        toolbarActionsOverflow: toolbarActions.scrollWidth - toolbarActions.clientWidth,
         gridStatusBarOverflow: gridStatusBar.scrollWidth - gridStatusBar.clientWidth,
-        clippedToolbarControls: clippedChildren(".toolbarActions", ":scope > *"),
+        clippedToolbarControls: clippedChildren(".toolbar", ":scope > .toolbarActions > *"),
         clippedGridStatusBar: clippedChildren(".gridStatusBar", ":scope > *")
       };
     });
     assert.ok(
-      measurement.appOverflow <= 1 &&
-        measurement.toolbarOverflow <= 1 &&
-        measurement.toolbarActionsOverflow <= 1 &&
-        measurement.gridStatusBarOverflow <= 1,
+      measurement.appOverflow <= 1 && measurement.toolbarOverflow <= 1 && measurement.gridStatusBarOverflow <= 1,
       `The 200% zoom layout must not overflow horizontally: ${JSON.stringify(measurement)}`
     );
     assert.deepEqual(
@@ -11250,11 +11251,6 @@ async function capturePackagedFileWorkflowScenes(testing: TestApi, outputDirecto
     const workflowSidebar = await arrangePackagedProductSidebar(capturePage, "workflow");
     await fitPackagedWorkflowFormulaDraftGrid(testing, capturePage, opened.sessionId);
     const codePreview = await waitForCodePreview(capturePage, "projected_revenue");
-    const visibleCode = await codePreview.innerText();
-    assert.match(visibleCode, /import polars as pl/u);
-    assert.match(visibleCode, /market_upper/u);
-    assert.match(visibleCode, /projected_revenue/u);
-    assert.match(visibleCode, /pl\.col\('revenue'\) \+ pl\.lit\(500\)/u);
     await assertPackagedWorkflowScene(capturePage, testing, opened.sessionId, workflowSidebar, codePreview);
     await clearPackagedProductSceneTransientUi(capturePage);
     await captureWorkbenchScreenshot(
@@ -11607,8 +11603,14 @@ async function capturePackagedFilterResultScene(
           filter?.column === "market" &&
           filter.predicates.length === 0 &&
           filter.valueFilter?.kind === "values" &&
-          filter.valueFilter.selectedValues.length === 1 &&
-          filter.valueFilter.selectedValues[0] === filterValue &&
+          isDeepStrictEqual(filter.valueFilter.selectedValues, [
+            {
+              kind: "typedSelection",
+              version: 1,
+              columnType: "string",
+              cell: { kind: "string", raw: filterValue, display: filterValue, isNull: false, isNaN: false }
+            }
+          ]) &&
           filter.valueFilter.includeNulls === false &&
           filter.valueFilter.includeNaN === false
         );
@@ -12103,6 +12105,23 @@ async function capturePackagedOperationDialogScenes(
       .waitFor({ state: "visible" });
     await dialog.getByRole("heading", { name: "Fill missing values", exact: true }).waitFor({ state: "visible" });
     await dialog.getByRole("button", { name: "Preview changes", exact: true }).waitFor({ state: "visible" });
+    await assertPackagedOperationDialogGeometry(dialog, "catalog");
+    const chooseOperation = dialog.getByRole("button", { name: "Choose operation", exact: true });
+    assert.equal(await chooseOperation.getAttribute("aria-expanded"), "true");
+    await chooseOperation.click();
+    assert.equal(await chooseOperation.getAttribute("aria-expanded"), "false");
+    await dialog
+      .getByRole("navigation", { name: "Operation catalog", includeHidden: true })
+      .waitFor({ state: "hidden" });
+    assert.equal(
+      await dialog.getByLabel("Column", { exact: true }).inputValue(),
+      columnReference(active.metadata, "revenue").id
+    );
+    assert.equal(await dialog.getByLabel("Method", { exact: true }).inputValue(), "groupedMean");
+    assert.equal(await dialog.getByLabel("Search group columns", { exact: true }).inputValue(), "market");
+    assert.equal(await groupBy.getByRole("checkbox", { name: "market", exact: true }).isChecked(), true);
+    await groupBy.getByText("Selected (2): market, segment", { exact: true }).waitFor({ state: "visible" });
+    assert.equal(await dialog.getByRole("button", { name: "Preview changes", exact: true }).isEnabled(), true);
     await assertPackagedOperationDialogGeometry(dialog, "configuration");
     await clearPackagedProductSceneTransientUi(workbench);
     await captureWorkbenchScreenshot(
@@ -12161,6 +12180,8 @@ async function assertPackagedOperationDialogGeometry(
       headerOverflow: header.scrollWidth - header.clientWidth,
       catalogVisible: catalog.getBoundingClientRect().width > 0,
       formVisible: form.getBoundingClientRect().width > 0,
+      formWidth: form.getBoundingClientRect().width,
+      bodyWidth: body.getBoundingClientRect().width,
       searchIconContained:
         searchIconBounds.left >= searchInputBounds.left - 1 &&
         searchIconBounds.right <= searchInputBounds.right + 1 &&
@@ -12182,11 +12203,16 @@ async function assertPackagedOperationDialogGeometry(
   );
   assert.ok(geometry.bodyOverflow <= 1, `${scene} operation dialog must not overflow horizontally.`);
   assert.ok(geometry.headerOverflow <= 1, `${scene} operation dialog header must not clip.`);
-  assert.equal(geometry.catalogVisible, scene !== "saved-step");
+  assert.equal(geometry.catalogVisible, scene === "catalog");
   assert.equal(geometry.formVisible, true);
-  if (scene !== "saved-step") {
+  if (scene === "catalog") {
     assert.equal(geometry.searchIconContained, true, `${scene} search icon must stay inside its input.`);
     assert.ok(geometry.searchIconCenterDelta <= 1, `${scene} search icon must be vertically centered in its input.`);
+  } else if (scene === "configuration") {
+    assert.ok(
+      Math.abs(geometry.formWidth - geometry.bodyWidth) <= 1,
+      `${scene} form must use the complete dialog body.`
+    );
   }
 }
 
@@ -12273,7 +12299,6 @@ async function capturePackagedExportOutcomeScenes(
   assert.equal(testing.activeSession()?.sessionId, sessionId, "Export capture requires the exact active session.");
   assert.equal(path.relative(workspace.fsPath, fixture.fsPath).startsWith(`..${path.sep}`), false);
   const codePreview = await waitForCodePreview(workbench, "projected_revenue");
-  assert.match(await codePreview.innerText(), /import polars as pl/u);
   const panel = workbench.locator(".part.panel:visible").first();
   await panel.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
   await panel.locator('[aria-label*="Export Generated Script"]:visible').first().waitFor({
@@ -12307,7 +12332,13 @@ async function capturePackagedExportOutcomeScenes(
     sourceBytes,
     "Applying the product workflow must preserve the source."
   );
-  assert.equal(await testing.synchronizePanel(sessionId), true, "Export capture must synchronize its applied plan.");
+  await synchronizedSessionApp(
+    workbench,
+    testing,
+    sessionId,
+    "Export capture must observe the applied plan's production publication.",
+    10_000
+  );
   const active = testing.activeSession();
   assert.equal(active?.sessionId, sessionId);
   const generatedCode = active?.code ?? "";
@@ -12425,7 +12456,29 @@ async function capturePackagedAppliedStepInspectionScene(
       30_000,
       "the exact latest applied-step inspection"
     );
-    await assertPackagedAppliedStepInspectionScene(workbench, testing, sessionId, sidebar, latestStep.id);
+    await vscode.commands.executeCommand("openWrangler.codePreview.focus");
+    const inspectedCode = await waitForCodePreview(workbench, "projected_revenue");
+    const inspectedScope = inspectedCode.locator("xpath=ancestor::*[@id='root']").locator("[data-code-scope]");
+    await inspectedScope.waitFor({ state: "visible", timeout: 10_000 });
+    await waitForLocatorText(
+      inspectedScope,
+      (text) => text === "Python · Inspecting step 2 of 2",
+      10_000,
+      "the exact applied-step Code Preview scope"
+    );
+    assert.equal(
+      await revealCodePreviewText(inspectedCode, "pl.col('revenue') + pl.lit(500)"),
+      testing.activeSession()?.stepInspection?.code,
+      "Applied-step capture must expose the exact inspected code and its Formula expression."
+    );
+    await assertPackagedAppliedStepInspectionScene(
+      workbench,
+      testing,
+      sessionId,
+      sidebar,
+      latestStep.id,
+      inspectedCode
+    );
     await clearPackagedProductSceneTransientUi(workbench);
     mkdirSync(outputDirectory, { recursive: true });
     await captureWorkbenchScreenshot(
@@ -12536,7 +12589,13 @@ async function capturePackagedEditAndUndoScenes(
     "the edited latest step to apply without appending another plan entry"
   );
   assertExactBytes(readFileSync(fixture.fsPath), sourceBytes, "Editing the latest step must preserve the source.");
-  assert.equal(await testing.synchronizePanel(sessionId), true);
+  await synchronizedSessionApp(
+    workbench,
+    testing,
+    sessionId,
+    "Latest-step capture must observe the edited plan's production publication.",
+    10_000
+  );
   await fitPackagedWorkflowFormulaDraftGrid(testing, workbench, sessionId);
   let codePreview = await waitForCodePreview(workbench, "pl.lit(750)");
   let sidebar = await arrangePackagedProductSidebar(workbench, "workflow");
@@ -12552,7 +12611,7 @@ async function capturePackagedEditAndUndoScenes(
     codePreview,
     2,
     "projected_revenue",
-    /pl\.lit\(750\)/u
+    "pl.col('revenue') + pl.lit(750)"
   );
   await clearPackagedProductSceneTransientUi(workbench);
   await alignPackagedSceneRowBoundary(workbench, app);
@@ -12584,14 +12643,20 @@ async function capturePackagedEditAndUndoScenes(
     "Undo to remove exactly the edited latest formula step"
   );
   assertExactBytes(readFileSync(fixture.fsPath), sourceBytes, "Undoing the latest step must preserve the source.");
-  assert.equal(await testing.synchronizePanel(sessionId), true);
+  await synchronizedSessionApp(
+    workbench,
+    testing,
+    sessionId,
+    "Undo capture must observe the remaining plan's production publication.",
+    10_000
+  );
   await fitPackagedUppercasePlanGrid(testing, workbench, sessionId);
   codePreview = await waitForCodePreview(workbench, "market_upper");
   sidebar = await arrangePackagedProductSidebar(workbench, "workflow");
   target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
   app = await exactSessionApp(target.frame, sessionId);
   assert.ok(app, "Undone latest-step capture requires its exact renderer.");
-  await assertPackagedCommittedPlanScene(
+  const undoneCode = await assertPackagedCommittedPlanScene(
     workbench,
     testing,
     sessionId,
@@ -12600,9 +12665,9 @@ async function capturePackagedEditAndUndoScenes(
     codePreview,
     1,
     "market_upper",
-    /market_upper/u
+    "market_upper"
   );
-  assert.doesNotMatch(await codePreview.innerText(), /projected_revenue|pl\.lit\(750\)/u);
+  assert.doesNotMatch(undoneCode, /projected_revenue|pl\.lit\(750\)/u);
   await clearPackagedProductSceneTransientUi(workbench);
   await alignPackagedSceneRowBoundary(workbench, app);
   await captureWorkbenchScreenshot(
@@ -12639,7 +12704,13 @@ async function capturePackagedEditAndUndoScenes(
     30_000,
     "the original 500-unit formula to return after edit and undo media"
   );
-  assert.equal(await testing.synchronizePanel(sessionId), true);
+  await synchronizedSessionApp(
+    workbench,
+    testing,
+    sessionId,
+    "Media restoration must observe the restored plan's production publication.",
+    10_000
+  );
   await fitPackagedWorkflowFormulaDraftGrid(testing, workbench, sessionId);
   await waitForCodePreview(workbench, "pl.lit(500)");
   await arrangePackagedProductSidebar(workbench, "workflow");
@@ -12655,8 +12726,8 @@ async function assertPackagedCommittedPlanScene(
   codePreview: Locator,
   stepCount: number,
   expectedOutput: string,
-  expectedCode: RegExp
-): Promise<void> {
+  expectedCode: string
+): Promise<string> {
   const active = testing.activeSession();
   assert.equal(active?.sessionId, sessionId);
   assert.equal(active?.metadata.steps.length, stepCount);
@@ -12729,12 +12800,13 @@ async function assertPackagedCommittedPlanScene(
   assert.ok(geometry.layoutOverflow <= 1);
   assert.deepEqual(geometry.partialHeaders, []);
   assert.deepEqual(geometry.clippedTitles, []);
-  const code = await codePreview.innerText();
+  const code = await revealCodePreviewText(codePreview, expectedCode);
+  assert.equal(code, active?.code, "Committed-plan capture must expose its exact generated code.");
   assert.match(code, /import polars as pl/u);
-  assert.match(code, expectedCode);
   const codeBounds = await codePreview.boundingBox();
   assert.ok(codeBounds && codeBounds.width > 0 && codeBounds.height > 0);
   assert.equal(await workbench.locator(".part.panel:visible").count(), 1);
+  return code;
 }
 
 async function openPackagedCleanedDataInOpenWrangler(
@@ -13203,8 +13275,8 @@ async function fitPackagedUppercasePlanGrid(testing: TestApi, workbench: Page, s
   assert.ok(available >= 840, "The uppercase-plan viewport must fit five complete comparison columns.");
   const names = ["gross_margin", "priority", "renewal_date", "account_note", "market_upper"] as const;
   const widths = [
-    Math.floor(available * 0.16),
-    Math.floor(available * 0.16),
+    Math.max(140, Math.floor(available * 0.16)),
+    Math.max(140, Math.floor(available * 0.16)),
     Math.floor(available * 0.19),
     Math.floor(available * 0.27)
   ];
@@ -13392,7 +13464,7 @@ async function fitPackagedWorkflowFormulaDraftGrid(
   assert.ok(available >= 840, "The 1440-pixel Workflow viewport must fit five complete comparison columns.");
   const names = ["priority", "renewal_date", "account_note", "market_upper", "projected_revenue"] as const;
   const widths = [
-    Math.floor(available * 0.16),
+    Math.max(140, Math.floor(available * 0.16)),
     Math.floor(available * 0.19),
     Math.floor(available * 0.24),
     Math.floor(available * 0.19)
@@ -13502,7 +13574,8 @@ async function fitPackagedWorkflowFormulaDraftGrid(
 
 async function arrangePackagedProductSidebar(
   workbench: Page,
-  scene: "explore" | "filter-result" | "workflow" | "sidebar-overview" | "operation-catalog" | "inspection"
+  scene:
+    "explore" | "filter-result" | "workflow" | "sidebar-overview" | "operation-catalog" | "data-sources" | "inspection"
 ): Promise<Locator> {
   await vscode.commands.executeCommand("workbench.view.extension.openWrangler");
   if ((process.env.OPEN_WRANGLER_TEST_EDITOR ?? "vscode") !== "cursor") {
@@ -13532,6 +13605,7 @@ async function arrangePackagedProductSidebar(
   await sidebar.waitFor({ state: "visible", timeout: 10_000 });
   await ensurePackagedProductSidebarWidth(workbench, sidebar);
   const sections = [
+    ["Data sources", /Data sources/u],
     ["Operations", /Operations/u],
     ["Summary", /Summary/u],
     ["Filters / Sorts", /Filters\s*\/\s*Sorts/u],
@@ -13543,11 +13617,13 @@ async function arrangePackagedProductSidebar(
   const expanded =
     scene === "explore" || scene === "sidebar-overview"
       ? new Set(["Operations", "Summary", "Filters / Sorts", "Cleaning Steps"])
-      : scene === "operation-catalog"
-        ? new Set(["Operations"])
-        : scene === "filter-result"
-          ? new Set(["Filters / Sorts"])
-          : new Set(["Filters / Sorts", "Cleaning Steps"]);
+      : scene === "data-sources"
+        ? new Set(["Data sources"])
+        : scene === "operation-catalog"
+          ? new Set(["Operations"])
+          : scene === "filter-result"
+            ? new Set(["Filters / Sorts"])
+            : new Set(["Filters / Sorts", "Cleaning Steps"]);
   for (const [label, treeName] of sections) {
     const tree = sidebar.getByRole("tree", { name: treeName }).first();
     const isExpanded = await tree.isVisible().catch(() => false);
@@ -13728,15 +13804,21 @@ async function assertPackagedAppliedStepInspectionScene(
   testing: TestApi,
   sessionId: string,
   sidebar: Locator,
-  stepId: string
+  stepId: string,
+  codePreview: Locator
 ): Promise<void> {
+  assert.equal(testing.activeSession()?.sessionId, sessionId);
   assert.equal(testing.activeSession()?.stepInspection?.stepId, stepId);
   const filters = sidebar.getByRole("tree", { name: /Filters\s*\/\s*Sorts/u }).first();
   const steps = sidebar.getByRole("tree", { name: /Cleaning Steps/u }).first();
   await filters
     .getByRole("treeitem", { name: /Filters and sorts paused, Inspecting an applied step/u })
     .waitFor({ state: "visible", timeout: 10_000 });
-  for (const expected of [/Current view/u, /1\. Uppercase/u, /2\. Formula column, Selected · latest applied step/u]) {
+  for (const expected of [
+    /Current view/u,
+    /1\. Uppercase/u,
+    /^2\. Formula column, Output at this step: projected_revenue · Selected · latest applied step$/u
+  ]) {
     await steps.getByRole("treeitem", { name: expected }).first().waitFor({ state: "visible", timeout: 10_000 });
   }
   await assertPackagedProductSidebarGeometry(sidebar);
@@ -13754,13 +13836,57 @@ async function assertPackagedAppliedStepInspectionScene(
   await inspection.getByText(/confirmed dataframe view and filters are unchanged/u).waitFor({ state: "visible" });
   await inspection.getByText("+1 columns", { exact: true }).waitFor({ state: "visible" });
   await inspection.getByRole("button", { name: "Show confirmed data", exact: true }).waitFor({ state: "visible" });
+  await inspection.getByRole("button", { name: "Edit step", exact: true }).waitFor({ state: "visible" });
+  await inspection.getByRole("button", { name: "Delete step", exact: true }).waitFor({ state: "visible" });
   await app.getByRole("button", { name: "Edit latest", exact: true }).waitFor({ state: "visible" });
   await app.getByRole("button", { name: "Undo", exact: true }).waitFor({ state: "visible" });
   const geometry = await measurePackagedOverviewGrid(app);
   assert.deepEqual(geometry.partialHeaders, []);
   assert.deepEqual(geometry.clippedTitles, []);
   assert.deepEqual(geometry.visibleColumns, ["account_note", "market_upper", "projected_revenue"]);
-  assert.equal(await workbench.locator(".part.panel:visible").count(), 0);
+  assert.ok(geometry.completeVisibleRows > 0, "Inspection must retain complete visible data rows beside its code.");
+  assert.equal(await workbench.locator(".part.panel:visible").count(), 1);
+  const codeLayout = await codePreview.evaluate((element) => {
+    type CodeElement = {
+      readonly textContent: string | null;
+      readonly hidden?: boolean;
+      readonly clientWidth: number;
+      readonly scrollWidth: number;
+      readonly ownerDocument: {
+        readonly defaultView: { readonly innerWidth: number; readonly innerHeight: number };
+        querySelector(selector: string): CodeElement | null;
+      };
+      getBoundingClientRect(): {
+        left: number;
+        right: number;
+        top: number;
+        bottom: number;
+        width: number;
+        height: number;
+      };
+    };
+    const document = (element as unknown as CodeElement).ownerDocument;
+    const scope = document.querySelector("[data-code-scope]");
+    const editor = document.querySelector(".cm-editor");
+    if (!scope || !editor) throw new Error("Applied-step capture requires Code Preview and its scope label.");
+    return {
+      scope: scope.textContent,
+      hidden: scope.hidden,
+      scopeOverflow: scope.scrollWidth - scope.clientWidth,
+      bounds: [scope.getBoundingClientRect(), editor.getBoundingClientRect()],
+      viewport: { width: document.defaultView.innerWidth, height: document.defaultView.innerHeight }
+    };
+  });
+  assert.equal(codeLayout.scope, "Python · Inspecting step 2 of 2");
+  assert.equal(codeLayout.hidden, false);
+  assert.ok(codeLayout.scopeOverflow <= 1, "The inspected-code scope must not clip horizontally.");
+  for (const bounds of codeLayout.bounds) {
+    assert.ok(bounds.width > 0 && bounds.height > 0, "Inspected code and scope must remain visible.");
+    assert.ok(bounds.left >= -1 && bounds.top >= -1);
+    assert.ok(bounds.right <= codeLayout.viewport.width + 1 && bounds.bottom <= codeLayout.viewport.height + 1);
+  }
+  assert.equal(testing.activeSession()?.sessionId, sessionId);
+  assert.equal(testing.activeSession()?.stepInspection?.stepId, stepId);
 }
 
 async function assertPackagedProductToolbarIdentity(app: Locator): Promise<void> {
@@ -13787,13 +13913,18 @@ async function measurePackagedOverviewGrid(app: Locator): Promise<{
   partialHeaders: string[];
   clippedTitles: string[];
   visibleColumns: string[];
+  completeVisibleRows: number;
 }> {
   return app.evaluate((root) => {
     type OverviewElement = {
       readonly clientWidth: number;
+      readonly clientHeight: number;
+      readonly clientLeft: number;
+      readonly clientTop: number;
       readonly scrollWidth: number;
+      readonly ownerDocument: { readonly defaultView: { readonly innerWidth: number; readonly innerHeight: number } };
       getAttribute(name: string): string | null;
-      getBoundingClientRect(): { left: number; right: number };
+      getBoundingClientRect(): { left: number; right: number; top: number; bottom: number; height: number };
       querySelector(selector: string): OverviewElement | null;
       querySelectorAll(selector: string): ArrayLike<OverviewElement>;
     };
@@ -13807,7 +13938,42 @@ async function measurePackagedOverviewGrid(app: Locator): Promise<{
       const headerBounds = header.getBoundingClientRect();
       return headerBounds.right > dataLeft + 1 && headerBounds.left < bounds.right - 1;
     });
+    const appBounds = appRoot.getBoundingClientRect();
+    const viewport = appRoot.ownerDocument.defaultView;
+    const scrollerTop = bounds.top + scroller.clientTop;
+    const appTop = appBounds.top + appRoot.clientTop;
+    const scrollerLeft = bounds.left + scroller.clientLeft;
+    const appLeft = appBounds.left + appRoot.clientLeft;
+    // Sticky cells, rather than the scrolling thead box, cover the first rows.
+    const visibleTop = Math.max(
+      0,
+      scrollerTop,
+      appTop,
+      rowHeader.getBoundingClientRect().bottom,
+      ...visible.map((header) => header.getBoundingClientRect().bottom)
+    );
+    const visibleBottom = Math.min(
+      viewport.innerHeight,
+      scrollerTop + scroller.clientHeight,
+      appTop + appRoot.clientHeight
+    );
+    const visibleLeft = Math.max(0, scrollerLeft, appLeft, dataLeft);
+    const visibleRight = Math.min(
+      viewport.innerWidth,
+      scrollerLeft + scroller.clientWidth,
+      appLeft + appRoot.clientWidth
+    );
     return {
+      completeVisibleRows: Array.from(scroller.querySelectorAll("tbody tr[aria-rowindex]")).filter((row) => {
+        const rowBounds = row.getBoundingClientRect();
+        return (
+          visibleRight > visibleLeft &&
+          visibleBottom > visibleTop &&
+          rowBounds.height > 0 &&
+          rowBounds.top >= visibleTop - 1 &&
+          rowBounds.bottom <= visibleBottom + 1
+        );
+      }).length,
       partialHeaders: visible
         .filter((header) => {
           const headerBounds = header.getBoundingClientRect();
@@ -14070,7 +14236,8 @@ async function assertPackagedWorkflowScene(
   assert.deepEqual(measurement.clippedTitles, []);
   assert.ok(measurement.visibleColumns.includes("market_upper"));
   assert.ok(measurement.visibleColumns.includes("projected_revenue"));
-  const code = await codePreview.innerText();
+  const code = await revealCodePreviewText(codePreview, "pl.col('revenue') + pl.lit(500)");
+  assert.equal(code, active.code, "Workflow capture must expose the exact current draft code.");
   assert.match(code, /import polars as pl/u);
   assert.match(code, /market_upper/u);
   assert.match(code, /projected_revenue/u);

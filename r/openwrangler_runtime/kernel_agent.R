@@ -6220,9 +6220,8 @@ openwrangler_r_kernel_agent <- local({
       "  if (any(.ow_row_columns > ncol(.ow_result)) || !identical(names(.ow_result)[.ow_row_columns], .ow_row_column_names)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)"
     )
     if (length(positions) == 0L) {
-      return(c(lines, "  .ow_rows <- seq_len(nrow(.ow_result))"))
-    }
-    if (identical(step$kind, "dropMissingRows")) {
+      lines <- c(lines, "  .ow_rows <- seq_len(nrow(.ow_result))")
+    } else if (identical(step$kind, "dropMissingRows")) {
       reducer <- if (identical(step$mode, "all")) "`|`" else "`&`"
       lines <- c(
         lines,

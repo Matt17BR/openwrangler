@@ -396,10 +396,12 @@ export function App() {
 
   const {
     backgroundDiagnostics,
+    datasetStatsPending,
     cancelPendingProfiling,
     captureProfileState,
     columnValues,
     releaseDrawerProfiling,
+    requestStatsForConfirmedView,
     requestValues,
     resetViewProfiling,
     restartProfilingAfterMutation,
@@ -1049,6 +1051,23 @@ export function App() {
           else clearStepInspection();
           return;
         }
+        if (response.action === "openDatasetSummary") {
+          const current = metadataRef.current;
+          if (
+            !current ||
+            response.expectedSessionId !== current.sessionId ||
+            response.expectedRevision !== current.revision ||
+            !supportsViewingCapability(current.capabilities, "profile") ||
+            foregroundRequest.current ||
+            isImportOptionsPending() ||
+            isModeChangePending()
+          )
+            return;
+          if (stepInspectionTargetRef.current) clearStepInspection();
+          openSidePanel("dataset");
+          requestStatsForConfirmedView();
+          return;
+        }
         if (isImportOptionsPending()) {
           setForegroundError({ message: "Wait for the current import-options change to finish." });
           return;
@@ -1550,6 +1569,7 @@ export function App() {
     requestImportOptionsChange,
     requestColumnReveal,
     requestStepInspection,
+    requestStatsForConfirmedView,
     resetConfirmedFilterHistory,
     resetGridViewState,
     restoreHostGridViewState,
@@ -2085,6 +2105,22 @@ export function App() {
   // the only recovery action permanently disabled. The host revalidates the
   // exact missing-dependency response before it offers confirmation.
   const installDependencyDisabled = runtimeDependencyInstallPending || importOptionsPending;
+  const installDependencyAction =
+    foregroundError?.code === "missing_dependencies" || foregroundError?.code === "dependency_install_failed" ? (
+      <button
+        type="button"
+        className="toolbarButton"
+        disabled={installDependencyDisabled}
+        aria-busy={runtimeDependencyInstallPending || undefined}
+        onClick={(event) => {
+          event.currentTarget.blur();
+          setRuntimeDependencyInstallPending(true);
+          vscode.postMessage({ kind: "installRuntimeDependencies" });
+        }}
+      >
+        <span className="codicon codicon-cloud-download" aria-hidden="true" /> Install required packages
+      </button>
+    ) : null;
   const visibleShape = metadata ? (displayMetadata ?? metadata).filteredShape : undefined;
   const visibleShapeText = visibleShape
     ? visibleShape.rows === null
@@ -2104,21 +2140,7 @@ export function App() {
         <h1>Open Wrangler</h1>
         <p role="alert">{foregroundError.message}</p>
         <div className="errorActions">
-          {foregroundError.code === "missing_dependencies" && (
-            <button
-              type="button"
-              className="toolbarButton"
-              disabled={installDependencyDisabled}
-              aria-busy={runtimeDependencyInstallPending || undefined}
-              onClick={(event) => {
-                event.currentTarget.blur();
-                setRuntimeDependencyInstallPending(true);
-                vscode.postMessage({ kind: "installRuntimeDependencies" });
-              }}
-            >
-              <span className="codicon codicon-cloud-download" aria-hidden="true" /> Install required dependency
-            </button>
-          )}
+          {installDependencyAction}
           {webviewConfig.canChangeImportOptions && (
             <button
               type="button"
@@ -2195,6 +2217,7 @@ export function App() {
               {metadata.mode === "editing" && (
                 <button
                   type="button"
+                  className="toolbarPrimaryButton"
                   data-operation-focus-fallback
                   data-cleaning-plan-focus-fallback
                   disabled={loading || projectionLoading || importOptionsPending || !canStartOperation(metadata)}
@@ -2462,6 +2485,12 @@ export function App() {
             {foregroundError && !foregroundError.form && (
               <div className="errorBanner" role="alert">
                 <span>{foregroundError.message}</span>
+                {installDependencyAction}
+                {runtimeDependencyInstallPending && (
+                  <span role="status" aria-live="polite">
+                    Waiting for dependency confirmation…
+                  </span>
+                )}
                 {foregroundError.code === "pyspark_connect_state_lost" &&
                   metadata?.backend === "pyspark" &&
                   metadata.source.kind === "notebookVariable" && (
@@ -2492,6 +2521,7 @@ export function App() {
                 metadata={metadata}
                 model={filterModel}
                 disabled={loading || projectionLoading || mutationPending || importOptionsPending || inspectionMode}
+                paused={inspectionMode}
                 canUndo={confirmedFilterHistory.entries.length > 0}
                 retainVisible={hasActiveFilters(metadata.filterModel)}
                 requestLifecycle={pageRequestLifecycle}
@@ -2649,6 +2679,10 @@ export function App() {
               <SummaryPanel
                 metadata={metadata}
                 summaries={summaries}
+                statsPending={datasetStatsPending}
+                statsError={backgroundDiagnostics.get("stats")?.message}
+                onRequestStats={() => requestStatsForConfirmedView()}
+                statsRequestDisabled={loading || projectionLoading || mutationPending || importOptionsPending}
                 schemaById={schemaById}
                 selectedColumnId={selectedSummaryColumnId}
                 activeView={summaryPanelView}

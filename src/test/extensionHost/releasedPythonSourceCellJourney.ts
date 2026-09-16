@@ -35,7 +35,7 @@ interface ReleasedPythonSourceVariableExpectation {
 
 export interface ReleasedPythonSourceCellJourneyDependencies {
   readonly RELEASED_JUPYTER_VARIABLE_DISCOVERY_TIMEOUT_MS: number;
-  readonly arrangePackagedProductSidebar: (workbench: Page, scene: "operation-catalog") => Promise<Locator>;
+  readonly arrangePackagedProductSidebar: (workbench: Page, scene: "data-sources") => Promise<Locator>;
   readonly assertExactOpenNotebookDocument: (notebook: vscode.NotebookDocument, checkpoint: string) => void;
   readonly assertExactVisibleReleasedNotebookEditor: (
     notebook: vscode.NotebookDocument,
@@ -411,34 +411,34 @@ export function createReleasedPythonSourceCellJourney({
       await waitFor(
         () => vscode.window.activeTextEditor?.document === sourceDocument,
         10_000,
-        "the exact Python source while Operations discovers its Interactive dataframe"
+        "the exact Python source while Data sources discovers its Interactive dataframe"
       );
-      const sidebar = await arrangePackagedProductSidebar(workbench, "operation-catalog");
+      const sidebar = await arrangePackagedProductSidebar(workbench, "data-sources");
       assert.equal(
         vscode.window.activeTextEditor?.document,
         sourceDocument,
         "Opening the Open Wrangler sidebar must retain the exact active Python source."
       );
-      const operations = sidebar.getByRole("tree", { name: /Operations/u }).first();
-      const liveFrame = operations.getByRole("treeitem", { name: /^python_source_frame\b/u });
+      const sources = sidebar.getByRole("tree", { name: /Data sources/u }).first();
+      const liveFrame = sources.getByRole("treeitem", { name: /^python_source_frame\b/u });
       await liveFrame.waitFor({ state: "visible", timeout: 90_000 });
       assert.equal(
         vscode.window.activeTextEditor?.document,
         sourceDocument,
-        "Operations must discover the dataframe while the exact Python source remains active."
+        "Data sources must discover the dataframe while the exact Python source remains active."
       );
       assert.equal(
         vscode.window.activeNotebookEditor,
         undefined,
-        "Operations discovery must not silently reactivate the Python Interactive Window."
+        "Data sources discovery must not silently reactivate the Python Interactive Window."
       );
       assert.match(
         (await liveFrame.innerText()).replace(/\s+/gu, " "),
         /python_source_frame.*Pandas · DataFrame/u,
-        "Operations must automatically list the Pandas dataframe from the source's Interactive kernel."
+        "Data sources must automatically list the Pandas dataframe from the source's Interactive kernel."
       );
       assert.equal(
-        await operations.getByRole("treeitem", { name: /^python_source_not_run\b/u }).count(),
+        await sources.getByRole("treeitem", { name: /^python_source_not_run\b/u }).count(),
         0,
         "Running the first Python source cell must not execute the later sentinel cell."
       );
@@ -516,7 +516,7 @@ export function createReleasedPythonSourceCellJourney({
         "Opening the existing dataframe must not rerun its source cell."
       );
       assert.equal(
-        await operations.getByRole("treeitem", { name: /^python_source_not_run\b/u }).count(),
+        await sources.getByRole("treeitem", { name: /^python_source_not_run\b/u }).count(),
         0,
         "Opening the existing dataframe must not execute the later sentinel cell."
       );

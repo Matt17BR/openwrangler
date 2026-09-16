@@ -1714,32 +1714,35 @@ describe("OpenWranglerPanel retained view state", () => {
     ).toBe(false);
   });
 
-  it("reveals an exact-session operation only after the renderer is hydrated", async () => {
-    const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) });
-    await harness.open();
-    await harness.receive({ kind: "ready" });
-    await acknowledgeLatestRendererSynchronization(harness);
-    harness.posted.length = 0;
-    harness.reveal.mockClear();
+  it.each(["openOperation", "openDatasetSummary"] as const)(
+    "reveals exact-session %s after hydration",
+    async (action) => {
+      const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) });
+      await harness.open();
+      await harness.receive({ kind: "ready" });
+      await acknowledgeLatestRendererSynchronization(harness);
+      harness.posted.length = 0;
+      harness.reveal.mockClear();
 
-    await expect(
-      OpenWranglerPanel.sendEditorActionForSession({
-        action: "openOperation",
-        expectedSessionId: openedResponse.metadata.sessionId,
-        expectedRevision: openedResponse.metadata.revision
-      })
-    ).resolves.toBe(true);
+      await expect(
+        OpenWranglerPanel.sendEditorActionForSession({
+          action,
+          expectedSessionId: openedResponse.metadata.sessionId,
+          expectedRevision: openedResponse.metadata.revision
+        })
+      ).resolves.toBe(true);
 
-    expect(harness.reveal).toHaveBeenCalledWith(expect.anything(), false);
-    expect(harness.posted).toEqual([
-      {
-        kind: "editorAction",
-        action: "openOperation",
-        expectedSessionId: openedResponse.metadata.sessionId,
-        expectedRevision: openedResponse.metadata.revision
-      }
-    ]);
-  });
+      expect(harness.reveal).toHaveBeenCalledWith(expect.anything(), false);
+      expect(harness.posted).toEqual([
+        {
+          kind: "editorAction",
+          action,
+          expectedSessionId: openedResponse.metadata.sessionId,
+          expectedRevision: openedResponse.metadata.revision
+        }
+      ]);
+    }
+  );
 
   it("reports a failed exact-session editor-action delivery", async () => {
     const harness = createPanelHarness(
@@ -2023,6 +2026,193 @@ describe("OpenWranglerPanel retained view state", () => {
     );
     expect(harness.posted).toContainEqual({ kind: "importOptionsState", busy: true });
     expect(harness.posted).toContainEqual({ kind: "importOptionsState", busy: false });
+  });
+
+  it.each(["polars", "duckdb"] as const)(
+    "installs and retries the requested %s backend without reopening its picker",
+    async (backend) => {
+      const source = { ...metadata.source, path: "/workspace/records.csv", uri: "file:///workspace/records.csv" };
+      const opened = { ...responseForSource(source), metadata: { ...metadata, source, backend: "pandas" as const } };
+      const configured = { ...opened, metadata: { ...opened.metadata, backend, revision: 1 } };
+      const missing: ErrorResponse = {
+        kind: "error",
+        code: "missing_dependencies",
+        message: "Required packages are missing.",
+        recoverable: true
+      };
+      const reconfigureFileSession = vi
+        .fn<NonNullable<OpenWranglerBridge["reconfigureFileSession"]>>()
+        .mockResolvedValueOnce(missing)
+        .mockResolvedValueOnce(configured);
+      const installFileDependencies = vi.fn(async () => true);
+      const harness = createPanelHarness(
+        { request: vi.fn(), reconfigureFileSession, installFileDependencies },
+        { source, openResponse: opened }
+      );
+      await harness.open();
+      panelPromptMocks.showQuickPick.mockResolvedValue({ backend });
+      await harness.receive({ kind: "changeBackend" });
+      expect(harness.posted).toContainEqual(missing);
+      expect(harness.posted).toContainEqual({ kind: "importOptionsState", busy: false });
+
+      await harness.receive({ kind: "installRuntimeDependencies" });
+
+      expect(installFileDependencies).toHaveBeenCalledWith(source, backend, { cancellation: expect.anything() });
+      expect(installFileDependencies).toHaveBeenCalledOnce();
+      expect(panelPromptMocks.showQuickPick).toHaveBeenCalledOnce();
+      expect(reconfigureFileSession).toHaveBeenCalledTimes(2);
+      expect(reconfigureFileSession).toHaveBeenLastCalledWith("session", 0, source, {
+        cancellation: expect.anything(),
+        backendPreference: backend
+      });
+      expect(harness.posted).toContainEqual(hostSnapshot(configured));
+      expect(harness.posted).toContainEqual({ kind: "runtimeDependencyInstallState", busy: true });
+      expect(harness.posted).toContainEqual({ kind: "runtimeDependencyInstallState", busy: false });
+      await harness.receive({ kind: "installRuntimeDependencies" });
+      expect(installFileDependencies).toHaveBeenCalledOnce();
+      expect(harness.posted.at(-1)).toEqual({ kind: "runtimeDependencyInstallState", busy: false });
+    }
+  );
+
+  it.each(["declined", "failed", "revision", "backend", "import options", "closed"] as const)(
+    "settles a %s backend dependency action without an obsolete retry",
+    async (outcome) => {
+      const source = { ...metadata.source, path: "/workspace/records.csv", uri: "file:///workspace/records.csv" };
+      const opened = { ...responseForSource(source), metadata: { ...metadata, source, backend: "pandas" as const } };
+      const missing: ErrorResponse = {
+        kind: "error",
+        code: "missing_dependencies",
+        message: "Required packages are missing.",
+        recoverable: true
+      };
+      const reconfigureFileSession = vi.fn(async () => missing);
+      const installation = deferred<boolean>();
+      const installFileDependencies = vi.fn<NonNullable<OpenWranglerBridge["installFileDependencies"]>>(async () => {
+        const ready = await installation.promise;
+        if (outcome === "failed") throw new Error("Installer failed.");
+        return ready;
+      });
+      const nextMetadata = { ...opened.metadata, revision: 1 };
+      const request = vi.fn(async (): Promise<OpenWranglerResponse> => ({
+        kind: "planUpdated",
+        action: "apply",
+        revision: 1,
+        metadata: nextMetadata,
+        page,
+        code: "df"
+      }));
+      const harness = createPanelHarness(
+        { request, reconfigureFileSession, installFileDependencies },
+        { source, openResponse: opened }
+      );
+      await harness.open();
+      panelPromptMocks.showQuickPick.mockResolvedValue({ backend: "polars" });
+      await harness.receive({ kind: "changeBackend" });
+      harness.posted.length = 0;
+
+      if (outcome === "revision") {
+        await harness.receive({
+          kind: "runtimeRequest",
+          request: { kind: "applyDraft", offset: 0, limit: 200, columnOffset: 0, columnLimit: 16 }
+        });
+        await harness.receive({ kind: "installRuntimeDependencies" });
+        expect(installFileDependencies).not.toHaveBeenCalled();
+      } else {
+        const action = harness.receive({ kind: "installRuntimeDependencies" });
+        await vi.waitFor(() => expect(installFileDependencies).toHaveBeenCalledOnce());
+        const duplicate = harness.receive({ kind: "installRuntimeDependencies" });
+        let newer: Promise<void> | undefined;
+        if (outcome === "backend") {
+          panelPromptMocks.showQuickPick.mockResolvedValue({ backend: "pandas" });
+          newer = harness.receive({ kind: "changeBackend" });
+        } else if (outcome === "import options") {
+          newer = harness.receive({ kind: "changeImportOptions" });
+        } else if (outcome === "closed") harness.dispose();
+        installation.resolve(outcome !== "declined");
+        await Promise.all([action, duplicate, newer]);
+        expect(installFileDependencies).toHaveBeenCalledOnce();
+        if (outcome === "backend" || outcome === "import options" || outcome === "closed") {
+          expect(installFileDependencies.mock.calls[0]?.[2]?.cancellation?.isCancellationRequested).toBe(true);
+        }
+      }
+
+      expect(reconfigureFileSession).toHaveBeenCalledOnce();
+      if (outcome !== "closed") {
+        expect(harness.posted).toContainEqual({ kind: "runtimeDependencyInstallState", busy: false });
+        if (outcome !== "revision") expect(harness.posted).toContainEqual({ kind: "importOptionsState", busy: false });
+        if (outcome === "failed")
+          expect(harness.posted).toContainEqual(
+            expect.objectContaining({
+              kind: "error",
+              code: "dependency_install_failed",
+              message: expect.stringContaining("recovered and validated")
+            })
+          );
+        harness.posted.length = 0;
+        await harness.receive({ kind: "ready" });
+        expect(harness.posted).toContainEqual(
+          hostSnapshot(outcome === "revision" ? { ...opened, metadata: nextMetadata, page, summaries: [] } : opened)
+        );
+      }
+    }
+  );
+
+  it("keeps a newer plan snapshot when a rewrite completes during dependency installation", async () => {
+    const source = { ...metadata.source, path: "/workspace/records.csv", uri: "file:///workspace/records.csv" };
+    const step = { id: "lower-city", kind: "lowerText" as const, params: { column: { id: "c:0", name: "city" } } };
+    const opened = {
+      ...responseForSource(source),
+      metadata: {
+        ...metadata,
+        source,
+        backend: "pandas" as const,
+        steps: [step],
+        latestStepInputSchema: metadata.schema
+      }
+    };
+    const missing: ErrorResponse = {
+      kind: "error",
+      code: "missing_dependencies",
+      message: "Required packages are missing.",
+      recoverable: true
+    };
+    const reconfigureFileSession = vi.fn(async () => missing);
+    const installation = deferred<boolean>();
+    const installFileDependencies = vi.fn(() => installation.promise);
+    const rewrite = deferred<OpenWranglerResponse>();
+    const rewriteCleaningPlan = vi.fn(() => rewrite.promise);
+    const harness = createPanelHarness(
+      { request: vi.fn(), reconfigureFileSession, installFileDependencies, rewriteCleaningPlan },
+      { source, openResponse: opened }
+    );
+    await harness.open();
+    panelPromptMocks.showQuickPick.mockResolvedValue({ backend: "polars" });
+    panelPromptMocks.showWarningMessage.mockResolvedValue("Replay and switch");
+    await harness.receive({ kind: "changeBackend" });
+    const rewriting = harness.receive({
+      kind: "rewriteCleaningPlan",
+      action: "deleteStep",
+      stepId: step.id,
+      offset: 0,
+      limit: 200,
+      columnOffset: 0,
+      columnLimit: 16
+    });
+    expect(rewriteCleaningPlan).toHaveBeenCalledOnce();
+    const installing = harness.receive({ kind: "installRuntimeDependencies" });
+    await vi.waitFor(() => expect(installFileDependencies).toHaveBeenCalledOnce());
+    const updated = { ...opened.metadata, revision: 1, steps: [], latestStepInputSchema: undefined };
+    rewrite.resolve({ kind: "planUpdated", action: "apply", revision: 1, metadata: updated, page, code: "df" });
+    await rewriting;
+    installation.resolve(true);
+    await installing;
+
+    expect(reconfigureFileSession).toHaveBeenCalledOnce();
+    expect(harness.posted).toContainEqual({ kind: "runtimeDependencyInstallState", busy: false });
+    expect(harness.posted).toContainEqual({ kind: "importOptionsState", busy: false });
+    harness.posted.length = 0;
+    await harness.receive({ kind: "ready" });
+    expect(harness.posted).toContainEqual(hostSnapshot({ ...opened, metadata: updated, page, summaries: [] }));
   });
 
   it("offers only engines that support the current file format and import options", async () => {

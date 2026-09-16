@@ -350,12 +350,10 @@ export function TextField({
 }) {
   const helpId = useId();
   const validateTextBounds = (input: HTMLInputElement) => {
-    const codePoints = Array.from(input.value).length;
-    const byteLength = new TextEncoder().encode(input.value).byteLength;
     input.setCustomValidity(
-      maxCodePoints !== undefined && codePoints > maxCodePoints
+      maxCodePoints !== undefined && Array.from(input.value).length > maxCodePoints
         ? `Use at most ${maxCodePoints.toLocaleString()} Unicode scalar values.`
-        : maxUtf8Bytes !== undefined && byteLength > maxUtf8Bytes
+        : maxUtf8Bytes !== undefined && new TextEncoder().encode(input.value).byteLength > maxUtf8Bytes
           ? `Use at most ${maxUtf8Bytes.toLocaleString()} UTF-8 bytes.`
           : ""
     );

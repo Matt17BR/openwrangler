@@ -1339,6 +1339,84 @@ describe("DataGrid", () => {
     expect(onViewStateChange).toHaveBeenLastCalledWith(expect.objectContaining({ selectedColumnId: "c:1" }));
   });
 
+  it("filters integer histogram edges in the header and explains unsafe bounds", () => {
+    const onApplyProfileFilter = vi.fn();
+    const integerMetadata: SessionMetadata = {
+      ...metadata,
+      schema: metadata.schema.map((column) =>
+        column.id === "c:1" ? { ...column, type: "integer", rawType: "Int64" } : column
+      )
+    };
+    const summary: ColumnSummary = {
+      columnId: "c:1",
+      column: "sales",
+      type: "integer",
+      rawType: "Int64",
+      totalCount: 2,
+      nullCount: 0,
+      nanCount: 0,
+      distinctCount: 2,
+      topValues: [],
+      visualization: {
+        kind: "numeric",
+        bins: [
+          { min: -2.8, max: -0.2, count: 1 },
+          { min: -0.2, max: 2.8, count: 1 }
+        ]
+      }
+    };
+    const props = {
+      metadata: integerMetadata,
+      page,
+      summaries: [summary],
+      pageSize: 2,
+      defaultColumnWidth: 190,
+      insightsOnOpen: true,
+      onApplyProfileFilter,
+      onPage: () => undefined,
+      onSortColumn: () => undefined,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined
+    };
+    const { rerender } = render(<DataGrid {...props} />);
+    const histogram = screen.getByRole("button", { name: /lower bound included, upper bound excluded/u });
+    fireEvent.click(histogram);
+    expect(onApplyProfileFilter).toHaveBeenLastCalledWith({
+      column: "sales",
+      type: "integer",
+      logic: "and",
+      predicates: [
+        { kind: "predicate", operator: "gte", value: -2 },
+        { kind: "predicate", operator: "lt", value: 0 }
+      ]
+    });
+    fireEvent.keyDown(histogram, { key: "End" });
+    fireEvent.keyDown(histogram, { key: "Enter" });
+    expect(onApplyProfileFilter.mock.lastCall?.[0].predicates).toEqual([
+      { kind: "predicate", operator: "gte", value: 0 },
+      { kind: "predicate", operator: "lte", value: 2 }
+    ]);
+
+    onApplyProfileFilter.mockClear();
+    rerender(
+      <DataGrid
+        {...props}
+        summaries={[
+          {
+            ...summary,
+            visualization: { kind: "numeric", bins: [{ min: 0, max: 2 ** 53, count: 2 }] }
+          }
+        ]}
+      />
+    );
+    const unavailable = screen.getByRole("button", { name: /both bounds included/u });
+    expect(unavailable).toHaveAttribute("aria-disabled", "true");
+    expect(unavailable).toHaveAttribute("title", expect.stringContaining("rounded large-integer"));
+    fireEvent.click(unavailable);
+    fireEvent.keyDown(unavailable, { key: "Enter" });
+    expect(onApplyProfileFilter).not.toHaveBeenCalled();
+  });
+
   it("filters Boolean values from the compact header with native buttons", () => {
     const booleanMetadata: SessionMetadata = {
       ...metadata,
@@ -4205,44 +4283,64 @@ describe("App file import options", () => {
     expect(action).not.toHaveAttribute("aria-busy");
   });
 
-  it("offers a direct confirmed dependency install only for a structured missing-dependency error", async () => {
-    const { unmount } = render(<App />);
-    dispatchAppMessage({
-      kind: "error",
-      code: "missing_dependencies",
-      message: "Polars is missing fastexcel>=0.9.",
-      recoverable: true
-    });
+  it.each(["initial", "retained"])(
+    "offers confirmed dependency installation for an %s session error",
+    async (state) => {
+      const { unmount } = render(<App />);
+      if (state === "retained") {
+        dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+        await screen.findByRole("cell", { name: "Milan" });
+        dispatchAppMessage({ kind: "importOptionsState", busy: true });
+      }
+      dispatchAppMessage({
+        kind: "error",
+        code: "missing_dependencies",
+        message: "Polars is missing fastexcel>=0.9.",
+        recoverable: true
+      });
 
-    const action = await screen.findByRole("button", { name: "Install required dependency" });
-    expect(action).toBeEnabled();
-    expect(action).not.toHaveAttribute("aria-busy");
-    dispatchAppMessage({ kind: "importOptionsState", busy: true });
-    expect(action).toBeDisabled();
-    dispatchAppMessage({ kind: "importOptionsState", busy: false });
-    expect(action).toBeEnabled();
-    webviewPostMessage.mockClear();
-    fireEvent.click(action);
+      dispatchAppMessage({ kind: "importOptionsState", busy: false });
+      const action = await screen.findByRole("button", { name: "Install required packages" });
+      expect(action).toBeEnabled();
+      expect(action).not.toHaveAttribute("aria-busy");
+      dispatchAppMessage({ kind: "importOptionsState", busy: true });
+      expect(action).toBeDisabled();
+      dispatchAppMessage({ kind: "importOptionsState", busy: false });
+      expect(action).toBeEnabled();
+      webviewPostMessage.mockClear();
+      fireEvent.click(action);
 
-    expect(webviewPostMessage).toHaveBeenCalledWith({ kind: "installRuntimeDependencies" });
-    expect(action).toBeDisabled();
-    expect(action).toHaveAttribute("aria-busy", "true");
-    expect(screen.getByRole("status")).toHaveTextContent("Waiting for dependency confirmation");
+      expect(webviewPostMessage).toHaveBeenCalledWith({ kind: "installRuntimeDependencies" });
+      expect(action).toBeDisabled();
+      expect(action).toHaveAttribute("aria-busy", "true");
+      expect(screen.getByText("Waiting for dependency confirmation…")).toHaveAttribute("role", "status");
 
-    dispatchAppMessage({ kind: "runtimeDependencyInstallState", busy: false });
-    expect(action).toBeEnabled();
-    expect(action).not.toHaveAttribute("aria-busy");
+      dispatchAppMessage({ kind: "runtimeDependencyInstallState", busy: false });
+      expect(action).toBeEnabled();
+      expect(action).not.toHaveAttribute("aria-busy");
+      dispatchAppMessage({
+        kind: "error",
+        code: "dependency_install_failed",
+        message: "Installation could not finish.",
+        recoverable: true
+      });
+      expect(screen.getByRole("button", { name: "Install required packages" })).toBeEnabled();
+      if (state === "retained") {
+        expect(screen.getByRole("cell", { name: "Milan" })).toBeVisible();
+        expect(screen.getByRole("grid")).toHaveAttribute("aria-busy", "false");
+      }
 
-    unmount();
-    render(<App />);
-    dispatchAppMessage({
-      kind: "error",
-      code: "invalid_import_options",
-      message: "Choose a valid delimiter.",
-      recoverable: true
-    });
-    expect(screen.queryByRole("button", { name: "Install required dependency" })).toBeNull();
-  });
+      unmount();
+      render(<App />);
+      dispatchAppMessage({
+        kind: "error",
+        code: "invalid_import_options",
+        message: "Choose a valid delimiter.",
+        recoverable: true
+      });
+      expect(screen.queryByRole("button", { name: "Install required packages" })).toBeNull();
+    }
+  );
 
   it("commits and blurs a pointer-triggered import action before dispatch, then restores it after completion", async () => {
     const frames: FrameRequestCallback[] = [];

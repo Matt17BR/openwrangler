@@ -8,6 +8,7 @@ import type {
   SessionMetadata
 } from "../../shared/protocol";
 import {
+  numericHistogramFilterUnavailableReason,
   valueCountSelectionValue,
   valueSelectionUnavailableReason,
   viewNumericBinFilter,
@@ -346,9 +347,15 @@ function MiniChart({
         compact
         valueMode={valueMode}
         percentDenominator={denominator}
+        selectionDisabledReason={
+          onApplyFilter ? numericHistogramFilterUnavailableReason(column, visualization.bins) : undefined
+        }
         onSelectBin={
           onApplyFilter
-            ? (bin, index) => onApplyFilter(viewNumericBinFilter(column, bin, index === visualization.bins.length - 1))
+            ? (bin, index) => {
+                const filter = viewNumericBinFilter(column, bin, index === visualization.bins.length - 1);
+                if (filter) onApplyFilter(filter);
+              }
             : undefined
         }
       />

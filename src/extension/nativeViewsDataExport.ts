@@ -67,7 +67,7 @@ async function exportSessionData(
     return false;
   const selected = await vscode.window.showQuickPick(choices, {
     title: "Export Cleaned Data",
-    placeHolder: "Choose a file format"
+    placeHolder: "Choose a format for all applied steps. Viewing filters and sorts are excluded."
   });
   if (!selected) return false;
   const confirmedBeforePolicy = pinnedExportSnapshot(coordinator, pin, backend);

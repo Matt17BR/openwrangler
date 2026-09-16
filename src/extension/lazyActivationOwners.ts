@@ -80,6 +80,7 @@ const NATIVE_VIEW_COMMANDS = [
   "openWrangler.openSourceFile"
 ] as const;
 const NATIVE_TREE_VIEW_IDS = [
+  "openWrangler.dataSources",
   "openWrangler.operations",
   "openWrangler.summary",
   "openWrangler.filters",

@@ -77,6 +77,7 @@ export function useProgressiveProfilingLifecycle({
   const pendingSummaryByColumnId = useRef(new Map<string, string>());
   const summaryOwnersByColumnId = useRef(new Map<string, Set<SummaryRequestOwner>>());
   const pendingStatsRequest = useRef<string | undefined>(undefined);
+  const [datasetStatsPending, setDatasetStatsPending] = useState(false);
   const latestValuesByColumn = useRef(new Map<string, string>());
   const retryTimers = useRef(new Map<number, PendingBackgroundRequest>());
   const mutationProfileRestartTimer = useRef<number | undefined>(undefined);
@@ -128,6 +129,7 @@ export function useProgressiveProfilingLifecycle({
     }
     if (pending.kind === "stats" && pendingStatsRequest.current === viewRequestId) {
       pendingStatsRequest.current = undefined;
+      setDatasetStatsPending(false);
     }
     if (pending.kind === "values" && latestValuesByColumn.current.get(pending.column) === viewRequestId) {
       latestValuesByColumn.current.delete(pending.column);
@@ -364,6 +366,7 @@ export function useProgressiveProfilingLifecycle({
       }
       const viewRequestId = nextViewRequestId();
       pendingStatsRequest.current = viewRequestId;
+      setDatasetStatsPending(true);
       pendingBackgroundRequests.current.set(viewRequestId, {
         kind: "stats",
         viewContextId: current.view.viewContextId,
@@ -631,10 +634,12 @@ export function useProgressiveProfilingLifecycle({
 
   return {
     backgroundDiagnostics,
+    datasetStatsPending,
     cancelPendingProfiling,
     captureProfileState,
     columnValues,
     releaseDrawerProfiling,
+    requestStatsForConfirmedView,
     requestValues,
     resetViewProfiling,
     restartProfilingAfterMutation,

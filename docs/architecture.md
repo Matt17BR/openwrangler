@@ -31,7 +31,10 @@ Native tree views, Code Preview and file custom editors keep their original lazy
 Loading an owner supplies its delegate without unregistering a view or disposing its document while VS Code resolves it.
 Walkthrough, Settings and Report Issue commands retain their lightweight owner when native views load.
 Lazy variable providers show a pending snapshot only until their owner loads. A loaded owner's absent notebook
-snapshot remains absent, allowing the Operations view to offer the idle R action.
+snapshot remains absent, allowing Data sources to offer the idle R action. Data sources owns file-opening and cached
+Python/R discovery rows and their refresh subscriptions; Operations shows only the active dataframe's cleaning catalog.
+An unread R terminal remains discoverable beside a notebook. The R snapshot states whether its idle action starts or
+refreshes a terminal; its display name does not choose the action.
 Editor and Code Preview resolution retain VS Code's exact cancellation token through loading and file preflight.
 Canceled resolution leaves existing view ownership intact and does not start panel setup or publish late file errors.
 Activation installs its lightweight gates before the first yield. Elapsed setup time does not invalidate successful
@@ -45,6 +48,8 @@ changing the reveal setting, or deactivating the panel does not settle an in-fli
 
 The extension host is the authority at every boundary. A webview cannot select a different source, session, kernel,
 terminal, or export destination by supplying an identifier the host did not issue and retain.
+Open Source File captures the currently active session. With no active session or reopenable source, it reports
+immediately.
 
 ## Sources, sessions, and data flow
 
@@ -181,7 +186,10 @@ replace imported modules or restart a user-owned kernel to change its protocol.
 
 Dataset statistics require exact missing-cell, missing-row and per-column missing counts. The duplicate-row count
 is either a nonnegative integer or explicit null when unavailable; null cannot carry a duplicate sample size. Both
-the workbench and native Dataset view display that state as unavailable. Native R retains numeric duplicate counts.
+the workbench and native Summary view display that state as unavailable. Native R retains numeric duplicate counts.
+The Dataset drawer owns requests for these statistics. Selecting an uncalculated statistic in native Summary opens
+that drawer for the displayed session and revision; stale actions cannot target another dataframe. The same request
+owner drives its pending indicator and explicit retry. Idle and failed requests do not keep a profiling indicator.
 
 Python request enums, including nested cleaning parameters, require string values before membership checks. Present
 `backend`, `mode` and `cloneFrom` options must satisfy their existing schemas; explicit null is not an omitted option.
@@ -196,6 +204,12 @@ This does not retry the operation, restart the runtime or cover native process c
 If an admitted exception's message formatting also raises an admitted exception, the same error mapper returns a
 fixed bounded message with its original classification and session fields. It omits traceback detail rather than
 calling the failed formatter again. This preserves request settlement without limiting arbitrary formatter execution.
+
+Histogram clicks use the shared view-filter builder. Integer bins translate their lower edge with ceiling, their
+exclusive upper edge with ceiling, and the final inclusive edge with floor. Strict integer operand validation stays
+unchanged. If any converted boundary is outside the safe integer range, selection is unavailable for that histogram:
+its floating-point display bins cannot guarantee exact integer membership. Hover and keyboard descriptions remain
+available; explicit column filters and exact value selections keep their existing limits.
 
 Runtime work has three relevant classes:
 
@@ -264,6 +278,10 @@ previous view remains authoritative until page construction, metadata, source va
 request scope succeed. Public page responses are checked with their real correlation fields before committing the
 candidate view. This preserves the separate page and complete-frame size limits. Failure preserves the previous
 query, epoch and frame identities; a changed or lost source still invalidates cached data.
+For the original frame of an ordinary Polars or DuckDB file, a page request changing only sorts reuses the known
+filtered count while still applying and validating the new query. Predicate changes and different displayed frames
+recount. Notebook sources and DuckDB database tables retain their existing count behavior, including reevaluation
+of computed database columns.
 Python response sizing and encoding share a strict-JSON writer. It processes long strings in chunks of at most
 16,384 characters, writing unescaped ASCII chunks directly and validating escaping and UTF-8 for other chunks.
 It stops when a prefix exceeds the byte bound, without inspecting later chunks for other invalid data.
@@ -621,7 +639,6 @@ Min-max Scale computes exact integer and decimal offsets before converting them 
 Float32 and float64 ranges that overflow on subtraction use wider or scaled operands; ordinary ranges retain their
 precision, including subnormal values. Live execution and standalone generated code use equivalent arithmetic in
 the owning engine. Pandas and Polars each share one helper between live execution and generated programs.
-These helpers and Polars Round avoid module-level type imports that would replace a notebook binding named `Any`.
 
 Python linear interpolation preserves equal finite nonzero anchors after validating the coordinate weight.
 At a binary64 weight of exactly one half, two zero or subnormal double anchors use their exact sum before the
@@ -697,6 +714,10 @@ source. Typed null, NaN, decimal, datetime, and wide-integer behavior is normali
 Pandas literal Split limits tokenization to the selected field or requested output count in live and generated code.
 It preserves the selected index, empty fields and null results, discarding one possible remainder.
 The remainder can still contain a large tail; input conversion, copied source columns and outputs retain their existing costs.
+
+Native NumPy int64 profile sums reuse the existing conservative overflow bound before summing without Python-value
+boxing; unproven integer cases retain exact widening. Native StringDtype missing counts use its declared null or NaN
+sentinel and native missing mask. Object columns and Series subclasses retain their existing classification.
 
 Integer profiles retain exact extrema and sums when floating-point approximations overflow. Each approximate statistic
 is attempted independently; unavailable statistics and histograms are omitted. Native value counting remains first.
@@ -875,8 +896,9 @@ Missing-power identities, noninteger Sparse fills and Boolean-only operations re
 Explicit floating-point and Decimal arithmetic, division, negative or fractional powers, modulo and By Example
 keep their existing paths. Live Formula and generated code share the same validation.
 
-Arrow-backed Formula preserves successful native results and types. Integer repairs accept 8-64-bit native NumPy,
-built-in Pandas nullable or Arrow integer columns; Sparse and arbitrary extension types are excluded.
+Arrow-backed Formula preserves the values and types of successful native operations and earlier repairs, including
+empty and all-null results. Integer repairs accept 8-64-bit native NumPy, built-in Pandas nullable or Arrow integer
+columns; Sparse and arbitrary extension types are excluded.
 Live execution and generated code use one repair implementation, called only after native arithmetic fails.
 The generated repair stays local to the Formula result helper so it adds no notebook-global binding.
 
@@ -887,15 +909,14 @@ UInt64 result. The additional path requires nonnegative values throughout both s
 paired with the other operand's null; it does not take magnitudes or infer per-row signs. Preparation failures,
 negative exponents and remaining overflows retain the original refusal. UInt64 exponent columns retain their
 existing repair path. Only selected operands and results gain temporary storage; the UInt64 attempt adds two native
-casts and one checked power, with no extrema scan. Successful native and Int64 results, including empty and all-null
-results, keep their types.
+casts and one checked power, with no extrema scan.
 
 After native power fails, a signed Arrow integer column and an exact positive scalar exponent below 2^64 can use
 checked UInt64 power. Even exponents take checked magnitudes after widening to Int64; odd exponents require
 nonnegative values through a safe unsigned cast. These repaired results must fit UInt64. If that attempt also fails
 for an odd exponent from 2^63+1 through 2^64-1, one native min/max scan may admit a column containing only -1, 0, 1
 and null, with at least one -1. Those values are unchanged by the power and return as Int64. Other failed domains
-retain the original refusal. Native successes and existing nonnegative, empty and all-null repairs retain their types.
+retain the original refusal.
 The added power path scans only the selected column and uses no per-row Python arithmetic.
 Other exponent and operand families keep their existing paths.
 
@@ -917,28 +938,26 @@ After existing native and eligible repairs fail, signed integer addition may use
 intermediate; fixed-width integer multiplication uses Decimal256. Both require at least one Arrow column and return
 Int64 if the complete result fits, or UInt64 otherwise. The added addition path accepts signed 8-64-bit columns and
 an eligible signed companion column or exact Int64-range literal. Multiplication retains its signed/unsigned operand
-rules. Successful native types and earlier UInt64 repairs stay unchanged. True overflow and columns needing both
-negative results and values above Int64 maximum retain the original refusal. Only selected operands gain temporary
-storage. Boolean, Sparse, arbitrary extension, floating and Decimal operands remain on their existing paths.
+rules. True overflow and columns needing both negative results and values above Int64 maximum retain the original
+refusal. Only selected operands gain temporary storage. Boolean, Sparse, arbitrary extension, floating and Decimal
+operands remain on their existing paths.
 
 Selected Decimal128 operands may widen to Decimal256 for add, subtract, multiply and divide, retaining each operand's
 precision and scale. Native arithmetic determines the result type.
 
 When native multiplication refuses two Decimal128 `(38, 38)` columns, Formula returns exact Decimal256 `(76, 76)`
-products. Safe widening precedes public Arrow views of the integer coefficients. Native grouped multiplication combines
-exactly two coefficients per source row; their product fits 76 digits. A final view restores scale 76, and positional
-sorting restores row order. Either null operand produces null; empty inputs retain the output type. This path adds
-temporary Decimal256 buffers, positional row identifiers and two aggregate entries per row. It preserves source values
-and indexes, and does not extend other Decimal precision, scale or input-width combinations.
+products. Either null operand produces null; empty inputs retain the output type. Source values, indexes and row order
+are preserved. This path adds temporary Decimal256 buffers, positional row identifiers and two aggregate entries per
+row. It does not extend other Decimal precision, scale or input-width combinations. The
+[operation-edge tests](../python/tests/test_operation_edges.py) check live and generated results.
 
 After a Decimal256 capacity failure, adding or subtracting the exact integer literal 0, or multiplying or dividing
 by 1, preserves the column's values. Multiplication and division by -1 use native checked negation. These repairs also
 accept native TypeError refusals for negative-scale
 Decimal256 operands whose full declared capacity cannot fit the 76-digit scale-zero intermediate described below.
 All retain the declared precision, scale and nulls. The identity result wraps the unchanged immutable Arrow storage
-in an independent Pandas array, so assigning to the result cannot change the source. Successful native and existing
-rescale results retain their types. Live and generated Formula apply the same policy; By Example
-remains unchanged.
+in an independent Pandas array, so assigning to the result cannot change the source. Live and generated Formula apply
+the same policy; By Example remains unchanged.
 
 After native add, subtract, multiply or divide fails on a selected negative-scale Arrow Decimal operand `(p, s)`,
 Formula may rescale that operand exactly to Decimal256 `(p-s, 0)` when its full declared capacity fits 76 digits.
@@ -1239,10 +1258,12 @@ Read-only recovery of a native WAL is supported without changing its bytes. Meta
 or protection against every same-size in-place change. Cleaning, code generation, export and cloning are unavailable.
 
 DuckDB viewing counts, profiles, value-choice search, filter predicates, row identities and timestamp display
-resolve their own calculations from the built-in catalog. Shared missing-value and interpolation finite checks use
-the same native functions in live and generated code. Expressions in the caller's source relation retain their
-declared function bindings; Open Wrangler does not change the caller's search path, macros or connection to compute
-its statistics.
+resolve their own calculations from the built-in catalog. Lowercase, Uppercase, Capitalize, Strip, Split, Find and
+Replace, and Split Text into Columns also bind their native text functions, concatenation and list extraction in
+live and generated code. Empty literal replacement uses the native list aggregate directly, avoiding caller-bound
+functions inside DuckDB's array-to-string macro. Shared missing-value and interpolation finite checks use the same
+native functions in live and generated code. Expressions in the caller's source relation retain their declared
+function bindings; Open Wrangler does not change the caller's search path, macros or connection.
 
 Page queries limit selected top-level `VARCHAR` values to 65,537 Unicode code points before Python fetch, in the
 outer projection after `LIMIT`/`OFFSET`. The same projection bounds top-level `BLOB` values to 49,153 native bytes
@@ -1577,6 +1598,10 @@ One-hot encoding derives indicators only from present categories with nonempty l
 duration columns contribute no categories; if no selected column contributes an indicator, the operation refuses
 before publishing a result. Other selected columns can still supply valid categories.
 One-hot and Multi-label preserve row counts and row-name mode when replacing every original `data.table` column.
+Sort Rows, Filter Rows, Drop Missing Rows and Drop Duplicates perform native row subsetting even when all rows remain.
+Nonempty base results have explicit row names; tibble and data.table results have positional names. Empty derived
+captures retain the input mode. The host predicts this from flavor and the validated full result count, independent
+of viewing filters. Generated zero-column reductions perform the same subset as live execution.
 Generated One-hot code normalizes text before choosing categories and comparing indicator values, matching live
 execution across text encodings. It validates the complete input before formatting distinct category labels.
 Multi-label encoding retains its per-row text preparation.
@@ -1635,7 +1660,10 @@ An existing official R-terminal variable stays pinned to the exact terminal and 
 sends no R command. During startup, it waits within the existing readiness deadline for the selected terminal's
 metadata, even if a previous terminal left a record behind. It never reads foreign workspace data. An explicit Open
 or Refresh action cancels pending discovery, revalidates the terminal and process, then uses terminal
-`sendText` to install or drive Open Wrangler's private dispatcher. Open Wrangler never writes vscode-R's files or
+`sendText` to install or drive Open Wrangler's private dispatcher. When `r.bracketedPaste` is enabled, every dispatch,
+including cleanup, uses bracketed-paste framing so terminals such as radian parse the complete expression together.
+The setting remains off by default, matching vscode-R. A timeout or cancellation stops waiting for the response;
+it does not establish that work in the user's R process has stopped. Open Wrangler never writes vscode-R's files or
 silently moves the session to another terminal. On macOS and Linux, trusted `.R`, `.Rmd`, and `.qmd` sources may use
 an Open Wrangler-owned `Rscript` process. Windows does not claim this direct document-process path. Literate documents
 resolve the owning executor before choosing R or Python; the fence label alone is not authority.
@@ -1746,6 +1774,10 @@ of a later host rejection. Step-info requests contain only metadata and do not r
 Ordinary viewing changes and returning to Current view do not release it. Replacement and mutation rollback can
 temporarily retain both pairs. DuckDB plans retain their immutable Custom checkpoints; later inspection windows read
 those same rows without re-executing the Custom result.
+
+Native step-inspection and return-to-current-view rows carry their originating session and revision. Their commands
+refuse stale or malformed handles before changing inspection. Public `selectStep` calls with a bare step ID still
+address the active session; omitting the argument returns that session to its current view.
 
 Saved notebook capture rejects source columns in the private row-identity namespace before constructing its schema
 and page, using the same admission check as live sessions.
@@ -1904,6 +1936,12 @@ If dependencies are already available, the panel retries its normal open without
 changing its open attempt invalidates pre-write authorization and reopening; an already authorized install retains
 its existing process settlement and environment-validation ownership. The global install command still uses the most
 recent missing target.
+Missing-dependency errors identify the captured Python executable, version, selection source and requested engine.
+A failed engine change keeps its confirmed grid and offers the same install action in the error banner. The host
+retains the requested engine with the source, session, revision and open-attempt generation, then rechecks that tuple
+before retrying the existing file reconfiguration. A later plan revision can allow an already confirmed installation
+to finish, but cannot receive the obsolete engine retry. Installing into a shared environment can stop its runtimes;
+the existing confirmed-state recovery handles their next requests.
 Custom code is trusted arbitrary code in the selected environment, not a sandbox.
 
 Excel sheet discovery, DuckDB table discovery and trusted Pickle conversion hold a read lease on their captured Python

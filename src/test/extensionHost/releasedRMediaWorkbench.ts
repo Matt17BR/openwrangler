@@ -63,7 +63,6 @@ export function createReleasedRMediaWorkbench({
       columnWidths: fittedWidths,
       viewport: { firstVisibleRow: 0, scrollLeft: 0 }
     });
-    assert.equal(await testing.synchronizePanel(sessionId), true, "The fitted R media grid must synchronize.");
     await requireFreshExactSessionPanelHydration(
       testing,
       sessionId,

@@ -385,12 +385,33 @@ export const viewCellSelectionFilter = (
  * Build a half-open histogram filter so adjacent bins never claim the same
  * boundary. Only the final bin includes its upper edge.
  */
-export const viewNumericBinFilter = (column: ColumnSchema, bin: NumericBin, finalBin: boolean): ColumnFilter => ({
-  column: column.name,
-  type: column.type,
-  logic: "and",
-  predicates: [
-    { kind: "predicate", operator: "gte", value: bin.min },
-    { kind: "predicate", operator: finalBin ? "lte" : "lt", value: bin.max }
-  ]
-});
+export const viewNumericBinFilter = (
+  column: ColumnSchema,
+  bin: NumericBin,
+  finalBin: boolean
+): ColumnFilter | undefined => {
+  // Adding zero canonicalizes negative zero from rounded negative edges.
+  const minimum = column.type === "integer" ? Math.ceil(bin.min) + 0 : bin.min;
+  const maximum = column.type === "integer" ? (finalBin ? Math.floor(bin.max) : Math.ceil(bin.max)) + 0 : bin.max;
+  if (column.type === "integer" && (!Number.isSafeInteger(minimum) || !Number.isSafeInteger(maximum))) {
+    return undefined;
+  }
+  return {
+    column: column.name,
+    type: column.type,
+    logic: "and",
+    predicates: [
+      { kind: "predicate", operator: "gte", value: minimum },
+      { kind: "predicate", operator: finalBin ? "lte" : "lt", value: maximum }
+    ]
+  };
+};
+
+export const numericHistogramFilterUnavailableReason = (
+  column: ColumnSchema,
+  bins: NumericBin[]
+): string | undefined =>
+  column.type === "integer" &&
+  bins.some((bin, index) => viewNumericBinFilter(column, bin, index === bins.length - 1) === undefined)
+    ? "Filtering is unavailable for rounded large-integer histogram bounds. Use column filters or exact values."
+    : undefined;

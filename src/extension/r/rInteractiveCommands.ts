@@ -255,6 +255,7 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
     if (!isOfficialRTerminal(terminal)) {
       this.replaceSnapshot({
         state: "idle",
+        action: "start",
         terminalLabel: "R session",
         message: "Select the R terminal that owns the dataframe first.",
         variables: []
@@ -843,7 +844,7 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
     this.generation += 1;
     this.releaseWorkspaceWatcher();
     const transport = this.releaseOwnedTransport();
-    this.replaceSnapshot({ state: "idle", terminalLabel: "R session", message, variables: [] });
+    this.replaceSnapshot({ state: "idle", action: "start", terminalLabel: "R session", message, variables: [] });
     if (transport) void this.disposeManagedTransport(transport).then((error) => error && showCleanupError(error));
   }
 

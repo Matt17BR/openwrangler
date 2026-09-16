@@ -24,21 +24,59 @@
   white-space: nowrap;
 }
 
+.columnInsight:not(.compact) > .exactSummaryStats {
+  align-content: start;
+  min-block-size: calc(2lh + 2px);
+}
+
+.narrowHeaderStats .columnInsight:not(.compact) > .exactSummaryStats {
+  grid-template-columns: minmax(0, 1fr);
+  min-block-size: calc(4lh + 6px);
+}
+
 .exactNumericExtremum {
   font-variant-numeric: tabular-nums;
 }
 
 .summaryDistribution {
+  align-content: center;
   border-top: 1px solid var(--vscode-panel-border);
+  box-sizing: border-box;
   display: grid;
   gap: 2px;
+  min-block-size: calc(var(--header-distribution-size, 36px) + var(--header-sampled-space, 0px));
   min-width: 0;
   overflow: clip;
   padding-top: 4px;
 }
 
+thead:has(.numericHistogram) {
+  --header-distribution-size: 56px;
+}
+
+thead:has(.categoryMiniChart > :nth-child(2)) {
+  --header-distribution-size: 64px;
+}
+
+thead:has(.categoryMiniChart > :nth-child(3)) {
+  --header-distribution-size: 97px;
+}
+
+thead:has(.categoryMiniChart > :nth-child(4)) {
+  --header-distribution-size: 125px;
+}
+
+thead:has(.sampledLabel) {
+  --header-sampled-space: 14px;
+}
+
 .columnInsight.compact > .summaryDistribution {
   display: none;
+}
+
+.summaryDistribution > .categoryMiniChart,
+.summaryDistribution > .datetimeMiniChart {
+  margin-top: 0;
 }
 
 .sampledLabel {
@@ -240,7 +278,7 @@ button.categoryMiniRow.interactive:focus-visible {
 }
 
 @container (max-width: 150px) {
-  .exactSummaryStats {
+  .columnInsight.compact > .exactSummaryStats {
     grid-template-columns: minmax(0, 1fr);
   }
 
