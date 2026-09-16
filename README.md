@@ -36,6 +36,9 @@ For a downloaded VSIX, use **Views and More Actions > Install from VSIX...** in 
 See the [latest release notes](https://github.com/Matt17BR/openwrangler/releases/latest) or
 [full changelog](https://github.com/Matt17BR/openwrangler/blob/main/CHANGELOG.md) for changes.
 
+Features marked **2.6** require version 2.6.0 or newer, or a current
+[source build](https://github.com/Matt17BR/openwrangler/blob/main/CONTRIBUTING.md#build-and-install-from-source).
+
 ## What you can do
 
 - **Clean rows:** remove missing rows, remove duplicates, or flag repeated records with **Mark duplicates**.
@@ -54,9 +57,8 @@ For work outside the catalog, a Custom Code step can use your dataframe engine d
 fill methods depend on the engine and column type; see the
 [operation support guide](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#cleaning-operations).
 
-In [source builds](https://github.com/Matt17BR/openwrangler/blob/main/CONTRIBUTING.md#build-and-install-from-source),
-opening a specific operation gives its settings the full dialog width. **Choose operation** shows or hides the catalog
-without clearing unfinished fields. **Add step** starts with the catalog open.
+In **2.6**, opening a specific operation gives its settings the full dialog width. **Choose operation** shows or hides
+the catalog without clearing unfinished fields. **Add step** starts with the catalog open.
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/main/docs/images/readme/gallery/operation-catalog.png"><img alt="The searchable cleaning-operation picker in Open Wrangler" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/gallery/operation-catalog.png" width="960"></a>
 
@@ -91,11 +93,11 @@ Choose an applied step in **Cleaning Steps** to inspect its changes, then choose
 or delete earlier steps, or use **Undo** and **Redo**. Changing an earlier step replays the later steps so the result
 and generated code follow the updated plan.
 
-In [source builds](https://github.com/Matt17BR/openwrangler/blob/main/CONTRIBUTING.md#build-and-install-from-source),
-use **Open Wrangler: Open Another File with This Plan** to repeat confirmed steps on a file matching the plan's original
-column names and types, even when their order changes. It opens a separate Editing session using the same engine and
-import options. This supports Pandas, Polars, and DuckDB file plans without Custom Code or an unfinished draft. Choose a file that is not already
-open in Open Wrangler and has no saved work for those import options. Both source files remain unchanged.
+In **2.6**, use **Open Wrangler: Open Another File with This Plan** to repeat confirmed steps on a file matching the
+plan's original column names and types, even when their order changes. It opens a separate Editing session using the
+same engine and import options. This supports Pandas, Polars, and DuckDB file plans without Custom Code or an
+unfinished draft. Choose a file that is not already open in Open Wrangler and has no saved work for those import
+options. Both source files remain unchanged.
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/main/docs/images/readme/gallery/applied-step-inspection-detail.png"><img alt="Inspecting an applied Formula column step with its added column highlighted and history controls visible" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/gallery/applied-step-inspection-detail.png" width="960"></a>
 
@@ -117,9 +119,10 @@ in the rest of your analysis.
 Generated Python defines a cleaning function; it does not load or export data automatically. To reuse it, load the
 next input with the same engine and import settings, preserve the expected column names and order, then call the
 generated function, for example `result = clean_data(next_frame)`.
-In source builds, DuckDB plans containing Custom Code require the input's exact connection:
+In **2.6**, DuckDB plans containing Custom Code require the input's exact connection:
 `result = clean_data(next_frame, connection=con)`. Return Custom results derived from `df`, rather than a separate
-connection. See the [capture requirements](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#sessions-and-generated-code).
+connection. Regenerate exported scripts to receive the new capture behavior. See the
+[capture requirements](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#sessions-and-generated-code).
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/main/docs/images/readme/gallery/notebook-code-insertion.png"><img alt="Generated Pandas cleaning code inserted into an orders-analysis notebook" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/gallery/notebook-code-insertion.png" width="960"></a>
 
@@ -127,9 +130,9 @@ _Bring the cleaning function back into the notebook that opened the dataframe._
 
 DuckDB notebook relations and local PySpark DataFrames support viewing, filters, sorts and profiles, with the limits
 in the table below. Their notebook sessions do not offer cleaning or export.
-In [source builds](https://github.com/Matt17BR/openwrangler/blob/main/CONTRIBUTING.md#build-and-install-from-source),
-Polars live notebook LazyFrames and lazy Custom Code results retain their complete native output to keep row identities
-stable across pages. These results must fit memory, including old and new results retained during a cleaning preview.
+In **2.6**, Polars live notebook LazyFrames and lazy Custom Code results retain their complete native output to keep
+row identities stable across pages. These results must fit memory, including old and new results retained during a
+cleaning preview.
 DuckDB notebook opening also captures the full result and asks you to select its originating connection. Keep that
 connection open while viewing. File Custom results use private native snapshots. These captures increase memory,
 execution time and temporary storage; the [capture requirements](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#sessions-and-generated-code)
@@ -154,20 +157,19 @@ describes supported frame classes, operations and export limits.
 
 ## Supported dataframes
 
-In [source builds](https://github.com/Matt17BR/openwrangler/blob/main/CONTRIBUTING.md#build-and-install-from-source),
-use **Open Wrangler: Open DuckDB Table** to choose a local database and explore its base tables with the grid,
+In **2.6**, use **Open Wrangler: Open DuckDB Table** to choose a local database and explore its base tables with the grid,
 filters and profiles. Multiple tables can stay open. Close all its viewers before writing to the database.
 Views, SQL editing, cleaning and exports are unavailable for this entry point. Computed columns can change between queries.
 
-| Dataframe or source                                  | View    | Cleaning and generated code         | Data export                |
-| ---------------------------------------------------- | ------- | ----------------------------------- | -------------------------- |
-| Pandas files and live dataframes                     | Yes     | Pandas Python                       | CSV / Parquet              |
-| Polars files and live dataframes                     | Yes     | Polars Python                       | CSV / Parquet              |
-| DuckDB CSV / TSV / Parquet / JSONL (experimental)    | Yes     | Supported operations, DuckDB Python | CSV / Parquet              |
-| DuckDB database tables (experimental, source builds) | Yes     | Unavailable                         | Unavailable                |
-| DuckDB notebook relations                            | Yes     | Unavailable                         | Unavailable                |
-| Local PySpark Classic / Connect notebooks            | Bounded | Unavailable                         | Unavailable                |
-| R base data.frame, tibble, data.table                | Yes     | Supported operations, native R      | CSV / Parquet, with limits |
+| Dataframe or source                               | View    | Cleaning and generated code         | Data export                |
+| ------------------------------------------------- | ------- | ----------------------------------- | -------------------------- |
+| Pandas files and live dataframes                  | Yes     | Pandas Python                       | CSV / Parquet              |
+| Polars files and live dataframes                  | Yes     | Polars Python                       | CSV / Parquet              |
+| DuckDB CSV / TSV / Parquet / JSONL (experimental) | Yes     | Supported operations, DuckDB Python | CSV / Parquet              |
+| DuckDB database tables (experimental, **2.6**)    | Yes     | Unavailable                         | Unavailable                |
+| DuckDB notebook relations                         | Yes     | Unavailable                         | Unavailable                |
+| Local PySpark Classic / Connect notebooks         | Bounded | Unavailable                         | Unavailable                |
+| R base data.frame, tibble, data.table             | Yes     | Supported operations, native R      | CSV / Parquet, with limits |
 
 PySpark uses an existing local batch session. Open Wrangler does not install or configure Spark; streaming dataframes
 and remote or authenticated clusters are unsupported.
