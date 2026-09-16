@@ -19,6 +19,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 ### Fixed
 
 - R header profiles honor the opening preference. Sampled charts identify the sample count used and full non-missing population.
+- Large R numeric histograms count every finite value. Categorical profiles use exact counts within bounded memory; larger sets retain labeled sampling.
 - Compact categorical headers include all omitted categories in Other.
 - R terminal commands honor bracketed paste, preventing radian from interpreting private command fragments as global assignments.
 - An open notebook no longer hides the action to discover dataframes in an existing R terminal.
@@ -28,6 +29,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 - Pandas profiles avoid per-value Python loops for bounded integer sums and native string missing counts.
 - Integer histogram bins create valid whole-number filters; rounded large-integer bins explain why filtering is unavailable.
 - Header profiles align statistics and chart groups across mixed column types; Add step keeps its icon beside its label.
+- Large Boolean profile counts wrap inside narrow columns.
 - Dependency errors identify the selected Python environment, explain unmet DuckDB supporting-package requirements, and offer installation followed by retry of a failed engine change.
 - Open Source File reports immediately when no dataframe is active, avoiding unexpected navigation when another dataframe opens.
 - Cleaning plan actions wrap in very narrow editor panes so Redo remains fully visible.
