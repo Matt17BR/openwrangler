@@ -31,7 +31,11 @@ function vsixManifest(version) {
 </PackageManifest>`;
 }
 
-function releaseEntries({ includeRFrameContract = true, version = sourceManifest.version } = {}) {
+function releaseEntries({
+  includeRFrameContract = true,
+  includeRWindowsJobSupervisor = true,
+  version = sourceManifest.version
+} = {}) {
   const entries = new Map([
     ["[Content_Types].xml", '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>'],
     ["extension.vsixmanifest", vsixManifest(version)],
@@ -57,6 +61,7 @@ function releaseEntries({ includeRFrameContract = true, version = sourceManifest
     ["extension/r/openwrangler_runtime/kernel_agent.R", "openwrangler_kernel_agent <- list()\n"],
     ["extension/r/openwrangler_runtime/kernel_exports.R", "openwrangler_kernel_exports <- list()\n"],
     ["extension/r/openwrangler_runtime/process_agent.R", 'quit(save = "no")\n'],
+    ["extension/r/openwrangler_runtime/windows-job-supervisor.ps1", "exit 0\n"],
     ["extension/python/openwrangler_runtime/dependency_guard.py", "pass\n"],
     ["extension/python/openwrangler_runtime/dependency_integrity.py", "pass\n"],
     ["extension/python/openwrangler_runtime/trusted_pickle_to_parquet.py", "pass\n"],
@@ -67,6 +72,7 @@ function releaseEntries({ includeRFrameContract = true, version = sourceManifest
     entries.delete("extension/r/openwrangler_runtime/frame_contract.R");
     entries.delete("extension/dist/extension/vendor/js-yaml.js");
   }
+  if (!includeRWindowsJobSupervisor) entries.delete("extension/r/openwrangler_runtime/windows-job-supervisor.ps1");
   return entries;
 }
 
@@ -157,6 +163,23 @@ test("canonical consumer accepts a historical v1 package without the later R run
     requireRFrameContract: false,
     requireVendoredJsYaml: false
   });
+  assert.equal(receipt.candidateSha256, fixture.digest);
+});
+
+test("canonical consumer preserves R releases predating the Windows supervisor only when authorized", async (context) => {
+  const fixture = await createFixture(context, { includeRWindowsJobSupervisor: false });
+  const options = {
+    directory: fixture.directory,
+    expectedCommit,
+    releaseTag: "v1.0.0",
+    sourceCommit: expectedCommit,
+    sourcePackageJson: JSON.stringify(sourceManifest)
+  };
+  await assert.rejects(
+    verifyCanonicalReleaseArtifact(options),
+    /Missing: extension\/r\/openwrangler_runtime\/windows-job-supervisor\.ps1/u
+  );
+  const receipt = await verifyCanonicalReleaseArtifact({ ...options, requireRWindowsJobSupervisor: false });
   assert.equal(receipt.candidateSha256, fixture.digest);
 });
 

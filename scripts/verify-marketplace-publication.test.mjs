@@ -52,7 +52,7 @@ function releaseEntries(
   readme = "# Open Wrangler\n",
   manifest = packageJson,
   preReleaseProperty = "",
-  { includeRFrameContract = true } = {}
+  { includeRFrameContract = true, includeRWindowsJobSupervisor = true } = {}
 ) {
   const entries = new Map([
     ["[Content_Types].xml", '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>'],
@@ -82,6 +82,7 @@ function releaseEntries(
     ["extension/r/openwrangler_runtime/kernel_agent.R", "openwrangler_kernel_agent <- list()\n"],
     ["extension/r/openwrangler_runtime/kernel_exports.R", "openwrangler_kernel_exports <- list()\n"],
     ["extension/r/openwrangler_runtime/process_agent.R", 'quit(save = "no")\n'],
+    ["extension/r/openwrangler_runtime/windows-job-supervisor.ps1", "exit 0\n"],
     ["extension/python/openwrangler_runtime/dependency_guard.py", "pass\n"],
     ["extension/python/openwrangler_runtime/dependency_integrity.py", "pass\n"],
     ["extension/python/openwrangler_runtime/trusted_pickle_to_parquet.py", "pass\n"],
@@ -92,6 +93,7 @@ function releaseEntries(
     entries.delete("extension/r/openwrangler_runtime/frame_contract.R");
     entries.delete("extension/dist/extension/vendor/js-yaml.js");
   }
+  if (!includeRWindowsJobSupervisor) entries.delete("extension/r/openwrangler_runtime/windows-job-supervisor.ps1");
   return entries;
 }
 
@@ -203,28 +205,40 @@ async function fixture(context, manifest = packageJson, preReleaseProperty = "")
   };
 }
 
-test("verifies historical v1 Marketplace packages without the later R runtime", async (context) => {
-  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-marketplace-historical-")));
-  context.after(() => rmSync(root, { force: true, recursive: true }));
-  const entries = releaseEntries("# Open Wrangler\n", packageJson, "", { includeRFrameContract: false });
-  const candidate = await createVsix(entries);
-  const publicVsix = await createVsix(entries, true);
-  const candidatePath = join(root, "openwrangler.vsix");
-  const candidateSha256 = createHash("sha256").update(candidate).digest("hex");
-  writeFileSync(candidatePath, candidate, { flag: "wx", mode: 0o600 });
+for (const scenario of [
+  {
+    name: "without the later R runtime",
+    entries: { includeRFrameContract: false, includeRWindowsJobSupervisor: false },
+    requirements: { requireRFrameContract: false, requireRWindowsJobSupervisor: false, requireVendoredJsYaml: false }
+  },
+  {
+    name: "with R but without the later Windows supervisor",
+    entries: { includeRWindowsJobSupervisor: false },
+    requirements: { requireRWindowsJobSupervisor: false }
+  }
+]) {
+  test(`verifies historical Marketplace packages ${scenario.name}`, async (context) => {
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-marketplace-historical-")));
+    context.after(() => rmSync(root, { force: true, recursive: true }));
+    const entries = releaseEntries("# Open Wrangler\n", packageJson, "", scenario.entries);
+    const candidate = await createVsix(entries);
+    const publicVsix = await createVsix(entries, true);
+    const candidatePath = join(root, "openwrangler.vsix");
+    const candidateSha256 = createHash("sha256").update(candidate).digest("hex");
+    writeFileSync(candidatePath, candidate, { flag: "wx", mode: 0o600 });
 
-  const receipt = await verifyMarketplacePublication({
-    attempts: 1,
-    candidatePath,
-    candidateSha256,
-    fetchImpl: fetchFixture(gallery(candidateSha256), publicVsix),
-    prerelease: false,
-    requireRFrameContract: false,
-    requireVendoredJsYaml: false,
-    version
+    const receipt = await verifyMarketplacePublication({
+      attempts: 1,
+      candidatePath,
+      candidateSha256,
+      fetchImpl: fetchFixture(gallery(candidateSha256), publicVsix),
+      prerelease: false,
+      ...scenario.requirements,
+      version
+    });
+    assert.equal(receipt.candidateSha256, candidateSha256);
   });
-  assert.equal(receipt.candidateSha256, candidateSha256);
-});
+}
 
 test("verifies upload SHA metadata and exact public VSIX semantics across ZIP reserialization", async (context) => {
   const candidate = await fixture(context);

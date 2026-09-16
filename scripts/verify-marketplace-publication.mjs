@@ -433,6 +433,7 @@ export async function verifyMarketplacePublication({
   fetchImpl = fetch,
   prerelease,
   requireRFrameContract = true,
+  requireRWindowsJobSupervisor = true,
   requireVendoredJsYaml = true,
   sleep = delay,
   version
@@ -457,7 +458,11 @@ export async function verifyMarketplacePublication({
   if (actualCandidateSha256 !== candidateSha256) {
     throw new Error("Canonical Marketplace candidate changed before public verification.");
   }
-  const canonicalArchive = await inspectVsixArchive(candidate.bytes, { requireRFrameContract, requireVendoredJsYaml });
+  const canonicalArchive = await inspectVsixArchive(candidate.bytes, {
+    requireRFrameContract,
+    requireRWindowsJobSupervisor,
+    requireVendoredJsYaml
+  });
   const candidateIconSize = new Map(canonicalArchive.entrySizes).get("extension/media/icon.png");
   const candidateIconSha256 = new Map(canonicalArchive.entryDigests).get("extension/media/icon.png");
   if (
@@ -497,6 +502,7 @@ export async function verifyMarketplacePublication({
       });
       const publishedArchive = await inspectVsixArchive(publishedBytes, {
         requireRFrameContract,
+        requireRWindowsJobSupervisor,
         requireVendoredJsYaml
       });
       assertSameVsixSemantics(canonicalArchive, publishedArchive);
@@ -558,6 +564,7 @@ async function runCli() {
     candidateSha256: canonical.candidateSha256,
     prerelease: canonical.prerelease,
     requireRFrameContract: canonical.requireRFrameContract,
+    requireRWindowsJobSupervisor: canonical.requireRWindowsJobSupervisor,
     requireVendoredJsYaml: canonical.requireVendoredJsYaml,
     version: canonical.version
   };

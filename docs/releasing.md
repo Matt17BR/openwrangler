@@ -71,6 +71,8 @@ metadata checks remain required. A changed output fails and only owned files are
 
 The native R runtime includes `windows-job-supervisor.ps1`, shared by Windows file execution and acceptance harnesses.
 Package it from its single runtime source; do not introduce a separate generated copy.
+Historical registry recovery requires this file only when it belongs to the exact release tag's source tree, so current
+automation can still verify and republish the original bytes of older releases.
 
 `npm run package:dev` is for local development. Its output is not a release candidate and must not be committed. The
 README installation guidance is editable prose linking to the

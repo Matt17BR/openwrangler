@@ -160,6 +160,7 @@ function releaseEntries(readmeSection = readmeCopy, manifest = stablePackage) {
     ["extension/r/openwrangler_runtime/kernel_agent.R", "openwrangler_kernel_agent <- list()\n"],
     ["extension/r/openwrangler_runtime/kernel_exports.R", "openwrangler_kernel_exports <- list()\n"],
     ["extension/r/openwrangler_runtime/process_agent.R", 'quit(save = "no")\n'],
+    ["extension/r/openwrangler_runtime/windows-job-supervisor.ps1", "exit 0\n"],
     ["extension/python/openwrangler_runtime/dependency_guard.py", "pass\n"],
     ["extension/python/openwrangler_runtime/dependency_integrity.py", "pass\n"],
     ["extension/python/openwrangler_runtime/trusted_pickle_to_parquet.py", "pass\n"],

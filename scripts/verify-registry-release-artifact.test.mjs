@@ -40,7 +40,7 @@ const previewProperty = '<Property Id="Microsoft.VisualStudio.Code.PreRelease" V
 function createVsix(
   packageJson = sourceManifest,
   property = previewProperty,
-  { includeRFrameContract = true, omitVendoredJsYaml = false } = {}
+  { includeRFrameContract = true, omitRWindowsJobSupervisor = false, omitVendoredJsYaml = false } = {}
 ) {
   const zip = new ZipFile();
   const entries = [
@@ -71,6 +71,7 @@ function createVsix(
     ["extension/r/openwrangler_runtime/kernel_agent.R", "openwrangler_kernel_agent <- list()\n"],
     ["extension/r/openwrangler_runtime/kernel_exports.R", "openwrangler_kernel_exports <- list()\n"],
     ["extension/r/openwrangler_runtime/process_agent.R", 'quit(save = "no")\n'],
+    ["extension/r/openwrangler_runtime/windows-job-supervisor.ps1", "exit 0\n"],
     ["extension/python/openwrangler_runtime/dependency_guard.py", "pass\n"],
     ["extension/python/openwrangler_runtime/dependency_integrity.py", "pass\n"],
     ["extension/python/openwrangler_runtime/trusted_pickle_to_parquet.py", "pass\n"],
@@ -80,7 +81,8 @@ function createVsix(
   for (const [name, value] of entries.filter(
     ([name]) =>
       (includeRFrameContract || name !== "extension/r/openwrangler_runtime/frame_contract.R") &&
-      (!omitVendoredJsYaml || name !== "extension/dist/extension/vendor/js-yaml.js")
+      (!omitVendoredJsYaml || name !== "extension/dist/extension/vendor/js-yaml.js") &&
+      (!omitRWindowsJobSupervisor || name !== "extension/r/openwrangler_runtime/windows-job-supervisor.ps1")
   )) {
     zip.addBuffer(Buffer.from(value), name);
   }
@@ -449,6 +451,89 @@ test("historical verification keeps current automation HEAD separate from the im
       root
     }),
     /no longer resolves/u
+  );
+});
+
+test("binds the supervisor requirement to the release tree, preserving historical R packages", async (context) => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-registry-r-supervisor-")));
+  context.after(() => rmSync(root, { force: true, recursive: true }));
+  const git = (...arguments_) =>
+    execFileSync("git", ["-c", "maintenance.auto=false", ...arguments_], {
+      cwd: root,
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      timeout: 10_000,
+      windowsHide: true
+    }).trim();
+  git("init", "--initial-branch=main");
+  git("config", "user.email", "tests@openwrangler.invalid");
+  git("config", "user.name", "Open Wrangler tests");
+  const runtime = join(root, "r", "openwrangler_runtime");
+  mkdirSync(runtime, { recursive: true });
+  mkdirSync(join(root, "scripts"));
+  const manifest = { ...sourceManifest, preview: false, version: "2.5.0" };
+  writeFileSync(join(root, "package.json"), `${JSON.stringify(manifest)}\n`);
+  writeFileSync(join(runtime, "frame_contract.R"), "frame_contract <- function(x) x\n");
+  writeFileSync(join(root, "scripts", "copy-extension-vendor-assets.mjs"), "export {};\n");
+  git("add", ".");
+  git("commit", "-m", "historical R release before Windows supervisor");
+  const historicalCommit = git("rev-parse", "HEAD");
+  git("tag", "v2.5.0");
+  const historical = await fixture(context, manifest, "", historicalCommit, {}, { omitRWindowsJobSupervisor: true });
+  const supervisor = join(runtime, "windows-job-supervisor.ps1");
+  writeFileSync(supervisor, "exit 0\n");
+  const currentManifest = { ...manifest, version: "2.6.0" };
+  writeFileSync(join(root, "package.json"), `${JSON.stringify(currentManifest)}\n`);
+  git("add", ".");
+  git("commit", "-m", "add Windows supervisor");
+  const currentCommit = git("rev-parse", "HEAD");
+  git("tag", "v2.6.0");
+
+  const historicalReceipt = await verifyRegistryReleaseArtifactFromCheckout({
+    automationCommit: currentCommit,
+    directory: historical.directory,
+    expectedCommit: historicalCommit,
+    prerelease: false,
+    releaseTag: "v2.5.0",
+    root
+  });
+  assert.equal(historicalReceipt.requireRFrameContract, true);
+  assert.equal(historicalReceipt.requireRWindowsJobSupervisor, false);
+  assert.equal(historicalReceipt.requireVendoredJsYaml, true);
+  assert.equal(historicalReceipt.candidateSha256, historical.digest);
+
+  const current = await fixture(context, currentManifest, "", currentCommit);
+  const currentOptions = {
+    automationCommit: currentCommit,
+    directory: current.directory,
+    expectedCommit: currentCommit,
+    prerelease: false,
+    releaseTag: "v2.6.0",
+    root
+  };
+  assert.equal((await verifyRegistryReleaseArtifactFromCheckout(currentOptions)).requireRWindowsJobSupervisor, true);
+  const missing = await fixture(context, currentManifest, "", currentCommit, {}, { omitRWindowsJobSupervisor: true });
+  await assert.rejects(
+    verifyRegistryReleaseArtifactFromCheckout({ ...currentOptions, directory: missing.directory }),
+    /Missing: extension\/r\/openwrangler_runtime\/windows-job-supervisor\.ps1/u
+  );
+
+  unlinkSync(supervisor);
+  symlinkSync("frame_contract.R", supervisor);
+  git("add", ".");
+  writeFileSync(join(root, "package.json"), `${JSON.stringify({ ...manifest, version: "2.6.1" })}\n`);
+  git("add", "package.json");
+  git("commit", "-m", "invalid supervisor source entry");
+  git("tag", "v2.6.1");
+  const invalidCommit = git("rev-parse", "HEAD");
+  await assert.rejects(
+    verifyRegistryReleaseArtifactFromCheckout({
+      ...currentOptions,
+      automationCommit: invalidCommit,
+      expectedCommit: invalidCommit,
+      releaseTag: "v2.6.1"
+    }),
+    /invalid R Windows job-supervisor source entry/u
   );
 });
 

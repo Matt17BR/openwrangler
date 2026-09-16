@@ -30,7 +30,8 @@ export const allowedVsixEntryPatterns = [
   /^extension\/python\/openwrangler_runtime\/engines\/[^/]+\.py$/u,
   /^extension\/r\/$/u,
   /^extension\/r\/openwrangler_runtime\/$/u,
-  /^extension\/r\/openwrangler_runtime\/(?:frame_contract|interactive_agent|kernel_agent|kernel_exports|process_agent)\.R$/u
+  /^extension\/r\/openwrangler_runtime\/(?:frame_contract|interactive_agent|kernel_agent|kernel_exports|process_agent)\.R$/u,
+  /^extension\/r\/openwrangler_runtime\/windows-job-supervisor\.ps1$/u
 ];
 
 const rFrameContractEntry = "extension/r/openwrangler_runtime/frame_contract.R";
@@ -38,6 +39,7 @@ const rInteractiveAgentEntry = "extension/r/openwrangler_runtime/interactive_age
 const rKernelAgentEntry = "extension/r/openwrangler_runtime/kernel_agent.R";
 const rKernelExportsEntry = "extension/r/openwrangler_runtime/kernel_exports.R";
 const rProcessAgentEntry = "extension/r/openwrangler_runtime/process_agent.R";
+const rWindowsJobSupervisorEntry = "extension/r/openwrangler_runtime/windows-job-supervisor.ps1";
 
 const requiredVsixEntriesBeforeR = Object.freeze([
   "[Content_Types].xml",
@@ -72,19 +74,35 @@ export const requiredVsixEntries = Object.freeze([
   rInteractiveAgentEntry,
   rKernelAgentEntry,
   rKernelExportsEntry,
-  rProcessAgentEntry
+  rProcessAgentEntry,
+  rWindowsJobSupervisorEntry
 ]);
 
-export function requiredVsixEntriesForRelease({ requireRFrameContract = true, requireVendoredJsYaml = true } = {}) {
-  if (typeof requireRFrameContract !== "boolean" || typeof requireVendoredJsYaml !== "boolean") {
-    throw new TypeError("VSIX R frame-contract and vendored js-yaml requirements must be boolean.");
+export function requiredVsixEntriesForRelease({
+  requireRFrameContract = true,
+  requireRWindowsJobSupervisor = true,
+  requireVendoredJsYaml = true
+} = {}) {
+  if (
+    typeof requireRFrameContract !== "boolean" ||
+    typeof requireRWindowsJobSupervisor !== "boolean" ||
+    typeof requireVendoredJsYaml !== "boolean"
+  ) {
+    throw new TypeError("VSIX R frame-contract, Windows supervisor and vendored js-yaml requirements must be boolean.");
   }
-  if (requireRFrameContract && requireVendoredJsYaml) return requiredVsixEntries;
+  if (requireRFrameContract && requireRWindowsJobSupervisor && requireVendoredJsYaml) return requiredVsixEntries;
   return Object.freeze([
     ...requiredVsixEntriesBeforeR,
     ...(requireVendoredJsYaml ? [VENDORED_JS_YAML_ENTRY] : []),
     ...(requireRFrameContract
-      ? [rFrameContractEntry, rInteractiveAgentEntry, rKernelAgentEntry, rKernelExportsEntry, rProcessAgentEntry]
+      ? [
+          rFrameContractEntry,
+          rInteractiveAgentEntry,
+          rKernelAgentEntry,
+          rKernelExportsEntry,
+          rProcessAgentEntry,
+          ...(requireRWindowsJobSupervisor ? [rWindowsJobSupervisorEntry] : [])
+        ]
       : [])
   ]);
 }
@@ -146,8 +164,15 @@ function portableVsixEntryIdentity(entry) {
   return path.toUpperCase().toLowerCase().normalize("NFC");
 }
 
-export function inspectVsixEntries(entries, { requireRFrameContract = true, requireVendoredJsYaml = true } = {}) {
-  const requiredEntries = requiredVsixEntriesForRelease({ requireRFrameContract, requireVendoredJsYaml });
+export function inspectVsixEntries(
+  entries,
+  { requireRFrameContract = true, requireRWindowsJobSupervisor = true, requireVendoredJsYaml = true } = {}
+) {
+  const requiredEntries = requiredVsixEntriesForRelease({
+    requireRFrameContract,
+    requireRWindowsJobSupervisor,
+    requireVendoredJsYaml
+  });
   const seen = new Map();
   const duplicates = [];
   const inspectedEntries = entries.map((entry) => ({
