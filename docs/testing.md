@@ -112,6 +112,8 @@ viewports and actual keyboard, pointer and focus behavior; Code Preview readines
 visible code, because virtualized offscreen text need not exist in the DOM.
 Its existing interaction owner checks inspection scope above the editor at wide, narrow and short sizes, with scope
 excluded from the code document and the editor still reachable by keyboard.
+The drawer workflow also checks that closing the panel profiles newly exposed partial columns without another
+window resize or grid scroll.
 Draft-preview, summary-family and by-example screenshots check the exact rendered column count and wait for completed
 profiles in every visible or partially visible column within the existing capture deadline. Offscreen rendering
 overscan can stay unprofiled. A virtual-time advance alone does not establish that asynchronous profile batches have rendered.
