@@ -13,6 +13,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- R terminal commands honor bracketed paste, preventing radian from interpreting private command fragments as global assignments.
 - Ordinary sidebar icons use the theme's neutral icon color; warning and error icons retain their status colors.
 - Generated DuckDB text-cleaning steps preserve their built-in behavior when caller-defined functions use the same names.
 - Pandas profiles avoid per-value Python loops for bounded integer sums and native string missing counts.

@@ -1390,7 +1390,8 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
       this.publishInvalidation(true);
       throw new Error("The active R terminal changed. Reopen the dataframe from its original R session.");
     }
-    terminal.sendText(code, true);
+    const bracketedPaste = vscode.workspace.getConfiguration("r").get<boolean>("bracketedPaste", false);
+    terminal.sendText(bracketedPaste ? `\x1b[200~${code}\x1b[201~` : code, true);
   }
 
   private assertActive(): void {
@@ -1588,9 +1589,13 @@ function remainingTimeout(timeoutMs: number, started: number): number {
 }
 
 function detachedMessage(reason: DetachedBridgeRequestReason, timeoutMs: number): string {
-  return reason === "timeout"
-    ? `Open Wrangler stopped waiting after ${timeoutMs} ms; the interactive R request is still finishing.`
-    : "Open Wrangler stopped waiting after host cancellation; the interactive R request is still finishing.";
+  if (reason === "cancellation") {
+    return "Open Wrangler stopped waiting after host cancellation; R work may still be running.";
+  }
+  const guidance = vscode.workspace.getConfiguration("r").get<boolean>("bracketedPaste", false)
+    ? ""
+    : " If you use radian, enable R: Bracketed Paste (r.bracketedPaste) before reconnecting.";
+  return `Open Wrangler did not receive an interactive R response within ${timeoutMs} ms. R work may still be running.${guidance}`;
 }
 
 function isCorrelatedClose(response: RKernelResponse, sessionId: string): boolean {

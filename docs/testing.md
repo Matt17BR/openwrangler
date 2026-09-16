@@ -290,6 +290,9 @@ macOS and Windows editor steps. Source, package and harness checks remain requir
 Linux interactive transport controls use a real PTY;
 portable parser controls retain one-expression and physical-line byte bounds. Operation semantics and arithmetic policy belong in
 [the native R architecture contract](architecture.md#native-r); do not repeat the catalog in installed UI journeys.
+The [interactive transport owner](../src/test/rInteractiveSessionTransport.unit.test.ts) checks plain and bracketed
+dispatch against the same captured terminal, including startup and follow-up requests. These source controls and
+the plain-R installed journey do not by themselves qualify radian's parser or terminal interaction.
 
 Linux R phase supervision needs the selected repository Python 3.10 to 3.14 standard library and kernel pidfd support,
 but no Python dataframe packages. Capability checks precede phase launch; signaling verifies the exact phase marker

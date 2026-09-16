@@ -757,6 +757,41 @@ describe("interactive R session transport", () => {
     }
   });
 
+  it.each([false, true])("reports a missing response with bracketed paste %s", async (bracketedPaste) => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-no-response-unit-"));
+    const configuration = vi.spyOn(vscode.workspace, "getConfiguration").mockReturnValue({
+      get: () => bracketedPaste
+    } as unknown as vscode.WorkspaceConfiguration);
+    let dispatched!: () => void;
+    const didDispatch = new Promise<void>((resolveDispatch) => {
+      dispatched = resolveDispatch;
+    });
+    const timeouts = new DeterministicRequestTimeouts();
+    const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
+      temporaryParent,
+      waitWithTimeout: timeouts.wait,
+      runSelection: async () => {
+        dispatched();
+      }
+    });
+    try {
+      const pending = transport.discoverVariables({ timeoutMs: 20 });
+      await didDispatch;
+      timeouts.expireOnlyBudget(20);
+      const error = await pending.catch((failure: unknown) => failure);
+      expect(error).toBeInstanceOf(DetachedBridgeRequestError);
+      expect(error).toMatchObject({ reason: "timeout", dispatched: true });
+      expect((error as Error).message).toContain("did not receive an interactive R response within 20 ms");
+      expect((error as Error).message).toContain("may still be running");
+      expect((error as Error).message.includes("r.bracketedPaste")).toBe(!bracketedPaste);
+    } finally {
+      await transport.dispose();
+      configuration.mockRestore();
+      expect(await readdir(temporaryParent)).toEqual([]);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  });
+
   it("cancels during request preparation without dispatching into R", async () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-prepare-cancel-unit-"));
     const token = new vscode.CancellationTokenSource();
@@ -817,11 +852,15 @@ describe("interactive R session transport", () => {
     }
   });
 
-  it("pins dispatch to the exact official R terminal without revealing it", async () => {
+  it.each([false, true])("pins exact terminal dispatch with paste %s", async (bracketedPaste) => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-terminal-unit-"));
     let responseWrite = Promise.resolve();
     const submittedCode: string[] = [];
-    const firstSendText = vi.fn((code: string) => {
+    const configuration = vi.spyOn(vscode.workspace, "getConfiguration").mockReturnValue({
+      get: () => bracketedPaste
+    } as unknown as vscode.WorkspaceConfiguration);
+    const firstSendText = vi.fn((code: string, shouldExecute: boolean) => {
+      expect(shouldExecute).toBe(true);
       submittedCode.push(code);
       responseWrite = responseWrite.then(async () => {
         const { requestPath, responsePath } = mailboxPaths(code);
@@ -882,6 +921,8 @@ describe("interactive R session transport", () => {
       expect(firstSendText).toHaveBeenCalledTimes(1);
       expect(secondSendText).not.toHaveBeenCalled();
       const bootstrapCode = submittedCode[0] ?? "";
+      expect(bootstrapCode.startsWith("\x1b[200~")).toBe(bracketedPaste);
+      expect(bootstrapCode.endsWith("\x1b[201~")).toBe(bracketedPaste);
       const dependencyCheck = bootstrapCode.lastIndexOf(".__ow_check_native_r_dependency(");
       const dispatcherSource = bootstrapCode.indexOf("sys.source(");
       expect(dependencyCheck).toBeGreaterThanOrEqual(0);
@@ -893,6 +934,8 @@ describe("interactive R session transport", () => {
       await transport.discoverVariables();
       expect(firstSendText).toHaveBeenCalledTimes(2);
       expect(secondSendText).not.toHaveBeenCalled();
+      expect(submittedCode[1]?.startsWith("\x1b[200~")).toBe(bracketedPaste);
+      expect(submittedCode[1]?.endsWith("\x1b[201~")).toBe(bracketedPaste);
       expect(submittedCode[1]).not.toContain("sys.source(");
       expect(submittedCode[1]).not.toContain('minimum = "1.0"');
       expect(submittedCode[1]!.length).toBeLessThan(submittedCode[0]!.length);
@@ -901,11 +944,13 @@ describe("interactive R session transport", () => {
       await expect(transport.discoverVariables()).rejects.toThrow("The active R terminal changed");
       expect(invalidations).toBe(1);
     } finally {
+      includeFirstTerminal = false;
       invalidation.dispose();
       await expect(transport.dispose()).rejects.toThrow("active R terminal changed");
       await responseWrite;
       includeFirstTerminal = true;
       activeTerminal = firstTerminal;
+      configuration.mockRestore();
       commandSpy.mockRestore();
       extensionSpy.mockRestore();
       for (const [key, descriptor] of terminalDescriptors) {

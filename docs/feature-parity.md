@@ -170,6 +170,8 @@ opens likewise retain the terminal selected when the command starts. Replacing e
 completes requires a new open action.
 With no notebook open, the Operations view offers **Start R and show dataframes…** after the R terminal closes.
 R terminal discovery can start before R's first prompt; short command lines avoid truncation by terminal startup input.
+Terminal commands honor vscode-R's `r.bracketedPaste` setting. Enable it when using radian so multiline commands
+arrive as one expression. Canceling a request stops waiting; R may still be running that work.
 
 Canceling file-editor or Code Preview resolution stops deferred setup without replacing an existing view, including
 during loading or file preflight.

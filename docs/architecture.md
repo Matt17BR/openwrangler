@@ -1653,7 +1653,10 @@ An existing official R-terminal variable stays pinned to the exact terminal and 
 sends no R command. During startup, it waits within the existing readiness deadline for the selected terminal's
 metadata, even if a previous terminal left a record behind. It never reads foreign workspace data. An explicit Open
 or Refresh action cancels pending discovery, revalidates the terminal and process, then uses terminal
-`sendText` to install or drive Open Wrangler's private dispatcher. Open Wrangler never writes vscode-R's files or
+`sendText` to install or drive Open Wrangler's private dispatcher. When `r.bracketedPaste` is enabled, every dispatch,
+including cleanup, uses bracketed-paste framing so terminals such as radian parse the complete expression together.
+The setting remains off by default, matching vscode-R. A timeout or cancellation stops waiting for the response;
+it does not establish that work in the user's R process has stopped. Open Wrangler never writes vscode-R's files or
 silently moves the session to another terminal. On macOS and Linux, trusted `.R`, `.Rmd`, and `.qmd` sources may use
 an Open Wrangler-owned `Rscript` process. Windows does not claim this direct document-process path. Literate documents
 resolve the owning executor before choosing R or Python; the fence label alone is not authority.
