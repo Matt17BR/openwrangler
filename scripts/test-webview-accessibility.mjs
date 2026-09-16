@@ -1378,7 +1378,8 @@ async function verifySessionModeDisclosure(browser) {
   await page.emulateMedia({ forcedColors: "active" });
   await page.goto(pathToFileURL(resolve(harnessDir, "wide-view.html")).href, { waitUntil: "load" });
   await page.getByText("wide.csv", { exact: true }).waitFor();
-  await page.evaluate(() => {
+  const sourceLabel = "regional_orders_with_adjustments_for_europe_asia_and_the_americas_current_quarter";
+  await page.evaluate((label) => {
     const payload = globalThis.openWranglerSessionPayload;
     if (!payload || payload.kind !== "sessionOpened") {
       throw new Error("The live Editing disclosure fixture did not expose its source session payload.");
@@ -1393,7 +1394,7 @@ async function verifySessionModeDisclosure(browser) {
       latestStepInputSchema: payload.metadata.schema,
       source: {
         kind: "notebookVariable",
-        label: "live_orders",
+        label,
         variableName: "live_orders",
         uri: "file:///workspace/live-orders.ipynb"
       },
@@ -1421,7 +1422,7 @@ async function verifySessionModeDisclosure(browser) {
         origin: globalThis.location.origin
       })
     );
-  });
+  }, sourceLabel);
 
   const reverseAction = page.getByRole("button", { name: "Switch to Viewing", exact: true });
   await reverseAction.waitFor();
@@ -1432,35 +1433,72 @@ async function verifySessionModeDisclosure(browser) {
     throw new Error("The live Editing disclosure fixture did not expose its blocked reverse transition.");
   }
 
-  await page.locator('[data-session-badge="mode"]').click();
+  const modeSummary = page.locator('[data-session-badge="mode"]');
+  await modeSummary.click();
   const modeHelp = page.locator(".sessionModeHelpText");
   await modeHelp.waitFor({ state: "visible" });
-  const layout = await modeHelp.evaluate((help) => {
-    const bounds = help.getBoundingClientRect();
-    const toolbar = help.closest(".toolbarActions")?.getBoundingClientRect();
-    return {
-      left: bounds.left,
-      right: bounds.right,
-      width: bounds.width,
-      viewportWidth: window.innerWidth,
-      withinToolbar: Boolean(toolbar && bounds.left >= toolbar.left - 1 && bounds.right <= toolbar.right + 1),
-      documentOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-      text: help.textContent?.trim() ?? ""
-    };
-  });
-  if (
-    layout.left < -1 ||
-    layout.right > layout.viewportWidth + 1 ||
-    layout.width <= 0 ||
-    !layout.withinToolbar ||
-    layout.documentOverflow > 1 ||
-    !layout.text.includes("Open Wrangler keeps the source unchanged") ||
-    !layout.text.includes("Undo the applied step")
-  ) {
-    throw new Error(
-      `The opened live Editing explanation escaped the 700px forced-colors toolbar: ${JSON.stringify(layout)}.`
-    );
+  for (const width of [700, 620]) {
+    await page.setViewportSize({ width, height: 760 });
+    if (width === 620) {
+      await modeSummary.focus();
+      await page.keyboard.press("Enter");
+      await modeHelp.waitFor({ state: "hidden" });
+      await page.keyboard.press("Enter");
+      await modeHelp.waitFor({ state: "visible" });
+      if (!(await modeSummary.evaluate(isActiveTab))) {
+        throw new Error("Compact live-mode help lost keyboard focus while toggling.");
+      }
+    }
+    const layout = await modeHelp.evaluate((help) => {
+      const bounds = help.getBoundingClientRect();
+      const toolbar = help.closest(".toolbar")?.getBoundingClientRect();
+      const source = document.querySelector(".toolbarIdentity strong");
+      const sourceBounds = source?.getBoundingClientRect();
+      return {
+        left: bounds.left,
+        right: bounds.right,
+        width: bounds.width,
+        viewportWidth: window.innerWidth,
+        withinToolbar: Boolean(
+          toolbar &&
+          bounds.left >= toolbar.left - 1 &&
+          bounds.right <= toolbar.right + 1 &&
+          bounds.top >= toolbar.top - 1 &&
+          bounds.bottom <= toolbar.bottom + 1
+        ),
+        sourceContained: Boolean(
+          toolbar &&
+          sourceBounds &&
+          sourceBounds.width > 0 &&
+          sourceBounds.height > 0 &&
+          sourceBounds.left >= toolbar.left - 1 &&
+          sourceBounds.right <= toolbar.right + 1
+        ),
+        sourceText: source?.textContent,
+        sourceTitle: source?.getAttribute("title"),
+        documentOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        text: help.textContent?.trim() ?? ""
+      };
+    });
+    if (
+      layout.left < -1 ||
+      layout.right > layout.viewportWidth + 1 ||
+      layout.width <= 0 ||
+      !layout.withinToolbar ||
+      !layout.sourceContained ||
+      layout.sourceText !== sourceLabel ||
+      layout.sourceTitle !== sourceLabel ||
+      layout.documentOverflow > 1 ||
+      !layout.text.includes("Open Wrangler keeps the source unchanged") ||
+      !layout.text.includes("Undo the applied step") ||
+      !(await reverseAction.isDisabled())
+    ) {
+      throw new Error(
+        `The opened live Editing explanation or source escaped the ${width}px forced-colors toolbar: ${JSON.stringify(layout)}.`
+      );
+    }
   }
+  await page.setViewportSize({ width: 700, height: 760 });
   await page.emulateMedia({ forcedColors: "none" });
   await page.addScriptTag({ path: axePath });
   await scanPageAccessibility(page, "wide-view.html (700px blocked reverse-mode explanation)");
@@ -1530,7 +1568,82 @@ async function verifySessionModeDisclosure(browser) {
     await projection.dispose();
     await page.close();
   }
-  console.log("Live Editing disclosure and continuous Undo gating through corrective projection verified.");
+  const sparkPage = await browser.newPage();
+  sparkPage.setDefaultTimeout(15_000);
+  sparkPage.setDefaultNavigationTimeout(15_000);
+  try {
+    await sparkPage.setViewportSize({ width: 620, height: 760 });
+    await sparkPage.goto(pathToFileURL(resolve(harnessDir, "wide-view.html")).href, { waitUntil: "load" });
+    await sparkPage.getByText("wide.csv", { exact: true }).waitFor();
+    await sparkPage.evaluate(() => {
+      const payload = globalThis.openWranglerSessionPayload;
+      payload.metadata = {
+        ...payload.metadata,
+        backend: "pyspark",
+        mode: "viewing",
+        source: {
+          kind: "notebookVariable",
+          label: "spark_orders",
+          variableName: "spark_orders",
+          uri: "file:///workspace/orders.ipynb"
+        },
+        capabilities: {
+          editable: false,
+          lazy: false,
+          cancel: false,
+          exportCsv: false,
+          exportParquet: false,
+          notebookInsert: false
+        },
+        steps: [],
+        filterModel: { filters: [], sort: [] }
+      };
+      globalThis.dispatchEvent(new MessageEvent("message", { data: payload, origin: globalThis.location.origin }));
+    });
+    const ordering = sparkPage.locator('[data-session-badge="ordering"]');
+    await ordering.waitFor();
+    if (
+      (await sparkPage.getByRole("button", { name: "Export", exact: true }).count()) !== 0 ||
+      (await sparkPage.locator("[data-session-mode-action]").count()) !== 0 ||
+      (await sparkPage.locator('[data-session-badge="mode"]').textContent())?.trim() !== "Viewing only"
+    ) {
+      throw new Error("The compact Spark fixture did not retain its viewing-only/no-export capabilities.");
+    }
+    await ordering.focus();
+    await sparkPage.keyboard.press("Enter");
+    const orderingHelp = sparkPage.locator(".orderingHelpText");
+    await orderingHelp.waitFor({ state: "visible" });
+    const layout = await orderingHelp.evaluate((help) => {
+      const bounds = help.getBoundingClientRect();
+      const toolbar = help.closest(".toolbar").getBoundingClientRect();
+      return {
+        contained:
+          bounds.width > 0 &&
+          bounds.height > 0 &&
+          bounds.left >= toolbar.left - 1 &&
+          bounds.right <= toolbar.right + 1 &&
+          bounds.top >= toolbar.top - 1 &&
+          bounds.bottom <= toolbar.bottom + 1,
+        documentOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        text: help.textContent ?? ""
+      };
+    });
+    if (
+      !layout.contained ||
+      layout.documentOverflow > 1 ||
+      !layout.text.includes("Spark does not guarantee source order")
+    ) {
+      throw new Error(`Compact Spark ordering help escaped the toolbar: ${JSON.stringify(layout)}.`);
+    }
+    await sparkPage.keyboard.press("Enter");
+    await orderingHelp.waitFor({ state: "hidden" });
+    if (!(await ordering.evaluate(isActiveTab))) throw new Error("Spark ordering help lost its summary focus.");
+  } finally {
+    await sparkPage.close();
+  }
+  console.log(
+    "Live Editing disclosure, compact Spark ordering help and continuous Undo gating through corrective projection verified."
+  );
 }
 
 async function verifyShortGridProfileResponsiveness(browser) {

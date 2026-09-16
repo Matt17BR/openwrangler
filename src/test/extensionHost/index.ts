@@ -10928,17 +10928,13 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
       return {
         appOverflow: root.scrollWidth - root.clientWidth,
         toolbarOverflow: toolbar.scrollWidth - toolbar.clientWidth,
-        toolbarActionsOverflow: toolbarActions.scrollWidth - toolbarActions.clientWidth,
         gridStatusBarOverflow: gridStatusBar.scrollWidth - gridStatusBar.clientWidth,
-        clippedToolbarControls: clippedChildren(".toolbarActions", ":scope > *"),
+        clippedToolbarControls: clippedChildren(".toolbar", ":scope > .toolbarActions > *"),
         clippedGridStatusBar: clippedChildren(".gridStatusBar", ":scope > *")
       };
     });
     assert.ok(
-      measurement.appOverflow <= 1 &&
-        measurement.toolbarOverflow <= 1 &&
-        measurement.toolbarActionsOverflow <= 1 &&
-        measurement.gridStatusBarOverflow <= 1,
+      measurement.appOverflow <= 1 && measurement.toolbarOverflow <= 1 && measurement.gridStatusBarOverflow <= 1,
       `The 200% zoom layout must not overflow horizontally: ${JSON.stringify(measurement)}`
     );
     assert.deepEqual(

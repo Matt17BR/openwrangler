@@ -125,6 +125,8 @@ header with the panel open at 1280px, 800px, 621px, 620px and a short 320px view
 data lane must expose that lane; the panel must not cover the grid, and its short-layout controls retain Tab/Escape access.
 The inspection workflow checks Enter on the paused-filter disclosure, retained disabled rules and focus on entry and
 return. Focus moves from a filter control being hidden to the disclosure and leaves unrelated controls alone.
+The mode-help owner checks compact toolbar containment with a long source label, keyboard disclosure and Spark's
+viewing-only ordering help, while retaining its blocked mode transition and projection-gated Undo checks.
 
 Use the existing owners to choose a focused source check:
 
