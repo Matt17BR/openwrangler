@@ -1504,8 +1504,10 @@ Cheap column/missing statistics scan in bounded chunks. Numeric histograms count
 20 bins; integer64 chart positions retain their double projection while typed extrema remain exact. Character and
 factor distributions retain exact counts and distinct values within 10,000 keys and 16 MiB of UTF-8 key text.
 Above either bound, distributions sample at most 100,000 non-missing values. Large frames with at most 100,000
-non-missing values keep their exact distribution regardless of those aggregation bounds. Numeric medians and general
-numeric distinct counts remain omitted above that population limit; omitted statistics show `n/a`. Sampled charts
+non-missing values keep their exact distribution regardless of those aggregation bounds. Above that population limit,
+numeric profiles retain exact distinct counts while at most 10,000 native identities are observed. Tracking stops when
+that bound is exceeded; integer64 keys retain their exact decimal identity. Numeric medians remain omitted above
+100,000 non-missing values. Omitted statistics show `n/a`. Sampled charts
 label the distribution approximate and show the sample count used alongside the full non-missing population.
 Dataset missing counts remain exact; bounded duplicate-row estimates name the sampled population. Sampling uses a
 private fixed seed and restores the user's random state. Unsearched value discovery samples at most 100,000 rows;

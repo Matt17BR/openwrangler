@@ -19,7 +19,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 ### Fixed
 
 - R header profiles honor the opening preference. Sampled charts identify the sample count used and full non-missing population.
-- Large R numeric histograms count every finite value. Categorical profiles use exact counts within bounded memory; larger sets retain labeled sampling.
+- Large R numeric histograms count every finite value, and numeric distinct counts stay exact through 10,000 values. Categorical profiles use exact counts within bounded memory; larger sets retain labeled sampling.
 - Large R text columns profile faster.
 - Offscreen columns no longer trigger header profiling.
 - Compact categorical headers include all omitted categories in Other.

@@ -6570,13 +6570,15 @@ for (index in seq_along(periodic_periods)) {
 local({
   repeats <- 40001L
   cases <- list(
-    c(-Inf, 0, 1, 2, Inf, NA_real_, NaN),
-    c(-Inf, Inf, -Inf, Inf, NA_real_, NaN),
-    c(1, 1 + .Machine$double.eps, 1 + 2 * .Machine$double.eps),
-    as.difftime(c(0, 1, 2), units = "hours"),
-    bit64::as.integer64(c("9007199254740992", "9007199254740993", "9007199254740994"))
+    list(values = c(-Inf, -0, 0, 1, 2, Inf, NA_real_, NaN), distinct = 5L),
+    list(values = c(-Inf, Inf, -Inf, Inf, NA_real_, NaN), distinct = 2L),
+    list(values = c(1, 1 + .Machine$double.eps, 1 + 2 * .Machine$double.eps), distinct = 3L),
+    list(values = as.difftime(c(-0, 0, 1, 2), units = "hours"), distinct = 4L),
+    list(values = bit64::as.integer64(c("9007199254740992", "9007199254740993", "9007199254740994")), distinct = 3L),
+    list(values = bit64::as.integer64(c("-9223372036854775807", "-9223372036854775806", "9223372036854775807", NA_character_)), distinct = 3L)
   )
-  for (values in cases) {
+  for (case in cases) {
+    values <- case$values
     frame <- data.frame(value = rep(values, repeats))
     before <- serialize(frame, NULL, version = 3L)
     capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
@@ -6585,6 +6587,7 @@ local({
     finite <- projected[is.finite(projected)]
     assert_identical(summary$nullCount, as.integer(sum(is.na(projected) & !is.nan(projected)) * repeats), "large null count changed")
     assert_identical(summary$nanCount, as.integer(sum(is.nan(projected)) * repeats), "large NaN count changed")
+    assert_identical(summary$distinctCount, case$distinct, "large numeric distinct count lost native identity")
     assert_true(is.null(summary$numeric$median), "large numeric median was mislabeled exact")
     assert_true(is.null(summary$visualization$sampled), "complete numeric histogram was sampled")
     bins <- summary$visualization$bins
@@ -6601,11 +6604,73 @@ local({
       assert_identical(sum(vapply(bins, `[[`, integer(1L), "count")), as.integer(length(finite) * repeats), "histogram omitted finite rows")
     }
     if (inherits(values, "integer64")) {
-      assert_identical(summary$numeric$exactMin$display, "9007199254740992", "chart projection changed exact integer64 minimum")
-      assert_identical(summary$numeric$exactMax$display, "9007199254740994", "chart projection changed exact integer64 maximum")
+      assert_identical(summary$numeric$exactMin$display, as.character(values[1L]), "chart projection changed exact integer64 minimum")
+      assert_identical(summary$numeric$exactMax$display, as.character(values[3L]), "chart projection changed exact integer64 maximum")
     }
     assert_identical(serialize(frame, NULL, version = 3L), before, "chunked histogram mutated its source")
   }
+})
+
+# Numeric distinct tracking stays bounded even when an extra value arrives late.
+local({
+  limit <- openwrangler_r_frame_contract$limits$columnValueDistinctMatches
+  frame <- data.frame(
+    integer = rep(seq_len(900L), length.out = 120001L),
+    double = rep(seq_len(900L) / 10, length.out = 120001L),
+    duration = as.difftime(rep(seq_len(900L) / 10, length.out = 120001L), units = "hours")
+  )
+  before <- serialize(frame, NULL, version = 3L)
+  set.seed(714L)
+  rng <- .Random.seed
+  capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
+  summaries <- openwrangler_r_frame_contract$materialize_summaries(capture, lapply(1:3, function(i) profile_reference(capture, i)))
+  for (summary in summaries) {
+    assert_identical(summary$distinctCount, 900L, "large ordinary numeric distinct count was omitted")
+    assert_true(is.null(summary$numeric$median), "distinct tracking invented a large numeric median")
+  }
+  assert_identical(.Random.seed, rng, "numeric distinct tracking changed caller RNG")
+  assert_identical(serialize(frame, NULL, version = 3L), before, "numeric distinct tracking mutated its source")
+
+  cases <- list(
+    list(values = rep(seq_len(limit), length.out = 110000L), distinct = limit),
+    list(values = c(rep(seq_len(limit), length.out = 110000L), limit + 1L), distinct = NULL),
+    list(values = as.difftime(c(rep(0:(limit - 1L), length.out = 110000L), -0), units = "hours"), distinct = NULL),
+    list(values = c(seq_len(limit + 1L), rep(NA_integer_, 100000L)), distinct = limit + 1L)
+  )
+  for (case in cases) {
+    frame <- data.frame(value = case$values)
+    capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
+    summary <- openwrangler_r_frame_contract$materialize_summaries(capture, list(profile_reference(capture, 1L)))[[1L]]
+    assert_identical(summary$distinctCount, case$distinct, "numeric distinct bound or sparse exact fallback changed")
+    assert_identical(sum(vapply(summary$visualization$bins, `[[`, integer(1L), "count")),
+      as.integer(sum(!is.na(case$values))), "distinct overflow changed complete histogram counts")
+  }
+
+  local({
+    maximum_unique_width <- 0L
+    assert_true(!exists("unique", contract_environment, inherits = FALSE), "distinct test would overwrite a private unique helper")
+    assign("unique", function(x, ...) {
+      maximum_unique_width <<- max(maximum_unique_width, length(x))
+      base::unique(x, ...)
+    }, contract_environment)
+    on.exit(rm("unique", envir = contract_environment), add = TRUE)
+    frame <- data.frame(value = as.double(seq_len(200001L)))
+    capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
+    summary <- openwrangler_r_frame_contract$materialize_summaries(capture, list(profile_reference(capture, 1L)))[[1L]]
+    assert_true(is.null(summary$distinctCount), "high-cardinality numeric profile invented an exact distinct count")
+    assert_true(maximum_unique_width > 0L &&
+      maximum_unique_width <= openwrangler_r_frame_contract$limits$profileChunkRows + limit,
+      "numeric distinct tracking grew beyond one scan chunk plus its retained bound")
+  })
+
+  frame <- data.frame(value = c(rep(seq_len(900L), length.out = 120001L), seq.int(901L, 11000L)),
+    keep = c(rep(TRUE, 120001L), rep(FALSE, 10100L)))
+  capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
+  query <- list(filters = list(list(column = profile_reference(capture, 2L), type = "boolean",
+    predicates = list(list(kind = "predicate", operator = "equals", value = TRUE)))), sorts = list())
+  summary <- openwrangler_r_frame_contract$materialize_summaries(capture, list(profile_reference(capture, 1L)), query)[[1L]]
+  assert_identical(summary$totalCount, 120001, "numeric distinct count ignored filtered population")
+  assert_identical(summary$distinctCount, 900L, "excluded numeric values exhausted the distinct bound")
 })
 
 # Equal counts use first visible occurrence, including empty text and late values;
