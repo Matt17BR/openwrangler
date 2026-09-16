@@ -283,6 +283,8 @@ primitive values, public mutations and correlated transport. Frame capture check
 kernel mutation checks use fewer, longer levels to exercise the full response byte limit.
 Formula transport keeps integer and maximum finite double samples; intermediate exact powers and their neighboring
 values belong to the encoder and native numeric-portability owners.
+Min-max scale's adjacent integer64 and missing-value results belong to the native kernel's live and generated-code
+owner. The text-replacement transport chain also checks factor-to-character inspection and Undo restoration.
 Edits confined to `r/tests/kernel_agent.R` and `r/tests/frame_contract.R`, with permitted Markdown, may omit the hosted
 macOS and Windows editor steps. Source, package and harness checks remain required; see the exact [CI scope](ci.md#pull-requests).
 Linux interactive transport controls use a real PTY;
