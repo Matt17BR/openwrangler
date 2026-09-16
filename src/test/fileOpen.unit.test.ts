@@ -4,6 +4,7 @@ import type { ExtensionContext } from "vscode";
 import type { DuckDBTableDiscovery, FilePlanOpenContext, OpenWranglerBridge } from "../extension/dataBridge";
 import type { SessionSourceProtection } from "../extension/files/safeFileExport";
 import type { SessionSource } from "../shared/protocol";
+import { FileBackendUnavailableError } from "../extension/dataBridge";
 
 type CommandHandler = (...args: unknown[]) => unknown;
 
@@ -860,6 +861,172 @@ describe("file launch command", () => {
       undefined,
       "auto"
     );
+  });
+
+  it("opens a fresh Auto file with R only after Python preflight confirms no compatible engine", async () => {
+    const native = { request: vi.fn(), onIdle: vi.fn() };
+    const createR = vi.fn(async () => native);
+    const { context, bridge } = register(createR);
+    bridge.prepareFileAutoFallback = vi.fn(async () => ({
+      isCurrent: () => true
+    }));
+
+    await command("openWrangler.openFile")(vscode.Uri.file("/workspace/data.csv"));
+
+    expect(bridge.prepareFileAutoFallback).toHaveBeenCalledOnce();
+    expect(createR).toHaveBeenCalledWith(expect.objectContaining({ path: "/workspace/data.csv" }));
+    expect(fileMocks.createPanel).toHaveBeenCalledWith(
+      context,
+      native,
+      expect.objectContaining({ path: "/workspace/data.csv" }),
+      "r",
+      "auto"
+    );
+    expect(fileMocks.bridgeRequest).not.toHaveBeenCalled();
+    expect(native.onIdle).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    "keeps Python selection, repair errors and explicit pins out of R fallback (guarded: %s)",
+    async (guarded) => {
+      const createR = vi.fn();
+      const { bridge } = register(createR);
+      bridge.prepareFileAutoFallback = vi.fn(async () =>
+        guarded
+          ? {
+              kind: "error" as const,
+              code: "dependency_environment_uncertain",
+              message: "Revalidate this Python environment",
+              recoverable: true
+            }
+          : undefined
+      );
+      await command("openWrangler.openFile")(vscode.Uri.file("/workspace/data.csv"));
+      expect(bridge.prepareFileAutoFallback).toHaveBeenCalledOnce();
+      expect(createR).not.toHaveBeenCalled();
+      expect(fileMocks.createPanel.mock.calls[0]?.[1]).toBe(bridge);
+      fileMocks.bridgeRequest.mockResolvedValueOnce({
+        kind: "error",
+        code: "file_read_failed",
+        message: "Invalid CSV",
+        recoverable: true
+      });
+      await expect(
+        bridge.request({
+          kind: "openSession",
+          source: fileMocks.createPanel.mock.calls[0]?.[2],
+          pageSize: 1,
+          columnOffset: 0,
+          columnLimit: 1
+        })
+      ).resolves.toMatchObject({ code: "file_read_failed" });
+      expect(createR).not.toHaveBeenCalled();
+      fileMocks.defaultBackend = "pandas";
+      await command("openWrangler.openFile")(vscode.Uri.file("/workspace/pinned.csv"));
+      expect(bridge.prepareFileAutoFallback).toHaveBeenCalledOnce();
+      expect(createR).not.toHaveBeenCalled();
+      expect(fileMocks.createPanel.mock.calls.at(-1)?.[3]).toBe("pandas");
+    }
+  );
+
+  it("releases Auto's unhanded R delegate when its Python selection changes during acquisition", async () => {
+    let finish!: (bridge: OpenWranglerBridge) => void;
+    const native = { request: vi.fn(), onIdle: vi.fn() };
+    const createR = vi.fn(
+      () =>
+        new Promise<OpenWranglerBridge>((resolve) => {
+          finish = resolve;
+        })
+    );
+    const { bridge } = register(createR);
+    let current = true;
+    bridge.prepareFileAutoFallback = vi.fn(async () => ({ isCurrent: () => current }));
+    const opening = command("openWrangler.openFile")(vscode.Uri.file("/workspace/data.csv"));
+    await vi.waitFor(() => expect(createR).toHaveBeenCalledOnce());
+    current = false;
+    finish(native);
+    await opening;
+    expect(fileMocks.createPanel).not.toHaveBeenCalled();
+    expect(native.onIdle).toHaveBeenCalledOnce();
+  });
+
+  it("does not probe Python again when recreating an Auto file already confirmed with R", async () => {
+    const uri = vscode.Uri.file("/workspace/data.csv");
+    const native = { request: vi.fn(), onIdle: vi.fn() };
+    const { bridge } = register(vi.fn(async () => native));
+    bridge.prepareFileAutoFallback = vi.fn();
+    fileMocks.workspaceValues.set(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY, {
+      version: 2,
+      entries: [
+        {
+          uri: uri.toString(),
+          backend: "r",
+          backendPreference: "auto",
+          importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+        }
+      ]
+    });
+    await fileMocks.customEditorProvider?.resolveCustomEditor({ uri }, { dispose: vi.fn() }, resolutionToken());
+    expect(bridge.prepareFileAutoFallback).not.toHaveBeenCalled();
+    expect(fileMocks.panelConstructor.mock.calls[0]?.slice(2, 7)).toEqual([
+      native,
+      expect.objectContaining({ path: "/workspace/data.csv" }),
+      "r",
+      true,
+      "auto"
+    ]);
+  });
+
+  it.each([true, false])(
+    "preserves Python repair UI only for expected R absence (unavailable: %s)",
+    async (unavailable) => {
+      const failure = unavailable
+        ? new FileBackendUnavailableError("Set Open Wrangler: Rscript Path to an installed Rscript executable.")
+        : new Error("Native bridge construction failed");
+      const { context, bridge } = register(
+        vi.fn(async () => {
+          throw failure;
+        })
+      );
+      bridge.prepareFileAutoFallback = vi.fn(async () => ({
+        isCurrent: () => true
+      }));
+      await command("openWrangler.openFile")(vscode.Uri.file("/workspace/data.csv"));
+      if (unavailable) {
+        expect(fileMocks.showErrorMessage).not.toHaveBeenCalled();
+        expect(fileMocks.createPanel).toHaveBeenCalledWith(
+          context,
+          bridge,
+          expect.objectContaining({ path: "/workspace/data.csv" }),
+          undefined,
+          "auto"
+        );
+      } else {
+        expect(fileMocks.showErrorMessage).toHaveBeenCalledWith(failure.message);
+        expect(fileMocks.createPanel).not.toHaveBeenCalled();
+      }
+    }
+  );
+
+  it("releases a fresh Auto custom editor's R owner when cancelled during factory acquisition", async () => {
+    const token = resolutionToken();
+    const native = { request: vi.fn(), onIdle: vi.fn() };
+    const { bridge } = register(
+      vi.fn(async () => {
+        token.isCancellationRequested = true;
+        return native;
+      })
+    );
+    bridge.prepareFileAutoFallback = vi.fn(async () => ({ isCurrent: () => true }));
+    const panel = { dispose: vi.fn() };
+    await fileMocks.customEditorProvider?.resolveCustomEditor(
+      { uri: vscode.Uri.file("/workspace/data.csv") },
+      panel,
+      token
+    );
+    expect(native.onIdle).toHaveBeenCalledOnce();
+    expect(fileMocks.panelConstructor).not.toHaveBeenCalled();
+    expect(panel.dispose).not.toHaveBeenCalled();
   });
 
   it("rejects a virtual custom-editor resource before constructing its panel", async () => {

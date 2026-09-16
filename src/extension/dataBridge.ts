@@ -108,12 +108,24 @@ export interface DuckDBTableDiscovery {
   isCurrent(): boolean;
 }
 
+/** A completed Python preflight permits native R selection before any file read. */
+export interface FileAutoFallback {
+  isCurrent(): boolean;
+}
+
+/** Expected compatibility or executable absence, never a data-read failure. */
+export class FileBackendUnavailableError extends Error {}
+
 export interface OpenWranglerBridge {
   request(request: OpenWranglerRequest, options?: BridgeRequestOptions): Promise<OpenWranglerResponse>;
   /** Retains a liveness check for the exact Python process and selection owning a file session. */
   captureFileSessionOwner?(sessionId: string): (() => boolean) | undefined;
   /** Pins the active confirmed file plan and returns its initial-open bridge, or an eligibility diagnostic. */
   captureActiveFilePlan?(): FilePlanOpenContext | ErrorResponse;
+  prepareFileAutoFallback?(
+    source: SessionSource,
+    options?: BridgeRequestOptions
+  ): Promise<FileAutoFallback | ErrorResponse | undefined>;
   discoverDuckDBTables?(
     source: SessionSource,
     options?: BridgeRequestOptions

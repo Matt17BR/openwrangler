@@ -74,7 +74,9 @@ spaces, percent-looking names and closing brackets remain supported. See the pre
 rules in [Architecture](architecture.md#polars); the current evidence does not establish arbitrary UNC, device or
 long-path support.
 
-Auto selects an available engine before reading the file and does not switch engines after a read error. To use
+Auto prefers a compatible Python engine in Polars, DuckDB, then Pandas order. If no compatible Python interpreter or
+file engine is available, it tries R for supported local files. Explicit Python engine choices, broken configured Python paths, unexpected environment
+errors and file-read failures do not switch to R. To use
 Pandas instead, set `openWrangler.defaultBackend` to `pandas` in Settings, then run **Open Wrangler: Open File Path**
 and select the same file. This uses Pandas' native parser, inferred types and eager snapshot costs; it is not a
 transparent Polars substitution. The setting affects future file opens, while existing sessions keep their engine.
@@ -629,8 +631,8 @@ The [architecture](architecture.md#native-r) defines frame, precision, source an
 
 Local R files use a base `data.frame` with the existing R cleaning operations. File sessions can restore saved plans;
 live R notebook, document and terminal sessions do not use workspace persistence.
-Select R explicitly in the engine picker or `openWrangler.defaultBackend`; Auto continues
-to choose a Python engine. Switching between R and Python opens a separate session and retains the original plan.
+Select R explicitly in the engine picker or `openWrangler.defaultBackend`, or let Auto select R when no compatible
+Python interpreter or file engine is available. Switching between R and Python opens a separate session and retains the original plan.
 R import-options changes also create a separate session. **Open Another File with This Plan** remains Python-only.
 
 The R reader requires UTF-8, double-quote escaping and LF/CRLF records. It supports custom single-byte delimiters and

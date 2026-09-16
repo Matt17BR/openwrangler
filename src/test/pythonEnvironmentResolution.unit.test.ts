@@ -9,6 +9,7 @@ import {
   PythonEnvironmentResolutionSupersededError,
   PythonEnvironmentResolutionTimeoutError,
   PythonEnvironmentResolutionWorkspaceTrustError,
+  PythonEnvironmentUnavailableError,
   resolvePythonEnvironment,
   type PythonEnvironmentProcessExecutor,
   type PythonEnvironmentResolutionClock
@@ -264,6 +265,66 @@ describe("bounded Python environment resolution", () => {
     expect(executeProcess).toHaveBeenCalledTimes(2);
     expect(executeProcess.mock.calls[0]?.[0]).toBe("/wrapper/python");
     expect(executeProcess.mock.calls[1]?.[0]).toBe("/env/bin/python");
+  });
+
+  it("distinguishes exhausted unconfigured discovery from a failed explicit interpreter pin", async () => {
+    mockExtensionLookup(undefined);
+    const failure = Object.assign(new Error("executable not found"), { code: "ENOENT" });
+    const executeProcess = vi.fn<PythonEnvironmentProcessExecutor>().mockRejectedValue(failure);
+    const control = { executeProcess, platform: "linux" as const, isExecutable: () => true, pathExists: () => true };
+    await expect(resolvePythonEnvironment(context(), undefined, undefined, control)).rejects.toBeInstanceOf(
+      PythonEnvironmentUnavailableError
+    );
+    setConfiguredPython("/pinned/python");
+    await expect(resolvePythonEnvironment(context(), undefined, undefined, control)).rejects.not.toBeInstanceOf(
+      PythonEnvironmentUnavailableError
+    );
+  });
+
+  it.each([
+    { name: "malformed JSON", stdout: "not JSON" },
+    { name: "invalid identity", stdout: probePayload("/selected/python").replace('"size":"16384"', '"size":"0"') }
+  ])("does not classify an exhausted malformed probe as interpreter absence: $name", async ({ stdout }) => {
+    mockExtensionLookup({
+      isActive: true,
+      exports: pythonApi("/selected/python"),
+      activate: vi.fn()
+    } as unknown as vscode.Extension<unknown>);
+    const executeProcess = vi
+      .fn<PythonEnvironmentProcessExecutor>()
+      .mockResolvedValueOnce({ stdout, stderr: "" })
+      .mockRejectedValue(Object.assign(new Error("executable not found"), { code: "ENOENT" }));
+    const failure = await resolvePythonEnvironment(context(), undefined, undefined, {
+      executeProcess,
+      platform: "linux",
+      isExecutable: () => true,
+      pathExists: () => true
+    }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).not.toBeInstanceOf(PythonEnvironmentUnavailableError);
+    expect((failure as Error).message).toContain("Python environment probe");
+    expect(executeProcess).toHaveBeenCalledTimes(3);
+  });
+
+  it("still uses a valid system alternative after an unexpected selected-interpreter probe failure", async () => {
+    mockExtensionLookup({
+      isActive: true,
+      exports: pythonApi("/selected/python"),
+      activate: vi.fn()
+    } as unknown as vscode.Extension<unknown>);
+    const executeProcess = vi
+      .fn<PythonEnvironmentProcessExecutor>()
+      .mockResolvedValueOnce({ stdout: "not JSON", stderr: "" })
+      .mockImplementation(async (executable) => ({ stdout: probePayload(executable), stderr: "" }));
+    const resolved = await resolvePythonEnvironment(context(), undefined, undefined, {
+      executeProcess,
+      platform: "linux",
+      isExecutable: () => true,
+      pathExists: () => true
+    });
+    expect(resolved.source).toBe("system");
+    expect(resolved.executable).toBe(executeProcess.mock.calls[1]?.[0]);
+    expect(executeProcess).toHaveBeenCalledTimes(2);
   });
 
   it("cancels a pending attempt without launching fallback candidates", async () => {

@@ -139,6 +139,7 @@ vi.mock("../extension/webviewPanel", () => ({
 
 import * as vscode from "vscode";
 import { createRFileBridge } from "../extension/r/rFileSource";
+import { FileBackendUnavailableError } from "../extension/dataBridge";
 import { supportsRscriptExecution } from "../extension/r/rscriptPath";
 import {
   OPEN_LITERATE_DOCUMENT_CURSOR_COMMAND,
@@ -226,21 +227,21 @@ describe("R document command", () => {
     expect(supportsRscriptExecution("linux")).toBe(true);
     expect(supportsRscriptExecution("darwin")).toBe(true);
     expect(supportsRscriptExecution("win32")).toBe(false);
-    for (const importOptions of [
-      { encoding: "utf8-lossy" },
-      { quoteChar: "'" },
-      { lineEnding: "cr" as const },
-      { sheetIndex: 0 }
-    ]) {
-      expect(() => createRFileBridge(context, { ...source, importOptions })).toThrow();
+    for (const importOptions of [{ encoding: "utf8-lossy" }, { quoteChar: "'" }, { lineEnding: "cr" as const }]) {
+      expect(() => createRFileBridge(context, { ...source, importOptions })).toThrow(FileBackendUnavailableError);
     }
+    expect(() => createRFileBridge(context, { ...source, importOptions: { sheetIndex: 0 } })).toThrow(
+      "exact local CSV or TSV"
+    );
     expect(() => createRFileBridge(context, { ...source, uri: "file:///workspace/other.csv" })).toThrow(
       "matching local"
     );
     mocks.resolveExecutable.mockReturnValue(undefined);
     expect(() => createRFileBridge(context, source)).toThrow("Set Open Wrangler: Rscript Path");
+    expect(() => createRFileBridge(context, source)).toThrow(FileBackendUnavailableError);
     mocks.trusted = false;
     expect(() => createRFileBridge(context, source)).toThrow("Trust this workspace");
+    expect(() => createRFileBridge(context, source)).not.toThrow(FileBackendUnavailableError);
     expect(mocks.transportOptions).toEqual([]);
     expect(mocks.bridgeDiagnostic).not.toHaveBeenCalled();
   });

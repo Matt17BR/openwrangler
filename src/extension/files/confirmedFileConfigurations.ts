@@ -199,10 +199,7 @@ function decodeFileConfiguration(
     return undefined;
   }
   const extension = fileExtension(uri);
-  if (
-    backend === "r" &&
-    (uri.scheme !== "file" || (extension !== ".csv" && extension !== ".tsv") || backendPreference !== "r")
-  ) {
+  if (backend === "r" && (uri.scheme !== "file" || (extension !== ".csv" && extension !== ".tsv"))) {
     return undefined;
   }
   if (extension === ".csv" || extension === ".tsv" || extension === ".xlsx" || extension === ".xls") {

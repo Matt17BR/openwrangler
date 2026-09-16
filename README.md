@@ -153,7 +153,8 @@ CSV export is available; Parquet export requires `nanoparquet` and has type and 
 _Preview grouped R results alongside the cleaning history and generated R code._
 
 Native R can also open local CSV and TSV files on Linux/macOS as a **Preview**. Choose R from the dataframe engine
-picker, or set `openWrangler.defaultBackend` to `r` before opening a file. R reads the complete UTF-8 file into memory;
+picker, or set `openWrangler.defaultBackend` to `r` before opening a file. Auto also tries R when no compatible Python
+interpreter or file engine is available. An explicit Python engine choice or a file-read error does not switch to R. R reads the complete UTF-8 file into memory;
 it requires an installed Rscript and does not need Python. The **Open Wrangler R** output channel records the selected
 Rscript path. Choosing R from a Python session opens a separate tab and
 preserves the existing steps. Changing an R file's import options also opens a separate session.

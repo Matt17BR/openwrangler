@@ -38,11 +38,17 @@ describe("SessionCoordinator", () => {
   it("delegates a file dependency action before a session exists with its captured intent", async () => {
     const coordinator = new SessionCoordinator();
     const installFileDependencies = vi.fn(async () => true);
+    const fallback = { isCurrent: () => true };
+    const prepareFileAutoFallback = vi.fn(async () => fallback);
     const request = vi.fn();
-    const bridge = coordinator.createBridge({ request, installFileDependencies });
+    const bridge = coordinator.createBridge({ request, installFileDependencies, prepareFileAutoFallback });
     const source = { kind: "file" as const, label: "A.xlsx", path: "/workspace/A.xlsx" };
     const cancellation = new vscode.CancellationTokenSource();
     try {
+      await expect(bridge.prepareFileAutoFallback?.(source, { cancellation: cancellation.token })).resolves.toBe(
+        fallback
+      );
+      expect(prepareFileAutoFallback).toHaveBeenCalledWith(source, { cancellation: cancellation.token });
       await expect(
         bridge.installFileDependencies?.(source, "pandas", { cancellation: cancellation.token })
       ).resolves.toBe(true);
