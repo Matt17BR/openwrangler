@@ -26,7 +26,7 @@ import __main__
 import openwrangler_runtime.engines.duckdb_engine as duckdb_runtime
 from openwrangler_runtime._column_binding import bind_step
 from openwrangler_runtime.duckdb_tables import list_duckdb_tables, validated_database_tables
-from openwrangler_runtime.engines.base import DataFrameEngine, EngineError, typed_selection_value
+from openwrangler_runtime.engines.base import DataFrameEngine, EngineError, SessionDataShape, typed_selection_value
 from openwrangler_runtime.engines.duckdb_engine import DuckDBEngine, DuckDBNotebookPlan, DuckDBSqlPlan
 from openwrangler_runtime.engines.registry import EngineRegistry
 from openwrangler_runtime.export_target import ExportTarget, _regular_file_identity
@@ -100,6 +100,30 @@ def test_duckdb_database_table_session_retains_quoted_source_and_forces_viewing(
         summary = manager.get_summary(session_id, 0, model, ["c:source:0"])["summaries"][0]
         assert summary["numeric"]["min"] == 7 and summary["numeric"]["max"] == 11
         assert summary["numeric"]["sum"] == 27
+        counted: list[Any] = []
+        shape = native.shape
+
+        def count(frame: Any) -> SessionDataShape:
+            counted.append(frame)
+            return shape(frame)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(native, "shape", count)
+            filtered_model = {
+                "filters": [
+                    {
+                        "column": "id",
+                        "type": "integer",
+                        "predicates": [{"kind": "predicate", "operator": "gt", "value": 7}],
+                    }
+                ],
+                "sort": [],
+            }
+            assert manager.get_page(session_id, 0, 0, 10, filtered_model)["page"]["totalRows"] == 2
+            sorted_model = {**filtered_model, "sort": model["sort"]}
+            sorted_page = manager.get_page(session_id, 0, 0, 10, sorted_model)["page"]
+            assert len(counted) == 2  # Database tables can have volatile computed columns.
+            assert [row["values"][0]["display"] for row in sorted_page["rows"]] == ["11", "9"]
         with pytest.raises(EngineError, match="Conversion Error"):
             native._terminal_rows(session.original, "SELECT CAST('invalid' AS INTEGER) FROM ow LIMIT 1")
         assert native.shape(session.original) == {"rows": 3, "columns": 3}

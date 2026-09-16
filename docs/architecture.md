@@ -266,6 +266,10 @@ previous view remains authoritative until page construction, metadata, source va
 request scope succeed. Public page responses are checked with their real correlation fields before committing the
 candidate view. This preserves the separate page and complete-frame size limits. Failure preserves the previous
 query, epoch and frame identities; a changed or lost source still invalidates cached data.
+For the original frame of an ordinary Polars or DuckDB file, a page request changing only sorts reuses the known
+filtered count while still applying and validating the new query. Predicate changes and different displayed frames
+recount. Notebook sources and DuckDB database tables retain their existing count behavior, including reevaluation
+of computed database columns.
 Python response sizing and encoding share a strict-JSON writer. It processes long strings in chunks of at most
 16,384 characters, writing unescaped ASCII chunks directly and validating escaping and UTF-8 for other chunks.
 It stops when a prefix exceeds the byte bound, without inspecting later chunks for other invalid data.
