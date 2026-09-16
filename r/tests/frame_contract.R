@@ -6105,6 +6105,84 @@ profile_reference <- function(capture, position) {
   list(id = schema$id, name = schema$name)
 }
 
+# Text validation stays chunked while preserving encoding, bounds and first-error labels.
+local({
+  encode <- function(bytes, encoding) {
+    value <- rawToChar(as.raw(bytes))
+    Encoding(value) <- encoding
+    value
+  }
+  latin1 <- encode(c(99, 97, 102, 233), "latin1")
+  utf8 <- "caf\u00e9"
+  unknown <- utf8
+  Encoding(unknown) <- "unknown"
+  utf8_limit <- strrep("\u00e9", 4096L)
+  latin1_limit <- encode(rep(233, 4096L), "latin1")
+  latin1_long_valid <- encode(c(233, rep(97, 5000L)), "latin1")
+  values <- c(rep(c("ASCII", utf8, latin1, unknown, "", NA_character_), 16667L),
+    utf8_limit, latin1_limit, strrep("a", 8192L), latin1_long_valid)
+  frame <- data.frame(text = values, factor = factor(values))
+  before <- serialize(frame, NULL, version = 3L)
+  set.seed(761L)
+  rng <- .Random.seed
+  maximum_conversion_width <- 0L
+  assert_true(!exists("iconv", contract_environment, inherits = FALSE), "profile test would overwrite a private converter")
+  assign("iconv", function(x, ...) {
+    maximum_conversion_width <<- max(maximum_conversion_width, length(x))
+    base::iconv(x, ...)
+  }, contract_environment)
+  on.exit(rm("iconv", envir = contract_environment), add = TRUE)
+  capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
+  summaries <- openwrangler_r_frame_contract$materialize_summaries(capture, lapply(1:2, function(i) profile_reference(capture, i)))
+  assert_true(maximum_conversion_width > 1L, "ordinary profile text still validates every row through scalar conversion")
+  assert_true(maximum_conversion_width <= 65536L, "profile text converted beyond its existing chunk bound")
+  for (summary in summaries) {
+    assert_identical(summary$nullCount, 16667L, "mixed text encoding changed missing count")
+    assert_identical(summary$text$emptyCount, 16667L, "mixed text encoding changed empty count")
+    assert_identical(summary$text$maxLength, 8192L, "valid text byte boundary was rejected or shortened")
+    assert_identical(summary$distinctCount, 6L, "equivalent encodings became distinct categories")
+    assert_identical(vapply(summary$topValues, `[[`, integer(1L), "count"), c(50001L, 16667L, 16667L, 2L, 1L, 1L),
+      "mixed text encoding changed full category counts")
+    assert_identical(vapply(summary$topValues, `[[`, character(1L), "value"),
+      c(utf8, "ASCII", "", utf8_limit, strrep("a", 8192L), paste0("\u00e9", strrep("a", 5000L))),
+      "mixed text encoding changed normalized values or first-occurrence ties")
+  }
+  assert_identical(serialize(frame, NULL, version = 3L), before, "text profiling changed source encodings or factor levels")
+  assert_identical(.Random.seed, rng, "text validation changed caller RNG")
+
+  malformed <- encode(255, "UTF-8")
+  bytes <- encode(255, "bytes")
+  oversized <- strrep("x", 8193L)
+  invalid_cases <- list(
+    list(values = c(malformed, oversized), code = "invalid-text", message = "is not valid UTF-8"),
+    list(values = c(malformed, bytes), code = "invalid-text", message = "is not valid UTF-8"),
+    list(values = c(bytes, malformed), code = "invalid-text", message = "uses the bytes encoding"),
+    list(values = c(oversized, malformed), code = "text-too-large", message = "exceeds 8192 UTF-8 bytes"),
+    list(values = c(paste0(utf8_limit, "x"), bytes), code = "text-too-large", message = "exceeds 8192 UTF-8 bytes"),
+    list(values = c(encode(rep(233, 4097L), "latin1"), malformed), code = "text-too-large", message = "exceeds 8192 UTF-8 bytes")
+  )
+  for (case in invalid_cases) {
+    frame <- data.frame(text = c(NA_character_, case$values, rep("ok", 100000L)))
+    before <- serialize(frame, NULL, version = 3L)
+    capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
+    maximum_conversion_width <- 0L
+    error <- tryCatch(openwrangler_r_frame_contract$materialize_summaries(capture, list(profile_reference(capture, 1L))), error = identity)
+    assert_true(inherits(error, "openwrangler_r_frame_error"), "invalid profile text escaped its native error owner")
+    assert_identical(error$code, case$code, "mixed invalid text changed first-error code")
+    assert_identical(conditionMessage(error), paste("profile value 2", case$message), "mixed invalid text changed first visible error")
+    assert_true(maximum_conversion_width <= 1L, "exceptional text chunk converted later values before scalar refusal")
+    assert_identical(serialize(frame, NULL, version = 3L), before, "failed text profile mutated its source")
+  }
+  frame <- data.frame(text = rep("ok", 100005L), keep = c(FALSE, rep(TRUE, 100004L)))
+  frame$text[[65538L]] <- NA_character_
+  frame$text[[65539L]] <- malformed
+  capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
+  query <- list(filters = list(list(column = profile_reference(capture, 2L), type = "boolean",
+    predicates = list(list(kind = "predicate", operator = "equals", value = TRUE)))), sorts = list())
+  assert_error(openwrangler_r_frame_contract$materialize_summaries(capture, list(profile_reference(capture, 1L)), query),
+    "profile value 65538 is not valid UTF-8")
+})
+
 # Profile reductions bypass registered caller mean methods.
 local({
   methods <- get(".__S3MethodsTable__.", asNamespace("base"), inherits = FALSE)

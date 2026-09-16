@@ -2400,12 +2400,29 @@ openwrangler_r_frame_contract <- local({
           false_count <- false_count + chunk_false
         } else if (kind %in% c("character", "factor")) {
           text_values <- if (kind == "factor") as.character(present) else present
-          text_values <- vapply(
-            seq_along(text_values),
-            function(index) bounded_utf8(text_values[[index]], sprintf("profile value %d", visible_positions[[index]])),
-            character(1L),
-            USE.NAMES = FALSE
-          )
+          encodings <- Encoding(text_values)
+          latin1 <- encodings == "latin1"
+          raw_bytes <- nchar(text_values, type = "bytes")
+          # Latin-1 may double in UTF-8; refuse scalarly before converting later potentially oversized values.
+          if (any(encodings == "bytes" | raw_bytes > maximum_text_bytes |
+                  (latin1 & raw_bytes > maximum_text_bytes / 2L))) {
+            text_values <- vapply(
+              seq_along(text_values),
+              function(index) bounded_utf8(text_values[[index]], sprintf("profile value %d", visible_positions[[index]])),
+              character(1L),
+              USE.NAMES = FALSE
+            )
+          } else {
+            converted <- character(length(text_values))
+            converted[latin1] <- iconv(text_values[latin1], from = "latin1", to = "UTF-8", sub = NA_character_)
+            converted[!latin1] <- iconv(text_values[!latin1], from = "UTF-8", to = "UTF-8", sub = NA_character_)
+            invalid <- which(is.na(converted) | nchar(converted, type = "bytes") > maximum_text_bytes)
+            if (length(invalid) != 0L) {
+              index <- invalid[[1L]]
+              bounded_utf8(text_values[[index]], sprintf("profile value %d", visible_positions[[index]]))
+            }
+            text_values <- converted
+          }
           lengths <- nchar(text_values, type = "chars", allowNA = FALSE, keepNA = FALSE)
           text_empty_count <- text_empty_count + sum(lengths == 0L)
           text_min_length <- min(text_min_length, min(lengths))
