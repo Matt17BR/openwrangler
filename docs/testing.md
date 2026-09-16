@@ -673,10 +673,11 @@ refusal, Save, clipboard and source-bound notebook insertion. Its editing sequen
 followed by source integrity checks and session disposal. The additional Undo after Redo runs in Linux
 core to prepare for Drop Columns. The macOS profile also retains all three collapse-frame opens,
 direct-document execution and kernel restart/recovery. Its managed-document stage also opens the existing 240-row,
-four-column CSV through the public file command with temporary R selection, checks native cells and Rename
+four-column CSV through the public file command with temporary R selection, checks default-on header statistics, native cells and Rename
 Preview/Apply, the full rendered generated code's exact file read, all-row CSV export and source-destination refusal.
-It restores the setting, preserves fixture bytes and checks session/private-process-root cleanup. This adds no
-profile, preparation dependency or deadline; its added macOS cost must be measured in the original hosted run.
+It restores the setting, preserves fixture bytes and checks session/private-process-root cleanup. It uses the existing
+profile, preparation dependencies and phase deadline. Its original hosted run records phase-relative checkpoints;
+polling can miss quick transitions, so these are not exact per-action timings.
 The Linux core catalog retains the Dense Rank form,
 Preview/Apply/Undo and three direct page samples for exact ranks, missing cells and row identities. The macOS profile
 does not check the Dense Rank form and its native nullable integer result together. Both paths restore the first column

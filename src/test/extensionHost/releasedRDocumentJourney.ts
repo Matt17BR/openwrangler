@@ -498,8 +498,19 @@ export function createReleasedRDocumentJourney({
               ];
             })
           );
-          recordAcceptanceProgress("jupyter-r:file:rename");
           let csvApp = await releasedRSessionApp(workbench, testing, csvSessionId, "the native R CSV renderer");
+          assert.equal(
+            await csvApp.getByRole("button", { name: "Header profiles", exact: true }).getAttribute("aria-pressed"),
+            "true"
+          );
+          await csvApp
+            .locator('th[data-column="row_id"] .exactSummaryStats')
+            .filter({ hasText: /Missing\s*0\b/u })
+            .filter({ hasText: /Distinct\s*240\b/u })
+            .filter({ hasText: /Min\s*1\b/u })
+            .filter({ hasText: /Max\s*240\b/u })
+            .waitFor({ state: "visible", timeout: 10_000 });
+          recordAcceptanceProgress("jupyter-r:file:rename");
           const renamed = await previewReleasedRRename(testing, workbench, csvApp, csvSessionId, "row_id", "record_id");
           csvApp = renamed.app;
           await csvApp
