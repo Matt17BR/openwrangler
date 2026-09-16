@@ -177,6 +177,7 @@
 }
 
 .summaryDistributionChart .numericHistogram {
+  box-sizing: border-box;
   border: 1px solid var(--vscode-panel-border);
   border-radius: 4px;
   padding: 8px 10px;
