@@ -1999,6 +1999,8 @@ Apply or Discard returns focus to Add step. Delayed cleaning-plan focus restorat
 and revision and yields to newer focus, including focus outside the webview.
 Code Preview keeps its labelled content in the tab order in both editable and read-only modes. Read-only buffers
 support keyboard navigation and selection while the editor's mutation guards remain active.
+Completed inspection scope travels with the private code message and appears above the editor, outside its document.
+It uses the existing inspection snapshot and clears when a host update has no inspection scope or usable generated code.
 No-code placeholders comment every source-label line; code actions still require generated code.
 When a Viewing session has no generated code, Code Preview and code-action replies explain its cleaning availability.
 

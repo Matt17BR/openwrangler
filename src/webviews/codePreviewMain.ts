@@ -30,6 +30,20 @@ const vscode = acquireVsCodeApi();
 const host = document.querySelector<HTMLElement>("#root");
 if (!host) throw new Error("Code Preview root was not found.");
 publishRuntimeIdentity(host, null);
+Object.assign(host.style, { display: "flex", flexDirection: "column" });
+const scope = document.createElement("div");
+scope.dataset.codeScope = "";
+scope.hidden = true;
+scope.setAttribute("role", "status");
+Object.assign(scope.style, {
+  flex: "none",
+  padding: "6px 10px",
+  fontFamily: "var(--vscode-font-family, sans-serif)",
+  fontSize: "var(--vscode-font-size, 13px)",
+  color: "var(--vscode-descriptionForeground)",
+  borderBottom: "1px solid var(--vscode-panel-border)"
+});
+host.append(scope);
 
 let applyingHostUpdate = false;
 let editTimer: ReturnType<typeof setTimeout> | undefined;
@@ -57,7 +71,9 @@ const pythonHighlightStyle = HighlightStyle.define([
 ]);
 const codePreviewTheme = EditorView.theme({
   "&": {
-    height: "100vh",
+    height: "100%",
+    flex: "1",
+    minHeight: "0",
     color: "var(--vscode-editor-foreground, var(--vscode-foreground, #d4d4d4))",
     backgroundColor: "var(--vscode-editor-background, #1e1e1e)"
   },
@@ -115,6 +131,10 @@ const handleHostMessage = (event: MessageEvent<unknown>): void => {
     currentCodeDialect = codeDialect;
     currentEditable = message.editable;
     currentLanguageLabel = languageLabel;
+    scope.textContent = message.inspection
+      ? `${languageLabel} · Inspecting step ${message.inspection.stepIndex + 1} of ${message.inspection.stepCount}`
+      : "";
+    scope.hidden = message.inspection === null;
     publishRuntimeIdentity(host, message.runtimeIdentity);
   } finally {
     applyingHostUpdate = false;

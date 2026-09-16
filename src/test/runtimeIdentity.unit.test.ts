@@ -88,10 +88,41 @@ describe("private Code Preview messages", () => {
   const pysparkIdentity = runtimeIdentityForDataBackend("pyspark");
   const rIdentity = runtimeIdentityForSessionMetadata({ backend: "r", rDataframeFlavor: "r.tibble" });
 
+  it.each([
+    [null, true],
+    [{ stepIndex: 0, stepCount: 2 }, true],
+    [{ stepIndex: 1, stepCount: 2 }, true],
+    [undefined, false],
+    [{ stepIndex: -1, stepCount: 2 }, false],
+    [{ stepIndex: 0, stepCount: 0 }, false],
+    [{ stepIndex: 2, stepCount: 2 }, false],
+    [{ stepIndex: 0.5, stepCount: 2 }, false],
+    [{ stepIndex: 0, stepCount: Number.MAX_SAFE_INTEGER + 1 }, false],
+    [{ stepIndex: 0, stepCount: 2, extra: true }, false]
+  ])("validates bounded inspection scope %j", (inspection, accepted) => {
+    const message = {
+      kind: "codePreview",
+      bufferId,
+      bufferVersion: 0,
+      bufferInvalid: false,
+      code: "def clean_data(df):\n    return df\n",
+      editable: true,
+      runtimeIdentity: polarsIdentity,
+      inspection
+    };
+    expect(isCodePreviewHostMessage(message)).toBe(accepted);
+    if (inspection !== null) {
+      expect(isCodePreviewHostMessage({ ...message, bufferInvalid: true })).toBe(false);
+      expect(isCodePreviewHostMessage({ ...message, code: "" })).toBe(false);
+      expect(isCodePreviewHostMessage({ ...message, runtimeIdentity: pysparkIdentity, editable: false })).toBe(false);
+    }
+  });
+
   it("accepts the current private host and webview messages", () => {
     expect(
       isCodePreviewHostMessage({
         kind: "codePreview",
+        inspection: null,
         bufferId,
         bufferVersion: 0,
         bufferInvalid: false,
@@ -103,6 +134,7 @@ describe("private Code Preview messages", () => {
     expect(
       isCodePreviewHostMessage({
         kind: "codePreview",
+        inspection: null,
         bufferId,
         bufferVersion: 0,
         bufferInvalid: false,
@@ -114,6 +146,7 @@ describe("private Code Preview messages", () => {
     expect(
       isCodePreviewHostMessage({
         kind: "codePreview",
+        inspection: null,
         bufferId,
         bufferVersion: 0,
         bufferInvalid: false,
@@ -125,6 +158,7 @@ describe("private Code Preview messages", () => {
     expect(
       isCodePreviewHostMessage({
         kind: "codePreview",
+        inspection: null,
         bufferId,
         bufferVersion: 0,
         bufferInvalid: false,
@@ -192,6 +226,7 @@ describe("private Code Preview messages", () => {
     expect(
       isCodePreviewHostMessage({
         kind: "codePreview",
+        inspection: null,
         bufferId,
         bufferVersion: 0,
         bufferInvalid: false,
@@ -214,6 +249,7 @@ describe("private Code Preview messages", () => {
   it.each([
     {
       kind: "codePreview",
+      inspection: null,
       bufferId,
       bufferVersion: 0,
       bufferInvalid: false,
@@ -223,6 +259,7 @@ describe("private Code Preview messages", () => {
     { kind: "codeSnapshotRequest", requestId: "not-a-request-id", bufferId, bufferVersion: 0 },
     {
       kind: "codePreview",
+      inspection: null,
       bufferId,
       bufferVersion: 0,
       bufferInvalid: false,
@@ -233,6 +270,7 @@ describe("private Code Preview messages", () => {
     },
     {
       kind: "codePreview",
+      inspection: null,
       bufferId,
       bufferVersion: 0,
       bufferInvalid: false,
@@ -242,6 +280,7 @@ describe("private Code Preview messages", () => {
     },
     {
       kind: "codePreview",
+      inspection: null,
       bufferId,
       bufferVersion: 0,
       bufferInvalid: false,

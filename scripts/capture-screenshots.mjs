@@ -1171,6 +1171,7 @@ function writeCodePreviewHarness(fileName, code, outputName) {
           setTimeout(() => window.dispatchEvent(new MessageEvent("message", {
             data: {
               kind: "codePreview",
+              inspection: null,
               bufferId: "00000000-0000-4000-8000-000000000001",
               bufferVersion: 0,
               bufferInvalid: false,
