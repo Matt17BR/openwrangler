@@ -354,8 +354,9 @@ session-scoped row IDs. Individual operations and native arithmetic remain in th
 BIFF worksheet names are qualified through the real Polars and Pandas import-options pickers; direct configured-import
 cases retain zero-based worksheet indexes.
 
-Ordinary installed R actions, picker acquisition, Explorer and editor-title file launches, and completed import-option
-changes observe the exact session/revision and committed renderer receipt without forcing another panel publication.
+Ordinary installed R actions, picker acquisition, Explorer and editor-title file launches, completed import-option
+changes, and public Apply/Undo actions in gallery captures observe the exact session/revision and committed renderer
+receipt without forcing another panel publication.
 Once acquired, Add and Edit operation dialogs retain their physical node, frame, session and revision through an
 opaque test marker. A new publication for the same dialog can continue configuration; a replacement dialog or changed
 revision cannot satisfy the old locator. Mutation-result assertions still require the exact acknowledged publication.

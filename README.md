@@ -99,9 +99,9 @@ same engine and import options. This supports Pandas, Polars, and DuckDB file pl
 unfinished draft. Choose a file that is not already open in Open Wrangler and has no saved work for those import
 options. Both source files remain unchanged.
 
-<a href="https://github.com/Matt17BR/openwrangler/blob/main/docs/images/readme/gallery/applied-step-inspection-detail.png"><img alt="Inspecting an applied Formula column step with its added column highlighted and history controls visible" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/gallery/applied-step-inspection-detail.png" width="960"></a>
+<a href="https://github.com/Matt17BR/openwrangler/blob/main/docs/images/readme/gallery/applied-step-inspection.png"><img alt="Applied Formula-step inspection with projected_revenue highlighted, Edit and Delete controls, and Code Preview labeled Inspecting step 2 of 2" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/gallery/applied-step-inspection-detail.png" width="960"></a>
 
-_Inspect an applied step without changing the confirmed data or viewing filters._
+_Inspect an applied step alongside its scoped code without changing the confirmed data or viewing filters._
 
 ## Use notebook data and keep the code
 
