@@ -478,7 +478,11 @@ export function createReleasedRDocumentJourney({
             csv.metadata.schema.map((column) => column.name),
             ["row_id", "group", "score", "label"]
           );
-          assert.equal(csv.metadata.capabilities.documentInsert, false);
+          assert.equal(
+            csv.metadata.capabilities.documentInsert === true,
+            false,
+            "An R CSV session must not enable source-document insertion."
+          );
           assert.equal(csv.metadata.capabilities.notebookInsert, false);
           assert.equal(releasedRProcessRoots().filter((root) => !initialProcessRoots.includes(root)).length, 1);
           const csvPage = await assertReleasedSessionPage(testing, csv, "1", "jupyter-r-file-page");

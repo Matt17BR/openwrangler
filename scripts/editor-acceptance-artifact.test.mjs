@@ -236,9 +236,11 @@ test("checkpoint timing logs only changed fixed labels without changing phase or
         (stage) => `jupyter-r:coverage:${profile}:native-frame:${frame}:view-open:${stage}`
       )
     );
+    const timedCheckpoints = [...collapseCheckpoints, "jupyter-r:file:start", "jupyter-r:file:complete"];
     const checkpoints = [
       "jupyter-r:editing:text-length-preview-discard",
-      ...collapseCheckpoints,
+      ...timedCheckpoints,
+      "jupyter-r:file:start:private-value",
       `jupyter-r:coverage:${profile}:native-frame:private-fixture:view-open:start`,
       `jupyter-r:coverage:${profile}:native-frame:collapse_frame_private:view-open:start`,
       `jupyter-r:coverage:${profile}:native-frame:collapse_frame:view-open:complete:private-value`,
@@ -263,10 +265,10 @@ test("checkpoint timing logs only changed fixed labels without changing phase or
       initialProgressCheckpoint: checkpoints[0],
       progressReader: () => checkpoints[Math.min(Math.floor((clock - 1_000) / 20), checkpoints.length - 1)]
     });
-    assert.deepEqual(observed, { kind: "timeout", timeout: "inactivity", elapsedMs: 400 });
+    assert.deepEqual(observed, { kind: "timeout", timeout: "inactivity", elapsedMs: 460 });
     assert.deepEqual(
       lines,
-      collapseCheckpoints.map(
+      timedCheckpoints.map(
         (checkpoint, index) => `R editor checkpoint observed at ${120 + index * 20} ms: ${checkpoint}`
       )
     );
