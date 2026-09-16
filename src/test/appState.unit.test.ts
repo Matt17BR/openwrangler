@@ -46,6 +46,22 @@ const filtered: FilterModel = {
 };
 
 describe("App view-state model", () => {
+  it("requires the displayed session and revision for a native Dataset action", () => {
+    const action = {
+      kind: "editorAction",
+      action: "openDatasetSummary",
+      expectedSessionId: "session",
+      expectedRevision: 3
+    };
+    expect(decodeAppHostMessage(action)).toEqual(action);
+    for (const expectedSessionId of [undefined, null, 4, ""]) {
+      expect(decodeAppHostMessage({ ...action, expectedSessionId })).toBeUndefined();
+    }
+    for (const expectedRevision of [undefined, null, -1, 0.5, "3"]) {
+      expect(decodeAppHostMessage({ ...action, expectedRevision })).toBeUndefined();
+    }
+  });
+
   it("requires bound native filter removal fields", () => {
     const action = {
       kind: "editorAction",

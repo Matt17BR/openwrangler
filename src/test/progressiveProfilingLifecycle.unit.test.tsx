@@ -193,6 +193,7 @@ describe("progressive profiling lifecycle", () => {
       act(() => result.current.updateVisibleSummaryColumns(["c:0"]));
       const firstSummary = onlyRuntimeEnvelope("getSummary").request.viewRequestId;
       const firstStats = onlyRuntimeEnvelope("getDatasetStats").request.viewRequestId;
+      expect(result.current.datasetStatsPending).toBe(true);
       act(() => {
         for (const viewRequestId of [firstSummary, firstStats]) {
           result.current.settleProfileMessage({
@@ -208,11 +209,13 @@ describe("progressive profiling lifecycle", () => {
       expect(runtimeEnvelopes("getSummary")).toHaveLength(1);
       expect(runtimeEnvelopes("getDatasetStats")).toHaveLength(1);
       expect(result.current.backgroundDiagnostics.size).toBe(2);
+      expect(result.current.datasetStatsPending).toBe(false);
 
       postMessage.mockClear();
       act(() => result.current.restartProfilingForConfirmedView());
       const summary = onlyRuntimeEnvelope("getSummary").request.viewRequestId;
       const stats = onlyRuntimeEnvelope("getDatasetStats").request.viewRequestId;
+      expect(result.current.datasetStatsPending).toBe(true);
       expect(summary).not.toBe(firstSummary);
       expect(stats).not.toBe(firstStats);
       act(() => {
@@ -231,6 +234,7 @@ describe("progressive profiling lifecycle", () => {
       });
       expect(result.current.summaries).toEqual([citySummary]);
       expect(result.current.backgroundDiagnostics.size).toBe(0);
+      expect(result.current.datasetStatsPending).toBe(false);
     } finally {
       unmount();
       vi.useRealTimers();
@@ -246,6 +250,7 @@ describe("progressive profiling lifecycle", () => {
     const { result, rerender } = renderLifecycle(drawer);
     await waitFor(() => expect(runtimeEnvelopes("getDatasetStats")).toHaveLength(1));
     const stale = onlyRuntimeEnvelope("getDatasetStats").request.viewRequestId;
+    expect(result.current.datasetStatsPending).toBe(true);
 
     confirmed = confirmedView(metadata, "view-b");
     let settlement: ReturnType<typeof result.current.settleProfileMessage> | undefined;
@@ -258,11 +263,13 @@ describe("progressive profiling lifecycle", () => {
       });
     });
     expect(settlement?.stats).toBeUndefined();
+    expect(result.current.datasetStatsPending).toBe(false);
 
     rerender({ drawer: { ...drawer, viewContextId: "view-b" } });
     await waitFor(() => expect(runtimeEnvelopes("getDatasetStats")).toHaveLength(2));
     const current = runtimeEnvelopes("getDatasetStats").at(-1)?.request.viewRequestId;
     if (!current) throw new Error("Expected current dataset statistics.");
+    expect(result.current.datasetStatsPending).toBe(true);
     act(() => {
       settlement = result.current.settleProfileMessage({
         kind: "datasetStats",
@@ -272,6 +279,55 @@ describe("progressive profiling lifecycle", () => {
       });
     });
     expect(settlement?.stats).toEqual(emptyStats());
+    expect(result.current.datasetStatsPending).toBe(false);
+  });
+
+  it("settles exhausted dataset cancellation and retires pending state with the source", () => {
+    vi.useFakeTimers();
+    const { result, rerender, unmount } = renderLifecycle({ ...closedDrawer, open: true, view: "dataset" });
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        expect(result.current.datasetStatsPending).toBe(true);
+        const request = runtimeEnvelopes("getDatasetStats").at(-1)!.request;
+        act(() =>
+          result.current.settleProfileMessage({
+            kind: "cancelled",
+            targetRequestId: request.viewRequestId,
+            viewRequestId: request.viewRequestId
+          })
+        );
+        expect(result.current.datasetStatsPending).toBe(false);
+        act(() => vi.runOnlyPendingTimers());
+        expect(runtimeEnvelopes("getDatasetStats")).toHaveLength(2);
+      }
+      expect(result.current.datasetStatsPending).toBe(false);
+      act(() => result.current.requestStatsForConfirmedView());
+      const retired = runtimeEnvelopes("getDatasetStats").at(-1)!.request.viewRequestId;
+      expect(result.current.datasetStatsPending).toBe(true);
+      act(() => result.current.resetViewProfiling({ clearOwners: true }));
+      expect(result.current.datasetStatsPending).toBe(false);
+      expect(cancelledRequestIds()).toContain(retired);
+      confirmed = confirmedView({ ...metadata, sessionId: "replacement" }, "replacement-view");
+      rerender({ drawer: { ...closedDrawer, open: true, view: "dataset", viewContextId: "replacement-view" } });
+      const replacement = runtimeEnvelopes("getDatasetStats").at(-1)!.request.viewRequestId;
+      expect(replacement).not.toBe(retired);
+      expect(result.current.datasetStatsPending).toBe(true);
+      act(() =>
+        result.current.settleProfileMessage({
+          kind: "datasetStats",
+          revision: metadata.revision,
+          viewRequestId: retired,
+          stats: emptyStats()
+        })
+      );
+      expect(result.current.datasetStatsPending).toBe(true);
+      act(() => result.current.releaseDrawerProfiling());
+      expect(result.current.datasetStatsPending).toBe(false);
+      expect(cancelledRequestIds()).toContain(replacement);
+    } finally {
+      unmount();
+      vi.useRealTimers();
+    }
   });
 
   it("captures and restores an isolated rollback snapshot", () => {

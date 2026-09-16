@@ -916,6 +916,31 @@ function registerNativeViewsTransactional(
     registerCommand("openWrangler.moveViewSortUp", (node?: unknown) => runViewSortAction(node, "moveUp")),
     registerCommand("openWrangler.moveViewSortDown", (node?: unknown) => runViewSortAction(node, "moveDown")),
     registerCommand("openWrangler.removeViewSort", (node?: unknown) => runViewSortAction(node, "remove")),
+    registerCommand("openWrangler.internal.openDatasetSummary", async (sessionId: unknown, revision: unknown) => {
+      const snapshot = coordinator.activeSession();
+      if (
+        typeof sessionId !== "string" ||
+        !Number.isInteger(revision) ||
+        !snapshot ||
+        snapshot.sessionId !== sessionId ||
+        snapshot.metadata.revision !== revision ||
+        !supportsViewingCapability(snapshot.metadata.capabilities, "profile")
+      ) {
+        void vscode.window.showInformationMessage("Select dataset statistics from the current dataframe's Summary.");
+        return;
+      }
+      if (
+        !(await OpenWranglerPanel.sendEditorActionForSession({
+          action: "openDatasetSummary",
+          expectedSessionId: snapshot.sessionId,
+          expectedRevision: snapshot.metadata.revision
+        }))
+      ) {
+        void vscode.window.showInformationMessage(
+          "Open this dataframe's editor before calculating dataset statistics."
+        );
+      }
+    }),
     registerCommand("openWrangler.startOperation", async (kind?: OperationKind) => {
       if (kind !== undefined && !operationCatalog.some((operation) => operation.kind === kind)) return;
       const snapshot = coordinator.activeSession();
@@ -1528,15 +1553,20 @@ function summaryNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
     nodes.push(new ViewNode("Profiles unavailable", "This dataframe does not support profiling", "info"));
     return nodes;
   }
-  const statsGuidance = stats
+  const statsGuidance = stats ? undefined : "Select to calculate these statistics in the Dataset view.";
+  const statsCommand = stats
     ? undefined
-    : "From Current view, choose Dataset in Column profiles to calculate these statistics.";
+    : {
+        command: "openWrangler.internal.openDatasetSummary",
+        title: "Calculate dataset statistics",
+        arguments: [snapshot.sessionId, metadata.revision]
+      };
   nodes.push(
     new ViewNode(
       "Missing cells",
       stats ? stats.missingCells.toLocaleString() : "Not calculated yet",
       "question",
-      undefined,
+      statsCommand,
       undefined,
       statsGuidance
     ),
@@ -1550,7 +1580,7 @@ function summaryNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
           : stats.duplicateRows.toLocaleString()
         : "Not calculated yet",
       "copy",
-      undefined,
+      statsCommand,
       undefined,
       statsGuidance
     )

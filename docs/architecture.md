@@ -183,7 +183,10 @@ replace imported modules or restart a user-owned kernel to change its protocol.
 
 Dataset statistics require exact missing-cell, missing-row and per-column missing counts. The duplicate-row count
 is either a nonnegative integer or explicit null when unavailable; null cannot carry a duplicate sample size. Both
-the workbench and native Dataset view display that state as unavailable. Native R retains numeric duplicate counts.
+the workbench and native Summary view display that state as unavailable. Native R retains numeric duplicate counts.
+The Dataset drawer owns requests for these statistics. Selecting an uncalculated statistic in native Summary opens
+that drawer for the displayed session and revision; stale actions cannot target another dataframe. The same request
+owner drives its pending indicator and explicit retry. Idle and failed requests do not keep a profiling indicator.
 
 Python request enums, including nested cleaning parameters, require string values before membership checks. Present
 `backend`, `mode` and `cloneFrom` options must satisfy their existing schemas; explicit null is not an omitted option.

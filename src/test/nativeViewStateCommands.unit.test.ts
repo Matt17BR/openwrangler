@@ -200,6 +200,34 @@ describe("native state and presentation commands", () => {
     });
   });
 
+  it("opens dataset statistics only for the Summary row's displayed session and revision", async () => {
+    const initial = exportableSnapshot("session", "sample.csv", 0);
+    const registered = register(initial);
+    const rows = treeChildren("openWrangler.summary").slice(-2);
+    const action = rows[0]!.command as { command: string; arguments: unknown[] };
+    expect(action).toEqual({
+      command: "openWrangler.internal.openDatasetSummary",
+      title: "Calculate dataset statistics",
+      arguments: [initial.sessionId, initial.metadata.revision]
+    });
+    expect(rows[1]!.command).toEqual(action);
+    await command(action.command)(...action.arguments);
+    expect(nativeMocks.sendEditorActionForSession).toHaveBeenCalledExactlyOnceWith({
+      action: "openDatasetSummary",
+      expectedSessionId: initial.sessionId,
+      expectedRevision: initial.metadata.revision
+    });
+    nativeMocks.sendEditorActionForSession.mockClear();
+    registered.setActiveSession({
+      ...initial,
+      metadata: { ...initial.metadata, revision: initial.metadata.revision + 1 }
+    });
+    await command(action.command)(...action.arguments);
+    registered.setActiveSession(exportableSnapshot("other", "other.csv", initial.metadata.revision));
+    await command(action.command)(...action.arguments);
+    expect(nativeMocks.sendEditorActionForSession).not.toHaveBeenCalled();
+  });
+
   it("reuses only previously validated canonical generated source", () => {
     const validate = vi.spyOn(codePreviewLimits, "isCanonicalCodePreviewText");
     try {
@@ -1475,12 +1503,14 @@ describe("native state and presentation commands", () => {
       ["Duplicate rows", "Not calculated yet"]
     ]);
     for (const node of summaryRows.slice(-2)) {
-      const detail =
-        "Not calculated yet. From Current view, choose Dataset in Column profiles to calculate these statistics.";
+      const detail = "Not calculated yet. Select to calculate these statistics in the Dataset view.";
       expect(node).toMatchObject({
         tooltip: `${node.label}: ${detail}`,
         accessibilityInformation: { label: `${node.label}, ${detail}` },
-        command: undefined
+        command: {
+          command: "openWrangler.internal.openDatasetSummary",
+          arguments: [savedOutput.sessionId, savedOutput.metadata.revision]
+        }
       });
     }
     expect(treeChildren("openWrangler.filters").map(nodePresentation)).toEqual([

@@ -72,6 +72,7 @@ export type EditorActionMessage =
   | ViewSortEditorActionMessage
   | ViewFilterRemovalEditorActionMessage
   | StepEditorActionMessage
+  | { kind: "editorAction"; action: "openDatasetSummary"; expectedSessionId: string; expectedRevision: number }
   | OtherEditorActionMessage;
 
 export interface ViewSortActionTarget {
@@ -302,6 +303,17 @@ export function decodeAppHostMessage(value: unknown) {
       )
         return undefined;
       switch (value.action) {
+        case "openDatasetSummary":
+          return typeof value.expectedSessionId === "string" &&
+            value.expectedSessionId.length > 0 &&
+            isNonNegativeInteger(value.expectedRevision)
+            ? {
+                kind: value.kind,
+                action: value.action,
+                expectedSessionId: value.expectedSessionId,
+                expectedRevision: value.expectedRevision
+              }
+            : undefined;
         case "openOperation":
           return value.operationKind === undefined || operationKinds.some((kind) => kind === value.operationKind)
             ? (value as OtherEditorActionMessage)

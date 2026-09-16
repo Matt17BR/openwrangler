@@ -260,6 +260,7 @@ export class OpenWranglerPanel {
     if (message.action === "openOperation" || message.action === "editLatest") {
       target.panel.reveal(target.panel.viewColumn, false);
     }
+    if (message.action === "openDatasetSummary") target.panel.reveal(target.panel.viewColumn, false);
     return target.postRendererMessage({ kind: "editorAction", ...message });
   }
 
@@ -2356,6 +2357,7 @@ type NonSortEditorAction =
 
 export type EditorActionMessage =
   | ({ action: "clearFilterColumn" } & ViewFilterRemovalTarget)
+  | { action: "openDatasetSummary"; expectedSessionId: string; expectedRevision: number }
   | {
       action: "changeViewSort";
       column: string;

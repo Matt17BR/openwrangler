@@ -396,10 +396,12 @@ export function App() {
 
   const {
     backgroundDiagnostics,
+    datasetStatsPending,
     cancelPendingProfiling,
     captureProfileState,
     columnValues,
     releaseDrawerProfiling,
+    requestStatsForConfirmedView,
     requestValues,
     resetViewProfiling,
     restartProfilingAfterMutation,
@@ -1049,6 +1051,23 @@ export function App() {
           else clearStepInspection();
           return;
         }
+        if (response.action === "openDatasetSummary") {
+          const current = metadataRef.current;
+          if (
+            !current ||
+            response.expectedSessionId !== current.sessionId ||
+            response.expectedRevision !== current.revision ||
+            !supportsViewingCapability(current.capabilities, "profile") ||
+            foregroundRequest.current ||
+            isImportOptionsPending() ||
+            isModeChangePending()
+          )
+            return;
+          if (stepInspectionTargetRef.current) clearStepInspection();
+          openSidePanel("dataset");
+          requestStatsForConfirmedView();
+          return;
+        }
         if (isImportOptionsPending()) {
           setForegroundError({ message: "Wait for the current import-options change to finish." });
           return;
@@ -1550,6 +1569,7 @@ export function App() {
     requestImportOptionsChange,
     requestColumnReveal,
     requestStepInspection,
+    requestStatsForConfirmedView,
     resetConfirmedFilterHistory,
     resetGridViewState,
     restoreHostGridViewState,
@@ -2659,6 +2679,10 @@ export function App() {
               <SummaryPanel
                 metadata={metadata}
                 summaries={summaries}
+                statsPending={datasetStatsPending}
+                statsError={backgroundDiagnostics.get("stats")?.message}
+                onRequestStats={() => requestStatsForConfirmedView()}
+                statsRequestDisabled={loading || projectionLoading || mutationPending || importOptionsPending}
                 schemaById={schemaById}
                 selectedColumnId={selectedSummaryColumnId}
                 activeView={summaryPanelView}

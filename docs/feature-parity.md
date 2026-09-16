@@ -526,6 +526,8 @@ Column search keeps arrow and page-key navigation aligned with the displayed res
 Small editor panes preserve room for the grid header and a row while the workbench scrolls around wrapped controls.
 In narrow panes, the source name and actions share toolbar rows when space allows.
 Column profiles and filters stay beside the grid, or below it in narrow panes, without covering the selected cell.
+Selecting an uncalculated statistic in native Summary opens the Dataset view and requests its counts. Failed requests
+show their error with an explicit retry instead of continuing to display a profiling indicator.
 Expanded header profiles align their statistics dividers and center complete chart groups across the visible columns.
 Mixed chart types can increase header height; the existing compact mode preserves space in short editors.
 The stacked layout shows fewer rows and scrolls to reach longer filter forms.
