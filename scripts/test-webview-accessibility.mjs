@@ -1985,19 +1985,44 @@ async function verifyAppliedPlanToolbarLayout(browser) {
     { harness: "applied-plan.html", width: 1280, label: "wide" },
     { harness: "applied-plan.html", width: 620, label: "narrow" },
     { harness: "applied-plan.html", width: 320, label: "compact" },
+    { harness: "applied-plan.html", width: 312, height: 486, label: "installed narrow pane", narrowEditor: true },
     { harness: "applied-plan-dark-zoom-200.html", width: 1280, label: "200% zoom" },
     { harness: "applied-plan.html", width: 620, label: "forced colors", forcedColors: true }
   ];
 
-  for (const { harness, width, label, forcedColors = false } of cases) {
+  for (const { harness, width, height = 760, label, forcedColors = false, narrowEditor = false } of cases) {
     console.log(`Applied-plan toolbar checking: ${harness} (${label}).`);
     const page = await browser.newPage();
-    await page.setViewportSize({ width, height: 760 });
+    await page.setViewportSize({ width, height });
     if (forcedColors) await page.emulateMedia({ forcedColors: "active" });
     await page.goto(pathToFileURL(resolve(harnessDir, harness)).href, { waitUntil: "load" });
 
     const plan = page.getByRole("group", { name: "Cleaning plan" });
     await plan.waitFor();
+    if (narrowEditor) {
+      await page.addStyleTag({
+        content:
+          ':root { --vscode-font-family: system-ui, Ubuntu, "Droid Sans", sans-serif; } body { padding: 0 20px; font-size: 13px; }'
+      });
+      await page.evaluate(() => {
+        const payload = window.openWranglerSessionPayload;
+        // This is a presentation state, not a simulated Undo response.
+        payload.metadata.canRedo = true;
+        window.dispatchEvent(
+          new MessageEvent("message", {
+            origin: location.origin,
+            data: {
+              kind: "sessionOpened",
+              metadata: payload.metadata,
+              page: payload.page,
+              summaries: [],
+              offeredViewContextId: "snapshot:accessibility-fixture"
+            }
+          })
+        );
+      });
+      await page.waitForFunction(() => !document.querySelector(".toolbarPlan button:last-child").disabled);
+    }
     if ((await page.locator(".cleaningBar").count()) !== 0) {
       throw new Error(`${harness} (${label}) retained the obsolete second cleaning-plan bar.`);
     }
@@ -2005,7 +2030,7 @@ async function verifyAppliedPlanToolbarLayout(browser) {
       throw new Error(`${harness} (${label}) did not place the named cleaning-plan group in the primary toolbar.`);
     }
     await plan.getByText("1 applied step", { exact: true }).waitFor();
-    for (const name of ["Edit latest", "Undo"]) {
+    for (const name of ["Edit latest", "Undo", ...(narrowEditor ? ["Redo"] : [])]) {
       const actions = plan.getByRole("button", { name, exact: true });
       if ((await actions.count()) !== 1 || !(await actions.isEnabled())) {
         throw new Error(`${harness} (${label}) did not expose one enabled ${name} action.`);
@@ -2083,8 +2108,15 @@ async function verifyAppliedPlanToolbarLayout(browser) {
     const addIndex = layout.actionLabels.indexOf("Add step");
     const editIndex = layout.actionLabels.indexOf("Edit latest");
     const undoIndex = layout.actionLabels.indexOf("Undo");
+    const redoIndex = layout.actionLabels.indexOf("Redo");
     const exportIndex = layout.actionLabels.indexOf("Export");
-    if (!(addIndex >= 0 && addIndex < editIndex && editIndex < undoIndex && undoIndex < exportIndex)) {
+    if (!(
+      addIndex >= 0 &&
+      addIndex < editIndex &&
+      editIndex < undoIndex &&
+      undoIndex < redoIndex &&
+      redoIndex < exportIndex
+    )) {
       throw new Error(
         `${harness} (${label}) exposed an unexpected cleaning-plan tab order: ${layout.actionLabels.join(", ")}.`
       );
@@ -2098,6 +2130,7 @@ async function verifyAppliedPlanToolbarLayout(browser) {
     for (const [name, target] of [
       ["Edit latest", editLatest],
       ["Undo", undo],
+      ...(narrowEditor ? [["Redo", plan.getByRole("button", { name: "Redo", exact: true })]] : []),
       ["Export", exportData]
     ]) {
       await page.keyboard.press("Tab");
