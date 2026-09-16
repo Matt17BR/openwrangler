@@ -1,0 +1,1779 @@
+{
+  "collectionDate": "2026-09-16",
+  "status": "18 fixed file-opening attempts; 17 completed, 1 runtime-connection timeout retained; no replacement attempts",
+  "products": {
+    "ow": {
+      "name": "Open Wrangler",
+      "version": "2.5.0",
+      "vsixSha256": "7ff9e135d1018e753fc81ec4b41e248b37010906d7cd438369db3fd058175fec"
+    },
+    "dw": {
+      "name": "Microsoft Data Wrangler",
+      "version": "1.24.2"
+    }
+  },
+  "environment": {
+    "editor": "VS Code 1.137.0",
+    "editorCommit": "645f29cc3176500b4b5762ba887cf2a7f0ffdf2c",
+    "os": "Ubuntu 26.04",
+    "kernel": "Linux 7.0.0-31-generic x86_64",
+    "cpu": "Intel Core Ultra 9 185H",
+    "logicalCpus": 22,
+    "ramKiB": 63963952,
+    "display": "private Xvfb, software rendering",
+    "viewport": [1280, 900],
+    "pandas": "3.0.5",
+    "polars": "1.44.1",
+    "jupyterExtension": "2025.9.1",
+    "pythonExtension": "2026.4.0",
+    "python": "3.12.14",
+    "pyarrow": "25.0.1"
+  },
+  "inputs": [
+    {
+      "file": "data/six-columns-100000.csv",
+      "rows": 100000,
+      "bytes": 5294554,
+      "sha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+      "missing_by_column": {
+        "id": 0,
+        "amount": 10000,
+        "category": 5883,
+        "active": 5264,
+        "day": 0,
+        "event_at": 0
+      },
+      "amount_profile": {
+        "present": 90000,
+        "missing": 10000,
+        "min": 1,
+        "max": 999,
+        "sum": 45000000,
+        "mean": 500,
+        "distinct_present": 900
+      },
+      "drop_missing_amount": {
+        "rows": 90000,
+        "retained_id_sum": 4500000000,
+        "retained_id_rule": "ascending i in range(N) where i % 10 != 0",
+        "amount_missing": 0,
+        "other_cells": "unchanged at each retained id",
+        "category_missing": 5294,
+        "active_missing": 4737
+      },
+      "verification": "every serialized cell, order, null counts and amount aggregates checked"
+    },
+    {
+      "file": "data/six-columns-1000000.csv",
+      "rows": 1000000,
+      "bytes": 53945240,
+      "sha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+      "missing_by_column": {
+        "id": 0,
+        "amount": 100000,
+        "category": 58824,
+        "active": 52632,
+        "day": 0,
+        "event_at": 0
+      },
+      "amount_profile": {
+        "present": 900000,
+        "missing": 100000,
+        "min": 1,
+        "max": 999,
+        "sum": 450000000,
+        "mean": 500,
+        "distinct_present": 900
+      },
+      "drop_missing_amount": {
+        "rows": 900000,
+        "retained_id_sum": 450000000000,
+        "retained_id_rule": "ascending i in range(N) where i % 10 != 0",
+        "amount_missing": 0,
+        "other_cells": "unchanged at each retained id",
+        "category_missing": 52941,
+        "active_missing": 47368
+      },
+      "verification": "every serialized cell, order, null counts and amount aggregates checked"
+    }
+  ],
+  "method": {
+    "frozenAtUtc": "2026-09-16T02:49:24.356135+00:00",
+    "collectorSha256": "e32e68845be41225cb1b50c4b747df23eeb0be3b10257469670db57367247282",
+    "order": [
+      {
+        "route": "ow-pandas",
+        "rows": 100000,
+        "sample": 1
+      },
+      {
+        "route": "dw",
+        "rows": 100000,
+        "sample": 1
+      },
+      {
+        "route": "ow-polars",
+        "rows": 100000,
+        "sample": 1
+      },
+      {
+        "route": "dw",
+        "rows": 100000,
+        "sample": 2
+      },
+      {
+        "route": "ow-polars",
+        "rows": 100000,
+        "sample": 2
+      },
+      {
+        "route": "ow-pandas",
+        "rows": 100000,
+        "sample": 2
+      },
+      {
+        "route": "ow-polars",
+        "rows": 100000,
+        "sample": 3
+      },
+      {
+        "route": "ow-pandas",
+        "rows": 100000,
+        "sample": 3
+      },
+      {
+        "route": "dw",
+        "rows": 100000,
+        "sample": 3
+      },
+      {
+        "route": "ow-pandas",
+        "rows": 1000000,
+        "sample": 1
+      },
+      {
+        "route": "dw",
+        "rows": 1000000,
+        "sample": 1
+      },
+      {
+        "route": "ow-polars",
+        "rows": 1000000,
+        "sample": 1
+      },
+      {
+        "route": "dw",
+        "rows": 1000000,
+        "sample": 2
+      },
+      {
+        "route": "ow-polars",
+        "rows": 1000000,
+        "sample": 2
+      },
+      {
+        "route": "ow-pandas",
+        "rows": 1000000,
+        "sample": 2
+      },
+      {
+        "route": "ow-polars",
+        "rows": 1000000,
+        "sample": 3
+      },
+      {
+        "route": "ow-pandas",
+        "rows": 1000000,
+        "sample": 3
+      },
+      {
+        "route": "dw",
+        "rows": 1000000,
+        "sample": 3
+      }
+    ],
+    "pollMs": 100,
+    "budgetMs": 60000,
+    "automaticRetries": 0,
+    "loadAverage": [0.509765625, 0.58251953125, 0.8857421875],
+    "visibleHeaderColumns": ["id", "amount", "category"],
+    "gridEndpoint": "full dimensions, first IDs0/1, grid itself not busy; then selected ID1 responds",
+    "firstStats": "amount Rows and Mean500 in native detail panel",
+    "completeStats": "all displayed amount numeric statistics; OW Null/NaN counted according to its CSV engine; DW includes quartiles/skew/kurtosis",
+    "profileClock": "all primary timestamps start at final Open; includes parsing, automatic profiles, deliberate selection, panel visibility actions and observation overhead",
+    "cacheSwitch": "after primary endpoints select ID until Rows+Mean ready, then return to amount until full statistics ready; display, not a new scan",
+    "scopeLimits": "three repeats, warm editor/interpreter/OS bytes, fresh named CSV viewers; no cold-disk, tail-latency or equal-computation claim",
+    "setupValidation": "all six route/size combinations passed; prior collector setup failures retained in validation.jsonl; source byte hashes unchanged"
+  },
+  "completion": {
+    "completedAtUtc": "2026-09-16T02:52:47.036618+00:00",
+    "fixedAttempts": 18,
+    "complete": 17,
+    "failed": [
+      {
+        "route": "dw",
+        "rows": 100000,
+        "sample": 3,
+        "error": "Error: 60-second observation budget exceeded"
+      }
+    ],
+    "sourceHashesUnchanged": true,
+    "collectorUnchanged": true,
+    "screenshotsRetained": true,
+    "noReplacementAttempts": true
+  },
+  "setup": "Normal Workspace Trust and interpreter selection completed before measurement. Public simple file dialogs select known synthetic paths. Default CSV import options; Pandas numeric missing values are NaN, Polars uses null. Date/timestamp CSV fields remain strings in these routes. Editor and OS cache prepared; any product runtime connection or startup after Open remains included. Distinct filenames avoid saved plans, without proving fresh internal scans.",
+  "observationLimits": "Header observations occur between actions and may lag rendering while an action waits for the target to stabilize. The 100 ms poll interval is not an accuracy bound. Full amount statistics differ: Data Wrangler additionally exposes quartiles/skew/kurtosis. Panel actions and controller overhead are included. Three repeats do not establish tail latency or a general ranking.",
+  "setupFailures": "Before timing, controller validation corrected implicit table roles, rowheader exclusion and Pandas NaN expectations. They are not product-latency samples. Historical notebook collector also had a whole-header hit-target uncertainty; its raw records are unchanged.",
+  "failureObservations": [
+    {
+      "attempt": {
+        "route": "dw",
+        "rows": 100000,
+        "sample": 3
+      },
+      "observedUtc": "2026-09-16T02:51:23.453061+00:00",
+      "classification": "did not reach grid before fixed 60-second observation budget",
+      "visibleEditor": "Connecting to runtime...",
+      "visibleWorkbenchStatus": "Connecting to kernel: recovered-current-runtime (Python 3.12.14): Waiting for Jupyter Session to be idle",
+      "cause": "not established through public UI",
+      "action": "retain failed attempt, close owned viewer normally, continue remaining predeclared attempts without replacement or deadline increase"
+    }
+  ],
+  "summary": [
+    {
+      "route": "ow-pandas",
+      "rows": 100000,
+      "planned": 3,
+      "complete": 3,
+      "seconds": {
+        "gridReadyMs": {
+          "observations": 3,
+          "median": 0.5439868490002118,
+          "minimum": 0.5422583960001357,
+          "maximum": 0.5465258009999525
+        },
+        "interactiveMs": {
+          "observations": 3,
+          "median": 0.674653805000009,
+          "minimum": 0.6699331270002294,
+          "maximum": 0.7002987990002147
+        },
+        "threeHeadersReadyMs": {
+          "observations": 3,
+          "median": 0.9212728649999481,
+          "minimum": 0.8517142330000642,
+          "maximum": 0.9274163360001985
+        },
+        "firstAmountStatsMs": {
+          "observations": 3,
+          "median": 0.8208658380000852,
+          "minimum": 0.8168360970001668,
+          "maximum": 0.8590381340000313
+        },
+        "completeAmountStatsMs": {
+          "observations": 3,
+          "median": 0.8208675260001328,
+          "minimum": 0.8168378240000457,
+          "maximum": 0.8590454110000283
+        },
+        "cachedSwitchMs": {
+          "observations": 3,
+          "median": 0.06460234400001355,
+          "minimum": 0.06289189800014719,
+          "maximum": 0.08523859500000254
+        }
+      }
+    },
+    {
+      "route": "ow-polars",
+      "rows": 100000,
+      "planned": 3,
+      "complete": 3,
+      "seconds": {
+        "gridReadyMs": {
+          "observations": 3,
+          "median": 0.3357000319999643,
+          "minimum": 0.33558229500008746,
+          "maximum": 0.35358120999997483
+        },
+        "interactiveMs": {
+          "observations": 3,
+          "median": 0.5797434209999628,
+          "minimum": 0.5621831920000259,
+          "maximum": 1.275780999999959
+        },
+        "threeHeadersReadyMs": {
+          "observations": 3,
+          "median": 0.5797098399999085,
+          "minimum": 0.5621509199999273,
+          "maximum": 1.2757530419998802
+        },
+        "firstAmountStatsMs": {
+          "observations": 3,
+          "median": 0.7071877999999561,
+          "minimum": 0.6954229409999679,
+          "maximum": 1.4125427800000179
+        },
+        "completeAmountStatsMs": {
+          "observations": 3,
+          "median": 0.7071904019999784,
+          "minimum": 0.6954251830000431,
+          "maximum": 1.4125455700000749
+        },
+        "cachedSwitchMs": {
+          "observations": 3,
+          "median": 0.06737577100005,
+          "minimum": 0.06704351900005713,
+          "maximum": 0.07546245300001465
+        }
+      }
+    },
+    {
+      "route": "dw",
+      "rows": 100000,
+      "planned": 3,
+      "complete": 2,
+      "seconds": {
+        "gridReadyMs": {
+          "observations": 2,
+          "median": 0.9434846560000443,
+          "minimum": 0.8485148259999696,
+          "maximum": 1.0384544860001188
+        },
+        "interactiveMs": {
+          "observations": 2,
+          "median": 1.0790967105000746,
+          "minimum": 0.989012856000103,
+          "maximum": 1.169180565000046
+        },
+        "threeHeadersReadyMs": {
+          "observations": 2,
+          "median": 1.0790787710000296,
+          "minimum": 0.9889951760000549,
+          "maximum": 1.1691623660000041
+        },
+        "firstAmountStatsMs": {
+          "observations": 2,
+          "median": 1.2773141875000438,
+          "minimum": 1.1816978510001208,
+          "maximum": 1.3729305239999667
+        },
+        "completeAmountStatsMs": {
+          "observations": 2,
+          "median": 1.277317528499989,
+          "minimum": 1.181702535999939,
+          "maximum": 1.372932521000039
+        },
+        "cachedSwitchMs": {
+          "observations": 2,
+          "median": 0.052498966500046665,
+          "minimum": 0.0463096310000401,
+          "maximum": 0.058688302000053226
+        }
+      }
+    },
+    {
+      "route": "ow-pandas",
+      "rows": 1000000,
+      "planned": 3,
+      "complete": 3,
+      "seconds": {
+        "gridReadyMs": {
+          "observations": 3,
+          "median": 1.0528597069999668,
+          "minimum": 1.046206424999982,
+          "maximum": 1.053207070000004
+        },
+        "interactiveMs": {
+          "observations": 3,
+          "median": 1.183609201000072,
+          "minimum": 1.182824358999962,
+          "maximum": 1.1864825500000733
+        },
+        "threeHeadersReadyMs": {
+          "observations": 3,
+          "median": 3.9388260429999793,
+          "minimum": 3.8230485849999822,
+          "maximum": 3.93914730699989
+        },
+        "firstAmountStatsMs": {
+          "observations": 3,
+          "median": 1.8702527479999698,
+          "minimum": 1.8652127690000926,
+          "maximum": 1.9758630150000098
+        },
+        "completeAmountStatsMs": {
+          "observations": 3,
+          "median": 1.8702551299999468,
+          "minimum": 1.8652194729999174,
+          "maximum": 1.9758639620000031
+        },
+        "cachedSwitchMs": {
+          "observations": 3,
+          "median": 0.07210302299982868,
+          "minimum": 0.06267978199990466,
+          "maximum": 0.07426662199990824
+        }
+      }
+    },
+    {
+      "route": "ow-polars",
+      "rows": 1000000,
+      "planned": 3,
+      "complete": 3,
+      "seconds": {
+        "gridReadyMs": {
+          "observations": 3,
+          "median": 0.4254683020000812,
+          "minimum": 0.4155914149999153,
+          "maximum": 0.42693989600008353
+        },
+        "interactiveMs": {
+          "observations": 3,
+          "median": 0.5590072860000656,
+          "minimum": 0.5474098930000327,
+          "maximum": 0.5650438939998857
+        },
+        "threeHeadersReadyMs": {
+          "observations": 3,
+          "median": 1.0208804919999093,
+          "minimum": 1.004350773999933,
+          "maximum": 1.026885906000156
+        },
+        "firstAmountStatsMs": {
+          "observations": 3,
+          "median": 0.9157166589999106,
+          "minimum": 0.9007992070000619,
+          "maximum": 0.9220592140001245
+        },
+        "completeAmountStatsMs": {
+          "observations": 3,
+          "median": 0.9157182169998996,
+          "minimum": 0.9008006629999727,
+          "maximum": 0.9220613530001137
+        },
+        "cachedSwitchMs": {
+          "observations": 3,
+          "median": 0.0724466699999757,
+          "minimum": 0.06894494900014252,
+          "maximum": 0.09139898000005632
+        }
+      }
+    },
+    {
+      "route": "dw",
+      "rows": 1000000,
+      "planned": 3,
+      "complete": 3,
+      "seconds": {
+        "gridReadyMs": {
+          "observations": 3,
+          "median": 1.2693970950001385,
+          "minimum": 1.2513157349999529,
+          "maximum": 1.2707680500000715
+        },
+        "interactiveMs": {
+          "observations": 3,
+          "median": 1.38408379100007,
+          "minimum": 1.3654123499998823,
+          "maximum": 1.4014143189999742
+        },
+        "threeHeadersReadyMs": {
+          "observations": 3,
+          "median": 1.697313953000121,
+          "minimum": 1.68267537000007,
+          "maximum": 2.3684305169999136
+        },
+        "firstAmountStatsMs": {
+          "observations": 3,
+          "median": 1.5773847380001098,
+          "minimum": 1.5392070710000116,
+          "maximum": 1.5923291270001791
+        },
+        "completeAmountStatsMs": {
+          "observations": 3,
+          "median": 1.5773869179999456,
+          "minimum": 1.539208706999896,
+          "maximum": 1.5923318770001642
+        },
+        "cachedSwitchMs": {
+          "observations": 3,
+          "median": 0.07156964299990795,
+          "minimum": 0.05542303800000809,
+          "maximum": 0.09264650000003166
+        }
+      }
+    }
+  ],
+  "samples": [
+    {
+      "route": "ow-pandas",
+      "rows": 100000,
+      "sample": 1,
+      "startedUtc": "2026-09-16T02:49:24.402Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 851.5760120002087,
+        "amount": 851.6335260001943,
+        "category": 851.7100220001303
+      },
+      "layoutActions": [
+        {
+          "action": "Open Column profiles",
+          "ms": 845.0371170002036
+        }
+      ],
+      "beforeScreenshot": "ow-pandas-100000-1-before.png",
+      "openStart": 1206900.198953,
+      "gridReadyMs": 542.2583960001357,
+      "interactiveMs": 700.2987990002148,
+      "selectionStartMs": 703.7171160001308,
+      "threeHeadersReadyMs": 851.7142330000643,
+      "profileText": "\namount\nfloat64\nCounts\n%\nRows\n100,000\nNull\n0\nNaN\n10,000\nDistinct\n900\nMin\n1\nMax\n999\nSum\n45,000,000\nMean\n500\nMedian\n500\nStd. deviation\n288.6739\nDISTRIBUTION\n1 to 999 \u00b7 20 bins",
+      "firstAmountStatsMs": 859.0381340000313,
+      "completeAmountStatsMs": 859.0454110000283,
+      "selectionToFirstStatsMs": 155.3210179999005,
+      "selectionToCompleteStatsMs": 155.32829499989748,
+      "cachedSwitchStartMs": 916.0478930000681,
+      "cachedSwitchReadyMs": 978.9397910002153,
+      "cachedSwitchMs": 62.891898000147194,
+      "ok": true,
+      "afterScreenshot": "ow-pandas-100000-1-after.png",
+      "finalSidebars": {
+        "primary": false,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "headerObservations": [
+        {
+          "text": "id\nint64\nMissing 0\nDistinct 100,000\nMin 0\nMax 99999\n0 to 99,999 \u00b7 20 bins",
+          "fullyVisible": true
+        },
+        {
+          "text": "amount\nfloat64\nMissing 10,000\nDistinct 900\nMin 1\nMax 999\n1 to 999 \u00b7 20 bins",
+          "fullyVisible": true
+        },
+        {
+          "text": "category\nstr\nMissing 5,883\nDistinct 3\nAlpha\n31,373\nBeta\n31,372\nGamma\n31,372",
+          "fullyVisible": true
+        },
+        {
+          "text": "active\nobject\nMissing 5,264\nDistinct 2\nTrue 47,368\nFalse 47,368",
+          "fullyVisible": false
+        },
+        {
+          "text": "day\nstr\nProfiling\u2026",
+          "fullyVisible": false
+        },
+        {
+          "text": "event_at\nstr\nProfiling\u2026",
+          "fullyVisible": false
+        }
+      ]
+    },
+    {
+      "route": "dw",
+      "rows": 100000,
+      "sample": 1,
+      "startedUtc": "2026-09-16T02:49:26.302Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 1169.139669999946,
+        "amount": 1169.153515999904,
+        "category": 1169.1614640001208
+      },
+      "layoutActions": [
+        {
+          "action": "Hide bottom panel",
+          "ms": 1277.0214919999707
+        }
+      ],
+      "beforeScreenshot": "dw-100000-1-before.png",
+      "openStart": 1208764.648207,
+      "gridReadyMs": 1038.4544860001188,
+      "threeHeadersReadyMs": 1169.162366000004,
+      "interactiveMs": 1169.180565000046,
+      "selectionStartMs": 1173.6142259999178,
+      "profileText": "Data type\nfloat64\nRows\n100,000\nDistinct values\n900\nMissing values\n10,000\nStatistics\nMean\n500.0\nStandard deviation\n288.67385157710777\nMinimum\n1.0\n25th percentile\n250.5\nMedian\n500.0\n75th percentile\n749.5\nMaximum\n999.0\nSum\n45000000.0\nAdvanced statistics\nKurtosis\n-1.2000479996821842\nSkew\n0.0",
+      "firstAmountStatsMs": 1372.9305239999667,
+      "completeAmountStatsMs": 1372.9325210000388,
+      "selectionToFirstStatsMs": 199.31629800004885,
+      "selectionToCompleteStatsMs": 199.318295000121,
+      "cachedSwitchStartMs": 1458.331096000038,
+      "cachedSwitchReadyMs": 1504.6407270000782,
+      "cachedSwitchMs": 46.3096310000401,
+      "ok": true,
+      "afterScreenshot": "dw-100000-1-after.png",
+      "finalSidebars": {
+        "primary": true,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "headerObservations": [
+        {
+          "text": "\uf7ac\nid\nMissing:\n0 (0%)\nDistinct:\n100000 (100%)\n\nValue histogram\n\nBar chart with 20 bars.\nThe chart has 1 X axis displaying Bin ranges. Data ranges from -0.19 to 19.\nThe chart has 1 Y axis displaying Bin frequencies. Data ranges from 4999 to 5001.\nEnd of interactive chart.\nMin 0\nMax 99999",
+          "fullyVisible": true
+        },
+        {
+          "text": "\uf7ac\namount\n\ue712\nMissing:\n10000 (10%)\nDistinct:\n900 (<1%)\n\nValue histogram\n\nBar chart with 20 bars.\nThe chart has 1 X axis displaying Bin ranges. Data ranges from -0.19 to 19.\nThe chart has 1 Y axis displaying Bin frequencies. Data ranges from 4500 to 4500.\nEnd of interactive chart.\nMin 1.0\nMax 999.0",
+          "fullyVisible": true
+        },
+        {
+          "text": "\uec7d\ncategory\nMissing:\n5883 (6%)\nDistinct:\n3 (<1%)\nAlpha\n31%\nBeta\n31%\nGamma\n31%",
+          "fullyVisible": true
+        },
+        {
+          "text": "\uf1aa\nactive\nMissing:\n5264 (5%)\nDistinct:\n2 (<1%)\nFalse\n47%\nTrue\n47%",
+          "fullyVisible": true
+        },
+        {
+          "text": "\uec7d\nday\nMissing:\n0 (0%)\nDistinct:\n366 (<1%)\n366\nDistinct values",
+          "fullyVisible": false
+        },
+        {
+          "text": "\uec7d\nevent_at\nMissing:\n0 (0%)\nDistinct:\n86400 (86%)\n86400\nDistinct values",
+          "fullyVisible": false
+        }
+      ]
+    },
+    {
+      "route": "ow-polars",
+      "rows": 100000,
+      "sample": 1,
+      "startedUtc": "2026-09-16T02:49:28.667Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 579.6727849999443,
+        "amount": 579.6906799999997,
+        "category": 579.7078269999474
+      },
+      "layoutActions": [
+        {
+          "action": "Open Column profiles",
+          "ms": 700.4008189998567
+        }
+      ],
+      "beforeScreenshot": "ow-polars-100000-1-before.png",
+      "openStart": 1211206.450501,
+      "gridReadyMs": 353.5812099999748,
+      "threeHeadersReadyMs": 579.7098399999086,
+      "interactiveMs": 579.7434209999628,
+      "selectionStartMs": 582.7234249999747,
+      "profileText": "\namount\nFloat64\nCounts\n%\nRows\n100,000\nNull\n10,000\nNaN\n0\nDistinct\n900\nMin\n1\nMax\n999\nSum\n45,000,000\nMean\n500\nMedian\n500\nStd. deviation\n288.6739\nDISTRIBUTION\n1 to 999 \u00b7 20 bins",
+      "firstAmountStatsMs": 707.187799999956,
+      "completeAmountStatsMs": 707.1904019999783,
+      "selectionToFirstStatsMs": 124.46437499998137,
+      "selectionToCompleteStatsMs": 124.46697700000368,
+      "cachedSwitchStartMs": 775.3168879998848,
+      "cachedSwitchReadyMs": 842.3604069999419,
+      "cachedSwitchMs": 67.04351900005713,
+      "ok": true,
+      "afterScreenshot": "ow-polars-100000-1-after.png",
+      "finalSidebars": {
+        "primary": false,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "headerObservations": [
+        {
+          "text": "id\nInt64\nMissing 0\nDistinct 100,000\nMin 0\nMax 99999\n0 to 99,999 \u00b7 20 bins",
+          "fullyVisible": true
+        },
+        {
+          "text": "amount\nFloat64\nMissing 10,000\nDistinct 900\nMin 1\nMax 999\n1 to 999 \u00b7 20 bins",
+          "fullyVisible": true
+        },
+        {
+          "text": "category\nString\nMissing 5,883\nDistinct 3\nAlpha\n31,373\nBeta\n31,372\nGamma\n31,372",
+          "fullyVisible": true
+        },
+        {
+          "text": "active\nBoolean\nMissing 5,264\nDistinct 2\nTrue 47,368\nFalse 47,368",
+          "fullyVisible": false
+        },
+        {
+          "text": "day\nString\nMissing 0\nDistinct 366\n2024-01-01\n274\n2024-01-02\n274\n2024-01-03\n274\nOther\n98,356",
+          "fullyVisible": false
+        },
+        {
+          "text": "event_at\nString\nMissing 0\nDistinct 86,400\n2024-01-01 00:00:00\n2\n2024-01-01 00:00:01\n2\n2024-01-01 00:00:02\n2\nOther\n99,988",
+          "fullyVisible": false
+        }
+      ]
+    },
+    {
+      "route": "dw",
+      "rows": 100000,
+      "sample": 2,
+      "startedUtc": "2026-09-16T02:49:30.487Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 988.9581389999948,
+        "amount": 988.9718200000934,
+        "category": 988.9881319999695
+      },
+      "layoutActions": [
+        {
+          "action": "Hide bottom panel",
+          "ms": 1097.2184679999482
+        }
+      ],
+      "beforeScreenshot": "dw-100000-2-before.png",
+      "openStart": 1212962.557266,
+      "gridReadyMs": 848.5148259999696,
+      "threeHeadersReadyMs": 988.9951760000549,
+      "interactiveMs": 989.012856000103,
+      "selectionStartMs": 992.1240819999948,
+      "profileText": "Data type\nfloat64\nRows\n100,000\nDistinct values\n900\nMissing values\n10,000\nStatistics\nMean\n500.0\nStandard deviation\n288.67385157710777\nMinimum\n1.0\n25th percentile\n250.5\nMedian\n500.0\n75th percentile\n749.5\nMaximum\n999.0\nSum\n45000000.0\nAdvanced statistics\nKurtosis\n-1.2000479996821842\nSkew\n0.0",
+      "firstAmountStatsMs": 1181.6978510001209,
+      "completeAmountStatsMs": 1181.7025359999388,
+      "selectionToFirstStatsMs": 189.57376900012605,
+      "selectionToCompleteStatsMs": 189.57845399994403,
+      "cachedSwitchStartMs": 1266.0644930000417,
+      "cachedSwitchReadyMs": 1324.752795000095,
+      "cachedSwitchMs": 58.68830200005323,
+      "ok": true,
+      "afterScreenshot": "dw-100000-2-after.png",
+      "finalSidebars": {
+        "primary": true,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "headerObservations": [
+        {
+          "text": "\uf7ac\nid\nMissing:\n0 (0%)\nDistinct:\n100000 (100%)\n\nValue histogram\n\nBar chart with 20 bars.\nThe chart has 1 X axis displaying Bin ranges. Data ranges from -0.19 to 19.\nThe chart has 1 Y axis displaying Bin frequencies. Data ranges from 4999 to 5001.\nEnd of interactive chart.\nMin 0\nMax 99999",
+          "fullyVisible": true
+        },
+        {
+          "text": "\uf7ac\namount\n\ue712\nMissing:\n10000 (10%)\nDistinct:\n900 (<1%)\n\nValue histogram\n\nBar chart with 20 bars.\nThe chart has 1 X axis displaying Bin ranges. Data ranges from -0.19 to 19.\nThe chart has 1 Y axis displaying Bin frequencies. Data ranges from 4500 to 4500.\nEnd of interactive chart.\nMin 1.0\nMax 999.0",
+          "fullyVisible": true
+        },
+        {
+          "text": "\uec7d\ncategory\nMissing:\n5883 (6%)\nDistinct:\n3 (<1%)\nAlpha\n31%\nBeta\n31%\nGamma\n31%",
+          "fullyVisible": true
+        },
+        {
+          "text": "\uf1aa\nactive\nMissing:\n5264 (5%)\nDistinct:\n2 (<1%)\nFalse\n47%\nTrue\n47%",
+          "fullyVisible": true
+        },
+        {
+          "text": "\uec7d\nday\nMissing:\n0 (0%)\nDistinct:\n366 (<1%)\n366\nDistinct values",
+          "fullyVisible": false
+        },
+        {
+          "text": "\uec7d\nevent_at\nMissing:\n0 (0%)\nDistinct:\n86400 (86%)\n86400\nDistinct values",
+          "fullyVisible": false
+        }
+      ]
+    },
+    {
+      "route": "ow-polars",
+      "rows": 100000,
+      "sample": 2,
+      "startedUtc": "2026-09-16T02:49:32.682Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 1275.72892699996,
+        "amount": 1275.7362819998525,
+        "category": 1275.7484740000218
+      },
+      "layoutActions": [
+        {
+          "action": "Open Column profiles",
+          "ms": 1406.1630869999062
+        }
+      ],
+      "beforeScreenshot": "ow-polars-100000-2-before.png",
+      "openStart": 1215204.55061,
+      "gridReadyMs": 335.70003199996427,
+      "threeHeadersReadyMs": 1275.7530419998802,
+      "interactiveMs": 1275.780999999959,
+      "selectionStartMs": 1279.0854919999838,
+      "profileText": "\namount\nFloat64\nCounts\n%\nRows\n100,000\nNull\n10,000\nNaN\n0\nDistinct\n900\nMin\n1\nMax\n999\nSum\n45,000,000\nMean\n500\nMedian\n500\nStd. deviation\n288.6739\nDISTRIBUTION\n1 to 999 \u00b7 20 bins",
+      "firstAmountStatsMs": 1412.542780000018,
+      "completeAmountStatsMs": 1412.5455700000748,
+      "selectionToFirstStatsMs": 133.45728800003417,
+      "selectionToCompleteStatsMs": 133.46007800009102,
+      "cachedSwitchStartMs": 1475.043393000029,
+      "cachedSwitchReadyMs": 1542.419164000079,
+      "cachedSwitchMs": 67.37577100005001,
+      "ok": true,
+      "afterScreenshot": "ow-polars-100000-2-after.png",
+      "finalSidebars": {
+        "primary": false,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "headerObservations": [
+        {
+          "text": "id\nInt64\nMissing 0\nDistinct 100,000\nMin 0\nMax 99999\n0 to 99,999 \u00b7 20 bins",
+          "fullyVisible": true
+        },
+        {
+          "text": "amount\nFloat64\nMissing 10,000\nDistinct 900\nMin 1\nMax 999\n1 to 999 \u00b7 20 bins",
+          "fullyVisible": true
+        },
+        {
+          "text": "category\nString\nMissing 5,883\nDistinct 3\nAlpha\n31,373\nBeta\n31,372\nGamma\n31,372",
+          "fullyVisible": true
+        },
+        {
+          "text": "active\nBoolean\nMissing 5,264\nDistinct 2\nTrue 47,368\nFalse 47,368",
+          "fullyVisible": false
+        },
+        {
+          "text": "day\nString\nMissing 0\nDistinct 366\n2024-01-01\n274\n2024-01-02\n274\n2024-01-03\n274\nOther\n98,356",
+          "fullyVisible": false
+        },
+        {
+          "text": "event_at\nString\nMissing 0\nDistinct 86,400\n2024-01-01 00:00:00\n2\n2024-01-01 00:00:01\n2\n2024-01-01 00:00:02\n2\nOther\n99,988",
+          "fullyVisible": false
+        }
+      ]
+    },
+    {
+      "route": "ow-pandas",
+      "rows": 100000,
+      "sample": 2,
+      "startedUtc": "2026-09-16T02:49:35.182Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 814.8539530001581,
+        "amount": 814.8603750001639,
+        "category": 921.2636170000769
+      },
+      "layoutActions": [
+        {
+          "action": "Open Column profiles",
+          "ms": 810.4054469999392
+        }
+      ],
+      "beforeScreenshot": "ow-pandas-100000-2-before.png",
+      "openStart": 1217684.916242,
+      "gridReadyMs": 546.5258009999525,
+      "interactiveMs": 674.653805000009,
+      "selectionStartMs": 677.2070730000269,
+      "profileText": "\namount\nfloat64\nCounts\n%\nRows\n100,000\nNull\n0\nNaN\n10,000\nDistinct\n900\nMin\n1\nMax\n999\nSum\n45,000,000\nMean\n500\nMedian\n500\nStd. deviation\n288.6739\nDISTRIBUTION\n1 to 999 \u00b7 20 bins",
+      "firstAmountStatsMs": 816.8360970001668,
+      "completeAmountStatsMs": 816.8378240000457,
+      "threeHeadersReadyMs": 921.2728649999481,
+      "selectionToFirstStatsMs": 139.6290240001399,
+      "selectionToCompleteStatsMs": 139.6307510000188,
+      "cachedSwitchStartMs": 980.2122629999649,
+      "cachedSwitchReadyMs": 1044.8146069999784,
+      "cachedSwitchMs": 64.60234400001355,
+      "ok": true,
+      "afterScreenshot": "ow-pandas-100000-2-after.png",
+      "finalSidebars": {
+        "primary": false,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "headerObservations": [
+        {
+          "text": "id\nint64\nMissing 0\nDistinct 100,000\nMin 0\nMax 99999\n0 to 99,999 \u00b7 20 bins",
+          "fullyVisible": true
+        },
+        {
+          "text": "amount\nfloat64\nMissing 10,000\nDistinct 900\nMin 1\nMax 999\n1 to 999 \u00b7 20 bins",
+          "fullyVisible": true
+        },
+        {
+          "text": "category\nstr\nMissing 5,883\nDistinct 3\nAlpha\n31,373\nBeta\n31,372\nGamma\n31,372",
+          "fullyVisible": true
+        },
+        {
+          "text": "active\nobject\nMissing 5,264\nDistinct 2\nTrue 47,368\nFalse 47,368",
+          "fullyVisible": false
+        },
+        {
+          "text": "day\nstr\nProfiling\u2026",
+          "fullyVisible": false
+        },
+        {
+          "text": "event_at\nstr\nProfiling\u2026",
+          "fullyVisible": false
+        }
+      ]
+    },
+    {
+      "route": "ow-polars",
+      "rows": 100000,
+      "sample": 3,
+      "startedUtc": "2026-09-16T02:49:37.132Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 562.1412710000295,
+        "amount": 562.1464209998958,
+        "category": 562.1498670000583
+      },
+      "layoutActions": [
+        {
+          "action": "Open Column profiles",
+          "ms": 690.3307459999342
+        }
+      ],
+      "beforeScreenshot": "ow-polars-100000-3-before.png",
+      "openStart": 1219599.090969,
+      "gridReadyMs": 335.58229500008747,
+      "threeHeadersReadyMs": 562.1509199999273,
+      "interactiveMs": 562.1831920000259,
+      "selectionStartMs": 564.340981000103,
+      "profileText": "\namount\nFloat64\nCounts\n%\nRows\n100,000\nNull\n10,000\nNaN\n0\nDistinct\n900\nMin\n1\nMax\n999\nSum\n45,000,000\nMean\n500\nMedian\n500\nStd. deviation\n288.6739\nDISTRIBUTION\n1 to 999 \u00b7 20 bins",
+      "firstAmountStatsMs": 695.422940999968,
+      "completeAmountStatsMs": 695.425183000043,
+      "selectionToFirstStatsMs": 131.08195999986492,
+      "selectionToCompleteStatsMs": 131.08420199993998,
+      "cachedSwitchStartMs": 763.9845799999312,
+      "cachedSwitchReadyMs": 839.4470329999458,
+      "cachedSwitchMs": 75.46245300001465,
+      "ok": true,
+      "afterScreenshot": "ow-polars-100000-3-after.png",
+      "finalSidebars": {
+        "primary": false,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "headerObservations": [
+        {
+          "text": "id\nInt64\nMissing 0\nDistinct 100,000\nMin 0\nMax 99999\n0 to 99,999 \u00b7 20 bins",
+          "fullyVisible": true
+        },
+        {
+          "text": "amount\nFloat64\nMissing 10,000\nDistinct 900\nMin 1\nMax 999\n1 to 999 \u00b7 20 bins",
+          "fullyVisible": true
+        },
+        {
+          "text": "category\nString\nMissing 5,883\nDistinct 3\nAlpha\n31,373\nBeta\n31,372\nGamma\n31,372",
+          "fullyVisible": true
+        },
+        {
+          "text": "active\nBoolean\nMissing 5,264\nDistinct 2\nTrue 47,368\nFalse 47,368",
+          "fullyVisible": false
+        },
+        {
+          "text": "day\nString\nMissing 0\nDistinct 366\n2024-01-01\n274\n2024-01-02\n274\n2024-01-03\n274\nOther\n98,356",
+          "fullyVisible": false
+        },
+        {
+          "text": "event_at\nString\nMissing 0\nDistinct 86,400\n2024-01-01 00:00:00\n2\n2024-01-01 00:00:01\n2\n2024-01-01 00:00:02\n2\nOther\n99,988",
+          "fullyVisible": false
+        }
+      ]
+    },
+    {
+      "route": "ow-pandas",
+      "rows": 100000,
+      "sample": 3,
+      "startedUtc": "2026-09-16T02:49:38.859Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 818.5897960001603,
+        "amount": 818.5977160001639,
+        "category": 927.4140640001278
+      },
+      "layoutActions": [
+        {
+          "action": "Open Column profiles",
+          "ms": 813.0900220000185
+        }
+      ],
+      "beforeScreenshot": "ow-pandas-100000-3-before.png",
+      "openStart": 1221348.648988,
+      "gridReadyMs": 543.9868490002118,
+      "interactiveMs": 669.9331270002294,
+      "selectionStartMs": 672.5741740001831,
+      "profileText": "\namount\nfloat64\nCounts\n%\nRows\n100,000\nNull\n0\nNaN\n10,000\nDistinct\n900\nMin\n1\nMax\n999\nSum\n45,000,000\nMean\n500\nMedian\n500\nStd. deviation\n288.6739\nDISTRIBUTION\n1 to 999 \u00b7 20 bins",
+      "firstAmountStatsMs": 820.8658380000852,
+      "completeAmountStatsMs": 820.8675260001328,
+      "threeHeadersReadyMs": 927.4163360001985,
+      "selectionToFirstStatsMs": 148.29166399990208,
+      "selectionToCompleteStatsMs": 148.29335199994966,
+      "cachedSwitchStartMs": 1004.4227190001402,
+      "cachedSwitchReadyMs": 1089.6613140001427,
+      "cachedSwitchMs": 85.23859500000253,
+      "ok": true,
+      "afterScreenshot": "ow-pandas-100000-3-after.png",
+      "finalSidebars": {
+        "primary": false,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "headerObservations": [
+        {
+          "text": "id\nint64\nMissing 0\nDistinct 100,000\nMin 0\nMax 99999\n0 to 99,999 \u00b7 20 bins",
+          "fullyVisible": true
+        },
+        {
+          "text": "amount\nfloat64\nMissing 10,000\nDistinct 900\nMin 1\nMax 999\n1 to 999 \u00b7 20 bins",
+          "fullyVisible": true
+        },
+        {
+          "text": "category\nstr\nMissing 5,883\nDistinct 3\nAlpha\n31,373\nBeta\n31,372\nGamma\n31,372",
+          "fullyVisible": true
+        },
+        {
+          "text": "active\nobject\nMissing 5,264\nDistinct 2\nTrue 47,368\nFalse 47,368",
+          "fullyVisible": false
+        },
+        {
+          "text": "day\nstr\nMissing 0\nDistinct 366\n2024-01-01\n274\n2024-01-02\n274\n2024-01-03\n274\nOther\n98,356",
+          "fullyVisible": false
+        },
+        {
+          "text": "event_at\nstr\nProfiling\u2026",
+          "fullyVisible": false
+        }
+      ]
+    },
+    {
+      "route": "dw",
+      "rows": 100000,
+      "sample": 3,
+      "startedUtc": "2026-09-16T02:49:40.870Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {},
+      "layoutActions": [],
+      "beforeScreenshot": "dw-100000-3-before.png",
+      "openStart": 1223331.295713,
+      "ok": false,
+      "error": "Error: 60-second observation budget exceeded",
+      "failedAtMs": 60000.30629500002,
+      "afterScreenshot": "dw-100000-3-after.png",
+      "finalSidebars": {
+        "primary": true,
+        "secondary": false,
+        "bottom": true
+      },
+      "sourceUnchanged": true,
+      "profileBeforeSelection": {},
+      "headerObservations": [],
+      "lastVisibleState": "Export to notebook\nExport as file\nCopy all code\nReport an issue\nGo to column\nEditing\n\ue70d\nConnecting to runtime..."
+    },
+    {
+      "route": "ow-pandas",
+      "rows": 1000000,
+      "sample": 1,
+      "startedUtc": "2026-09-16T02:51:23.510Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "amount": 1861.8675049999729,
+        "id": 2841.440615999978,
+        "category": 3939.135837999871
+      },
+      "layoutActions": [
+        {
+          "action": "Open Column profiles",
+          "ms": 1313.0604580000509
+        }
+      ],
+      "beforeScreenshot": "ow-pandas-1000000-1-before.png",
+      "openStart": 1326122.370446,
+      "gridReadyMs": 1052.8597069999669,
+      "interactiveMs": 1182.824358999962,
+      "selectionStartMs": 1184.8464049999602,
+      "profileText": "\namount\nfloat64\nCounts\n%\nRows\n1,000,000\nNull\n0\nNaN\n100,000\nDistinct\n900\nMin\n1\nMax\n999\nSum\n450,000,000\nMean\n500\nMedian\n500\nStd. deviation\n288.6724\nDISTRIBUTION\n1 to 999 \u00b7 20 bins",
+      "firstAmountStatsMs": 1865.2127690000925,
+      "completeAmountStatsMs": 1865.2194729999173,
+      "threeHeadersReadyMs": 3939.14730699989,
+      "selectionToFirstStatsMs": 680.3663640001323,
+      "selectionToCompleteStatsMs": 680.3730679999571,
+      "cachedSwitchStartMs": 3986.7382970000617,
+      "cachedSwitchReadyMs": 4058.8413199998904,
+      "cachedSwitchMs": 72.10302299982868,
+      "ok": true,
+      "afterScreenshot": "ow-pandas-1000000-1-after.png",
+      "finalSidebars": {
+        "primary": false,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "headerObservations": [
+        {
+          "text": "id\nint64\nMissing 0\nDistinct 1,000,000\nMin 0\nMax 999999\n0 to 1,000,000 \u00b7 20 bins",
+          "fullyVisible": true
+        },
+        {
+          "text": "amount\nfloat64\nMissing 100,000\nDistinct 900\nMin 1\nMax 999\n1 to 999 \u00b7 20 bins",
+          "fullyVisible": true
+        },
+        {
+          "text": "category\nstr\nMissing 58,824\nDistinct 3\nAlpha\n313,726\nBeta\n313,725\nGamma\n313,725",
+          "fullyVisible": true
+        },
+        {
+          "text": "active\nobject\nProfiling\u2026",
+          "fullyVisible": false
+        },
+        {
+          "text": "day\nstr\nProfiling\u2026",
+          "fullyVisible": false
+        },
+        {
+          "text": "event_at\nstr\nProfiling\u2026",
+          "fullyVisible": false
+        }
+      ]
+    },
+    {
+      "route": "dw",
+      "rows": 1000000,
+      "sample": 1,
+      "startedUtc": "2026-09-16T02:51:28.665Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 1515.5668430000078,
+        "amount": 1697.295296000084,
+        "category": 1697.3091000001878
+      },
+      "layoutActions": [
+        {
+          "action": "Hide bottom panel",
+          "ms": 1513.2296200001147
+        }
+      ],
+      "beforeScreenshot": "dw-1000000-1-before.png",
+      "openStart": 1331193.038701,
+      "gridReadyMs": 1270.7680500000715,
+      "interactiveMs": 1401.414318999974,
+      "selectionStartMs": 1405.3051250001881,
+      "profileText": "Data type\nfloat64\nRows\n1,000,000\nDistinct values\n900\nMissing values\n100,000\nStatistics\nMean\n500.0\nStandard deviation\n288.6724082026377\nMinimum\n1.0\n25th percentile\n250.5\nMedian\n500.0\n75th percentile\n749.5\nMaximum\n999.0\nSum\n450000000.0\nAdvanced statistics\nKurtosis\n-1.200047997575563\nSkew\n0.0",
+      "firstAmountStatsMs": 1592.3291270001791,
+      "completeAmountStatsMs": 1592.3318770001642,
+      "threeHeadersReadyMs": 1697.3139530001208,
+      "selectionToFirstStatsMs": 187.02400199999101,
+      "selectionToCompleteStatsMs": 187.0267519999761,
+      "cachedSwitchStartMs": 1778.693895000033,
+      "cachedSwitchReadyMs": 1871.3403950000647,
+      "cachedSwitchMs": 92.64650000003166,
+      "ok": true,
+      "afterScreenshot": "dw-1000000-1-after.png",
+      "finalSidebars": {
+        "primary": true,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "headerObservations": [
+        {
+          "text": "\uf7ac\nid\nMissing:\n0 (0%)\nDistinct:\n1000000 (100%)\n\nValue histogram\n\nBar chart with 20 bars.\nThe chart has 1 X axis displaying Bin ranges. Data ranges from -0.19 to 19.\nThe chart has 1 Y axis displaying Bin frequencies. Data ranges from 49999 to 50001.\nEnd of interactive chart.\nMin 0\nMax 999999",
+          "fullyVisible": true
+        },
+        {
+          "text": "\uf7ac\namount\n\ue712\nMissing:\n100000 (10%)\nDistinct:\n900 (<1%)\n\nValue histogram\n\nBar chart with 20 bars.\nThe chart has 1 X axis displaying Bin ranges. Data ranges from -0.19 to 19.\nThe chart has 1 Y axis displaying Bin frequencies. Data ranges from 45000 to 45000.\nEnd of interactive chart.\nMin 1.0\nMax 999.0",
+          "fullyVisible": true
+        },
+        {
+          "text": "\uec7d\ncategory\nMissing:\n58824 (6%)\nDistinct:\n3 (<1%)\nAlpha\n31%\nBeta\n31%\nGamma\n31%",
+          "fullyVisible": true
+        },
+        {
+          "text": "\uf1aa\nactive\nMissing:\n52632 (5%)\nDistinct:\n2 (<1%)\nFalse\n47%\nTrue\n47%",
+          "fullyVisible": true
+        },
+        {
+          "text": "\uec7d\nday\nMissing:\n0 (0%)\nDistinct:\n366 (<1%)\n366\nDistinct values",
+          "fullyVisible": false
+        },
+        {
+          "text": "\uec7d\nevent_at\nMissing:\n0 (0%)\nDistinct:\n86400 (9%)\n86400\nDistinct values",
+          "fullyVisible": false
+        }
+      ]
+    },
+    {
+      "route": "ow-polars",
+      "rows": 1000000,
+      "sample": 1,
+      "startedUtc": "2026-09-16T02:51:31.513Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 811.4182550001424,
+        "amount": 918.7668500000145,
+        "category": 1026.88199000014
+      },
+      "layoutActions": [
+        {
+          "action": "Open Column profiles",
+          "ms": 701.0253700001631
+        }
+      ],
+      "beforeScreenshot": "ow-polars-1000000-1-before.png",
+      "openStart": 1333975.455408,
+      "gridReadyMs": 425.46830200008117,
+      "interactiveMs": 559.0072860000655,
+      "selectionStartMs": 562.8122710001189,
+      "profileText": "\namount\nFloat64\nCounts\n%\nRows\n1,000,000\nNull\n100,000\nNaN\n0\nDistinct\n900\nMin\n1\nMax\n999\nSum\n450,000,000\nMean\n500\nMedian\n500\nStd. deviation\n288.6724\nDISTRIBUTION\n1 to 999 \u00b7 20 bins",
+      "firstAmountStatsMs": 922.0592140001245,
+      "completeAmountStatsMs": 922.0613530001137,
+      "threeHeadersReadyMs": 1026.885906000156,
+      "selectionToFirstStatsMs": 359.24694300000556,
+      "selectionToCompleteStatsMs": 359.2490819999948,
+      "cachedSwitchStartMs": 1094.9469040001277,
+      "cachedSwitchReadyMs": 1186.345884000184,
+      "cachedSwitchMs": 91.39898000005633,
+      "ok": true,
+      "afterScreenshot": "ow-polars-1000000-1-after.png",
+      "finalSidebars": {
+        "primary": false,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "headerObservations": [
+        {
+          "text": "id\nInt64\nMissing 0\nDistinct 1,000,000\nMin 0\nMax 999999\n0 to 1,000,000 \u00b7 20 bins",
+          "fullyVisible": true
+        },
+        {
+          "text": "amount\nFloat64\nMissing 100,000\nDistinct 900\nMin 1\nMax 999\n1 to 999 \u00b7 20 bins",
+          "fullyVisible": true
+        },
+        {
+          "text": "category\nString\nMissing 58,824\nDistinct 3\nAlpha\n313,726\nBeta\n313,725\nGamma\n313,725",
+          "fullyVisible": true
+        },
+        {
+          "text": "active\nBoolean\nMissing 52,632\nDistinct 2\nTrue 473,684\nFalse 473,684",
+          "fullyVisible": false
+        },
+        {
+          "text": "day\nString\nMissing 0\nDistinct 366\n2024-01-01\n2,733\n2024-01-02\n2,733\n2024-01-03\n2,733\nOther\n983,602",
+          "fullyVisible": false
+        },
+        {
+          "text": "event_at\nString\nProfiling\u2026",
+          "fullyVisible": false
+        }
+      ]
+    },
+    {
+      "route": "dw",
+      "rows": 1000000,
+      "sample": 2,
+      "startedUtc": "2026-09-16T02:51:33.616Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 1494.0429040000308,
+        "amount": 1682.6636360001285,
+        "category": 1682.6732419999316
+      },
+      "layoutActions": [
+        {
+          "action": "Hide bottom panel",
+          "ms": 1491.1053689999972
+        }
+      ],
+      "beforeScreenshot": "dw-1000000-2-before.png",
+      "openStart": 1336146.471467,
+      "gridReadyMs": 1269.3970950001385,
+      "interactiveMs": 1384.08379100007,
+      "selectionStartMs": 1387.2679930001032,
+      "profileText": "Data type\nfloat64\nRows\n1,000,000\nDistinct values\n900\nMissing values\n100,000\nStatistics\nMean\n500.0\nStandard deviation\n288.6724082026377\nMinimum\n1.0\n25th percentile\n250.5\nMedian\n500.0\n75th percentile\n749.5\nMaximum\n999.0\nSum\n450000000.0\nAdvanced statistics\nKurtosis\n-1.200047997575563\nSkew\n0.0",
+      "firstAmountStatsMs": 1577.3847380001098,
+      "completeAmountStatsMs": 1577.3869179999456,
+      "threeHeadersReadyMs": 1682.67537000007,
+      "selectionToFirstStatsMs": 190.11674500000663,
+      "selectionToCompleteStatsMs": 190.11892499984242,
+      "cachedSwitchStartMs": 1780.0124119999819,
+      "cachedSwitchReadyMs": 1835.43544999999,
+      "cachedSwitchMs": 55.42303800000809,
+      "ok": true,
+      "afterScreenshot": "dw-1000000-2-after.png",
+      "finalSidebars": {
+        "primary": true,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "headerObservations": [
+        {
+          "text": "\uf7ac\nid\nMissing:\n0 (0%)\nDistinct:\n1000000 (100%)\n\nValue histogram\n\nBar chart with 20 bars.\nThe chart has 1 X axis displaying Bin ranges. Data ranges from -0.19 to 19.\nThe chart has 1 Y axis displaying Bin frequencies. Data ranges from 49999 to 50001.\nEnd of interactive chart.\nMin 0\nMax 999999",
+          "fullyVisible": true
+        },
+        {
+          "text": "\uf7ac\namount\n\ue712\nMissing:\n100000 (10%)\nDistinct:\n900 (<1%)\n\nValue histogram\n\nBar chart with 20 bars.\nThe chart has 1 X axis displaying Bin ranges. Data ranges from -0.19 to 19.\nThe chart has 1 Y axis displaying Bin frequencies. Data ranges from 45000 to 45000.\nEnd of interactive chart.\nMin 1.0\nMax 999.0",
+          "fullyVisible": true
+        },
+        {
+          "text": "\uec7d\ncategory\nMissing:\n58824 (6%)\nDistinct:\n3 (<1%)\nAlpha\n31%\nBeta\n31%\nGamma\n31%",
+          "fullyVisible": true
+        },
+        {
+          "text": "\uf1aa\nactive\nMissing:\n52632 (5%)\nDistinct:\n2 (<1%)\nFalse\n47%\nTrue\n47%",
+          "fullyVisible": true
+        },
+        {
+          "text": "\uec7d\nday\nMissing:\n0 (0%)\nDistinct:\n366 (<1%)\n366\nDistinct values",
+          "fullyVisible": false
+        },
+        {
+          "text": "\uec7d\nevent_at\nMissing:\n0 (0%)\nDistinct:\n86400 (9%)\n86400\nDistinct values",
+          "fullyVisible": false
+        }
+      ]
+    },
+    {
+      "route": "ow-polars",
+      "rows": 1000000,
+      "sample": 2,
+      "startedUtc": "2026-09-16T02:51:36.411Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 806.8192380000837,
+        "amount": 913.2886679999065,
+        "category": 1020.874792000046
+      },
+      "layoutActions": [
+        {
+          "action": "Open Column profiles",
+          "ms": 693.0661679999903
+        }
+      ],
+      "beforeScreenshot": "ow-polars-1000000-2-before.png",
+      "openStart": 1338947.090787,
+      "gridReadyMs": 415.5914149999153,
+      "interactiveMs": 565.0438939998858,
+      "selectionStartMs": 567.7614229999017,
+      "profileText": "\namount\nFloat64\nCounts\n%\nRows\n1,000,000\nNull\n100,000\nNaN\n0\nDistinct\n900\nMin\n1\nMax\n999\nSum\n450,000,000\nMean\n500\nMedian\n500\nStd. deviation\n288.6724\nDISTRIBUTION\n1 to 999 \u00b7 20 bins",
+      "firstAmountStatsMs": 915.7166589999106,
+      "completeAmountStatsMs": 915.7182169998996,
+      "threeHeadersReadyMs": 1020.8804919999093,
+      "selectionToFirstStatsMs": 347.9552360000089,
+      "selectionToCompleteStatsMs": 347.9567939999979,
+      "cachedSwitchStartMs": 1113.7831490000244,
+      "cachedSwitchReadyMs": 1186.2298190000001,
+      "cachedSwitchMs": 72.44666999997571,
+      "ok": true,
+      "afterScreenshot": "ow-polars-1000000-2-after.png",
+      "finalSidebars": {
+        "primary": false,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "headerObservations": [
+        {
+          "text": "id\nInt64\nMissing 0\nDistinct 1,000,000\nMin 0\nMax 999999\n0 to 1,000,000 \u00b7 20 bins",
+          "fullyVisible": true
+        },
+        {
+          "text": "amount\nFloat64\nMissing 100,000\nDistinct 900\nMin 1\nMax 999\n1 to 999 \u00b7 20 bins",
+          "fullyVisible": true
+        },
+        {
+          "text": "category\nString\nMissing 58,824\nDistinct 3\nAlpha\n313,726\nBeta\n313,725\nGamma\n313,725",
+          "fullyVisible": true
+        },
+        {
+          "text": "active\nBoolean\nMissing 52,632\nDistinct 2\nTrue 473,684\nFalse 473,684",
+          "fullyVisible": false
+        },
+        {
+          "text": "day\nString\nMissing 0\nDistinct 366\n2024-01-01\n2,733\n2024-01-02\n2,733\n2024-01-03\n2,733\nOther\n983,602",
+          "fullyVisible": false
+        },
+        {
+          "text": "event_at\nString\nProfiling\u2026",
+          "fullyVisible": false
+        }
+      ]
+    },
+    {
+      "route": "ow-pandas",
+      "rows": 1000000,
+      "sample": 2,
+      "startedUtc": "2026-09-16T02:51:38.579Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "amount": 1865.9446940000635,
+        "id": 2847.187231000047,
+        "category": 3938.8149200000335
+      },
+      "layoutActions": [
+        {
+          "action": "Open Column profiles",
+          "ms": 1317.9099940001033
+        }
+      ],
+      "beforeScreenshot": "ow-pandas-1000000-2-before.png",
+      "openStart": 1341116.030939,
+      "gridReadyMs": 1046.2064249999821,
+      "interactiveMs": 1186.4825500000734,
+      "selectionStartMs": 1188.8725030000787,
+      "profileText": "\namount\nfloat64\nCounts\n%\nRows\n1,000,000\nNull\n0\nNaN\n100,000\nDistinct\n900\nMin\n1\nMax\n999\nSum\n450,000,000\nMean\n500\nMedian\n500\nStd. deviation\n288.6724\nDISTRIBUTION\n1 to 999 \u00b7 20 bins",
+      "firstAmountStatsMs": 1870.2527479999699,
+      "completeAmountStatsMs": 1870.2551299999468,
+      "threeHeadersReadyMs": 3938.826042999979,
+      "selectionToFirstStatsMs": 681.3802449998911,
+      "selectionToCompleteStatsMs": 681.3826269998681,
+      "cachedSwitchStartMs": 4006.896041000029,
+      "cachedSwitchReadyMs": 4081.1626629999373,
+      "cachedSwitchMs": 74.26662199990824,
+      "ok": true,
+      "afterScreenshot": "ow-pandas-1000000-2-after.png",
+      "finalSidebars": {
+        "primary": false,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "headerObservations": [
+        {
+          "text": "id\nint64\nMissing 0\nDistinct 1,000,000\nMin 0\nMax 999999\n0 to 1,000,000 \u00b7 20 bins",
+          "fullyVisible": true
+        },
+        {
+          "text": "amount\nfloat64\nMissing 100,000\nDistinct 900\nMin 1\nMax 999\n1 to 999 \u00b7 20 bins",
+          "fullyVisible": true
+        },
+        {
+          "text": "category\nstr\nMissing 58,824\nDistinct 3\nAlpha\n313,726\nBeta\n313,725\nGamma\n313,725",
+          "fullyVisible": true
+        },
+        {
+          "text": "active\nobject\nProfiling\u2026",
+          "fullyVisible": false
+        },
+        {
+          "text": "day\nstr\nProfiling\u2026",
+          "fullyVisible": false
+        },
+        {
+          "text": "event_at\nstr\nProfiling\u2026",
+          "fullyVisible": false
+        }
+      ]
+    },
+    {
+      "route": "ow-polars",
+      "rows": 1000000,
+      "sample": 3,
+      "startedUtc": "2026-09-16T02:51:43.663Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 791.8026380001102,
+        "amount": 898.3379200000782,
+        "category": 1004.3413249999285
+      },
+      "layoutActions": [
+        {
+          "action": "Open Column profiles",
+          "ms": 669.1437770000193
+        }
+      ],
+      "beforeScreenshot": "ow-polars-1000000-3-before.png",
+      "openStart": 1346183.205232,
+      "gridReadyMs": 426.93989600008354,
+      "interactiveMs": 547.4098930000328,
+      "selectionStartMs": 550.2921279999427,
+      "profileText": "\namount\nFloat64\nCounts\n%\nRows\n1,000,000\nNull\n100,000\nNaN\n0\nDistinct\n900\nMin\n1\nMax\n999\nSum\n450,000,000\nMean\n500\nMedian\n500\nStd. deviation\n288.6724\nDISTRIBUTION\n1 to 999 \u00b7 20 bins",
+      "firstAmountStatsMs": 900.7992070000619,
+      "completeAmountStatsMs": 900.8006629999727,
+      "threeHeadersReadyMs": 1004.3507739999332,
+      "selectionToFirstStatsMs": 350.5070790001191,
+      "selectionToCompleteStatsMs": 350.50853500002995,
+      "cachedSwitchStartMs": 1080.4876719999593,
+      "cachedSwitchReadyMs": 1149.4326210001018,
+      "cachedSwitchMs": 68.94494900014251,
+      "ok": true,
+      "afterScreenshot": "ow-polars-1000000-3-after.png",
+      "finalSidebars": {
+        "primary": false,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "headerObservations": [
+        {
+          "text": "id\nInt64\nMissing 0\nDistinct 1,000,000\nMin 0\nMax 999999\n0 to 1,000,000 \u00b7 20 bins",
+          "fullyVisible": true
+        },
+        {
+          "text": "amount\nFloat64\nMissing 100,000\nDistinct 900\nMin 1\nMax 999\n1 to 999 \u00b7 20 bins",
+          "fullyVisible": true
+        },
+        {
+          "text": "category\nString\nMissing 58,824\nDistinct 3\nAlpha\n313,726\nBeta\n313,725\nGamma\n313,725",
+          "fullyVisible": true
+        },
+        {
+          "text": "active\nBoolean\nMissing 52,632\nDistinct 2\nTrue 473,684\nFalse 473,684",
+          "fullyVisible": false
+        },
+        {
+          "text": "day\nString\nMissing 0\nDistinct 366\n2024-01-01\n2,733\n2024-01-02\n2,733\n2024-01-03\n2,733\nOther\n983,602",
+          "fullyVisible": false
+        },
+        {
+          "text": "event_at\nString\nProfiling\u2026",
+          "fullyVisible": false
+        }
+      ]
+    },
+    {
+      "route": "ow-pandas",
+      "rows": 1000000,
+      "sample": 3,
+      "startedUtc": "2026-09-16T02:51:45.801Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "amount": 1972.7860719999298,
+        "id": 2737.993770000059,
+        "category": 3823.0307380000595
+      },
+      "layoutActions": [
+        {
+          "action": "Open Column profiles",
+          "ms": 1307.941629000008
+        }
+      ],
+      "beforeScreenshot": "ow-pandas-1000000-3-before.png",
+      "openStart": 1348329.547851,
+      "gridReadyMs": 1053.207070000004,
+      "interactiveMs": 1183.609201000072,
+      "selectionStartMs": 1185.8199080000632,
+      "profileText": "\namount\nfloat64\nCounts\n%\nRows\n1,000,000\nNull\n0\nNaN\n100,000\nDistinct\n900\nMin\n1\nMax\n999\nSum\n450,000,000\nMean\n500\nMedian\n500\nStd. deviation\n288.6724\nDISTRIBUTION\n1 to 999 \u00b7 20 bins",
+      "firstAmountStatsMs": 1975.86301500001,
+      "completeAmountStatsMs": 1975.863962000003,
+      "threeHeadersReadyMs": 3823.0485849999823,
+      "selectionToFirstStatsMs": 790.0431069999468,
+      "selectionToCompleteStatsMs": 790.0440539999399,
+      "cachedSwitchStartMs": 3881.75004500011,
+      "cachedSwitchReadyMs": 3944.4298270000145,
+      "cachedSwitchMs": 62.67978199990466,
+      "ok": true,
+      "afterScreenshot": "ow-pandas-1000000-3-after.png",
+      "finalSidebars": {
+        "primary": false,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "headerObservations": [
+        {
+          "text": "id\nint64\nMissing 0\nDistinct 1,000,000\nMin 0\nMax 999999\n0 to 1,000,000 \u00b7 20 bins",
+          "fullyVisible": true
+        },
+        {
+          "text": "amount\nfloat64\nMissing 100,000\nDistinct 900\nMin 1\nMax 999\n1 to 999 \u00b7 20 bins",
+          "fullyVisible": true
+        },
+        {
+          "text": "category\nstr\nMissing 58,824\nDistinct 3\nAlpha\n313,726\nBeta\n313,725\nGamma\n313,725",
+          "fullyVisible": true
+        },
+        {
+          "text": "active\nobject\nProfiling\u2026",
+          "fullyVisible": false
+        },
+        {
+          "text": "day\nstr\nProfiling\u2026",
+          "fullyVisible": false
+        },
+        {
+          "text": "event_at\nstr\nProfiling\u2026",
+          "fullyVisible": false
+        }
+      ]
+    },
+    {
+      "route": "dw",
+      "rows": 1000000,
+      "sample": 3,
+      "startedUtc": "2026-09-16T02:51:50.725Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "amount": 2248.166489999974,
+        "id": 2368.41133500007,
+        "category": 2368.4280399999116
+      },
+      "layoutActions": [
+        {
+          "action": "Hide bottom panel",
+          "ms": 1452.8786440000404
+        }
+      ],
+      "beforeScreenshot": "dw-1000000-3-before.png",
+      "openStart": 1353166.520061,
+      "gridReadyMs": 1251.3157349999528,
+      "interactiveMs": 1365.4123499998823,
+      "selectionStartMs": 1369.7639250000939,
+      "profileText": "Data type\nfloat64\nRows\n1,000,000\nDistinct values\n900\nMissing values\n100,000\nStatistics\nMean\n500.0\nStandard deviation\n288.6724082026377\nMinimum\n1.0\n25th percentile\n250.5\nMedian\n500.0\n75th percentile\n749.5\nMaximum\n999.0\nSum\n450000000.0\nAdvanced statistics\nKurtosis\n-1.200047997575563\nSkew\n0.0",
+      "firstAmountStatsMs": 1539.2070710000116,
+      "completeAmountStatsMs": 1539.208706999896,
+      "threeHeadersReadyMs": 2368.4305169999134,
+      "selectionToFirstStatsMs": 169.44314599991776,
+      "selectionToCompleteStatsMs": 169.44478199980222,
+      "cachedSwitchStartMs": 2479.844676000066,
+      "cachedSwitchReadyMs": 2551.414318999974,
+      "cachedSwitchMs": 71.56964299990796,
+      "ok": true,
+      "afterScreenshot": "dw-1000000-3-after.png",
+      "finalSidebars": {
+        "primary": true,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "headerObservations": [
+        {
+          "text": "\uf7ac\nid\nMissing:\n0 (0%)\nDistinct:\n1000000 (100%)\n\nValue histogram\n\nBar chart with 20 bars.\nThe chart has 1 X axis displaying Bin ranges. Data ranges from -0.19 to 19.\nThe chart has 1 Y axis displaying Bin frequencies. Data ranges from 49999 to 50001.\nEnd of interactive chart.\nMin 0\nMax 999999",
+          "fullyVisible": true
+        },
+        {
+          "text": "\uf7ac\namount\n\ue712\nMissing:\n100000 (10%)\nDistinct:\n900 (<1%)\n\nValue histogram\n\nBar chart with 20 bars.\nThe chart has 1 X axis displaying Bin ranges. Data ranges from -0.19 to 19.\nThe chart has 1 Y axis displaying Bin frequencies. Data ranges from 45000 to 45000.\nEnd of interactive chart.\nMin 1.0\nMax 999.0",
+          "fullyVisible": true
+        },
+        {
+          "text": "\uec7d\ncategory\nMissing:\n58824 (6%)\nDistinct:\n3 (<1%)\nAlpha\n31%\nBeta\n31%\nGamma\n31%",
+          "fullyVisible": true
+        },
+        {
+          "text": "\uf1aa\nactive\nMissing:\n52632 (5%)\nDistinct:\n2 (<1%)\nFalse\n47%\nTrue\n47%",
+          "fullyVisible": true
+        },
+        {
+          "text": "\uec7d\nday\nMissing:\n0 (0%)\nDistinct:\n366 (<1%)\n366\nDistinct values",
+          "fullyVisible": false
+        },
+        {
+          "text": "\uec7d\nevent_at\nMissing:\n0 (0%)\nDistinct:\n86400 (9%)\n86400\nDistinct values",
+          "fullyVisible": false
+        }
+      ]
+    }
+  ]
+}

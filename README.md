@@ -172,9 +172,9 @@ Views, SQL editing, cleaning and exports are unavailable for this entry point. C
 PySpark uses an existing local batch session. Open Wrangler does not install or configure Spark; streaming dataframes
 and remote or authenticated clusters are unsupported.
 
-A [local product comparison](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/2026-09-16-released-products/review.md)
-records dataframe opening, selected-column profile display and dropping missing rows in Open Wrangler and Microsoft
-Data Wrangler. It includes repeated observations, the procedure and output differences.
+In our [local CSV comparison](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/2026-09-16-released-products/review.md),
+median times favored Open Wrangler with Polars for opening files and showing the three tested column profiles.
+Pandas results were mixed, and Data Wrangler opened already-loaded notebook dataframes sooner.
 
 ## Compatibility and limits
 
