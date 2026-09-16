@@ -922,7 +922,157 @@ describe("canonical R kernel bridge", () => {
     });
   });
 
-  it("fails closed on mismatched custom R lineage, flavor, diff, and effective views", async () => {
+  it("publishes and restores admitted Custom Code flavors across drafts, history, and inspection", async () => {
+    const source = frameContract();
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    const step: CustomCodeTransformStep = {
+      id: "package-class",
+      kind: "customCode",
+      params: { code: "result <- tibble::as_tibble(df)" }
+    };
+    const columns = source.schema.map(({ name }, sourcePosition) => ({ name, sourcePosition }));
+    const tibble = customCodeContract(source, step.id, columns, { dataframeFlavor: "r.tibble" });
+    const previewAt = async (revision: number, output = tibble, replaceStepId?: string) => {
+      transport.queuePreview({
+        sessionId,
+        revision: revision + 1,
+        page: output,
+        diff: customCodeDiff(source, output),
+        code: "generated",
+        effectiveView: { filters: [], sorts: [] }
+      });
+      return bridge.request({ ...planRequest("undoStep", revision), kind: "previewStep", step, replaceStepId });
+    };
+    const expectFlavor = (response: unknown, kind: string, flavor: string) =>
+      expect(response).toMatchObject({ kind, metadata: { rDataframeFlavor: flavor } });
+    try {
+      expectFlavor(await bridge.request(openRequest("editing")), "sessionOpened", "r.data.frame");
+      expectFlavor(await previewAt(0), "stepPreview", "r.tibble");
+      transport.discardDraft.mockResolvedValueOnce({
+        sessionId,
+        action: "discard",
+        revision: 2,
+        page: source,
+        code: ""
+      });
+      expectFlavor(await bridge.request(planRequest("discardDraft", 1)), "planUpdated", "r.data.frame");
+      expectFlavor(await previewAt(2), "stepPreview", "r.tibble");
+      transport.applyDraft.mockResolvedValueOnce({ sessionId, action: "apply", revision: 4, page: tibble, code: "" });
+      expectFlavor(await bridge.request(planRequest("applyDraft", 3)), "planUpdated", "r.tibble");
+      transport.inspectStep.mockResolvedValueOnce({
+        sessionId,
+        revision: 4,
+        stepId: step.id,
+        stepIndex: 0,
+        inputPage: source,
+        outputPage: tibble,
+        inputSchema: source.schema,
+        outputSchema: tibble.schema,
+        code: ""
+      });
+      await expect(
+        bridge.request({ ...planRequest("undoStep", 4), kind: "inspectStep", stepId: step.id })
+      ).resolves.toMatchObject({ kind: "stepInspection", stepId: step.id, diff: { addedRows: 1, removedRows: 1 } });
+      // Replacing a class-changing step uses its original input flavor. Discard restores the committed flavor.
+      const table = customCodeContract(source, step.id, columns, {
+        dataframeFlavor: "r.data.table",
+        keyColumnIds: ["r:c:0"]
+      });
+      expectFlavor(await previewAt(4, table, step.id), "stepPreview", "r.data.table");
+      transport.discardDraft.mockResolvedValueOnce({
+        sessionId,
+        action: "discard",
+        revision: 6,
+        page: tibble,
+        code: ""
+      });
+      expectFlavor(await bridge.request(planRequest("discardDraft", 5)), "planUpdated", "r.tibble");
+      expectFlavor(await previewAt(6, table, step.id), "stepPreview", "r.data.table");
+      transport.applyDraft.mockResolvedValueOnce({ sessionId, action: "apply", revision: 8, page: table, code: "" });
+      expectFlavor(await bridge.request(planRequest("applyDraft", 7)), "planUpdated", "r.data.table");
+      transport.getPage.mockResolvedValueOnce(table);
+      expectFlavor(
+        await bridge.request({
+          ...planRequest("undoStep", 8),
+          kind: "getPage",
+          viewRequestId: "table-page",
+          filterModel: { filters: [], sort: [] }
+        }),
+        "page",
+        "r.data.table"
+      );
+      transport.undoStep.mockResolvedValueOnce({ sessionId, action: "undo", revision: 9, page: source, code: "" });
+      expectFlavor(await bridge.request(planRequest("undoStep", 8)), "planUpdated", "r.data.frame");
+      transport.redoStep.mockResolvedValueOnce({
+        sessionId,
+        revision: 10,
+        page: table,
+        diff: customCodeDiff(source, table),
+        code: "",
+        effectiveView: { filters: [], sorts: [] }
+      });
+      expectFlavor(
+        await bridge.request({ ...planRequest("undoStep", 9), kind: "redoStep", viewRequestId: "package-redo" }),
+        "planUpdated",
+        "r.data.table"
+      );
+      const renamed = renameContract(table, "r:c:0", "amount");
+      const renameStep: TransformStep = {
+        id: "after-package",
+        kind: "renameColumn",
+        params: { column: { id: "r:c:0", name: "value" }, newName: "amount" }
+      };
+      transport.queuePreview({ sessionId, revision: 11, page: renamed, diff: renameDiff(), code: "" });
+      expectFlavor(
+        await bridge.request({ ...planRequest("undoStep", 10), kind: "previewStep", step: renameStep }),
+        "stepPreview",
+        "r.data.table"
+      );
+      transport.applyDraft.mockResolvedValueOnce({ sessionId, action: "apply", revision: 12, page: renamed, code: "" });
+      expectFlavor(await bridge.request(planRequest("applyDraft", 11)), "planUpdated", "r.data.table");
+      for (const [stepIndex, appliedStep, inputPage, outputPage] of [
+        [0, step, source, table],
+        [1, renameStep, table, renamed]
+      ] as const) {
+        transport.inspectStep.mockResolvedValueOnce({
+          sessionId,
+          revision: 12,
+          stepId: appliedStep.id,
+          stepIndex,
+          inputPage,
+          outputPage,
+          inputSchema: inputPage.schema,
+          outputSchema: outputPage.schema,
+          code: ""
+        });
+        await expect(
+          bridge.request({ ...planRequest("undoStep", 12), kind: "inspectStep", stepId: appliedStep.id })
+        ).resolves.toMatchObject({ kind: "stepInspection", stepId: appliedStep.id });
+      }
+      transport.undoStep.mockResolvedValueOnce({ sessionId, action: "undo", revision: 13, page: table, code: "" });
+      expectFlavor(await bridge.request(planRequest("undoStep", 12)), "planUpdated", "r.data.table");
+      // A built-in still cannot return another admitted flavor.
+      transport.queuePreview({
+        sessionId,
+        revision: 14,
+        page: {
+          ...renamed,
+          dataframeFlavor: "r.tibble",
+          frameSemantics: { ...renamed.frameSemantics, classes: ["tbl_df", "tbl", "data.frame"], keyColumnIds: [] }
+        },
+        diff: renameDiff(),
+        code: ""
+      });
+      await expect(
+        bridge.request({ ...planRequest("undoStep", 13), kind: "previewStep", step: renameStep })
+      ).rejects.toThrow("dataframe flavor");
+    } finally {
+      await bridge.dispose();
+    }
+  });
+
+  it("fails closed on mismatched custom R lineage, diff, and effective views", async () => {
     const source = frameContract();
     const step: CustomCodeTransformStep = {
       id: "r-custom-invalid-response",
@@ -986,16 +1136,6 @@ describe("canonical R kernel bridge", () => {
             ...valid.page,
             columnIds: valid.page.columnIds.map((id, index) => (index === 1 ? `c:step:${step.id}:1` : id))
           }
-        },
-        diff: customCodeDiff(source, valid),
-        effectiveView: { filters: [], sorts: [] }
-      },
-      {
-        label: "flavor",
-        page: {
-          ...valid,
-          dataframeFlavor: "r.tibble",
-          frameSemantics: { ...valid.frameSemantics, classes: ["tbl_df", "tbl", "data.frame"] }
         },
         diff: customCodeDiff(source, valid),
         effectiveView: { filters: [], sorts: [] }
@@ -1649,6 +1789,7 @@ function customCodeContract(
     rows?: number;
     rowNames?: "positional" | "explicit";
     keyColumnIds?: readonly string[];
+    dataframeFlavor?: RFramePageContract["dataframeFlavor"];
   }> = {}
 ): RFramePageContract {
   const idsByName = new Map<string, string[]>();
@@ -1663,6 +1804,13 @@ function customCodeContract(
     const id = retainedId ?? `c:step:${stepId}:${createdOrdinal++}`;
     return { ...template, id, name: output.name, position };
   });
+  const dataframeFlavor = options.dataframeFlavor ?? source.dataframeFlavor;
+  const classes =
+    dataframeFlavor === "r.tibble"
+      ? ["tbl_df", "tbl", "data.frame"]
+      : dataframeFlavor === "r.data.table"
+        ? ["data.table", "data.frame"]
+        : ["data.frame"];
   const rows = options.rows ?? 1;
   const rowNames = options.rowNames ?? source.frameSemantics.rowNames;
   const columnOffset = Math.min(source.page.columnOffset, schema.length);
@@ -1671,9 +1819,11 @@ function customCodeContract(
   if (!sourceRow && rows > 0) throw new Error("Fake R custom-code output requires one source row template.");
   return {
     ...source,
+    dataframeFlavor,
     shape: { rows: source.shape.rows + rows, columns: schema.length },
     frameSemantics: {
       ...source.frameSemantics,
+      classes,
       rowNames,
       keyColumnIds: [...(options.keyColumnIds ?? [])]
     },

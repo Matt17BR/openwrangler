@@ -8860,12 +8860,6 @@ openwrangler_r_frame_contract <- local({
       validate_values = TRUE,
       metrics = preflight_metrics
     )
-    if (!identical(
-      preflight$descriptor$dataframeFlavor,
-      source_capture$descriptor$dataframeFlavor
-    )) {
-      abort("invalid-view-query", "Custom Code must return the same R dataframe flavor as its input")
-    }
     if (preflight$descriptor$shape$columns < 1L) {
       abort("invalid-view-query", "Custom Code must return at least one column")
     }

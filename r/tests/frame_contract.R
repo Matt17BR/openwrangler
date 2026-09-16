@@ -1039,6 +1039,33 @@ for (case_index in seq_along(custom_flavor_cases)) {
 custom_validation_source <- openwrangler_r_frame_contract$capture_frame(
   data.frame(value = 1:2, check.names = FALSE)
 )
+local({
+  value <- data.frame(id = 1:3, score = c(1, NA_real_, 3),
+    day = as.Date(c("2026-01-01", NA, "2026-01-03")),
+    label = factor(c("a", NA, "b")),
+    wide = bit64::as.integer64(c("9007199254740993", NA, "9007199254740994")))
+  frames <- list(value, tibble::as_tibble(value), data.table::as.data.table(value))
+  flavors <- c("r.data.frame", "r.tibble", "r.data.table")
+  for (source_index in seq_along(frames)) {
+    source <- frames[[source_index]]
+    before <- serialize(source, NULL, version = 3L)
+    source_capture <- openwrangler_r_frame_contract$capture_frame(source)
+    for (output_index in seq_along(frames)) {
+      output <- frames[[output_index]]
+      output_capture <- openwrangler_r_frame_contract$capture_custom_code_result(output, source_capture, "class-transition")
+      page <- openwrangler_r_frame_contract$materialize_page(output_capture)
+      assert_identical(page$dataframeFlavor, flavors[[output_index]], "Custom Code lost its admitted output flavor")
+      assert_identical(page$frameSemantics$classes, I(class(output)), "Custom Code lost output frame classes")
+      assert_identical(vapply(page$schema, `[[`, character(1L), "id"), sprintf("r:c:%d", 0:4),
+        "a frame-class transition replaced unchanged column identities")
+      assert_identical(vapply(page$page$rows, `[[`, character(1L), "id"), sprintf("r:r:%d", 3:5),
+        "a frame-class transition reused input row identities")
+      assert_identical(as.data.frame(output_capture$snapshot), value,
+        "a frame-class transition changed native values, missingness or column types")
+    }
+    assert_identical(serialize(source, NULL, version = 3L), before, "a frame-class transition mutated its source")
+  }
+})
 custom_zero_rows <- openwrangler_r_frame_contract$capture_custom_code_result(
   data.frame(value = integer(), check.names = FALSE),
   custom_validation_source,
@@ -1085,11 +1112,11 @@ assert_error(
 )
 assert_error(
   openwrangler_r_frame_contract$capture_custom_code_result(
-    tibble::tibble(value = 1:2),
+    structure(data.frame(value = 1:2), class = c("unsupported", "data.frame")),
     custom_validation_source,
-    "cross-flavor"
+    "unsupported-flavor"
   ),
-  "invalid-view-query"
+  "unsupported-frame-class"
 )
 private_custom_output <- data.frame(value = 1:2, check.names = FALSE)
 names(private_custom_output) <- "__OPEN_WRANGLER_INTERNAL_ROW_ID_FORBIDDEN"

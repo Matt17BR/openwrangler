@@ -7626,7 +7626,6 @@ openwrangler_r_kernel_agent <- local({
       "  }",
       "  .ow_custom_validate <- function(.ow_value) {",
       "    .ow_flavor <- .ow_custom_flavor(.ow_value)",
-      "    if (!base::identical(.ow_flavor, .ow_source_flavor)) base::stop(\"Open Wrangler Custom Code must return the same R dataframe flavor as its input\", call. = FALSE)",
       "    .ow_attribute_names <- base::names(base::attributes(.ow_value)); if (base::is.null(.ow_attribute_names)) .ow_attribute_names <- base::character()",
       "    if (base::anyNA(.ow_attribute_names) || base::any(.ow_attribute_names == \"\") || base::anyDuplicated.default(.ow_attribute_names)) base::stop(\"Open Wrangler Custom Code returned malformed dataframe attributes\", call. = FALSE)",
       "    .ow_allowed_attributes <- c(\"names\", \"row.names\", \"class\"); if (base::identical(.ow_flavor, \"r.data.table\")) .ow_allowed_attributes <- c(.ow_allowed_attributes, \".internal.selfref\", \"sorted\")",
@@ -7988,21 +7987,19 @@ openwrangler_r_kernel_agent <- local({
       "  }",
       "  .ow_result_ids <- base::sprintf(\"r:c:%d\", base::seq_len(.ow_source_column_count) - 1L)"
     )
-    if (
-      any(vapply(
-        bound_plan,
-        function(step) {
-          identical(step$kind, "formula") ||
-            (identical(step$kind, "formatDatetime") && !isTRUE(step$inPlace)) ||
-            step$kind %in% c("oneHotEncode", "multiLabelBinarize")
-        },
-        logical(1L)
-      ))
-    ) {
+    needs_data_table_alloccol <- any(vapply(
+      bound_plan,
+      function(step) {
+        identical(step$kind, "formula") ||
+          (identical(step$kind, "formatDatetime") && !isTRUE(step$inPlace)) ||
+          step$kind %in% c("oneHotEncode", "multiLabelBinarize")
+      },
+      logical(1L)
+    ))
+    if (needs_data_table_alloccol) {
       lines <- c(
         lines,
-        "  .ow_data_table_alloccol <- NULL",
-        "  if (base::identical(.ow_source_flavor, \"r.data.table\")) {",
+        "  .ow_prepare_data_table_alloccol <- function() {",
         "    .ow_data_table_namespace <- base::asNamespace(\"data.table\")",
         "    .ow_data_table_namespace_dlls <- base::getNamespaceInfo(.ow_data_table_namespace, \"DLLs\")",
         "    .ow_data_table_namespace_routines <- base::getNamespaceInfo(.ow_data_table_namespace, \"nativeRoutines\")",
@@ -8015,7 +8012,9 @@ openwrangler_r_kernel_agent <- local({
         "    .ow_data_table_binding_fields <- base::unclass(.ow_data_table_binding)",
         "    .ow_data_table_alloccol_fields <- if (base::is.null(.ow_data_table_alloccol)) NULL else base::unclass(.ow_data_table_alloccol)",
         "    if (!base::inherits(.ow_data_table_dll, \"DLLInfo\") || !base::identical(base::.subset2(.ow_data_table_dll_fields, \"name\"), \"data_table\") || !base::identical(base::.subset2(.ow_data_table_dll_fields, \"dynamicLookup\"), FALSE) || !base::is.character(.ow_data_table_routine_map) || !base::identical(base::.subset2(.ow_data_table_routine_map, \"Calloccolwrapper\"), \"Calloccolwrapper\") || !base::identical(base::class(.ow_data_table_binding), c(\"CallRoutine\", \"NativeSymbolInfo\")) || !base::identical(base::attr(.ow_data_table_binding, \"names\", exact = TRUE), c(\"name\", \"address\", \"dll\", \"numParameters\")) || !base::identical(base::.subset2(.ow_data_table_binding_fields, \"name\"), \"Calloccolwrapper\") || !base::identical(base::.subset2(.ow_data_table_binding_fields, \"numParameters\"), -1L) || !base::identical(base::.subset2(.ow_data_table_binding_fields, \"dll\"), .ow_data_table_dll) || !base::inherits(base::.subset2(.ow_data_table_binding_fields, \"address\"), \"RegisteredNativeSymbol\") || base::is.null(.ow_data_table_alloccol) || !base::identical(base::.subset2(.ow_data_table_alloccol_fields, \"name\"), \"Calloccolwrapper\") || !base::identical(base::.subset2(.ow_data_table_alloccol_fields, \"numParameters\"), -1L) || !base::identical(base::.subset2(.ow_data_table_alloccol_fields, \"dll\"), .ow_data_table_dll) || !base::inherits(base::.subset2(.ow_data_table_alloccol_fields, \"address\"), \"NativeSymbol\")) base::stop(\"data.table has invalid append primitives\", call. = FALSE)",
-        "  }"
+        "    .ow_data_table_alloccol",
+        "  }",
+        "  .ow_data_table_alloccol <- if (base::identical(.ow_source_flavor, \"r.data.table\")) .ow_prepare_data_table_alloccol() else NULL"
       )
     }
     if (any(vapply(bound_plan, function(step) {
@@ -8257,6 +8256,11 @@ openwrangler_r_kernel_agent <- local({
           "  if (base::anyDuplicated.default(.ow_result_ids)) base::stop(\"Open Wrangler Custom Code produced conflicting output identities\", call. = FALSE)",
           "  .ow_custom_validate_identity_budget(.ow_custom_metadata_bytes, .ow_result, .ow_result_ids)"
         )
+        if (needs_data_table_alloccol) {
+          lines <- c(lines,
+            "  if (base::inherits(.ow_result, \"data.table\") && base::is.null(.ow_data_table_alloccol)) .ow_data_table_alloccol <- .ow_prepare_data_table_alloccol()"
+          )
+        }
       } else if (identical(step$kind, "groupBy")) {
         key_specs <- vapply(step$keys, r_group_spec, character(1L), USE.NAMES = FALSE)
         aggregation_specs <- vapply(

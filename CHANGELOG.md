@@ -6,6 +6,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Added
 
+- R Custom Code accepts results that change between supported base data.frame, tibble and data.table classes, with matching Preview, history and generated code.
 - Native R opens local UTF-8 CSV and TSV files on Linux and macOS as a Preview, with native cleaning, generated R and saved plans. Choosing R from a Python file session preserves the original in a separate tab.
 
 ### Changed

@@ -16,7 +16,7 @@ import type { BridgeRequestOptions } from "../dataBridge";
 import { RKernelDiagnosticError } from "./rKernelTransport";
 import type { RKernelBridgeTransport } from "./rKernelBridgeTransport";
 import { type RKernelTransformStep, type RKernelViewQuery } from "./rKernelProtocol";
-import type { RColumnSchema, RFramePageContract } from "./rFrameContract";
+import type { RColumnSchema, RDataframeFlavor, RFramePageContract } from "./rFrameContract";
 import {
   R_BRIDGE_CAPABILITIES,
   assertMutationContract,
@@ -143,6 +143,7 @@ export class RKernelMutationLifecycle {
     let inputIdentityRows: number;
     let inputKeyColumnIds: readonly string[];
     let inputRowNames: RFramePageContract["frameSemantics"]["rowNames"];
+    let inputDataframeFlavor: RDataframeFlavor;
     let inputCustomRowIdentities: RCustomRowIdentityConstraint | undefined;
     if (replaceStepId !== undefined) {
       const matches = confirmed.steps.flatMap((step, index) => (step.id === replaceStepId ? [index] : []));
@@ -165,6 +166,7 @@ export class RKernelMutationLifecycle {
       inputIdentityRows = confirmed.planInputIdentityRows[replaceIndex] ?? confirmed.sourceRows;
       inputKeyColumnIds = confirmed.planInputKeyColumnIds[replaceIndex] ?? confirmed.sourceKeyColumnIds;
       inputRowNames = confirmed.planInputRowNames[replaceIndex] ?? confirmed.sourceRowNames;
+      inputDataframeFlavor = confirmed.planInputDataframeFlavors[replaceIndex] ?? confirmed.sourceDataframeFlavor;
       inputCustomRowIdentities = confirmed.planInputCustomRowIdentities[replaceIndex];
     } else {
       if (confirmed.steps.some((applied) => applied.id === step.id)) {
@@ -176,6 +178,7 @@ export class RKernelMutationLifecycle {
       inputIdentityRows = confirmed.committedIdentityRows;
       inputKeyColumnIds = confirmed.committedKeyColumnIds;
       inputRowNames = confirmed.committedRowNames;
+      inputDataframeFlavor = confirmed.committedDataframeFlavor;
       inputCustomRowIdentities = confirmed.committedCustomRowIdentities;
     }
 
@@ -292,10 +295,11 @@ export class RKernelMutationLifecycle {
         retainedStep = copyRTransformStep(step);
       }
       const targetRows = rowCountAfterRStep(step, inputRows, result.diff);
+      const targetDataframeFlavor = step.kind === "customCode" ? result.page.dataframeFlavor : inputDataframeFlavor;
       const targetRowNames =
         step.kind === "customCode"
           ? result.page.frameSemantics.rowNames
-          : rowNamesAfterRStep(inputRowNames, step, confirmed.dataframeFlavor, targetRows);
+          : rowNamesAfterRStep(inputRowNames, step, inputDataframeFlavor, targetRows);
       const targetIdentityRows = rowIdentityDomainAfterRStep(step, inputIdentityRows, targetRows);
       const targetCustomRowIdentities = customRowIdentityConstraintAfterRStep(
         step,
@@ -327,7 +331,8 @@ export class RKernelMutationLifecycle {
               ? { columnId: `c:step:${step.id}:0`, mode: "mayAdd" }
               : step.kind === "fillMissingValues" && step.params.replacement.kind === "fallbackColumns"
                 ? { columnId: step.params.column.id, mode: "mayRemove" }
-                : undefined
+                : undefined,
+        targetDataframeFlavor
       );
       assertMutationDiff(
         retainedStep,
@@ -355,6 +360,7 @@ export class RKernelMutationLifecycle {
       confirmed.keyColumnIds = Object.freeze([...targetKeyColumnIds]);
       confirmed.customRowIdentities = targetCustomRowIdentities;
       confirmed.rowNames = targetRowNames;
+      confirmed.dataframeFlavor = targetDataframeFlavor;
       confirmed.filterModel = nextFilterModel;
       if (request.kind === "redoStep") {
         confirmed.steps = [...confirmed.steps, copyRTransformStep(retainedStep)];
@@ -364,6 +370,7 @@ export class RKernelMutationLifecycle {
         confirmed.planInputIdentityRows = [...confirmed.planInputIdentityRows, inputIdentityRows];
         confirmed.planInputKeyColumnIds = [...confirmed.planInputKeyColumnIds, Object.freeze([...inputKeyColumnIds])];
         confirmed.planInputRowNames = [...confirmed.planInputRowNames, inputRowNames];
+        confirmed.planInputDataframeFlavors = [...confirmed.planInputDataframeFlavors, inputDataframeFlavor];
         confirmed.planInputCustomRowIdentities = [...confirmed.planInputCustomRowIdentities, inputCustomRowIdentities];
         confirmed.committedSchema = confirmed.schema;
         confirmed.committedRSchema = confirmed.rSchema;
@@ -371,6 +378,7 @@ export class RKernelMutationLifecycle {
         confirmed.committedIdentityRows = targetIdentityRows;
         confirmed.committedKeyColumnIds = confirmed.keyColumnIds;
         confirmed.committedRowNames = targetRowNames;
+        confirmed.committedDataframeFlavor = targetDataframeFlavor;
         confirmed.committedCustomRowIdentities = targetCustomRowIdentities;
         confirmed.redoSteps = confirmed.redoSteps.slice(0, -1);
         confirmed.lastAppliedViewRestore =
@@ -400,6 +408,7 @@ export class RKernelMutationLifecycle {
       confirmed.draftInputIdentityRows = inputIdentityRows;
       confirmed.draftInputKeyColumnIds = Object.freeze([...inputKeyColumnIds]);
       confirmed.draftInputRowNames = inputRowNames;
+      confirmed.draftInputDataframeFlavor = inputDataframeFlavor;
       confirmed.draftInputCustomRowIdentities = inputCustomRowIdentities;
       confirmed.draftBaseFilterModel = draftBaseFilterModel;
       confirmed.draftBaseViewChangeEpoch = draftBaseViewChangeEpoch;
@@ -457,6 +466,7 @@ export class RKernelMutationLifecycle {
     let targetIdentityRows: number;
     let targetKeyColumnIds: readonly string[];
     let targetRowNames: RFramePageContract["frameSemantics"]["rowNames"];
+    let targetDataframeFlavor: RDataframeFlavor;
     let targetCustomRowIdentities: RCustomRowIdentityConstraint | undefined;
     let nextFilterModel: FilterModel;
     if (request.kind === "applyDraft") {
@@ -467,7 +477,8 @@ export class RKernelMutationLifecycle {
         confirmed.draftInputRows === undefined ||
         confirmed.draftInputIdentityRows === undefined ||
         !confirmed.draftInputKeyColumnIds ||
-        confirmed.draftInputRowNames === undefined
+        confirmed.draftInputRowNames === undefined ||
+        confirmed.draftInputDataframeFlavor === undefined
       ) {
         return errorResponse("invalid_request", "There is no R draft step to apply.", true, request.sessionId);
       }
@@ -485,6 +496,7 @@ export class RKernelMutationLifecycle {
       targetIdentityRows = confirmed.identityRows;
       targetKeyColumnIds = confirmed.keyColumnIds;
       targetRowNames = confirmed.rowNames;
+      targetDataframeFlavor = confirmed.dataframeFlavor;
       targetCustomRowIdentities = confirmed.customRowIdentities;
       nextFilterModel = copyFilterModel(currentView.filterModel);
     } else if (request.kind === "discardDraft") {
@@ -495,7 +507,8 @@ export class RKernelMutationLifecycle {
         confirmed.draftInputRows === undefined ||
         confirmed.draftInputIdentityRows === undefined ||
         !confirmed.draftInputKeyColumnIds ||
-        confirmed.draftInputRowNames === undefined
+        confirmed.draftInputRowNames === undefined ||
+        confirmed.draftInputDataframeFlavor === undefined
       ) {
         return errorResponse("invalid_request", "There is no R draft step to discard.", true, request.sessionId);
       }
@@ -505,6 +518,7 @@ export class RKernelMutationLifecycle {
       targetIdentityRows = confirmed.committedIdentityRows;
       targetKeyColumnIds = confirmed.committedKeyColumnIds;
       targetRowNames = confirmed.committedRowNames;
+      targetDataframeFlavor = confirmed.committedDataframeFlavor;
       targetCustomRowIdentities = confirmed.committedCustomRowIdentities;
       nextFilterModel =
         confirmed.draftBaseViewChangeEpoch === currentView.viewChangeEpoch && confirmed.draftBaseFilterModel
@@ -528,6 +542,7 @@ export class RKernelMutationLifecycle {
       targetIdentityRows = confirmed.planInputIdentityRows.at(-1) ?? confirmed.sourceRows;
       targetKeyColumnIds = confirmed.planInputKeyColumnIds.at(-1) ?? confirmed.sourceKeyColumnIds;
       targetRowNames = confirmed.planInputRowNames.at(-1) ?? confirmed.sourceRowNames;
+      targetDataframeFlavor = confirmed.planInputDataframeFlavors.at(-1) ?? confirmed.sourceDataframeFlavor;
       targetCustomRowIdentities = confirmed.planInputCustomRowIdentities.at(-1);
       const latest = confirmed.steps.at(-1) as RetainedTransformStep;
       const restore = confirmed.lastAppliedViewRestore;
@@ -585,7 +600,9 @@ export class RKernelMutationLifecycle {
         targetIdentityRows,
         targetKeyColumnIds,
         targetRowNames,
-        view
+        view,
+        undefined,
+        targetDataframeFlavor
       );
       assertCustomDerivedRowIdentities(result.page, targetCustomRowIdentities, view);
       if (!isDeepStrictEqual(targetRSchema, result.page.schema)) {
@@ -602,6 +619,7 @@ export class RKernelMutationLifecycle {
         const draftInputIdentityRows = confirmed.draftInputIdentityRows as number;
         const draftInputKeyColumnIds = confirmed.draftInputKeyColumnIds as readonly string[];
         const draftInputRowNames = confirmed.draftInputRowNames as RFramePageContract["frameSemantics"]["rowNames"];
+        const draftInputDataframeFlavor = confirmed.draftInputDataframeFlavor as RDataframeFlavor;
         const draftInputCustomRowIdentities = confirmed.draftInputCustomRowIdentities;
         if (confirmed.draftReplacesStepId === undefined) {
           confirmed.steps = [...confirmed.steps, copyRTransformStep(draftStep)];
@@ -614,6 +632,7 @@ export class RKernelMutationLifecycle {
             Object.freeze([...draftInputKeyColumnIds])
           ];
           confirmed.planInputRowNames = [...confirmed.planInputRowNames, draftInputRowNames];
+          confirmed.planInputDataframeFlavors = [...confirmed.planInputDataframeFlavors, draftInputDataframeFlavor];
           confirmed.planInputCustomRowIdentities = [
             ...confirmed.planInputCustomRowIdentities,
             draftInputCustomRowIdentities
@@ -629,6 +648,10 @@ export class RKernelMutationLifecycle {
             Object.freeze([...draftInputKeyColumnIds])
           ];
           confirmed.planInputRowNames = [...confirmed.planInputRowNames.slice(0, -1), draftInputRowNames];
+          confirmed.planInputDataframeFlavors = [
+            ...confirmed.planInputDataframeFlavors.slice(0, -1),
+            draftInputDataframeFlavor
+          ];
           confirmed.planInputCustomRowIdentities = [
             ...confirmed.planInputCustomRowIdentities.slice(0, -1),
             draftInputCustomRowIdentities
@@ -640,6 +663,7 @@ export class RKernelMutationLifecycle {
         confirmed.committedIdentityRows = targetIdentityRows;
         confirmed.committedKeyColumnIds = Object.freeze([...targetKeyColumnIds]);
         confirmed.committedRowNames = targetRowNames;
+        confirmed.committedDataframeFlavor = targetDataframeFlavor;
         confirmed.committedCustomRowIdentities = targetCustomRowIdentities;
         const chainedRestore =
           confirmed.draftReplacesStepId === draftStep.id &&
@@ -673,6 +697,7 @@ export class RKernelMutationLifecycle {
         confirmed.planInputIdentityRows = confirmed.planInputIdentityRows.slice(0, -1);
         confirmed.planInputKeyColumnIds = confirmed.planInputKeyColumnIds.slice(0, -1);
         confirmed.planInputRowNames = confirmed.planInputRowNames.slice(0, -1);
+        confirmed.planInputDataframeFlavors = confirmed.planInputDataframeFlavors.slice(0, -1);
         confirmed.planInputCustomRowIdentities = confirmed.planInputCustomRowIdentities.slice(0, -1);
         confirmed.committedSchema = schemaFromContract(result.page);
         confirmed.committedRSchema = result.page.schema;
@@ -680,6 +705,7 @@ export class RKernelMutationLifecycle {
         confirmed.committedIdentityRows = targetIdentityRows;
         confirmed.committedKeyColumnIds = Object.freeze([...targetKeyColumnIds]);
         confirmed.committedRowNames = targetRowNames;
+        confirmed.committedDataframeFlavor = targetDataframeFlavor;
         confirmed.committedCustomRowIdentities = targetCustomRowIdentities;
         confirmed.lastAppliedViewRestore = undefined;
       }
@@ -691,6 +717,7 @@ export class RKernelMutationLifecycle {
       confirmed.identityRows = targetIdentityRows;
       confirmed.keyColumnIds = Object.freeze([...targetKeyColumnIds]);
       confirmed.rowNames = targetRowNames;
+      confirmed.dataframeFlavor = targetDataframeFlavor;
       confirmed.customRowIdentities = targetCustomRowIdentities;
       confirmed.filterModel = nextFilterModel;
       clearDraft(confirmed);

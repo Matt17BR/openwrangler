@@ -298,6 +298,10 @@ The existing frame profiling owner checks complete numeric bin membership and bo
 filtered populations, both sampled fallback limits and sparse columns that remain exact. It also checks bounded exact
 numeric distinct counts, integer64 identity, duration signed zero and abandonment at the cardinality limit. The R
 decoder owner verifies exact large histograms while allowing omitted statistics above their bounds.
+The existing native Custom Code owners execute real dplyr, data.table and collapse calls from file and package-backed
+frames, including admitted class changes, retained metadata, history, failure recovery and executable generated code.
+The bridge owner checks output-flavor publication and inspection; the existing process Custom Code lifecycle changes
+a base frame to a tibble. Generated append coverage includes a later Formula after conversion to data.table.
 Formula transport keeps integer and maximum finite double samples; intermediate exact powers and their neighboring
 values belong to the encoder and native numeric-portability owners.
 Min-max scale's adjacent integer64 and missing-value results belong to the native kernel's live and generated-code
