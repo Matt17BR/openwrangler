@@ -2998,6 +2998,36 @@ describe("App toolbar", () => {
     ({ App } = await import("../webviews/App"));
   });
 
+  it.each(["file", "notebookVariable"] as const)("offers R engine selection only for a %s source", (kind) => {
+    render(<App />);
+    dispatchAppMessage({
+      kind: "sessionOpened",
+      page,
+      summaries: [],
+      metadata: {
+        ...metadata,
+        backend: "r",
+        rDataframeFlavor: "r.data.frame",
+        source:
+          kind === "file"
+            ? { kind, label: "records.csv", path: "/tmp/records.csv", uri: "file:///tmp/records.csv" }
+            : { kind, label: "df", variableName: "df", uri: "file:///tmp/notebook.ipynb" }
+      }
+    });
+    const engine = screen.queryByRole("button", { name: /Change dataframe engine/u });
+    if (kind === "notebookVariable") {
+      expect(engine).toBeNull();
+      return;
+    }
+    expect(engine).toBeEnabled();
+    fireEvent.click(engine!);
+    expect(webviewPostMessage).toHaveBeenCalledWith({ kind: "changeBackend" });
+    expect(screen.getByRole("button", { name: "Import options" })).toHaveAttribute(
+      "title",
+      "Open a separate R session with new import options"
+    );
+  });
+
   it("keeps the visible dataframe shape compact while exposing its full meaning", async () => {
     const schema = Array.from({ length: 417 }, (_, position) => ({
       id: `c:${position}`,

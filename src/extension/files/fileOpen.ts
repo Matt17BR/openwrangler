@@ -1,6 +1,7 @@
 import * as path from "path";
 import * as vscode from "vscode";
 import type { DataBackend, SessionSource } from "../../shared/protocol";
+import { isSessionSource } from "../../shared/protocolValidation";
 import type { OpenWranglerBridge } from "../dataBridge";
 import { OpenWranglerPanel } from "../webviewPanel";
 import { getSetting } from "../configuration";
@@ -10,12 +11,25 @@ import { detectImportOptions } from "./importOptions";
 import { captureSessionSourceProtection, confirmSessionSourceProtection } from "./safeFileExport";
 
 const CUSTOM_EDITOR_ID = "openWrangler.viewer";
-type FileDataBackend = Extract<DataBackend, "polars" | "duckdb" | "pandas">;
+type FileDataBackend = Extract<DataBackend, "polars" | "duckdb" | "pandas" | "r">;
+export type RFileBridgeFactory = (source: SessionSource) => Promise<OpenWranglerBridge>;
+
+async function selectFileBridge(
+  source: SessionSource,
+  backend: FileDataBackend | undefined,
+  pythonBridge: OpenWranglerBridge,
+  createRBridge: RFileBridgeFactory | undefined
+): Promise<OpenWranglerBridge> {
+  if (backend !== "r") return pythonBridge;
+  if (!createRBridge) throw new Error("Native R file opening is unavailable in this extension host.");
+  return createRBridge(source);
+}
 
 export class OpenWranglerCustomEditorProvider implements vscode.CustomReadonlyEditorProvider {
   constructor(
     private readonly context: vscode.ExtensionContext,
-    private readonly bridge: OpenWranglerBridge
+    private readonly bridge: OpenWranglerBridge,
+    private readonly createRBridge?: RFileBridgeFactory
   ) {}
 
   openCustomDocument(uri: vscode.Uri): vscode.CustomDocument {
@@ -42,19 +56,92 @@ export class OpenWranglerCustomEditorProvider implements vscode.CustomReadonlyEd
     if (token.isCancellationRequested) return;
     const source = fileSource(document.uri, importOptions);
     const configuredBackend = getConfiguredBackend();
-    new OpenWranglerPanel(
-      webviewPanel,
-      this.context,
-      this.bridge,
-      source,
-      confirmed?.backend ?? backendPin(configuredBackend),
-      true,
-      confirmed?.backendPreference ?? configuredBackend
-    );
+    const backend = confirmed?.backend ?? backendPin(configuredBackend);
+    let selectedBridge: OpenWranglerBridge | undefined;
+    let handedOff = false;
+    try {
+      selectedBridge = await selectFileBridge(
+        source,
+        backend as FileDataBackend | undefined,
+        this.bridge,
+        this.createRBridge
+      );
+      if (token.isCancellationRequested) return;
+      new OpenWranglerPanel(
+        webviewPanel,
+        this.context,
+        selectedBridge,
+        source,
+        backend,
+        true,
+        confirmed?.backendPreference ?? configuredBackend
+      );
+      handedOff = true;
+    } catch (error) {
+      if (!token.isCancellationRequested) {
+        await vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
+        webviewPanel.dispose();
+      }
+    } finally {
+      if (!handedOff && backend === "r") selectedBridge?.onIdle?.();
+    }
   }
 }
 
-export const registerFileCommands = (context: vscode.ExtensionContext, bridge: OpenWranglerBridge): void => {
+export const registerFileCommands = (
+  context: vscode.ExtensionContext,
+  bridge: OpenWranglerBridge,
+  createRBridge?: RFileBridgeFactory
+): void => {
+  const openSource = async (
+    source: SessionSource,
+    backendPreference: FileDataBackend | "auto",
+    isCurrent: () => boolean = () => true
+  ): Promise<void> => {
+    if (!isCurrent()) return;
+    let selectedBridge: OpenWranglerBridge | undefined;
+    let handedOff = false;
+    try {
+      selectedBridge = await selectFileBridge(source, backendPin(backendPreference), bridge, createRBridge);
+      if (!isCurrent()) return;
+      OpenWranglerPanel.create(context, selectedBridge, source, backendPin(backendPreference), backendPreference);
+      handedOff = true;
+    } catch (error) {
+      if (isCurrent()) await vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (!handedOff && backendPreference === "r") selectedBridge?.onIdle?.();
+    }
+  };
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "openWrangler.internal.openFileWithEngine",
+      async (source: unknown, backend: unknown, isCurrent: unknown) => {
+        if (
+          !isSessionSource(source) ||
+          source.kind !== "file" ||
+          !source.path ||
+          !path.isAbsolute(source.path) ||
+          !source.uri ||
+          typeof backend !== "string" ||
+          !fileDataBackends.has(backend as FileDataBackend) ||
+          typeof isCurrent !== "function"
+        )
+          return;
+        const current = isCurrent as () => boolean;
+        const captured = structuredClone(source);
+        const uri = vscode.Uri.parse(captured.uri as string, true);
+        if (
+          !current() ||
+          uri.scheme !== "file" ||
+          path.resolve(uri.fsPath) !== path.resolve(captured.path as string) ||
+          !(await validateFileTarget(uri)) ||
+          !current()
+        )
+          return;
+        await openSource(captured, backend as FileDataBackend, current);
+      }
+    )
+  );
   const databaseOpens = new Set<vscode.CancellationTokenSource>();
   context.subscriptions.push({
     dispose: () => {
@@ -247,13 +334,7 @@ export const registerFileCommands = (context: vscode.ExtensionContext, bridge: O
       if (!(await validateFileTarget(target))) return;
 
       const configuredBackend = getConfiguredBackend();
-      OpenWranglerPanel.create(
-        context,
-        bridge,
-        fileSource(target, await detectImportOptions(target)),
-        backendPin(configuredBackend),
-        configuredBackend
-      );
+      await openSource(fileSource(target, await detectImportOptions(target)), configuredBackend);
     })
   );
 
@@ -277,13 +358,7 @@ export const registerFileCommands = (context: vscode.ExtensionContext, bridge: O
       if (!(await validateFileTarget(selected))) return;
 
       const configuredBackend = getConfiguredBackend();
-      OpenWranglerPanel.create(
-        context,
-        bridge,
-        fileSource(selected, await detectImportOptions(selected)),
-        backendPin(configuredBackend),
-        configuredBackend
-      );
+      await openSource(fileSource(selected, await detectImportOptions(selected)), configuredBackend);
     })
   );
 };
@@ -296,7 +371,7 @@ const fileSource = (uri: vscode.Uri, importOptions?: SessionSource["importOption
   importOptions
 });
 
-const fileDataBackends = new Set<FileDataBackend>(["polars", "duckdb", "pandas"]);
+const fileDataBackends = new Set<FileDataBackend>(["polars", "duckdb", "pandas", "r"]);
 
 const getConfiguredBackend = (): FileDataBackend | "auto" => {
   const configured = getSetting<unknown>("defaultBackend", "auto");

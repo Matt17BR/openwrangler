@@ -69,7 +69,7 @@ export function createRFileBridge(context: vscode.ExtensionContext, source: Sess
       workingDirectory: path.dirname(fileSource.path),
       fileSource
     });
-    return new RKernelBridge(
+    const bridge = new RKernelBridge(
       context,
       transport,
       undefined,
@@ -79,6 +79,8 @@ export function createRFileBridge(context: vscode.ExtensionContext, source: Sess
       async () => create(),
       pinnedSource
     );
+    bridge.reportDiagnostic(`R file runtime selected: ${JSON.stringify(rscriptPath)}.`);
+    return bridge;
   };
   return create();
 }

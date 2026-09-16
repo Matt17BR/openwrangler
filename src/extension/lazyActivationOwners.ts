@@ -30,7 +30,8 @@ const FILE_COMMANDS = [
   "openWrangler.openFile",
   "openWrangler.openPath",
   "openWrangler.openDuckDBTable",
-  "openWrangler.openFileWithPlan"
+  "openWrangler.openFileWithPlan",
+  "openWrangler.internal.openFileWithEngine"
 ] as const;
 const PICKLE_COMMANDS = ["openWrangler.convertTrustedPickle"] as const;
 const NOTEBOOK_COMMANDS = [
@@ -109,6 +110,7 @@ interface ROwner {
 
 interface FileOwner {
   module: typeof import("./files/fileOpen");
+  createRBridge: import("./files/fileOpen").RFileBridgeFactory;
 }
 
 interface NativeOwner {
@@ -186,6 +188,7 @@ interface LazyActivationModuleLoaders {
   rendererMessaging(): Promise<typeof import("./notebooks/rendererMessaging")>;
   rInteractiveCommands(): Promise<typeof import("./r/rInteractiveCommands")>;
   rDocumentCommands(): Promise<typeof import("./r/rDocumentCommands")>;
+  rFileSource(): Promise<typeof import("./r/rFileSource")>;
   runtimeCommands(): Promise<typeof import("./runtimeCommands")>;
   nativeViews(): Promise<typeof import("./nativeViews")>;
   webviewPanel(): Promise<typeof import("./webviewPanel")>;
@@ -209,6 +212,7 @@ const defaultLazyActivationModuleLoaders: LazyActivationModuleLoaders = {
     require("./notebooks/rendererMessaging") as typeof import("./notebooks/rendererMessaging"),
   rInteractiveCommands: async () => require("./r/rInteractiveCommands") as typeof import("./r/rInteractiveCommands"),
   rDocumentCommands: async () => require("./r/rDocumentCommands") as typeof import("./r/rDocumentCommands"),
+  rFileSource: async () => require("./r/rFileSource") as typeof import("./r/rFileSource"),
   runtimeCommands: async () => require("./runtimeCommands") as typeof import("./runtimeCommands"),
   nativeViews: async () => require("./nativeViews") as typeof import("./nativeViews"),
   webviewPanel: async () => require("./webviewPanel") as typeof import("./webviewPanel")
@@ -440,7 +444,8 @@ export class LazyActivationOwners implements vscode.Disposable {
       const owner = await this.ensureFileOwner();
       return new owner.module.OpenWranglerCustomEditorProvider(
         this.context,
-        await this.ensureCoordinatedPythonBridge()
+        await this.ensureCoordinatedPythonBridge(),
+        owner.createRBridge
       );
     });
     this.customEditorRegistration = vscode.window.registerCustomEditorProvider(CUSTOM_EDITOR_ID, provider, {
@@ -566,9 +571,17 @@ export class LazyActivationOwners implements vscode.Disposable {
     ]);
     this.assertActive();
     this.replaceCommandGroup("file");
-    this.captureOwnerRegistration("file", () => fileOpenModule.registerFileCommands(this.context, coordinatedBridge));
+    const createRBridge: import("./files/fileOpen").RFileBridgeFactory = async (source) => {
+      const [rFile, session] = await Promise.all([this.moduleLoaders.rFileSource(), this.ensureSessionOwner()]);
+      this.assertActive();
+      const native = rFile.createRFileBridge(this.context, source);
+      return { ...session.coordinator.createBridge(native), onIdle: () => native.onIdle() };
+    };
+    this.captureOwnerRegistration("file", () =>
+      fileOpenModule.registerFileCommands(this.context, coordinatedBridge, createRBridge)
+    );
     this.constructedOwners.push("custom-editor");
-    return { module: fileOpenModule };
+    return { module: fileOpenModule, createRBridge };
   }
 
   private ensurePickleOwner(): Promise<TrustedPickleWorkerLifecycle> {

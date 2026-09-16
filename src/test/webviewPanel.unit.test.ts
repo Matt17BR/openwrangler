@@ -2028,6 +2028,123 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(harness.posted).toContainEqual({ kind: "importOptionsState", busy: false });
   });
 
+  it.each([
+    ["polars", "r"],
+    ["r", "pandas"]
+  ] as const)(
+    "opens %s files in a separate %s session without replaying the original plan",
+    async (backend, target) => {
+      const source: SessionSource = {
+        kind: "file",
+        label: "records.csv",
+        path: "/workspace/records.csv",
+        uri: "file:///workspace/records.csv"
+      };
+      const opened: SessionOpenedResponse = {
+        ...responseForSource(source),
+        metadata: {
+          ...metadata,
+          source,
+          backend,
+          steps: [{ id: "lower-city", kind: "lowerText", params: { column: { id: "c:0", name: "city" } } }],
+          latestStepInputSchema: metadata.schema
+        }
+      };
+      const executeCommand = vi.spyOn(commands, "executeCommand");
+      const reconfigureFileSession = vi.fn();
+      const harness = createPanelHarness(
+        { request: vi.fn(), reconfigureFileSession },
+        { source, backend, backendPreference: backend, openResponse: opened }
+      );
+      await harness.open();
+      panelPromptMocks.showQuickPick.mockImplementation(async (items) => {
+        const choice = (items as Array<{ backend: DataBackend; description?: string; detail?: string }>).find(
+          (item) => item.backend === target
+        );
+        expect(choice).toMatchObject({
+          description: "Open in a separate session",
+          detail: "Keeps this session and its steps. Opens the source with its own saved plan, if any."
+        });
+        return choice;
+      });
+
+      await harness.receive({ kind: "changeBackend" });
+
+      const handoff = executeCommand.mock.calls.find(
+        ([command]) => command === "openWrangler.internal.openFileWithEngine"
+      );
+      expect(handoff).toEqual(["openWrangler.internal.openFileWithEngine", source, target, expect.any(Function)]);
+      expect(reconfigureFileSession).not.toHaveBeenCalled();
+      expect(panelPromptMocks.showWarningMessage).not.toHaveBeenCalled();
+      const isCurrent = handoff?.[3] as () => boolean;
+      expect(isCurrent()).toBe(true);
+      harness.posted.length = 0;
+      await harness.receive({ kind: "ready" });
+      expect(harness.posted).toContainEqual(hostSnapshot(opened));
+      harness.dispose();
+      expect(isCurrent()).toBe(false);
+    }
+  );
+
+  it("does not hand a late engine selection from a closed panel to a new file owner", async () => {
+    const source: SessionSource = {
+      kind: "file",
+      label: "records.csv",
+      path: "/workspace/records.csv",
+      uri: "file:///workspace/records.csv"
+    };
+    const picker = deferred<{ backend: "r" }>();
+    const executeCommand = vi.spyOn(commands, "executeCommand");
+    const harness = createPanelHarness({ request: vi.fn() }, { source, openResponse: responseForSource(source) });
+    await harness.open();
+    panelPromptMocks.showQuickPick.mockReturnValueOnce(picker.promise);
+
+    const changing = harness.receive({ kind: "changeBackend" });
+    await vi.waitFor(() => expect(panelPromptMocks.showQuickPick).toHaveBeenCalledOnce());
+    harness.dispose();
+    picker.resolve({ backend: "r" });
+    await changing;
+
+    expect(executeCommand.mock.calls.some(([command]) => command === "openWrangler.internal.openFileWithEngine")).toBe(
+      false
+    );
+  });
+
+  it("opens changed R import options in a separate session and keeps the pinned source intact", async () => {
+    const source: SessionSource = {
+      kind: "file",
+      label: "records.csv",
+      path: "/workspace/records.csv",
+      uri: "file:///workspace/records.csv",
+      importOptions: { delimiter: ",", hasHeader: true }
+    };
+    const opened: SessionOpenedResponse = {
+      ...responseForSource(source),
+      metadata: { ...metadata, backend: "r", source }
+    };
+    const executeCommand = vi.spyOn(commands, "executeCommand");
+    const reconfigureFileSession = vi.fn();
+    const harness = createPanelHarness(
+      { request: vi.fn(), reconfigureFileSession },
+      { source, backend: "r", backendPreference: "r", openResponse: opened }
+    );
+    await harness.open();
+    configureImportOptions({ delimiter: ";", hasHeader: false });
+
+    await harness.receive({ kind: "changeImportOptions" });
+
+    expect(executeCommand).toHaveBeenCalledWith(
+      "openWrangler.internal.openFileWithEngine",
+      { ...source, importOptions: { delimiter: ";", hasHeader: false } },
+      "r",
+      expect.any(Function)
+    );
+    expect(reconfigureFileSession).not.toHaveBeenCalled();
+    harness.posted.length = 0;
+    await harness.receive({ kind: "ready" });
+    expect(harness.posted).toContainEqual(hostSnapshot(opened));
+  });
+
   it.each(["polars", "duckdb"] as const)(
     "installs and retries the requested %s backend without reopening its picker",
     async (backend) => {

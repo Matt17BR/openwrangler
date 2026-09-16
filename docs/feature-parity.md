@@ -85,7 +85,8 @@ consistent record endings. A sample without complete records may need an explici
 the full file. Existing LF/CRLF file settings and saved-state keys remain unchanged.
 
 CSV/TSV imports preserve native empty fields and whitespace values, including headerless all-null TSV records.
-Files with no bytes or only a UTF-8 BOM open with an empty schema; other blank records follow the selected reader.
+Python file engines open files with no bytes or only a UTF-8 BOM with an empty schema; R refuses those inputs.
+Other blank records follow the selected reader.
 Pandas accepts its supported text encodings and Unicode CSV syntax; Polars CSV export remains UTF-8 with single-byte
 delimiter and quote syntax. Polars refuses syntax characters that its numeric, Boolean or temporal column types could
 emit unescaped, including for empty and all-null columns. Standard comma, tab, semicolon and pipe with ordinary quotes
@@ -617,10 +618,24 @@ limits below. Support labels describe the qualification commitment for each entr
 | IRkernel notebook in desktop VS Code                | Stable since 2.5.0 on Linux, macOS and Windows; exact notebook, kernel and variable ownership | Copy, save, notebook insertion, CSV and Parquet        |
 | Active terminal managed by the official R extension | Preview on Linux; exact terminal and process ownership                                        | Copy, save, CSV and Parquet; no document for insertion |
 | Managed `.R`, `.Rmd` or `.qmd` document             | Preview on Linux and macOS; exact document/version and owned R process                        | Copy, save, source-document insertion, CSV and Parquet |
+| Local CSV or TSV file                               | Preview on Linux and macOS; exact file/options and owned R process                            | Copy, save, CSV and Parquet; no document insertion     |
 | IRkernel notebook in Cursor on Linux                | Experimental editor compatibility with narrower coverage                                      | Only the capabilities of its documented execution path |
 
 The [architecture](architecture.md#native-r) defines frame, precision, source and transport guarantees.
 [Testing](testing.md#native-r-editor-dependencies) identifies the native and installed checks for each path.
+
+Local R files use a base `data.frame` with the existing R cleaning operations. File sessions can restore saved plans;
+live R notebook, document and terminal sessions do not use workspace persistence.
+Select R explicitly in the engine picker or `openWrangler.defaultBackend`; Auto continues
+to choose a Python engine. Switching between R and Python opens a separate session and retains the original plan.
+R import-options changes also create a separate session. **Open Another File with This Plan** remains Python-only.
+
+The R reader requires UTF-8, double-quote escaping and LF/CRLF records. It supports custom single-byte delimiters and
+headerless input, preserves duplicate/empty column names, and refuses malformed records. Empty and `NA` fields are
+missing; dates and integers that would lose precision stay text. R loads the full file into memory before returning
+bounded pages, and editing can require additional copies. It needs Rscript, not Python. Windows file execution and
+R Parquet, Excel and JSONL input are unavailable; the [reader contract](architecture.md#csv-and-tsv-files) gives precise limits.
+Installed R-file qualification is pending; existing notebook and document checks do not establish this new entry path.
 
 ### First stable R notebook scope
 

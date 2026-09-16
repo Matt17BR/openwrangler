@@ -2208,7 +2208,11 @@ export function App() {
                   disabled={importOptionsDisabled}
                   aria-busy={importOptionsPending || undefined}
                   data-import-options-action
-                  title="Change file import options"
+                  title={
+                    metadata.backend === "r"
+                      ? "Open a separate R session with new import options"
+                      : "Change file import options"
+                  }
                   onClick={(event) => requestImportOptionsChange(undefined, event.currentTarget)}
                 >
                   <span className="codicon codicon-settings-gear" aria-hidden="true" /> Import options

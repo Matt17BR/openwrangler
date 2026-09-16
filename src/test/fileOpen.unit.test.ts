@@ -502,20 +502,130 @@ describe("file launch command", () => {
     );
   });
 
-  it("ignores an R backend value manually written into file settings", async () => {
-    const { context, bridge } = register();
+  it("opens the selected CSV with the native R file owner when R is the default", async () => {
+    const nativeBridge = { request: vi.fn() } as OpenWranglerBridge;
+    const createRBridge = vi.fn(async () => nativeBridge);
+    const { context } = register(createRBridge);
+    const menuUri = vscode.Uri.file("/workspace/native.csv");
+    fileMocks.defaultBackend = "r";
+    fileMocks.detectImportOptions.mockResolvedValue({
+      delimiter: ",",
+      encoding: "utf-8",
+      quoteChar: '"',
+      hasHeader: true
+    });
+
+    await command("openWrangler.openFile")(menuUri);
+
+    expect(createRBridge).toHaveBeenCalledWith(
+      expect.objectContaining({ path: menuUri.fsPath, uri: menuUri.toString() })
+    );
+    expect(fileMocks.createPanel).toHaveBeenCalledWith(
+      context,
+      nativeBridge,
+      expect.objectContaining({ uri: menuUri.toString() }),
+      "r",
+      "r"
+    );
+    expect(fileMocks.bridgeRequest).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])(
+    "keeps explicit R engine handoff source-bound (owner remains current: %s)",
+    async (remainsCurrent) => {
+      let release!: (bridge: OpenWranglerBridge) => void;
+      const held = new Promise<OpenWranglerBridge>((resolve) => {
+        release = resolve;
+      });
+      let entered!: () => void;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const nativeBridge = { request: vi.fn(), onIdle: vi.fn() };
+      const createRBridge = vi.fn((_source: SessionSource) => {
+        entered();
+        return held;
+      });
+      const { context } = register(createRBridge);
+      const source: SessionSource = {
+        kind: "file",
+        label: "original.csv",
+        path: "/workspace/original.csv",
+        uri: "file:///workspace/original.csv",
+        importOptions: { delimiter: ";", encoding: "utf-8", quoteChar: '"', hasHeader: false }
+      };
+      const expected = structuredClone(source);
+      let current = true;
+      const opening = command("openWrangler.internal.openFileWithEngine")(source, "r", () => current);
+      try {
+        await started;
+        source.path = "/workspace/later.csv";
+        source.uri = "file:///workspace/later.csv";
+        source.importOptions!.delimiter = ",";
+        fileMocks.activeTextUri = vscode.Uri.file("/workspace/unrelated.csv");
+        current = remainsCurrent;
+        release(nativeBridge);
+        await opening;
+        expect(createRBridge).toHaveBeenCalledExactlyOnceWith(expected);
+        expect(createRBridge.mock.calls[0]![0]).not.toBe(source);
+        expect(fileMocks.detectImportOptions).not.toHaveBeenCalled();
+        expect(fileMocks.bridgeRequest).not.toHaveBeenCalled();
+        expect(nativeBridge.request).not.toHaveBeenCalled();
+        if (remainsCurrent) {
+          expect(fileMocks.createPanel).toHaveBeenCalledExactlyOnceWith(context, nativeBridge, expected, "r", "r");
+          expect(nativeBridge.onIdle).not.toHaveBeenCalled();
+        } else {
+          expect(fileMocks.createPanel).not.toHaveBeenCalled();
+          expect(nativeBridge.onIdle).toHaveBeenCalledOnce();
+        }
+        expect(fileMocks.showErrorMessage).not.toHaveBeenCalled();
+      } finally {
+        release(nativeBridge);
+        await opening;
+      }
+    }
+  );
+
+  it.each([
+    { kind: "file", label: "missing.csv", path: "/workspace/missing.csv" },
+    { kind: "file", label: "relative.csv", path: "relative.csv", uri: "file:///workspace/relative.csv" },
+    { kind: "file", label: "different.csv", path: "/workspace/different.csv", uri: "file:///workspace/other.csv" },
+    {
+      kind: "file",
+      label: "remote.csv",
+      path: "/workspace/remote.csv",
+      uri: "vscode-remote://host/workspace/remote.csv"
+    },
+    {
+      kind: "notebookVariable",
+      label: "frame",
+      variableName: "frame",
+      path: "/workspace/frame.csv",
+      uri: "file:///workspace/frame.csv"
+    }
+  ])("refuses an invalid explicit file-engine source $label before acquiring R", async (source) => {
+    const createRBridge = vi.fn();
+    register(createRBridge);
+    await command("openWrangler.internal.openFileWithEngine")(source, "r", () => true);
+    expect(createRBridge).not.toHaveBeenCalled();
+    expect(fileMocks.createPanel).not.toHaveBeenCalled();
+    expect(fileMocks.stat).not.toHaveBeenCalled();
+    expect(fileMocks.bridgeRequest).not.toHaveBeenCalled();
+  });
+
+  it("reports an unsupported R file instead of silently falling back to Python", async () => {
+    const createRBridge = vi.fn(async () => {
+      throw new Error("Native R requires CSV or TSV.");
+    });
+    register(createRBridge);
     const menuUri = vscode.Uri.file("/workspace/menu.parquet");
     fileMocks.defaultBackend = "r";
 
     await command("openWrangler.openFile")(menuUri);
 
-    expect(fileMocks.createPanel).toHaveBeenCalledWith(
-      context,
-      bridge,
-      expect.objectContaining({ uri: menuUri.toString() }),
-      undefined,
-      "auto"
-    );
+    expect(fileMocks.createPanel).not.toHaveBeenCalled();
+    expect(fileMocks.showErrorMessage).toHaveBeenCalledWith("Native R requires CSV or TSV.");
+    expect(fileMocks.bridgeRequest).not.toHaveBeenCalled();
   });
 
   it("falls back to text, custom, and modified diff tab resources", async () => {
@@ -822,6 +932,69 @@ describe("file launch command", () => {
     expect(fileMocks.detectImportOptions).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])(
+    "keeps remembered R custom-editor ownership across factory acquisition (cancelled: %s)",
+    async (cancelled) => {
+      const uri = vscode.Uri.file("/workspace/remembered.tsv");
+      const importOptions = { delimiter: "\t", encoding: "utf-8", quoteChar: '"', hasHeader: true };
+      fileMocks.workspaceValues.set(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY, {
+        version: 2,
+        entries: [{ uri: uri.toString(), backend: "r", backendPreference: "r", importOptions }]
+      });
+      fileMocks.defaultBackend = "polars";
+      const nativeBridge = { request: vi.fn(), onIdle: vi.fn() };
+      let release!: (bridge: OpenWranglerBridge) => void;
+      const held = new Promise<OpenWranglerBridge>((resolve) => {
+        release = resolve;
+      });
+      let entered!: () => void;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const createRBridge = vi.fn((_source: SessionSource) => {
+        entered();
+        return held;
+      });
+      const { context } = register(createRBridge);
+      const panel = { dispose: vi.fn() };
+      const token = resolutionToken();
+      const opening = fileMocks.customEditorProvider!.resolveCustomEditor({ uri }, panel, token);
+      try {
+        await started;
+        token.isCancellationRequested = cancelled;
+        fileMocks.defaultBackend = "pandas";
+        fileMocks.activeTextUri = vscode.Uri.file("/workspace/unrelated.csv");
+        release(nativeBridge);
+        await opening;
+        const source = { kind: "file", label: "remembered.tsv", path: uri.fsPath, uri: uri.toString(), importOptions };
+        expect(createRBridge).toHaveBeenCalledExactlyOnceWith(source);
+        if (cancelled) {
+          expect(fileMocks.panelConstructor).not.toHaveBeenCalled();
+          expect(nativeBridge.onIdle).toHaveBeenCalledOnce();
+        } else {
+          expect(fileMocks.panelConstructor).toHaveBeenCalledExactlyOnceWith(
+            panel,
+            context,
+            nativeBridge,
+            source,
+            "r",
+            true,
+            "r"
+          );
+          expect(nativeBridge.onIdle).not.toHaveBeenCalled();
+        }
+        expect(fileMocks.detectImportOptions).not.toHaveBeenCalled();
+        expect(fileMocks.bridgeRequest).not.toHaveBeenCalled();
+        expect(nativeBridge.request).not.toHaveBeenCalled();
+        expect(panel.dispose).not.toHaveBeenCalled();
+        expect(fileMocks.showErrorMessage).not.toHaveBeenCalled();
+      } finally {
+        release(nativeBridge);
+        await opening;
+      }
+    }
+  );
+
   it("keeps an explicit confirmed Parquet preference pinned without adding import options", async () => {
     const uri = vscode.Uri.file("/workspace/data.parquet");
     const panel = { dispose: vi.fn() };
@@ -924,7 +1097,10 @@ function resolutionToken(cancelled = false) {
   return { isCancellationRequested: cancelled, onCancellationRequested: () => ({ dispose: () => undefined }) };
 }
 
-function register(): { context: ExtensionContext; bridge: OpenWranglerBridge } {
+function register(createRBridge?: (source: SessionSource) => Promise<OpenWranglerBridge>): {
+  context: ExtensionContext;
+  bridge: OpenWranglerBridge;
+} {
   const context = {
     extensionPath: "/tmp/openwrangler",
     subscriptions: [],
@@ -940,8 +1116,8 @@ function register(): { context: ExtensionContext; bridge: OpenWranglerBridge } {
     request: fileMocks.bridgeRequest,
     discoverDuckDBTables: fileMocks.discoverTables
   } as OpenWranglerBridge;
-  registerFileCommands(context, bridge);
-  fileMocks.customEditorProvider = new OpenWranglerCustomEditorProvider(context, bridge);
+  registerFileCommands(context, bridge, createRBridge);
+  fileMocks.customEditorProvider = new OpenWranglerCustomEditorProvider(context, bridge, createRBridge);
   return { context, bridge };
 }
 

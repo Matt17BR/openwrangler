@@ -146,6 +146,8 @@ Use the existing owners to choose a focused source check:
   File-plan reuse uses coordinator persistence, the [persistence store](../src/test/sessionPersistenceStore.unit.test.ts)
   and [file commands](../src/test/fileOpen.unit.test.ts) for private target publication, captured picker ownership,
   engine/import settings and failure restoration. Native operation semantics stay in their engine owners.
+  The same persistence owners check R-file replay and Reset through a fresh verified delegate, including failed
+  storage, stale choices and candidate cleanup. Live R sources remain excluded from workspace persistence.
   See [protocol and publication](architecture.md#protocol-and-publication) for the live contract.
 - **UI state and interactions:** [App draft state](../src/test/appDraftState.component.test.tsx),
   [operation forms](../src/test/operationBuilder.component.test.tsx),
@@ -172,6 +174,12 @@ Use the existing owners to choose a focused source check:
   Native R exports belong in the [frame owner's](../r/tests/frame_contract.R) `capture-and-export` case and the
   [kernel owner's](../r/tests/kernel_agent.R) `group-pivot-and-export` case. Retain refusal before writer opening,
   destination/source preservation, bounded conversion and lazy-streaming assertions in these existing owners.
+  Native CSV/TSV load and generated-code agreement belong to that kernel owner's `lifecycle-and-structure` case;
+  the [managed process owner](../src/test/rProcessTransport.cross.test.ts) checks actual file loading, editing,
+  cloning, export, close and fresh reopen. Existing R-document/factory tests check the shared process boundary and
+  exact file/executable admission. File commands, lazy activation, confirmed configuration and panel tests own R
+  selection/defaults, cancellation and separate-session handoff. These source checks do not qualify installed hosts
+  or measure whole-session allocation; retain separate installed evidence for the advertised platforms.
   DuckDB engine and SessionSource tests own database selection, native WAL/source preservation, query serialization,
   shared reader lifetime and writer refusal. File-command, PythonBridge and discovery-adapter tests own picker,
   interpreter and dependency admission, including package-write exclusion through actual child closure.

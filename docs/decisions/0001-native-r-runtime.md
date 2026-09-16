@@ -1,6 +1,6 @@
 # Native R runtime for Open Wrangler 2
 
-- Status: Accepted; amended for owned R-document processes and active R terminals
+- Status: Accepted; amended for owned document/file processes and active R terminals
 - Date: 2026-08-03
 
 ## Context
@@ -19,13 +19,15 @@ Run R dataframe operations in R. Share the workbench, operation model and versio
 while keeping frame validation, execution, generated code and exports native to R. The host identifies the confirmed
 backend, frame flavor and code dialect explicitly.
 
-Support three execution paths with distinct owners:
+Support four execution paths with distinct owners:
 
 - An IRkernel session stays bound to the exact notebook, kernel and variable captured when the action starts.
 - An existing live terminal session stays bound to the exact official R terminal and process. Passive discovery uses
   bounded, untrusted vscode-R metadata; Open or Refresh explicitly connects through the terminal API.
 - An R document session owns a private `Rscript` process and the exact text document/version that started it. R Markdown
   and Quarto use the same process for supported R cells, without attaching to or replacing their render processes.
+- A CSV or TSV file session owns a private `Rscript` process bound to the exact local file, import options and executable.
+  It shares the managed process transport with documents but has no source-code document or live variable to execute.
 
 Do not retarget asynchronous work to whichever editor, kernel or terminal becomes active later. Recovery must verify
 its replacement and retain the original operation's outcome; abandoning an await does not establish that native work
@@ -57,5 +59,6 @@ and exact cleanup still apply to every path.
 
 The [stable R notebook scope](../feature-parity.md#first-stable-r-notebook-scope) defines supported frames and entry paths;
 [Releasing](../releasing.md#release-candidate) owns continuing qualification. Terminal and document paths are assessed separately. New claims need direct native and
-generated-code evidence plus installed evidence for the advertised host path. [Testing](../testing.md) and [CI](../ci.md)
+generated-code evidence plus installed evidence for the advertised host path. File opening is assessed separately too.
+[Testing](../testing.md) and [CI](../ci.md)
 own those checks.

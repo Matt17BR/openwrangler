@@ -25,9 +25,10 @@ const mocks = vi.hoisted(() => ({
   bridgeOptions: [] as unknown[][],
   transportConstructorError: undefined as Error | undefined,
   bridgeDispose: vi.fn(async () => undefined),
+  bridgeDiagnostic: vi.fn(),
   panelCreate: vi.fn(),
   restoreEditorGroupAfterQuickPick: vi.fn(async () => undefined),
-  resolveExecutable: vi.fn(() => "/usr/bin/Rscript"),
+  resolveExecutable: vi.fn((): string | undefined => "/usr/bin/Rscript"),
   executeCommand: vi.fn(async () => undefined),
   getCommands: vi.fn(async () => [] as string[]),
   reticulateCells: true
@@ -127,6 +128,7 @@ vi.mock("../extension/r/rKernelBridge", () => ({
       mocks.bridgeOptions.push(args);
     }
     dispose = mocks.bridgeDispose;
+    reportDiagnostic = mocks.bridgeDiagnostic;
   }
 }));
 
@@ -168,6 +170,7 @@ describe("R document command", () => {
     mocks.transportOptions.length = 0;
     mocks.transportConstructorError = undefined;
     mocks.bridgeDispose.mockClear();
+    mocks.bridgeDiagnostic.mockClear();
     mocks.bridgeOptions.length = 0;
     mocks.panelCreate.mockReset();
     mocks.restoreEditorGroupAfterQuickPick.mockReset();
@@ -191,6 +194,7 @@ describe("R document command", () => {
       importOptions: { hasHeader: false }
     };
     createRFileBridge(context, source);
+    expect(mocks.bridgeDiagnostic.mock.calls).toEqual([['R file runtime selected: "/usr/bin/Rscript".']]);
     expect(mocks.discovery).not.toHaveBeenCalled();
     expect(mocks.transportOptions[0]).toMatchObject({
       fileSource: { path: source.path, header: false, delimiter: "\t" },
@@ -205,6 +209,10 @@ describe("R document command", () => {
     expect(mocks.transportOptions[1]).toEqual(mocks.transportOptions[0]);
     expect(mocks.bridgeOptions[1]?.[7]).toMatchObject({ ...source, importOptions: { hasHeader: false } });
     expect(mocks.resolveExecutable).toHaveBeenCalledTimes(1);
+    expect(mocks.bridgeDiagnostic.mock.calls).toEqual([
+      ['R file runtime selected: "/usr/bin/Rscript".'],
+      ['R file runtime selected: "/usr/bin/Rscript".']
+    ]);
   });
 
   it("refuses unsupported native file options and trust before constructing a process owner", () => {
@@ -229,9 +237,12 @@ describe("R document command", () => {
     expect(() => createRFileBridge(context, { ...source, uri: "file:///workspace/other.csv" })).toThrow(
       "matching local"
     );
+    mocks.resolveExecutable.mockReturnValue(undefined);
+    expect(() => createRFileBridge(context, source)).toThrow("Set Open Wrangler: Rscript Path");
     mocks.trusted = false;
     expect(() => createRFileBridge(context, source)).toThrow("Trust this workspace");
     expect(mocks.transportOptions).toEqual([]);
+    expect(mocks.bridgeDiagnostic).not.toHaveBeenCalled();
   });
 
   it("disposes the first real R-document command when the grouped second registration throws", () => {

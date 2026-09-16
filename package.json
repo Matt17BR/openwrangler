@@ -857,10 +857,11 @@
             "auto",
             "polars",
             "duckdb",
-            "pandas"
+            "pandas",
+            "r"
           ],
           "default": "auto",
-          "description": "Default backend for CSV, TSV, Parquet, JSONL/NDJSON and Excel sessions. Auto selects the first available engine in Polars, DuckDB, then Pandas order, subject to file-format and import-option support. It does not switch engines after a file-read error. Open DuckDB Table always uses DuckDB."
+          "description": "Default file engine. Auto selects the first available Python engine in Polars, DuckDB, then Pandas order, subject to file-format and import-option support. R opens local UTF-8 CSV/TSV files natively on Linux and macOS using Rscript. It does not fall back to Python for unsupported files. Auto does not switch engines after a file-read error. Open DuckDB Table always uses DuckDB."
         },
         "openWrangler.fileStartMode": {
           "type": "string",
@@ -974,7 +975,7 @@
         "openWrangler.rscriptPath": {
           "type": "string",
           "default": "",
-          "description": "Optional Rscript executable used for .R, .Rmd, and .qmd documents on macOS or Linux. When empty, Open Wrangler resolves Rscript from PATH."
+          "description": "Optional Rscript executable used for native R CSV/TSV files and .R, .Rmd, and .qmd documents on macOS or Linux. When empty, Open Wrangler resolves Rscript from PATH."
         },
         "openWrangler.sessionOpenTimeoutMs": {
           "type": "number",
