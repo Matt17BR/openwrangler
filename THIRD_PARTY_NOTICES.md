@@ -46,8 +46,12 @@ The bundled pure-Python runtime interoperates with, but does not redistribute, t
 - xlrd: BSD licenses. Loaded when Pandas opens legacy `.xls` workbooks.
 - fastexcel: MIT License. Loaded when Polars opens `.xlsx` or `.xls` workbooks.
 
-The bundled R runtime can use nanoparquet 0.5.1 or newer from the selected R environment for native Parquet export.
-nanoparquet uses the MIT License and is not shipped in the VSIX.
+The bundled R runtime uses optional packages from the selected R environment for file formats:
+
+- nanoparquet 0.5.1 or newer: MIT License, for native Parquet input and export.
+- readxl 1.4.5 or newer: MIT License, for native Excel input.
+
+These packages are not shipped in the VSIX.
 
 The released-Jupyter acceptance workflow may download a manifest-pinned Ubuntu Xvfb package from the X.Org Server project. X.Org Server uses its canonical MIT/X11 license plus legacy MIT/X11 and BSD-like notices; the downloaded package retains the complete `/usr/share/doc/xvfb/copyright` file. Package sources, versions, and digests are recorded in `scripts/xvfb-packages.json`. Xvfb is test tooling and is not shipped in the VSIX.
 

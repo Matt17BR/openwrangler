@@ -12,6 +12,7 @@ import type {
   OpenWranglerRequest,
   PivotLongerTransformStep,
   PivotWiderTransformStep,
+  SessionSource,
   TransformStep
 } from "../shared/protocol";
 import {
@@ -21,6 +22,8 @@ import {
   type RuntimeSessionState
 } from "../extension/sessionRuntimeStateRestorer";
 import { RKernelDiagnosticError } from "../extension/r/rKernelTransport";
+import { RKernelBridge } from "../extension/r/rKernelBridge";
+import { R_KERNEL_TRANSPORT_VERSION } from "../extension/r/rKernelProtocol";
 import type { RKernelStepPreviewResult } from "../extension/r/rKernelProtocol";
 import type { RColumnSchema, RFrameCell, RFramePageContract } from "../extension/r/rFrameContract";
 import {
@@ -34,10 +37,95 @@ import {
   rKernelPlanRequest as planRequest,
   rKernelReplaceColumnSemantics as replaceColumnSemantics,
   rKernelRenameContract as renameContract,
-  rKernelRenameDiff as renameDiff
+  rKernelRenameDiff as renameDiff,
+  rKernelRenamePreviewRequest as renamePreviewRequest
 } from "./rKernelBridgeTestFixtures";
 
 describe("canonical R kernel bridge", () => {
+  it.each(["current", "closed", "kernel", "cancelled", "untrusted", "revision"] as const)(
+    "binds Excel sheet discovery and manual fallback to the captured file owner (%s)",
+    async (transition) => {
+      const source: SessionSource = {
+        kind: "file",
+        label: "book.xlsx",
+        path: "/workspace/book.xlsx",
+        importOptions: { sheetIndex: 0 }
+      };
+      let complete!: (value: readonly string[]) => void;
+      const pending = new Promise<readonly string[]>((resolve) => {
+        complete = resolve;
+      });
+      const transport = Object.assign(fakeTransport(frameContract()), { listExcelSheets: vi.fn(() => pending) });
+      const diagnostic = vi.fn();
+      const bridge = new RKernelBridge(
+        { extension: { packageJSON: { version: "2.6.0" } } } as vscode.ExtensionContext,
+        transport,
+        () => sessionId,
+        diagnostic,
+        undefined,
+        {},
+        undefined,
+        source
+      );
+      const cancellation = new vscode.CancellationTokenSource();
+      let trust: ReturnType<typeof vi.spyOn> | undefined;
+      try {
+        await expect(bridge.request({ ...openRequest("editing"), source })).resolves.toMatchObject({
+          kind: "sessionOpened"
+        });
+        await expect(bridge.listExcelSheets(sessionId, { ...source, path: "/other.xlsx" }, "r")).rejects.toThrow(
+          "no longer current"
+        );
+        expect(transport.listExcelSheets).not.toHaveBeenCalled();
+        const result = bridge.listExcelSheets(sessionId, source, "r", { cancellation: cancellation.token });
+        expect(transport.listExcelSheets).toHaveBeenCalledExactlyOnceWith(sessionId, {
+          timeoutMs: 15_000,
+          cancellation: cancellation.token
+        });
+        if (transition === "closed") await bridge.request({ kind: "closeSession", sessionId, revision: 0 });
+        if (transition === "kernel") transport.invalidate();
+        if (transition === "cancelled") cancellation.cancel();
+        if (transition === "untrusted") trust = vi.spyOn(vscode.workspace, "isTrusted", "get").mockReturnValue(false);
+        if (transition === "revision") {
+          transport.queuePreview({
+            sessionId,
+            revision: 1,
+            page: renameContract(frameContract(), "r:c:0", "amount"),
+            diff: renameDiff(),
+            code: "owned code"
+          });
+          await expect(bridge.request(renamePreviewRequest(0))).resolves.toMatchObject({
+            kind: "stepPreview",
+            revision: 1
+          });
+        }
+        complete([" Overview ", "销售"]);
+        if (transition === "current") {
+          await expect(result).resolves.toEqual([" Overview ", "销售"]);
+          transport.listExcelSheets.mockRejectedValueOnce(
+            new RKernelDiagnosticError({
+              transportVersion: R_KERNEL_TRANSPORT_VERSION,
+              requestId: sessionId,
+              kind: "error",
+              code: "runtime_error",
+              message: "Workbook metadata could not be read",
+              recoverable: true
+            })
+          );
+          await expect(bridge.listExcelSheets(sessionId, source, "r")).resolves.toBeUndefined();
+          expect(diagnostic).toHaveBeenCalledOnce();
+          transport.listExcelSheets.mockRejectedValueOnce(new Error("mis-correlated response"));
+          await expect(bridge.listExcelSheets(sessionId, source, "r")).rejects.toThrow("mis-correlated");
+        } else await expect(result).rejects.toThrow("no longer current");
+      } finally {
+        complete([]);
+        trust?.mockRestore();
+        cancellation.dispose();
+        await bridge.dispose();
+      }
+    }
+  );
+
   it("binds the exact stable ordering to the R contract, native bridge, and public operation catalog", async () => {
     const bridge = createBridge(fakeTransport(frameContract()));
     try {
@@ -771,7 +859,7 @@ describe("canonical R kernel bridge", () => {
     const redoRequest = { ...planRequest("undoStep", 3), kind: "redoStep" as const, viewRequestId: "redo-dynamic" };
     transport.redoStep.mockRejectedValueOnce(
       new RKernelDiagnosticError({
-        transportVersion: 14,
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
         requestId: sessionId,
         kind: "error",
         code: "invalid_request",
@@ -831,7 +919,7 @@ describe("canonical R kernel bridge", () => {
     });
     transport.redoStep.mockRejectedValueOnce(
       new RKernelDiagnosticError({
-        transportVersion: 14,
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
         requestId: sessionId,
         kind: "error",
         code: "redo_unavailable",

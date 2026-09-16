@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import * as vscode from "vscode";
 import {
   PROTOCOL_VERSION,
+  type DataBackend,
   type OpenSessionRequest,
   type OpenWranglerRequest,
   type OpenWranglerResponse,
@@ -11,6 +12,7 @@ import {
 import { DetachedBridgeRequestError, type BridgeRequestOptions, type OpenWranglerBridge } from "../dataBridge";
 import { runtimeRequestTimeoutMs } from "../configuration";
 import { beginAtomicFileTransaction } from "../files/safeFileExport";
+import { EXCEL_SHEET_DISCOVERY_TIMEOUT_MS } from "../files/excelSheetNames";
 import { RKernelDiagnosticError, RKernelSessionTransport } from "./rKernelTransport";
 import type { RKernelBridgeTransport } from "./rKernelBridgeTransport";
 import { RKernelDataExport, type RKernelBridgeFileOperations } from "./rKernelDataExport";
@@ -183,6 +185,51 @@ export class RKernelBridge implements OpenWranglerBridge {
         return this.closeSession(request.sessionId, options);
       default:
         return unsupportedRequest(request);
+    }
+  }
+
+  async listExcelSheets(
+    sessionId: string,
+    source: SessionSource,
+    backend: DataBackend,
+    options: BridgeRequestOptions = {}
+  ): Promise<readonly string[] | undefined> {
+    if (backend !== "r" || !this.fileSource || !this.transport.listExcelSheets) return undefined;
+    const session = this.sessions.get(sessionId);
+    const generation = this.kernelGeneration;
+    const revision = session?.revision;
+    const current = (): boolean =>
+      !this.disposed &&
+      vscode.workspace.isTrusted &&
+      !options.cancellation?.isCancellationRequested &&
+      generation === this.kernelGeneration &&
+      Boolean(session && !session.invalidated && session.revision === revision) &&
+      this.sessions.get(sessionId) === session &&
+      !this.closeOperations.has(sessionId) &&
+      this.transport.isSessionMapped(sessionId) &&
+      isDeepStrictEqual(this.fileSource, source) &&
+      isDeepStrictEqual(session?.source, source);
+    const assertCurrent = (): void => {
+      if (!current()) throw new Error("The R file session is no longer current. Reopen its import options.");
+    };
+    assertCurrent();
+    try {
+      const names = await this.transport.listExcelSheets(sessionId, {
+        ...transportOptions(options),
+        timeoutMs: options.timeoutMs ?? EXCEL_SHEET_DISCOVERY_TIMEOUT_MS
+      });
+      assertCurrent();
+      return names;
+    } catch (error) {
+      assertCurrent();
+      if (
+        !(error instanceof RKernelDiagnosticError) ||
+        !error.diagnostic.recoverable ||
+        (error.diagnostic.code !== "runtime_error" && error.diagnostic.code !== "missing_package")
+      )
+        throw error;
+      this.reportDiagnostic(`Could not list Excel worksheets: ${error.message}`);
+      return undefined;
     }
   }
 

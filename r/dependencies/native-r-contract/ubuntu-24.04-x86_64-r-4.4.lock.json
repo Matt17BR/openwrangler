@@ -25,7 +25,8 @@
       "data.table",
       "bit64",
       "rlang",
-      "nanoparquet"
+      "nanoparquet",
+      "readxl"
     ],
     "fixtures": [
       "collapse"
@@ -108,6 +109,28 @@
         "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.4/src/contrib/bit64_4.8.2.tar.gz",
         "bytes": 563853,
         "sha256": "e05997eb38c5ea014bea90f1588bbec9485488f58e043252937730f8e5d7649d"
+      }
+    },
+    {
+      "name": "cellranger",
+      "version": "1.1.0",
+      "direct": false,
+      "needsCompilation": false,
+      "license": "MIT + file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [
+          "rematch",
+          "tibble"
+        ],
+        "linkingTo": []
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.4/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.4/src/contrib/cellranger_1.1.0.tar.gz",
+        "bytes": 103893,
+        "sha256": "decc3fa0b02889dd11dc152c5c5da8723fd5c8937bf6f627863d0547adb49040"
       }
     },
     {
@@ -521,6 +544,50 @@
         "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.4/src/contrib/readr_2.2.0.tar.gz",
         "bytes": 836606,
         "sha256": "5ef7e0062713ef991629fcd1cd8d377ab378f719d86a064c7ee126fc6db58192"
+      }
+    },
+    {
+      "name": "readxl",
+      "version": "1.5.0",
+      "direct": true,
+      "needsCompilation": true,
+      "license": "MIT + file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [
+          "cellranger",
+          "tibble"
+        ],
+        "linkingTo": [
+          "cpp11",
+          "progress"
+        ]
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.4/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.4/src/contrib/readxl_1.5.0.tar.gz",
+        "bytes": 865648,
+        "sha256": "ac45af9730639d00e64f666c848909d5d5b35f1967c352e57f7841337ed25135"
+      }
+    },
+    {
+      "name": "rematch",
+      "version": "2.0.0",
+      "direct": false,
+      "needsCompilation": false,
+      "license": "MIT + file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [],
+        "linkingTo": []
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.4/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.4/src/contrib/rematch_2.0.0.tar.gz",
+        "bytes": 16206,
+        "sha256": "767fe37827571419900d3717abec8292d81edeb4cabef8519ffb1dc55091a860"
       }
     },
     {

@@ -6,6 +6,7 @@ import * as vscode from "vscode";
 import type { NotebookDocument } from "vscode";
 import type { BridgeRequestOptions, OpenWranglerBridge } from "../extension/dataBridge";
 import { RKernelDiagnosticError } from "../extension/r/rKernelTransport";
+import { R_KERNEL_TRANSPORT_VERSION } from "../extension/r/rKernelProtocol";
 import { SESSION_STORAGE_KEY } from "../extension/sessionPersistence";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
 import type { FilterModel } from "../shared/filterModel";
@@ -190,7 +191,7 @@ describe("SessionCoordinator", () => {
           if (page.view.sorts[0]?.direction === "desc") return releaseB.promise;
           if (outcome === "C fails")
             throw new RKernelDiagnosticError({
-              transportVersion: 14,
+              transportVersion: R_KERNEL_TRANSPORT_VERSION,
               requestId: rKernelBridgeSessionId,
               kind: "error",
               code: "runtime_error",

@@ -2029,16 +2029,19 @@ describe("OpenWranglerPanel retained view state", () => {
   });
 
   it.each([
-    ["polars", "r"],
-    ["r", "pandas"]
+    ["polars", "r", "csv"],
+    ["r", "pandas", "csv"],
+    ["polars", "r", "parquet"],
+    ["polars", "r", "jsonl"],
+    ["pandas", "r", "xlsx"]
   ] as const)(
-    "opens %s files in a separate %s session without replaying the original plan",
-    async (backend, target) => {
+    "opens %s files in a separate %s session (%s) without replaying the original plan",
+    async (backend, target, extension) => {
       const source: SessionSource = {
         kind: "file",
-        label: "records.csv",
-        path: "/workspace/records.csv",
-        uri: "file:///workspace/records.csv"
+        label: `records.${extension}`,
+        path: `/workspace/records.${extension}`,
+        uri: `file:///workspace/records.${extension}`
       };
       const opened: SessionOpenedResponse = {
         ...responseForSource(source),
@@ -2110,40 +2113,68 @@ describe("OpenWranglerPanel retained view state", () => {
     );
   });
 
-  it("opens changed R import options in a separate session and keeps the pinned source intact", async () => {
-    const source: SessionSource = {
-      kind: "file",
-      label: "records.csv",
-      path: "/workspace/records.csv",
-      uri: "file:///workspace/records.csv",
-      importOptions: { delimiter: ",", hasHeader: true }
-    };
-    const opened: SessionOpenedResponse = {
-      ...responseForSource(source),
-      metadata: { ...metadata, backend: "r", source }
-    };
-    const executeCommand = vi.spyOn(commands, "executeCommand");
-    const reconfigureFileSession = vi.fn();
-    const harness = createPanelHarness(
-      { request: vi.fn(), reconfigureFileSession },
-      { source, backend: "r", backendPreference: "r", openResponse: opened }
-    );
-    await harness.open();
-    configureImportOptions({ delimiter: ";", hasHeader: false });
+  it.each([
+    {
+      filename: "records.csv",
+      original: { delimiter: ",", hasHeader: true },
+      selected: { delimiter: ";", hasHeader: false },
+      sheets: undefined
+    },
+    {
+      filename: "book.xlsx",
+      original: { sheetIndex: 0 },
+      selected: { sheetName: " Sales " },
+      sheets: ["Overview", " Sales ", "销售"]
+    }
+  ])(
+    "opens changed R import options in a separate session and keeps $filename pinned",
+    async ({ filename, original, selected, sheets }) => {
+      const source: SessionSource = {
+        kind: "file",
+        label: filename,
+        path: `/workspace/${filename}`,
+        uri: `file:///workspace/${filename}`,
+        importOptions: original
+      };
+      const opened: SessionOpenedResponse = {
+        ...responseForSource(source),
+        metadata: { ...metadata, backend: "r", source }
+      };
+      const executeCommand = vi.spyOn(commands, "executeCommand");
+      const reconfigureFileSession = vi.fn();
+      const listExcelSheets = vi.fn(async () => sheets);
+      const harness = createPanelHarness(
+        { request: vi.fn(), reconfigureFileSession, listExcelSheets },
+        { source, backend: "r", backendPreference: "r", openResponse: opened }
+      );
+      await harness.open();
+      configureImportOptions(selected);
 
-    await harness.receive({ kind: "changeImportOptions" });
+      await harness.receive({ kind: "changeImportOptions" });
 
-    expect(executeCommand).toHaveBeenCalledWith(
-      "openWrangler.internal.openFileWithEngine",
-      { ...source, importOptions: { delimiter: ";", hasHeader: false } },
-      "r",
-      expect.any(Function)
-    );
-    expect(reconfigureFileSession).not.toHaveBeenCalled();
-    harness.posted.length = 0;
-    await harness.receive({ kind: "ready" });
-    expect(harness.posted).toContainEqual(hostSnapshot(opened));
-  });
+      if (sheets) {
+        expect(listExcelSheets).toHaveBeenCalledExactlyOnceWith("session", source, "r", {
+          cancellation: expect.objectContaining({ isCancellationRequested: false })
+        });
+        expect(promptImportOptions).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ fsPath: source.path }),
+          original,
+          expect.objectContaining({ isCancellationRequested: false }),
+          sheets
+        );
+      } else expect(listExcelSheets).not.toHaveBeenCalled();
+      expect(executeCommand).toHaveBeenCalledWith(
+        "openWrangler.internal.openFileWithEngine",
+        { ...source, importOptions: selected },
+        "r",
+        expect.any(Function)
+      );
+      expect(reconfigureFileSession).not.toHaveBeenCalled();
+      harness.posted.length = 0;
+      await harness.receive({ kind: "ready" });
+      expect(harness.posted).toContainEqual(hostSnapshot(opened));
+    }
+  );
 
   it.each(["polars", "duckdb"] as const)(
     "installs and retries the requested %s backend without reopening its picker",
@@ -2353,8 +2384,8 @@ describe("OpenWranglerPanel retained view state", () => {
       label: string;
       backend: DataBackend;
     }>;
-    expect(choices.map(({ backend }) => backend)).toEqual(["polars", "pandas"]);
-    expect(choices.map(({ label }) => label)).toEqual(["Polars", "Pandas"]);
+    expect(choices.map(({ backend }) => backend)).toEqual(["polars", "pandas", "r"]);
+    expect(choices.map(({ label }) => label)).toEqual(["Polars", "Pandas", "R"]);
   });
 
   it("requires explicit replay confirmation before switching a session with cleaning state", async () => {

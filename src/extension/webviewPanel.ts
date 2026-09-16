@@ -1300,7 +1300,10 @@ export class OpenWranglerPanel {
         revision === this.sessionRevision &&
         !cancellation.token.isCancellationRequested;
       const compatibleBackends: Array<FileDataBackend | "r"> = automaticBackends(source);
-      if (fileSourceUri(source)?.scheme === "file" && /\.(csv|tsv)$/iu.test(source.path ?? "")) {
+      if (
+        fileSourceUri(source)?.scheme === "file" &&
+        /\.(csv|tsv|parquet|jsonl|ndjson|xlsx|xls)$/iu.test(source.path ?? "")
+      ) {
         if (!current()) return;
         if (supportsRscriptExecution()) compatibleBackends.push("r");
       }

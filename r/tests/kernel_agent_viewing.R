@@ -345,7 +345,7 @@ local({
   on.exit(boundary_agent$dispose())
   id <- "92929292-9292-4292-8292-929292929292"
   send <- function(kind, payload) {
-    request <- list(transportVersion = 14L, requestId = request_id, kind = kind, payload = payload)
+    request <- list(transportVersion = 15L, requestId = request_id, kind = kind, payload = payload)
     jsonlite::fromJSON(boundary_agent$dispatch_json(as.character(jsonlite::toJSON(
       request, auto_unbox = TRUE, digits = 17L, null = "null", na = "null"
     ))), simplifyVector = FALSE)

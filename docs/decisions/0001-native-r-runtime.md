@@ -26,7 +26,7 @@ Support four execution paths with distinct owners:
   bounded, untrusted vscode-R metadata; Open or Refresh explicitly connects through the terminal API.
 - An R document session owns a private `Rscript` process and the exact text document/version that started it. R Markdown
   and Quarto use the same process for supported R cells, without attaching to or replacing their render processes.
-- A CSV or TSV file session owns a private `Rscript` process bound to the exact local file, import options and executable.
+- A local file session owns a private `Rscript` process bound to the exact file, format, import options and executable.
   It shares the managed process transport with documents but has no source-code document or live variable to execute.
 
 Do not retarget asynchronous work to whichever editor, kernel or terminal becomes active later. Recovery must verify

@@ -66,11 +66,12 @@ export interface RProcessVariableDiscovery {
   readonly truncated: boolean;
 }
 
-export interface RProcessFileSource {
-  readonly path: string;
-  readonly header: boolean;
-  readonly delimiter: string;
-}
+export type RProcessFileSource = { readonly path: string } & (
+  | { readonly format: "csv"; readonly header: boolean; readonly delimiter: string }
+  | { readonly format: "parquet" | "jsonl" }
+  | { readonly format: "excel"; readonly sheetName: string; readonly sheetIndex?: never }
+  | { readonly format: "excel"; readonly sheetIndex: number; readonly sheetName?: never }
+);
 
 export type RProcessSessionTransportOptions = {
   /** Directory containing frame_contract.R, kernel_exports.R, kernel_agent.R, and process_agent.R. */
@@ -117,7 +118,7 @@ interface ScheduledRequest {
 }
 
 /**
- * Long-lived native-R transport for one captured document or eagerly loaded CSV/TSV source.
+ * Long-lived native-R transport for one captured document or eagerly loaded file source.
  *
  * Protocol responses are atomically published in a private mailbox rather than
  * written to stdout. User code can therefore print freely, spawn noisy child
@@ -148,18 +149,42 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
       typeof options.documentText === "string" ? [options.documentText] : (options.documentText ?? []);
     if (options.fileSource !== undefined) {
       const source = options.fileSource;
+      const keys = Object.keys(source).sort().join(",");
+      let validFormat = false;
+      switch (source.format) {
+        case "csv":
+          validFormat =
+            keys === "delimiter,format,header,path" &&
+            typeof source.header === "boolean" &&
+            typeof source.delimiter === "string" &&
+            /^[\t\x20-\x21\x23-\x7e]$/u.test(source.delimiter);
+          break;
+        case "parquet":
+        case "jsonl":
+          validFormat = keys === "format,path";
+          break;
+        case "excel":
+          validFormat =
+            (keys === "format,path,sheetName" &&
+              typeof source.sheetName === "string" &&
+              source.sheetName.length > 0 &&
+              !source.sheetName.includes("\0") &&
+              !hasUnpairedSurrogate(source.sheetName)) ||
+            (keys === "format,path,sheetIndex" &&
+              typeof source.sheetIndex === "number" &&
+              Number.isSafeInteger(source.sheetIndex) &&
+              source.sheetIndex >= 0);
+          break;
+      }
       if (
         options.documentText !== undefined ||
-        Object.keys(source).sort().join(",") !== "delimiter,header,path" ||
+        !validFormat ||
         typeof source.path !== "string" ||
         !path.isAbsolute(source.path) ||
         hasUnpairedSurrogate(source.path) ||
-        /[\0\r\n]/u.test(source.path) ||
-        typeof source.header !== "boolean" ||
-        typeof source.delimiter !== "string" ||
-        !/^[\t\x20-\x21\x23-\x7e]$/u.test(source.delimiter)
+        /[\0\r\n]/u.test(source.path)
       )
-        throw new TypeError("The R CSV/TSV source descriptor is invalid.");
+        throw new TypeError("The R file source descriptor is invalid.");
       this.fileSource = Object.freeze({ ...source });
       if (Buffer.byteLength(JSON.stringify(this.fileSource), "utf8") > 65_536)
         throw new RangeError("The R file source descriptor is too large.");
@@ -287,6 +312,15 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
       throw new Error("The R process returned a mismatched page session identity.");
     }
     return response.page;
+  }
+
+  async listExcelSheets(sessionId: string, options: RKernelRequestOptions = {}): Promise<readonly string[]> {
+    const response = await this.executeMapped(this.request("listExcelSheets", { sessionId }), options);
+    if (response.kind === "error") throw new RKernelDiagnosticError(response);
+    if (response.kind !== "excelSheets" || response.sessionId !== sessionId) {
+      throw new Error("The R process returned mismatched Excel worksheet metadata.");
+    }
+    return response.sheets;
   }
 
   async getSummary(

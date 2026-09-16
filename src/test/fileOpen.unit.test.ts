@@ -5,6 +5,7 @@ import type { DuckDBTableDiscovery, FilePlanOpenContext, OpenWranglerBridge } fr
 import type { SessionSourceProtection } from "../extension/files/safeFileExport";
 import type { SessionSource } from "../shared/protocol";
 import { FileBackendUnavailableError } from "../extension/dataBridge";
+import { isSessionSource } from "../shared/protocolValidation";
 
 type CommandHandler = (...args: unknown[]) => unknown;
 
@@ -530,6 +531,37 @@ describe("file launch command", () => {
     );
     expect(fileMocks.bridgeRequest).not.toHaveBeenCalled();
   });
+
+  it.each(["parquet", "jsonl", "ndjson"])(
+    "opens native R %s without an absent import-options property",
+    async (extension) => {
+      const nativeBridge = { request: vi.fn() } as OpenWranglerBridge;
+      const createRBridge = vi.fn(async (source: SessionSource) => {
+        expect(isSessionSource(source)).toBe(true);
+        expect(Object.hasOwn(source, "importOptions")).toBe(false);
+        return nativeBridge;
+      });
+      const { context } = register(createRBridge);
+      const uri = vscode.Uri.file(`/workspace/native.${extension}`);
+      fileMocks.defaultBackend = "r";
+      fileMocks.detectImportOptions.mockResolvedValue(undefined);
+      await command("openWrangler.openFile")(uri);
+      expect(createRBridge).toHaveBeenCalledOnce();
+      expect(fileMocks.createPanel).toHaveBeenCalledWith(
+        context,
+        nativeBridge,
+        {
+          kind: "file",
+          label: `native.${extension}`,
+          path: uri.fsPath,
+          uri: uri.toString()
+        },
+        "r",
+        "r"
+      );
+      expect(fileMocks.bridgeRequest).not.toHaveBeenCalled();
+    }
+  );
 
   it.each([true, false])(
     "keeps explicit R engine handoff source-bound (owner remains current: %s)",
@@ -1180,13 +1212,13 @@ describe("file launch command", () => {
       bridge,
       expect.objectContaining({
         path: "/workspace/data.parquet",
-        uri: uri.toString(),
-        importOptions: undefined
+        uri: uri.toString()
       }),
       "duckdb",
       true,
       "duckdb"
     );
+    expect(fileMocks.panelConstructor.mock.calls[0]?.[3]).not.toHaveProperty("importOptions");
   });
 
   it("keeps explicit custom-editor selection available for a picker-disabled format", async () => {

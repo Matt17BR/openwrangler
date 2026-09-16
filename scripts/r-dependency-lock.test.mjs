@@ -324,7 +324,7 @@ test("strict canonical locks bind the exact qualification, roots, archives, and 
     const bytes = canonicalLockBytes(lock);
     writeFileSync(path, bytes);
     assert.equal(readLock(path).digest, sha256(bytes));
-    assert.equal(validateLock(lock).packageCount, 9);
+    assert.equal(validateLock(lock).packageCount, 10);
 
     writeFileSync(path, bytes.trimEnd());
     assert.throws(() => readLock(path), /not canonical JSON/u);
@@ -386,7 +386,8 @@ test("lock validation binds categorized roots and version 2 generation semantics
     "data.table",
     "bit64",
     "rlang",
-    "nanoparquet"
+    "nanoparquet",
+    "readxl"
   ]);
   assert.deepEqual(LOCK_ROOTS.fixtures, ["collapse"]);
   assert.deepEqual(lock.roots, LOCK_ROOTS);

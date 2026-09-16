@@ -198,7 +198,7 @@ describe("R document command", () => {
     expect(mocks.bridgeDiagnostic.mock.calls).toEqual([['R file runtime selected: "/usr/bin/Rscript".']]);
     expect(mocks.discovery).not.toHaveBeenCalled();
     expect(mocks.transportOptions[0]).toMatchObject({
-      fileSource: { path: source.path, header: false, delimiter: "\t" },
+      fileSource: { path: source.path, format: "csv", header: false, delimiter: "\t" },
       rscriptPath: "/usr/bin/Rscript",
       workingDirectory: "/workspace"
     });
@@ -216,6 +216,45 @@ describe("R document command", () => {
     ]);
   });
 
+  it.each([
+    { extension: "parquet", format: "parquet", importOptions: undefined, selector: {} },
+    { extension: "jsonl", format: "jsonl", importOptions: undefined, selector: {} },
+    { extension: "ndjson", format: "jsonl", importOptions: undefined, selector: {} },
+    { extension: "xlsx", format: "excel", importOptions: undefined, selector: { sheetIndex: 0 } },
+    { extension: "xls", format: "excel", importOptions: { sheetIndex: 2 }, selector: { sheetIndex: 2 } },
+    {
+      extension: "xlsx",
+      format: "excel",
+      importOptions: { sheetName: "  $(sheet)  " },
+      selector: { sheetName: "  $(sheet)  " }
+    }
+  ])(
+    "pins the exact $extension descriptor and selected sheet through lazy recovery",
+    async ({ extension, format, importOptions, selector }) => {
+      const context = { asAbsolutePath: (part: string) => `/extension/${part}` } as unknown as ExtensionContext;
+      const source = {
+        kind: "file" as const,
+        label: `orders.${extension}`,
+        path: `/workspace/orders.${extension}`,
+        uri: `file:///workspace/orders.${extension}`,
+        ...(importOptions ? { importOptions } : {})
+      };
+      createRFileBridge(context, source);
+      expect(mocks.transportOptions[0]).toMatchObject({
+        fileSource: { path: source.path, format, ...selector },
+        rscriptPath: "/usr/bin/Rscript"
+      });
+      expect(mocks.transportOptions[0]).toHaveProperty("fileSource", { path: source.path, format, ...selector });
+      expect(mocks.discovery).not.toHaveBeenCalled();
+      source.path = "/workspace/changed.csv";
+      mocks.resolveExecutable.mockReturnValue("/different/Rscript");
+      await (mocks.bridgeOptions[0]?.[6] as () => Promise<unknown>)();
+      expect(mocks.transportOptions[1]).toEqual(mocks.transportOptions[0]);
+      expect(mocks.bridgeOptions[1]?.[7]).toMatchObject({ path: `/workspace/orders.${extension}` });
+      expect(mocks.resolveExecutable).toHaveBeenCalledTimes(1);
+    }
+  );
+
   it("refuses unsupported native file options and trust before constructing a process owner", () => {
     const context = { asAbsolutePath: (part: string) => `/extension/${part}` } as unknown as ExtensionContext;
     const source = {
@@ -231,8 +270,18 @@ describe("R document command", () => {
       expect(() => createRFileBridge(context, { ...source, importOptions })).toThrow(FileBackendUnavailableError);
     }
     expect(() => createRFileBridge(context, { ...source, importOptions: { sheetIndex: 0 } })).toThrow(
-      "exact local CSV or TSV"
+      "exact local file"
     );
+    for (const extension of ["parquet", "jsonl", "xlsx"]) {
+      expect(() =>
+        createRFileBridge(context, {
+          ...source,
+          path: `/workspace/orders.${extension}`,
+          uri: `file:///workspace/orders.${extension}`,
+          importOptions: { duckdbSchema: "main", duckdbTable: "orders" }
+        })
+      ).toThrow();
+    }
     expect(() => createRFileBridge(context, { ...source, uri: "file:///workspace/other.csv" })).toThrow(
       "matching local"
     );

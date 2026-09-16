@@ -11,7 +11,7 @@ import { prepareRDocumentSource } from "../extension/r/rDocumentSource";
 import { RKernelBridge } from "../extension/r/rKernelBridge";
 import type { TransformStep } from "../shared/protocol";
 import { isOpenWranglerResponse } from "../shared/protocolValidation";
-import { RProcessSessionTransport } from "../extension/r/rProcessTransport";
+import { RProcessSessionTransport, type RProcessFileSource } from "../extension/r/rProcessTransport";
 import type { RKernelPageWindow } from "../extension/r/rKernelProtocol";
 import { rCsvExportOptions, rExportOptions } from "./rExportTestOptions";
 
@@ -21,6 +21,45 @@ const runtimeRoot = resolve(root, "r/openwrangler_runtime");
 const rscriptPath = process.env.RSCRIPT ?? "Rscript";
 
 describe.skipIf(!enabled)("plain R process transport", () => {
+  it("validates exact file descriptors before acquiring a process", async () => {
+    const options = { runtimeRoot, rscriptPath: resolve("/selected/Rscript"), workingDirectory: root };
+    const sourcePath = resolve(root, "orders.data");
+    for (const fileSource of [
+      { path: sourcePath, format: "csv", header: false, delimiter: "\t" },
+      { path: sourcePath, format: "parquet" },
+      { path: sourcePath, format: "jsonl" },
+      { path: sourcePath, format: "excel", sheetName: "  $(sheet)  " },
+      { path: sourcePath, format: "excel", sheetIndex: 2 }
+    ] as const) {
+      const transport = new RProcessSessionTransport({ ...options, fileSource });
+      await transport.dispose();
+    }
+    for (const descriptor of [
+      { header: true, delimiter: "," },
+      { format: "csv", header: true, delimiter: ",", sheetIndex: 0 },
+      { format: "parquet", header: true },
+      { format: "jsonl", sheetName: "Sheet1" },
+      { format: "excel" },
+      { format: "excel", sheetName: "Sheet1", sheetIndex: 0 },
+      { format: "excel", sheetName: undefined },
+      { format: "excel", sheetName: "" },
+      { format: "excel", sheetName: "bad\0name" },
+      { format: "excel", sheetName: "bad\ud800name" },
+      { format: "excel", sheetIndex: -1 },
+      { format: "excel", sheetIndex: 1.5 },
+      { format: "excel", sheetIndex: Number.MAX_SAFE_INTEGER + 1 },
+      { format: "unknown" }
+    ]) {
+      expect(
+        () =>
+          new RProcessSessionTransport({
+            ...options,
+            fileSource: { path: sourcePath, ...descriptor } as RProcessFileSource
+          })
+      ).toThrow("The R file source descriptor is invalid");
+    }
+  });
+
   it("opens a genuine TSV source, preserves its original through clone/replay/export, and closes before reopening", async () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-file-test-"));
     const filePath = resolve(temporaryParent, "orders.tsv");
@@ -38,7 +77,7 @@ describe.skipIf(!enabled)("plain R process transport", () => {
       rscriptPath,
       temporaryParent,
       workingDirectory: temporaryParent,
-      fileSource: { path: filePath, header: true, delimiter: "\t" }
+      fileSource: { path: filePath, format: "csv" as const, header: true, delimiter: "\t" }
     };
     const transport = new RProcessSessionTransport(options);
     const context = {
