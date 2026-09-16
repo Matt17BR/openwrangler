@@ -166,7 +166,11 @@ export function createPackagedExcelDependencyInstallJourney({
       assert.equal(missing?.kind, "error");
       if (missing?.kind !== "error") throw new Error("The XLSX dependency error was replaced unexpectedly.");
       assert.equal(missing.code, "missing_dependencies");
-      assert.match(missing.message, /cannot open this source with Pandas\. Missing: openpyxl>=3\.1\.5,<4\.$/u);
+      assert.match(
+        missing.message,
+        /cannot open this source with Pandas\. Missing or incompatible packages: openpyxl>=3\.1\.5,<4\./u
+      );
+      assert.ok(missing.message.includes(dependency.executable));
       assert.doesNotMatch(missing.message, /fastexcel|polars|xlrd/iu);
       assert.equal(testing.activeSession(), undefined);
       assert.equal(testing.diagnostics().sessionCount, 0);
@@ -192,7 +196,7 @@ export function createPackagedExcelDependencyInstallJourney({
       await errorAlert.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
       assert.match(
         await errorAlert.innerText(),
-        /cannot open this source with Pandas\. Missing: openpyxl>=3\.1\.5,<4\./u
+        /cannot open this source with Pandas\. Missing or incompatible packages: openpyxl>=3\.1\.5,<4\./u
       );
       assert.ok((await errorAlert.innerText()).includes(dependency.executable));
 

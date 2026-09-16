@@ -18520,7 +18520,12 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
     assert.equal(rejected.kind, "error");
     if (rejected.kind === "error") {
       assert.equal(rejected.code, "missing_dependencies");
-      assert.equal(rejected.message.endsWith(`Missing: ${polarsRequirementList}.`), true);
+      assert.ok(
+        rejected.message.includes(
+          `cannot open this source with Polars. Missing or incompatible packages: ${polarsRequirementList}.`
+        )
+      );
+      assert.ok(rejected.message.includes(isolatedPython));
       assert.match(rejected.detail ?? "", /Install Runtime Dependencies/);
     }
     const rejectedDuckDB = await testing.request({
@@ -18534,7 +18539,11 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
     assert.equal(rejectedDuckDB.kind, "error");
     if (rejectedDuckDB.kind === "error") {
       assert.equal(rejectedDuckDB.code, "missing_dependencies");
-      assert.equal(rejectedDuckDB.message.endsWith(`Missing: ${duckdbRequirementList}.`), true);
+      assert.ok(
+        rejectedDuckDB.message.includes(
+          `cannot open this source with DuckDB. Missing or incompatible packages: ${duckdbRequirementList}.`
+        )
+      );
       assert.match(rejectedDuckDB.detail ?? "", /Install Runtime Dependencies/);
     }
     const rejectedLossyUtf8 = await testing.request({
@@ -18547,7 +18556,11 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
     assert.equal(rejectedLossyUtf8.kind, "error");
     if (rejectedLossyUtf8.kind === "error") {
       assert.equal(rejectedLossyUtf8.code, "missing_dependencies");
-      assert.equal(rejectedLossyUtf8.message.endsWith(`Missing: ${lossyRequirement}.`), true);
+      assert.ok(
+        rejectedLossyUtf8.message.includes(
+          `cannot open this source with Pandas. Missing or incompatible packages: ${lossyRequirement}.`
+        )
+      );
       assert.doesNotMatch(rejectedLossyUtf8.message, /polars|duckdb/iu);
       assert.match(rejectedLossyUtf8.detail ?? "", /Install Runtime Dependencies/);
     }
@@ -18562,7 +18575,11 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
     assert.equal(rejectedLegacyExcel.kind, "error");
     if (rejectedLegacyExcel.kind === "error") {
       assert.equal(rejectedLegacyExcel.code, "missing_dependencies");
-      assert.equal(rejectedLegacyExcel.message.includes(`Missing: ${legacyRequirementList}`), true);
+      assert.ok(
+        rejectedLegacyExcel.message.includes(
+          `cannot open this source with Pandas. Missing or incompatible packages: ${legacyRequirementList}.`
+        )
+      );
       assert.doesNotMatch(rejectedLegacyExcel.message, /openpyxl/);
       assert.match(rejectedLegacyExcel.detail ?? "", /Install Runtime Dependencies/);
     }

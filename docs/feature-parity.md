@@ -56,7 +56,8 @@ Supported Python dependencies installed as hard links are recognized within the 
 
 Runtime selection commands change only the workspace Python override. User and Remote `openWrangler.pythonPath`
 values remain unchanged.
-Missing-package errors identify the Python executable, version and selection source. **Install required packages**
+Dependency errors identify the Python executable, version, selection source and unmet package requirements. When
+DuckDB is available, they explain its required supporting packages. **Install required packages**
 opens the existing confirmation for that environment. After a failed file-engine change, a successful installation
 retries the requested engine while the original confirmed view remains available.
 

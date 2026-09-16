@@ -1937,6 +1937,10 @@ changing its open attempt invalidates pre-write authorization and reopening; an 
 its existing process settlement and environment-validation ownership. The global install command still uses the most
 recent missing target.
 Missing-dependency errors identify the captured Python executable, version, selection source and requested engine.
+The unmet requirements can be absent or incompatible packages. DuckDB file admission retains its full dependency set,
+including fsspec for the reserved export writer and pytz for timezone-aware values. Although fsspec is not needed to
+read a CSV, removing its open-time check alone would leave advertised exports without equivalent dependency recovery.
+When DuckDB passes its check, the error explains why supporting packages are still required.
 A failed engine change keeps its confirmed grid and offers the same install action in the error banner. The host
 retains the requested engine with the source, session, revision and open-attempt generation, then rechecks that tuple
 before retrying the existing file reconfiguration. A later plan revision can allow an already confirmed installation
