@@ -11246,11 +11246,6 @@ async function capturePackagedFileWorkflowScenes(testing: TestApi, outputDirecto
     const workflowSidebar = await arrangePackagedProductSidebar(capturePage, "workflow");
     await fitPackagedWorkflowFormulaDraftGrid(testing, capturePage, opened.sessionId);
     const codePreview = await waitForCodePreview(capturePage, "projected_revenue");
-    const visibleCode = await codePreview.innerText();
-    assert.match(visibleCode, /import polars as pl/u);
-    assert.match(visibleCode, /market_upper/u);
-    assert.match(visibleCode, /projected_revenue/u);
-    assert.match(visibleCode, /pl\.col\('revenue'\) \+ pl\.lit\(500\)/u);
     await assertPackagedWorkflowScene(capturePage, testing, opened.sessionId, workflowSidebar, codePreview);
     await clearPackagedProductSceneTransientUi(capturePage);
     await captureWorkbenchScreenshot(
@@ -12299,7 +12294,6 @@ async function capturePackagedExportOutcomeScenes(
   assert.equal(testing.activeSession()?.sessionId, sessionId, "Export capture requires the exact active session.");
   assert.equal(path.relative(workspace.fsPath, fixture.fsPath).startsWith(`..${path.sep}`), false);
   const codePreview = await waitForCodePreview(workbench, "projected_revenue");
-  assert.match(await codePreview.innerText(), /import polars as pl/u);
   const panel = workbench.locator(".part.panel:visible").first();
   await panel.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
   await panel.locator('[aria-label*="Export Generated Script"]:visible').first().waitFor({
@@ -12600,7 +12594,7 @@ async function capturePackagedEditAndUndoScenes(
     codePreview,
     2,
     "projected_revenue",
-    /pl\.lit\(750\)/u
+    "pl.col('revenue') + pl.lit(750)"
   );
   await clearPackagedProductSceneTransientUi(workbench);
   await alignPackagedSceneRowBoundary(workbench, app);
@@ -12639,7 +12633,7 @@ async function capturePackagedEditAndUndoScenes(
   target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
   app = await exactSessionApp(target.frame, sessionId);
   assert.ok(app, "Undone latest-step capture requires its exact renderer.");
-  await assertPackagedCommittedPlanScene(
+  const undoneCode = await assertPackagedCommittedPlanScene(
     workbench,
     testing,
     sessionId,
@@ -12648,9 +12642,9 @@ async function capturePackagedEditAndUndoScenes(
     codePreview,
     1,
     "market_upper",
-    /market_upper/u
+    "market_upper"
   );
-  assert.doesNotMatch(await codePreview.innerText(), /projected_revenue|pl\.lit\(750\)/u);
+  assert.doesNotMatch(undoneCode, /projected_revenue|pl\.lit\(750\)/u);
   await clearPackagedProductSceneTransientUi(workbench);
   await alignPackagedSceneRowBoundary(workbench, app);
   await captureWorkbenchScreenshot(
@@ -12703,8 +12697,8 @@ async function assertPackagedCommittedPlanScene(
   codePreview: Locator,
   stepCount: number,
   expectedOutput: string,
-  expectedCode: RegExp
-): Promise<void> {
+  expectedCode: string
+): Promise<string> {
   const active = testing.activeSession();
   assert.equal(active?.sessionId, sessionId);
   assert.equal(active?.metadata.steps.length, stepCount);
@@ -12777,12 +12771,13 @@ async function assertPackagedCommittedPlanScene(
   assert.ok(geometry.layoutOverflow <= 1);
   assert.deepEqual(geometry.partialHeaders, []);
   assert.deepEqual(geometry.clippedTitles, []);
-  const code = await codePreview.innerText();
+  const code = await revealCodePreviewText(codePreview, expectedCode);
+  assert.equal(code, active?.code, "Committed-plan capture must expose its exact generated code.");
   assert.match(code, /import polars as pl/u);
-  assert.match(code, expectedCode);
   const codeBounds = await codePreview.boundingBox();
   assert.ok(codeBounds && codeBounds.width > 0 && codeBounds.height > 0);
   assert.equal(await workbench.locator(".part.panel:visible").count(), 1);
+  return code;
 }
 
 async function openPackagedCleanedDataInOpenWrangler(
@@ -13251,8 +13246,8 @@ async function fitPackagedUppercasePlanGrid(testing: TestApi, workbench: Page, s
   assert.ok(available >= 840, "The uppercase-plan viewport must fit five complete comparison columns.");
   const names = ["gross_margin", "priority", "renewal_date", "account_note", "market_upper"] as const;
   const widths = [
-    Math.floor(available * 0.16),
-    Math.floor(available * 0.16),
+    Math.max(140, Math.floor(available * 0.16)),
+    Math.max(140, Math.floor(available * 0.16)),
     Math.floor(available * 0.19),
     Math.floor(available * 0.27)
   ];
@@ -13440,7 +13435,7 @@ async function fitPackagedWorkflowFormulaDraftGrid(
   assert.ok(available >= 840, "The 1440-pixel Workflow viewport must fit five complete comparison columns.");
   const names = ["priority", "renewal_date", "account_note", "market_upper", "projected_revenue"] as const;
   const widths = [
-    Math.floor(available * 0.16),
+    Math.max(140, Math.floor(available * 0.16)),
     Math.floor(available * 0.19),
     Math.floor(available * 0.24),
     Math.floor(available * 0.19)
@@ -14208,7 +14203,8 @@ async function assertPackagedWorkflowScene(
   assert.deepEqual(measurement.clippedTitles, []);
   assert.ok(measurement.visibleColumns.includes("market_upper"));
   assert.ok(measurement.visibleColumns.includes("projected_revenue"));
-  const code = await codePreview.innerText();
+  const code = await revealCodePreviewText(codePreview, "pl.col('revenue') + pl.lit(500)");
+  assert.equal(code, active.code, "Workflow capture must expose the exact current draft code.");
   assert.match(code, /import polars as pl/u);
   assert.match(code, /market_upper/u);
   assert.match(code, /projected_revenue/u);
