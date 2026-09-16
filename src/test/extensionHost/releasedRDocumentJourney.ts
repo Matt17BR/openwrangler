@@ -537,8 +537,13 @@ export function createReleasedRDocumentJourney({
           assert.ok(csvApplied);
           assertReleasedRGeneratedCode(csvApplied.code ?? "", "record_id", {
             path: csvPath,
-            header: true,
-            delimiter: ","
+            header: csvApplied.metadata.source.importOptions?.hasHeader ?? true,
+            delimiter: csvApplied.metadata.source.importOptions?.delimiter ?? ",",
+            encoding:
+              csvApplied.metadata.source.importOptions?.encoding === "utf8"
+                ? "utf-8"
+                : (csvApplied.metadata.source.importOptions?.encoding ?? "utf-8"),
+            quoteChar: csvApplied.metadata.source.importOptions?.quoteChar ?? '"'
           });
           await assert.rejects(
             testing.request(
