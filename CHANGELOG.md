@@ -4,6 +4,8 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-09-16
+
 ### Added
 
 - Open DuckDB Table opens local database tables for read-only browsing, filters and profiles. Multiple tables can stay open; close their viewers before writing to the database. Views, cleaning and exports remain unavailable.

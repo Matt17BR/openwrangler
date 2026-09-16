@@ -393,6 +393,9 @@ setup retain their explicit synchronization. A missing production publication mu
 the ordinary assertion path. Page assertions use the existing read-only request option so inspecting returned rows
 does not replace the visible page or retire the renderer's view context. Requests that deliberately change the view
 or exercise recovery keep their own mutation path.
+Notebook toolbar discovery treats an overflow menu that disappears before action acquisition as transient within its
+existing twenty-second discovery deadline. Duplicate menus and cleanup failures remain terminal; discovery does not
+dispatch the Open Wrangler action, which still requires exact notebook identity and one activation after acquisition.
 The released-Jupyter Variables action shows its exact notebook and opens Jupyter's Variables view once before each
 bounded action acquisition, including after session disposal changes focus. The shared dispatcher
 owns this preparation for Pandas, DuckDB and PySpark; it still requires one trusted keyboard activation and the exact
