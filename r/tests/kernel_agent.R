@@ -112,17 +112,48 @@ local({
     list(text = "a\tb\n\t\n\t", delimiter = "\t", expected = data.frame(a = c(NA, NA), b = c(NA, NA))),
     list(text = "\t\n\t", header = FALSE, delimiter = "\t", expected = data.frame(V1 = c(NA, NA), V2 = c(NA, NA)))
   ))
+  for (encoding in c("utf-16le", "utf-16be", "iso-8859-1", "windows-1252")) {
+    cases <- c(cases, list(
+      list(text = "same;same;\r1;'  é  ';'two\nlines'\r", encoding = encoding, delimiter = ";", quote = "'",
+        expected = structure(list(1L, "  é  ", "two\nlines"), names = c("same", "same", ""), class = "data.frame", row.names = .set_row_names(1L))),
+      list(text = "\r \r1;'  é  '\r2;'two\nlines'\r", encoding = encoding, header = FALSE, delimiter = ";", quote = "'",
+        expected = data.frame(V1 = 1:2, V2 = c("  é  ", "two\nlines")))
+    ))
+  }
+  cases <- c(cases, list(
+    list(text = "id,label\n1,€\n", encoding = "windows-1252", expected = data.frame(id = 1L, label = "€")),
+    list(bytes = c(charToRaw("id,label\n1,"), as.raw(c(255L, 195L, 40L)), charToRaw("\n")), encoding = "utf8-lossy", expected = data.frame(id = 1L, label = "\ufffd\ufffd(")),
+    list(text = "id;label\r1;'two\r\nlines'\r", delimiter = ";", quote = "'", expected = data.frame(id = 1L, label = "two\nlines"))
+  ))
+  for (character in c("é", "€", "😀")) for (split in seq_len(nchar(character, type = "bytes") - 1L)) {
+    value <- paste0(strrep("a", 65536L - 6L - split), character)
+    cases <- c(cases, list(list(text = paste0("label\n", value, "\n"), encoding = "utf8-lossy", expected = data.frame(label = value))))
+  }
+  for (encoding in c("utf-16le", "utf-16be")) {
+    value <- paste0(strrep("a", (65536L - 12L - 2L) / 2L), "😀")
+    cases <- c(cases, list(list(text = paste0("label\n", value, "\n"), encoding = encoding, expected = data.frame(label = value))))
+  }
+  cases <- c(cases, list(
+    list(text = "\r\r\"\",\"  \"\r\n1,text\r\n", header = FALSE, expected = data.frame(V1 = c(NA_integer_, 1L), V2 = c("  ", "text"))),
+    list(text = " a ,  b \n", header = FALSE, expected = data.frame(V1 = " a ", V2 = "  b ")),
+    list(text = "\ufeff\n \n1,x\n", header = FALSE, expected = data.frame(V1 = 1L, V2 = "x"))
+  ))
+  normalized_before <- list.files(tempdir(), pattern = "^openwrangler-csv-", full.names = TRUE)
   for (index in seq_along(cases)) {
     case <- cases[[index]]
     path <- file.path(root, sprintf("accepted-%d.csv", index))
-    bytes <- charToRaw(enc2utf8(case$text))
+    bytes <- if (!is.null(case$bytes)) case$bytes else if (!is.null(case$encoding) && case$encoding != "utf8-lossy") iconv(case$text, from = "UTF-8", to = case$encoding, toRaw = TRUE)[[1L]] else charToRaw(enc2utf8(case$text))
     writeBin(bytes, path)
     connections <- getAllConnections()
-    actual <- load_csv(path, if (is.null(case$header)) TRUE else case$header, if (is.null(case$delimiter)) "," else case$delimiter)
+    arguments <- list(path, if (is.null(case$header)) TRUE else case$header, if (is.null(case$delimiter)) "," else case$delimiter)
+    if (!is.null(case$encoding)) arguments$encoding <- case$encoding
+    if (!is.null(case$quote)) arguments$quote_char <- case$quote
+    actual <- do.call(load_csv, arguments)
     assert_identical(getAllConnections(), connections, "CSV accepted input retained a connection")
     assert_identical(actual, case$expected, sprintf("CSV accepted case %d lost native values/types/names", index))
     assert_identical(readBin(path, "raw", length(bytes) + 1L), bytes, "CSV loader changed source bytes")
   }
+  assert_identical(list.files(tempdir(), pattern = "^openwrangler-csv-", full.names = TRUE), normalized_before, "CSV normalization retained a private temporary file")
   rejected <- list(
     raw(), charToRaw("\n\n"), charToRaw("a,b\n1\n"), charToRaw("a,b\n1,2,3\n"),
     charToRaw("a,b\n1,x\n \n2,y\n"),
@@ -142,12 +173,46 @@ local({
     if (!inherits(error, "error")) stop(sprintf("CSV refused case %d unexpectedly accepted", index), call. = FALSE)
     assert_identical(readBin(path, "raw", length(bytes) + 1L), bytes, "Refused CSV changed source bytes")
   }
+  for (encoding in c("utf-16le", "utf-16be")) {
+    valid <- iconv("id,label\n1,ok\n", from = "UTF-8", to = encoding, toRaw = TRUE)[[1L]]
+    high_surrogate <- if (encoding == "utf-16le") as.raw(c(0L, 216L)) else as.raw(c(216L, 0L))
+    for (tail in list(as.raw(65L), high_surrogate, as.raw(c(0L, 0L)))) {
+      path <- file.path(root, "invalid-encoding.csv")
+      bytes <- c(valid, tail)
+      writeBin(bytes, path)
+      error <- tryCatch(load_csv(path, encoding = encoding), error = identity)
+      stopifnot(inherits(error, "error"))
+      assert_identical(readBin(path, "raw", length(bytes) + 1L), bytes, "Failed conversion changed source bytes")
+    }
+    bom <- if (encoding == "utf-16le") as.raw(c(255L, 254L)) else as.raw(c(254L, 255L))
+    writeBin(c(bom, valid), path)
+    assert_identical(load_csv(path, encoding = encoding), data.frame(id = 1L, label = "ok"), "UTF16 BOM changed decoded values")
+  }
+  for (case in list(
+    list(encoding = "windows-1252", bytes = as.raw(c(194L, 129L))),
+    list(encoding = "utf8-lossy", bytes = as.raw(0L))
+  )) {
+    writeBin(c(charToRaw("id,label\n1,"), case$bytes, charToRaw("\n")), path)
+    stopifnot(inherits(tryCatch(load_csv(path, encoding = case$encoding), error = identity), "error"))
+  }
+  for (encoding in c("utf8-lossy", "windows-1252", "utf-16le", "utf-16be")) for (after_boundary in 0:1) {
+    width <- if (startsWith(encoding, "utf-16")) 2L else 1L
+    prefix <- paste0("label\n", strrep("x", (65536L - 6L * width) / width - 1L + after_boundary))
+    from <- if (encoding == "utf8-lossy") "UTF-8" else encoding
+    bytes <- c(iconv(prefix, from = "UTF-8", to = from, toRaw = TRUE)[[1L]], rep(as.raw(0L), width), iconv("private text\n", from = "UTF-8", to = from, toRaw = TRUE)[[1L]])
+    writeBin(bytes, path)
+    error <- tryCatch(load_csv(path, encoding = encoding), error = identity)
+    stopifnot(inherits(error, "error"))
+    assert_identical(conditionMessage(error), "CSV input has invalid or incomplete text in the selected encoding", "CSV conversion exposed input text in its diagnostic")
+  }
+  assert_identical(getAllConnections(), connections, "CSV conversion failure retained a connection")
+  assert_identical(list.files(tempdir(), pattern = "^openwrangler-csv-", full.names = TRUE), normalized_before, "CSV conversion failure retained a private temporary file")
   path <- file.path(root, "accepted-1.csv")
   environment <- new.env(parent = baseenv())
   environment$.ow_csv_source <- load_csv(path)
   file_agent <- openwrangler_r_kernel_agent$new_agent(
     openwrangler_r_frame_contract, environment,
-    file_source = list(path = path, format = "csv", header = TRUE, delimiter = ",")
+    file_source = list(path = path, format = "csv", header = TRUE, delimiter = ",", encoding = "utf-8", quoteChar = "\"")
   )
   on.exit(file_agent$dispose(), add = TRUE)
   opened <- dispatch_with(file_agent, "openSession", list(sessionId = session_id, variableName = ".ow_csv_source", page = page_window()))
@@ -220,6 +285,13 @@ local({
     on.exit(NULL)
     assert_identical(getAllConnections(), connections, "Native file workflow retained a connection")
   }
+  csv_path <- file.path(root, "options.csv")
+  writeBin(iconv("1;'  é  '\r2;'two\nlines'\r", from = "UTF-8", to = "UTF-16BE", toRaw = TRUE)[[1L]], csv_path)
+  check_file(list(path = csv_path, format = "csv", header = FALSE, delimiter = ";", encoding = "utf-16be", quoteChar = "'"),
+    data.frame(V1 = 1:2, V2 = c("  é  ", "two\nlines")))
+  writeBin(c(charToRaw("id,label\n1,"), as.raw(255L), charToRaw("\n2,text\n")), csv_path)
+  check_file(list(path = csv_path, format = "csv", header = TRUE, delimiter = ",", encoding = "utf8-lossy", quoteChar = "\""),
+    data.frame(id = 1:2, label = c("\ufffd", "text")))
   json_path <- file.path(root, "sample.ndjson")
   writeLines(c('{"id":1,"text":"  é  ","flag":true,"amount":1.5}', '', '{"id":2,"text":"","flag":false}', '{"id":3,"text":null,"amount":2.5}'), json_path, useBytes = TRUE)
   check_file(list(path = json_path, format = "jsonl"), data.frame(id = 1:3, text = c("  é  ", "", NA), flag = c(TRUE, FALSE, NA), amount = c(1.5, NA, 2.5)))

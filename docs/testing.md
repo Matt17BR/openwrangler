@@ -180,10 +180,13 @@ Use the existing owners to choose a focused source check:
   [kernel owner's](../r/tests/kernel_agent.R) `group-pivot-and-export` case. Retain refusal before writer opening,
   destination/source preservation, bounded conversion and lazy-streaming assertions in these existing owners.
   Native CSV/TSV, Parquet, JSONL and Excel loading and generated-code agreement belong to that kernel owner's
-  `lifecycle-and-structure` case. Small synthetic cross-writer fixtures cover reader precision and sheet identity;
+  `lifecycle-and-structure` case. CSV cases cover encoding boundaries, strict/lossy decoding, configured quoting,
+  CR records, headerless first-record retention, source preservation and temporary-file cleanup.
+  Small synthetic cross-writer fixtures cover reader precision and sheet identity;
   the native dependency locks include readxl for this owner.
   The [managed process owner](../src/test/rProcessTransport.cross.test.ts) checks actual file loading, editing,
-  cloning, export, close and fresh reopen. Existing R-document/factory tests check the shared process boundary and
+  cloning, export, close and fresh reopen, including native temporary-file containment and removal on forced disposal.
+  Existing R-document/factory tests check the shared process boundary and
   exact file/executable admission. File commands, lazy activation, confirmed configuration and panel tests own R
   selection/defaults, cancellation and separate-session handoff. These source checks do not qualify installed hosts
   or measure whole-session allocation; retain separate installed evidence for the advertised platforms.

@@ -1,8 +1,8 @@
 import { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, mkdtemp, readFile, readdir, rm, unlink, utimes, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import * as vscode from "vscode";
@@ -25,7 +25,7 @@ describe.skipIf(!enabled)("plain R process transport", () => {
     const options = { runtimeRoot, rscriptPath: resolve("/selected/Rscript"), workingDirectory: root };
     const sourcePath = resolve(root, "orders.data");
     for (const fileSource of [
-      { path: sourcePath, format: "csv", header: false, delimiter: "\t" },
+      { path: sourcePath, format: "csv", header: false, delimiter: "\t", encoding: "utf-16be", quoteChar: "'" },
       { path: sourcePath, format: "parquet" },
       { path: sourcePath, format: "jsonl" },
       { path: sourcePath, format: "excel", sheetName: "  $(sheet)  " },
@@ -37,6 +37,11 @@ describe.skipIf(!enabled)("plain R process transport", () => {
     for (const descriptor of [
       { header: true, delimiter: "," },
       { format: "csv", header: true, delimiter: ",", sheetIndex: 0 },
+      { format: "csv", header: true, delimiter: ",", encoding: "unknown", quoteChar: '"' },
+      { format: "csv", header: true, delimiter: ",", encoding: "utf-8", quoteChar: "§" },
+      { format: "csv", header: true, delimiter: "§", encoding: "utf-8", quoteChar: '"' },
+      { format: "csv", header: true, delimiter: ",", encoding: "utf-8", quoteChar: "," },
+      { format: "csv", header: true, delimiter: ",", encoding: "utf-8", quoteChar: "\n" },
       { format: "parquet", header: true },
       { format: "jsonl", sheetName: "Sheet1" },
       { format: "excel" },
@@ -77,7 +82,14 @@ describe.skipIf(!enabled)("plain R process transport", () => {
       rscriptPath,
       temporaryParent,
       workingDirectory: temporaryParent,
-      fileSource: { path: filePath, format: "csv" as const, header: true, delimiter: "\t" }
+      fileSource: {
+        path: filePath,
+        format: "csv" as const,
+        header: true,
+        delimiter: "\t",
+        encoding: "utf-8",
+        quoteChar: '"'
+      }
     };
     const transport = new RProcessSessionTransport(options);
     const context = {
@@ -1450,21 +1462,49 @@ not_a_frame <- matrix(1:4, nrow = 2L)
     }
   }, 30_000);
 
-  it("terminates the exact owned child when disposal interrupts document execution", async () => {
+  it("terminates the exact owned child and removes native temporary files during interrupted execution", async () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-process-dispose-test-"));
+    const marker = resolve(temporaryParent, "temporary-path.txt");
+    const sentinel = resolve(temporaryParent, "unrelated.txt");
+    await writeFile(sentinel, "preserve this fixture");
     const transport = new RProcessSessionTransport({
       runtimeRoot,
       rscriptPath,
       temporaryParent,
       workingDirectory: temporaryParent,
-      documentText: "Sys.sleep(60); frame <- data.frame(value = 1L)"
+      documentText: `
+private_copy <- tempfile("openwrangler-csv-", fileext = ".csv")
+writeLines("fixture contents", private_copy)
+writeLines(private_copy, ${JSON.stringify(marker)})
+Sys.sleep(60)
+frame <- data.frame(value = 1L)
+`
     });
     const startup = transport.discoverVariables({ timeoutMs: 60_000 }).catch(() => undefined);
-    await sleep(100);
-    await transport.dispose();
-    await startup;
-    expect(await readdir(temporaryParent)).toEqual([]);
-    await rm(temporaryParent, { recursive: true, force: true });
+    let privateCopy: string | undefined;
+    try {
+      await vi.waitFor(
+        async () => {
+          privateCopy = (await readFile(marker, "utf8")).trim();
+        },
+        { timeout: 5_000, interval: 20 }
+      );
+      const roots = (await readdir(temporaryParent)).filter((name) => name.startsWith("openwrangler-r-"));
+      expect(roots).toHaveLength(1);
+      const ownedRoot = resolve(temporaryParent, roots[0]!);
+      expect((await realpath(privateCopy!)).startsWith((await realpath(ownedRoot)) + sep)).toBe(true);
+      expect(await readFile(privateCopy!, "utf8")).toContain("fixture contents");
+      await transport.dispose();
+      await startup;
+      await expect(lstat(privateCopy!)).rejects.toMatchObject({ code: "ENOENT" });
+      expect((await readdir(temporaryParent)).sort()).toEqual(["temporary-path.txt", "unrelated.txt"]);
+      expect(await readFile(sentinel, "utf8")).toBe("preserve this fixture");
+    } finally {
+      await transport.dispose().catch(() => undefined);
+      await startup;
+      if (privateCopy) await rm(privateCopy, { force: true });
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
   }, 10_000);
 
   it.skipIf(process.platform === "win32")(

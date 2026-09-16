@@ -635,8 +635,9 @@ Select R explicitly in the engine picker or `openWrangler.defaultBackend`, or le
 Python interpreter or file engine is available. Switching between R and Python opens a separate session and retains the original plan.
 R import-options changes also create a separate session. **Open Another File with This Plan** remains Python-only.
 
-The R reader requires UTF-8, double-quote escaping and LF/CRLF records. It supports custom single-byte delimiters and
-headerless input, preserves duplicate/empty column names, and refuses malformed records. Empty and `NA` fields are
+R CSV/TSV imports accept UTF-8, explicit UTF-8-lossy, UTF-16LE/BE, ISO-8859-1 and Windows-1252, with distinct ASCII
+delimiter/quote choices and LF, CRLF or CR records. Quoted CR/CRLF normalize to LF. Headerless input and duplicate/empty
+column names are supported; malformed records and strict decoding failures are refused. Empty and `NA` fields are
 missing; dates and integers that would lose precision stay text. R loads the full file into memory before returning
 bounded pages, and editing can require additional copies. It needs Rscript, not Python. Parquet and JSONL/NDJSON
 also admit flat scalar data; Excel opens the selected worksheet. Parquet requires `nanoparquet`, Excel requires

@@ -155,7 +155,9 @@ _Preview grouped R results alongside the cleaning history and generated R code._
 Local R file support is **Preview**. On Linux/macOS, choose R from the dataframe engine picker to open CSV, TSV,
 Parquet, JSONL/NDJSON or an Excel worksheet, or set `openWrangler.defaultBackend` to `r` before opening a file.
 Auto also tries R when no compatible Python interpreter or file engine is available. An explicit Python engine choice
-or a file-read error does not switch to R. Parquet needs `nanoparquet`; Excel needs `readxl`. R loads the complete file into memory;
+or a file-read error does not switch to R. CSV/TSV import options include UTF-16 and single-byte encodings,
+ASCII delimiter/quote choices and headerless input. Parquet needs `nanoparquet`; Excel needs `readxl`.
+R loads the complete file into memory;
 it requires an installed Rscript and does not need Python. The **Open Wrangler R** output channel records the selected
 Rscript path. Choosing R from a Python session opens a separate tab and
 preserves the existing steps. Changing an R file's import options also opens a separate session.

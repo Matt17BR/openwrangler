@@ -66,8 +66,26 @@ export interface RProcessVariableDiscovery {
   readonly truncated: boolean;
 }
 
+export function supportsRCsvImportOptions(delimiter: unknown, quoteChar: unknown, encoding: unknown): boolean {
+  return (
+    typeof delimiter === "string" &&
+    /^[\t\x20-\x7e]$/u.test(delimiter) &&
+    typeof quoteChar === "string" &&
+    /^[\t\x20-\x7e]$/u.test(quoteChar) &&
+    delimiter !== quoteChar &&
+    typeof encoding === "string" &&
+    ["utf-8", "utf8-lossy", "utf-16le", "utf-16be", "iso-8859-1", "windows-1252"].includes(encoding)
+  );
+}
+
 export type RProcessFileSource = { readonly path: string } & (
-  | { readonly format: "csv"; readonly header: boolean; readonly delimiter: string }
+  | {
+      readonly format: "csv";
+      readonly header: boolean;
+      readonly delimiter: string;
+      readonly encoding: string;
+      readonly quoteChar: string;
+    }
   | { readonly format: "parquet" | "jsonl" }
   | { readonly format: "excel"; readonly sheetName: string; readonly sheetIndex?: never }
   | { readonly format: "excel"; readonly sheetIndex: number; readonly sheetName?: never }
@@ -154,10 +172,9 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
       switch (source.format) {
         case "csv":
           validFormat =
-            keys === "delimiter,format,header,path" &&
+            keys === "delimiter,encoding,format,header,path,quoteChar" &&
             typeof source.header === "boolean" &&
-            typeof source.delimiter === "string" &&
-            /^[\t\x20-\x21\x23-\x7e]$/u.test(source.delimiter);
+            supportsRCsvImportOptions(source.delimiter, source.quoteChar, source.encoding);
           break;
         case "parquet":
         case "jsonl":
@@ -184,7 +201,12 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
         hasUnpairedSurrogate(source.path) ||
         /[\0\r\n]/u.test(source.path)
       )
-        throw new TypeError("The R file source descriptor is invalid.");
+        throw new TypeError(
+          "The R file source descriptor is invalid." +
+            (source.format === "csv"
+              ? " CSV requires a supported text encoding and different ASCII delimiter and quote characters."
+              : "")
+        );
       this.fileSource = Object.freeze({ ...source });
       if (Buffer.byteLength(JSON.stringify(this.fileSource), "utf8") > 65_536)
         throw new RangeError("The R file source descriptor is too large.");
@@ -820,6 +842,9 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
         stdio: ["pipe", "pipe", "pipe"],
         env: {
           ...process.env,
+          TMPDIR: root,
+          TMP: root,
+          TEMP: root,
           OPEN_WRANGLER_R_RUNTIME_ROOT: runtimeRoot,
           OPEN_WRANGLER_R_DOCUMENT_ROOT: documentRoot,
           OPEN_WRANGLER_R_RESPONSE_ROOT: responseRoot,

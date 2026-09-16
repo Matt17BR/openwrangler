@@ -1464,14 +1464,23 @@ Excel retains either a sheet name or a zero-based sheet index. Live and generate
 
 #### CSV and TSV files
 
-The native loader uses `scan()` and `type.convert(numerals = "no.loss")`. The same helper is emitted into generated
-code, which reads the source again when executed. Input is strict UTF-8 with double-quote escaping, LF/CRLF records,
-an optional header and a supported single-byte delimiter. Blank leading records are skipped in either header mode;
-headerless columns are named `V1`, `V2`, and so on. Duplicate and empty header names remain intact. Header-only inputs
-produce zero-row logical columns; empty files, malformed row widths, unclosed quotes, NUL and invalid UTF-8 are refused.
+The native loader uses `scan()` and `type.convert(numerals = "no.loss")`. Live and generated code use the same helper
+and captured import options. It accepts strict UTF-8, explicit UTF-8-lossy replacement, UTF-16LE/BE, ISO-8859-1 and
+Windows-1252. Delimiter and quote must be different single tab or printable ASCII characters. LF, CRLF and CR delimit records;
+native scanning normalizes CR and CRLF inside quoted fields to LF. Blank leading records are skipped in either
+header mode; headerless columns are named `V1`, `V2`, and so on. Duplicate and empty header names remain intact.
+Header-only inputs produce zero-row logical columns. Empty files, malformed row widths, unclosed quotes and NUL are
+refused. Invalid or incomplete selected-encoding text is refused unless UTF-8-lossy replacement is explicitly selected.
 Scanner warnings are errors, so truncated records cannot become an apparently successful dataframe.
 
-Empty fields and `NA`, including quoted forms, become missing. Field whitespace is preserved; native type inference
+Default strict UTF-8 reads the source directly without an extra conversion pass. Other encodings and explicit lossy
+mode decode in 64 KiB chunks, retaining only an incomplete encoding suffix, into an owned temporary UTF-8 file.
+This adds a decoding pass and temporary I/O. Normal completion and errors close and remove the temporary file.
+Managed R processes place their native temporary directory beneath the exact owned process root, so forced process
+cleanup also removes interrupted conversion files. Generated code uses its R temporary directory and the same
+normal/error cleanup. Neither path modifies the source.
+
+Empty fields and `NA`, including quoted forms, become missing. Text columns preserve field whitespace; native type inference
 recognizes logical and numeric values, retains precision-losing integers as text and leaves dates as text. The complete
 frame is loaded into R memory before the bounded page/capture path. First editing isolation, profiles and operations
 can allocate additional complete vectors or frames. This is an eager native reader, without a page-sized memory

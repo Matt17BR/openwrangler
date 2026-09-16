@@ -111,7 +111,8 @@ vi.mock("../extension/pythonPath", () => ({
   resolveExecutableCommand: mocks.resolveExecutable
 }));
 
-vi.mock("../extension/r/rProcessTransport", () => ({
+vi.mock("../extension/r/rProcessTransport", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../extension/r/rProcessTransport")>()),
   RProcessSessionTransport: class {
     constructor(options: unknown) {
       if (mocks.transportConstructorError) throw mocks.transportConstructorError;
@@ -192,13 +193,20 @@ describe("R document command", () => {
       label: "orders.tsv",
       path: "/workspace/orders.tsv",
       uri: "file:///workspace/orders.tsv",
-      importOptions: { hasHeader: false }
+      importOptions: { hasHeader: false, encoding: "utf-16be", quoteChar: "'", lineEnding: "cr" as const }
     };
     createRFileBridge(context, source);
     expect(mocks.bridgeDiagnostic.mock.calls).toEqual([['R file runtime selected: "/usr/bin/Rscript".']]);
     expect(mocks.discovery).not.toHaveBeenCalled();
     expect(mocks.transportOptions[0]).toMatchObject({
-      fileSource: { path: source.path, format: "csv", header: false, delimiter: "\t" },
+      fileSource: {
+        path: source.path,
+        format: "csv",
+        header: false,
+        delimiter: "\t",
+        encoding: "utf-16be",
+        quoteChar: "'"
+      },
       rscriptPath: "/usr/bin/Rscript",
       workingDirectory: "/workspace"
     });
@@ -208,7 +216,10 @@ describe("R document command", () => {
     const recovery = mocks.bridgeOptions[0]?.[6] as () => Promise<unknown>;
     await recovery();
     expect(mocks.transportOptions[1]).toEqual(mocks.transportOptions[0]);
-    expect(mocks.bridgeOptions[1]?.[7]).toMatchObject({ ...source, importOptions: { hasHeader: false } });
+    expect(mocks.bridgeOptions[1]?.[7]).toMatchObject({
+      ...source,
+      importOptions: { hasHeader: false, encoding: "utf-16be", quoteChar: "'", lineEnding: "cr" }
+    });
     expect(mocks.resolveExecutable).toHaveBeenCalledTimes(1);
     expect(mocks.bridgeDiagnostic.mock.calls).toEqual([
       ['R file runtime selected: "/usr/bin/Rscript".'],
@@ -266,7 +277,7 @@ describe("R document command", () => {
     expect(supportsRscriptExecution("linux")).toBe(true);
     expect(supportsRscriptExecution("darwin")).toBe(true);
     expect(supportsRscriptExecution("win32")).toBe(false);
-    for (const importOptions of [{ encoding: "utf8-lossy" }, { quoteChar: "'" }, { lineEnding: "cr" as const }]) {
+    for (const importOptions of [{ encoding: "unknown" }, { quoteChar: "§" }, { delimiter: "§" }]) {
       expect(() => createRFileBridge(context, { ...source, importOptions })).toThrow(FileBackendUnavailableError);
     }
     expect(() => createRFileBridge(context, { ...source, importOptions: { sheetIndex: 0 } })).toThrow(

@@ -7728,23 +7728,75 @@ openwrangler_r_kernel_agent <- local({
     )
   }
 
-  load_csv_source <- function(path, header = TRUE, delimiter = ",") {
+  load_csv_source <- function(path, header = TRUE, delimiter = ",", encoding = "utf-8", quote_char = "\"") {
+    if (!encoding %in% c("utf-8", "utf8")) {
+      normalized <- base::tempfile("openwrangler-csv-", tmpdir = base::tempdir(), fileext = ".csv")
+      base::on.exit(base::unlink(normalized), add = TRUE)
+      base::local({
+        input <- base::file(path, open = "rb")
+        base::on.exit(base::close(input), add = TRUE)
+        output <- base::file(normalized, open = "wb")
+        base::on.exit(base::close(output), add = TRUE)
+        carry <- base::raw()
+        repeat {
+          chunk <- base::readBin(input, "raw", n = 65536L)
+          bytes <- c(carry, chunk)
+          if (!base::length(bytes)) break
+          end <- base::length(bytes)
+          if (base::length(chunk)) {
+            if (encoding == "utf8-lossy") {
+              tail <- base::as.integer(utils::tail(bytes, 4L))
+              starts <- base::which(tail < 128L | tail >= 192L)
+              if (base::length(starts)) {
+                start <- starts[[base::length(starts)]]
+                lead <- tail[[start]]
+                needed <- if (lead >= 194L && lead <= 223L) 2L else if (lead >= 224L && lead <= 239L) 3L else if (lead >= 240L && lead <= 244L) 4L else 1L
+                available <- base::length(tail) - start + 1L
+                if (needed > available) end <- end - available
+              }
+            } else if (encoding %in% c("utf-16le", "utf-16be")) {
+              end <- end - end %% 2L
+              if (end >= 2L) {
+                pair <- base::as.integer(bytes[c(end - 1L, end)])
+                unit <- if (encoding == "utf-16le") pair[[1L]] + 256L * pair[[2L]] else 256L * pair[[1L]] + pair[[2L]]
+                if (unit >= 55296L && unit <= 56319L) end <- end - 2L
+              }
+            }
+          }
+          if (end > 0L) {
+            # Character output reports failed conversion as NA; raw output can retain the original bytes instead.
+            text <- base::tryCatch(base::iconv(list(bytes[base::seq_len(end)]), from = if (encoding == "utf8-lossy") "UTF-8" else encoding,
+              to = "UTF-8", sub = if (encoding == "utf8-lossy") "\ufffd" else NA_character_)[[1L]], error = function(error) NA_character_)
+            if (base::is.na(text)) base::stop("CSV input has invalid or incomplete text in the selected encoding", call. = FALSE)
+            base::writeBin(base::charToRaw(text), output)
+          }
+          carry <- if (end < base::length(bytes)) bytes[base::seq.int(end + 1L, base::length(bytes))] else base::raw()
+          if (!base::length(chunk)) break
+        }
+      })
+      path <- normalized
+    }
     connection <- base::file(path, open = "rt")
     base::on.exit(base::close(connection), add = TRUE)
     base::withCallingHandlers({
+      first_line <- TRUE
       repeat {
-        position <- base::seek(connection, rw = "read")
-        first <- base::scan(connection, what = character(), nlines = 1L, sep = delimiter,
-          quote = "\"", quiet = TRUE, strip.white = TRUE, blank.lines.skip = TRUE,
-          na.strings = character(), comment.char = "", encoding = "UTF-8")
-        if (base::length(first)) break
-        if (base::seek(connection, rw = "read") == position) base::stop("CSV has no header or records", call. = FALSE)
+        line <- base::readLines(connection, n = 1L, warn = FALSE)
+        if (!base::length(line)) base::stop("CSV has no header or records", call. = FALSE)
+        if (first_line) line <- base::sub("^\ufeff", "", line)
+        first_line <- FALSE
+        if (base::nzchar(base::trimws(line)) || base::grepl(delimiter, line, fixed = TRUE) || base::grepl(quote_char, line, fixed = TRUE)) break
       }
-      if (!header) base::seek(connection, where = position, origin = "start", rw = "read")
+      base::pushBack(line, connection, encoding = "bytes")
+      first <- base::scan(connection, what = character(), nlines = 1L, sep = delimiter,
+        quote = quote_char, quiet = TRUE, strip.white = header, blank.lines.skip = TRUE,
+        na.strings = if (header) character() else c("", "NA"), comment.char = "", encoding = "UTF-8",
+        allowEscapes = FALSE, skipNul = FALSE)
       columns <- base::scan(connection, what = base::rep(base::list(""), base::length(first)),
-        sep = delimiter, quote = "\"", quiet = TRUE, fill = FALSE, multi.line = FALSE,
+        sep = delimiter, quote = quote_char, quiet = TRUE, fill = FALSE, multi.line = FALSE,
         strip.white = FALSE, blank.lines.skip = TRUE, na.strings = c("", "NA"),
         comment.char = "", encoding = "UTF-8", allowEscapes = FALSE, skipNul = FALSE)
+      if (!header) columns <- base::lapply(base::seq_along(columns), function(index) c(first[[index]], columns[[index]]))
       names <- if (header) first else base::paste0("V", base::seq_along(first))
       if (!base::all(base::validUTF8(names))) base::stop("CSV header is not valid UTF-8", call. = FALSE)
       for (column in columns) if (!base::all(base::validUTF8(column))) base::stop("CSV text is not valid UTF-8", call. = FALSE)
@@ -7994,15 +8046,18 @@ openwrangler_r_kernel_agent <- local({
   }
 
   validate_file_source <- function(source) {
-    source <- exact_record(source, c("path", "format"), "file source", c("header", "delimiter", "sheetName", "sheetIndex"))
+    source <- exact_record(source, c("path", "format"), "file source", c("header", "delimiter", "encoding", "quoteChar", "sheetName", "sheetIndex"))
     source$path <- bounded_text(source$path, "file source.path", 65536L)
     if (!startsWith(source$path, "/") || grepl("[\r\n]", source$path)) abort("invalid_source", "R files require an absolute local path")
     source$format <- bounded_text(source$format, "file source.format", 16L)
     if (identical(source$format, "csv")) {
-      source <- exact_record(source, c("path", "format", "header", "delimiter"), "CSV file source")
+      source <- exact_record(source, c("path", "format", "header", "delimiter", "encoding", "quoteChar"), "CSV file source")
       if (!is.logical(source$header) || length(source$header) != 1L || is.na(source$header)) abort("invalid_source", "R CSV header must be logical")
       source$delimiter <- bounded_text(source$delimiter, "file source.delimiter", 1L)
-      if (nchar(source$delimiter, type = "bytes") != 1L || source$delimiter %in% c("\r", "\n", "\"")) abort("invalid_source", "R CSV requires a single-byte delimiter other than a quote or record ending")
+      source$quoteChar <- bounded_text(source$quoteChar, "file source.quoteChar", 1L)
+      source$encoding <- bounded_text(source$encoding, "file source.encoding", 16L)
+      if (!source$encoding %in% c("utf-8", "utf8-lossy", "utf-16le", "utf-16be", "iso-8859-1", "windows-1252")) abort("invalid_source", "R CSV encoding is unsupported")
+      if (!grepl("^[\\t -~]$", source$delimiter, perl = TRUE) || !grepl("^[\\t -~]$", source$quoteChar, perl = TRUE) || source$delimiter == source$quoteChar) abort("invalid_source", "R CSV requires different ASCII delimiter and quote characters, without record endings")
     } else if (source$format %in% c("parquet", "jsonl")) {
       source <- exact_record(source, c("path", "format"), "file source")
     } else if (identical(source$format, "excel")) {
@@ -8024,7 +8079,7 @@ openwrangler_r_kernel_agent <- local({
   load_file_source <- function(source) {
     source <- validate_file_source(source)
     switch(source$format,
-      csv = load_csv_source(source$path, source$header, source$delimiter),
+      csv = load_csv_source(source$path, source$header, source$delimiter, source$encoding, source$quoteChar),
       parquet = load_parquet_source(source$path),
       jsonl = load_jsonl_source(source$path),
       excel = load_excel_source(source$path, if ("sheetName" %in% names(source)) source$sheetName else source$sheetIndex + 1)
@@ -8049,7 +8104,7 @@ openwrangler_r_kernel_agent <- local({
         jsonl = load_jsonl_source, excel = load_excel_source)
       arguments <- r_string(file_source$path)
       if (identical(file_source$format, "csv")) {
-        arguments <- sprintf("%s, header = %s, delimiter = %s", arguments, if (file_source$header) "TRUE" else "FALSE", r_string(file_source$delimiter))
+        arguments <- sprintf("%s, header = %s, delimiter = %s, encoding = %s, quote_char = %s", arguments, if (file_source$header) "TRUE" else "FALSE", r_string(file_source$delimiter), r_string(file_source$encoding), r_string(file_source$quoteChar))
       } else if (identical(file_source$format, "excel")) {
         sheet <- if ("sheetName" %in% names(file_source)) r_string(file_source$sheetName) else sprintf("%.0f", file_source$sheetIndex + 1)
         arguments <- sprintf("%s, sheet = %s", arguments, sheet)
