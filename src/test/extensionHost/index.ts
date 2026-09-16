@@ -11603,8 +11603,14 @@ async function capturePackagedFilterResultScene(
           filter?.column === "market" &&
           filter.predicates.length === 0 &&
           filter.valueFilter?.kind === "values" &&
-          filter.valueFilter.selectedValues.length === 1 &&
-          filter.valueFilter.selectedValues[0] === filterValue &&
+          isDeepStrictEqual(filter.valueFilter.selectedValues, [
+            {
+              kind: "typedSelection",
+              version: 1,
+              columnType: "string",
+              cell: { kind: "string", raw: filterValue, display: filterValue, isNull: false, isNaN: false }
+            }
+          ]) &&
           filter.valueFilter.includeNulls === false &&
           filter.valueFilter.includeNaN === false
         );
