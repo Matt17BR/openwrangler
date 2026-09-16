@@ -18,7 +18,10 @@ Custom-backed [step inspection](https://github.com/Matt17BR/openwrangler/issues/
 in Pandas, Polars, DuckDB and native R.
 The [Jupyter Variables failure](https://github.com/Matt17BR/openwrangler/issues/1498) remains open under the
 [documented support limitation](feature-parity.md#sessions-and-generated-code).
-The milestone links the required outcomes and records that release decision.
+The remaining requirements include [exact ordinary R distributions beyond 100,000 values](https://github.com/Matt17BR/openwrangler/issues/1553)
+with bounded memory and measured cost, and [refreshed public media and performance results](https://github.com/Matt17BR/openwrangler/issues/1554).
+Sampling-label improvements alone do not complete the R distribution requirement. The milestone links all required
+outcomes and records the release decision.
 
 After these outcomes, freeze scope and qualify one immutable 2.6.0 candidate under [Releasing](releasing.md#release-candidate).
 Qualification and publication remain separate; no release date or automatic publication is promised.
@@ -27,26 +30,27 @@ Explode List and Extract Struct Fields are implemented on main within their
 
 ## Released-product comparison
 
-The [released-product comparison](https://github.com/Matt17BR/openwrangler/issues/1519) uses released Open Wrangler 2.5.0
-and Microsoft Data Wrangler through their public interfaces in an isolated local VS Code instance. It does not wait
-for 2.6 or the redesign. The [dated report](performance/2026-09-16-released-products/review.md) records paired Pandas
-and Polars routes, separate Open Wrangler engine observations, and output differences. Update the comparison when useful;
-it is not a per-release obligation. The retired
+The latest reviewed [dated report](performance/2026-09-16-released-products/review.md) compares released Open Wrangler 2.5.0
+and Microsoft Data Wrangler through public interfaces in an isolated local VS Code instance. It records paired Pandas
+and Polars routes, separate Open Wrangler engine observations, and output differences. Before 2.6 and every later
+stable release, rerun the advertised comparison on the final integrated product and refresh public screenshots under
+the [stable-release checklist](releasing.md#stable-release-media-and-comparison-checklist). Preserve earlier dated
+reports and update this pointer when the new results are reviewed and merged. The retired
 [2.4.0 attempt](https://github.com/Matt17BR/openwrangler/issues/1419) remains incomplete; its automation is not being resumed.
 
-## Selected work after 2.6
+## Workbench design
 
-[Open Wrangler 3.0](https://github.com/Matt17BR/openwrangler/milestone/17) is planned for a distinctive, coherent workbench.
+[Open Wrangler 3.0](https://github.com/Matt17BR/openwrangler/milestone/17) records the workbench design direction.
 [Design selection](https://github.com/Matt17BR/openwrangler/issues/1397) retains native navigation and cleaning history
 beside the central grid, the column-profile drawer, modal operation settings and native Code Preview. Draft and
 inspection actions stay beside their result. Compared alternatives added scrolling or obscured useful context without
 demonstrating a task advantage. At narrow widths, open native sidebars and Code Preview reduce the data area and require
 scrolling or panel resizing.
 
-Delivery includes the selected layout corrections, verified wide and narrow workflows, keyboard access, accessibility,
-representative responsiveness, and updated README, gallery and store media. The issue records the observations and
-remaining delivery work. Selecting the direction does not complete the milestone. There is no date, automatic
-major-version bump or publication decision.
+The selected corrections, wide and narrow workflow checks, keyboard/accessibility checks and refreshed media landed
+in [#1539](https://github.com/Matt17BR/openwrangler/pull/1539) and are included in the current 2.6 source. They are no
+longer pending work held until after 2.6. The design issue retains the observations and tradeoffs; any remaining 3.0
+scope needs separate selection. The milestone does not authorize a major-version bump or publication.
 
 ## Feature proposals
 
