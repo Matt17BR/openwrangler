@@ -37,12 +37,16 @@ it is not a per-release obligation. The retired
 ## Selected work after 2.6
 
 [Open Wrangler 3.0](https://github.com/Matt17BR/openwrangler/milestone/17) is planned for a distinctive, coherent workbench.
-[Design selection](https://github.com/Matt17BR/openwrangler/issues/1397) compares two bounded directions for inspecting and
-filtering, configuring and applying changes, and reviewing and exporting history. The milestone requires the selected
-layout and interaction hierarchy to be implemented across the grid, profiles, operation settings, history/diff and code.
-Real wide and narrow journeys, keyboard access, accessibility and representative responsiveness must support the choice.
-Update README, gallery and store media to the delivered interface. Completing the design evaluation alone does not
-complete the milestone. There is no date, automatic major-version bump or publication decision.
+[Design selection](https://github.com/Matt17BR/openwrangler/issues/1397) retains native navigation and cleaning history
+beside the central grid, the column-profile drawer, modal operation settings and native Code Preview. Draft and
+inspection actions stay beside their result. Compared alternatives added scrolling or obscured useful context without
+demonstrating a task advantage. At narrow widths, open native sidebars and Code Preview reduce the data area and require
+scrolling or panel resizing.
+
+Delivery includes the selected layout corrections, verified wide and narrow workflows, keyboard access, accessibility,
+representative responsiveness, and updated README, gallery and store media. The issue records the observations and
+remaining delivery work. Selecting the direction does not complete the milestone. There is no date, automatic
+major-version bump or publication decision.
 
 ## Feature proposals
 
