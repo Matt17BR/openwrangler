@@ -31,6 +31,7 @@ export interface GridVirtualWindow {
   readonly leftSpacerWidth: number;
   readonly localRowStart: number;
   readonly pageColumnPositionById: ReadonlyMap<string, number>;
+  readonly profileColumnRange: VisibleColumnRange;
   readonly renderedColumnCount: number;
   readonly rightSpacerWidth: number;
   readonly topSpacerHeight: number;
@@ -59,6 +60,20 @@ export function createGridVirtualWindow({
   const visibleColumnRange = columnRange(widths, viewport.scrollLeft, viewport.width, rowHeaderWidth);
   const pageColumnPositionById = new Map(page.columnIds.map((columnId, position) => [columnId, position]));
   const leftSpacerWidth = sum(widths.slice(0, visibleColumnRange.start));
+  // Profiling excludes overscan and columns covered by the sticky row header.
+  // Trim the already-rendered window using strict, positive intersections.
+  let profileStart = visibleColumnRange.start;
+  let profilePosition = leftSpacerWidth;
+  while (profileStart < visibleColumnRange.end && profilePosition + widths[profileStart] <= viewport.scrollLeft) {
+    profilePosition += widths[profileStart];
+    profileStart += 1;
+  }
+  let profileEnd = profileStart;
+  const profileRight = viewport.scrollLeft + Math.max(0, viewport.width - rowHeaderWidth);
+  while (viewport.width > rowHeaderWidth && profileEnd < visibleColumnRange.end && profilePosition < profileRight) {
+    profilePosition += widths[profileEnd];
+    profileEnd += 1;
+  }
   const rightSpacerWidth = sum(widths.slice(visibleColumnRange.end));
   const renderedColumnCount =
     1 +
@@ -89,6 +104,7 @@ export function createGridVirtualWindow({
     leftSpacerWidth,
     localRowStart,
     pageColumnPositionById,
+    profileColumnRange: { start: profileStart, end: profileEnd },
     renderedColumnCount,
     rightSpacerWidth,
     topSpacerHeight: rowSegmentSpacers.top,

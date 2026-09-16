@@ -475,6 +475,8 @@ describe("DataGrid", () => {
         configurable: true,
         get: () => scrollerHeight
       });
+      Object.defineProperty(scroller, "clientWidth", { configurable: true, value: 500 });
+      fireEvent(window, new Event("resize"));
       Object.defineProperty(tableHeader, "offsetHeight", {
         configurable: true,
         get: () => {
@@ -2031,18 +2033,19 @@ describe("DataGrid", () => {
 
   it("ignores a teardown scroll collapse but still accepts an explicit user scroll", () => {
     const onViewStateChange = vi.fn();
+    const onVisibleSummaryColumnsChange = vi.fn();
     const props = {
       metadata,
       page,
       summaries: [],
       pageSize: 2,
       defaultColumnWidth: 190,
-      insightsOnOpen: false,
+      insightsOnOpen: true,
       onViewStateChange,
       onPage: vi.fn(),
       onSortColumn: () => undefined,
       onOpenFilter: () => undefined,
-      onVisibleSummaryColumnsChange: () => undefined
+      onVisibleSummaryColumnsChange
     };
     const { rerender } = render(<DataGrid {...props} />);
     const scroller = screen.getByTestId("data-grid-scroller");
@@ -2083,6 +2086,7 @@ describe("DataGrid", () => {
     );
     expect(scroller.scrollTop).toBe(29);
     expect(scroller.scrollLeft).toBe(23);
+    expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:0", "c:1"]);
     onViewStateChange.mockClear();
 
     physicalScrollHeight = 58;
@@ -2091,6 +2095,7 @@ describe("DataGrid", () => {
 
     expect(onViewStateChange).not.toHaveBeenCalled();
     expect(document.querySelector('[data-grid-row="1"][data-grid-column="1"]')).toHaveAttribute("tabindex", "0");
+    expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith([]);
 
     physicalScrollHeight = 232;
     fireEvent.wheel(scroller);
@@ -2101,6 +2106,7 @@ describe("DataGrid", () => {
       selectedColumnId: "c:1",
       viewport: { firstVisibleRow: 0, scrollLeft: 23 }
     });
+    expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:0", "c:1"]);
   });
 
   it("reaches the first, middle, and final rows beyond Chromium's layout ceiling", async () => {
@@ -2657,13 +2663,23 @@ describe("DataGrid", () => {
       />
     );
     const scroller = screen.getByTestId("data-grid-scroller");
+    // jsdom starts with no measured layout. The rendering fallback must never
+    // request profiles, including the first effect before viewport measurement.
+    expect(onVisibleSummaryColumnsChange.mock.calls.length).toBeGreaterThan(0);
+    for (const [columnIds] of onVisibleSummaryColumnsChange.mock.calls) expect(columnIds).toEqual([]);
     Object.defineProperty(scroller, "clientWidth", { configurable: true, value: 180 });
     fireEvent(window, new Event("resize"));
-    await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:0", "c:1", "c:2", "c:3"]));
+    await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:0", "c:1"]));
+    expect(document.querySelector('th[data-column="column-2"]')).toBeInTheDocument();
+    expect(onVisibleSummaryColumnsChange.mock.calls.flatMap(([columnIds]) => columnIds)).not.toContain("c:2");
+
+    scroller.scrollLeft = 100;
+    fireEvent.scroll(scroller);
+    await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:1", "c:2"]));
 
     scroller.scrollLeft = 700;
     fireEvent.scroll(scroller);
-    await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:4", "c:5", "c:6", "c:7"]));
+    await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:7"]));
     expect(onVisibleColumnRangeChange).toHaveBeenLastCalledWith({ start: 4, end: 8 });
     expect(document.querySelector('th[data-column="column-4"]')).toHaveAttribute("aria-colindex", "6");
     expect(document.querySelector('th[data-column="column-7"]')).toHaveAttribute("aria-colindex", "9");
@@ -2808,6 +2824,8 @@ describe("DataGrid", () => {
         onVisibleSummaryColumnsChange={onVisibleSummaryColumnsChange}
       />
     );
+    Object.defineProperty(screen.getByTestId("data-grid-scroller"), "clientWidth", { configurable: true, value: 500 });
+    fireEvent(window, new Event("resize"));
 
     await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith([]));
     onVisibleSummaryColumnsChange.mockClear();
@@ -2842,6 +2860,8 @@ describe("DataGrid", () => {
         onVisibleSummaryColumnsChange={onVisibleSummaryColumnsChange}
       />
     );
+    Object.defineProperty(screen.getByTestId("data-grid-scroller"), "clientWidth", { configurable: true, value: 500 });
+    fireEvent(window, new Event("resize"));
 
     const headerProfiles = screen.getByRole("button", { name: "Header profiles" });
     expect(headerProfiles).toHaveAttribute("aria-pressed", "false");
@@ -2869,6 +2889,8 @@ describe("DataGrid", () => {
         onVisibleSummaryColumnsChange={onVisibleSummaryColumnsChange}
       />
     );
+    Object.defineProperty(screen.getByTestId("data-grid-scroller"), "clientWidth", { configurable: true, value: 500 });
+    fireEvent(window, new Event("resize"));
 
     const headerProfiles = screen.getByRole("button", { name: "Header profiles" });
     expect(headerProfiles).toBeEnabled();
@@ -2944,7 +2966,10 @@ describe("DataGrid", () => {
       onVisibleSummaryColumnsChange
     };
     const { rerender } = render(<DataGrid {...props} metadata={metadata} />);
-    await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenCalledTimes(1));
+    Object.defineProperty(screen.getByTestId("data-grid-scroller"), "clientWidth", { configurable: true, value: 500 });
+    fireEvent(window, new Event("resize"));
+    await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:0", "c:1"]));
+    onVisibleSummaryColumnsChange.mockClear();
 
     rerender(
       <DataGrid
@@ -2956,7 +2981,7 @@ describe("DataGrid", () => {
       />
     );
 
-    await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenCalledTimes(1));
     expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:0", "c:1"]);
   });
 
@@ -4566,6 +4591,8 @@ describe("App file import options", () => {
     render(<App />);
     dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
     await screen.findByRole("cell", { name: "Milan" });
+    Object.defineProperty(screen.getByTestId("data-grid-scroller"), "clientWidth", { configurable: true, value: 500 });
+    fireEvent(window, new Event("resize"));
     await waitFor(() =>
       expect(
         webviewPostMessage.mock.calls.some(
