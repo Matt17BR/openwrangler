@@ -32,3 +32,9 @@ export function profileDistributionDenominator(summary: ColumnSummary): number {
   }
   return Math.max(0, summary.totalCount - summary.nullCount - summary.nanCount);
 }
+
+export function sampledDistributionDescription(summary: ColumnSummary): string {
+  const sampleCount = profileDistributionDenominator(summary);
+  const population = Math.max(0, summary.totalCount - summary.nullCount - summary.nanCount);
+  return `Approximate distribution uses ${sampleCount.toLocaleString()} sample values from ${population.toLocaleString()} non-missing values.`;
+}

@@ -530,6 +530,8 @@ describe("App progressive profiling and view correlation", () => {
       {
         ...sampledCitySummary,
         totalCount: totalRows,
+        nullCount: 17,
+        nanCount: 0,
         topValues: [
           { value: "Berlin", count: 60_000 },
           { value: "Milan", count: 40_000 }
@@ -550,7 +552,7 @@ describe("App progressive profiling and view correlation", () => {
         type: "float",
         rawType: "Float64",
         totalCount: totalRows,
-        nullCount: 0,
+        nullCount: 17,
         nanCount: 0,
         topValues: [],
         numeric: { min: 1, max: totalRows, mean: (totalRows + 1) / 2 },
@@ -578,7 +580,11 @@ describe("App progressive profiling and view correlation", () => {
       const header = document.querySelector<HTMLElement>(`th[data-column="${column}"]`);
       expect(header).not.toBeNull();
       expect(within(header as HTMLElement).getByText("Distinct n/a")).toBeVisible();
-      expect(within(header as HTMLElement).getByText("Distribution sampled")).toBeVisible();
+      const sampleNotice = within(header as HTMLElement).getByRole("note", {
+        name: "Approximate distribution uses 100,000 sample values from 4,000,000 non-missing values."
+      });
+      expect(sampleNotice).toBeVisible();
+      expect(sampleNotice).toHaveTextContent("Sampled distribution100,000 / 4,000,000non-missing values");
       expect(within(header as HTMLElement).queryByText("Distinct 0%")).not.toBeInTheDocument();
     }
   });
@@ -1263,7 +1269,7 @@ describe("App progressive profiling and view correlation", () => {
   it("lets an immediate non-cancellable undo run before post-mutation profiling restarts", async () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata: rCloneDraftMetadata, page: clonePage, summaries: [] });
-    fireEvent.click(await screen.findByRole("button", { name: "Header profiles" }));
+    expect(await screen.findByRole("button", { name: "Header profiles" })).toHaveAttribute("aria-pressed", "true");
     await waitFor(() => expect(requestsOfKind("getSummary").length).toBeGreaterThan(0));
     postMessage.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "Apply step" }));
@@ -1294,7 +1300,7 @@ describe("App progressive profiling and view correlation", () => {
   it("lets an immediate non-cancellable Redo run before post-Undo profiling restarts", async () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata: rCloneAppliedMetadata, page: clonePage, summaries: [] });
-    fireEvent.click(await screen.findByRole("button", { name: "Header profiles" }));
+    expect(await screen.findByRole("button", { name: "Header profiles" })).toHaveAttribute("aria-pressed", "true");
     await waitFor(() => expect(requestsOfKind("getSummary").length).toBeGreaterThan(0));
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
     expect(onlyRequest("undoStep")).toBeDefined();

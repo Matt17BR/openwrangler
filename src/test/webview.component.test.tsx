@@ -1089,6 +1089,7 @@ describe("DataGrid", () => {
         column: "value",
         type: "float",
         rawType: "Float64",
+        totalCount: 1_000,
         numeric: { min: 1, max: 4, mean: 2.5, median: 2.5, std: 1.29 },
         visualization: {
           kind: "numeric",
@@ -1113,13 +1114,16 @@ describe("DataGrid", () => {
         column: "group",
         type: "string",
         rawType: "String",
+        totalCount: 1_000,
         visualization: {
           kind: "categorical",
           categories: [
-            { value: "alpha", count: 3 },
-            { value: "beta", count: 1 }
+            { value: "alpha", count: 300 },
+            { value: "beta", count: 200 },
+            { value: "gamma", count: 100 },
+            { value: "delta", count: 50 }
           ],
-          otherCount: 0
+          otherCount: 350
         }
       },
       {
@@ -1155,7 +1159,15 @@ describe("DataGrid", () => {
     if (!numericHeader) throw new Error("Expected the numeric header.");
     expect(within(numericHeader).getByText("Min 1")).toBeVisible();
     expect(within(numericHeader).getByText("Max 4")).toBeVisible();
-    expect(within(numericHeader).getByText("Distribution sampled").closest(".summaryDistribution")).not.toBeNull();
+    const sampleNotice = within(numericHeader).getByRole("note", {
+      name: "Approximate distribution uses 101 sample values from 1,000 non-missing values."
+    });
+    expect(sampleNotice).toHaveAttribute(
+      "title",
+      "Approximate distribution uses 101 sample values from 1,000 non-missing values."
+    );
+    expect(sampleNotice).toHaveTextContent("Sampled distribution101 / 1,000non-missing values");
+    expect(sampleNotice.closest(".summaryDistribution")).not.toBeNull();
     expect(
       within(numericHeader).getByRole("img", {
         name: "Sampled numeric distribution with 2 bins; range 1 to 4."
@@ -1185,9 +1197,16 @@ describe("DataGrid", () => {
       "True 3False 1"
     );
     const categoricalChart = screen.getByRole("img", {
-      name: "categorical distribution: alpha: 3 (75%), beta: 1 (25%)."
+      name: "categorical distribution: alpha: 300 (30%), beta: 200 (20%), gamma: 100 (10%), Other: 400 (40%)."
     });
-    expect(categoricalChart).toHaveTextContent("alpha3beta1");
+    expect(categoricalChart).toHaveTextContent("alpha300beta200gamma100Other400");
+    expect(within(categoricalChart).queryByText("delta")).not.toBeInTheDocument();
+    const otherRow = within(categoricalChart).getByText("Other").closest(".categoryMiniRow");
+    expect(otherRow?.querySelector("small")).toHaveAttribute("title", "Other: 400 (40%)");
+    expect(otherRow?.querySelector("i")).toHaveStyle({ width: "100%" });
+    expect(within(categoricalChart).getByText("alpha").closest(".categoryMiniRow")?.querySelector("i")).toHaveStyle({
+      width: "75%"
+    });
     expect(within(categoricalChart).getByText("alpha")).toHaveAttribute("title", "alpha");
     expect(
       screen.getByRole("img", {
@@ -2834,7 +2853,7 @@ describe("DataGrid", () => {
     await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:0", "c:1"]));
   });
 
-  it("keeps R header profiles explicit even when insights-on-open is configured", async () => {
+  it.each([true, false])("honors insights-on-open=%s for R header profiles", async (insightsOnOpen) => {
     const onVisibleSummaryColumnsChange = vi.fn();
     render(
       <DataGrid
@@ -2843,7 +2862,7 @@ describe("DataGrid", () => {
         summaries={[]}
         pageSize={2}
         defaultColumnWidth={190}
-        insightsOnOpen={true}
+        insightsOnOpen={insightsOnOpen}
         onPage={() => undefined}
         onSortColumn={() => undefined}
         onOpenFilter={() => undefined}
@@ -2853,13 +2872,17 @@ describe("DataGrid", () => {
 
     const headerProfiles = screen.getByRole("button", { name: "Header profiles" });
     expect(headerProfiles).toBeEnabled();
-    expect(headerProfiles).toHaveAttribute("aria-pressed", "false");
+    expect(headerProfiles).toHaveAttribute("aria-pressed", String(insightsOnOpen));
     expect(headerProfiles).toHaveAttribute("title", "Runs R profiling queries for the visible columns.");
-    await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith([]));
+    await waitFor(() =>
+      expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(insightsOnOpen ? ["c:0", "c:1"] : [])
+    );
 
     fireEvent.click(headerProfiles);
-    expect(headerProfiles).toHaveAttribute("aria-pressed", "true");
-    await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:0", "c:1"]));
+    expect(headerProfiles).toHaveAttribute("aria-pressed", String(!insightsOnOpen));
+    await waitFor(() =>
+      expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(insightsOnOpen ? [] : ["c:0", "c:1"])
+    );
   });
 
   it("maps a projected page by stable column ID while preserving full-schema grid coordinates", async () => {

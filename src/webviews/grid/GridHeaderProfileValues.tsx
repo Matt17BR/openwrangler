@@ -20,6 +20,7 @@ import {
   describeProfileValue,
   formatProfileValue,
   profileDistributionDenominator,
+  sampledDistributionDescription,
   type ProfileValueMode
 } from "../profileValueMode";
 import { NumericHistogram } from "../visualizations/NumericHistogram";
@@ -64,7 +65,7 @@ export function useGridHeaderProfiles({
   const headerRef = useRef<HTMLTableSectionElement>(null);
   const toggleRef = useRef<HTMLButtonElement>(null);
   const fitDescriptionId = useId();
-  const startsWithProfilesOff = backend === "pyspark" || backend === "r";
+  const startsWithProfilesOff = backend === "pyspark";
   const [showProfiles, setShowProfiles] = useState(startsWithProfilesOff || disabled ? false : insightsOnOpen);
   const [fitState, setFitState] = useState({ compact: false, sessionId });
   const [fitAnnouncement, setFitAnnouncement] = useState({ message: "", sessionId });
@@ -174,6 +175,8 @@ export function useGridHeaderProfiles({
     if (!showProfiles) return null;
     const summary = summaryByColumnId.get(column.id);
     if (!summary) return <span className="columnInsight emptyInsight">Profiling…</span>;
+    const distributionDenominator = profileDistributionDenominator(summary);
+    const sampleDescription = summary.visualization?.sampled ? sampledDistributionDescription(summary) : undefined;
     const applyFilter =
       filterAvailable && onApplyFilter ? (filter: ColumnFilter): void => onApplyFilter(column, filter) : undefined;
     return (
@@ -195,12 +198,21 @@ export function useGridHeaderProfiles({
           {summary.numeric && <CompactExtremum label="Max" summary={summary.numeric} bound="max" />}
         </div>
         <div className="summaryDistribution">
-          {summary.visualization?.sampled && <span className="sampledLabel">Distribution sampled</span>}
+          {sampleDescription && (
+            <span className="sampledLabel" role="note" title={sampleDescription} aria-label={sampleDescription}>
+              Sampled distribution
+              <br />
+              {distributionDenominator.toLocaleString()} /{" "}
+              {Math.max(0, summary.totalCount - summary.nullCount - summary.nanCount).toLocaleString()}
+              <br />
+              non-missing values
+            </span>
+          )}
           <MiniChart
             visualization={summary.visualization}
             column={column}
             valueMode={valueMode}
-            denominator={profileDistributionDenominator(summary)}
+            denominator={distributionDenominator}
             onApplyFilter={applyFilter}
           />
         </div>
@@ -408,11 +420,14 @@ function MiniChart({
     );
   }
   if (visualization.kind === "categorical") {
-    const max = Math.max(1, ...visualization.categories.map((category) => category.count), visualization.otherCount);
     const visibleCategories = visualization.categories.slice(0, 3);
+    const otherCount = visualization.categories
+      .slice(3)
+      .reduce((count, category) => count + category.count, visualization.otherCount);
+    const max = Math.max(1, ...visibleCategories.map((category) => category.count), otherCount);
     const categoryLabel = [
       ...visibleCategories.map((category) => describeProfileValue(category.value, category.count, denominator)),
-      ...(visualization.otherCount > 0 ? [describeProfileValue("Other", visualization.otherCount, denominator)] : [])
+      ...(otherCount > 0 ? [describeProfileValue("Other", otherCount, denominator)] : [])
     ].join(", ");
     return (
       <span
@@ -453,12 +468,12 @@ function MiniChart({
             </span>
           );
         })}
-        {visualization.otherCount > 0 && (
+        {otherCount > 0 && (
           <span className="categoryMiniRow">
             <span className="categoryMiniLabel">Other</span>
-            <i aria-hidden="true" style={{ width: `${(visualization.otherCount / max) * 100}%` }} />
-            <small title={describeProfileValue("Other", visualization.otherCount, denominator)}>
-              {formatProfileValue(visualization.otherCount, denominator, valueMode)}
+            <i aria-hidden="true" style={{ width: `${(otherCount / max) * 100}%` }} />
+            <small title={describeProfileValue("Other", otherCount, denominator)}>
+              {formatProfileValue(otherCount, denominator, valueMode)}
             </small>
           </span>
         )}

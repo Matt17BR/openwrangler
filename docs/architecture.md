@@ -1497,8 +1497,13 @@ may retain a compatible data-table key; explicit sorting clears the data-table k
 `NaN` remain distinct. Null filter logic is invalid, not a default AND; picker search is a required nullable field.
 Optional value-filter search must be text when present. Invalid viewing requests leave an existing draft usable.
 
+R header profiles honor `openWrangler.insightsOnOpen`; automatic demand covers only the visible column window.
+The existing post-mutation quiet period still gives immediate Undo and Redo priority over background profiles.
+
 Cheap column/missing statistics scan in bounded chunks. Histograms and categorical distributions sample at most
-100,000 non-missing values; omitted exact statistics show `n/a`, and sampled charts name their sample population.
+100,000 non-missing values; omitted exact statistics show `n/a`. Sampled charts label the distribution approximate
+and show the sample count used alongside the full non-missing population. Numeric bins omit infinities, so their
+count can be smaller than the selected sample.
 Dataset missing counts remain exact; bounded duplicate-row estimates name the sampled population. Sampling uses a
 private fixed seed and restores the user's random state. Unsearched value discovery samples at most 100,000 rows;
 a nonempty search scans exactly in bounded chunks and refuses more than 10,000 distinct matches or 16 MiB of key text.
