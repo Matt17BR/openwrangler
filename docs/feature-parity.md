@@ -638,7 +638,10 @@ headerless input, preserves duplicate/empty column names, and refuses malformed 
 missing; dates and integers that would lose precision stay text. R loads the full file into memory before returning
 bounded pages, and editing can require additional copies. It needs Rscript, not Python. Windows file execution and
 R Parquet, Excel and JSONL input are unavailable; the [reader contract](architecture.md#csv-and-tsv-files) gives precise limits.
-Installed R-file qualification is pending; existing notebook and document checks do not establish this new entry path.
+Installed CSV workflows have been verified in desktop VS Code on Linux and macOS. The
+[macOS check](https://github.com/Matt17BR/openwrangler/actions/runs/35094083555/job/104787104263) covers native cells,
+Rename Preview/Apply, generated R, protected all-row CSV export and session/process cleanup. Local R file support is
+Preview; this evidence does not qualify Windows file execution or every parser option.
 
 ### First stable R notebook scope
 
