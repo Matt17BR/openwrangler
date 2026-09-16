@@ -27,7 +27,7 @@
 | `openWrangler.checkJupyterIntegration`        | Open Wrangler: Check Jupyter Integration                       |
 | `openWrangler.chooseNotebookPreviewProvider`  | Open Wrangler: Choose Notebook Preview Provider                |
 | `openWrangler.changeRuntime`                  | Open Wrangler: Change Runtime                                  |
-| `openWrangler.clearRuntime`                   | Open Wrangler: Clear Runtime Override                          |
+| `openWrangler.clearRuntime`                   | Open Wrangler: Clear Workspace Runtime Override                |
 | `openWrangler.installRuntimeDependencies`     | Open Wrangler: Install Runtime Dependencies                    |
 | `openWrangler.revalidateRuntimeDependencies`  | Open Wrangler: Revalidate Runtime Dependencies                 |
 | `openWrangler.startOperation`                 | Open Wrangler: Add Cleaning Step                               |

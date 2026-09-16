@@ -328,7 +328,7 @@
       },
       {
         "command": "openWrangler.clearRuntime",
-        "title": "Open Wrangler: Clear Runtime Override"
+        "title": "Open Wrangler: Clear Workspace Runtime Override"
       },
       {
         "command": "openWrangler.installRuntimeDependencies",

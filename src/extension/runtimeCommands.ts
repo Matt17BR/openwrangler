@@ -13,16 +13,14 @@ export function registerRuntimeCommands(context: vscode.ExtensionContext, bridge
             : await vscode.window.showInputBox({
                 title: "Change Open Wrangler Python Runtime",
                 prompt:
-                  "Enter a Python 3.10-3.14 executable path. Leave the setting empty to use the Python extension selection.",
+                  "Enter a Python 3.10-3.14 executable path for this workspace. Leave empty to remove the workspace override.",
                 value: current,
                 placeHolder: "/path/to/python"
               });
         if (selected === undefined) return;
         await updateSetting("pythonPath", selected.trim() || undefined, vscode.ConfigurationTarget.Workspace);
         bridge.clearRuntimeSelection();
-        void vscode.window.showInformationMessage(
-          "Open Wrangler will use the new Python runtime for the next request."
-        );
+        void vscode.window.showInformationMessage("The workspace Python runtime override was updated.");
         return selected.trim();
       })
     );
@@ -31,7 +29,7 @@ export function registerRuntimeCommands(context: vscode.ExtensionContext, bridge
         await updateSetting("pythonPath", undefined, vscode.ConfigurationTarget.Workspace);
         bridge.clearRuntimeSelection();
         void vscode.window.showInformationMessage(
-          "Open Wrangler will use the selected Python extension environment, then a system interpreter."
+          "The workspace Python runtime override was removed. Other openWrangler.pythonPath settings still apply."
         );
         return true;
       })

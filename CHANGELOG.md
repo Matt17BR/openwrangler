@@ -4,6 +4,10 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ## [Unreleased]
 
+### Fixed
+
+- Python runtime commands and troubleshooting guidance clarify that clearing the workspace override leaves User and Remote settings unchanged.
+
 ## [2.6.0] - 2026-09-16
 
 ### Added

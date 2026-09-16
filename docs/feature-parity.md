@@ -54,6 +54,9 @@ cleaning, export, and recovery flows, but not the full VS Code qualification mat
 Supported Python dependencies installed as hard links are recognized within the existing
 [version and module-origin checks](architecture.md#trust-source-integrity-and-export).
 
+Runtime selection commands change only the workspace Python override. User and Remote `openWrangler.pythonPath`
+values remain unchanged.
+
 ## Files and exports
 
 File inputs include CSV, TSV, Parquet, `.xls` and `.xlsx` workbooks, and `.jsonl` and `.ndjson` aliases.
