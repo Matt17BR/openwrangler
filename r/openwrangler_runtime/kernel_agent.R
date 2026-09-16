@@ -10664,18 +10664,8 @@ openwrangler_r_kernel_agent <- local({
     }
 
     environment(dispatch_json) <- environment()
-    dispose <- function() {
-      on.exit({
-        for (session_id in ls(sessions, all.names = TRUE)) {
-          session <- get(session_id, envir = sessions, inherits = FALSE)
-          session$inspectionBoundary <- NULL
-          assign(session_id, session, envir = sessions)
-        }
-      }, add = TRUE)
-      export_lifecycle$dispose()
-    }
     construction_complete <- TRUE
-    list(dispatch_json = dispatch_json, dispose = dispose)
+    list(dispatch_json = dispatch_json, dispose = export_lifecycle$dispose)
   }
 
   list(new_agent = new_agent, transport_version = transport_version)

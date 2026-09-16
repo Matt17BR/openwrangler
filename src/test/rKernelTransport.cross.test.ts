@@ -936,11 +936,10 @@ stopifnot(is.null(get("${sessionId}", envir = inspection_sessions)$inspectionBou
 ${discard.code}
 ${refreshed.code}
 stopifnot(!is.null(get("${sessionId}", envir = inspection_sessions)$inspectionBoundary))
-inspection_agent$dispose()
-stopifnot(is.null(get("${sessionId}", envir = inspection_sessions)$inspectionBoundary))
 stopifnot(identical(serialize(frame, NULL, version = 3L), source_before))
 ${close.code}
 stopifnot(!exists("${sessionId}", envir = inspection_sessions, inherits = FALSE))
+inspection_agent$dispose()
 ${afterClose.code}
 `);
     const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open, {
