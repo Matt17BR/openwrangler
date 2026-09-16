@@ -162,6 +162,8 @@ thead:has(.sampledLabel) {
 .miniChartLegend {
   display: flex;
   gap: 7px;
+  min-width: 0;
+  white-space: normal;
 }
 
 .booleanMiniChart.interactive .miniChartLegend {
