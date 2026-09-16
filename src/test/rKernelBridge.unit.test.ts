@@ -634,13 +634,13 @@ describe("canonical R kernel bridge", () => {
         diff: { ...renameDiff(), truncated: true },
         code: "owned sort"
       });
-      const step = {
+      const step: TransformStep = {
         id: "sort",
         kind: "sortRows",
         params: {
           rules: [{ column: { id: "r:c:0", name: "value" }, direction: "asc", nulls: "last" }]
         }
-      } as const;
+      };
       const view: ConfirmedView = {
         filterModel: {
           filters: [

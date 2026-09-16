@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { RFramePageContract } from "../extension/r/rFrameContract";
 import {
   createRKernelBridge as createBridge,
   fakeRKernelTransport as fakeTransport,
@@ -215,7 +216,7 @@ describe("R kernel row-reduction lifecycle", () => {
       ["r:r:0", "r:r:1", "r:r:2", "r:r:3"],
       4
     );
-    const filtered = rowOrderContract(source, ["r:r:1", "r:r:3"], 2);
+    const filtered = explicitRowNames(rowOrderContract(source, ["r:r:1", "r:r:3"], 2), ["2", "4"]);
     const transport = fakeTransport(source);
     const bridge = createBridge(transport);
     await bridge.request(openRequest("editing"));
@@ -568,7 +569,7 @@ describe("R kernel row-reduction lifecycle", () => {
 
   it("normalizes an empty R drop-missing selection to all columns at the kernel boundary", async () => {
     const source = rowOrderContract(frameContract({ totalRows: 3 }), ["r:r:0", "r:r:1", "r:r:2"], 3);
-    const reduced = rowOrderContract(source, ["r:r:1", "r:r:2"], 2);
+    const reduced = explicitRowNames(rowOrderContract(source, ["r:r:1", "r:r:2"], 2), ["2", "3"]);
     const transport = fakeTransport(source);
     const bridge = createBridge(transport);
     await bridge.request(openRequest("editing"));
@@ -608,7 +609,7 @@ describe("R kernel row-reduction lifecycle", () => {
 
   it("rejects stale native R row-reduction columns and impossible row diffs", async () => {
     const source = rowOrderContract(frameContract({ totalRows: 3 }), ["r:r:0", "r:r:1", "r:r:2"], 3);
-    const reduced = rowOrderContract(source, ["r:r:0", "r:r:2"], 2);
+    const reduced = explicitRowNames(rowOrderContract(source, ["r:r:0", "r:r:2"], 2), ["1", "3"]);
     const transport = fakeTransport(source);
     const bridge = createBridge(transport);
     await bridge.request(openRequest("editing"));
@@ -760,7 +761,7 @@ describe("R kernel row-reduction lifecycle", () => {
       transport.queuePreview({
         sessionId,
         revision: 1,
-        page: completeOutput,
+        page: explicitRowNames(completeOutput, ["2", "4"]),
         diff: { ...rowDiff(2), truncated },
         code: "open_wrangler_result <- orders[orders[[1L]] > 0, , drop = FALSE]"
       });
@@ -798,7 +799,7 @@ describe("R kernel row-reduction lifecycle", () => {
 
   it.each([true, false])("requires an incomplete filtered output to be marked truncated (%s)", async (truncated) => {
     const source = rowOrderContract(frameContract({ totalRows: 4 }), ["r:r:0", "r:r:1", "r:r:2", "r:r:3"], 4);
-    const incompleteOutput = rowOrderContract(source, ["r:r:1", "r:r:3"], 3);
+    const incompleteOutput = explicitRowNames(rowOrderContract(source, ["r:r:1", "r:r:3"], 3), ["2", "4"]);
     const transport = fakeTransport(source);
     const bridge = createBridge(transport);
     await bridge.request(openRequest("editing"));
@@ -847,3 +848,14 @@ describe("R kernel row-reduction lifecycle", () => {
     }
   });
 });
+
+function explicitRowNames(contract: RFramePageContract, rowLabels: readonly string[]): RFramePageContract {
+  return {
+    ...contract,
+    frameSemantics: { ...contract.frameSemantics, rowNames: "explicit" },
+    page: {
+      ...contract.page,
+      rows: contract.page.rows.map((row, index) => ({ ...row, rowLabel: rowLabels[index]! }))
+    }
+  };
+}

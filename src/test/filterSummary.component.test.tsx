@@ -1073,6 +1073,21 @@ describe("SummaryPanel", () => {
         onSelectView={() => undefined}
       />
     );
+    expect(screen.getByText("Dataset statistics have not been calculated.")).toBeInTheDocument();
+    expect(screen.queryByText("Profiling dataset statistics...")).not.toBeInTheDocument();
+    expect(screen.queryByText("Exact statistics")).not.toBeInTheDocument();
+
+    rerender(
+      <SummaryPanel
+        metadata={withoutStats}
+        summaries={[]}
+        schemaById={new Map(withoutStats.schema.map((column) => [column.id, column]))}
+        selectedColumnId="c:1"
+        activeView="dataset"
+        statsPending
+        onSelectView={() => undefined}
+      />
+    );
     expect(screen.getByText("Profiling dataset statistics...")).toHaveAttribute("role", "status");
     expect(screen.queryByText("Exact statistics")).not.toBeInTheDocument();
 
