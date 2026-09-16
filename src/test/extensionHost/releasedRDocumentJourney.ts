@@ -504,11 +504,13 @@ export function createReleasedRDocumentJourney({
             "true"
           );
           await csvApp
-            .locator('th[data-column="row_id"] .exactSummaryStats')
-            .filter({ hasText: /Missing\s*0\b/u })
-            .filter({ hasText: /Distinct\s*240\b/u })
-            .filter({ hasText: /Min\s*1\b/u })
-            .filter({ hasText: /Max\s*240\b/u })
+            .locator(
+              'th[data-column="row_id"] .exactSummaryStats' +
+                ':has([aria-label="Missing: 0 (0%)"])' +
+                ':has([aria-label="Distinct: 240 (100%)"])' +
+                ':has([aria-label="Minimum 1"])' +
+                ':has([aria-label="Maximum 240"])'
+            )
             .waitFor({ state: "visible", timeout: 10_000 });
           recordAcceptanceProgress("jupyter-r:file:rename");
           const renamed = await previewReleasedRRename(testing, workbench, csvApp, csvSessionId, "row_id", "record_id");
