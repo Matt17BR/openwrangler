@@ -28,20 +28,29 @@ const wideColumnCases: Array<
     position: string,
     scrollLeft: number,
     expectedRange: { start: number; end: number },
+    expectedProfileRange: { start: number; end: number },
     expectedLeft: number,
     expectedRight: number,
     expectedRenderedCount: number
   ]
 > = [
-  ["start", 0, { start: 0, end: 5 }, 0, 980, 7],
-  ["middle", 700, { start: 2, end: 10 }, 200, 250, 11],
-  ["end", 1_350, { start: 7, end: 12 }, 950, 0, 7]
+  ["start", 0, { start: 0, end: 5 }, { start: 0, end: 2 }, 0, 980, 7],
+  ["middle", 700, { start: 2, end: 10 }, { start: 5, end: 7 }, 200, 250, 11],
+  ["end", 1_350, { start: 7, end: 12 }, { start: 9, end: 12 }, 950, 0, 7]
 ];
 
 describe("grid virtual window", () => {
   it.each(wideColumnCases)(
     "bounds a heterogeneous wide-column window at the %s",
-    (_position, scrollLeft, expectedRange, expectedLeft, expectedRight, expectedRenderedCount) => {
+    (
+      _position,
+      scrollLeft,
+      expectedRange,
+      expectedProfileRange,
+      expectedLeft,
+      expectedRight,
+      expectedRenderedCount
+    ) => {
       const window = createGridVirtualWindow({
         logicalRowExtent: 100,
         page: widePage,
@@ -53,11 +62,31 @@ describe("grid virtual window", () => {
       expect(gridColumnWidths(wideSchema, columnWidths, 190)).toEqual(heterogeneousWidths);
       expect(window.totalColumnWidth).toBe(1_630);
       expect(window.visibleColumnRange).toEqual(expectedRange);
+      expect(window.profileColumnRange).toEqual(expectedProfileRange);
       expect(window.leftSpacerWidth).toBe(expectedLeft);
       expect(window.rightSpacerWidth).toBe(expectedRight);
       expect(window.renderedColumnCount).toBe(expectedRenderedCount);
     }
   );
+
+  it.each([
+    ["exact left and right edges", [100, 100, 100], 100, 160, { start: 1, end: 2 }],
+    ["partial left and right columns", [100, 100, 100], 99.5, 160, { start: 0, end: 2 }],
+    ["a column wider than the viewport", [640, 80, 100], 100, 260, { start: 0, end: 1 }],
+    ["a viewport covered by the sticky row header", [100, 100], 0, 60, { start: 0, end: 0 }],
+    ["zero-width layout", [100, 100], 0, 0, { start: 0, end: 0 }]
+  ] as const)("profiles only positive data-column intersections: %s", (_label, widths, scrollLeft, width, expected) => {
+    const window = createGridVirtualWindow({
+      logicalRowExtent: 100,
+      page: widePage,
+      rowHeaderWidth: 60,
+      viewport: { firstVisibleRow: 0, scrollLeft, scrollTop: 0, width, height: 58 },
+      widths
+    });
+
+    expect(window.profileColumnRange).toEqual(expected);
+    expect(window.visibleColumnRange.end).toBeGreaterThan(window.profileColumnRange.end);
+  });
 
   it("maps reordered and partial projected values only through stable column IDs", () => {
     const schema = wideSchema.slice(0, 3);

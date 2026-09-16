@@ -1497,7 +1497,7 @@ may retain a compatible data-table key; explicit sorting clears the data-table k
 `NaN` remain distinct. Null filter logic is invalid, not a default AND; picker search is a required nullable field.
 Optional value-filter search must be text when present. Invalid viewing requests leave an existing draft usable.
 
-R header profiles honor `openWrangler.insightsOnOpen`; automatic demand covers only the visible column window.
+R header profiles honor `openWrangler.insightsOnOpen`.
 The existing post-mutation quiet period still gives immediate Undo and Redo priority over background profiles.
 
 Cheap column/missing statistics scan in bounded chunks. Numeric histograms count every finite value into at most
@@ -1794,7 +1794,9 @@ for that range, cleaning controls remain unavailable between the two requests. L
 start another projection and temporarily disable those controls again.
 
 Profiles are progressive and bounded. The initial open does not profile all columns, background capacity is limited,
-and values or aggregates cross the runtime boundary only as bounded samples or fixed-size results. Summary and
+and values or aggregates cross the runtime boundary only as bounded samples or fixed-size results. Header profiles
+request columns intersecting the measured data viewport, including partially visible columns. Unmeasured layouts and
+offscreen rendering overscan submit no header demand. Summary and
 dataset-statistics requests retry once after cancellation, capacity refusal or a bridge failure while their view and
 demand remain current. Other errors are reported without an automatic retry. Fresh profiling demand can request them
 again. A recoverable session error does not itself imply that repeating the request can succeed. Applied-step

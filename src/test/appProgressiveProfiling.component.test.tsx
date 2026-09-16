@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SerializedGridViewState } from "../shared/viewState";
 import type { FilterModel } from "../shared/filterModel";
 import type { ColumnSummary, GridPage, OpenWranglerResponse, SessionMetadata, TransformStep } from "../shared/protocol";
@@ -91,7 +91,14 @@ const citySummary: ColumnSummary = {
 };
 
 describe("App progressive profiling and view correlation", () => {
-  beforeEach(() => postMessage.mockClear());
+  beforeEach(() => {
+    postMessage.mockClear();
+    // These ownership tests require a measured grid; jsdom has no layout.
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (this: HTMLElement) {
+      return this.dataset.testid === "data-grid-scroller" ? 1_200 : 0;
+    });
+  });
+  afterEach(() => vi.restoreAllMocks());
 
   it("ignores messages from another origin", () => {
     render(<App />);

@@ -213,6 +213,7 @@ export function DataGrid({
     restorationRef.current = { viewState, metadata, page, pageSize };
   }, [metadata, page, pageSize, viewState]);
   const [viewport, setViewport] = useState({
+    measured: false,
     firstVisibleRow: viewState.viewport.firstVisibleRow,
     scrollLeft: 0,
     scrollTop: 0,
@@ -330,6 +331,7 @@ export function DataGrid({
     const scrollLeft = viewStateRef.current.viewport.scrollLeft;
     writeProgrammaticViewport(scroller, { firstVisibleRow, scrollTop, scrollLeft });
     setViewport({
+      measured: Math.abs(scroller.scrollLeft - scrollLeft) <= scrollQuantizationTolerance,
       scrollLeft,
       scrollTop,
       firstVisibleRow,
@@ -390,6 +392,7 @@ export function DataGrid({
     const scrollLeft = restoration.viewState.viewport.scrollLeft;
     writeProgrammaticViewport(scroller, { firstVisibleRow: row, scrollTop, scrollLeft });
     setViewport({
+      measured: Math.abs(scroller.scrollLeft - scrollLeft) <= scrollQuantizationTolerance,
       scrollLeft,
       scrollTop,
       firstVisibleRow: row,
@@ -429,6 +432,7 @@ export function DataGrid({
     leftSpacerWidth,
     localRowStart: localStart,
     pageColumnPositionById,
+    profileColumnRange,
     renderedColumnCount,
     rightSpacerWidth,
     topSpacerHeight,
@@ -439,6 +443,10 @@ export function DataGrid({
   const visibleColumns = useMemo(
     () => metadata.schema.slice(visibleColumnRange.start, visibleColumnRange.end),
     [metadata.schema, visibleColumnRange.end, visibleColumnRange.start]
+  );
+  const profileColumns = useMemo(
+    () => (viewport.measured ? metadata.schema.slice(profileColumnRange.start, profileColumnRange.end) : []),
+    [metadata.schema, profileColumnRange.end, profileColumnRange.start, viewport.measured]
   );
   const narrowHeaderStats = visibleColumns.some((column) => widths[column.position] <= narrowHeaderStatsColumnWidth);
   const loadedColumnSignature = page.columnIds.join("\u0000");
@@ -462,7 +470,7 @@ export function DataGrid({
     backend: metadata.backend,
     sessionId: metadata.sessionId,
     scrollerRef,
-    visibleColumns,
+    visibleColumns: profileColumns,
     summaries,
     visibleSummaryOwner: viewScope,
     insightsOnOpen,
@@ -491,8 +499,9 @@ export function DataGrid({
       }
       programmaticViewportTarget.current = { firstVisibleRow, scrollTop, scrollLeft };
       setViewport((current) => {
-        const next = { firstVisibleRow, scrollLeft, scrollTop, width, height };
-        return current.firstVisibleRow === next.firstVisibleRow &&
+        const next = { measured: true, firstVisibleRow, scrollLeft, scrollTop, width, height };
+        return current.measured === next.measured &&
+          current.firstVisibleRow === next.firstVisibleRow &&
           current.scrollLeft === next.scrollLeft &&
           current.scrollTop === next.scrollTop &&
           current.width === next.width &&
@@ -608,13 +617,15 @@ export function DataGrid({
       scroller.scrollLeft = scrollLeft;
       setViewport((current) => {
         const next = {
+          measured: Math.abs(scroller.scrollLeft - scrollLeft) <= scrollQuantizationTolerance,
           firstVisibleRow,
           scrollLeft,
           scrollTop,
           width: scroller.clientWidth,
           height: scroller.clientHeight
         };
-        return current.firstVisibleRow === next.firstVisibleRow &&
+        return current.measured === next.measured &&
+          current.firstVisibleRow === next.firstVisibleRow &&
           current.scrollLeft === next.scrollLeft &&
           current.scrollTop === next.scrollTop &&
           current.width === next.width &&
@@ -706,13 +717,15 @@ export function DataGrid({
       }
       setViewport((current) => {
         const next = {
+          measured: false,
           firstVisibleRow: target.firstVisibleRow,
           scrollLeft: target.scrollLeft,
           scrollTop: target.scrollTop,
           width: scroller.clientWidth,
           height: scroller.clientHeight
         };
-        return current.firstVisibleRow === next.firstVisibleRow &&
+        return current.measured === next.measured &&
+          current.firstVisibleRow === next.firstVisibleRow &&
           current.scrollLeft === next.scrollLeft &&
           current.scrollTop === next.scrollTop &&
           current.width === next.width &&
@@ -727,6 +740,7 @@ export function DataGrid({
     const scrollTop = confirmedTarget?.scrollTop ?? scroller.scrollTop;
     const scrollLeft = confirmedTarget?.scrollLeft ?? scroller.scrollLeft;
     const next = {
+      measured: true,
       firstVisibleRow: 0,
       scrollLeft,
       scrollTop,
@@ -738,6 +752,7 @@ export function DataGrid({
       : logicalRowForScrollTop(createRowScrollModel(totalRows, next.height), next.scrollTop);
     next.firstVisibleRow = row;
     setViewport((current) =>
+      current.measured === next.measured &&
       current.firstVisibleRow === next.firstVisibleRow &&
       current.scrollLeft === next.scrollLeft &&
       current.scrollTop === next.scrollTop &&
@@ -898,6 +913,7 @@ export function DataGrid({
       programmaticViewportTarget.current = { firstVisibleRow: bounded, scrollTop, scrollLeft };
       scroller.scrollTop = scrollTop;
       setViewport({
+        measured: true,
         firstVisibleRow: bounded,
         scrollLeft,
         scrollTop,

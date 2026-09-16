@@ -21,6 +21,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 - R header profiles honor the opening preference. Sampled charts identify the sample count used and full non-missing population.
 - Large R numeric histograms count every finite value. Categorical profiles use exact counts within bounded memory; larger sets retain labeled sampling.
 - Large R text columns profile faster.
+- Offscreen columns no longer trigger header profiling.
 - Compact categorical headers include all omitted categories in Other.
 - R terminal commands honor bracketed paste, preventing radian from interpreting private command fragments as global assignments.
 - An open notebook no longer hides the action to discover dataframes in an existing R terminal.
