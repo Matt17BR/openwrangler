@@ -38,11 +38,13 @@ from .session_source import (
     SessionSource,
     SourceChangedError,
     is_duckdb_table_source,
+    resolve_duckdb_connection,
     resolve_notebook_variable,
 )
 from .version import __version__
 
 if TYPE_CHECKING:
+    from .engines.duckdb_engine import DuckDBEngine
     from .engines.polars_engine import PolarsEngine
     from .engines.pyspark_engine import PySparkEngine, PySparkPageCheckpoint
 
@@ -435,6 +437,7 @@ class SessionManager:
         session: Session | None = None
         session_source: SessionSource | None = None
         cloned_row_id: Any | None = None
+        duckdb_connection: Any | None = None
         try:
             source_kind = str(source.get("kind", ""))
             if clone_from is None:
@@ -449,6 +452,8 @@ class SessionManager:
                 frame = self._load_source(session_source.resolved_metadata, engine)
                 session_source.bind_loaded_value(engine, frame)
                 if source.get("kind") != "file":
+                    if engine.name == "duckdb":
+                        duckdb_connection = resolve_duckdb_connection(session_source.resolved_metadata)
                     notebook_normalizer = getattr(engine, "normalize_notebook_relation", None)
                     frame = (
                         notebook_normalizer(frame)
@@ -484,6 +489,10 @@ class SessionManager:
             engine.validate_column_addressability(frame)
             if clone_from is None and source_kind != "file" and engine.name == "polars":
                 frame = cast("PolarsEngine", engine).capture_notebook_source(frame)
+            if clone_from is None and source_kind != "file" and engine.name == "duckdb":
+                frame = cast("DuckDBEngine", engine).capture_notebook_source(
+                    frame, duckdb_connection, row_id_token=f"{session_id}:source"
+                )
             frame = engine.ensure_row_ids(frame, f"{session_id}:source")
             filter_model = {"logic": "and", "filters": [], "sort": []}
             source_shape = engine.shape(frame)

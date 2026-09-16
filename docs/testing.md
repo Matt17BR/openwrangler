@@ -199,6 +199,11 @@ Use the existing owners to choose a focused source check:
   validation. Its native dtype controls
   preserve Object references, nulls, signed zero, nested values and Enum domains. Ordinary file scans and saved MIME
   captures retain their separate lazy/bounded owners; sequential whole-column copy uses the same stable page reads.
+  DuckDB's existing engine owner checks once-evaluated notebook and Custom results, exact native types, stored row
+  identities, connection affinity, generated programs and checkpoint release. The shared Custom inspection fixture
+  also runs on DuckDB, including response rejection, retained inspection storage and source invalidation.
+  Notebook command and KernelBridge owners check explicit connection selection against the pinned kernel; the
+  executed-result owner checks automatic inline snapshots through the bounded MIME path without opening a Session.
   The [session binding owner](../python/tests/test_session_column_binding.py) covers apply/history and source identities.
   Extract Struct Fields uses the Polars and DuckDB owners for native types, exact names, current-input refusals and
   full generated programs. The session binding owner checks appended identities, history and native Parquet export;

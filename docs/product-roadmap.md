@@ -11,10 +11,11 @@ records delivered changes. This page records release priorities and proposals th
 in desktop VS Code on Linux, macOS and Windows.
 
 [Open Wrangler 2.6](https://github.com/Matt17BR/openwrangler/milestone/16) is the next selected release. It requires
-an outcome for [DuckDB row consistency](https://github.com/Matt17BR/openwrangler/issues/1487).
+the native capture correction for [DuckDB row consistency](https://github.com/Matt17BR/openwrangler/issues/1487),
+including explicit notebook connection selection and its [capture costs](feature-parity.md#sessions-and-generated-code).
 The [macOS import-options focus](https://github.com/Matt17BR/openwrangler/issues/1482) issue is fixed on main.
 Custom-backed [step inspection](https://github.com/Matt17BR/openwrangler/issues/1526) now reuses its input/output pair
-in Pandas, Polars and native R.
+in Pandas, Polars, DuckDB and native R.
 The [Jupyter Variables failure](https://github.com/Matt17BR/openwrangler/issues/1498) remains open under the
 [documented support limitation](feature-parity.md#sessions-and-generated-code).
 The milestone links the required outcomes and records that release decision.

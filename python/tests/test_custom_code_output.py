@@ -228,7 +228,12 @@ def test_live_engine_output_is_suppressed_but_generated_code_keeps_normal_stream
 
         generated_namespace = {"df": frame}
         exec(engine.compile_plan([_custom_step(code)]), generated_namespace, generated_namespace)
-        generated = generated_namespace["clean_data"](frame)
+        options = {}
+        if backend == "duckdb":
+            import duckdb
+
+            options["connection"] = duckdb.default_connection()
+        generated = generated_namespace["clean_data"](frame, **options)
         assert generated is not None
 
     assert process_stdout.getvalue() == f"{backend}-live-stdout\n"

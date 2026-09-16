@@ -789,7 +789,7 @@ def test_duckdb_integer_formula_refusal_preserves_public_history_and_allows_corr
             with duckdb.connect() as connection:
                 source = connection.read_csv(str(path))
                 with pytest.raises(duckdb.Error, match=message):
-                    namespace["clean_data"](source)
+                    namespace["clean_data"](source, connection=connection)
                 assert source.fetchall() == [(index,) for index in range(202)]
 
         corrected = {
@@ -805,7 +805,7 @@ def test_duckdb_integer_formula_refusal_preserves_public_history_and_allows_corr
         assert session.engine._terminal_rows(session.committed, "SELECT ow, lhs, rhs, result FROM ow") == expected
         namespace: dict[str, Any] = {}
         exec(applied["code"], namespace)
-        generated = namespace["clean_data"](duckdb.read_csv(str(path)))
+        generated = namespace["clean_data"](duckdb.read_csv(str(path)), connection=duckdb.default_connection())
         assert list(map(str, generated.types)) == [
             "BIGINT",
             left_type,
@@ -835,7 +835,7 @@ def test_duckdb_unsigned_round_refusal_keeps_the_confirmed_plan(tmp_path: Path) 
         session_id = opened["metadata"]["sessionId"]
         native_values = custom_step(
             "unsigned-values",
-            f"result = duckdb.sql(\"SELECT '{maximum}'::UHUGEINT AS value UNION ALL SELECT NULL::UHUGEINT\")",
+            f"result = df.query('ow', \"SELECT '{maximum}'::UHUGEINT AS value UNION ALL SELECT NULL::UHUGEINT\")",
         )
         manager.preview_step(session_id, 0, native_values, 0, 2)
         confirmed = manager.apply_draft(session_id, 1, 0, 2)

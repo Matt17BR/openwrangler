@@ -7,6 +7,7 @@ import type {
   NotebookEditor
 } from "vscode";
 import type { SessionCoordinator } from "../extension/sessionCoordinator";
+import type { DataBackend, SessionSource } from "../shared/protocol";
 
 type CommandHandler = (...args: unknown[]) => unknown;
 
@@ -20,6 +21,13 @@ const mocks = vi.hoisted(() => ({
   visibleEditors: [] as NotebookEditor[],
   warning: vi.fn(async () => undefined),
   createPanel: vi.fn(),
+  prepare:
+    vi.fn<
+      (
+        source: SessionSource,
+        backend?: DataBackend
+      ) => Promise<{ source: SessionSource; backend?: DataBackend } | undefined>
+    >(),
   createBridge: vi.fn((bridge: unknown) => bridge),
   capture: vi.fn(async () => ({
     backend: "pandas" as const,
@@ -142,6 +150,7 @@ vi.mock("../extension/notebooks/kernelBridge", () => ({
     constructor(_context: ExtensionContext, document: NotebookDocument) {
       mocks.bridgeDocuments.push(document);
     }
+    prepareLiveSource = mocks.prepare;
     captureExecutedCellResult = mocks.capture;
     dispose(): void {
       mocks.disposed += 1;
@@ -186,6 +195,8 @@ export function resetNotebookCellResultTest(): void {
   mocks.visibleEditors.length = 0;
   mocks.warning.mockClear();
   mocks.createPanel.mockReset();
+  mocks.prepare.mockReset();
+  mocks.prepare.mockImplementation(async (source, backend) => ({ source, backend }));
   mocks.createBridge.mockClear();
   mocks.capture.mockReset();
   mocks.capture.mockResolvedValue({

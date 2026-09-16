@@ -1,5 +1,7 @@
 import { spawnSync } from "node:child_process";
 import * as vscode from "vscode";
+import { NOTEBOOK_OUTPUT_LIMITS } from "../shared/notebookOutput";
+import { DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS } from "../extension/configuration";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildNotebookCellResultCode,
@@ -31,24 +33,33 @@ describe("executed notebook cell results", () => {
   const source = "frame.tail()\n";
   const sourceFingerprint = fingerprintNotebookCellSource(source);
 
-  it("builds an Out lookup without rerunning cell source or changing execution history", () => {
-    const code = buildNotebookCellResultCode(marker, 17, sourceFingerprint);
+  it.each([false, true])(
+    "builds an Out lookup and bounded snapshot=%s without rerunning cell source or changing history",
+    (snapshot) => {
+      const code = buildNotebookCellResultCode(marker, 17, sourceFingerprint, snapshot ? 256 : undefined);
 
-    const result = spawnSync(process.env.OPEN_WRANGLER_TEST_PYTHON ?? "python3", ["-I", "-"], {
-      encoding: "utf8",
-      input: `
+      const result = spawnSync(process.env.OPEN_WRANGLER_TEST_PYTHON ?? "python3", ["-I", "-"], {
+        encoding: "utf8",
+        input: `
 import builtins, contextlib, io, json, sys, types
 source = object()
 inputs = [""] * 17 + [${JSON.stringify(source)}]
 history = {17: source}
 shell = types.SimpleNamespace(user_ns={"Out": history}, history_manager=types.SimpleNamespace(input_hist_raw=inputs), execution_count=18)
 links = []
+captures = []
 package = types.ModuleType("openwrangler_runtime")
 notebook = types.ModuleType("openwrangler_runtime.notebook")
 def link(value, originating_shell):
     assert value is source and originating_shell is shell
     links.append(value)
     return {"protocolVersion": 1, "backend": "polars", "label": "DataFrame", "variableName": "__openwrangler_live_result_0123456789abcdef0123456789abcdef"}
+def capture(value, **options):
+    assert value is source
+    assert options == {"label": "DataFrame", "backend": "polars", "page_size": 200, "variable_name": "__openwrangler_live_result_0123456789abcdef0123456789abcdef", "max_columns": 256}
+    captures.append(value)
+    return {"bounded": True}
+notebook.build_payload = capture
 notebook.link_live_result = link
 package.notebook = notebook
 sys.modules[package.__name__] = package
@@ -80,26 +91,30 @@ for reason, lookup, seeded in ((None, "global", True), ("missing", "global", Tru
     assert lines[2] == "__OPEN_WRANGLER_CELL_RESULT_END_${marker}__"
     result = json.loads(lines[1])
     if reason is None:
+        if ${snapshot ? "True" : "False"}:
+            assert result.pop("payload") == {"bounded": True}
         assert result == {"ok": True, "protocolVersion": 1, "backend": "polars", "label": "DataFrame", "variableName": "__openwrangler_live_result_0123456789abcdef0123456789abcdef"}
     else:
         assert result == {"ok": False, "protocolVersion": 1, "reason": reason}
     assert namespace.keys() == original.keys() and all(namespace[name] is value for name, value in original.items()), "cell helpers changed user bindings"
     assert inputs == before_inputs and history == before_history and shell.execution_count == 18
 assert links == [source, source, source]
+assert captures == ([source, source, source] if ${snapshot ? "True" : "False"} else [])
 `,
-      maxBuffer: 128 * 1024,
-      timeout: 30_000,
-      windowsHide: true
-    });
-    expect(result.error).toBeUndefined();
-    expect(result.signal).toBeNull();
-    expect(result.stderr).toBe("");
-    expect(result.status).toBe(0);
-    expect(() => buildNotebookCellResultCode(marker, 0, sourceFingerprint)).toThrow("positive safe integer");
-    expect(() => buildNotebookCellResultCode(marker, 17, "invalid")).toThrow("64 lowercase hexadecimal");
-    expect(fingerprintNotebookCellSource("a\r\nb\r")).toBe(fingerprintNotebookCellSource("a\nb\n"));
-    expect(fingerprintNotebookCellSource("frame\n\n")).toBe(fingerprintNotebookCellSource("frame"));
-  });
+        maxBuffer: 128 * 1024,
+        timeout: 30_000,
+        windowsHide: true
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.signal).toBeNull();
+      expect(result.stderr).toBe("");
+      expect(result.status).toBe(0);
+      expect(() => buildNotebookCellResultCode(marker, 0, sourceFingerprint)).toThrow("positive safe integer");
+      expect(() => buildNotebookCellResultCode(marker, 17, "invalid")).toThrow("64 lowercase hexadecimal");
+      expect(fingerprintNotebookCellSource("a\r\nb\r")).toBe(fingerprintNotebookCellSource("a\nb\n"));
+      expect(fingerprintNotebookCellSource("frame\n\n")).toBe(fingerprintNotebookCellSource("frame"));
+    }
+  );
 
   it("builds and parses a history-neutral supported-result probe", () => {
     const code = buildNotebookCellResultProbeCode(marker, 17, sourceFingerprint);
@@ -163,6 +178,61 @@ assert links == [source, source, source]
     ).toThrow("malformed live notebook result link");
   });
 
+  function emptyDuckDBSnapshot() {
+    return {
+      mimeVersion: 2,
+      metadata: {
+        protocolVersion: 4,
+        sessionId: "snapshot",
+        revision: 0,
+        backend: "duckdb",
+        mode: "viewing",
+        source: { kind: "notebookOutput", label: "relation", variableName: "frame" },
+        capabilities: {
+          editable: false,
+          lazy: false,
+          cancel: false,
+          exportCsv: false,
+          exportParquet: false,
+          notebookInsert: false
+        },
+        shape: { rows: 0, columns: 0 },
+        filteredShape: { rows: 0, columns: 0 },
+        schema: [],
+        filterModel: { filters: [], sort: [] },
+        steps: []
+      },
+      page: { offset: 0, limit: 200, totalRows: 0, columnIds: [], rows: [] },
+      summaries: []
+    };
+  }
+
+  it("admits only a bounded snapshot belonging to its exact captured link", () => {
+    const link = { ok: true, protocolVersion: 1, backend: "duckdb", label: "relation", variableName: "frame" };
+    const payload = emptyDuckDBSnapshot();
+    const marked = (value: unknown) =>
+      [
+        `__OPEN_WRANGLER_CELL_RESULT_START_${marker}__`,
+        JSON.stringify(value),
+        `__OPEN_WRANGLER_CELL_RESULT_END_${marker}__`
+      ].join("\n");
+    expect(parseNotebookCellResult(marked({ ...link, payload }), marker)).toMatchObject({
+      backend: "duckdb",
+      payload: { page: payload.page }
+    });
+    for (const mismatch of [{ variableName: "other" }, { label: "other" }, { backend: "polars" }]) {
+      expect(() => parseNotebookCellResult(marked({ ...link, ...mismatch, payload }), marker)).toThrow(
+        "malformed notebook snapshot"
+      );
+    }
+    expect(() =>
+      parseNotebookCellResult(
+        marked({ ...link, payload: { ...payload, page: { ...payload.page, limit: NOTEBOOK_OUTPUT_LIMITS.rows + 1 } } }),
+        marker
+      )
+    ).toThrow("malformed notebook snapshot");
+  });
+
   it("captures the exact execution result on the selected notebook kernel", async () => {
     const document = notebookDocument();
     setOpenNotebookDocuments(document);
@@ -201,6 +271,110 @@ assert links == [source, source, source]
     expect(getExtension).toHaveBeenCalledOnce();
     expect(controller.executionTokens()).toHaveLength(2);
   });
+
+  it.each([200, 201])(
+    "keeps automatic capture within its 200-row request when the kernel returns limit=%i",
+    async (limit) => {
+      const payload = emptyDuckDBSnapshot();
+      payload.page.limit = limit;
+      const controller = controllableKernel((code) => {
+        const resultMarker = code.match(/__OPEN_WRANGLER_CELL_RESULT_START_([a-f0-9]{32})__/)?.[1];
+        if (!resultMarker) return bootstrapKernelExecution(code);
+        return textKernelExecution(
+          [
+            `__OPEN_WRANGLER_CELL_RESULT_START_${resultMarker}__`,
+            JSON.stringify({
+              ok: true,
+              protocolVersion: 1,
+              backend: "duckdb",
+              label: "relation",
+              variableName: "frame",
+              payload
+            }),
+            `__OPEN_WRANGLER_CELL_RESULT_END_${resultMarker}__`
+          ].join("\n")
+        );
+      });
+      mockKernel(controller.kernel);
+      const bridge = createKernelBridge();
+      try {
+        const capture = bridge.captureExecutedCellResult(
+          7,
+          sourceFingerprint,
+          resultBinding(controller.kernel, "duckdb"),
+          { maxColumns: 256 }
+        );
+        if (limit === 200) await expect(capture).resolves.toMatchObject({ payload: { page: { limit } } });
+        else await expect(capture).rejects.toThrow("could not capture this bounded notebook output");
+      } finally {
+        bridge.dispose();
+      }
+      expect(controller.executionTokens().every((token) => !token.isCancellationRequested)).toBe(true);
+    }
+  );
+
+  it.each([false, true])(
+    "background snapshot=%s retains native settlement independently of reporting timeout",
+    async (snapshot) => {
+      vi.useFakeTimers();
+      const started = deferred<void>();
+      const release = deferred<void>();
+      const controller = controllableKernel((code) => {
+        const resultMarker = code.match(/__OPEN_WRANGLER_CELL_RESULT_START_([a-f0-9]{32})__/)?.[1];
+        if (!resultMarker) return bootstrapKernelExecution(code);
+        return (async function* () {
+          started.resolve();
+          await release.promise;
+          yield* textKernelExecution(
+            [
+              `__OPEN_WRANGLER_CELL_RESULT_START_${resultMarker}__`,
+              JSON.stringify({
+                ok: true,
+                protocolVersion: 1,
+                backend: "duckdb",
+                label: "relation",
+                variableName: "frame",
+                ...(snapshot ? { payload: emptyDuckDBSnapshot() } : {})
+              }),
+              `__OPEN_WRANGLER_CELL_RESULT_END_${resultMarker}__`
+            ].join("\n")
+          );
+        })();
+      });
+      mockKernel(controller.kernel);
+      const bridge = createKernelBridge();
+      const capture = bridge.captureExecutedCellResult(
+        7,
+        sourceFingerprint,
+        resultBinding(controller.kernel, "duckdb"),
+        snapshot ? { maxColumns: 256 } : undefined
+      );
+      let settled = false;
+      void capture.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        }
+      );
+      try {
+        await started.promise;
+        await vi.advanceTimersByTimeAsync(DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS);
+        expect(settled).toBe(!snapshot);
+        expect(controller.executionTokens().every((token) => !token.isCancellationRequested)).toBe(true);
+        release.resolve();
+        if (snapshot)
+          await expect(capture).resolves.toMatchObject({ backend: "duckdb", payload: { page: { limit: 200 } } });
+        else await expect(capture).rejects.toThrow("timed out");
+      } finally {
+        release.resolve();
+        await capture.catch(() => undefined);
+        bridge.dispose();
+        vi.useRealTimers();
+      }
+    }
+  );
 
   it("inspects a supported Out result and binds it to the exact selected kernel", async () => {
     const document = notebookDocument();

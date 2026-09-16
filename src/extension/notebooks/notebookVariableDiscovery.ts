@@ -119,6 +119,116 @@ export interface PySparkNotebookPreflight {
   readonly version: string | null;
 }
 
+export interface DuckDBNotebookConnections {
+  readonly isDuckDB: boolean;
+  readonly names: readonly string[];
+  readonly truncated: boolean;
+}
+
+export async function discoverDuckDBNotebookConnections(
+  kernel: Kernel,
+  notebook: vscode.NotebookDocument,
+  variableName: string
+): Promise<DuckDBNotebookConnections> {
+  const marker = randomUUID().replaceAll("-", "");
+  const tokenSource = new vscode.CancellationTokenSource();
+  try {
+    assertNotebookProvenance(notebook);
+    const output = kernel.executeCode(buildDuckDBConnectionDiscoveryCode(marker, variableName), tokenSource.token);
+    const text = await collectBoundedKernelText(
+      output,
+      notebook,
+      "Open Wrangler could not inspect DuckDB connection names in the selected notebook kernel."
+    );
+    return parseDuckDBConnectionDiscoveryOutput(text, marker);
+  } finally {
+    tokenSource.dispose();
+  }
+}
+
+export function buildDuckDBConnectionDiscoveryCode(marker: string, variableName: string): string {
+  if (!/^[a-f0-9]{32}$/.test(marker) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(variableName)) {
+    throw new Error("DuckDB connection discovery requires a marker and a Python variable name.");
+  }
+  return buildNotebookExecutionCode(`
+import json as __ow_json
+import sys as __ow_sys
+from openwrangler_runtime.session_source import resolve_notebook_variable as __ow_resolve
+__ow_value = __ow_resolve({"variableName": ${JSON.stringify(variableName)}})
+__ow_duckdb = __ow_sys.modules.get("duckdb")
+__ow_relation_type = None if __ow_duckdb is None else __ow_duckdb.__dict__.get("DuckDBPyRelation")
+__ow_connection_type = None if __ow_duckdb is None else __ow_duckdb.__dict__.get("DuckDBPyConnection")
+__ow_is_duckdb = isinstance(__ow_relation_type, type) and isinstance(__ow_value, __ow_relation_type)
+__ow_names = []
+__ow_truncated = False
+if __ow_is_duckdb and isinstance(__ow_connection_type, type):
+    for __ow_index, (__ow_name, __ow_candidate) in enumerate(__ow_user_ns.items()):
+        if __ow_index >= ${MAX_DISCOVERY_SCANNED_VARIABLES}:
+            __ow_truncated = True
+            break
+        if (
+            isinstance(__ow_name, str)
+            and 0 < len(__ow_name) <= ${MAX_DISCOVERY_NAME_CHARACTERS}
+            and __ow_name.isascii() and __ow_name.isidentifier()
+            and isinstance(__ow_candidate, __ow_connection_type)
+        ):
+            if len(__ow_names) >= ${MAX_DISCOVERY_VARIABLES}:
+                __ow_truncated = True
+                break
+            __ow_names.append(__ow_name)
+print("__OPEN_WRANGLER_DUCKDB_CONNECTIONS_START_${marker}__")
+print(__ow_json.dumps({"isDuckDB": __ow_is_duckdb, "names": sorted(__ow_names), "truncated": __ow_truncated},
+    ensure_ascii=True, allow_nan=False, separators=(",", ":")))
+print("__OPEN_WRANGLER_DUCKDB_CONNECTIONS_END_${marker}__")
+`);
+}
+
+export function parseDuckDBConnectionDiscoveryOutput(output: string, marker: string): DuckDBNotebookConnections {
+  if (!/^[a-f0-9]{32}$/.test(marker) || Buffer.byteLength(output, "utf8") > MAX_DISCOVERY_OUTPUT_BYTES) {
+    throw oversizedDiscoveryResponse();
+  }
+  const start = `__OPEN_WRANGLER_DUCKDB_CONNECTIONS_START_${marker}__`;
+  const end = `__OPEN_WRANGLER_DUCKDB_CONNECTIONS_END_${marker}__`;
+  const startIndex = output.indexOf(start);
+  const endIndex = output.indexOf(end);
+  if (
+    startIndex < 0 ||
+    endIndex <= startIndex ||
+    output.indexOf(start, startIndex + start.length) >= 0 ||
+    output.indexOf(end, endIndex + end.length) >= 0
+  )
+    throw malformedDiscoveryResponse();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output.slice(startIndex + start.length, endIndex).trim());
+  } catch {
+    throw malformedDiscoveryResponse();
+  }
+  if (
+    !isPlainRecord(parsed) ||
+    !hasExactKeys(parsed, ["isDuckDB", "names", "truncated"]) ||
+    typeof parsed.isDuckDB !== "boolean" ||
+    typeof parsed.truncated !== "boolean" ||
+    !Array.isArray(parsed.names) ||
+    parsed.names.length > MAX_DISCOVERY_VARIABLES ||
+    (!parsed.isDuckDB && (parsed.names.length > 0 || parsed.truncated))
+  )
+    throw malformedDiscoveryResponse();
+  const names: string[] = [];
+  for (const name of parsed.names) {
+    if (
+      typeof name !== "string" ||
+      name.length > MAX_DISCOVERY_NAME_CHARACTERS ||
+      !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ||
+      (names.length > 0 && name <= names[names.length - 1]!)
+    ) {
+      throw malformedDiscoveryResponse();
+    }
+    names.push(name);
+  }
+  return { isDuckDB: parsed.isDuckDB, names, truncated: parsed.truncated };
+}
+
 export class NotebookVariableDiscoveryError extends Error {
   constructor(message: string) {
     super(message);

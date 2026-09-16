@@ -135,18 +135,11 @@ def materialize(frame: Any) -> tuple[list[str], list[tuple[Any, ...]]]:
     if isinstance(frame, pl.DataFrame):
         return list(frame.columns), frame.rows()
     if isinstance(frame, DuckDBSqlPlan):
-        connection = duckdb.connect(
-            config={
-                "autoinstall_known_extensions": False,
-                "autoload_known_extensions": False,
-                "enable_external_file_cache": False,
-            }
-        )
+        engine = DuckDBEngine()
         try:
-            result = connection.execute(frame.sql)
-            return [column[0] for column in result.description], result.fetchall()
+            return frame.columns, engine._terminal_rows(frame, "SELECT * FROM ow")
         finally:
-            connection.close()
+            engine.close()
     return list(frame.columns), frame.fetchall()
 
 
@@ -155,7 +148,8 @@ def execute_generated(engine: Any, frame: Any, operation: dict[str, Any] | list[
     namespace: dict[str, Any] = {"__builtins__": builtins}
     source = engine.compile_plan(plan)
     exec(compile(source, "<generated-custom-code>", "exec", dont_inherit=True), namespace, namespace)
-    return namespace["clean_data"](frame)
+    options = {"connection": duckdb.default_connection()} if engine.name == "duckdb" else {}
+    return namespace["clean_data"](frame, **options)
 
 
 @pytest.mark.parametrize(("case_name", "code", "message"), REJECTED_SCOPES)
@@ -286,7 +280,8 @@ def test_live_and_generated_custom_code_receive_the_same_exact_globals(
     namespace: dict[str, Any] = {name: frame for name in source_names}
     exec(compile(engine.compile_plan([operation]), "<generated-custom-globals>", "exec", dont_inherit=True), namespace)
     assert all(namespace.get(name) is frame for name in source_names)
-    generated = namespace["clean_data"](frame)
+    options = {"connection": duckdb.default_connection()} if backend == "duckdb" else {}
+    generated = namespace["clean_data"](frame, **options)
     assert materialize(engine.apply_transform(frame, operation)) == materialize(generated)
     assert all(namespace.get(name) is frame for name in source_names)
 

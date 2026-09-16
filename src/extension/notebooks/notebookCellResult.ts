@@ -187,8 +187,13 @@ async function openNotebookCellResult(
       variableName: captured.variableName,
       uri: origin.notebook.uri.toString()
     };
+    const prepared = await delegate.prepareLiveSource(source, captured.backend);
+    if (!prepared || !matchesExecutedCellOrigin(origin, tracker)) {
+      delegate.dispose();
+      return;
+    }
     const bridge = coordinator.createBridge(delegate, origin.notebook, sourceProtection);
-    OpenWranglerPanel.create(context, bridge, source, captured.backend);
+    OpenWranglerPanel.create(context, bridge, prepared.source, prepared.backend);
   } catch (error) {
     delegate.dispose();
     const detail = error instanceof Error ? error.message : "Open Wrangler could not read this cell result.";

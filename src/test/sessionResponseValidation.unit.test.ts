@@ -17,6 +17,7 @@ import type {
 } from "../shared/protocol";
 import { isOpenWranglerResponse } from "../shared/protocolValidation";
 import { responseMismatch, sessionOpenedResponseMismatch } from "../extension/sessionResponseValidation";
+import { copySessionSource } from "../extension/files/safePythonDataExport";
 
 const runtimeSessionId = "runtime-session";
 const filterModel: FilterModel = { filters: [], sort: [] };
@@ -416,6 +417,42 @@ describe("session response validation", () => {
     }
   });
 
+  it("pins the selected DuckDB connection through source copies and runtime opening", () => {
+    const selection = { kind: "variable" as const, name: "connection" };
+    const source = copySessionSource({
+      kind: "notebookVariable",
+      label: "frame",
+      variableName: "frame",
+      duckdbConnection: selection
+    });
+    selection.name = "replacement";
+    const request: OpenSessionRequest = {
+      kind: "openSession",
+      source,
+      backend: "duckdb",
+      mode: "viewing",
+      pageSize: 10,
+      columnOffset: 0,
+      columnLimit: 2
+    };
+    const response: SessionOpenedResponse = {
+      kind: "sessionOpened",
+      metadata: { ...metadata, backend: "duckdb", mode: "viewing", source: copySessionSource(source) },
+      page,
+      summaries: []
+    };
+    expect(source.duckdbConnection).toEqual({ kind: "variable", name: "connection" });
+    expect(sessionOpenedResponseMismatch(request, response)).toBeUndefined();
+    for (const duckdbConnection of [undefined, selection, { kind: "default" as const }]) {
+      expect(
+        sessionOpenedResponseMismatch(request, {
+          ...response,
+          metadata: { ...response.metadata, source: { ...source, duckdbConnection } }
+        })
+      ).toBe("metadata reported a different immutable source");
+    }
+  });
+
   it("publishes a JSON-roundtripped Parquet open when undefined optional source fields are omitted", async () => {
     const request: OpenSessionRequest = {
       kind: "openSession",
@@ -425,6 +462,7 @@ describe("session response validation", () => {
         path: "/workspace/sales.parquet",
         uri: "file:///workspace/sales.parquet",
         variableName: undefined,
+        duckdbConnection: undefined,
         importOptions: undefined
       },
       backend: "polars",

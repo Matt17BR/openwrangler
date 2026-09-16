@@ -290,12 +290,29 @@ async function openLiveNotebookVariable(
       throw error;
     }
   }
+  const retainedSourceProtection = sourceProtection ?? captureSessionSourceFiles(source);
   try {
-    const bridge = coordinator.createBridge(delegate, notebook, sourceProtection ?? captureSessionSourceFiles(source));
-    if (backend) {
-      OpenWranglerPanel.create(context, bridge, source, backend);
+    let prepared: { source: SessionSource; backend?: DataBackend } | undefined;
+    try {
+      prepared =
+        delegate instanceof KernelBridge ? await delegate.prepareLiveSource(source, backend) : { source, backend };
+    } catch (error) {
+      await delegate.dispose();
+      const detail = error instanceof Error ? ` ${error.message}` : "";
+      void vscode.window.showWarningMessage(
+        `Open Wrangler could not prepare this notebook dataframe.${detail} Check notebook kernel access, then open the dataframe again.`
+      );
+      return false;
+    }
+    if (!prepared || !isExactOpenNotebook(notebook)) {
+      await delegate.dispose();
+      return false;
+    }
+    const bridge = coordinator.createBridge(delegate, notebook, retainedSourceProtection);
+    if (prepared.backend) {
+      OpenWranglerPanel.create(context, bridge, prepared.source, prepared.backend);
     } else {
-      OpenWranglerPanel.create(context, bridge, source);
+      OpenWranglerPanel.create(context, bridge, prepared.source);
     }
     return true;
   } catch (error) {

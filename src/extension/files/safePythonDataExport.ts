@@ -71,6 +71,7 @@ export async function exportPythonDataSafely({
 export function copySessionSource(source: SessionSource): SessionSource {
   return {
     ...source,
+    ...(source.duckdbConnection ? { duckdbConnection: { ...source.duckdbConnection } } : {}),
     ...(source.importOptions ? { importOptions: { ...source.importOptions } } : {})
   };
 }

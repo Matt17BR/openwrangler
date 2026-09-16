@@ -2313,8 +2313,15 @@ async function exerciseReleasedJupyterExtension(
         "the persisted released-Jupyter denial retry"
       );
       assertExactOpenNotebookDocument(notebook, "after retrying the denied released Jupyter permission");
-      const denialError = await waitForReleasedJupyterTerminalPanelError(workbench, testing);
-      assert.ok(denialError.length > 0, "The persisted Jupyter denial must publish a terminal panel error.");
+      const denialWarning = workbench
+        .locator(
+          ".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible"
+        )
+        .filter({ hasText: "Open Wrangler could not prepare this notebook dataframe." })
+        .first();
+      await denialWarning.waitFor({ state: "visible", timeout: OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS });
+      assert.match(await denialWarning.innerText(), /Check notebook kernel access, then open the dataframe again/u);
+      assert.equal(releasedJupyterSessionTabs().length, 0, "Denied preparation must not create a live panel.");
       await waitForStableReleasedJupyterSessionCount(testing, 0, 2_000, 10_000);
       assert.equal(
         await visibleReleasedJupyterConsentCount(workbench),
@@ -3776,6 +3783,10 @@ async function dispatchReleasedJupyterVariableAction(
     `immediately before dispatching the released-Jupyter Variables action for ${variableName}`
   );
   recordAcceptanceProgress(`${checkpoint}:dispatch`);
+  const sessionReceipt = async (): Promise<void> => {
+    if (variableName === "duckdb_relation") await selectReleasedDuckDBConnection(workbench, notebook);
+    await waitForReleasedJupyterVariableActionReceipt(variableName);
+  };
   await invokeAcceptanceActionOnceWithAuthoritativeReceipt({
     description: `the real released-Jupyter Variables action for ${variableName}`,
     activate: () => viewerAction.action.press("Enter", { timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
@@ -3788,9 +3799,9 @@ async function dispatchReleasedJupyterVariableAction(
         "seen",
         `The real released-Jupyter Variables action for ${variableName} must receive one trusted keyboard activation.`
       );
-      await waitForReleasedJupyterVariableActionReceipt(variableName);
+      await sessionReceipt();
     },
-    authoritativeReceiptAfterActivationFailure: () => waitForReleasedJupyterVariableActionReceipt(variableName)
+    authoritativeReceiptAfterActivationFailure: sessionReceipt
   });
   recordAcceptanceProgress(`${checkpoint}:receipt`);
 }
@@ -5386,6 +5397,9 @@ async function waitForReleasedVariableSession(
   const active = testing.activeSession();
   assert.ok(active, `${description} must publish an active session.`);
   assert.equal(active.metadata.backend, expected.backend);
+  if (expected.backend === "duckdb") {
+    assert.deepEqual(active.metadata.source.duckdbConnection, { kind: "variable", name: "duckdb_connection" });
+  }
   if (expected.rDataframeFlavor !== undefined) {
     assert.equal(active.metadata.rDataframeFlavor, expected.rDataframeFlavor);
   }
@@ -5407,6 +5421,7 @@ async function openReleasedRendererVariableSession(
 ): Promise<NonNullable<ReturnType<TestApi["activeSession"]>>> {
   recordAcceptanceProgress(`${checkpoint}:button-ready`);
   const receipt = async (): Promise<NonNullable<ReturnType<TestApi["activeSession"]>>> => {
+    if (expected.backend === "duckdb") await selectReleasedDuckDBConnection(workbench, notebook);
     const active = await waitForReleasedVariableSession(workbench, testing, notebook, expected, description);
     recordAcceptanceProgress(`${checkpoint}:receipt`);
     return active;
@@ -5858,6 +5873,19 @@ async function releasedNotebookInsertionDiagnostics(
   };
 }
 
+async function selectReleasedDuckDBConnection(workbench: Page, notebook: vscode.NotebookDocument): Promise<void> {
+  assertExactOpenNotebookDocument(notebook, "before selecting the DuckDB relation's connection");
+  const picker = workbench.locator(".quick-input-widget:visible").filter({
+    hasText: "Select the DuckDB connection that created this relation"
+  });
+  await picker.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+  const row = await releasedJupyterQuickPickRow(picker, "duckdb_connection");
+  assert.ok(row, "The fixture's explicit DuckDB connection must be offered without selecting the default.");
+  await row.click();
+  await picker.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+  assertExactOpenNotebookDocument(notebook, "after selecting the DuckDB relation's connection");
+}
+
 async function invokeReleasedNotebookToolbarVariable(
   workbench: Page,
   notebook: vscode.NotebookDocument,
@@ -5885,6 +5913,7 @@ async function invokeReleasedNotebookToolbarVariable(
   } while (Date.now() < deadline);
   assert.ok(row, `The Open Wrangler notebook-variable picker did not expose ${JSON.stringify(variableName)}.`);
   await row.click();
+  if (variableName === "duckdb_relation") await selectReleasedDuckDBConnection(workbench, notebook);
   assertExactOpenNotebookDocument(notebook, "after submitting the Open Wrangler notebook toolbar variable");
 }
 

@@ -170,7 +170,7 @@ export function sessionOpenedResponseMismatch(
 
 function canonicalImmutableSource(source: SessionSource): SessionSource {
   const canonical = { ...source };
-  for (const key of ["path", "uri", "variableName"] as const) {
+  for (const key of ["path", "uri", "variableName", "duckdbConnection"] as const) {
     if (canonical[key] === undefined) delete canonical[key];
   }
   if (canonical.importOptions === undefined) {

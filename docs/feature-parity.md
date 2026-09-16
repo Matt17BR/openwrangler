@@ -132,12 +132,23 @@ identities stable even when the original query had no unique order. These full r
 not bound capture, and a mutation can retain old and new results together. The native LazyFrame type is preserved, but
 later projections cannot avoid that initial work. Python Object values retain their caller-owned references.
 
-Unordered DuckDB notebook queries and file Custom Code results can assign the same row ID to different logical rows
-between reads, or repeat or omit rows across pages and column projections, even with unchanged input data. Keep values
-stable and use a deterministic `ORDER BY` over a unique key in the notebook query or Custom Code result.
-Sorting the grid afterward does not repair identities assigned before that sort. Whole-column copy also reads
-pages in sequence and is exposed to this limitation. The [pagination bug](https://github.com/Matt17BR/openwrangler/issues/1487)
-remains open; explicit query ordering is a workaround.
+DuckDB notebook opening captures the full native result to keep values and row identities stable across pages,
+column windows and whole-column copy. Select the connection that created the relation and keep it open while using
+the viewer. Expose private connections as notebook variables, or explicitly select DuckDB's default connection when
+that is the owner. Another connection to the same database does not qualify. Automatic inline previews remain bounded
+and do not require this selection.
+
+DuckDB file Custom Code also captures each complete result into private native storage. Captures increase execution
+time, memory and temporary disk use, and previews can retain old and new results together. Page limits do not bound
+that work. Replay may evaluate volatile code again; it does not change rows already retained by an existing capture.
+Generated DuckDB plans containing Custom Code require `clean_data(frame, connection=con)`, where `con` created
+`frame`. Each Custom result must derive from its supplied `df`; returning a relation from another connection is
+refused. This includes independent `duckdb.sql(...)` results that older file sessions could rebind. Later native
+queries over generated results can also incur substantial materialization overhead.
+
+Open Wrangler never commits, rolls back or closes a notebook's connection. Native queries can invalidate a pending
+result, and execution errors may abort an active transaction. Resolve that transaction in the notebook before
+reopening the viewer. The [DuckDB contract](architecture.md#duckdb) describes ownership and capture costs.
 
 Generated Python keeps import and helper bindings local. Pandas and Polars notebook inputs named like those bindings
 remain available after executing the program; an input named `clean_data` uses the generated function `clean_data_1`.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import glob
 import json
 import os
@@ -25,7 +26,7 @@ import __main__
 import openwrangler_runtime.engines.duckdb_engine as duckdb_runtime
 from openwrangler_runtime._column_binding import bind_step
 from openwrangler_runtime.duckdb_tables import list_duckdb_tables, validated_database_tables
-from openwrangler_runtime.engines.base import EngineError, typed_selection_value
+from openwrangler_runtime.engines.base import DataFrameEngine, EngineError, typed_selection_value
 from openwrangler_runtime.engines.duckdb_engine import DuckDBEngine, DuckDBNotebookPlan, DuckDBSqlPlan
 from openwrangler_runtime.engines.registry import EngineRegistry
 from openwrangler_runtime.export_target import ExportTarget, _regular_file_identity
@@ -1234,17 +1235,11 @@ def reserve_export_target(path: Path) -> dict[str, str]:
 def rows(frame: Any) -> list[tuple[Any, ...]]:
     if not isinstance(frame, DuckDBSqlPlan):
         return list(frame.fetchall())
-    connection = duckdb.connect(
-        config={
-            "autoinstall_known_extensions": False,
-            "autoload_known_extensions": False,
-            "enable_external_file_cache": False,
-        }
-    )
+    engine = DuckDBEngine()
     try:
-        return list(connection.execute(frame.sql).fetchall())
+        return engine._terminal_rows(frame, "SELECT * FROM ow")
     finally:
-        connection.close()
+        engine.close()
 
 
 def records(frame: Any) -> list[dict[str, Any]]:
@@ -1305,14 +1300,286 @@ def reference_header_stats(engine: DuckDBEngine, frame: Any) -> dict[str, Any]:
     }
 
 
-def execute_generated(engine: DuckDBEngine, frame: Any, plan: list[dict[str, Any]]) -> Any:
+def execute_generated(engine: DuckDBEngine, frame: Any, plan: list[dict[str, Any]], *, connection: Any = None) -> Any:
     code = engine.compile_plan(plan)
     assert "openwrangler_runtime" not in code
     namespace: dict[str, Any] = {}
     exec(compile(code, "<generated-duckdb-plan>", "exec", dont_inherit=True), namespace, namespace)
-    result = namespace["clean_data"](frame)
+    # Most native fixtures above use the explicit module-default source owner.
+    # Private-connection fixtures pass their owner through this helper.
+    options = (
+        {"connection": connection if connection is not None else duckdb.default_connection()}
+        if any(operation["kind"] == "customCode" for operation in plan)
+        else {}
+    )
+    result = namespace["clean_data"](frame, **options)
     assert isinstance(result, duckdb.DuckDBPyRelation)
     return result
+
+
+def export_generated_native(engine: DataFrameEngine, frame: Any, connection: Any, writer: Any, options: Any) -> None:
+    owner = duckdb_runtime._DuckDBNotebookRelationOwner(frame, connection)
+    try:
+        plan = DuckDBNotebookPlan(
+            owner, f'SELECT * FROM "{owner.alias}"', tuple(frame.columns), tuple(map(str, frame.types))
+        )
+        engine.export_data(plan, writer, options)
+    finally:
+        owner.close()
+
+
+def test_duckdb_custom_checkpoint_retains_rows_and_stored_ids(tmp_path: Path) -> None:
+    path = tmp_path / "capture.csv"
+    path.write_text("id\n0\n1\n2\n3\n", encoding="utf-8")
+    before = path.read_bytes()
+    engine = DuckDBEngine()
+    try:
+        source = engine.ensure_row_ids(engine.read_file(str(path)), "source")
+        captured = engine.apply_transform(
+            source,
+            step(
+                "customCode",
+                code="df.query('__custom_input', 'BEGIN')\n"
+                "df.query('__custom_input', \"SET default_null_order='NULLS_FIRST'\")\n"
+                "result = df.project('id, uuid() AS token').order('random()')",
+            ),
+        )
+        engine.validate_internal_row_id_namespace(captured)
+        frame = engine.ensure_row_ids(captured, "captured")
+        original = engine.page(frame, 0, 4)
+        assert engine.page(frame, 0, 4) == original
+        assert engine.page(frame, 0, 2)["rows"] + engine.page(frame, 2, 2)["rows"] == original["rows"]
+        clone = engine.apply_transform(
+            frame, bound_step("cloneColumn", column=bound_ref("c:1", "token", 1), newName="copy")
+        )
+        assert engine._terminal_scalar(clone, "SELECT bool_and(token = copy) FROM ow") is True
+        assert [row["id"] for row in engine.page(clone, 0, 4)["rows"]] == [row["id"] for row in original["rows"]]
+        with duckdb_runtime._connect() as connection:
+            assert (
+                engine._terminal_scalar(clone, "SELECT current_setting('default_null_order') FROM ow LIMIT 1")
+                == (connection.sql("SELECT current_setting('default_null_order')").fetchone()[0])
+            )
+        second = engine.apply_transform(clone, step("customCode", code="result = df.project('*, uuid() AS second')"))
+        second = engine.ensure_row_ids(second, "second")
+        second_clone = engine.apply_transform(
+            second, bound_step("cloneColumn", column=bound_ref("c:3", "second", 3), newName="second_copy")
+        )
+        ordered = engine.apply_filter_model(
+            second_clone,
+            {"logic": "and", "filters": [], "sort": [{"column": "id", "direction": "desc", "nulls": "last"}]},
+        )
+        ordered_page = engine.page(ordered, 0, 4)
+        assert [row["values"][0]["display"] for row in ordered_page["rows"]] == ["3", "2", "1", "0"]
+        assert engine.page(ordered, 0, 4) == ordered_page
+        assert engine._terminal_scalar(ordered, "SELECT bool_and(token = copy) FROM ow") is True
+        assert engine._terminal_scalar(ordered, "SELECT bool_and(second = second_copy) FROM ow") is True
+        checkpoint = captured.checkpoint
+        assert checkpoint is not None
+        stored_path = Path(checkpoint.temporary.name)
+        owner_ref = weakref.ref(checkpoint)
+        del checkpoint, captured, frame
+        gc.collect()
+        assert stored_path.exists() and owner_ref() is not None
+        del clone
+        gc.collect()
+        assert owner_ref() is None and not stored_path.exists()
+        assert second.checkpoint is not None
+        second_path = Path(second.checkpoint.temporary.name)
+        engine.close()
+        assert not second_path.exists()
+        assert path.read_bytes() == before
+    finally:
+        engine.close()
+
+
+def test_duckdb_generated_custom_captures_once_on_explicit_connection() -> None:
+    engine = DuckDBEngine()
+    visits: list[int] = []
+    with duckdb.connect(config={"python_enable_replacements": False}) as connection:
+
+        def observed(value: int) -> int:
+            visits.append(value)
+            return value
+
+        connection.create_function("capture_observed", observed, [BIGINT], BIGINT, side_effects=True)
+        source = connection.sql("SELECT i AS id FROM range(4) input(i)")
+        plan = [step("customCode", code="result = df.project('capture_observed(id) AS id, uuid() AS token')")]
+        namespace: dict[str, Any] = {}
+        exec(engine.compile_plan(plan), namespace)
+        try:
+            result = namespace["clean_data"](source, connection=connection)
+            assert visits == [0, 1, 2, 3]
+            first = result.fetchall()
+            assert result.fetchall() == first and visits == [0, 1, 2, 3]
+            assert connection.sql("SELECT view_name FROM duckdb_views() WHERE NOT internal").fetchall() == []
+            assert source.fetchall() == [(0,), (1,), (2,), (3,)]
+        finally:
+            engine.close()
+
+
+def test_duckdb_notebook_capture_owns_rows_not_caller_connection() -> None:
+    engine = DuckDBEngine()
+    clone_engine = DuckDBEngine()
+    with duckdb.connect() as connection:
+        source = connection.sql("SELECT i AS id, uuid() AS token FROM range(4) input(i) ORDER BY random()")
+        try:
+            frame = engine.capture_notebook_source(
+                engine.normalize_notebook_relation(source), connection, row_id_token="notebook:source"
+            )
+            first = engine.page(frame, 0, 4)
+            assert engine.page(frame, 0, 2)["rows"] + engine.page(frame, 2, 2)["rows"] == first["rows"]
+            assert engine.page(frame, 0, 4) == first
+            assert connection.sql("SELECT view_name FROM duckdb_views() WHERE NOT internal").fetchall() == []
+            cloned = clone_engine.clone_session_source(frame)
+            assert cloned.owner is not frame.owner
+        finally:
+            engine.close()
+        try:
+            assert clone_engine.page(cloned, 0, 4) == first
+        finally:
+            clone_engine.close()
+        assert connection.sql("SELECT 17").fetchone() == (17,)
+
+
+@pytest.mark.parametrize("owner", ["file", "generated", "notebook"])
+def test_duckdb_native_capture_preserves_difficult_types(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, owner: str
+) -> None:
+    install_conversion_guards(monkeypatch)
+    projection = """id,
+        CASE WHEN id%2=0 THEN '-170141183460469231731687303715884105728'::HUGEINT
+             ELSE '170141183460469231731687303715884105727'::HUGEINT END AS signed,
+        '340282366920938463463374607431768211455'::UHUGEINT AS unsigned,
+        '12345678901234567890123456789.123456789'::DECIMAL(38,9) AS amount,
+        INTERVAL '1 month 2 days 3 microseconds' AS span,
+        '12:34:56.123456+05:30'::TIMETZ AS clock,
+        '\\x00\\xFF'::BLOB AS payload,
+        MAP(['12:00:00+02'::TIMETZ, '10:00:00+00'::TIMETZ], ['a', 'b']) AS clocks,
+        CASE WHEN id%2=0 THEN union_value(a := 'same')::UNION(a VARCHAR, b VARCHAR)
+             ELSE union_value(b := 'same')::UNION(a VARCHAR, b VARCHAR) END AS choice,
+        struct_pack(span := INTERVAL '-3 microseconds',
+                    choice := CASE WHEN id%2=0 THEN union_value(a := 'same')::UNION(a VARCHAR, b VARCHAR)
+                              ELSE union_value(b := 'same')::UNION(a VARCHAR, b VARCHAR) END) AS nested,
+        '2024-01-02 03:04:05.123456789'::TIMESTAMP_NS AS stamp,
+        uuid() AS token"""
+    predicate = """signed = CASE WHEN id%2=0 THEN '-170141183460469231731687303715884105728'::HUGEINT
+             ELSE '170141183460469231731687303715884105727'::HUGEINT END
+        AND unsigned = '340282366920938463463374607431768211455'::UHUGEINT
+        AND amount = '12345678901234567890123456789.123456789'::DECIMAL(38,9)
+        AND date_part('month', span)=1 AND date_part('day', span)=2 AND date_part('microseconds', span)=3
+        AND clock::VARCHAR='12:34:56.123456+05:30' AND hex(payload)='00FF'
+        AND map_extract_value(clocks, '12:00:00+02'::TIMETZ)='a'
+        AND map_extract_value(clocks, '10:00:00+00'::TIMETZ)='b'
+        AND union_tag(choice)::VARCHAR=CASE WHEN id%2=0 THEN 'a' ELSE 'b' END
+        AND union_tag(nested.choice)::VARCHAR=CASE WHEN id%2=0 THEN 'a' ELSE 'b' END
+        AND date_part('microseconds', nested.span)=-3
+        AND epoch_ns(stamp)=1704164645123456789"""
+    engine = DuckDBEngine()
+    path = tmp_path / "native.csv"
+    path.write_text("id\n0\n1\n2\n3\n", encoding="utf-8")
+    original = path.read_bytes()
+    with duckdb.connect() as connection:
+        source = connection.sql("SELECT i AS id FROM range(4) input(i)")
+        expected_types = tuple(map(str, source.project(projection).types))
+        try:
+            if owner == "file":
+                frame = engine.apply_transform(
+                    engine.read_file(str(path)), step("customCode", code=f"result = df.project({projection!r})")
+                )
+            elif owner == "notebook":
+                frame = engine.capture_notebook_source(
+                    engine.normalize_notebook_relation(source.project(projection)), connection, row_id_token="native"
+                )
+            else:
+                result = execute_generated(
+                    engine,
+                    source,
+                    [step("customCode", code=f"result = df.project({projection!r})")],
+                    connection=connection,
+                )
+                assert tuple(map(str, result.types)) == expected_types
+                assert result.aggregate(f"count(*), bool_and({predicate})").fetchone() == (4, True)
+                tokens = result.project("id, token").fetchall()
+                assert result.project("id, token").fetchall() == tokens
+                return
+            assert tuple(column["rawType"] for column in engine.schema(frame)) == expected_types
+            assert engine._terminal_rows(frame, f"SELECT count(*), bool_and({predicate}) FROM ow") == [(4, True)]
+            tokens = engine._terminal_rows(frame, "SELECT id, token FROM ow")
+            assert engine._terminal_rows(frame, "SELECT id, token FROM ow") == tokens
+        finally:
+            engine.close()
+            assert path.read_bytes() == original
+            assert source.fetchall() == [(0,), (1,), (2,), (3,)]
+
+
+def test_duckdb_capture_refusal_preserves_affinity_and_caller_rollback() -> None:
+    engine = DuckDBEngine()
+    with duckdb.connect() as connection, duckdb.connect() as wrong:
+        connection.execute("CREATE TABLE capture_source AS SELECT 1 AS value UNION ALL SELECT 129")
+        source = connection.table("capture_source")
+        operation = step("customCode", code="result = df.project('CAST(value AS TINYINT) AS value')")
+        namespace: dict[str, Any] = {}
+        exec(engine.compile_plan([operation]), namespace)
+        wrong.execute("CREATE TABLE marker AS SELECT 1 AS value")
+        wrong.execute("BEGIN")
+        wrong.execute("UPDATE marker SET value=2")
+        try:
+            with pytest.raises(ValueError, match="supplied connection"):
+                namespace["clean_data"](source, connection=wrong)
+            assert wrong.sql("SELECT value FROM marker").fetchone() == (2,)
+            wrong.execute("ROLLBACK")
+            assert wrong.sql("SELECT value FROM marker").fetchone() == (1,)
+            connection.execute("BEGIN")
+            connection.execute("UPDATE capture_source SET value=2 WHERE value=1")
+            with pytest.raises(duckdb.ConversionException, match="129"):
+                namespace["clean_data"](source, connection=connection)
+            # A native evaluation error may abort the caller transaction. Only
+            # the caller rolls it back; Open Wrangler must not commit or recover it.
+            connection.execute("ROLLBACK")
+            assert source.fetchall() == [(1,), (129,)]
+            assert connection.sql("SELECT view_name FROM duckdb_views() WHERE NOT internal").fetchall() == []
+            for code, message in (
+                ("result = duckdb.sql('SELECT 23 AS value')", "supplied connection"),
+                ("result = df.project('value AS __Open_Wrangler_Internal_Row_Id_forged')", "reserved"),
+            ):
+                program: dict[str, Any] = {}
+                exec(engine.compile_plan([step("customCode", code=code)]), program)
+                with pytest.raises(ValueError, match=message):
+                    program["clean_data"](source, connection=connection)
+                with pytest.raises(EngineError, match=message):
+                    engine.apply_transform(
+                        source_relation(), step("customCode", code=code.replace("value AS", "other AS"))
+                    )
+                assert connection.sql("SELECT view_name FROM duckdb_views() WHERE NOT internal").fetchall() == []
+        finally:
+            engine.close()
+
+
+def test_duckdb_failed_checkpoint_rebind_removes_owned_storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "failed-capture.csv"
+    path.write_text("value\n1\n2\n", encoding="utf-8")
+    before = path.read_bytes()
+    engine = DuckDBEngine()
+    frame = engine.read_file(str(path))
+    native_rebind = engine._relation_from_sql
+    owned_paths: list[Path] = []
+
+    def fail_checkpoint(sql: str, *, checkpoint: Any = None, ordinal_sql: str | None = None) -> Any:
+        if checkpoint is not None:
+            owned_paths.append(Path(checkpoint.temporary.name))
+            raise EngineError("owned checkpoint reader failure")
+        return native_rebind(sql, checkpoint=checkpoint, ordinal_sql=ordinal_sql)
+
+    monkeypatch.setattr(engine, "_relation_from_sql", fail_checkpoint)
+    try:
+        with pytest.raises(EngineError, match="owned checkpoint reader failure"):
+            engine.apply_transform(frame, step("customCode", code="result = df.project('value + 1 AS value')"))
+        assert len(owned_paths) == 1 and not owned_paths[0].exists()
+        assert not list(engine._checkpoints)
+        assert engine._terminal_rows(frame, "SELECT * FROM ow") == [(1,), (2,)]
+        assert path.read_bytes() == before
+    finally:
+        engine.close()
 
 
 @pytest.mark.parametrize(
@@ -2276,7 +2543,9 @@ def test_duckdb_generated_rename_results_use_the_private_connection(
                 # Computed results still evaluate through qualified builtins,
                 # even when this connection shadows a validation function.
                 with pytest.raises(duckdb.Error, match="owned private result error"):
-                    execute_generated(engine, invalid, [bound_step("customCode", code="result = df"), *plan])
+                    execute_generated(
+                        engine, invalid, [bound_step("customCode", code="result = df"), *plan], connection=connection
+                    )
                 assert invalid.columns == ["ow"]
                 generated = execute_generated(engine, frame, plan)
                 assert visits == []
@@ -2436,7 +2705,7 @@ def test_duckdb_generated_query_preserves_the_custom_module_namespace(mixed: boo
                 "FROM (VALUES (2::BIGINT), (3)) t(key)"
             )
             frame = connection.table("generated_custom_source")
-            generated = execute_generated(engine, frame, plan)
+            generated = execute_generated(engine, frame, plan, connection=connection)
             assert generated.fetchall() == ([(3, 4), (4, 5)] if mixed else [(3,), (4,)])
             assert generated.types == ([BIGINT, BIGINT] if mixed else [BIGINT])
             assert frame.fetchall() == [(2, 2), (3, 3)]
@@ -2627,6 +2896,8 @@ def test_duckdb_generated_code_emits_only_reachable_helpers() -> None:
             assert empty_source.fetchall() == [(99, 2)]
             assert calls == [99]
         plain_code = engine.compile_plan(plain_plan)
+        assert "_registered_native_relation" not in plain_code
+        assert "_OW_CAPTURED" not in plain_code
         assert "def _ow_text(" in plain_code
         assert "def _ow_assign(" in plain_code
         assert "def _ow_query(" not in plain_code
@@ -2641,6 +2912,8 @@ def test_duckdb_generated_code_emits_only_reachable_helpers() -> None:
         )
         for plan in categorical_plans:
             code = engine.compile_plan(plan)
+            assert "_registered_native_relation" not in code
+            assert "_OW_CAPTURED" not in code
             assert "def _ow_query(" in code
             assert "def _ow_pivot_wider(" not in code
             assert_same_relation(
@@ -6296,7 +6569,9 @@ def test_duckdb_grouped_integer_export_matches_generated_code_and_refuses_hidden
             )
         namespace = {}
         exec(compile(applied["code"], "<exported-cleaning-plan>", "exec"), namespace, namespace)
-        generated = namespace["clean_data"](duckdb.read_csv(str(source), header=True))
+        generated = namespace["clean_data"](
+            duckdb.read_csv(str(source), header=True), connection=duckdb.default_connection()
+        )
         rejected_generated = tmp_path / "unpublished-generated.parquet"
         identity = reserve_export_target(rejected_generated)
         with (
@@ -6305,7 +6580,7 @@ def test_duckdb_grouped_integer_export_matches_generated_code_and_refuses_hidden
             ).pinned_writer_path() as writer,
             pytest.raises(EngineError, match="DECIMAL"),
         ):
-            engine.export_data(generated, writer, export_options("parquet"))
+            export_generated_native(engine, generated, duckdb.default_connection(), writer, export_options("parquet"))
         assert manager.get_page(session_id, applied["revision"], 0, 10, {"filters": [], "sort": []}) == confirmed
         fallback = tmp_path / "exact.csv"
         assert (
@@ -6342,7 +6617,9 @@ def test_duckdb_temporal_export_matches_generated_code_and_refuses_hidden_loss(t
         engine = manager.sessions[session_id].engine
         namespace: dict[str, Any] = {}
         exec(compile(applied["code"], "<temporal-cleaning-plan>", "exec"), namespace, namespace)
-        generated = namespace["clean_data"](duckdb.read_csv(str(source), header=True))
+        generated = namespace["clean_data"](
+            duckdb.read_csv(str(source), header=True), connection=duckdb.default_connection()
+        )
         text_projection = 'row, "elapsed ""exact"""::VARCHAR, clock::VARCHAR, "wide integer"::VARCHAR'
         before = generated.project(text_projection).fetchall()
         assert before == [
@@ -6365,7 +6642,9 @@ def test_duckdb_temporal_export_matches_generated_code_and_refuses_hidden_loss(t
                 with ExportTarget(
                     destination, int(identity["device"]), int(identity["inode"])
                 ).pinned_writer_path() as writer:
-                    engine.export_data(generated, writer, export_options("parquet"))
+                    export_generated_native(
+                        engine, generated, duckdb.default_connection(), writer, export_options("parquet")
+                    )
             loaded = duckdb.read_parquet(str(destination))
             assert loaded.project(text_projection).fetchall() == [
                 (1, "00:00:01", "10:00:00+00", "9007199254740993"),
@@ -6397,7 +6676,9 @@ def test_duckdb_temporal_export_matches_generated_code_and_refuses_hidden_loss(t
         confirmed = manager.get_page(session_id, applied["revision"], 0, 10, {"filters": [], "sort": []})
         namespace = {}
         exec(compile(applied["code"], "<temporal-cleaning-plan>", "exec"), namespace, namespace)
-        generated = namespace["clean_data"](duckdb.read_csv(str(source), header=True))
+        generated = namespace["clean_data"](
+            duckdb.read_csv(str(source), header=True), connection=duckdb.default_connection()
+        )
         if invalid == "map_key":
             assert generated.filter("row = 2").project(
                 "map_extract_value(nested,'12:00:00+02'::TIMETZ), map_extract_value(nested,'10:00:00+00'::TIMETZ)"
@@ -6414,7 +6695,9 @@ def test_duckdb_temporal_export_matches_generated_code_and_refuses_hidden_loss(t
                     with ExportTarget(
                         destination, int(identity["device"]), int(identity["inode"])
                     ).pinned_writer_path() as writer:
-                        engine.export_data(generated, writer, export_options("parquet"))
+                        export_generated_native(
+                            engine, generated, duckdb.default_connection(), writer, export_options("parquet")
+                        )
             assert _regular_file_identity(destination) == (int(identity["device"]), int(identity["inode"]))
         assert manager.get_page(session_id, applied["revision"], 0, 10, {"filters": [], "sort": []}) == confirmed
         fallback = tmp_path / "exact.csv"
@@ -6442,8 +6725,15 @@ def test_duckdb_live_notebook_session_owns_the_exact_relation_without_conversion
         "CREATE TABLE private_orders AS "
         "SELECT * FROM (VALUES (7, 'Milan'), (11, 'Berlin'), (9, 'Paris')) AS rows(order_id, city)"
     )
-    relation = connection.table("private_orders")
+    relation = connection.table("private_orders").project("*, uuid() AS token").order("random()")
     monkeypatch.setattr(__main__, "duck_orders", relation, raising=False)
+    monkeypatch.setattr(__main__, "orders_connection", connection, raising=False)
+    source = {
+        "kind": source_kind,
+        "label": "duck_orders",
+        "variableName": "duck_orders",
+        "duckdbConnection": {"kind": "variable", "name": "orders_connection"},
+    }
 
     def reject_unrelated_connection() -> Any:
         raise AssertionError("A live notebook relation must never replay SQL on an unrelated DuckDB connection")
@@ -6453,7 +6743,7 @@ def test_duckdb_live_notebook_session_owns_the_exact_relation_without_conversion
     owner = None
     try:
         opened = manager.open_session(
-            {"kind": source_kind, "label": "duck_orders", "variableName": "duck_orders"},
+            source,
             backend="duckdb",
             mode="editing",
             page_size=2,
@@ -6470,8 +6760,16 @@ def test_duckdb_live_notebook_session_owns_the_exact_relation_without_conversion
             "notebookInsert": False,
             "supportedOperations": [],
         }
-        assert opened["metadata"]["shape"] == {"rows": 3, "columns": 2}
-        assert [row["values"][0]["display"] for row in opened["page"]["rows"]] == ["7", "11"]
+        assert opened["metadata"]["shape"] == {"rows": 3, "columns": 3}
+        view = {"logic": "and", "filters": [], "sort": []}
+        full_page = manager.get_page(session_id, 0, 0, 3, view)["page"]
+        adjacent = manager.get_page(session_id, 0, 2, 2, view)["page"]
+        assert opened["page"]["rows"] + adjacent["rows"] == full_page["rows"]
+        assert {row["values"][0]["display"] for row in full_page["rows"]} == {"7", "9", "11"}
+        projected = [
+            row for offset in (0, 2) for row in manager.get_page(session_id, 0, offset, 2, view, 2, 1)["page"]["rows"]
+        ]
+        assert projected == [{**row, "values": [row["values"][2]]} for row in full_page["rows"]]
         original = manager.sessions[session_id].original
         assert isinstance(original, DuckDBNotebookPlan)
         owner = original.owner
@@ -6517,9 +6815,25 @@ def test_duckdb_live_notebook_session_owns_the_exact_relation_without_conversion
         with pytest.raises(EngineError, match="viewing mode"):
             manager.export_data(session_id, 0, str(tmp_path / "must-not-export.csv"), export_options("csv"))
 
+        cloned = manager.open_session(
+            source,
+            backend="duckdb",
+            mode="viewing",
+            page_size=3,
+            clone_from={"sessionId": session_id, "revision": 0},
+        )
+        clone_id = cloned["metadata"]["sessionId"]
         assert manager.close_session(session_id, 0) == {"kind": "sessionClosed", "sessionId": session_id}
         assert owner.closed is True
-        assert relation.fetchall() == [(7, "Milan"), (11, "Berlin"), (9, "Paris")]
+        assert manager.get_page(clone_id, 0, 0, 3, view)["page"]["rows"] == full_page["rows"]
+        assert vars(__main__)["duck_orders"] is relation
+        assert connection.table("private_orders").fetchall() == [(7, "Milan"), (11, "Berlin"), (9, "Paris")]
+        assert relation.project("order_id").order("order_id").fetchall() == [(7,), (9,), (11,)]
+        monkeypatch.setattr(__main__, "orders_connection", object())
+        with pytest.raises(EngineError, match="no longer available"):
+            manager.open_session(source, backend="duckdb", page_size=2)
+        assert list(manager.sessions) == [clone_id]
+        assert connection.sql("SELECT 17").fetchone() == (17,)
     finally:
         manager.close_all()
         connection.close()
@@ -6658,11 +6972,17 @@ def test_duckdb_notebook_session_close_does_not_leave_query_views(monkeypatch: p
         connection.execute("CREATE TABLE private_values AS SELECT 7 AS value UNION ALL SELECT 11")
         relation = connection.table("private_values")
         monkeypatch.setattr(__main__, "owned_values", relation, raising=False)
+        monkeypatch.setattr(__main__, "values_connection", connection, raising=False)
         manager = SessionManager(EngineRegistry((("duckdb", DuckDBEngine),)))
         try:
             for _ in range(2):
                 opened = manager.open_session(
-                    {"kind": "notebookVariable", "label": "owned_values", "variableName": "owned_values"},
+                    {
+                        "kind": "notebookVariable",
+                        "label": "owned_values",
+                        "variableName": "owned_values",
+                        "duckdbConnection": {"kind": "variable", "name": "values_connection"},
+                    },
                     backend="duckdb",
                     page_size=2,
                 )

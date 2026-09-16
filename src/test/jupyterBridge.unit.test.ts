@@ -14,6 +14,35 @@ const notebookMocks = jupyterBridgeMocks();
 describe("notebook command lifecycle provenance", () => {
   beforeEach(resetNotebookCommandTest);
 
+  it.each(["preparation", "panel"] as const)("reports only %s failure as a pre-open refusal", async (stage) => {
+    const original = notebook("file:///workspace/denied.ipynb");
+    notebookMocks.notebookDocuments.push(original);
+    const { coordinator } = register();
+    if (stage === "preparation") notebookMocks.prepare.mockRejectedValueOnce(new Error("Kernel access denied."));
+    else
+      notebookMocks.createPanel.mockImplementationOnce(() => {
+        throw new Error("Panel creation failed.");
+      });
+
+    const opening = command("openWrangler.launchDataViewer")({
+      name: "relation",
+      type: "_duckdb.DuckDBPyRelation",
+      fileName: original.uri
+    });
+    if (stage === "preparation") {
+      await opening;
+      expect(coordinator.createBridge).not.toHaveBeenCalled();
+      expect(notebookMocks.createPanel).not.toHaveBeenCalled();
+      expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
+        "Open Wrangler could not prepare this notebook dataframe. Kernel access denied. Check notebook kernel access, then open the dataframe again."
+      );
+    } else {
+      await expect(opening).rejects.toThrow("Panel creation failed.");
+      expect(notebookMocks.showWarningMessage).not.toHaveBeenCalled();
+    }
+    expect(notebookMocks.kernelDelegateDisposals).toEqual([original]);
+  });
+
   it("does not retarget the interactive command after its captured document closes and reopens", async () => {
     const original = notebook("file:///workspace/shared.ipynb");
     const replacement = notebook("file:///workspace/shared.ipynb");

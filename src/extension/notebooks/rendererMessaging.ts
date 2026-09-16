@@ -1,8 +1,6 @@
 import { createHash } from "node:crypto";
 import * as vscode from "vscode";
 import {
-  NOTEBOOK_OUTPUT_DEFAULT_CAPTURE_ROWS,
-  NOTEBOOK_OUTPUT_LIMITS,
   isNotebookLiveResultHandle,
   isPythonIdentifier,
   normalizeNotebookOutputPayload,
@@ -10,7 +8,6 @@ import {
 } from "../../shared/notebookOutput";
 import { getSetting } from "../configuration";
 import { SessionCoordinator } from "../sessionCoordinator";
-import { responseMismatch, sessionOpenedResponseMismatch } from "../sessionResponseValidation";
 import { OpenWranglerPanel } from "../webviewPanel";
 import {
   KernelBridge,
@@ -266,7 +263,18 @@ async function completeOwnedInlineUpgradeAction(
       terminateInlineUpgradeOperation(state, operation);
       return;
     }
-    openLinkedNotebookSource(context, coordinator, editor, source, binding.kernelBinding, sourceProtection);
+    // Connection selection is user-controlled; preparation bounds its own kernel work.
+    if (action.deadline) clearTimeout(action.deadline);
+    action.deadline = undefined;
+    await openLinkedNotebookSource(
+      context,
+      coordinator,
+      editor,
+      source,
+      binding.kernelBinding,
+      sourceProtection,
+      () => isInlineUpgradeActionCurrent(state, action) && isInlineUpgradeBindingCurrent(operation)
+    );
   } finally {
     settleInlineUpgradeAction(state, action);
   }
@@ -298,17 +306,18 @@ function openLinkedNotebookResult(
     return;
   }
 
-  openLinkedNotebookSource(context, coordinator, editor, payload.metadata.source, requiredKernelBinding);
+  void openLinkedNotebookSource(context, coordinator, editor, payload.metadata.source, requiredKernelBinding);
 }
 
-function openLinkedNotebookSource(
+async function openLinkedNotebookSource(
   context: vscode.ExtensionContext,
   coordinator: SessionCoordinator,
   editor: vscode.NotebookEditor,
   source: Readonly<{ label: string; variableName?: string }>,
   requiredKernelBinding?: ExecutedNotebookCellResultBinding,
-  sourceProtection?: Promise<SessionSourceProtection>
-): void {
+  sourceProtection?: Promise<SessionSourceProtection>,
+  isCurrent: () => boolean = () => true
+): Promise<void> {
   const notebook = originatingNotebook(editor);
   if (!notebook) {
     void vscode.window.showErrorMessage(
@@ -331,24 +340,27 @@ function openLinkedNotebookSource(
     return;
   }
 
+  let delegate: KernelBridge | undefined;
   try {
     const label = isNotebookLiveResultHandle(variableName) ? source.label : variableName;
-    OpenWranglerPanel.create(
-      context,
-      coordinator.createBridge(
-        new KernelBridge(context, notebook, shouldRegisterNotebookFormatters(), {}, requiredKernelBinding),
-        notebook,
-        sourceProtection ??
-          captureSessionSourceFiles({ kind: "notebookVariable", label: "notebook", uri: notebook.uri.toString() })
-      ),
-      {
-        kind: "notebookVariable",
-        label,
-        variableName,
-        uri: notebook.uri.toString()
-      }
-    );
+    const liveSource = { kind: "notebookVariable" as const, label, variableName, uri: notebook.uri.toString() };
+    const retainedProtection = sourceProtection ?? captureSessionSourceFiles(liveSource);
+    delegate = new KernelBridge(context, notebook, shouldRegisterNotebookFormatters(), {}, requiredKernelBinding);
+    const prepared = await delegate.prepareLiveSource(liveSource);
+    if (
+      !prepared ||
+      originatingNotebook(editor) !== notebook ||
+      !isSoleOpenNotebookDocument(notebook) ||
+      !isCurrent()
+    ) {
+      delegate.dispose();
+      return;
+    }
+    const bridge = coordinator.createBridge(delegate, notebook, retainedProtection);
+    if (prepared.backend === undefined) OpenWranglerPanel.create(context, bridge, prepared.source);
+    else OpenWranglerPanel.create(context, bridge, prepared.source, prepared.backend);
   } catch (error) {
+    delegate?.dispose();
     const detail = error instanceof Error ? ` ${error.message}` : "";
     const recovery = isNotebookLiveResultHandle(variableName)
       ? "run the cell again and try again."
@@ -513,6 +525,11 @@ async function runInlineUpgradeWork(
       );
       if (!selected || !(await hasCurrentInlineUpgradeOwner(state, operation))) return;
       operation.providerSelected = true;
+      operation.deadline = setTimeout(
+        () => terminateInlineUpgradeOperation(state, operation),
+        INLINE_UPGRADE_PREPUBLICATION_DEADLINE_MS
+      );
+      operation.deadline.unref?.();
     } else if (provider !== "owned") {
       return;
     }
@@ -599,129 +616,27 @@ async function createInlineUpgradePayload(
   const binding = operation.binding;
   if (!binding || !(await hasCurrentInlineUpgradeKernel(operation))) return undefined;
   const bridge = new KernelBridge(context, binding.notebook, true, {}, binding.kernelBinding);
-  let session: { readonly sessionId: string; readonly revision: number } | undefined;
   let payload: NotebookOutputPayload | undefined;
-  let cleanupFailed = false;
   try {
     const captured = await bridge.captureExecutedCellResult(
       binding.executionOrder,
       binding.sourceFingerprint,
-      binding.kernelBinding
+      binding.kernelBinding,
+      { maxColumns: INLINE_UPGRADE_MAX_COLUMNS }
     );
     if (!(await hasCurrentInlineUpgradeKernel(operation)) || captured.backend === "pyspark") return undefined;
-    const requestedSessionId = `inline-session-${operation.candidate.token}`;
-    const openRequest = {
-      kind: "openSession" as const,
-      source: {
-        kind: "notebookVariable" as const,
-        label: captured.label,
-        variableName: captured.variableName,
-        uri: binding.notebook.uri.toString()
-      },
-      backend: captured.backend,
-      mode: "viewing" as const,
-      pageSize: 1,
-      columnOffset: 0,
-      columnLimit: INLINE_UPGRADE_MAX_COLUMNS,
-      requestedSessionId
-    };
-    session = { sessionId: requestedSessionId, revision: 0 };
-    const opened = await bridge.request(openRequest, { cancellation: operation.cancellation.token });
-    if (!(await hasCurrentInlineUpgradeKernel(operation))) return undefined;
-    if (opened.kind !== "sessionOpened") return undefined;
-    session = { sessionId: requestedSessionId, revision: opened.metadata.revision };
-    if (
-      sessionOpenedResponseMismatch(openRequest, opened, true) !== undefined ||
-      opened.metadata.shape.rows === null ||
-      opened.metadata.schema.length > INLINE_UPGRADE_MAX_COLUMNS
-    ) {
-      return undefined;
-    }
-    const columns = opened.metadata.schema.length;
-    const pageLimit = Math.max(
-      1,
-      Math.min(
-        NOTEBOOK_OUTPUT_DEFAULT_CAPTURE_ROWS,
-        opened.metadata.shape.rows,
-        Math.floor(NOTEBOOK_OUTPUT_LIMITS.cells / Math.max(1, columns))
-      )
-    );
-    const pageRequest = {
-      kind: "getPage" as const,
-      sessionId: session.sessionId,
-      revision: session.revision,
-      viewRequestId: `inline-${operation.candidate.token}`,
-      offset: 0,
-      limit: pageLimit,
-      columnOffset: 0,
-      columnLimit: Math.max(1, Math.min(INLINE_UPGRADE_MAX_COLUMNS, columns)),
-      filterModel: { filters: [], sort: [] }
-    };
-    const page = await bridge.request(pageRequest, { cancellation: operation.cancellation.token, ephemeralPage: true });
-    if (!(await hasCurrentInlineUpgradeKernel(operation))) return undefined;
-    const pageMismatch = responseMismatch(pageRequest, page, session.sessionId, opened.metadata.schema);
-    if (
-      page.kind !== "page" ||
-      pageMismatch !== undefined ||
-      page.page.totalRows === null ||
-      page.metadata.backend !== captured.backend
-    ) {
-      return undefined;
-    }
-    session = { sessionId: page.metadata.sessionId, revision: page.metadata.revision };
+    if (!captured.payload || captured.payload.metadata.schema.length > INLINE_UPGRADE_MAX_COLUMNS) return undefined;
     const snapshot = {
-      mimeVersion: 2,
-      metadata: savedInlineMetadata(page.metadata, captured.label, captured.variableName, operation.candidate.token),
-      page: page.page,
+      ...captured.payload,
+      metadata: { ...captured.payload.metadata, sessionId: `inline-${operation.candidate.token}` },
       summaries: []
     };
     payload = normalizeNotebookOutputPayload(snapshot);
     if (!payload || !isInlineUpgradeBindingCurrent(operation)) return undefined;
   } finally {
-    if (session) {
-      try {
-        const closed = await bridge.request(
-          { kind: "closeSession", sessionId: session.sessionId, revision: session.revision },
-          { startRuntimeIfNeeded: false, restartRuntimeOnTimeout: false }
-        );
-        cleanupFailed = closed.kind !== "sessionClosed" || closed.sessionId !== session.sessionId;
-      } catch {
-        cleanupFailed = true;
-      }
-    }
     bridge.dispose();
   }
-  return cleanupFailed || !(await hasCurrentInlineUpgradeKernel(operation)) ? undefined : payload;
-}
-
-function savedInlineMetadata(
-  metadata: Extract<Awaited<ReturnType<KernelBridge["request"]>>, { kind: "page" }>["metadata"],
-  label: string,
-  variableName: string,
-  token: string
-) {
-  return {
-    protocolVersion: 2,
-    sessionId: `inline-${token}`,
-    revision: 0,
-    backend: metadata.backend,
-    mode: "viewing" as const,
-    source: { kind: "notebookOutput" as const, label, variableName },
-    capabilities: {
-      editable: false,
-      lazy: false,
-      cancel: false,
-      exportCsv: false,
-      exportParquet: false,
-      notebookInsert: false
-    },
-    shape: metadata.shape,
-    filteredShape: { ...metadata.shape },
-    schema: metadata.schema,
-    ...(metadata.rowAxis ? { rowAxis: metadata.rowAxis } : {}),
-    filterModel: { filters: [], sort: [] },
-    steps: []
-  };
+  return !(await hasCurrentInlineUpgradeKernel(operation)) ? undefined : payload;
 }
 
 function isInlineUpgradeOperationCurrent(

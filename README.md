@@ -117,6 +117,9 @@ in the rest of your analysis.
 Generated Python defines a cleaning function; it does not load or export data automatically. To reuse it, load the
 next input with the same engine and import settings, preserve the expected column names and order, then call the
 generated function, for example `result = clean_data(next_frame)`.
+In source builds, DuckDB plans containing Custom Code require the input's exact connection:
+`result = clean_data(next_frame, connection=con)`. Return Custom results derived from `df`, rather than a separate
+connection. See the [capture requirements](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#sessions-and-generated-code).
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/main/docs/images/readme/gallery/notebook-code-insertion.png"><img alt="Generated Pandas cleaning code inserted into an orders-analysis notebook" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/gallery/notebook-code-insertion.png" width="960"></a>
 
@@ -127,9 +130,10 @@ in the table below. Their notebook sessions do not offer cleaning or export.
 In [source builds](https://github.com/Matt17BR/openwrangler/blob/main/CONTRIBUTING.md#build-and-install-from-source),
 Polars live notebook LazyFrames and lazy Custom Code results retain their complete native output to keep row identities
 stable across pages. These results must fit memory, including old and new results retained during a cleaning preview.
-Unordered DuckDB notebook queries and file Custom Code results can associate row IDs with different values or repeat
-rows across pages, even with unchanged input data. Give the notebook query or Custom result a deterministic order;
-see the [ordering limitation and workaround](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#sessions-and-generated-code).
+DuckDB notebook opening also captures the full result and asks you to select its originating connection. Keep that
+connection open while viewing. File Custom results use private native snapshots. These captures increase memory,
+execution time and temporary storage; the [capture requirements](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#sessions-and-generated-code)
+describe the limits. Automatic inline previews remain bounded.
 
 ## Work with R directly
 

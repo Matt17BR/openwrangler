@@ -49,12 +49,17 @@ def build_payload(
     page_size: int = DEFAULT_CAPTURE_ROWS,
     *,
     variable_name: str | None = None,
+    max_columns: int | None = None,
 ) -> dict[str, Any]:
     if not isinstance(label, str) or not label:
         raise EngineError("Notebook output label must be a non-empty string.")
     _validate_text_limit(label, MAX_SAVED_LABEL_CHARACTERS, "Notebook output label")
     if not isinstance(page_size, int) or isinstance(page_size, bool) or page_size < 1 or page_size > MAX_SAVED_ROWS:
         raise EngineError(f"Notebook output page_size must be an integer between 1 and {MAX_SAVED_ROWS}.")
+    if max_columns is None:
+        max_columns = MAX_SAVED_COLUMNS
+    if not isinstance(max_columns, int) or isinstance(max_columns, bool) or not 1 <= max_columns <= MAX_SAVED_COLUMNS:
+        raise EngineError(f"Notebook output max_columns must be an integer between 1 and {MAX_SAVED_COLUMNS}.")
     if variable_name is not None:
         _validate_text_limit(variable_name, MAX_SAVED_LABEL_CHARACTERS, "Notebook variable_name")
         if not _is_python_identifier(variable_name):
@@ -82,9 +87,9 @@ def build_payload(
             source["variableName"] = variable_name
         shape = engine.shape(frame)
         schema = engine.schema(frame)
-        if len(schema) > MAX_SAVED_COLUMNS:
+        if len(schema) > max_columns:
             raise EngineError(
-                f"Notebook output captures at most {MAX_SAVED_COLUMNS:,} columns; received {len(schema):,}. "
+                f"Notebook output captures at most {max_columns:,} columns; received {len(schema):,}. "
                 "Select fewer columns before displaying the dataframe."
             )
         _validate_snapshot_schema_fields(schema)
