@@ -30,6 +30,9 @@ temporary-path refusal with the selected Python.
 The Python runtime job reports the 20 slowest test phases, including fixture setup and teardown, to guide later
 investigation.
 
+Java setup in CI, performance and released-Jupyter checks explicitly requires signature verification for downloaded
+Temurin packages. Verification failures stop setup; runner-provided JDKs retain the action's existing tool-cache path.
+
 Linux native R jobs explicitly select Python 3.12 for their standard-library pidfd signaling helper. Native cancellation
 contracts run once, with the frame/catalog/transport shard; scheduled R 4.4 qualification includes them through the
 full R command. Each shard retains serial execution within its own worker. Source keeps its existing Node-only test owner.

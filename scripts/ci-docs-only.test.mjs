@@ -1535,7 +1535,8 @@ test("Python keeps its full checks and installs Spark unless the exact proof per
   }
   assert.deepEqual(job.steps.find((step) => step.uses?.startsWith("actions/setup-java@")).with, {
     distribution: "temurin",
-    "java-version": "17"
+    "java-version": "17",
+    "verify-signature": true
   });
   assert.deepEqual(
     job.steps.slice(guardIndex + 1).map((step) => step.run),
