@@ -97,12 +97,26 @@ _POLARS_EXPLODE_MAX_ROWS = 2_147_483_647
 def _polars_filter_literal(value: Any, dtype: Any, operator: str) -> Any:
     import polars as pl
 
+    if isinstance(dtype, pl.Enum) and type(value) is int and 0 <= value < len(dtype.categories):
+        value = dtype.categories[value]
     literal = pl.lit(value)
     if dtype is not None and not (
         isinstance(dtype, pl.Enum) and isinstance(value, str) and operator in {"equals", "notEquals"}
     ):
         literal = literal.cast(dtype)
     return literal
+
+
+def _polars_filter_values(values: list[Any], dtype: Any) -> Any:
+    import polars as pl
+
+    selected = pl.Series(values)
+    if isinstance(dtype, pl.Enum):
+        if selected.dtype == pl.String:
+            return selected.cast(dtype, strict=False).drop_nulls()
+        if selected.dtype.is_integer() and all(0 <= value < len(dtype.categories) for value in selected):
+            selected = dtype.categories.gather(selected)
+    return selected.cast(dtype, strict=True)
 
 
 def _polars_exact_filter(column: Any, dtype: Any, method: str, values: list[Any]) -> Any:
@@ -849,12 +863,7 @@ class PolarsEngine(DataFrameEngine):
                 if column_type in {"decimal", "datetime", "duration"}:
                     current = _polars_exact_filter(_ow_polars_col(schema, column), schema[column], "isin", selected)
                 else:
-                    selected_series = pl.Series(selected) if selected else None
-                    if selected_series is not None:
-                        if isinstance(schema[column], pl.Enum) and selected_series.dtype == pl.String:
-                            selected_series = selected_series.cast(schema[column], strict=False).drop_nulls()
-                        else:
-                            selected_series = selected_series.cast(schema[column], strict=True)
+                    selected_series = _polars_filter_values(selected, schema[column]) if selected else None
                     current = (
                         _ow_polars_col(schema, column).is_in(selected_series.implode())
                         if selected_series is not None
@@ -1603,7 +1612,7 @@ class PolarsEngine(DataFrameEngine):
                 result = expr <= typed_value
             else:
                 second_value = coerce_typed_view_value(predicate.get("secondValue"), column_type)
-                typed_second = pl.lit(second_value).cast(raw_type) if raw_type is not None else pl.lit(second_value)
+                typed_second = _polars_filter_literal(second_value, raw_type, operator)
                 result = (expr >= typed_value) & (expr <= typed_second)
         valid = expr.is_not_null()
         if column_type == "float":
@@ -2267,6 +2276,8 @@ class PolarsEngine(DataFrameEngine):
                     getsource(_polars_exact_filter),
                     "",
                     getsource(_polars_filter_literal),
+                    "",
+                    getsource(_polars_filter_values),
                     "",
                 ]
             )
@@ -4677,16 +4688,7 @@ def _compile_polars_filter(model: Mapping[str, Any], index: int) -> list[str]:
                     parts.append(f"_polars_exact_filter({expression}, {dtype_variable}, 'isin', [{selected}])")
                 else:
                     selected_variable = f"_filter_values_{index}_{filter_index}"
-                    prelude.extend(
-                        [
-                            f"    {selected_variable} = pl.Series([{selected}])",
-                            f"    if isinstance({dtype_variable}, pl.Enum) and {selected_variable}.dtype == pl.String:",
-                            f"        {selected_variable} = {selected_variable}"
-                            f".cast({dtype_variable}, strict=False).drop_nulls()",
-                            "    else:",
-                            f"        {selected_variable} = {selected_variable}.cast({dtype_variable}, strict=True)",
-                        ]
-                    )
+                    prelude.append(f"    {selected_variable} = _polars_filter_values([{selected}], {dtype_variable})")
                     parts.append(f"{expression}.is_in({selected_variable}.implode())")
             if value_filter.get("includeNulls"):
                 parts.append(f"{expression}.is_null()")
@@ -4770,7 +4772,7 @@ def _polars_predicate_expression(
         result = f"({expression} {symbol} {typed_literal})"
     else:
         second = f"_open_wrangler_view_value({predicate.get('secondValue')!r}, {column_type!r})"
-        second_literal = f"pl.lit({second}).cast({dtype_expression}, strict=True)"
+        second_literal = f"_polars_filter_literal({second}, {dtype_expression}, {operator!r})"
         result = f"(({expression} >= {typed_literal}) & ({expression} <= {second_literal}))"
     valid = f"{expression}.is_not_null()"
     if column_type == "float":

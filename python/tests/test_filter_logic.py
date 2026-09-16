@@ -1684,7 +1684,7 @@ def test_polars_decimal_filters_keep_exact_thresholds_and_source_capacity(lazy, 
 
 
 @pytest.mark.parametrize("lazy", [False, True])
-def test_polars_enum_filters_match_absent_labels_without_changing_domain_order(lazy):
+def test_polars_enum_filters_match_absent_labels_without_changing_domain_order(lazy, recwarn):
     source = pl.DataFrame(
         {
             "label": ["a-row", "b-row", "null"],
@@ -1702,6 +1702,7 @@ def test_polars_enum_filters_match_absent_labels_without_changing_domain_order(l
         ("notEquals", "absent", ["a-row", "b-row"]),
         ("equals", "a", ["a-row"]),
         ("notEquals", "a", ["b-row"]),
+        ("equals", typed_selection_value(0, "string"), ["b-row"]),
         ("equals", typed_selection_value(1, "string"), ["a-row"]),
         ("notEquals", typed_selection_value(1, "string"), ["b-row"]),
         ("gt", "b", ["a-row"]),  # Enum order is intentionally not lexical.
@@ -1721,11 +1722,36 @@ def test_polars_enum_filters_match_absent_labels_without_changing_domain_order(l
                 labels,
             )
         )
+    cases.append(
+        (
+            {
+                "filters": [
+                    {
+                        "column": "value",
+                        "type": "string",
+                        "predicates": [
+                            {
+                                "kind": "predicate",
+                                "operator": "between",
+                                "value": typed_selection_value(0, "string"),
+                                "secondValue": typed_selection_value(1, "string"),
+                            }
+                        ],
+                    }
+                ],
+                "sort": [],
+            },
+            ["a-row", "b-row"],
+        )
+    )
     for selected, include_nulls, labels in [
         (["absent"], False, []),
         (["absent"], True, ["null"]),
         (["a", "absent"], True, ["a-row", "null"]),
         ([], False, ["a-row", "b-row", "null"]),
+        ([0], False, ["b-row"]),
+        ([1], False, ["a-row"]),
+        ([0, 1], False, ["a-row", "b-row"]),
     ]:
         model = _value_selection_model("string", None)
         model["filters"][0]["valueFilter"].update(
@@ -1753,15 +1779,11 @@ def test_polars_enum_filters_match_absent_labels_without_changing_domain_order(l
         assert source.equals(before)
         assert source.schema == before.schema
 
-    # Heterogeneous typed tokens retain their existing native operands.
-    ordinal = _value_selection_model("string", typed_selection_value(1, "string"))
-    for apply in (engine.apply_filter_model, lambda source, model: _execute_generated_filter(engine, source, model)):
-        result = apply(frame, ordinal)
-        if lazy:
-            result = result.collect()
-        assert result.equals(source.head(1))
-    assert source.equals(before)
-    assert source.schema == before.schema
+    assert not [
+        str(warning.message)
+        for warning in recwarn
+        if isinstance(warning.message, DeprecationWarning) and "to Enum" in str(warning.message)
+    ]
 
 
 @pytest.mark.parametrize("lazy", [False, True])
