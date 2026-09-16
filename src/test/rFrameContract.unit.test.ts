@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { metadataFor, sessionFromContract } from "../extension/r/rKernelBridgeContract";
+import { gridPageFromRContract } from "../extension/r/rKernelFrameMapping";
+import { isOpenWranglerResponse } from "../shared/protocolValidation";
 import { decodeRFramePageJson, R_FRAME_CONTRACT_LIMITS } from "../extension/r/rFrameContract";
 
 function decodeCandidate(candidate: Record<string, unknown>) {
@@ -7,7 +10,7 @@ function decodeCandidate(candidate: Record<string, unknown>) {
 
 function minimalContract(): Record<string, unknown> {
   return {
-    contractVersion: 5,
+    contractVersion: 6,
     dataframeFlavor: "r.data.frame",
     shape: { rows: 1, columns: 1 },
     frameSemantics: { classes: ["data.frame"], rowNames: "positional", keyColumnIds: [] },
@@ -54,6 +57,119 @@ function dateContract(raw: string): Record<string, unknown> {
 }
 
 describe("native R frame contract decoder", () => {
+  it("decodes bounded native list prototypes, names, typed children and present empties", () => {
+    const candidate = minimalContract();
+    const column = (candidate.schema as Array<Record<string, unknown>>)[0]!;
+    const row = ((candidate.page as Record<string, unknown>).rows as Array<Record<string, unknown>>)[0]!;
+    column.type = "list";
+    column.rawType = "list";
+    column.semantics = {
+      kind: "list",
+      storageMode: "list",
+      classes: ["AsIs"],
+      element: { kind: "integer64", storageMode: "double", classes: ["integer64"] }
+    };
+    row.values = [
+      {
+        kind: "list",
+        raw: [
+          { kind: "integer", raw: "9223372036854775807", display: "9223372036854775807", isNull: false, isNaN: false },
+          { kind: "null", raw: null, display: "NA", isNull: true, isNaN: false }
+        ],
+        names: ["__proto__", null],
+        display: "[9223372036854775807, NA]",
+        isNull: false,
+        isNaN: false
+      }
+    ];
+    const contract = decodeCandidate(candidate);
+    const publicPage = gridPageFromRContract(contract);
+    expect(publicPage.rows[0]!.values[0]).toMatchObject({ raw: { names: ["__proto__", null] } });
+    expect(publicPage.rows[0]!.values[0]).not.toHaveProperty("names");
+    const metadata = metadataFor(
+      sessionFromContract(
+        "nested",
+        { kind: "file", label: "frame.csv", path: "/workspace/frame.csv", uri: "file:///workspace/frame.csv" },
+        "viewing",
+        contract,
+        ["csv"]
+      )
+    );
+    expect(
+      isOpenWranglerResponse({ kind: "page", revision: 0, viewRequestId: "nested-page", metadata, page: publicPage })
+    ).toBe(true);
+    const decoded = contract.page.rows[0]!.values[0]!;
+    expect(decoded).toMatchObject({
+      kind: "list",
+      names: ["__proto__", null],
+      raw: [{ raw: "9223372036854775807" }, { isNull: true }]
+    });
+    expect(Object.isFrozen(decoded.raw)).toBe(true);
+    expect(Object.isFrozen((decoded.raw as unknown[])[0])).toBe(true);
+    const cell = (row.values as Array<Record<string, unknown>>)[0]!;
+    cell.names = ["__proto__"];
+    expect(() => decodeCandidate(candidate)).toThrow("names");
+    cell.names = ["__proto__", null];
+    cell.raw = [{ kind: "number", raw: "1", display: "1", isNull: false, isNaN: false }];
+    delete cell.names;
+    expect(() => decodeCandidate(candidate)).toThrow("kind does not match");
+    (column.semantics as Record<string, unknown>).element = null;
+    expect(() => decodeCandidate(candidate)).toThrow("captured prototype");
+    cell.raw = [];
+    cell.display = "[]";
+    expect(decodeCandidate(candidate).page.rows[0]!.values[0]).toMatchObject({ kind: "list", raw: [], isNull: false });
+  });
+
+  it("aligns flat record children with validated unique field prototypes and refuses recursion", () => {
+    const candidate = minimalContract();
+    const column = (candidate.schema as Array<Record<string, unknown>>)[0]!;
+    const row = ((candidate.page as Record<string, unknown>).rows as Array<Record<string, unknown>>)[0]!;
+    column.type = "struct";
+    column.rawType = "list";
+    const leaf = { kind: "integer", storageMode: "integer", classes: ["integer"] };
+    const fields = [
+      { name: "__proto__", semantics: leaf },
+      { name: "count", semantics: leaf }
+    ];
+    column.semantics = { kind: "struct", storageMode: "list", classes: ["list"], fields };
+    row.values = [
+      {
+        kind: "struct",
+        raw: [
+          { kind: "integer", raw: "2", display: "2", isNull: false, isNaN: false },
+          { kind: "null", raw: null, display: "NA", isNull: true, isNaN: false }
+        ],
+        display: "{__proto__ = 2, count = NA}",
+        isNull: false,
+        isNaN: false
+      }
+    ];
+    const decoded = decodeCandidate(candidate);
+    expect(decoded.schema[0]!.semantics).toMatchObject({ fields });
+    expect(Object.isFrozen((decoded.schema[0]!.semantics as { fields: unknown[] }).fields[0])).toBe(true);
+    fields[1]!.name = "__proto__";
+    expect(() => decodeCandidate(candidate)).toThrow("unique nonempty");
+    fields[1]!.name = "count";
+    expect(() =>
+      decodeRFramePageJson(
+        JSON.stringify({
+          ...candidate,
+          schema: [
+            {
+              ...column,
+              semantics: {
+                kind: "list",
+                storageMode: "list",
+                classes: ["list"],
+                element: { kind: "list", storageMode: "list", classes: ["list"], element: null }
+              }
+            }
+          ]
+        })
+      )
+    ).toThrow("atomic leaf");
+  });
+
   it("accepts a strict frame page and freezes it", () => {
     const decoded = decodeRFramePageJson(JSON.stringify(minimalContract()));
 

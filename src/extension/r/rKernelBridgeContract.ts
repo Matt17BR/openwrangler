@@ -41,9 +41,7 @@ const R_BASE_CAPABILITIES = Object.freeze({
   sort: true,
   profile: true,
   columnValues: true,
-  supportedOperations: operationKinds.filter(
-    (kind) => kind !== "extractStructFields" && kind !== "explodeList"
-  ) as OperationKind[]
+  supportedOperations: [...operationKinds] as OperationKind[]
 } satisfies Omit<SourceCapabilities, "notebookInsert" | "documentInsert">);
 
 export const R_BRIDGE_CAPABILITIES: SourceCapabilities = Object.freeze({

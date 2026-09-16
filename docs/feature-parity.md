@@ -185,19 +185,21 @@ during loading or file preflight.
 ## Cleaning operations
 
 The complete operation list and parameters are in the [generated catalog](reference.md#transformation-operations).
-Extract Struct Fields copies known scalar fields from a Struct column into new columns in Polars editing sessions
-and DuckDB file sessions. Enter each exact field name and its output name; the parent column and rows stay intact.
+Extract Struct Fields copies known scalar fields from a Struct column into new columns in Polars editing sessions,
+DuckDB file sessions and native R. Enter each exact field name and its output name; the parent column and rows stay intact.
 For example, extract `city` from an `address` Struct as `customer_city`. Missing parents produce missing outputs.
 Choose up to 64 fields, with the [native type and naming limits](architecture.md#engine-boundaries-and-capabilities).
-Pandas and R do not support this operation.
+Pandas does not support this operation. R accepts the flat records described in the [native R scope](#native-r-support).
 
 Explode List turns one native Polars List column into rows and repeats the other columns. Empty or missing lists keep
 one row with a missing value. The operation expands one level: List and Struct children keep their types. For example,
 explode a list of addresses, then use Extract Struct Fields to copy each address's city. Fixed-size Array columns and
-Object-containing lists are unsupported. Pandas, DuckDB and R do not support Explode List.
+Object-containing lists are unsupported. Native R also supports Explode List for homogeneous atomic list columns;
+empty and missing cells keep one typed missing value. Pandas and DuckDB do not support Explode List.
 Lazy input is read into memory before preview so the growth check and expansion use the same values. The result stays
 lazy, but later steps cannot reduce that initial read. The [capacity limit](architecture.md#engine-boundaries-and-capabilities)
-does not guarantee that an input or its expanded output will fit in memory.
+does not guarantee that an input or its expanded output will fit in memory. R uses its existing native operation
+byte limit before allocating expanded output.
 
 Automatic field discovery, recursive flattening and transpose remain unavailable.
 
@@ -673,6 +675,22 @@ Supported frames are base `data.frame`, tibble and `data.table`, including ordin
 are refused. IRkernel works across the supported desktop platforms; direct `.R`, `.Rmd` and `.qmd` execution is
 limited to macOS and Linux. Literate support runs selected lexical R cells, without promising document-render
 semantics. An active R terminal has no source document for generated-code insertion.
+
+Ordinary list columns can contain atomic vectors of one native type, including factors, temporal values and integer64.
+Typed empty vectors retain their type; `list()` is an untyped empty value and outer `NULL` is missing. Flat named records
+with the same scalar fields appear as Struct columns, even when field order differs. Missing fields, `NULL` field
+values, mixed element types and recursive containers are refused. Atomic element names remain intact.
+Extract Struct Fields appends selected fields; Explode List repeats sibling values and gives empty or missing cells
+one typed missing output. A wholly untyped list column cannot be exploded. Preview, Apply, Discard, Undo/Redo,
+inspection and generated R preserve the admitted native metadata and source.
+
+List and Struct profiles show outer missing counts. Missing-value filters are available; nested sorting, value pickers,
+distributions and dataset duplicate counts are unavailable. Scalar siblings keep their ordinary viewing and cleaning
+operations. CSV and Parquet export require a scalar result: extract then drop record columns, or explode typed lists.
+Pages and copying have separate [native bounds](architecture.md#frame-and-source-ownership), so a large list column
+may be viewable but too large to isolate or expand. The existing native frame, lifecycle and Custom Code owners cover
+this finite scope on current and minimum R; the catalog also checks live/generated agreement. Installed entry-path
+qualification remains separate.
 
 Sessions honor the opening and ordinary request timeout settings; invalid values use defaults and fractions round
 upward to whole milliseconds. Exports retain their separate 30-minute default. Large R profiles count every finite

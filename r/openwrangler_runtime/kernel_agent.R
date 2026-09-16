@@ -1,5 +1,5 @@
 openwrangler_r_kernel_agent <- local({
-  transport_version <- 15L
+  transport_version <- 16L
   maximum_identifier_bytes <- 128L
   maximum_name_bytes <- 1024L
   maximum_variable_name_bytes <- 1024L
@@ -2611,6 +2611,20 @@ openwrangler_r_kernel_agent <- local({
           replacement = decode_fill_missing_replacement(params$replacement, limits, column)
         )
       ))
+    }
+    if (kind %in% c("extractStructFields", "explodeList")) {
+      params <- exact_record(step$params, if (kind == "explodeList") "column" else c("column", "fields"), "request.payload.step.params")
+      column <- decode_column_reference(params$column, "request.payload.step.params.column", limits$columnIdBytes)
+      if (kind == "explodeList") return(list(id = step_id, kind = kind, params = list(column = column)))
+      if (!is.list(params$fields) || length(params$fields) < 1L || length(params$fields) > 64L) abort("invalid_request", "Extract Struct Fields requires 1 through 64 fields")
+      fields <- lapply(seq_along(params$fields), function(index) {
+        field <- exact_record(.subset2(params$fields, index), c("field", "newColumn"), "extracted field")
+        list(field = bounded_text(field$field, "extracted field name", maximum_variable_name_bytes),
+          newColumn = bounded_text(field$newColumn, "extracted output name", maximum_variable_name_bytes))
+      })
+      if (any(vapply(fields, function(field) field$field == "" || field$newColumn == "", logical(1L)))) abort("invalid_request", "Extract Struct Fields requires nonempty names")
+      return(list(id = step_id, kind = kind, params = list(column = column, fields = fields),
+        outputIds = vapply(seq_along(fields), function(index) bounded_text(paste0("c:step:", step_id, ":", index - 1L), "extracted output identity", limits$columnIdBytes), character(1L))))
     }
     if (kind %in% c("renameColumn", "cloneColumn")) {
       params <- exact_record(step$params, c("column", "newName"), "request.payload.step.params")
@@ -5248,6 +5262,17 @@ openwrangler_r_kernel_agent <- local({
         bound = bound
       ))
     }
+    if (step$kind %in% c("extractStructFields", "explodeList")) {
+      schema <- unclass(capture$descriptor$schema); attributes(schema) <- NULL
+      matches <- which(vapply(schema, function(column) identical(column$id, step$params$column$id) && identical(column$name, step$params$column$name), logical(1L)))
+      if (length(matches) != 1L) abort("stale_column", "The nested column reference no longer matches the active R dataframe", TRUE)
+      fields <- if (step$kind == "explodeList") NULL else vapply(step$params$fields, `[[`, character(1L), "field")
+      new_names <- if (is.null(fields)) NULL else vapply(step$params$fields, `[[`, character(1L), "newColumn")
+      bound <- list(id = step$id, kind = step$kind, position = as.integer(matches[[1L]]), schema = schema,
+        fields = fields, newNames = new_names, outputIds = step$outputIds, identityDomain = capture$rowIdentityDomain)
+      result <- frame_contract$nested_operation_frame(source, schema, bound$position, fields, new_names, capture$rowIdentityDomain)
+      return(list(capture = frame_contract$capture_nested_result(result, capture, bound$position, fields, step$outputIds), bound = bound))
+    }
     if (identical(step$kind, "cloneColumn")) {
       bound <- bind_clone_step(capture, step)
       result <- frame_contract$clone_column_at(source, bound$position, bound$oldName, bound$newName)
@@ -6233,7 +6258,7 @@ openwrangler_r_kernel_agent <- local({
       reducer <- if (identical(step$mode, "all")) "`|`" else "`&`"
       lines <- c(
         lines,
-        "  .ow_present <- lapply(.ow_row_columns, function(.ow_position) !is.na(.ow_result[[.ow_position]]))",
+        "  .ow_present <- lapply(.ow_row_columns, function(.ow_position) { .ow_column <- base::.subset2(.ow_result, .ow_position); if (base::is.list(.ow_column)) !base::vapply(base::unclass(.ow_column), base::is.null, base::logical(1L)) else !is.na(.ow_column) })",
         sprintf("  .ow_keep <- Reduce(%s, .ow_present)", reducer),
         "  .ow_rows <- which(.ow_keep)"
       )
@@ -7684,6 +7709,15 @@ openwrangler_r_kernel_agent <- local({
       "    }",
       "    for (.ow_position in base::seq_len(.ow_column_count)) {",
       "      .ow_column <- base::.subset2(.ow_columns, .ow_position); if (base::length(base::unclass(.ow_column)) != .ow_row_count) base::stop(\"Open Wrangler Custom Code returned a column with the wrong row count\", call. = FALSE)",
+      "      if (base::is.list(.ow_column) && !base::is.matrix(.ow_column) && !base::is.array(.ow_column)) {",
+      "        .ow_nested_metadata <- .ow_nested_helpers$budget(.ow_metadata_bytes)",
+      "        .ow_nested_semantics <- .ow_nested_helpers$semantics(.ow_column, \"Custom Code list column\", .ow_nested_metadata)",
+      "        .ow_metadata_bytes <- .ow_nested_metadata$used",
+      "        .ow_nested_copy <- .ow_nested_helpers$budget(.ow_operation_bytes)",
+      "        .ow_nested_helpers$charge(.ow_column, .ow_nested_semantics, .ow_position, .ow_nested_copy, TRUE)",
+      "        .ow_operation_bytes <- .ow_nested_copy$used",
+      "        next",
+      "      }",
       "      if (base::is.matrix(.ow_column) || base::is.array(.ow_column) || base::is.list(.ow_column) || base::is.raw(.ow_column) || base::is.complex(.ow_column)) base::stop(\"Open Wrangler Custom Code returned an unsupported column\", call. = FALSE)",
       "      .ow_column_attributes <- base::attributes(.ow_column); .ow_column_attribute_names <- base::names(.ow_column_attributes); if (base::is.null(.ow_column_attribute_names)) .ow_column_attribute_names <- base::character()",
       "      if (base::anyNA(.ow_column_attribute_names) || base::any(.ow_column_attribute_names == \"\") || base::anyDuplicated.default(.ow_column_attribute_names)) base::stop(\"Open Wrangler Custom Code returned malformed column attributes\", call. = FALSE)",
@@ -8196,8 +8230,24 @@ openwrangler_r_kernel_agent <- local({
     )
   }
 
-  compile_plan <- function(variable_name, bound_plan, frame_contract, file_source = NULL) {
+  nested_column_code_helper_lines <- function(frame_contract, operations = FALSE) {
+    lines <- "  .ow_nested_helpers <- base::evalq({"
+    helpers <- c(frame_contract$nested_column_helpers, if (operations) frame_contract$nested_operation_helpers)
+    for (name in names(helpers)) {
+      lines <- c(lines, sprintf("    `%s` <-", name), paste0("    ", deparse(helpers[[name]], width.cutoff = 500L)))
+    }
+    c(lines,
+      if (operations) "    base::list(semantics = nested_column_semantics, charge = charge_native_column, budget = new_payload_budget, transform = nested_operation_frame)" else "    base::list(semantics = nested_column_semantics, charge = charge_native_column, budget = new_payload_budget)",
+      "  }, base::new.env(parent = base::baseenv()))",
+      "  .ow_nested_source_budget <- .ow_nested_helpers$budget()"
+    )
+  }
+
+  compile_plan <- function(variable_name, bound_plan, frame_contract, file_source = NULL, source_schema = NULL) {
     if (length(bound_plan) == 0L) return("")
+    needs_nested_operations <- any(vapply(bound_plan, function(step) step$kind %in% c("extractStructFields", "explodeList"), logical(1L)))
+    needs_nested_helpers <- needs_nested_operations || any(vapply(seq_along(source_schema), function(position) .subset2(source_schema, position)$semantics$kind %in% c("list", "struct"), logical(1L))) ||
+      any(vapply(bound_plan, function(step) identical(step$kind, "customCode"), logical(1L)))
     maximum_columns <- frame_contract$limits$columns
     maximum_factor_levels <- frame_contract$limits$factorLevels
     maximum_text_bytes <- frame_contract$limits$textBytes
@@ -8232,6 +8282,7 @@ openwrangler_r_kernel_agent <- local({
       sprintf("  .ow_publication_name <- %s", r_string(result_name)),
       "  if (base::exists(.ow_publication_name, envir = .ow_caller_environment, inherits = FALSE) && base::bindingIsActive(.ow_publication_name, .ow_caller_environment)) base::stop(\"Open Wrangler generated R does not accept an active result binding\", call. = FALSE)",
       "  .ow_generated_result <- base::evalq({",
+      if (needs_nested_helpers) nested_column_code_helper_lines(frame_contract, needs_nested_operations),
       if (is.null(file_source)) c(
       sprintf(
         "  if (!base::exists(%s, envir = .ow_source_environment, inherits = FALSE)) base::stop(\"Open Wrangler source variable is unavailable\", call. = FALSE)",
@@ -8337,6 +8388,15 @@ openwrangler_r_kernel_agent <- local({
       "      if (!base::is.character(.ow_column_names) || base::is.object(.ow_column_names) || !base::is.null(base::attributes(.ow_column_names)) || base::length(.ow_column_names) != .ow_column_length) base::stop(base::sprintf(\"Open Wrangler generated R received malformed names on %s\", .ow_column_label), call. = FALSE)",
       "      .ow_column_attribute_names <- .ow_column_attribute_names[.ow_column_attribute_names != \"names\"]",
       "    }",
+      if (needs_nested_helpers) c(
+        "    if (base::is.list(.ow_column)) {",
+        "      .ow_nested_metadata <- .ow_nested_helpers$budget()",
+        "      .ow_nested_semantics <- .ow_nested_helpers$semantics(.ow_column, .ow_column_label, .ow_nested_metadata)",
+        "      .ow_spend_source_metadata(.ow_nested_metadata$used, \"nested column metadata\")",
+        "      .ow_nested_helpers$charge(.ow_column, .ow_nested_semantics, .ow_column_index, .ow_nested_source_budget, TRUE)",
+        "      return(base::invisible(NULL))",
+        "    }"
+      ),
       "    .ow_column_type <- base::typeof(.ow_column)",
       "    .ow_column_classes <- base::class(.ow_column)",
       "    .ow_allowed_column_attributes <- base::character()",
@@ -8669,7 +8729,7 @@ openwrangler_r_kernel_agent <- local({
       # Match native copy metadata without copying the already-owned values.
       # Clone, Dense Rank, Mark Duplicates and Custom Code preserve names. By Example validates named
       # intermediates before its public result capture removes them.
-      if (!step$kind %in% c("cloneColumn", "conditionalColumn", "denseRank", "markDuplicates", "customCode", "byExample")) {
+      if (!step$kind %in% c("cloneColumn", "conditionalColumn", "denseRank", "markDuplicates", "customCode", "byExample", "extractStructFields", "explodeList")) {
         lines <- c(lines, data_table_copy_metadata_lines)
       }
       if (identical(step$kind, "sortRows")) {
@@ -8758,6 +8818,14 @@ openwrangler_r_kernel_agent <- local({
             step$position,
             r_string(step$newName)
           )
+        )
+      } else if (step$kind %in% c("extractStructFields", "explodeList")) {
+        lines <- c(lines,
+          sprintf("  .ow_result <- .ow_nested_helpers$transform(.ow_result, %s, %dL, %s, %s, %s)",
+            paste(deparse(step$schema, width.cutoff = 500L), collapse = " "), step$position,
+            if (is.null(step$fields)) "NULL" else r_character_vector(step$fields),
+            if (is.null(step$newNames)) "NULL" else r_character_vector(step$newNames), as.character(step$identityDomain)),
+          if (!is.null(step$outputIds)) sprintf("  .ow_result_ids <- c(.ow_result_ids, %s)", r_character_vector(step$outputIds))
         )
       } else if (step$kind %in% c("cloneColumn", "conditionalColumn", "denseRank", "markDuplicates")) {
         lines <- c(
@@ -9975,7 +10043,7 @@ openwrangler_r_kernel_agent <- local({
       bound$outputNames
     } else if (bound$kind %in% c("oneHotEncode", "multiLabelBinarize")) {
       bound$generatedNames
-    } else if (identical(bound$kind, "splitTextColumns")) {
+    } else if (bound$kind %in% c("splitTextColumns", "extractStructFields")) {
       bound$newNames
     } else if (
       bound$kind %in% c("cloneColumn", "conditionalColumn", "denseRank", "markDuplicates", "formula", "textLength", "byExample", "extractRegexGroup") ||
@@ -10045,7 +10113,7 @@ openwrangler_r_kernel_agent <- local({
           after_page$page$totalRows == after_rows &&
           length(after_page$page$rows) == after_rows
       truncated <- !(before_complete && after_complete)
-    } else if (identical(bound$kind, "groupBy") || identical(bound$kind, "pivotLonger") || identical(bound$kind, "pivotWider")) {
+    } else if (bound$kind %in% c("groupBy", "pivotLonger", "pivotWider", "explodeList")) {
       if (is.null(frame_contract) || is.null(before) || is.null(after) || is.null(page)) {
         abort("runtime_error", "The R row-expanding diff is missing its bounded page context")
       }
@@ -10343,7 +10411,8 @@ openwrangler_r_kernel_agent <- local({
         session$variableName,
         session$boundPlan,
         frame_contract,
-        session$fileSource
+        session$fileSource,
+        session$source$descriptor$schema
       )
     )
   }
@@ -10694,7 +10763,8 @@ openwrangler_r_kernel_agent <- local({
               params = list(code = step$params$code)
             ))),
             frame_contract,
-            session$fileSource
+            session$fileSource,
+            session$source$descriptor$schema
           )
         } else {
           NULL
@@ -10743,7 +10813,8 @@ openwrangler_r_kernel_agent <- local({
             candidate$variableName,
             candidate_bound_plan,
             frame_contract,
-            candidate$fileSource
+            candidate$fileSource,
+            candidate$source$descriptor$schema
           )
         )
         if (!is.null(effective_view)) response$effectiveView <- effective_view
@@ -10812,7 +10883,8 @@ openwrangler_r_kernel_agent <- local({
               session$variableName,
               utils::head(session$boundPlan, step_index),
               frame_contract,
-              session$fileSource
+              session$fileSource,
+              session$source$descriptor$schema
             )
           ))
         }

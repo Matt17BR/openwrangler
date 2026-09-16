@@ -165,6 +165,10 @@ preserves the existing steps. Changing an R file's import options also opens a s
 Custom Code can call installed R packages such as `dplyr`, `data.table` and `collapse`, and return a supported
 base `data.frame`, tibble or `data.table`, including a change of frame class.
 
+R also displays homogeneous atomic list columns and flat scalar records. Use Explode List, or Extract Struct Fields
+followed by dropping the parent column, to produce scalar columns for CSV or Parquet export. Recursive containers
+remain unsupported.
+
 R terminal sessions on Linux and managed `.R`, `.Rmd` and `.qmd` documents on Linux/macOS are **Preview**.
 Cursor support is **experimental**. The [native R support guide](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#native-r-support)
 describes supported frame classes, operations and export limits.

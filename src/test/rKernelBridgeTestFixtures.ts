@@ -223,7 +223,7 @@ export function rKernelFrameContract(
     { kind: "infinity", raw: null, display: "Inf", isNull: false, isNaN: false, sign: 1 }
   ];
   return {
-    contractVersion: 5,
+    contractVersion: 6,
     dataframeFlavor: "r.data.frame",
     shape: { rows: options.totalRows ?? 1, columns: 8 },
     frameSemantics: {

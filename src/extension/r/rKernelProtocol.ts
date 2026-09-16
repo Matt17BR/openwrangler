@@ -33,7 +33,7 @@ import {
   isTransformStep
 } from "../../shared/protocolValidation";
 
-export const R_KERNEL_TRANSPORT_VERSION = 15 as const;
+export const R_KERNEL_TRANSPORT_VERSION = 16 as const;
 export const R_KERNEL_MAX_REQUEST_BYTES = 16 * 1_024 * 1_024;
 export const R_KERNEL_MAX_RESPONSE_BYTES = 17 * 1_024 * 1_024;
 export const R_KERNEL_EXPORT_CHUNK_BYTES = 1 * 1_024 * 1_024;
@@ -133,6 +133,24 @@ export interface RKernelCloneColumnStep {
     column: RKernelColumnReference;
     newName: string;
   }>;
+}
+
+export interface RKernelExtractStructFieldsStep {
+  readonly id: string;
+  readonly kind: "extractStructFields";
+  readonly params: Readonly<{
+    column: RKernelColumnReference;
+    fields: readonly [
+      Readonly<{ field: string; newColumn: string }>,
+      ...Readonly<{ field: string; newColumn: string }>[]
+    ];
+  }>;
+}
+
+export interface RKernelExplodeListStep {
+  readonly id: string;
+  readonly kind: "explodeList";
+  readonly params: Readonly<{ column: RKernelColumnReference }>;
 }
 
 export type RKernelCastDtype = "string" | "integer" | "float" | "boolean" | "date" | "datetime";
@@ -556,6 +574,8 @@ export type RKernelTransformStep =
   | RKernelGroupByStep
   | RKernelRenameColumnStep
   | RKernelCloneColumnStep
+  | RKernelExtractStructFieldsStep
+  | RKernelExplodeListStep
   | RKernelConditionalColumnStep
   | RKernelCastColumnStep
   | RKernelFormulaStep
@@ -1743,6 +1763,22 @@ function validateTransformStep(value: unknown): void {
     }
     return;
   }
+  if (step.kind === "extractStructFields" || step.kind === "explodeList") {
+    if (!isTransformStep(step)) fail("R kernel nested operation parameters are malformed.");
+    const params = exactRecord(
+      step.params,
+      step.kind === "explodeList" ? ["column"] : ["column", "fields"],
+      "R kernel nested parameters"
+    );
+    validateColumnReference(params.column, "request.payload.step.params.column");
+    if (step.kind === "extractStructFields") {
+      for (const field of step.params.fields) {
+        boundedText(field.field, "extracted field", maximumVariableNameBytes, false);
+        boundedText(field.newColumn, "extracted column", maximumVariableNameBytes, false);
+      }
+    }
+    return;
+  }
   if (step.kind === "renameColumn" || step.kind === "cloneColumn") {
     const operation = step.kind === "renameColumn" ? "rename" : "clone";
     const params = exactRecord(step.params, ["column", "newName"], `R kernel ${operation} parameters`);
@@ -2517,9 +2553,17 @@ function validatePivotWiderKey(value: unknown, label: string): void {
 }
 
 function isRColumnType(value: unknown): value is RColumnType {
-  return new Set<RColumnType>(["string", "integer", "float", "boolean", "datetime", "date", "duration"]).has(
-    value as RColumnType
-  );
+  return new Set<RColumnType>([
+    "string",
+    "integer",
+    "float",
+    "boolean",
+    "datetime",
+    "date",
+    "duration",
+    "list",
+    "struct"
+  ]).has(value as RColumnType);
 }
 
 function isPredicateOperator(value: unknown): value is PredicateFilter["operator"] {
@@ -2547,6 +2591,17 @@ function validateRColumnSummaries(summaries: readonly ColumnSummary[]): void {
     boundedText(summary.columnId, `${label}.columnId`, R_FRAME_CONTRACT_LIMITS.columnIdBytes, false);
     boundedText(summary.column, `${label}.column`, maximumVariableNameBytes, true);
     boundedText(summary.rawType, `${label}.rawType`, maximumVariableNameBytes, false);
+    const nested = summary.type === "list" || summary.type === "struct";
+    if (
+      nested &&
+      (summary.nanCount !== 0 ||
+        summary.distinctCount !== undefined ||
+        summary.topValues.length !== 0 ||
+        summary.visualization !== undefined ||
+        summary.numeric !== undefined ||
+        summary.text !== undefined)
+    )
+      fail(`${label} has unsupported nested profile statistics.`);
     const present = summary.totalCount - summary.nullCount - summary.nanCount;
     const visualization = summary.visualization;
     const sampledDistribution = visualization?.sampled === true;
@@ -2557,7 +2612,7 @@ function validateRColumnSummaries(summaries: readonly ColumnSummary[]): void {
       (summary.distinctCount !== undefined &&
         summary.topValues.length !== Math.min(R_FRAME_CONTRACT_LIMITS.topValues, summary.distinctCount)) ||
       (summary.distinctCount === undefined &&
-        (present <= R_FRAME_CONTRACT_LIMITS.profileSampleRows ||
+        ((!nested && present <= R_FRAME_CONTRACT_LIMITS.profileSampleRows) ||
           (!sampledDistribution && summary.topValues.length !== 0)))
     ) {
       fail(`${label} has inconsistent value counts.`);
@@ -2657,10 +2712,10 @@ function validateRColumnSummaries(summaries: readonly ColumnSummary[]): void {
 function validateRDatasetStats(stats: DatasetStats, totalRows: number): void {
   const duplicateRowsDomain = stats.duplicateRowsSampleSize ?? totalRows;
   if (
-    stats.duplicateRows === null ||
+    (stats.duplicateRows === null && stats.duplicateRowsSampleSize !== undefined) ||
     stats.missingRows > totalRows ||
     duplicateRowsDomain > totalRows ||
-    stats.duplicateRows > Math.max(0, duplicateRowsDomain - 1) ||
+    (stats.duplicateRows !== null && stats.duplicateRows > Math.max(0, duplicateRowsDomain - 1)) ||
     stats.missingCells > totalRows * stats.missingValuesByColumn.length
   ) {
     fail("R kernel dataset statistics exceed the filtered row count.");

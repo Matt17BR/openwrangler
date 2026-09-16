@@ -24,7 +24,7 @@ describes the durable ownership and safety boundaries. It intentionally leaves o
 - `protocol/openwrangler.v4.schema.json` is the canonical coordinator-facing request and response schema. Its
   generator emits five checked-in artifacts: TypeScript protocol types, TypeScript operation catalog, TypeScript
   limits, Python operation catalog, and Python limits. It does not generate the full Python runtime protocol. Native R
-  has a separate private transport v15 and frame contract v5, which `RKernelBridge` adapts to and from coordinator
+  has a separate private transport v16 and frame contract v6, which `RKernelBridge` adapts to and from coordinator
   protocol v4.
 
 Native tree views, Code Preview and file custom editors keep their original lazy provider registrations until shutdown.
@@ -443,9 +443,10 @@ binds public references against the exact input schema and lineage to private po
 disallowed, type/name-mismatched, colliding, or private row-identity references fail closed. The current catalog and
 parameters are listed in the generated [transformation reference](reference.md#transformation-operations).
 
-Session capabilities explicitly list supported operations. Polars editing sources and DuckDB file editing support
-Extract Struct Fields; only Polars editing sources support Explode List. Pandas, native R and viewing-only engines
-support neither operation. Older capability responses without this list cannot enable either operation.
+Session capabilities explicitly list supported operations. Polars editing sources, DuckDB file editing and native R
+support Extract Struct Fields. Polars editing sources and native R support Explode List. Pandas and viewing-only
+engines support neither operation. Older capability responses without this list cannot enable either operation.
+The [native R contract](#native-r) defines R's finite flat-container types and materialization bounds.
 
 Extract Struct Fields appends 1 to 64 named direct scalar fields from one genuine native Struct. It preserves the
 parent, row order, row identities and native child types, including nulls inherited from a missing parent. Field and
@@ -453,12 +454,12 @@ output names are exact, unique within their lists, nonempty single-line Unicode 
 wildcards and regular-expression-shaped names have no special meaning. Outputs must be fresh under the engine's
 existing collision rules. Private row-identity prefixes remain forbidden for the source and outputs; a nested child
 with a similar name cannot address the hidden top-level identity. Live and generated execution resolve current native
-field names and scalar types, including on empty or all-null inputs. Text, integer, float, Decimal, Boolean, Date,
+field names and scalar types, including on empty or all-null inputs. In Polars and DuckDB, text, integer, float, Decimal, Boolean, Date,
 Datetime, Duration and Binary fields are supported. Child containers, Polars Object, Time and Null fields, and
 unrecognized native types are refused. The append uses native expressions and adds no row-growth policy or input scan
 for field admission. Ordinary result validation and transport bounds still apply.
 
-Explode List expands one current native Polars List column by one level, preserving its exact child dtype and
+Polars Explode List expands one current native List column by one level, preserving its exact child dtype and
 source-row/child order. Sibling values repeat, and empty or null outer lists each keep one row with a null child value. Inner empty
 lists and Struct children retain their native values. Fixed-size Array, text and Object columns are refused;
 Object leaves inside the selected List's nested List, Array or Struct dtype are also refused before collection.
@@ -1455,7 +1456,7 @@ process.
 
 Native R sessions operate directly on R `data.frame`, tibble, and `data.table` frames. IRkernel, exact official
 R-terminal, and owned `Rscript` transports share the same native frame contract and supported cleaning operations,
-including generated R. Extract Struct Fields and Explode List are unavailable for R. The runtime never routes an R frame through Python.
+including generated R. The runtime never routes an R frame through Python.
 [Feature parity](feature-parity.md#native-r-support) defines support and limitations for each entry path.
 
 #### Local files
@@ -1553,7 +1554,7 @@ are checked by the emitted loader itself, so live and generated failures give th
 The producer and host independently validate canonical frame classes, column IDs, row names, typed values and
 bounded metadata. Factors, ordered factors, Date, POSIXct, difftime and integer64 retain explicit native metadata.
 Plain-double `NA`, `NaN` and both infinities remain distinct. Non-finite classed temporal values, fractional Dates,
-reserved integer missing-value sentinels used as values, nested columns, unsupported attributes and malformed names
+reserved integer missing-value sentinels used as values, recursive containers, unsupported attributes and malformed names
 are refused. Ordinary `collapse::qDF()`, `qTBL()` and `qDT()` outputs use the three supported frame paths;
 `GRP_df` and `indexed_frame` do not.
 
@@ -1572,6 +1573,40 @@ The first editing draft isolates the original through R serialization or `data.t
 results remain separate, and targets use stable IDs plus captured names. Ordinary cleaning drops inert column-element
 names according to native data-table copy semantics; the explicit retention exceptions are described below.
 
+Ordinary list and `AsIs` list columns admit one flat prototype. A List contains atomic vectors of one native type
+and exact metadata across rows: logical, integer, double, character, factor, Date, POSIXct, difftime or integer64.
+Typed empty vectors establish that prototype; different typed empties are incompatible. An empty `list()` is present
+but untyped, while an outer `NULL` is missing. A column containing only those two values has no invented element type.
+A Struct contains plain named lists with the same unique, nonempty field names and scalar native types. Field order
+may differ between rows and is aligned by the captured names. Missing or extra fields and `NULL` field values are
+refused; a typed `NA` field or missing whole record is valid. Recursive containers, matrices, arbitrary child classes
+and attributes hiding reference objects remain unsupported. Atomic child names retain their native values and appear
+inside the public cell's raw representation, without adding fields to the public cell protocol.
+
+Initial capture infers the prototype once. Later projected pages reuse it and validate the returned
+cells, so changing an unseen cell is refused when that cell is requested. Editing and Custom Code validate every
+nested cell against the captured prototype before isolation. Derived empty or all-missing columns retain their
+captured prototype. Within each validation walk, identical atomic metadata may reuse one representative, while factor
+codes, temporal values and name lengths remain checked. There is no persistent cache. Existing metadata, page and
+cell limits bound serialization. Before native copying, the existing 64 MiB operation budget also charges nested
+pointer slots, child headers, payloads, names and attributes, including each occurrence of an aliased child. This is
+separate from JSON cell envelopes and does not impose a new whole-source cap on scalar siblings. Metadata capture and
+projected viewing can remain available when a nested column is too large to copy.
+
+Extract Struct Fields appends 1 to 64 captured scalar fields and retains the parent, row IDs and sibling column IDs.
+Missing parents produce typed missing outputs. Explode List requires a known atomic element prototype, retains the
+selected column ID and repeats sibling values in source-row and child order. Each missing or empty cell produces one
+typed missing value. Expanded rows receive fresh IDs in the existing row domain. Both operations preserve the frame
+class, native child metadata and valid scalar data-table keys. Explode checks the row domain, repeated sibling bytes
+and materialized output against existing limits before allocating expansion indices or output vectors; Extract checks
+its new columns and metadata. Scalar comparisons, sorting and duplicate operations require scalar selected columns.
+
+Generated nested guards and expansion use an explicit finite set of deparsed native validators and helpers in a
+private base environment. They enforce the same prototype, attribute and copy bounds before publishing a result.
+Nested source plans and Custom Code include the guard helpers; Extract and Explode add their materialization helpers.
+Scalar plans without Custom Code omit those helper sets. This does not add package-specific code dialects
+or a recursive flattening engine.
+
 #### Viewing and profiling
 
 Viewing filters and sorts preserve source row IDs and stay outside the cleaning plan. Compound logic, typed predicates,
@@ -1582,6 +1617,11 @@ Optional value-filter search must be text when present. Invalid viewing requests
 
 R header profiles honor `openWrangler.insightsOnOpen`.
 The existing post-mutation quiet period still gives immediate Undo and Redo priority over background profiles.
+
+List and Struct profiles report outer `NULL` counts only, with no distinct count, value distribution or chart.
+Their filters support `isNull` and `isNotNull`; value selection and nested sorting are unavailable. Scalar siblings
+retain ordinary filters, sorts and profiles. Dataset duplicate counts are unavailable while any nested column remains.
+These outer counts do not re-infer leaf prototypes; page and editing boundaries retain their own validation.
 
 Cheap column/missing statistics scan in bounded chunks. Numeric histograms count every finite value into at most
 20 bins; integer64 chart positions retain their double projection while typed extrema remain exact. Character and
@@ -1613,6 +1653,8 @@ and native floating columns refuse integer-cell selection tokens.
 Cleaned-data export requires Editing mode with no outstanding draft; Apply or Discard first. The writer runs in the
 same owning R process, including nanoparquet for Parquet. Document transport streams an identified private file;
 notebook and terminal transports read offset-checked chunks from the exact native owner before the host's atomic save.
+CSV and Parquet export refuse remaining List or Struct columns before creating an artifact. Extract the needed fields
+and drop the parent, or Explode a typed List, to produce an exportable scalar frame.
 
 Native R CSV export writes validated UTF-8 bytes with LF record separators, independent of the current locale.
 It prepares character values and factor levels in a temporary frame. Duration columns use plain numeric storage in

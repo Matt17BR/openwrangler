@@ -2,6 +2,8 @@ import { readFile } from "node:fs/promises";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { describe, expect, it, vi } from "vitest";
+import { isOpenWranglerResponse } from "../shared/protocolValidation";
+import { schemaAfterNestedStep } from "../extension/r/rKernelMutationSchema";
 import { operationCatalog, operationKinds } from "../shared/operationCatalog.generated";
 import type {
   ConfirmedView,
@@ -132,7 +134,7 @@ describe("canonical R kernel bridge", () => {
       const response = await bridge.request({ kind: "initialize" });
       if (response.kind !== "initialized") throw new Error("Native R bridge did not initialize.");
       const operations = response.capabilities.supportedOperations ?? [];
-      const rOperations = operationKinds.filter((kind) => kind !== "extractStructFields" && kind !== "explodeList");
+      const rOperations = operationKinds;
       expect(operations).toEqual(rOperations);
       expect(operationCatalog.map(({ kind }) => kind)).toEqual(operationKinds);
       await expect(catalogKindsFromDirectRContract()).resolves.toEqual(rOperations);
@@ -149,47 +151,192 @@ describe("canonical R kernel bridge", () => {
       params: { column: { id: "r:c:0", name: "value" }, fields: [{ field: "a", newColumn: "out" }] }
     },
     { id: "explode", kind: "explodeList", params: { column: { id: "r:c:0", name: "value" } } }
-  ] satisfies TransformStep[])("refuses $kind before native R transport and preserves the session", async (step) => {
-    const transport = fakeTransport(frameContract());
-    const bridge = createBridge(transport);
-    try {
-      const opened = await bridge.request(openRequest("editing"));
-      if (opened.kind !== "sessionOpened") throw new Error("R source did not open.");
-      const source = opened.metadata;
-      await expect(
-        bridge.request({
-          kind: "previewStep",
+  ] satisfies TransformStep[])(
+    "refuses $kind on a scalar column before transport and preserves the session",
+    async (step) => {
+      const transport = fakeTransport(frameContract());
+      const bridge = createBridge(transport);
+      try {
+        const opened = await bridge.request(openRequest("editing"));
+        if (opened.kind !== "sessionOpened") throw new Error("R source did not open.");
+        const source = opened.metadata;
+        await expect(
+          bridge.request({
+            kind: "previewStep",
+            sessionId,
+            revision: source.revision,
+            offset: 0,
+            limit: 1,
+            columnOffset: 0,
+            columnLimit: 8,
+            step
+          })
+        ).resolves.toMatchObject({ kind: "error", code: "invalid_request", sessionId });
+        expect(transport.previewStep).not.toHaveBeenCalled();
+        expect(transport.applyDraft).not.toHaveBeenCalled();
+        const page = await bridge.request({
+          kind: "getPage",
           sessionId,
           revision: source.revision,
+          viewRequestId: "after-refused-fields",
+          filterModel: source.filterModel,
           offset: 0,
-          limit: 1,
+          limit: 20,
           columnOffset: 0,
-          columnLimit: 8,
-          step
-        })
-      ).resolves.toMatchObject({ kind: "error", code: "unsupported_operation", sessionId });
-      expect(transport.previewStep).not.toHaveBeenCalled();
-      expect(transport.applyDraft).not.toHaveBeenCalled();
-      const page = await bridge.request({
-        kind: "getPage",
-        sessionId,
-        revision: source.revision,
-        viewRequestId: "after-refused-fields",
-        filterModel: source.filterModel,
-        offset: 0,
-        limit: 20,
-        columnOffset: 0,
-        columnLimit: 8
-      });
-      expect(page).toMatchObject({
-        kind: "page",
-        revision: source.revision,
-        metadata: { schema: source.schema, steps: [] }
-      });
-    } finally {
-      await bridge.dispose();
+          columnLimit: 8
+        });
+        expect(page).toMatchObject({
+          kind: "page",
+          revision: source.revision,
+          metadata: { schema: source.schema, steps: [] }
+        });
+      } finally {
+        await bridge.dispose();
+      }
     }
-  });
+  );
+
+  it.each(["explodeList", "extractStructFields"] as const)(
+    "publishes checked %s scalar transitions through the public response boundary",
+    async (kind) => {
+      const base = frameContract();
+      const leaf = { kind: "integer64", storageMode: "double", classes: ["integer64"] } as const;
+      const scalar = base.page.rows[0]!.values[1]!;
+      const nested: RColumnSchema = {
+        ...base.schema[0]!,
+        rawType: "list",
+        type: kind === "explodeList" ? "list" : "struct",
+        semantics:
+          kind === "explodeList"
+            ? { kind: "list", storageMode: "list", classes: ["list"], element: leaf }
+            : {
+                kind: "struct",
+                storageMode: "list",
+                classes: ["list"],
+                fields: [{ name: "__proto__", semantics: leaf }]
+              }
+      };
+      const source: RFramePageContract = {
+        ...base,
+        schema: [nested, ...base.schema.slice(1)],
+        page: {
+          ...base.page,
+          rows: [
+            {
+              ...base.page.rows[0]!,
+              values: [
+                {
+                  kind: kind === "explodeList" ? "list" : "struct",
+                  raw: [scalar],
+                  display: "[9223372036854775807]",
+                  isNull: false,
+                  isNaN: false
+                },
+                ...base.page.rows[0]!.values.slice(1)
+              ]
+            }
+          ]
+        }
+      };
+      const step =
+        kind === "explodeList"
+          ? { id: "nested", kind, params: { column: { id: nested.id, name: nested.name } } }
+          : {
+              id: "nested",
+              kind,
+              params: {
+                column: { id: nested.id, name: nested.name },
+                fields: [{ field: "__proto__", newColumn: "extracted" }]
+              }
+            };
+      const schema = schemaAfterNestedStep(source.schema, step);
+      const output: RFramePageContract = {
+        ...source,
+        schema,
+        shape: { rows: kind === "explodeList" ? 2 : 1, columns: schema.length },
+        page: {
+          ...source.page,
+          columnLimit: 9,
+          columnIds: schema.map((column) => column.id),
+          rows: [
+            {
+              ...source.page.rows[0]!,
+              id: kind === "explodeList" ? "r:r:1" : "r:r:0",
+              values:
+                kind === "explodeList"
+                  ? [scalar, ...source.page.rows[0]!.values.slice(1)]
+                  : [...source.page.rows[0]!.values, scalar]
+            }
+          ]
+        }
+      };
+      const transport = fakeTransport(source);
+      const bridge = createBridge(transport);
+      const diff: DataDiff = {
+        addedRows: kind === "explodeList" ? 1 : 0,
+        removedRows: kind === "explodeList" ? 1 : 0,
+        addedColumns: kind === "extractStructFields" ? ["extracted"] : [],
+        removedColumns: [],
+        changedCells: 0,
+        cells: [],
+        truncated: false
+      };
+      try {
+        await expect(bridge.request(openRequest("editing"))).resolves.toMatchObject({ kind: "sessionOpened" });
+        transport.queuePreview({ sessionId, revision: 1, page: output, diff, code: "generated native operation" });
+        const preview = await bridge.request({
+          ...planRequest("applyDraft", 0),
+          kind: "previewStep",
+          step,
+          columnLimit: 9
+        });
+        expect(preview).toMatchObject({
+          kind: "stepPreview",
+          metadata: { schema: schema.map(({ semantics: _semantics, ...column }) => column) }
+        });
+        expect(isOpenWranglerResponse(preview)).toBe(true);
+        expect(transport.previewStep).toHaveBeenCalledOnce();
+        transport.applyDraft.mockResolvedValueOnce({
+          sessionId,
+          revision: 2,
+          action: "apply",
+          page: output,
+          code: "generated native operation"
+        });
+        await expect(bridge.request({ ...planRequest("applyDraft", 1), columnLimit: 9 })).resolves.toMatchObject({
+          kind: "planUpdated"
+        });
+        transport.undoStep.mockResolvedValueOnce({
+          sessionId,
+          revision: 3,
+          action: "undo",
+          page: { ...source, page: { ...source.page, columnLimit: 9 } },
+          code: ""
+        });
+        await expect(bridge.request({ ...planRequest("undoStep", 2), columnLimit: 9 })).resolves.toMatchObject({
+          kind: "planUpdated",
+          metadata: { schema: source.schema.map(({ semantics: _semantics, ...column }) => column) }
+        });
+        const changed = output.schema.map((column) =>
+          column.semantics.kind === "datetime"
+            ? { ...column, semantics: { ...column.semantics, timezone: "America/New_York" } }
+            : column
+        );
+        transport.queuePreview({
+          sessionId,
+          revision: 4,
+          page: { ...output, schema: changed },
+          diff,
+          code: "changed sibling metadata"
+        });
+        await expect(
+          bridge.request({ ...planRequest("applyDraft", 3), kind: "previewStep", step, columnLimit: 9 })
+        ).rejects.toThrow("exact nested output or sibling metadata");
+      } finally {
+        await bridge.dispose();
+      }
+    }
+  );
 
   it.each([
     [120_000.25, 90_000.5, 120_001, 90_001],

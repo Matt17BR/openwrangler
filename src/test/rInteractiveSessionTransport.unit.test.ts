@@ -1899,7 +1899,7 @@ function openResponse(requestId: string, sessionId: string, includeFormats = tru
     sessionId,
     ...(includeFormats ? { exportFormats: ["csv"] } : {}),
     page: {
-      contractVersion: 5,
+      contractVersion: 6,
       dataframeFlavor: "r.data.frame",
       shape: { rows: 1, columns: 1 },
       frameSemantics: { classes: ["data.frame"], rowNames: "positional", keyColumnIds: [] },

@@ -368,19 +368,26 @@ describe("native R kernel protocol", () => {
   });
 
   it("strictly decodes bounded column profiles and dataset statistics", () => {
+    const unavailableDuplicates = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: statsRequestId,
+      kind: "datasetStats",
+      sessionId,
+      totalRows: 1,
+      stats: { ...minimalDatasetStats(), duplicateRows: null }
+    };
+    expect(decodeRKernelResponseJson(JSON.stringify(unavailableDuplicates), statsRequestId)).toMatchObject({
+      stats: { duplicateRows: null }
+    });
     expect(() =>
       decodeRKernelResponseJson(
         JSON.stringify({
-          transportVersion: R_KERNEL_TRANSPORT_VERSION,
-          requestId: statsRequestId,
-          kind: "datasetStats",
-          sessionId,
-          totalRows: 1,
-          stats: { ...minimalDatasetStats(), duplicateRows: null }
+          ...unavailableDuplicates,
+          stats: { ...unavailableDuplicates.stats, duplicateRowsSampleSize: 1 }
         }),
         statsRequestId
       )
-    ).toThrow("filtered row count");
+    ).toThrow("dataset-statistics response is invalid");
     const summary = JSON.stringify({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: summaryRequestId,
@@ -4513,7 +4520,7 @@ function minimalRenameDiff() {
 
 function minimalFramePage() {
   return {
-    contractVersion: 5,
+    contractVersion: 6,
     dataframeFlavor: "r.data.frame",
     shape: { rows: 1, columns: 1 },
     frameSemantics: { classes: ["data.frame"], rowNames: "positional", keyColumnIds: [] },
@@ -4610,7 +4617,7 @@ function minimalTextLengthFramePage() {
 
 function minimalLowerFramePage() {
   return {
-    contractVersion: 5,
+    contractVersion: 6,
     dataframeFlavor: "r.data.frame",
     shape: { rows: 1, columns: 1 },
     frameSemantics: { classes: ["data.frame"], rowNames: "positional", keyColumnIds: [] },
@@ -4645,7 +4652,7 @@ function minimalLowerFramePage() {
 
 function minimalCastFloatFramePage() {
   return {
-    contractVersion: 5,
+    contractVersion: 6,
     dataframeFlavor: "r.data.frame",
     shape: { rows: 1, columns: 1 },
     frameSemantics: { classes: ["data.frame"], rowNames: "positional", keyColumnIds: [] },

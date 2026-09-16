@@ -296,7 +296,7 @@ missing <- dispatch(
 assert_identical(missing$kind, "error", "an unknown variable was accepted")
 assert_identical(missing$code, "unknown_variable", "the unknown-variable diagnostic changed")
 
-source_environment$unsupported <- data.frame(value = I(list(1L)))
+source_environment$unsupported <- data.frame(value = I(list(list(1L))))
 unsupported <- dispatch(
   "openSession",
   list(sessionId = second_session_id, variableName = "unsupported", page = page_window())
@@ -311,7 +311,7 @@ named_rows <- dispatch(
   list(sessionId = second_session_id, variableName = "named_rows", page = page_window())
 )
 assert_identical(named_rows$kind, "page", "a dataframe with explicit row names could not be opened")
-assert_identical(named_rows$page$contractVersion, 5L, "the R kernel agent emitted the wrong frame contract")
+assert_identical(named_rows$page$contractVersion, 6L, "the R kernel agent emitted the wrong frame contract")
 assert_identical(named_rows$page$frameSemantics$rowNames, "explicit", "explicit R row names were hidden")
 assert_identical(named_rows$page$page$rows[[1L]]$rowLabel, "named-row", "the explicit R row label changed")
 named_rows_closed <- dispatch("closeSession", list(sessionId = second_session_id))
@@ -345,7 +345,7 @@ local({
   on.exit(boundary_agent$dispose())
   id <- "92929292-9292-4292-8292-929292929292"
   send <- function(kind, payload) {
-    request <- list(transportVersion = 15L, requestId = request_id, kind = kind, payload = payload)
+    request <- list(transportVersion = 16L, requestId = request_id, kind = kind, payload = payload)
     jsonlite::fromJSON(boundary_agent$dispatch_json(as.character(jsonlite::toJSON(
       request, auto_unbox = TRUE, digits = 17L, null = "null", na = "null"
     ))), simplifyVector = FALSE)

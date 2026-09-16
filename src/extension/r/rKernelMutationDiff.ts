@@ -145,6 +145,7 @@ export function inspectionDiff(
   if (
     step.kind === "groupBy" ||
     step.kind === "customCode" ||
+    step.kind === "explodeList" ||
     step.kind === "pivotLonger" ||
     step.kind === "pivotWider"
   ) {
@@ -286,6 +287,32 @@ export function assertMutationDiff(
   diff: DataDiff,
   view: RKernelViewQuery
 ): void {
+  if (step.kind === "explodeList" || step.kind === "extractStructFields") {
+    const extracted = step.kind === "extractStructFields" ? step.params.fields.map((field) => field.newColumn) : [];
+    const expectedIds = [
+      ...inputSchema.map((column) => column.id),
+      ...extracted.map((_, ordinal) => `c:step:${step.id}:${ordinal}`)
+    ];
+    const fullyRepresented =
+      outputPage.page.offset === 0 &&
+      outputPage.page.totalRows === outputRows &&
+      outputPage.page.rows.length === outputRows;
+    if (
+      !isDeepStrictEqual(
+        outputSchema.map((column) => column.id),
+        expectedIds
+      ) ||
+      !isDeepStrictEqual(diff.addedColumns, extracted) ||
+      diff.removedColumns.length !== 0 ||
+      diff.addedRows !== (step.kind === "explodeList" ? outputRows : 0) ||
+      diff.removedRows !== (step.kind === "explodeList" ? inputRows : 0) ||
+      diff.changedCells !== 0 ||
+      diff.cells.length !== 0 ||
+      (step.kind === "extractStructFields" ? diff.truncated : !fullyRepresented && !diff.truncated)
+    )
+      throw new Error("The R kernel returned an invalid nested operation diff.");
+    return;
+  }
   if (step.kind === "pivotLonger") {
     const selectedIds = new Set(step.params.columns.map((column) => column.id));
     const retained = inputSchema.filter((column) => !selectedIds.has(column.id));

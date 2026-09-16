@@ -8,6 +8,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 - R CSV/TSV imports honor encoding, ASCII delimiter and quote, headerless and CR record options, with matching generated code.
 - Native R file sessions can reuse confirmed built-in cleaning plans on another file with compatible columns.
+- Native R displays homogeneous atomic list columns and flat records. Extract Struct Fields and Explode List preserve native types, source isolation, history and generated code; exports require scalar output columns.
 - R Custom Code accepts results that change between supported base data.frame, tibble and data.table classes, with matching Preview, history and generated code.
 - Local R file support is Preview on Linux, macOS and Windows: CSV, TSV, flat Parquet and JSONL/NDJSON, and selected Excel worksheets, with native cleaning, generated R and saved plans. Choosing R from a Python file session preserves the original in a separate tab.
 

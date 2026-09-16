@@ -107,7 +107,7 @@ function frameContract(): RFramePageContract {
     }
   ] as const;
   return {
-    contractVersion: 5,
+    contractVersion: 6,
     dataframeFlavor: "r.data.frame",
     shape: { rows: 9, columns: 1 },
     frameSemantics: { classes: ["data.frame"], rowNames: "explicit", keyColumnIds: [] },
