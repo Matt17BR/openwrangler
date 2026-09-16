@@ -573,7 +573,11 @@ describe("native state and presentation commands", () => {
     });
     active.metadata.shape.columns = 2;
     active.metadata.filteredShape.columns = 2;
-    register(active);
+    const registered = register(active);
+    const onRefresh = vi.fn();
+    const subscription = nativeMocks.treeDataProviders
+      .get("openWrangler.cleaningSteps")
+      ?.onDidChangeTreeData?.(onRefresh);
 
     const steps = treeChildren("openWrangler.cleaningSteps");
     expect(steps[1]).toMatchObject({
@@ -590,6 +594,150 @@ describe("native state and presentation commands", () => {
         label: "4. Formula column, Output at this step: 東京 *売上* [gross] · Latest applied step"
       }
     });
+
+    const firstFormula = active.metadata.steps[0]!;
+    if (firstFormula.kind === "formula") firstFormula.params.newColumn = "revised output";
+    registered.setActiveSession(active);
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+    expect(treeChildren("openWrangler.cleaningSteps")[1]?.tooltip).toContain("Output at this step: revised output");
+
+    active.metadata.steps.reverse();
+    registered.setActiveSession(active);
+    expect(onRefresh).toHaveBeenCalledTimes(2);
+    expect(treeChildren("openWrangler.cleaningSteps")[1]?.tooltip).toContain(latestOutput);
+
+    active.metadata.steps[0] = { id: "latest", kind: "dropMissingRows", params: {} };
+    registered.setActiveSession(active);
+    expect(onRefresh).toHaveBeenCalledTimes(3);
+    expect(treeChildren("openWrangler.cleaningSteps")[1]?.label).toBe("1. Drop missing rows");
+
+    active.metadata.steps[0]!.id = "replacement-step";
+    registered.setActiveSession(active);
+    expect(onRefresh).toHaveBeenCalledTimes(4);
+    expect(treeChildren("openWrangler.cleaningSteps")[1]?.cleaningStepHandle).toMatchObject({
+      stepId: "replacement-step"
+    });
+
+    active.metadata.steps.pop();
+    registered.setActiveSession(active);
+    expect(onRefresh).toHaveBeenCalledTimes(5);
+    expect(treeChildren("openWrangler.cleaningSteps")).toHaveLength(4);
+    subscription?.dispose();
+  });
+
+  it("keeps Cleaning Steps unchanged while fresh viewing and profiling snapshots update Summary", () => {
+    const initial = exportableSnapshot("session", "sample.csv", 0);
+    const registered = register(initial);
+    const onStepsRefresh = vi.fn();
+    const onSummaryRefresh = vi.fn();
+    const stepsSubscription = nativeMocks.treeDataProviders
+      .get("openWrangler.cleaningSteps")
+      ?.onDidChangeTreeData?.(onStepsRefresh);
+    const summarySubscription = nativeMocks.treeDataProviders
+      .get("openWrangler.summary")
+      ?.onDidChangeTreeData?.(onSummaryRefresh);
+    const initialRows = treeChildren("openWrangler.cleaningSteps");
+
+    const viewed = structuredClone(initial);
+    viewed.viewState.selectedColumnId = "c:value";
+    viewed.metadata.filteredShape.rows = 1;
+    viewed.viewState.filterModel = { filters: [], sort: [{ column: "value", direction: "desc", nulls: "last" }] };
+    viewed.metadata.filterModel = viewed.viewState.filterModel;
+    registered.setActiveSession(viewed);
+    expect(onStepsRefresh).not.toHaveBeenCalled();
+    expect(onSummaryRefresh).toHaveBeenCalledTimes(1);
+    expect(treeChildren("openWrangler.summary").map(nodePresentation)).toContainEqual(["Shape", "1 × 1"]);
+
+    const profiled = structuredClone(viewed);
+    profiled.metadata.stats = {
+      missingCells: 0,
+      missingRows: 0,
+      duplicateRows: 0,
+      missingValuesByColumn: [{ column: "value", count: 0 }]
+    };
+    profiled.metadata.schema[0]!.rawType = "Int32";
+    profiled.code = "# unchanged plan with refreshed code presentation";
+    profiled.stepInspectionActive = true;
+    registered.setActiveSession(profiled);
+    expect(onStepsRefresh).not.toHaveBeenCalled();
+    expect(onSummaryRefresh).toHaveBeenCalledTimes(2);
+    expect(treeChildren("openWrangler.cleaningSteps")).toEqual(initialRows);
+    expect(treeChildren("openWrangler.summary").map(nodePresentation)).toContainEqual(["Missing cells", "0"]);
+    stepsSubscription?.dispose();
+    summarySubscription?.dispose();
+  });
+
+  it("refreshes Cleaning Steps for draft and completed inspection transitions", () => {
+    const active = exportableSnapshot("session", "sample.csv", 0);
+    const registered = register(active);
+    const onRefresh = vi.fn();
+    const subscription = nativeMocks.treeDataProviders
+      .get("openWrangler.cleaningSteps")
+      ?.onDidChangeTreeData?.(onRefresh);
+
+    active.metadata.draftStep = { id: "draft", kind: "dropMissingRows", params: {} };
+    registered.setActiveSession(active);
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+    expect(treeChildren("openWrangler.cleaningSteps")[1]?.contextValue).toBe("openWrangler.cleaningStep");
+    expect(treeChildren("openWrangler.cleaningSteps").at(-1)?.label).toBe("Draft · Drop missing rows");
+
+    active.metadata.draftStep = {
+      id: "draft",
+      kind: "dropColumns",
+      params: { columns: [{ id: "c:value", name: "value" }] }
+    };
+    registered.setActiveSession(active);
+    expect(onRefresh).toHaveBeenCalledTimes(2);
+    expect(treeChildren("openWrangler.cleaningSteps").at(-1)?.label).toBe("Draft · Drop columns");
+
+    delete active.metadata.draftStep;
+    registered.setActiveSession(active);
+    expect(onRefresh).toHaveBeenCalledTimes(3);
+    expect(treeChildren("openWrangler.cleaningSteps")[1]?.contextValue).toBe("openWrangler.latestCleaningStep");
+
+    active.metadata.steps.push({ ...appliedStep, id: "second-step" });
+    registered.setActiveSession(active);
+    expect(onRefresh).toHaveBeenCalledTimes(4);
+    expect(treeChildren("openWrangler.cleaningSteps")).toHaveLength(3);
+
+    active.stepInspection = stepInspectionResponse({
+      kind: "inspectStep",
+      sessionId: active.sessionId,
+      revision: 0,
+      stepId: appliedStep.id,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 16
+    });
+    registered.setActiveSession(active);
+    expect(onRefresh).toHaveBeenCalledTimes(5);
+    expect(treeChildren("openWrangler.cleaningSteps").map(nodePresentation)).toEqual([
+      ["Current view", "Show current view"],
+      ["1. Drop missing rows", "Selected · applied"],
+      ["2. Drop missing rows", "Latest applied step"]
+    ]);
+
+    active.stepInspection.stepId = "second-step";
+    active.stepInspection.stepIndex = 1;
+    registered.setActiveSession(active);
+    expect(onRefresh).toHaveBeenCalledTimes(6);
+    expect(treeChildren("openWrangler.cleaningSteps")[2]?.description).toBe("Selected · latest applied step");
+
+    delete active.stepInspection;
+    registered.setActiveSession(active);
+    expect(onRefresh).toHaveBeenCalledTimes(7);
+    expect(treeChildren("openWrangler.cleaningSteps")[0]?.description).toBe("Selected");
+
+    registered.setActiveSession(undefined);
+    expect(onRefresh).toHaveBeenCalledTimes(8);
+    expect(treeChildren("openWrangler.cleaningSteps")[0]?.label).toBe("No active dataframe");
+    registered.setActiveSession(undefined);
+    expect(onRefresh).toHaveBeenCalledTimes(8);
+    registered.setActiveSession(active);
+    expect(onRefresh).toHaveBeenCalledTimes(9);
+    expect(treeChildren("openWrangler.cleaningSteps")).toHaveLength(3);
+    subscription?.dispose();
   });
 
   it("routes cleaning-step selection through the exact active session and rejects stale steps", async () => {
@@ -646,6 +794,10 @@ describe("native state and presentation commands", () => {
     const original = exportableSnapshot("original", "original.csv", 0);
     original.stepInspectionActive = true;
     const registered = register(original);
+    const onRefresh = vi.fn();
+    const subscription = nativeMocks.treeDataProviders
+      .get("openWrangler.cleaningSteps")
+      ?.onDidChangeTreeData?.(onRefresh);
     const inspectionRows = () => {
       const steps = treeChildren("openWrangler.cleaningSteps");
       return [
@@ -674,6 +826,7 @@ describe("native state and presentation commands", () => {
     replacement.stepInspectionActive = true;
     expect(replacement.metadata.steps[0]?.id).toBe(original.metadata.steps[0]?.id);
     registered.setActiveSession(replacement);
+    expect(onRefresh).toHaveBeenCalledOnce();
 
     await command("openWrangler.editSelectedStep")(oldRow);
     expect(nativeMocks.sendEditorActionForSession).not.toHaveBeenCalled();
@@ -697,6 +850,7 @@ describe("native state and presentation commands", () => {
     }
     expect(nativeMocks.sendEditorActionForSession).toHaveBeenCalledTimes(3);
     expect(registered.clearActiveStepInspection).toHaveBeenCalledTimes(2);
+    subscription?.dispose();
   });
 
   it("refuses malformed bound inspection targets without returning to the current view", async () => {

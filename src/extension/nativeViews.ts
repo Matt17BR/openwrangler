@@ -67,6 +67,7 @@ class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vsc
   private readonly subscriptions: vscode.Disposable[] = [this.changeEmitter];
   private snapshot: ActiveSessionSnapshot | undefined;
   private sortRegistryContext: string;
+  private cleaningStepsContext: string | undefined;
   private readonly sortTargets = new Map<string, ViewSortTarget>();
   private readonly sortTokens = new Map<string, string>();
   private disposed = false;
@@ -80,17 +81,23 @@ class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vsc
     private readonly rVariables?: RLiveVariableProvider
   ) {
     this.snapshot = coordinator.activeSession();
-    this.sortRegistryContext = viewSortRegistryContext(this.snapshot);
+    this.sortRegistryContext = this.kind === "filters" ? viewSortRegistryContext(this.snapshot) : "";
+    this.cleaningStepsContext = this.kind === "steps" ? cleaningStepsContext(this.snapshot) : undefined;
     try {
       this.subscriptions.push(
         coordinator.onDidChangeActiveSession((snapshot) => {
           this.snapshot = snapshot;
-          const nextContext = viewSortRegistryContext(snapshot);
           if (this.kind === "filters") {
+            const nextContext = viewSortRegistryContext(snapshot);
             if (nextContext === this.sortRegistryContext) return;
             this.sortRegistryContext = nextContext;
             this.sortTargets.clear();
             this.sortTokens.clear();
+          }
+          if (this.kind === "steps") {
+            const nextStepsContext = cleaningStepsContext(snapshot);
+            if (nextStepsContext === this.cleaningStepsContext) return;
+            this.cleaningStepsContext = nextStepsContext;
           }
           this.changeEmitter.fire(undefined);
         })
@@ -1445,6 +1452,22 @@ function rLiveVariableNodes(snapshot: RLiveVariableSnapshot | undefined): ViewNo
         })
     )
   ];
+}
+
+function cleaningStepsContext(snapshot: ActiveSessionSnapshot | undefined): string {
+  if (!snapshot) return "inactive";
+  const { metadata, stepInspection } = snapshot;
+  return JSON.stringify([
+    snapshot.sessionId,
+    metadata.revision,
+    stepInspection?.stepId ?? null,
+    metadata.draftStep?.kind ?? null,
+    metadata.steps.map((step) => [
+      step.id,
+      step.kind,
+      step.kind === "formula" && typeof step.params.newColumn === "string" ? step.params.newColumn : null
+    ])
+  ]);
 }
 
 function cleaningStepNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
