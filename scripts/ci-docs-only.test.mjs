@@ -1682,10 +1682,12 @@ test("CI schedules every existing native R phase on two workers and cancellation
   assert.equal(shard.env.R_LIBS_USER, "${{ steps.r_prepare.outputs.library }}");
   const phases = createRContractPhases({ environment: {}, r: "unused-R", rscript: "unused-Rscript" });
   const kernelTransport = phases.find((phase) => phase.id === "kernel-transport");
-  assert.deepEqual(kernelTransport.args.slice(2, -1), [
+  assert.deepEqual(kernelTransport.args.slice(2), [
     "src/test/rKernelTransport.cross.test.ts",
     "src/test/rKernelTransport.unit.test.ts",
-    "src/test/rNotebookVariableDiscovery.unit.test.ts"
+    "src/test/rNotebookVariableDiscovery.unit.test.ts",
+    "--maxWorkers=1",
+    "--reporter=verbose"
   ]);
   assert.equal(kernelTransport.environment.OPEN_WRANGLER_R_CONTRACT_TESTS, "1");
   assert.equal(kernelTransport.environment.RSCRIPT, "unused-Rscript");

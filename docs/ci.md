@@ -139,6 +139,7 @@ do load the webview and exercise real profiles, so they remain required. Local b
 The Linux R phases load native R assets and the selected Node transport owners, without loading renderer source or the
 listed host files.
 The kernel-transport phase also runs native notebook discovery, selection and dependency checks with the same selected R executable.
+Native Vitest phases report completed test names and durations, so a phase timeout retains more than a file summary.
 Their separate `r_runtime_omittable` result permits the Linux matrix and each platform's numeric-portability step to be
 skipped. The platform step loads native R assets and its source-test helpers, without loading renderer source or the
 listed host files.
