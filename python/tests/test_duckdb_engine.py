@@ -1341,7 +1341,7 @@ def test_duckdb_custom_checkpoint_retains_rows_and_stored_ids(tmp_path: Path) ->
                 "customCode",
                 code="df.query('__custom_input', 'BEGIN')\n"
                 "df.query('__custom_input', \"SET default_null_order='NULLS_FIRST'\")\n"
-                "result = df.project('id, uuid() AS token').order('random()')",
+                "result = df.project('id, uuid() AS token, id % 2 AS tie').order('random()')",
             ),
         )
         engine.validate_internal_row_id_namespace(captured)
@@ -1362,7 +1362,7 @@ def test_duckdb_custom_checkpoint_retains_rows_and_stored_ids(tmp_path: Path) ->
         second = engine.apply_transform(clone, step("customCode", code="result = df.project('*, uuid() AS second')"))
         second = engine.ensure_row_ids(second, "second")
         second_clone = engine.apply_transform(
-            second, bound_step("cloneColumn", column=bound_ref("c:3", "second", 3), newName="second_copy")
+            second, bound_step("cloneColumn", column=bound_ref("c:4", "second", 4), newName="second_copy")
         )
         ordered = engine.apply_filter_model(
             second_clone,
@@ -1373,6 +1373,31 @@ def test_duckdb_custom_checkpoint_retains_rows_and_stored_ids(tmp_path: Path) ->
         assert engine.page(ordered, 0, 4) == ordered_page
         assert engine._terminal_scalar(ordered, "SELECT bool_and(token = copy) FROM ow") is True
         assert engine._terminal_scalar(ordered, "SELECT bool_and(second = second_copy) FROM ow") is True
+        captured_rows = engine.page(second_clone, 0, 4)["rows"]
+        expected = sorted(
+            (row for row in captured_rows if row["values"][0]["raw"] >= 1),
+            key=lambda row: row["values"][2]["raw"],
+        )
+        filtered = engine.apply_filter_model(
+            second_clone,
+            {
+                "filters": [
+                    {
+                        "column": "id",
+                        "type": "integer",
+                        "predicates": [{"kind": "predicate", "operator": "gte", "value": 1}],
+                    }
+                ],
+                "sort": [{"column": "tie", "direction": "asc", "nulls": "last"}],
+            },
+        )
+        filtered_rows = [row for offset in (0, 2) for row in engine.page(filtered, offset, 2)["rows"]]
+        assert {row["values"][0]["raw"] for row in filtered_rows} == {1, 2, 3}
+        assert filtered_rows == [{**row, "rowNumber": index} for index, row in enumerate(expected)]
+        copied = [
+            row for offset in (0, 2) for row in engine.page(filtered, offset, 2, column_projection=[(1, "c:1")])["rows"]
+        ]
+        assert copied == [{**row, "values": [row["values"][1]]} for row in filtered_rows]
         checkpoint = captured.checkpoint
         assert checkpoint is not None
         stored_path = Path(checkpoint.temporary.name)
@@ -6723,7 +6748,7 @@ def test_duckdb_live_notebook_session_owns_the_exact_relation_without_conversion
     connection = duckdb.connect()
     connection.execute(
         "CREATE TABLE private_orders AS "
-        "SELECT * FROM (VALUES (7, 'Milan'), (11, 'Berlin'), (9, 'Paris')) AS rows(order_id, city)"
+        "SELECT * FROM (VALUES (7, 'Milan'), (11, 'Berlin'), (9, 'Paris'), (13, 'Berlin')) AS rows(order_id, city)"
     )
     relation = connection.table("private_orders").project("*, uuid() AS token").order("random()")
     monkeypatch.setattr(__main__, "duck_orders", relation, raising=False)
@@ -6760,12 +6785,12 @@ def test_duckdb_live_notebook_session_owns_the_exact_relation_without_conversion
             "notebookInsert": False,
             "supportedOperations": [],
         }
-        assert opened["metadata"]["shape"] == {"rows": 3, "columns": 3}
+        assert opened["metadata"]["shape"] == {"rows": 4, "columns": 3}
         view = {"logic": "and", "filters": [], "sort": []}
-        full_page = manager.get_page(session_id, 0, 0, 3, view)["page"]
+        full_page = manager.get_page(session_id, 0, 0, 4, view)["page"]
         adjacent = manager.get_page(session_id, 0, 2, 2, view)["page"]
         assert opened["page"]["rows"] + adjacent["rows"] == full_page["rows"]
-        assert {row["values"][0]["display"] for row in full_page["rows"]} == {"7", "9", "11"}
+        assert {row["values"][0]["display"] for row in full_page["rows"]} == {"7", "9", "11", "13"}
         projected = [
             row for offset in (0, 2) for row in manager.get_page(session_id, 0, offset, 2, view, 2, 1)["page"]["rows"]
         ]
@@ -6773,6 +6798,33 @@ def test_duckdb_live_notebook_session_owns_the_exact_relation_without_conversion
         original = manager.sessions[session_id].original
         assert isinstance(original, DuckDBNotebookPlan)
         owner = original.owner
+        filtered_view = {
+            "filters": [
+                {
+                    "column": "order_id",
+                    "type": "integer",
+                    "predicates": [{"kind": "predicate", "operator": "gte", "value": 9}],
+                }
+            ],
+            "sort": [{"column": "city", "direction": "asc", "nulls": "last"}],
+        }
+        expected = sorted(
+            (row for row in full_page["rows"] if row["values"][0]["raw"] >= 9),
+            key=lambda row: row["values"][1]["raw"],
+        )
+        filtered_rows = [
+            row
+            for offset in (0, 2)
+            for row in manager.get_page(session_id, 0, offset, 2, filtered_view)["page"]["rows"]
+        ]
+        assert {row["values"][0]["raw"] for row in filtered_rows} == {9, 11, 13}
+        assert filtered_rows == [{**row, "rowNumber": index} for index, row in enumerate(expected)]
+        copied = [
+            row
+            for offset in (0, 2)
+            for row in manager.get_page(session_id, 0, offset, 2, filtered_view, 2, 1)["page"]["rows"]
+        ]
+        assert copied == [{**row, "values": [row["values"][2]]} for row in filtered_rows]
 
         sorted_page = manager.get_page(
             session_id,
@@ -6785,7 +6837,7 @@ def test_duckdb_live_notebook_session_owns_the_exact_relation_without_conversion
                 "sort": [{"column": "order_id", "direction": "desc", "nulls": "last"}],
             },
         )
-        assert [row["values"][0]["display"] for row in sorted_page["page"]["rows"]] == ["11", "9", "7"]
+        assert [row["values"][0]["display"] for row in sorted_page["page"]["rows"]] == ["13", "11", "9", "7"]
         summary = manager.get_summary(
             session_id,
             0,
@@ -6793,7 +6845,7 @@ def test_duckdb_live_notebook_session_owns_the_exact_relation_without_conversion
             ["c:source:0"],
         )["summaries"][0]
         assert summary["numeric"]["min"] == 7.0
-        assert summary["numeric"]["max"] == 11.0
+        assert summary["numeric"]["max"] == 13.0
 
         with pytest.raises(EngineError, match="viewing mode"):
             manager.preview_step(
@@ -6819,16 +6871,21 @@ def test_duckdb_live_notebook_session_owns_the_exact_relation_without_conversion
             source,
             backend="duckdb",
             mode="viewing",
-            page_size=3,
+            page_size=4,
             clone_from={"sessionId": session_id, "revision": 0},
         )
         clone_id = cloned["metadata"]["sessionId"]
         assert manager.close_session(session_id, 0) == {"kind": "sessionClosed", "sessionId": session_id}
         assert owner.closed is True
-        assert manager.get_page(clone_id, 0, 0, 3, view)["page"]["rows"] == full_page["rows"]
+        assert manager.get_page(clone_id, 0, 0, 4, view)["page"]["rows"] == full_page["rows"]
         assert vars(__main__)["duck_orders"] is relation
-        assert connection.table("private_orders").fetchall() == [(7, "Milan"), (11, "Berlin"), (9, "Paris")]
-        assert relation.project("order_id").order("order_id").fetchall() == [(7,), (9,), (11,)]
+        assert connection.table("private_orders").fetchall() == [
+            (7, "Milan"),
+            (11, "Berlin"),
+            (9, "Paris"),
+            (13, "Berlin"),
+        ]
+        assert relation.project("order_id").order("order_id").fetchall() == [(7,), (9,), (11,), (13,)]
         monkeypatch.setattr(__main__, "orders_connection", object())
         with pytest.raises(EngineError, match="no longer available"):
             manager.open_session(source, backend="duckdb", page_size=2)

@@ -1033,8 +1033,7 @@ native lazy scans, and saved notebook MIME capture keeps its separate bounded qu
 Capture uses `pl.collect_all` with `engine="in-memory"`, including on minimum Polars under caller-configured streaming.
 It evaluates and retains every result column and row; page and transport limits do not bound that work or memory.
 Subsequent projection cannot avoid the original full capture. Native dtypes and Python Object references are preserved;
-mutable Python objects are not deep-copied or protected from caller mutation. The remaining DuckDB query-order limitation
-is tracked in [the pagination issue](https://github.com/Matt17BR/openwrangler/issues/1487).
+mutable Python objects are not deep-copied or protected from caller mutation.
 
 Column references bind literal names, including `*` and names that resemble anchored regular expressions.
 The native selection owner checks those names against the current input schema before constructing an exact
