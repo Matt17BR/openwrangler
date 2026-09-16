@@ -259,7 +259,7 @@ Windows runs the existing supervisor native owner before dependency preparation,
 and PowerShell source startup. Its installed file stage checks native formats, import restoration and private-process
 recovery through the existing notebook journey; [Testing](testing.md#native-r-editor-dependencies) defines its scope.
 Unless the source omission applies, the released-Jupyter jobs then run the canonical `kernel:numeric-portability`
-and `kernel:csv-import` source cases with the same private jsonlite, readr and bit64 dependencies before opening the editor.
+and `kernel:csv-import` source cases with the same private jsonlite and bit64 dependencies before opening the editor.
 Parquet dependencies remain with the separate export and editor owners.
 These cases check platform-sensitive arithmetic, text conversion, selections and generated programs without
 repeating the broad Linux operation and export suites. macOS uses the bounded `platform-lifecycle` journey; Windows

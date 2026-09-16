@@ -690,7 +690,7 @@ remain in their existing source cases.
 The two focused cases run serially in separate R processes through the warning-strict wrapper, each with a two-minute
 limit and bounded output. Their synthetic fixtures and operations do not launch subprocesses; ordinary direct-child
 execution is sufficient and does not qualify general process-tree cleanup. Both reuse one preparation by the existing
-private-library owner with pinned jsonlite, readr and bit64 roots, including version and namespace checks. The separate
+private-library owner with pinned jsonlite and bit64 roots, including version and namespace checks. The separate
 export case requires nanoparquet; source preparation skips the empty supplemental package install. Any preparation
 or test failure retains the private root; successful preparation and both child exits permit its removal.
 The subsequent installed-editor journey keeps its separate environment, nanoparquet dependency and lifetime.
@@ -710,8 +710,8 @@ of the confirmed plan followed by public grid navigation. A tiny CP1252 CSV uses
 header, quote and CR controls after its encoding is automatically detected, retaining quoted CRLF bytes; its saved options/plan restore through the public custom editor and its generated program executes
 in the original R notebook kernel with exact PID equality. The same branch opens the existing Parquet, JSONL, XLSX and BIFF fixtures and selects
 the nonfirst XLSX worksheet through the real picker. Exact native cells, source bytes, an unrelated sentinel and owned
-session/private-root cleanup remain asserted. Default notebook preparation includes pinned readr, readxl and bit64 for these
-file inputs; focused and terminal package sets stay unchanged. Source-only preparation also includes readr for the CSV case. This adds small file launches and reader
+session/private-root cleanup remain asserted. Default notebook preparation includes pinned readxl and bit64 for these
+file inputs; focused, terminal and source-only package sets stay unchanged. This adds small file launches and reader
 preparation within the existing profile and phase deadline; hosted checkpoints must establish the actual additional cost. Its original hosted run records phase-relative checkpoints;
 polling can miss quick transitions, so these are not exact per-action timings.
 The Linux core catalog retains the Dense Rank form,
