@@ -123,6 +123,8 @@ disclosure and failed preview. Busy forms retain keyboard scrolling without focu
 The filter keyboard owner also checks selected-column/profile agreement and hit visibility of the focused cell and
 header with the panel open at 1280px, 800px, 621px, 620px and a short 320px viewport. A column wider than the available
 data lane must expose that lane; the panel must not cover the grid, and its short-layout controls retain Tab/Escape access.
+The inspection workflow checks Enter on the paused-filter disclosure, retained disabled rules and focus on entry and
+return. Focus moves from a filter control being hidden to the disclosure and leaves unrelated controls alone.
 
 Use the existing owners to choose a focused source check:
 

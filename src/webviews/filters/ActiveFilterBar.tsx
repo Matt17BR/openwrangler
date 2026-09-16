@@ -19,6 +19,7 @@ interface ActiveFilterBarProps {
   metadata: SessionMetadata;
   model: FilterModel;
   disabled?: boolean;
+  paused?: boolean;
   canUndo: boolean;
   retainVisible?: boolean;
   requestLifecycle?: FilterBarRequestLifecycle;
@@ -43,6 +44,7 @@ export function ActiveFilterBar({
   metadata,
   model,
   disabled = false,
+  paused = false,
   canUndo,
   retainVisible = false,
   requestLifecycle,
@@ -50,11 +52,29 @@ export function ActiveFilterBar({
   onUndo
 }: ActiveFilterBarProps) {
   const region = useRef<HTMLElement | null>(null);
+  const disclosure = useRef<HTMLDetailsElement | null>(null);
   const focusIntent = useRef<FilterFocusIntent | undefined>(undefined);
   const activeFilters = useMemo(() => model.filters.filter(isActiveColumnFilter), [model.filters]);
   const filteredColumnCount = new Set(activeFilters.map((filter) => filter.column)).size;
   const pendingRequestId = requestLifecycle?.pendingRequestId;
   const settledRequestId = requestLifecycle?.settledRequestId;
+  const visible = activeFilters.length > 0 || canUndo || retainVisible;
+
+  useLayoutEffect(() => {
+    const details = disclosure.current;
+    const summary = details?.querySelector("summary");
+    if (!details || !summary) return;
+    if (paused) {
+      summary.hidden = false;
+      focusIntent.current = undefined;
+      if (region.current?.contains(document.activeElement)) summary.focus({ preventScroll: true });
+      details.open = false;
+    } else {
+      details.open = true;
+      if (document.activeElement === summary) region.current?.focus({ preventScroll: true });
+      summary.hidden = true;
+    }
+  }, [paused, visible]);
 
   useLayoutEffect(() => {
     const intent = focusIntent.current;
@@ -88,7 +108,7 @@ export function ActiveFilterBar({
     restoreFilterActionFocus(intent.action, region.current, activeFilters.length > 0);
   }, [activeFilters, canUndo, disabled, pendingRequestId, settledRequestId]);
 
-  if (activeFilters.length === 0 && !canUndo && !retainVisible) return null;
+  if (!visible) return null;
 
   const applyRuleRemoval = (filter: ColumnFilter, nextFilter: ColumnFilter, trigger: HTMLButtonElement) => {
     if (disabled) return;
@@ -103,7 +123,7 @@ export function ActiveFilterBar({
     }
   };
 
-  return (
+  const filterBar = (
     <section
       ref={region}
       className="viewFilterBar"
@@ -274,6 +294,13 @@ export function ActiveFilterBar({
         </div>
       )}
     </section>
+  );
+
+  return (
+    <details ref={disclosure} className="viewFilterDisclosure">
+      <summary hidden>Viewing filters paused</summary>
+      {filterBar}
+    </details>
   );
 }
 

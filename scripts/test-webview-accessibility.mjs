@@ -2168,9 +2168,37 @@ async function verifyStepInspectionWorkflow(browser) {
     throw new Error("Applied-step inspection did not expose an accessible added-cell diff state.");
   }
 
+  const filterBar = page.getByRole("region", { name: "Viewing filters" });
+  const disclosure = page.locator(".viewFilterDisclosure");
+  const summary = disclosure.locator("summary");
+  const expectedRules = [
+    'Remove equals "Berlin" filter from city',
+    'Remove equals "Milan" filter from city',
+    'Remove contains "i" filter from city'
+  ];
   const pageRequestsBeforeClear = await runtimeRequestCount(page, "getPage");
-  const showConfirmed = page.getByRole("button", { name: "Show confirmed data" });
-  await showConfirmed.focus();
+  if ((await disclosure.evaluate((element) => element.open)) || (await filterBar.isVisible())) {
+    throw new Error("Applied-step inspection did not initially collapse its retained viewing filters.");
+  }
+  await summary.focus();
+  await page.keyboard.press("Enter");
+  await filterBar.waitFor();
+  const pausedRules = await filterBar
+    .locator("[data-view-filter-rule]")
+    .evaluateAll((buttons) =>
+      buttons.map((button) => ({ label: button.getAttribute("aria-label"), disabled: button.disabled }))
+    );
+  if (
+    JSON.stringify(pausedRules.map((rule) => rule.label)) !== JSON.stringify(expectedRules) ||
+    pausedRules.some((rule) => !rule.disabled) ||
+    !(await summary.evaluate(isActiveTab))
+  ) {
+    throw new Error(
+      `Viewing-filter disclosure lost its rules, disabled state or keyboard focus: ${JSON.stringify(pausedRules)}.`
+    );
+  }
+  await page.keyboard.press("Enter");
+  await filterBar.waitFor({ state: "hidden" });
   await page.keyboard.press("Escape");
   await inspection.waitFor({ state: "detached" });
   await page.waitForFunction(() =>
@@ -2193,9 +2221,66 @@ async function verifyStepInspectionWorkflow(browser) {
   if ((await page.locator("[data-diff-state]").count()) !== 0) {
     throw new Error("Clearing applied-step inspection left diff annotations in the confirmed grid.");
   }
+  const restoredRules = await filterBar
+    .locator("[data-view-filter-rule]")
+    .evaluateAll((buttons) =>
+      buttons.map((button) => ({ label: button.getAttribute("aria-label"), disabled: button.disabled }))
+    );
+  if (
+    (await summary.isVisible()) ||
+    !(await filterBar.evaluate(isActiveTab)) ||
+    JSON.stringify(restoredRules.map((rule) => rule.label)) !== JSON.stringify(expectedRules) ||
+    restoredRules.some((rule) => rule.disabled)
+  ) {
+    throw new Error("Clearing inspection did not restore the full active filter bar and its owned focus.");
+  }
+
+  await page.goto(pathToFileURL(resolve(harnessDir, "applied-plan.html")).href, { waitUntil: "load" });
+  await filterBar.waitFor();
+  await page.bringToFront();
+  await page.waitForFunction(() => document.hasFocus());
+  for (const name of ["Clear filters", "Add step"]) {
+    const target = page.getByRole("button", { name, exact: true });
+    await target.focus();
+    if (!(await target.evaluate(isActiveTab))) throw new Error(`Could not focus ${name} before inspection.`);
+    const previousInspections = await runtimeRequestCount(page, "inspectStep");
+    const previousPages = await runtimeRequestCount(page, "getPage");
+    await page.evaluate(() => {
+      const { sessionId, revision, steps } = window.openWranglerSessionPayload.metadata;
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: {
+            kind: "editorAction",
+            action: "selectStep",
+            expectedSessionId: sessionId,
+            expectedRevision: revision,
+            stepId: steps[0].id
+          },
+          origin: location.origin
+        })
+      );
+    });
+    await waitForRuntimeRequestCount(page, "inspectStep", previousInspections + 1);
+    await page.getByText("Loading selected-step inspection…", { exact: true }).waitFor();
+    const expectedFocus = name === "Clear filters" ? summary : target;
+    if (!(await expectedFocus.evaluate(isActiveTab)) || (await filterBar.isVisible())) {
+      throw new Error(`Pending inspection did not preserve focus ownership from ${name}.`);
+    }
+    await page.keyboard.press("Escape");
+    await filterBar.waitFor();
+    const restoredFocus = name === "Clear filters" ? filterBar : target;
+    if (!(await restoredFocus.evaluate(isActiveTab)) || (await summary.isVisible())) {
+      throw new Error(`Clearing pending inspection did not restore focus ownership from ${name}.`);
+    }
+    if ((await runtimeRequestCount(page, "getPage")) !== previousPages) {
+      throw new Error("Inspection disclosure or focus transitions submitted a viewing-filter request.");
+    }
+  }
 
   await page.close();
-  console.log("Applied-step diff, Escape clear, and local confirmed-grid restoration verified.");
+  console.log(
+    "Applied-step diff, paused-filter disclosure, owned focus and local confirmed-grid restoration verified."
+  );
 }
 
 async function verifyFilterKeyboardWorkflow(browser) {

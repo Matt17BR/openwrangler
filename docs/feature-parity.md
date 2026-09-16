@@ -520,6 +520,8 @@ Column search keeps arrow and page-key navigation aligned with the displayed res
 Small editor panes preserve room for the grid header and a row while the workbench scrolls around wrapped controls.
 Column profiles and filters stay beside the grid, or below it in narrow panes, without covering the selected cell.
 The stacked layout shows fewer rows and scrolls to reach longer filter forms.
+During applied-step inspection, **Viewing filters paused** expands to reveal the retained rules. Clearing inspection
+restores the full viewing-filter bar.
 Column search reveals and focuses its target within both the table and editor viewport, including when the same column
 is selected again, without replacing a later focus choice.
 Focused draft buttons return keyboard focus to Add step, and deletion confirmation retains focus through Cancel.

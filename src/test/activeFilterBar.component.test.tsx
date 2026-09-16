@@ -74,6 +74,7 @@ interface FocusViewState {
   canUndo: boolean;
   requestLifecycle?: FilterBarRequestLifecycle;
   disabled?: boolean;
+  paused?: boolean;
   retainVisible?: boolean;
 }
 
@@ -89,6 +90,7 @@ function FocusView({
   onApply,
   onUndo,
   disabled = false,
+  paused = false,
   retainVisible = false
 }: FocusViewProps) {
   return (
@@ -98,6 +100,7 @@ function FocusView({
         model={model}
         canUndo={canUndo}
         disabled={disabled}
+        paused={paused}
         retainVisible={retainVisible}
         requestLifecycle={requestLifecycle}
         onApply={onApply}
@@ -275,10 +278,12 @@ describe("ActiveFilterBar", () => {
         model={{ ...activeModel, filters: [] }}
         canUndo={true}
         disabled={true}
+        paused={true}
         onApply={onApply}
         onUndo={onUndo}
       />
     );
+    fireEvent.click(screen.getByText("Viewing filters paused"));
     expect(screen.getByText("No active filters")).toBeVisible();
     expect(screen.getByRole("button", { name: "Clear filters" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Undo latest filter" })).toBeDisabled();
@@ -289,11 +294,111 @@ describe("ActiveFilterBar", () => {
         metadata={metadata}
         model={{ ...activeModel, filters: [] }}
         canUndo={false}
+        paused={true}
         onApply={onApply}
         onUndo={onUndo}
       />
     );
     expect(screen.queryByRole("region", { name: "Viewing filters" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Viewing filters paused")).not.toBeInTheDocument();
+  });
+
+  it("retains the same rules and disclosure choice while inspection is paused", () => {
+    const onApply = vi.fn();
+    const onUndo = vi.fn();
+    const view = (paused: boolean) => (
+      <FocusView
+        model={activeModel}
+        canUndo={true}
+        paused={paused}
+        disabled={paused}
+        onApply={onApply}
+        onUndo={onUndo}
+      />
+    );
+    const rendered = render(view(false));
+    const region = screen.getByRole("region", { name: "Viewing filters" });
+    const rule = screen.getByRole("button", { name: 'Remove equals "Milan" (string) filter from city' });
+    const gridRow = screen.getByRole("button", { name: "Grid row" });
+    gridRow.focus();
+    rendered.rerender(view(true));
+
+    const summary = screen.getByText("Viewing filters paused");
+    const disclosure = summary.closest("details")!;
+    expect(gridRow).toHaveFocus();
+    expect(disclosure.open).toBe(false);
+    expect(region).toBeInTheDocument();
+    expect(region).not.toBeVisible();
+    expect(rule).toBeDisabled();
+    fireEvent.click(summary);
+    expect(disclosure.open).toBe(true);
+    expect(region).toBeVisible();
+    rendered.rerender(view(true));
+    expect(disclosure.open).toBe(true);
+    expect(screen.getByRole("region", { name: "Viewing filters" })).toBe(region);
+    expect(screen.getByText("2 filtered columns; match any")).toBeVisible();
+    expect(onApply).not.toHaveBeenCalled();
+    expect(onUndo).not.toHaveBeenCalled();
+
+    summary.focus();
+    rendered.rerender(view(false));
+    expect(summary).not.toBeVisible();
+    expect(region).toHaveFocus();
+    expect(rule).toBeEnabled();
+    fireEvent.click(rule);
+    expect(onApply).toHaveBeenLastCalledWith({
+      ...activeModel,
+      filters: [
+        {
+          ...activeModel.filters[0],
+          valueFilter: { ...activeModel.filters[0].valueFilter!, selectedValues: ["Paris"] }
+        },
+        activeModel.filters[1]
+      ]
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Undo latest filter" }));
+    expect(onUndo).toHaveBeenCalledOnce();
+  });
+
+  it("moves only owned filter focus to the disclosure and retires pending action focus", () => {
+    const sequence = renderFocusSequence({ model: activeModel, canUndo: true });
+    const clear = screen.getByRole("button", { name: "Clear filters" });
+    clear.focus();
+    fireEvent.click(clear);
+    sequence.rerender({
+      model: activeModel,
+      canUndo: true,
+      paused: true,
+      disabled: true,
+      requestLifecycle: { pendingRequestId: "clear-request" }
+    });
+    const summary = screen.getByText("Viewing filters paused");
+    expect(summary).toHaveFocus();
+    sequence.rerender({
+      model: activeModel,
+      canUndo: true,
+      paused: true,
+      disabled: true,
+      requestLifecycle: { settledRequestId: "clear-request" }
+    });
+    expect(summary).toHaveFocus();
+    const gridRow = screen.getByRole("button", { name: "Grid row" });
+    gridRow.focus();
+    sequence.rerender({ model: activeModel, canUndo: true });
+    expect(gridRow).toHaveFocus();
+
+    clear.focus();
+    fireEvent.click(clear);
+    clear.blur();
+    sequence.rerender({
+      model: activeModel,
+      canUndo: true,
+      paused: true,
+      disabled: true,
+      requestLifecycle: { settledRequestId: "clear-request" }
+    });
+    expect(document.body).toHaveFocus();
+    expect(screen.getByRole("region", { name: "Viewing filters", hidden: true })).not.toBeVisible();
   });
 
   it("restores focus when the initiating request moves from disabled to settled", () => {

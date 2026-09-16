@@ -2492,6 +2492,7 @@ export function App() {
                 metadata={metadata}
                 model={filterModel}
                 disabled={loading || projectionLoading || mutationPending || importOptionsPending || inspectionMode}
+                paused={inspectionMode}
                 canUndo={confirmedFilterHistory.entries.length > 0}
                 retainVisible={hasActiveFilters(metadata.filterModel)}
                 requestLifecycle={pageRequestLifecycle}

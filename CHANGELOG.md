@@ -7,6 +7,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 ### Changed
 
 - Formula steps show their saved output names in Cleaning Steps tooltips and accessible names.
+- Applied-step inspection collapses paused viewing filters into a disclosure, with full rules available on demand.
 
 ### Fixed
 
