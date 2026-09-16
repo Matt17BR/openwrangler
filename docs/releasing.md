@@ -16,6 +16,29 @@ A release pull request contains only:
 Use [the writing guide](writing-style.md) for release notes. Land product changes, tests, generated media, and unrelated
 documentation before the release pull request.
 
+## Stable-release media and comparison checklist
+
+Complete this checklist for every stable release, including fixes-only releases. Automated daily previews are excluded.
+Use the final integrated product behavior before preparing release-only metadata or freezing a candidate.
+
+1. Build and verify a development VSIX from the final source. Record its commit and checksum with the captures and
+   measurements; this is not the later immutable release candidate.
+2. Recapture the relevant README, gallery and store-facing images with the existing example data and
+   [public screenshot tools](../CONTRIBUTING.md#public-screenshots). Inspect legibility, clipping, settled content and
+   captions, then compose and verify the README media. Preserve useful screenshot coverage.
+3. Repeat the advertised public-UI tasks against the identified public Data Wrangler version, using the inputs,
+   fixed attempts and timing boundaries in the [latest reviewed comparison](product-roadmap.md#released-product-comparison).
+   Use one isolated local editor and public controls. Keep engine routes and loading/conversion costs distinct;
+   preserve failed attempts without replacement. Do not inspect Microsoft Data Wrangler package contents.
+4. Publish a new dated report with a small table or chart, readable conclusions and linked raw measurements. Record
+   versions, date, machine and sample count, including slower results and limitations. Preserve earlier reports,
+   update the latest-reviewed pointer and README summary/link, and merge product, media and report changes before
+   release-only metadata.
+
+If later product changes affect the images or measurements, refresh the affected evidence before candidate freeze.
+The comparison is separate from `npm run benchmark:installed`, which owns Open Wrangler's installed qualification
+checks. Once qualification starts, never rebuild or replace its artifact; follow the existing [candidate process](#release-candidate).
+
 ## Version and channel policy
 
 Numeric `0.<odd-minor>.x` versions are preview bands. The manual `1.99.N` preview series ends at `1.99.7`.
