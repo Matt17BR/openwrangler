@@ -138,12 +138,12 @@ vi.mock("../extension/webviewPanel", () => ({
 }));
 
 import * as vscode from "vscode";
-import { createRFileBridge, supportsRFileExecution } from "../extension/r/rFileSource";
+import { createRFileBridge } from "../extension/r/rFileSource";
+import { supportsRscriptExecution } from "../extension/r/rscriptPath";
 import {
   OPEN_LITERATE_DOCUMENT_CURSOR_COMMAND,
   OPEN_R_DOCUMENT_COMMAND,
-  registerRDocumentCommands,
-  supportsRDocumentExecution
+  registerRDocumentCommands
 } from "../extension/r/rDocumentCommands";
 
 describe("R document command", () => {
@@ -223,9 +223,9 @@ describe("R document command", () => {
       path: "/workspace/orders.csv",
       uri: "file:///workspace/orders.csv"
     };
-    expect(supportsRFileExecution("linux")).toBe(true);
-    expect(supportsRFileExecution("darwin")).toBe(true);
-    expect(supportsRFileExecution("win32")).toBe(false);
+    expect(supportsRscriptExecution("linux")).toBe(true);
+    expect(supportsRscriptExecution("darwin")).toBe(true);
+    expect(supportsRscriptExecution("win32")).toBe(false);
     for (const importOptions of [
       { encoding: "utf8-lossy" },
       { quoteChar: "'" },
@@ -874,10 +874,10 @@ describe("R document command", () => {
   });
 
   it("keeps plain R execution disabled on Windows until it can own the complete process tree", () => {
-    expect(supportsRDocumentExecution("linux")).toBe(true);
-    expect(supportsRDocumentExecution("darwin")).toBe(true);
-    expect(supportsRDocumentExecution("win32")).toBe(false);
-    expect(supportsRDocumentExecution("freebsd")).toBe(false);
+    expect(supportsRscriptExecution("linux")).toBe(true);
+    expect(supportsRscriptExecution("darwin")).toBe(true);
+    expect(supportsRscriptExecution("win32")).toBe(false);
+    expect(supportsRscriptExecution("freebsd")).toBe(false);
   });
 
   it("reports an invalid R source capture instead of rejecting the command", async () => {

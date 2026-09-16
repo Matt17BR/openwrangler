@@ -4,7 +4,7 @@ import { formatQuickPickName } from "../quickPickName";
 import type { SessionSource } from "../../shared/protocol";
 import { runtimeRequestTimeoutMs } from "../configuration";
 import { DetachedBridgeRequestError } from "../dataBridge";
-import { configuredRscriptPath } from "./rscriptPath";
+import { configuredRscriptPath, supportsRscriptExecution } from "./rscriptPath";
 import { type TextDocumentSessionOrigin, SessionCoordinator } from "../sessionCoordinator";
 import { OpenWranglerPanel, restoreEditorGroupAfterQuickPick } from "../webviewPanel";
 import { prepareRDocumentSource, rDocumentKind, rDocumentLabel } from "./rDocumentSource";
@@ -49,7 +49,7 @@ export function registerRDocumentCommands(
           void vscode.window.showWarningMessage("Trust this workspace before running an R document in Open Wrangler.");
           return false;
         }
-        if (!supportsRDocumentExecution()) {
+        if (!supportsRscriptExecution()) {
           void vscode.window.showWarningMessage(
             "Running R documents in Open Wrangler currently requires macOS or Linux. Open the dataframe from an IRkernel notebook instead."
           );
@@ -410,10 +410,6 @@ function showChangedReticulateSetting(): void {
   void vscode.window.showWarningMessage(
     "The Quarto reticulate-cell setting changed while this chunk was starting. Return to the chunk and try again."
   );
-}
-
-export function supportsRDocumentExecution(platform: NodeJS.Platform = process.platform): boolean {
-  return platform === "linux" || platform === "darwin";
 }
 
 export function captureRDocumentOrigin(document: vscode.TextDocument): TextDocumentSessionOrigin | undefined {

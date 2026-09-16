@@ -3,6 +3,10 @@ import type * as vscode from "vscode";
 import { getSetting } from "../configuration";
 import { resolveExecutableCommand } from "../pythonPath";
 
+export function supportsRscriptExecution(platform: NodeJS.Platform = process.platform): boolean {
+  return platform === "linux" || platform === "darwin";
+}
+
 export function configuredRscriptPath(resource: vscode.Uri): string | undefined {
   const configured = getSetting<string>("rscriptPath", "", resource).trim() || "Rscript";
   return resolveExecutableCommand(configured, process.env, isExecutableFile);

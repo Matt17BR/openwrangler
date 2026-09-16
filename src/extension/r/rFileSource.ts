@@ -4,16 +4,12 @@ import type { SessionSource } from "../../shared/protocol";
 import { isSessionSource } from "../../shared/protocolValidation";
 import { RKernelBridge } from "./rKernelBridge";
 import { RProcessSessionTransport, type RProcessFileSource } from "./rProcessTransport";
-import { configuredRscriptPath } from "./rscriptPath";
-
-export function supportsRFileExecution(platform: NodeJS.Platform = process.platform): boolean {
-  return platform === "linux" || platform === "darwin";
-}
+import { configuredRscriptPath, supportsRscriptExecution } from "./rscriptPath";
 
 /** Creates a lazy, exact-file native R owner; the coordinator owns opening and replay. */
 export function createRFileBridge(context: vscode.ExtensionContext, source: SessionSource): RKernelBridge {
   if (!vscode.workspace.isTrusted) throw new Error("Trust this workspace before opening CSV or TSV with R.");
-  if (!supportsRFileExecution())
+  if (!supportsRscriptExecution())
     throw new Error(
       "Opening CSV or TSV with native R is supported on Linux and macOS. R notebooks remain available on Windows."
     );

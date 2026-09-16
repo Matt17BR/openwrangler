@@ -30,6 +30,7 @@ import { rememberConfirmedFileConfiguration } from "./files/confirmedFileConfigu
 import { ImportCancelledError, promptImportOptions } from "./files/importOptions";
 import { dependencyGuardRecoveryGuidance } from "./pythonDependencyState";
 import { automaticBackends, type FileDataBackend } from "./pythonEnvironmentModel";
+import { supportsRscriptExecution } from "./r/rscriptPath";
 import {
   RendererSynchronizationCoordinator,
   type RendererImportPreparation,
@@ -1300,9 +1301,8 @@ export class OpenWranglerPanel {
         !cancellation.token.isCancellationRequested;
       const compatibleBackends: Array<FileDataBackend | "r"> = automaticBackends(source);
       if (fileSourceUri(source)?.scheme === "file" && /\.(csv|tsv)$/iu.test(source.path ?? "")) {
-        const { supportsRFileExecution } = await import("./r/rFileSource.js");
         if (!current()) return;
-        if (supportsRFileExecution()) compatibleBackends.push("r");
+        if (supportsRscriptExecution()) compatibleBackends.push("r");
       }
       const currentBackend = this.snapshot.metadata.backend;
       const backend =

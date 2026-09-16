@@ -5,7 +5,7 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import type { Jupyter, JupyterServerCollection } from "@vscode/jupyter-extension";
 import type { Page } from "playwright-core";
-import { supportsRDocumentExecution } from "../../extension/r/rDocumentCommands";
+import { supportsRscriptExecution } from "../../extension/r/rscriptPath";
 import { cleanupAcceptanceTemporaryDirectory } from "./acceptanceTemporaryDirectory";
 import {
   RELEASED_JUPYTER_R_KERNEL_RESULT,
@@ -320,7 +320,7 @@ export function createReleasedRJupyterExtensionJourney({
 
       if (phase === "jupyter-r" && process.platform === "darwin") {
         assert.equal(
-          supportsRDocumentExecution(process.platform),
+          supportsRscriptExecution(process.platform),
           true,
           "The ordinary macOS R gate requires the product's direct-document transport."
         );
