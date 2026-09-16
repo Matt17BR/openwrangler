@@ -1464,7 +1464,7 @@ function cleaningStepNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
         revision: metadata.revision,
         stepId: step.id
       };
-      return new ViewNode(
+      const node = new ViewNode(
         `${index + 1}. ${operation.title}`,
         selected
           ? `Selected · ${isLatest ? "latest applied step" : "applied"}`
@@ -1482,6 +1482,13 @@ function cleaningStepNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
         undefined,
         handle
       );
+      if (step.kind === "formula" && typeof step.params.newColumn === "string") {
+        const outputName = step.params.newColumn;
+        const detail = `Output at this step: ${outputName} · ${node.description}`;
+        node.tooltip = `${index + 1}. ${operation.title}: ${detail}`;
+        node.accessibilityInformation = { label: `${index + 1}. ${operation.title}, ${detail}` };
+      }
+      return node;
     })
   );
   if (metadata.draftStep) {

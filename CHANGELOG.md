@@ -4,6 +4,10 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ## [Unreleased]
 
+### Changed
+
+- Formula steps show their saved output names in Cleaning Steps tooltips and accessible names.
+
 ### Fixed
 
 - History inspection controls ignore stale clicks after switching dataframes or changing the plan.

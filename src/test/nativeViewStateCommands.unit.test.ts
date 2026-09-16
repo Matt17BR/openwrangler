@@ -538,6 +538,60 @@ describe("native state and presentation commands", () => {
     );
   });
 
+  it("keeps saved Formula outputs in native context after later Rename and Drop steps", () => {
+    const active = exportableSnapshot("formula-context", "sample.csv", 4);
+    const savedOutput = "  東京 *売上* [net]  ";
+    const latestOutput = "東京 *売上* [gross]";
+    const source = { id: "c:value", name: "value" };
+    active.metadata.steps = [
+      {
+        id: "formula",
+        kind: "formula",
+        params: { leftColumn: source, rightColumn: source, operator: "add", newColumn: savedOutput }
+      },
+      {
+        id: "rename",
+        kind: "renameColumn",
+        params: { column: { id: "c:step:formula:0", name: savedOutput }, newName: "retired" }
+      },
+      {
+        id: "drop",
+        kind: "dropColumns",
+        params: { columns: [{ id: "c:step:formula:0", name: "retired" }] }
+      },
+      {
+        id: "latest",
+        kind: "formula",
+        params: { leftColumn: source, rightColumn: source, operator: "add", newColumn: latestOutput }
+      }
+    ];
+    active.metadata.schema.push({
+      ...active.metadata.schema[0]!,
+      id: "c:step:latest:0",
+      name: latestOutput,
+      position: 1
+    });
+    active.metadata.shape.columns = 2;
+    active.metadata.filteredShape.columns = 2;
+    register(active);
+
+    const steps = treeChildren("openWrangler.cleaningSteps");
+    expect(steps[1]).toMatchObject({
+      label: "1. Formula column",
+      description: "Applied",
+      tooltip: "1. Formula column: Output at this step:   東京 *売上* [net]   · Applied",
+      accessibilityInformation: { label: "1. Formula column, Output at this step:   東京 *売上* [net]   · Applied" }
+    });
+    expect(steps[4]).toMatchObject({
+      label: "4. Formula column",
+      description: "Latest applied step",
+      tooltip: "4. Formula column: Output at this step: 東京 *売上* [gross] · Latest applied step",
+      accessibilityInformation: {
+        label: "4. Formula column, Output at this step: 東京 *売上* [gross] · Latest applied step"
+      }
+    });
+  });
+
   it("routes cleaning-step selection through the exact active session and rejects stale steps", async () => {
     const registered = register(noDraftSnapshot());
     for (const active of [snapshotWithDraft(), noDraftSnapshot()]) {
