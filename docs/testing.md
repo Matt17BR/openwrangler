@@ -112,8 +112,9 @@ viewports and actual keyboard, pointer and focus behavior; Code Preview readines
 visible code, because virtualized offscreen text need not exist in the DOM.
 Its existing interaction owner checks inspection scope above the editor at wide, narrow and short sizes, with scope
 excluded from the code document and the editor still reachable by keyboard.
-Draft-preview, summary-family and by-example screenshots wait for their expected header profiles within the existing
-capture deadline. A virtual-time advance alone does not establish that asynchronous profile batches have rendered.
+Draft-preview, summary-family and by-example screenshots check the exact rendered column count and wait for completed
+profiles in every visible or partially visible column within the existing capture deadline. Offscreen rendering
+overscan can stay unprofiled. A virtual-time advance alone does not establish that asynchronous profile batches have rendered.
 Screenshot verification reports all visual mismatches after capturing the remaining images. Browser, readiness and
 invalid-image errors still stop the run immediately; any mismatch fails verification before accessibility checks run.
 The existing operation-form browser owner checks that Group By controls fit without sideways scrolling and remain
