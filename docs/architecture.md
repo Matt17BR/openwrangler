@@ -1598,6 +1598,10 @@ One-hot encoding derives indicators only from present categories with nonempty l
 duration columns contribute no categories; if no selected column contributes an indicator, the operation refuses
 before publishing a result. Other selected columns can still supply valid categories.
 One-hot and Multi-label preserve row counts and row-name mode when replacing every original `data.table` column.
+Sort Rows, Filter Rows, Drop Missing Rows and Drop Duplicates perform native row subsetting even when all rows remain.
+Nonempty base results have explicit row names; tibble and data.table results have positional names. Empty derived
+captures retain the input mode. The host predicts this from flavor and the validated full result count, independent
+of viewing filters. Generated zero-column reductions perform the same subset as live execution.
 Generated One-hot code normalizes text before choosing categories and comparing indicator values, matching live
 execution across text encodings. It validates the complete input before formatting distinct category labels.
 Multi-label encoding retains its per-row text preparation.

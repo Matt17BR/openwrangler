@@ -19,6 +19,8 @@ import { assertReleasedRGeneratedSourceBoundary } from "./extensionHost/released
 import { rParquetExportOptions } from "./rExportTestOptions";
 import { schemaFromRContract } from "../extension/r/rKernelFrameMapping";
 import { assertMutationDiff, inspectionDiff } from "../extension/r/rKernelMutationDiff";
+import { assertMutationContract, sessionFromContract } from "../extension/r/rKernelBridgeContract";
+import { rowNamesAfterRStep } from "../extension/r/rKernelMutationSchema";
 
 const enabled = process.env.OPEN_WRANGLER_R_CONTRACT_TESTS === "1";
 const root = resolve(__dirname, "../..");
@@ -37,6 +39,158 @@ const valuesRequestId = "f2222222-2222-4222-8222-222222222222";
 const numericValuesRequestId = "f3333333-3333-4333-8333-333333333333";
 
 describe.skipIf(!enabled)("R kernel bootstrap to TypeScript transport", () => {
+  it.each([
+    { label: "automatic base", setup: "", positions: [0, 2], mode: "explicit" },
+    {
+      label: "named base",
+      setup: 'row.names(frame) <- c("left", "missing", "right")',
+      positions: [0, 2],
+      mode: "explicit"
+    },
+    {
+      label: "named tibble",
+      setup: 'frame <- tibble::as_tibble(frame); attr(frame, "row.names") <- c("left", "missing", "right")',
+      positions: [0, 2],
+      mode: "positional"
+    },
+    {
+      label: "named data.table",
+      setup:
+        'frame <- data.table::as.data.table(frame); data.table::setattr(frame, "row.names", c("left", "missing", "right"))',
+      positions: [0, 2],
+      mode: "positional"
+    },
+    { label: "all retained", setup: "frame$amount[[2L]] <- 4", positions: [0, 1, 2], mode: "explicit" },
+    { label: "automatic empty", setup: "frame$amount[] <- NA_real_", positions: [], mode: "positional" },
+    {
+      label: "named empty",
+      setup: 'row.names(frame) <- c("left", "missing", "right"); frame$amount[] <- NA_real_',
+      positions: [],
+      mode: "explicit"
+    },
+    { label: "zero columns missing", setup: "frame <- frame[integer()]", positions: [0, 1, 2], mode: "explicit" },
+    { label: "zero columns duplicates", setup: "frame <- frame[integer()]", positions: [0, 1, 2], mode: "explicit" }
+  ] as const)("admits $label row reduction with native/generated row-name agreement", (fixture) => {
+    const step =
+      fixture.label === "zero columns duplicates"
+        ? ({ id: "reduce", kind: "dropDuplicates", params: { keep: "first" } } as const)
+        : ({ id: "reduce", kind: "dropMissingRows", params: { how: "any" } } as const);
+    const bootstrap = buildRKernelBootstrapCode(readRRuntimeFiles(resolve(root, "r")));
+    const open = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: openRequestId,
+      kind: "openSession",
+      payload: { sessionId, variableName: "frame", page: pageWindow() }
+    });
+    const preview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: pageRequestId,
+      kind: "previewStep",
+      payload: { sessionId, revision: 0, step, page: pageWindow() }
+    });
+    const apply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: namedRowsRequestId,
+      kind: "applyDraft",
+      payload: { sessionId, revision: 1, page: pageWindow() }
+    });
+    const close = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: closeRequestId,
+      kind: "closeSession",
+      payload: { sessionId }
+    });
+    const setup = `frame <- read.csv(text = "id,amount\n1,2.5\n2,NA\n3,7.25")
+${fixture.setup}
+frame_before <- serialize(frame, NULL, version = 3L)`;
+    const result = runR(`${setup}
+${bootstrap}
+${open.code}
+${preview.code}
+${apply.code}
+stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
+${close.code}`);
+    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), openRequestId, {
+      expectExportFormats: true
+    });
+    if (opened.kind !== "page") throw new Error("Expected native source admission.");
+    const previewed = decodeRKernelResponseJson(marked(result.stdout, preview.marker), pageRequestId, {
+      inputSchema: opened.page.schema,
+      previewStep: step
+    });
+    if (previewed.kind !== "stepPreview") throw new Error("Expected native row reduction.");
+    expect(previewed.page.frameSemantics.rowNames).toBe(fixture.mode);
+    expect(previewed.page.page.rows.map((row) => row.id)).toEqual(
+      fixture.positions.map((position) => `r:r:${position}`)
+    );
+    const labels =
+      fixture.mode === "positional"
+        ? fixture.positions.map(() => undefined)
+        : fixture.positions.map((position) =>
+            fixture.label.startsWith("named") ? ["left", "missing", "right"][position] : String(position + 1)
+          );
+    expect(previewed.page.page.rows.map((row) => row.rowLabel)).toEqual(labels);
+    const applied = decodeRKernelResponseJson(marked(result.stdout, apply.marker), namedRowsRequestId);
+    if (applied.kind !== "planUpdated") throw new Error("Expected applied native row reduction.");
+    expect(applied.page).toEqual(previewed.page);
+    const positions =
+      fixture.positions.length === 0
+        ? "integer()"
+        : `c(${fixture.positions.map((position) => `${position + 1}L`).join(", ")})`;
+    runR(`${setup}
+expected_positions <- ${positions}
+expected <- if (inherits(frame, "data.table")) frame[expected_positions] else frame[expected_positions, , drop = FALSE]
+${applied.code}
+stopifnot(identical(open_wrangler_result, expected), identical(serialize(frame, NULL, version = 3L), frame_before))
+${fixture.positions.length > 0 ? `stopifnot(identical(base::.row_names_info(open_wrangler_result, 1L) > 0L, ${fixture.mode === "explicit" ? "TRUE" : "FALSE"}))` : ""}`);
+    const host = sessionFromContract(
+      sessionId,
+      { kind: "rInteractiveVariable", label: "frame", variableName: "frame" },
+      "editing",
+      opened.page,
+      []
+    );
+    const expectedMode = rowNamesAfterRStep(
+      opened.page.frameSemantics.rowNames,
+      step,
+      opened.page.dataframeFlavor,
+      fixture.positions.length
+    );
+    const window = { offset: 0, limit: 100, columnOffset: 0, columnLimit: 100 };
+    expect(() =>
+      assertMutationContract(
+        host,
+        applied.page,
+        window,
+        host.schema,
+        fixture.positions.length,
+        3,
+        [],
+        expectedMode,
+        emptyView()
+      )
+    ).not.toThrow();
+    expect(() =>
+      assertMutationContract(
+        host,
+        {
+          ...applied.page,
+          frameSemantics: {
+            ...applied.page.frameSemantics,
+            rowNames: fixture.mode === "explicit" ? "positional" : "explicit"
+          }
+        },
+        window,
+        host.schema,
+        fixture.positions.length,
+        3,
+        [],
+        expectedMode,
+        emptyView()
+      )
+    ).toThrow("row-name semantics");
+  });
+
   it("pages current same-schema values, rejects structural changes, and closes the live session", () => {
     const bootstrap = buildRKernelBootstrapCode(readRRuntimeFiles(resolve(root, "r")));
     const open = requestCode({

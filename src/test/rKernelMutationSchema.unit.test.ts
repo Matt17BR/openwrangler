@@ -47,7 +47,7 @@ describe("R kernel mutation schema", () => {
       { id: "c:step:condition:0", name: "flag", position: 2, type: "boolean", rawType: "logical", nullable: true }
     ]);
     expect(keyColumnsAfterRStep(["b"], output, step)).toEqual(["b"]);
-    expect(rowNamesAfterRStep("explicit", step)).toBe("explicit");
+    expect(rowNamesAfterRStep("explicit", step, "r.data.frame", 3)).toBe("explicit");
     const nullary = {
       ...step,
       params: { ...step.params, predicate: { kind: "predicate" as const, operator: "isNull" as const } }
@@ -146,8 +146,8 @@ describe("R kernel mutation schema", () => {
       { id: "b", name: "count", position: 1, rawType: "double", type: "float", nullable: true }
     ]);
 
-    expect(rowNamesAfterRStep("explicit", groupStep)).toBe("positional");
-    expect(rowNamesAfterRStep("explicit", sortStep)).toBe("explicit");
+    expect(rowNamesAfterRStep("explicit", groupStep, "r.data.frame", 3)).toBe("positional");
+    expect(rowNamesAfterRStep("explicit", sortStep, "r.data.frame", 3)).toBe("explicit");
     expect(keyColumnsAfterRStep(["a", "b"], schema, sortStep)).toEqual([]);
     expect(keyColumnsAfterRStep(["a", "b"], schema, cloneStep)).toEqual(["a", "b"]);
 
@@ -155,6 +155,24 @@ describe("R kernel mutation schema", () => {
     expect(() => rowCountAfterRStep(filterStep, 5, { ...rowDiff(2), addedRows: 1 })).toThrow("invalid row counts");
     expect(rowIdentityDomainAfterRStep(groupStep, 5, 2)).toBe(7);
     expect(rowIdentityDomainAfterRStep(cloneStep, 5, 2)).toBe(5);
+  });
+
+  it.each([
+    sortStep,
+    filterStep,
+    { id: "missing", kind: "dropMissingRows", params: { how: "any" } },
+    { id: "duplicates", kind: "dropDuplicates", params: { keep: "first" } }
+  ] as const)("predicts native $kind row-name mode from flavor and full result size", (step) => {
+    expect(rowNamesAfterRStep("positional", step, "r.data.frame", 3)).toBe("explicit");
+    expect(rowNamesAfterRStep("explicit", step, "r.data.frame", 3)).toBe("explicit");
+    for (const flavor of ["r.tibble", "r.data.table"] as const) {
+      expect(rowNamesAfterRStep("explicit", step, flavor, 2)).toBe("positional");
+      expect(rowNamesAfterRStep("positional", step, flavor, 2)).toBe("positional");
+    }
+    for (const flavor of ["r.data.frame", "r.tibble", "r.data.table"] as const) {
+      expect(rowNamesAfterRStep("explicit", step, flavor, 0)).toBe("explicit");
+      expect(rowNamesAfterRStep("positional", step, flavor, 0)).toBe("positional");
+    }
   });
 
   it("derives formula and group schemas with stable created-output identities", () => {

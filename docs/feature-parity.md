@@ -652,7 +652,8 @@ a request error; a smaller page remains available without restarting the standal
 
 The [generated reference](reference.md#transformation-operations) lists the complete operation set and parameters.
 Custom Code can create the first column of a supported zero-column source, with inspection, Undo and Redo. Drop
-Missing Rows and Drop Duplicates may retain an empty schema; Custom Code output still requires a column. Active
+Missing Rows and Drop Duplicates may retain an empty schema; Custom Code output still requires a column.
+Sorting and reducing rows work with ordinary `read.csv` inputs, preserving native row-name behavior. Active
 `data.table` keys restrict in-place changes. Fill interpolation requires ordinary numeric or temporal coordinates
 and does not accept integer64 coordinates. Formula accepts exactly representable large integer literals and refuses
 inexact neighbors; ordinary R arithmetic limits still apply. Integer and integer64 aggregate outputs retain their
