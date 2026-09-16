@@ -518,54 +518,60 @@ describe("SessionPersistenceStore", () => {
     expect(persistence.ownershipCardinality()).toEqual({ retainedOwners: 0, retainedKeys: 0, degradedKeys: 0 });
   });
 
-  it("keeps notebook-output, native R, and Spark state ephemeral", async () => {
+  it("saves native R file state separately while keeping every live R source ephemeral", async () => {
+    const rLiveSources: SessionSource[] = [
+      { kind: "notebookVariable", label: "frame", variableName: "frame" },
+      { kind: "notebookOutput", label: "capture" },
+      { kind: "rInteractiveVariable", label: "frame", variableName: "frame" },
+      { kind: "documentVariable", label: "frame", variableName: "frame", path: "/workspace/source.R" }
+    ];
     const snapshotSource: SessionSource = { kind: "notebookOutput", label: "capture" };
-    const stored = {
-      [persistenceKey(snapshotSource, "polars")]: serializedState("polars", 1),
-      [persistenceKey(source, "r")]: state("r", 2),
-      [persistenceKey(source, "pyspark")]: state("pyspark", 3)
-    };
-    const memory = memento(() => stored);
-    const persistence = new SessionPersistenceStore(memory.value);
-    const commit = vi.fn();
-
-    expect(persistence.load(snapshotSource, "polars")).toBeUndefined();
-    expect(persistence.load(source, "r")).toBeUndefined();
-    expect(persistence.load(source, "pyspark")).toBeUndefined();
-
-    await persistence.save(snapshotSource, "polars", () => state("polars", 1));
-    await persistence.save(source, "r", () => state("r", 2));
-    await persistence.save(source, "pyspark", () => state("pyspark", 3));
-    const replacementCommit = vi.fn(() => vi.fn());
-    for (const [input, backend] of [
+    const ephemeral = [
       [snapshotSource, "polars"],
-      [source, "r"],
-      [source, "pyspark"]
-    ] as const) {
+      [source, "pyspark"],
+      ...rLiveSources.map((input) => [input, "r"] as const)
+    ] as const;
+    let stored: Record<string, unknown> = { [persistenceKey(source, "polars")]: serializedState("polars", 7) };
+    const memory = memento(
+      () => stored,
+      (value) => {
+        stored = value;
+      }
+    );
+    const persistence = new SessionPersistenceStore(memory.value);
+    await persistence.save(source, "r", () => state("r", 2));
+    expect(persistence.load(source, "r")).toEqual(state("r", 2));
+    expect(persistence.load(source, "polars")).toEqual(state("polars", 7));
+    const savedFileState = structuredClone(stored);
+    memory.update.mockClear();
+    const replacementCommit = vi.fn(() => vi.fn());
+    const commit = vi.fn();
+    for (const [input, backend] of ephemeral) {
+      stored[persistenceKey(input, backend)] = serializedState("r", 3);
+      expect(persistence.load(input, backend)).toBeUndefined();
+      await persistence.save(input, backend, () => state(backend, 4));
       expect(persistence.checkAbsent(input, backend)).toMatchObject({
         kind: "unavailable",
         failure: { kind: "read", cause: { code: "STORAGE_UNAVAILABLE" } }
       });
       await expect(
-        persistence.commitRuntimeReplacement(input, state(backend, 2), () => true, replacementCommit, {
+        persistence.commitRuntimeReplacement(input, state(backend, 4), () => true, replacementCommit, {
           requireAbsent: true
         })
       ).resolves.toMatchObject({ kind: "unavailable", liveState: "unchanged" });
+      await expect(
+        persistence.commitCurrent(
+          input,
+          () => state(backend, 4),
+          () => true,
+          commit
+        )
+      ).resolves.toEqual({ kind: "committed" });
     }
     expect(replacementCommit).not.toHaveBeenCalled();
-    await expect(
-      persistence.commitCurrent(
-        source,
-        () => state("r", 4),
-        () => true,
-        commit
-      )
-    ).resolves.toEqual({
-      kind: "committed"
-    });
-
     expect(memory.update).not.toHaveBeenCalled();
-    expect(commit).toHaveBeenCalledOnce();
+    expect(commit).toHaveBeenCalledTimes(ephemeral.length);
+    expect(stored).toMatchObject(savedFileState);
   });
 
   it("serializes writes and bases each update on the latest stored state", async () => {
@@ -1332,7 +1338,7 @@ function state(backend: DataBackend, firstVisibleRow: number): PersistedSessionS
   };
 }
 
-function serializedState(backend: Extract<DataBackend, "pandas" | "polars" | "duckdb">, firstVisibleRow: number) {
+function serializedState(backend: Extract<DataBackend, "pandas" | "polars" | "duckdb" | "r">, firstVisibleRow: number) {
   const serialized = serializePersistedSession(state(backend, firstVisibleRow));
   if (!serialized) throw new Error("Expected test state to serialize.");
   return serialized;

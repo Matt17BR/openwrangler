@@ -130,8 +130,8 @@ function decodePersistedView(value: unknown): PersistedViewingState | undefined 
   return gridViewState ? { ...gridViewState, filterModel: value.filterModel } : undefined;
 }
 
-function isPersistableDataBackend(value: unknown): value is Extract<DataBackend, "pandas" | "polars" | "duckdb"> {
-  return value === "polars" || value === "duckdb" || value === "pandas";
+function isPersistableDataBackend(value: unknown): value is Extract<DataBackend, "pandas" | "polars" | "duckdb" | "r"> {
+  return value === "polars" || value === "duckdb" || value === "pandas" || value === "r";
 }
 
 function decodeStep(value: unknown): TransformStep | undefined {

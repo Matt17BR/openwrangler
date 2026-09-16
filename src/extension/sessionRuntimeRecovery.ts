@@ -32,7 +32,7 @@ export interface RuntimeRecoveryDelegateCandidate {
 }
 
 export interface RuntimeRecoveryDelegateFactory {
-  /** True only when the R bridge is bound to one re-verifiable notebook variable. */
+  /** True only when the R bridge can re-verify its exact source and execution owner. */
   readonly supportsVerifiedRuntimeRecoveryDelegate: boolean;
   createRuntimeRecoveryDelegate(): Promise<RuntimeRecoveryDelegateCandidate>;
 }
@@ -206,7 +206,10 @@ export class SessionRuntimeRecovery {
       assertCurrent();
       const openedMismatch = sessionOpenedResponseMismatch(session.openRequest, response, true);
       if (openedMismatch) throw new Error(openedMismatch);
-      if (session.openRequest.source.kind === "file" && isFileDataBackend(response.metadata.backend)) {
+      if (
+        session.openRequest.source.kind === "file" &&
+        (isFileDataBackend(response.metadata.backend) || response.metadata.backend === "r")
+      ) {
         candidate.sourceSchema = structuredClone(response.metadata.schema);
       }
       restoredPage = await this.runtimeStateRestorer.restoreRuntimeState(
@@ -228,17 +231,19 @@ export class SessionRuntimeRecovery {
     } catch (error) {
       if (error instanceof DetachedBridgeRequestError) {
         const delegate = replacementDelegate?.delegate ?? candidate?.delegate ?? session.delegate;
-        const deferredCleanup = error.settlement.then(() => this.discardCandidate(candidate, replacementDelegate));
+        const deferredCleanup = error.settlement.then(() =>
+          discardRuntimeRecoveryCandidate(this.runtimeCleanup, candidate, replacementDelegate)
+        );
         const barrier = this.runtimeCleanup.trackDelegateSettlement(delegate, deferredCleanup);
         hooks.installRuntimeSettlement(barrier);
         return false;
       }
-      await this.discardCandidate(candidate, replacementDelegate);
+      await discardRuntimeRecoveryCandidate(this.runtimeCleanup, candidate, replacementDelegate);
       return false;
     }
 
     if (!isCurrent()) {
-      await this.discardCandidate(candidate, replacementDelegate);
+      await discardRuntimeRecoveryCandidate(this.runtimeCleanup, candidate, replacementDelegate);
       return false;
     }
 
@@ -273,26 +278,28 @@ export class SessionRuntimeRecovery {
     if (restoredPage) onRestoredPage?.(restoredPage);
     return true;
   }
-
-  private async discardCandidate(
-    candidate: RuntimeSessionState | undefined,
-    replacementDelegate: RuntimeRecoveryDelegateCandidate | undefined
-  ): Promise<void> {
-    if (candidate) await this.runtimeCleanup.close(candidate, "recovery candidate");
-    if (!replacementDelegate) return;
-    try {
-      await replacementDelegate.dispose();
-    } catch (error) {
-      replacementDelegate.delegate.reportDiagnostic?.(
-        `Open Wrangler could not finish cleanup of an unpublished recovery delegate: ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
-    }
-  }
 }
 
-function runtimeRecoveryDelegateFactory(delegate: OpenWranglerBridge): RuntimeRecoveryDelegateFactory | undefined {
+export async function discardRuntimeRecoveryCandidate(
+  runtimeCleanup: SessionRuntimeCleanup,
+  candidate: RuntimeSessionState | undefined,
+  replacementDelegate: RuntimeRecoveryDelegateCandidate | undefined
+): Promise<void> {
+  if (candidate) await runtimeCleanup.close(candidate, "recovery candidate");
+  if (!replacementDelegate) return;
+  try {
+    await replacementDelegate.dispose();
+  } catch (error) {
+    replacementDelegate.delegate.reportDiagnostic?.(
+      `Open Wrangler could not finish cleanup of an unpublished recovery delegate: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  }
+}
+export function runtimeRecoveryDelegateFactory(
+  delegate: OpenWranglerBridge
+): RuntimeRecoveryDelegateFactory | undefined {
   const candidate = delegate as OpenWranglerBridge & Partial<RuntimeRecoveryDelegateFactory>;
   return typeof candidate.createRuntimeRecoveryDelegate === "function" &&
     candidate.supportsVerifiedRuntimeRecoveryDelegate === true

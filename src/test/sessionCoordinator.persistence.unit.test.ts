@@ -263,6 +263,194 @@ describe("SessionCoordinator persistence diagnostics", () => {
     }
   });
 
+  it.each([
+    "reset",
+    "dismiss",
+    "cancel",
+    "newer-plan",
+    "open-error",
+    "source-mismatch",
+    "detached",
+    "read-fault",
+    "factory-cancel",
+    "source-replacement",
+    "save-fault"
+  ] as const)("uses a fresh native R file delegate for saved-plan %s", async (outcome) => {
+    const directory = await mkdtemp(join(tmpdir(), "openwrangler-r-file-reset-"));
+    const sourcePath = join(directory, "source.csv");
+    await writeFile(sourcePath, "sales,units\n2,20\n1,10\n");
+    const opening = { ...openRequest, backend: "r" as const, source: { ...openRequest.source, path: sourcePath } };
+    const initial = presentationOpenedResponse();
+    initial.metadata = { ...initial.metadata, backend: "r", source: opening.source };
+    const saved = {
+      ...serializePersistedSession(
+        persistedSessionState(
+          { ...initial.metadata, backend: "polars", steps: [inspectionStep] },
+          { columnWidths: new Map(), viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
+        )
+      )!,
+      backend: "r"
+    };
+    const key = persistenceKey(opening.source, "r");
+    let stored: Record<string, unknown> = { [key]: saved };
+    const workspaceState = {
+      get: vi.fn(() => stored),
+      update: vi.fn(async (_key: string, value: Record<string, unknown>) => {
+        if (outcome === "save-fault") throw new Error("Reset storage unavailable.");
+        stored = value;
+      }),
+      keys: () => [SESSION_STORAGE_KEY]
+    } as unknown as Memento;
+    const coordinator = new SessionCoordinator(workspaceState);
+    const cancellation = new vscode.CancellationTokenSource();
+    let closed = false;
+    const originalRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (closed) throw new Error("The managed R transport is disposed.");
+      if (request.kind === "openSession") return initial;
+      if (request.kind === "previewStep")
+        return {
+          kind: "error",
+          code: "engine_error",
+          message: "Saved plan no longer applies.",
+          recoverable: true,
+          sessionId: request.sessionId
+        };
+      if (request.kind === "closeSession") {
+        closed = true;
+        return { kind: "sessionClosed", sessionId: request.sessionId };
+      }
+      throw new Error(`Unexpected original request: ${request.kind}`);
+    });
+    const settlement = deferred<void>();
+    const disposeCandidate = vi.fn(async () => undefined);
+    const candidateIdle = vi.fn();
+    const candidateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") {
+        expect(request.source).toEqual(opening.source);
+        expect(request.backend).toBe("r");
+        if (outcome === "open-error")
+          return { kind: "error", code: "engine_error", message: "Open failed.", recoverable: true };
+        if (outcome === "detached")
+          throw new DetachedBridgeRequestError("Held R open.", "timeout", true, settlement.promise);
+        if (outcome === "source-replacement") {
+          await rename(sourcePath, join(directory, "original.csv"));
+          await writeFile(sourcePath, "sales,units\n200,20\n1,10\n");
+        }
+        if (outcome === "read-fault") {
+          vi.mocked(workspaceState.get).mockImplementationOnce(() => {
+            throw new Error("Opening storage fault.");
+          });
+          coordinator["persistence"].load(opening.source, "r");
+        }
+        return {
+          ...initial,
+          metadata: {
+            ...initial.metadata,
+            sessionId: "fresh-r-runtime",
+            ...(outcome === "source-mismatch"
+              ? { source: { ...opening.source, path: join(directory, "other.csv") } }
+              : {})
+          }
+        };
+      }
+      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+      if (request.kind === "getPage")
+        return pageResponseForMetadata(request, { ...initial.metadata, sessionId: request.sessionId });
+      throw new Error(`Unexpected fresh request: ${request.kind}`);
+    });
+    const candidate = { request: candidateRequest, onIdle: candidateIdle };
+    const createRuntimeRecoveryDelegate = vi.fn(async () => {
+      if (outcome === "factory-cancel") cancellation.cancel();
+      return { delegate: candidate, dispose: disposeCandidate };
+    });
+    const warningWindow: {
+      showWarningMessage(
+        message: string,
+        options: vscode.MessageOptions,
+        ...items: string[]
+      ): Thenable<string | undefined>;
+    } = vscode.window;
+    const warning = vi
+      .spyOn(warningWindow, "showWarningMessage")
+      .mockImplementation(async (_message, _options, ...items) => {
+        expect(closed).toBe(true);
+        if (outcome === "cancel") cancellation.cancel();
+        if (outcome === "newer-plan") stored = { [key]: { ...saved, cleaning: { steps: [] } } };
+        return outcome === "dismiss" ? undefined : items[0];
+      });
+    const bridge = coordinator.createBridge({
+      request: originalRequest,
+      ...{ supportsVerifiedRuntimeRecoveryDelegate: true, createRuntimeRecoveryDelegate }
+    });
+    try {
+      const result = await bridge.request(opening, { cancellation: cancellation.token });
+      expect(originalRequest.mock.calls.map(([request]) => request.kind)).toEqual([
+        "openSession",
+        "previewStep",
+        "closeSession"
+      ]);
+      expect(
+        warning.mock.calls.filter(([, , ...items]) => items.includes("Open Original and Reset Plan"))
+      ).toHaveLength(1);
+      const neverCreated = ["dismiss", "cancel", "newer-plan"].includes(outcome);
+      expect(createRuntimeRecoveryDelegate).toHaveBeenCalledTimes(neverCreated ? 0 : 1);
+      if (outcome === "reset") {
+        expect(result.kind).toBe("sessionOpened");
+        if (result.kind !== "sessionOpened") throw new Error("Expected fresh original R file.");
+        const current = coordinator["sessions"].get(result.metadata.sessionId)!;
+        expect(current.delegate).toBe(candidate);
+        expect(current.sourceSchema).toEqual(initial.metadata.schema);
+        expect(current.sourceSchema).not.toBe(initial.metadata.schema);
+        expect(result.metadata.steps).toEqual([]);
+        expect(coordinator["persistence"].load(opening.source, "r")?.cleaning.steps).toEqual([]);
+        await expect(
+          bridge.request({
+            kind: "getPage",
+            sessionId: result.metadata.sessionId,
+            revision: result.metadata.revision,
+            viewRequestId: "after-reset",
+            offset: 0,
+            limit: 2,
+            columnOffset: 0,
+            columnLimit: 2,
+            filterModel: result.metadata.filterModel
+          })
+        ).resolves.toMatchObject({ kind: "page" });
+        expect(disposeCandidate).not.toHaveBeenCalled();
+        expect(candidateIdle).not.toHaveBeenCalled();
+      } else {
+        expect(result.kind).toBe(outcome === "cancel" || outcome === "factory-cancel" ? "cancelled" : "error");
+        expect(coordinator.activeSession()).toBeUndefined();
+        expect(stored[key]).toEqual(
+          outcome === "newer-plan" || outcome === "read-fault" ? { ...saved, cleaning: { steps: [] } } : saved
+        );
+        if (outcome === "read-fault" || outcome === "save-fault") expect(workspaceState.update).toHaveBeenCalled();
+        else expect(workspaceState.update).not.toHaveBeenCalled();
+        if (outcome === "factory-cancel") expect(candidateRequest).not.toHaveBeenCalled();
+        if (outcome === "detached") {
+          expect(disposeCandidate).not.toHaveBeenCalled();
+          settlement.resolve();
+          await coordinator["runtimeCleanup"].waitForTracked();
+        }
+        expect(disposeCandidate).toHaveBeenCalledTimes(neverCreated || outcome === "read-fault" ? 0 : 1);
+        if (outcome === "read-fault") {
+          expect(candidateRequest.mock.calls.map(([request]) => request.kind)).toEqual(["openSession", "closeSession"]);
+          expect(candidateIdle).toHaveBeenCalledOnce();
+        }
+      }
+    } finally {
+      settlement.resolve();
+      warning.mockRestore();
+      cancellation.dispose();
+      await coordinator.shutdown();
+      if (outcome === "reset") {
+        expect(candidateRequest.mock.calls.filter(([request]) => request.kind === "closeSession")).toHaveLength(1);
+        expect(candidateIdle).toHaveBeenCalledOnce();
+      }
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it.each([false, true])("keeps the latest live presentation after failed saves (overlapping: %s)", async (overlap) => {
     const runtimeOpened = presentationOpenedResponse();
     const filterModel: FilterModel = {
