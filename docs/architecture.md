@@ -1471,7 +1471,9 @@ preserves the root and reports unconfirmed cleanup. The supervisor compiles its 
 PowerShell `Add-Type`, after loading its built-in Utility module directly from `$PSHOME` so inherited module search
 paths do not delay startup. Policy or compilation failure stops opening with a diagnostic. An initial startup failure keeps
 its cause through cleanup; only an established runtime publishes invalidation. This file path does not enable
-Windows document or terminal execution.
+Windows document or terminal execution. PowerShell’s temporary compiler runs before the R Job Object exists.
+Abrupt helper termination during compilation does not establish compiler-child containment; the host reports
+unconfirmed cleanup and retains the private root. The job-empty receipt covers the subsequently launched R tree.
 
 #### CSV and TSV files
 

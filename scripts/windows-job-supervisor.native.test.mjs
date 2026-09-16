@@ -276,7 +276,6 @@ test(
       const binaryResult = JSON.parse(binary.stdout);
       assert.equal(binaryResult.passed, 8);
       assert.ok(binaryResult.sourceStartupMs > 0);
-      assert.ok(binaryResult.compilerChildren >= 1);
       t.diagnostic(JSON.stringify(binaryResult));
     } catch (error) {
       if (editorProcessTreeMayBeLive(error)) cleanupIsSafe = false;
@@ -438,9 +437,6 @@ async function windowsRBinaryControls() {
     }
     assert.equal(alive(sentinelPids.pid), true);
     assert.equal(alive(sentinelPids.descendant), true);
-    sentinel.child.stdin.end();
-    await settled(sentinel);
-
     const started = performance.now();
     const sourceOwned = launch(tree, true);
     const sourcePids = await ready(sourceOwned);
@@ -454,75 +450,21 @@ async function windowsRBinaryControls() {
     duringCompilation.child.stdin.end();
     await settled(duringCompilation);
 
-    // Observe compilation before killing the exact source helper. The outer Job
-    // stays alive until assertions finish, so it cannot hide compiler lifetime.
-    const observerCode = `
-$ErrorActionPreference = 'Stop'
-Register-WmiEvent -Class Win32_ProcessStartTrace -SourceIdentifier owSourceCompiler | Out-Null
-[Console]::WriteLine('{"ready":true}')
-$ownerId = [int][Console]::ReadLine()
-$owner = [Diagnostics.Process]::GetProcessById($ownerId)
-$deadline = [DateTime]::UtcNow.AddSeconds(10)
-$children = @()
-try {
-  do {
-    $event = Wait-Event -SourceIdentifier owSourceCompiler -Timeout 1
-    if ($null -eq $event) { continue }
-    $created = $event.SourceEventArgs.NewEvent
-    Remove-Event -EventIdentifier $event.EventIdentifier
-    if ($created.ParentProcessID -eq $ownerId -and ($created.ProcessName -eq 'csc.exe' -or $created.ProcessName -eq 'cvtres.exe')) {
-      $children = @($created)
-      break
-    }
-  } while ([DateTime]::UtcNow -lt $deadline)
-  if ($children.Count -eq 0) { throw 'No source compiler child was observed.' }
-  if ($owner.HasExited) { throw 'Source helper exited before compiler observation.' }
-  $owner.Kill()
-} finally {
-  Unregister-Event -SourceIdentifier owSourceCompiler
-}
-$started = [DateTime]::UtcNow
-$deadline = $started.AddSeconds(5)
-do {
-  $remaining = @($children | Where-Object { Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue })
-  if ($remaining.Count -eq 0) { break }
-  Start-Sleep -Milliseconds 10
-} while ([DateTime]::UtcNow -lt $deadline)
-if ($remaining.Count -gt 0) { throw 'Compiler child outlived the source helper settlement bound.' }
-[Console]::WriteLine((@{ compilerChildren=$children.Count; compilerExitMs=([DateTime]::UtcNow-$started).TotalMilliseconds } | ConvertTo-Json -Compress))
-`;
-    const observer = spawn(powerShell, ["-NoProfile", "-NonInteractive", "-Command", observerCode], {
-      env: process.env,
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true
-    });
-    ownedChildren.add(observer);
-    observer.once("close", () => ownedChildren.delete(observer));
-    let observerResult;
-    let observation = "",
-      observationError = "";
-    observer.stdout.on("data", (chunk) => {
-      observation += chunk;
-    });
-    observer.stderr.on("data", (chunk) => {
-      observationError += chunk;
-    });
-    const observed = new Promise((resolve, reject) => {
-      observer.once("error", reject);
-      observer.once("close", (code) => {
-        observerResult = { code, stderr: observationError };
-        resolve(code);
-      });
-    });
-    void observed.catch(() => undefined);
-    await ready({ output: () => observation, result: () => observerResult, diagnostic: () => observationError });
+    // The source owner must contain the same native tree once its job is ready.
     const killedSource = launch(tree, true);
-    observer.stdin.end(`${killedSource.child.pid}\n`);
-    assert.equal(await observed, 0, observationError);
+    const killedSourcePids = await ready(killedSource);
+    killedSource.child.kill("SIGKILL");
     await settled(killedSource, false);
-    assert.equal(killedSource.output(), "", "R target must not run before source compilation finishes");
-    const compiler = JSON.parse(observation.trim().split(/\r?\n/).at(-1));
-    process.stdout.write(JSON.stringify({ passed: 8, sourceStartupMs, ...compiler }));
+    const sourceExitDeadline = Date.now() + 5_000;
+    while (alive(killedSourcePids.pid) || alive(killedSourcePids.descendant)) {
+      assert.ok(Date.now() < sourceExitDeadline, "killed source supervisor left a fixture descendant");
+      await delay(10);
+    }
+    assert.equal(alive(sentinelPids.pid), true);
+    assert.equal(alive(sentinelPids.descendant), true);
+    sentinel.child.stdin.end();
+    await settled(sentinel);
+    process.stdout.write(JSON.stringify({ passed: 8, sourceStartupMs }));
   } finally {
     await Promise.allSettled(
       [...ownedChildren].map(
