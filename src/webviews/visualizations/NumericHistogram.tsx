@@ -7,6 +7,7 @@ interface NumericHistogramProps {
   compact?: boolean;
   valueMode?: ProfileValueMode;
   percentDenominator?: number;
+  selectionDisabledReason?: string;
   onSelectBin?(bin: NumericVisualization["bins"][number], index: number): void;
 }
 
@@ -27,6 +28,7 @@ export function NumericHistogram({
   compact = false,
   valueMode = "count",
   percentDenominator,
+  selectionDisabledReason,
   onSelectBin
 }: NumericHistogramProps) {
   const view = useMemo(
@@ -133,6 +135,9 @@ export function NumericHistogram({
             type="button"
             className="numericHistogramHitTarget"
             aria-label={currentBinLabel}
+            aria-disabled={selectionDisabledReason ? true : undefined}
+            aria-description={selectionDisabledReason}
+            title={selectionDisabledReason}
             onPointerMove={(event) => {
               setHoveredBin({ view, index: binIndexAt(event.clientX, event.currentTarget) });
             }}
@@ -146,6 +151,7 @@ export function NumericHistogram({
               setHoveredBin(undefined);
             }}
             onClick={(event) => {
+              if (selectionDisabledReason) return;
               const index = event.detail > 0 ? binIndexAt(event.clientX, event.currentTarget) : currentBinIndex;
               const bin = visualization.bins[index];
               if (bin) onSelectBin(bin, index);
@@ -167,7 +173,7 @@ export function NumericHistogram({
                 event.preventDefault();
                 setFocusedBin({ view, index: currentBinIndex });
                 const bin = visualization.bins[currentBinIndex];
-                if (bin) onSelectBin(bin, currentBinIndex);
+                if (bin && !selectionDisabledReason) onSelectBin(bin, currentBinIndex);
               }
             }}
           />

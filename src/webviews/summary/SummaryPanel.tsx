@@ -5,6 +5,7 @@ import type { ColumnFilter, FilterModel } from "../../shared/filterModel";
 import {
   countViewColumnNames,
   isActiveColumnFilter,
+  numericHistogramFilterUnavailableReason,
   removeViewColumnFilter,
   replaceViewColumnFilter,
   supportsTypedViewComparison,
@@ -302,12 +303,19 @@ function SelectedColumnSummary({
                 visualization={numericVisualization}
                 valueMode={profileValueMode}
                 percentDenominator={distributionDenominator}
+                selectionDisabledReason={
+                  canFilter ? numericHistogramFilterUnavailableReason(schema, numericVisualization.bins) : undefined
+                }
                 onSelectBin={
                   canFilter
-                    ? (bin, index) =>
-                        applyProfileFilter(
-                          viewNumericBinFilter(schema, bin, index === numericVisualization.bins.length - 1)
-                        )
+                    ? (bin, index) => {
+                        const filter = viewNumericBinFilter(
+                          schema,
+                          bin,
+                          index === numericVisualization.bins.length - 1
+                        );
+                        if (filter) applyProfileFilter(filter);
+                      }
                     : undefined
                 }
               />

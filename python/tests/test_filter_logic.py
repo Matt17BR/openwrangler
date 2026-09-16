@@ -1562,6 +1562,50 @@ def test_column_value_selection_tokens_round_trip_live_and_generated(backend):
     assert _filtered_labels(_execute_generated_filter(engine, frame, model), backend) == ["match"]
 
 
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_integer_histogram_filter_bounds_match_live_and_generated(backend):
+    values = [-3, -2, -1, 0, 1, 2, 3, 149999, 150000, 199999, 200000, 949999, 950000, 999999, 1000000, None]
+    labels = [str(value) for value in values]
+    engine = _engine(backend)
+    if backend == "pandas":
+        frame = pd.DataFrame({"label": labels, "value": pd.Series(values, dtype="Int64")})
+    elif backend == "polars":
+        frame = pl.DataFrame({"label": labels, "value": pl.Series(values, dtype=pl.Int64)})
+    else:
+        rows = ",".join(
+            f"('{label}', {value if value is not None else 'NULL'})"
+            for label, value in zip(labels, values, strict=True)
+        )
+        frame = duckdb.sql(f"SELECT * FROM (VALUES {rows}) AS source(label, value)")
+
+    try:
+        for lower, upper, final, expected in [
+            (150000, 200000, False, ["150000", "199999"]),
+            (950000, 999999, True, ["950000", "999999"]),
+            (-2, 0, False, ["-2", "-1"]),
+            (0, 2, True, ["0", "1", "2"]),
+        ]:
+            model = {
+                "filters": [
+                    {
+                        "column": "value",
+                        "type": "integer",
+                        "logic": "and",
+                        "predicates": [
+                            {"kind": "predicate", "operator": "gte", "value": lower},
+                            {"kind": "predicate", "operator": "lte" if final else "lt", "value": upper},
+                        ],
+                    }
+                ],
+                "sort": [],
+            }
+            assert _filtered_labels(engine.apply_filter_model(frame, model), backend) == expected
+            assert _filtered_labels(_execute_generated_filter(engine, frame, model), backend) == expected
+        assert _filtered_labels(frame, backend) == labels
+    finally:
+        engine.close()
+
+
 def test_typed_selection_tokens_fail_closed_live_and_generated():
     token = typed_selection_value(7, "integer")
     assert token is not None

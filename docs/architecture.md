@@ -199,6 +199,12 @@ If an admitted exception's message formatting also raises an admitted exception,
 fixed bounded message with its original classification and session fields. It omits traceback detail rather than
 calling the failed formatter again. This preserves request settlement without limiting arbitrary formatter execution.
 
+Histogram clicks use the shared view-filter builder. Integer bins translate their lower edge with ceiling, their
+exclusive upper edge with ceiling, and the final inclusive edge with floor. Strict integer operand validation stays
+unchanged. If any converted boundary is outside the safe integer range, selection is unavailable for that histogram:
+its floating-point display bins cannot guarantee exact integer membership. Hover and keyboard descriptions remain
+available; explicit column filters and exact value selections keep their existing limits.
+
 Runtime work has three relevant classes:
 
 - mutations and exports are exclusive;

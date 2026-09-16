@@ -536,6 +536,9 @@ History inspection controls ignore stale clicks after switching dataframes or ch
 Formula steps expose their saved output names in Cleaning Steps tooltips and accessible names, including after later
 Rename or Drop steps.
 Numeric histogram arrows use the highlighted bin as their starting point after pointer hover.
+Integer-bin clicks use whole-number bounds and include the final upper edge. Filtering from rounded large-integer
+histograms is unavailable; use explicit column filters or exact value choices. Their hover and keyboard descriptions
+remain available.
 Staged viewing sorts retire rules invalidated by Rename, Drop, identity replacement or a semantic type change.
 Unaffected staged rules remain, and Undo does not restore a rule already retired from the draft.
 

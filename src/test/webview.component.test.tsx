@@ -1339,6 +1339,84 @@ describe("DataGrid", () => {
     expect(onViewStateChange).toHaveBeenLastCalledWith(expect.objectContaining({ selectedColumnId: "c:1" }));
   });
 
+  it("filters integer histogram edges in the header and explains unsafe bounds", () => {
+    const onApplyProfileFilter = vi.fn();
+    const integerMetadata: SessionMetadata = {
+      ...metadata,
+      schema: metadata.schema.map((column) =>
+        column.id === "c:1" ? { ...column, type: "integer", rawType: "Int64" } : column
+      )
+    };
+    const summary: ColumnSummary = {
+      columnId: "c:1",
+      column: "sales",
+      type: "integer",
+      rawType: "Int64",
+      totalCount: 2,
+      nullCount: 0,
+      nanCount: 0,
+      distinctCount: 2,
+      topValues: [],
+      visualization: {
+        kind: "numeric",
+        bins: [
+          { min: -2.8, max: -0.2, count: 1 },
+          { min: -0.2, max: 2.8, count: 1 }
+        ]
+      }
+    };
+    const props = {
+      metadata: integerMetadata,
+      page,
+      summaries: [summary],
+      pageSize: 2,
+      defaultColumnWidth: 190,
+      insightsOnOpen: true,
+      onApplyProfileFilter,
+      onPage: () => undefined,
+      onSortColumn: () => undefined,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined
+    };
+    const { rerender } = render(<DataGrid {...props} />);
+    const histogram = screen.getByRole("button", { name: /lower bound included, upper bound excluded/u });
+    fireEvent.click(histogram);
+    expect(onApplyProfileFilter).toHaveBeenLastCalledWith({
+      column: "sales",
+      type: "integer",
+      logic: "and",
+      predicates: [
+        { kind: "predicate", operator: "gte", value: -2 },
+        { kind: "predicate", operator: "lt", value: 0 }
+      ]
+    });
+    fireEvent.keyDown(histogram, { key: "End" });
+    fireEvent.keyDown(histogram, { key: "Enter" });
+    expect(onApplyProfileFilter.mock.lastCall?.[0].predicates).toEqual([
+      { kind: "predicate", operator: "gte", value: 0 },
+      { kind: "predicate", operator: "lte", value: 2 }
+    ]);
+
+    onApplyProfileFilter.mockClear();
+    rerender(
+      <DataGrid
+        {...props}
+        summaries={[
+          {
+            ...summary,
+            visualization: { kind: "numeric", bins: [{ min: 0, max: 2 ** 53, count: 2 }] }
+          }
+        ]}
+      />
+    );
+    const unavailable = screen.getByRole("button", { name: /both bounds included/u });
+    expect(unavailable).toHaveAttribute("aria-disabled", "true");
+    expect(unavailable).toHaveAttribute("title", expect.stringContaining("rounded large-integer"));
+    fireEvent.click(unavailable);
+    fireEvent.keyDown(unavailable, { key: "Enter" });
+    expect(onApplyProfileFilter).not.toHaveBeenCalled();
+  });
+
   it("filters Boolean values from the compact header with native buttons", () => {
     const booleanMetadata: SessionMetadata = {
       ...metadata,
