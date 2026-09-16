@@ -13,6 +13,7 @@ import polars as pl
 import pytest
 
 from openwrangler_runtime.engines import EngineError, EngineRegistry, PandasEngine
+from openwrangler_runtime.engines.duckdb_engine import DuckDBEngine, DuckDBSqlPlan
 from openwrangler_runtime.session import Session, SessionManager
 from openwrangler_runtime.session_source import SourceChangedError
 
@@ -232,9 +233,9 @@ def test_inspect_applied_step_replays_only_its_prefix_without_publishing_state(
     manager.close_session(session_id, revision)
 
 
-@pytest.fixture
+@pytest.fixture(params=["polars", "duckdb"])
 def custom_inspection_session(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
 ) -> Iterator[tuple[SessionManager, Session, Path]]:
     import __main__
 
@@ -244,7 +245,10 @@ def custom_inspection_session(
     manager = SessionManager()
     try:
         opened = manager.open_session(
-            {"kind": "file", "label": path.name, "path": str(path)}, backend="polars", mode="editing", page_size=4
+            {"kind": "file", "label": path.name, "path": str(path)},
+            backend=request.param,
+            mode="editing",
+            page_size=4,
         )
         session_id = opened["metadata"]["sessionId"]
         revision = apply_step(
@@ -257,9 +261,13 @@ def custom_inspection_session(
                 code=(
                     "import __main__\n"
                     "__main__.inspection_calls += 1\n"
-                    "result = df.sort([pl.col('id')], descending=[__main__.inspection_calls % 2 == 0], "
-                    "nulls_last=[True], maintain_order=True)\n"
-                    "result = result if isinstance(result, pl.LazyFrame) else result.lazy()"
+                    + (
+                        "result = df.sort([pl.col('id')], descending=[__main__.inspection_calls % 2 == 0], "
+                        "nulls_last=[True], maintain_order=True)\n"
+                        "result = result if isinstance(result, pl.LazyFrame) else result.lazy()"
+                        if request.param == "polars"
+                        else "result = df.order('id DESC' if __main__.inspection_calls % 2 == 0 else 'id ASC')"
+                    )
                 ),
             ),
         )
@@ -274,6 +282,13 @@ def custom_inspection_session(
         yield manager, session, path
     finally:
         manager.close_all()
+
+
+def retained_storage_ref(frame: Any) -> weakref.ReferenceType[Any]:
+    if isinstance(frame, DuckDBSqlPlan):
+        assert frame.checkpoint is not None
+        return weakref.ref(frame.checkpoint)
+    return weakref.ref(frame)
 
 
 def test_custom_inspection_keeps_row_identity_across_row_and_column_windows(custom_inspection_session) -> None:
@@ -310,9 +325,17 @@ def test_custom_inspection_boundary_survives_failed_edits_but_retires_with_its_o
     original = manager.inspect_step(session_id, revision, "copy-id", 0, 1)
     boundary = session.inspection_boundary
     assert boundary is not None
-    frames = [weakref.ref(boundary.before), weakref.ref(boundary.after)]
+    frames = [retained_storage_ref(boundary.before), retained_storage_ref(boundary.after)]
+    checkpoint_paths = (
+        {Path(checkpoint.path) for checkpoint in session.engine._checkpoints}
+        if isinstance(session.engine, DuckDBEngine)
+        else set()
+    )
+    rejected_paths: set[Path] = set()
 
     def reject(_response: Any, *_args: Any, **_kwargs: Any) -> None:
+        if isinstance(session.engine, DuckDBEngine):
+            rejected_paths.update(Path(checkpoint.path) for checkpoint in session.engine._checkpoints)
         raise EngineError("rejected response")
 
     with monkeypatch.context() as patch:
@@ -322,12 +345,16 @@ def test_custom_inspection_boundary_survives_failed_edits_but_retires_with_its_o
     assert session.inspection_boundary is boundary
 
     before = observable_state(session)
-    id_column = next(column for column in session.committed_lineage if column["name"] == "id")
-    edit = step("more", "cloneColumn", column={"id": id_column["id"], "name": "id"}, newName="more")
+    edit = step("more", "customCode", code="result = df")
     with pytest.raises(EngineError, match="rejected response"):
         manager.preview_step(session_id, revision, edit, 0, 1, response_preflight=reject)
     assert observable_state(session) == before
     assert session.inspection_boundary is boundary
+    gc.collect()
+    if checkpoint_paths:
+        assert rejected_paths - checkpoint_paths
+        assert all(path.exists() for path in checkpoint_paths)
+        assert all(not path.exists() for path in rejected_paths - checkpoint_paths)
     manager.get_page(
         session_id,
         revision,
@@ -348,14 +375,20 @@ def test_custom_inspection_boundary_survives_failed_edits_but_retires_with_its_o
     manager.inspect_step(session_id, revision, "copy-id", 0, 1)
     assert __main__.inspection_calls == 5
     assert session.inspection_boundary is not None
-    frames = [weakref.ref(session.inspection_boundary.before), weakref.ref(session.inspection_boundary.after)]
+    frames = [
+        retained_storage_ref(session.inspection_boundary.before),
+        retained_storage_ref(session.inspection_boundary.after),
+    ]
     preview = manager.preview_step(session_id, revision, edit, 0, 1)
     assert session.inspection_boundary is None
     gc.collect()
     assert all(frame() is None for frame in frames)
     manager.inspect_step(session_id, preview["revision"], "copy-id", 0, 1)
     assert session.inspection_boundary is not None
-    frames = [weakref.ref(session.inspection_boundary.before), weakref.ref(session.inspection_boundary.after)]
+    frames = [
+        retained_storage_ref(session.inspection_boundary.before),
+        retained_storage_ref(session.inspection_boundary.after),
+    ]
     discarded = manager.discard_draft(session_id, preview["revision"], 0, 1)
     assert session.inspection_boundary is None
     gc.collect()
@@ -363,7 +396,10 @@ def test_custom_inspection_boundary_survives_failed_edits_but_retires_with_its_o
 
     manager.inspect_step(session_id, discarded["revision"], "copy-id", 0, 1)
     assert session.inspection_boundary is not None
-    frames = [weakref.ref(session.inspection_boundary.before), weakref.ref(session.inspection_boundary.after)]
+    frames = [
+        retained_storage_ref(session.inspection_boundary.before),
+        retained_storage_ref(session.inspection_boundary.after),
+    ]
     manager.close_session(session_id, discarded["revision"])
     assert session.inspection_boundary is None
     gc.collect()
@@ -378,7 +414,10 @@ def test_custom_inspection_source_invalidation_releases_retained_frames(
     session_id, revision = session.session_id, session.revision
     manager.inspect_step(session_id, revision, "copy-id", 0, 1)
     assert session.inspection_boundary is not None
-    frames = [weakref.ref(session.inspection_boundary.before), weakref.ref(session.inspection_boundary.after)]
+    frames = [
+        retained_storage_ref(session.inspection_boundary.before),
+        retained_storage_ref(session.inspection_boundary.after),
+    ]
 
     def replace_source() -> None:
         replacement = path.with_name("replacement.csv")

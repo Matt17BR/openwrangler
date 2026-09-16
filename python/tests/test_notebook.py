@@ -6,6 +6,7 @@ import re
 from datetime import date, datetime, timedelta, tzinfo
 from decimal import Decimal
 from pathlib import Path
+from typing import Any, cast
 
 import duckdb
 import numpy as np
@@ -561,6 +562,28 @@ def test_notebook_snapshot_validates_options():
         notebook.build_payload(pd.DataFrame({"value": [1]}), page_size=0)
     with pytest.raises(EngineError, match="page_size"):
         notebook.build_payload(pd.DataFrame({"value": [1]}), page_size=10_001)
+    for limit in (False, 0, 2049, "256"):
+        with pytest.raises(EngineError, match="max_columns"):
+            notebook.build_payload(pd.DataFrame({"value": [1]}), max_columns=cast(Any, limit))
+
+
+def test_inline_column_limit_refuses_before_reading_rows_and_keeps_normal_output_limit(monkeypatch):
+    frame = pl.DataFrame({f"c{index}": [index] for index in range(257)})
+    calls = []
+    original_page = PolarsEngine.page
+
+    def page(self, *args, **kwargs):
+        calls.append(True)
+        return original_page(self, *args, **kwargs)
+
+    monkeypatch.setattr(PolarsEngine, "page", page)
+    with pytest.raises(EngineError, match="at most 256 columns"):
+        notebook.build_payload(frame, backend="polars", max_columns=256)
+    assert calls == []
+    snapshot = notebook.build_payload(frame, backend="polars", page_size=1)
+    assert snapshot["metadata"]["shape"] == {"rows": 1, "columns": 257}
+    assert len(snapshot["page"]["rows"][0]["values"]) == 257
+    assert calls == [True]
 
 
 def test_notebook_snapshot_limits_variable_name_before_engine_work(monkeypatch):

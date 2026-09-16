@@ -278,6 +278,25 @@
     "RDataframeFlavor": { "type": "string", "enum": ["r.data.frame", "r.tibble", "r.data.table"] },
     "SessionMode": { "type": "string", "enum": ["viewing", "editing"] },
     "RequestPriority": { "type": "string", "enum": ["interactive", "background"] },
+    "DuckDBConnectionSource": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "name"],
+          "properties": {
+            "kind": { "const": "variable" },
+            "name": { "type": "string", "minLength": 1, "maxLength": 128 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": { "kind": { "const": "default" } }
+        }
+      ]
+    },
     "SessionSource": {
       "type": "object",
       "additionalProperties": false,
@@ -308,6 +327,9 @@
         }
       },
       "dependencies": {
+        "duckdbConnection": {
+          "properties": { "kind": { "enum": ["notebookVariable", "notebookOutput"] } }
+        },
         "importOptions": {
           "allOf": [
             {
@@ -358,6 +380,7 @@
         "path": { "type": "string" },
         "uri": { "type": "string" },
         "variableName": { "type": "string" },
+        "duckdbConnection": { "$ref": "#/definitions/DuckDBConnectionSource" },
         "importOptions": {
           "if": { "anyOf": [{ "required": ["duckdbSchema"] }, { "required": ["duckdbTable"] }] },
           "then": { "required": ["duckdbSchema", "duckdbTable"], "maxProperties": 2 },
@@ -2339,6 +2362,11 @@
       "not": {
         "anyOf": [
           {
+            "required": ["source"],
+            "properties": { "source": { "required": ["duckdbConnection"] } },
+            "not": { "required": ["backend"], "properties": { "backend": { "const": "duckdb" } } }
+          },
+          {
             "required": ["backend"],
             "properties": { "backend": { "const": "r" } },
             "not": { "required": ["rDataframeFlavor"] }
@@ -2484,6 +2512,11 @@
       "required": ["kind", "source", "pageSize", "columnOffset", "columnLimit"],
       "not": {
         "anyOf": [
+          {
+            "required": ["source"],
+            "properties": { "source": { "required": ["duckdbConnection"] } },
+            "not": { "required": ["backend"], "properties": { "backend": { "const": "duckdb" } } }
+          },
           {
             "required": ["backend"],
             "properties": {

@@ -455,7 +455,9 @@ recreation to edit. The form does not stringify stored operand objects, change t
 saved operands, output names or results.
 
 Generated Python defines one public function, `clean_data(df)`, with its selected imports and helpers local to that
-function. A retained notebook source named `clean_data` instead uses `clean_data_1(df)`. Preview, inspection and
+function. DuckDB plans containing Custom Code require `clean_data(df, *, connection)`, where `connection` is the
+exact connection that created the input relation. A retained notebook source named `clean_data` instead uses
+`clean_data_1`. Preview, inspection and
 history regeneration select that name from the same captured source metadata. Files and direct compiler calls keep
 the default name. This preserves source bindings that the generated program would otherwise replace; it does not
 change ordinary Python lookup when the caller shadows builtins.
@@ -1202,6 +1204,21 @@ creates and closes its own hardened connection, and any `DuckDBPyRelation` is de
 closes. DuckDB never converts through Pandas, Polars, or Arrow, and extension auto-install, autoload, and external-file
 caching remain disabled.
 
+File Custom Code is an explicit capture boundary. Its result must belong to the supplied `df` connection, have
+addressable visible columns and use no reserved row-identity names. It is evaluated once, with a stored row ordinal,
+into native storage. The private Custom context is rolled back without committing outstanding side effects, then
+writes an owned DuckDB checkpoint before closing. Later reads attach that checkpoint read-only on fresh hardened
+connections. Native types survive this boundary without a CSV, Parquet or Python-value conversion. A Custom change
+to connection settings may prevent capture, but cannot change the context of a later reader.
+
+Immutable plans retain their checkpoint and derived queries preserve that owner. The fresh Custom plan exposes
+only user columns; Session projects the stored ordinal into its step namespace after normal result validation.
+It does not renumber a replay or reorder later Sort Rows results by identity. Discarded plans release their storage
+when their last references disappear; the engine's weak registry does not retain old drafts. Engine close removes
+its remaining owned storage after active session reads finish. Mutation snapshots, inspection pairs and profile
+leases keep their referenced frames alive. Preview, replay and inspection can retain multiple full results, so
+page and transport limits do not bound capture work, memory or temporary disk use.
+
 Database-table sessions retain one read-only connection in their engine and serialize each full query and fetch
 scope. They reuse the same SQL-plan, page and profile owners. Native spill files belong to a private temporary
 directory, removed after the last reserved reader closes; DuckDB's database-adjacent default is not used. External access is
@@ -1325,7 +1342,8 @@ checks the whole result. One DuckDB-owned classification also controls generated
 
 Other operations, including Formula and Custom Code, retain the native aggregate before a later projection can remove
 an erroneous output. The hash primitives resolve from DuckDB's built-in catalog; generated code evaluates on the input
-relation's connection. The scalar is discarded without retaining a materialized frame, connection or cache. This work
+relation's connection. The validation scalar is discarded. Custom capture retains its full result independently of
+this check. This work
 remains necessary to force lazy arithmetic guards, including mixed-integer precision checks.
 
 Structural steps preserve native lazy input evaluation: an inherited expression error may surface on a later read,
@@ -1353,21 +1371,28 @@ paths. BIGNUM addition and subtraction also retain native behavior.
 
 CSV, TSV, JSONL, and Parquet file sessions support native viewing and the DuckDB operations in the
 [cleaning support guide](feature-parity.md#cleaning-operations), with matching live and generated code. DuckDB file editing remains experimental; Excel is unsupported. Database tables retain the read-only
-connection described above. A live notebook `DuckDBPyRelation` retains the exact user-owned relation, serialized on
-its originating connection, is viewing-only, and is released without closing or mutating the user's relation.
-The runtime keeps both notebook source kinds in viewing mode even when a caller requests editing.
-Each terminal request removes its temporary query view after consuming the results, including when the query fails,
-under the catalog ownership rules above. The notebook lock serializes Open Wrangler requests.
+connection described above. Notebook relations remain viewing-only, including when a caller requests editing.
+Opening requires an explicit choice of their originating global connection variable or DuckDB's default connection.
+The host pins the notebook and kernel before this picker and retains the choice in the immutable source descriptor.
+The runtime resolves the relation and selected connection together, verifies native affinity and captures rows once
+with their ordinal. Private connections must be exposed as notebook variables; another connection to the same
+database is not interchangeable. Subsequent viewing queries use the retained native result and compact SQL on that
+exact connection. Closing a viewer releases its references without closing, committing or rolling back the caller's
+connection. Closing the caller connection makes the viewer unavailable.
 
-Notebook sources and file Custom Code results receive row identity from `row_number() OVER () - 1` in a lazy derived
-plan, before viewing filters and sorts.
-Each uncached `LIMIT`/`OFFSET` page evaluates it again. The session cache key includes view generation, revision,
-row window and projected column IDs; cache hits do not establish consistent identities across other windows or
-projections. An unordered relation can therefore map the same ID to different logical rows across reads, even with
-stable values. These paths neither snapshot the query output nor enforce deterministic ordering. Reliable
-paging requires stable values and a deterministic source order with unique tie-breakers before row numbering;
-a later grid sort does not repair the earlier identity assignment. The open
-[pagination bug](https://github.com/Matt17BR/openwrangler/issues/1487) tracks the correction.
+Native capture and query helpers use collision-checked temporary aliases and remove only the catalog identity they
+created, after consuming the result. Notebook requests remain serialized. Native execution can invalidate an unread
+stream or abort an active caller transaction. Such a failure publishes no candidate; Open Wrangler preserves the
+original error and does not recover the caller's transaction. An aborted transaction can prevent alias cleanup until
+the caller rolls it back, and native rollback does not clear DuckDB's Python registration-name bookkeeping.
+
+Generated Custom plans use the same connection-affinity and native capture rules for each Custom result. Results
+created on a different connection, including portable `duckdb.sql(...)` results, are refused in live and generated
+execution; derive them from `df` instead. Ordinary plans retain their existing lazy interface. Capture-aware SQL
+helpers and validation execute through the explicit connection, fetching before alias cleanup. Returned generated
+results remain native DuckDB relations. Their later derivations can incur substantial DuckDB collection-formatting
+overhead; internal compact SQL does not remove that external cost. Capture freezes one evaluation's values and
+traversal, including volatile expressions, rather than promising the same values on a later replay or function call.
 
 Drop Duplicates materializes its numbered input once, computes membership by row ordinal, and returns values from
 the selected original rows. Native partitioning cannot replace those values with a normalized key or another
@@ -1720,11 +1745,18 @@ Runtime response construction must succeed before replacing the pair. Failed mut
 pair, except when its source has become invalid. Native R publishes after its own preflight; it has no acknowledgement
 of a later host rejection. Step-info requests contain only metadata and do not replace the pair.
 Ordinary viewing changes and returning to Current view do not release it. Replacement and mutation rollback can
-temporarily retain both pairs. DuckDB retains lazy relations here, so its documented query-identity limitation still
-applies; this retention does not materialize a DuckDB query.
+temporarily retain both pairs. DuckDB plans retain their immutable Custom checkpoints; later inspection windows read
+those same rows without re-executing the Custom result.
 
 Saved notebook capture rejects source columns in the private row-identity namespace before constructing its schema
 and page, using the same admission check as live sessions.
+Automatic inline upgrades use this bounded snapshot owner directly, with a 256-column limit checked before requesting
+the captured page. They do not create a temporary live Session, ask for a DuckDB connection or trigger a full notebook
+capture.
+Cancellation and the publication deadline retire an upgrade immediately; its work slot remains occupied until the
+kernel execution settles. Provider selection pauses the publication deadline, which resumes after selection.
+Opening a published preview retains its action owner while the user chooses a connection, without timing out that
+choice. The captured notebook, cell result and kernel must still be valid afterward.
 Saved notebook MIME v2 is one bounded static inline capture. Its caps are 10,000 rows, 2,048 columns, 100,000 cells,
 16 MiB, 64 graph levels, and 1,000,000 graph nodes, with separate field-text limits. It is full-width and carries exact
 `columnIds`. The inline renderer pages only captured rows and never treats them as a live session, cleaning source,

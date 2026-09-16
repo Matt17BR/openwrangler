@@ -142,6 +142,7 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
       return (
         isSessionSource(candidate.source) &&
         (!isDuckDBTableSource(candidate.source) || candidate.backend === "duckdb") &&
+        (candidate.source.duckdbConnection === undefined || candidate.backend === "duckdb") &&
         optional(candidate, "requestedSessionId", isNonEmptyString) &&
         optional(candidate, "cloneFrom", isSessionCloneSource) &&
         (candidate.cloneFrom === undefined || candidate.requestedSessionId !== undefined) &&
@@ -507,6 +508,7 @@ function isSessionMetadata(value: unknown): value is SessionMetadata {
       : !Object.prototype.hasOwnProperty.call(candidate, "rDataframeFlavor")) &&
     isOneOf(candidate.mode, ["viewing", "editing"]) &&
     isSessionSource(candidate.source) &&
+    (candidate.source.duckdbConnection === undefined || candidate.backend === "duckdb") &&
     isSourceCapabilities(candidate.capabilities) &&
     hasCompatibleInsertionCapabilities(candidate.source, candidate.capabilities) &&
     (!isDuckDBTableSource(candidate.source) ||
@@ -544,7 +546,11 @@ function isSessionMetadata(value: unknown): value is SessionMetadata {
 }
 
 function isSessionSource(value: unknown): value is SessionSource {
-  const candidate = exactRecord(value, ["kind", "label"], ["path", "uri", "variableName", "importOptions"]);
+  const candidate = exactRecord(
+    value,
+    ["kind", "label"],
+    ["path", "uri", "variableName", "importOptions", "duckdbConnection"]
+  );
   if (
     candidate === undefined ||
     !isOneOf(candidate.kind, [
@@ -558,7 +564,9 @@ function isSessionSource(value: unknown): value is SessionSource {
     !optional(candidate, "path", isString) ||
     !optional(candidate, "uri", isString) ||
     !optional(candidate, "variableName", isString) ||
-    !optional(candidate, "importOptions", isImportOptions)
+    !optional(candidate, "importOptions", isImportOptions) ||
+    !optional(candidate, "duckdbConnection", isDuckDBConnectionSource) ||
+    (candidate.duckdbConnection !== undefined && !isOneOf(candidate.kind, ["notebookVariable", "notebookOutput"]))
   ) {
     return false;
   }
@@ -579,6 +587,18 @@ function isSessionSource(value: unknown): value is SessionSource {
     );
   }
   return hasCompatibleImportOptions(candidate);
+}
+
+function isDuckDBConnectionSource(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (value.kind === "default") return exactRecord(value, ["kind"]) !== undefined;
+  const candidate = exactRecord(value, ["kind", "name"]);
+  return (
+    candidate !== undefined &&
+    candidate.kind === "variable" &&
+    isNonEmptyString(candidate.name) &&
+    Array.from(candidate.name).length <= 128
+  );
 }
 
 function isCanonicalSourceUri(value: unknown): value is string {

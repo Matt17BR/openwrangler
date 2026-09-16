@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .engines import DataFrameEngine, EngineError
+from .protocol import ProtocolError, validate_duckdb_connection_source
 from .trusted_pickle_to_parquet import _confirmed_source_path_fingerprint
 
 
@@ -60,6 +61,8 @@ class SessionSource:
         engine: DataFrameEngine,
     ) -> SessionSource:
         metadata = dict(source)
+        if isinstance(metadata.get("duckdbConnection"), Mapping):
+            metadata["duckdbConnection"] = dict(metadata["duckdbConnection"])
         return cls(session_id, metadata, cls._capture_fingerprint(metadata, engine))
 
     def clone_for(self, session_id: str) -> SessionSource:
@@ -207,3 +210,25 @@ def resolve_notebook_variable(source: Mapping[str, Any]) -> Any:
         f"Live dataframe '{variable_name}' is not available in the selected notebook kernel. "
         "Run the cell that defines it, then choose Open in Open Wrangler again."
     )
+
+
+def resolve_duckdb_connection(source: Mapping[str, Any]) -> Any:
+    try:
+        selected = validate_duckdb_connection_source(source.get("duckdbConnection"))
+    except ProtocolError as error:
+        raise EngineError(
+            "Select the DuckDB connection that created this relation before opening it in Open Wrangler."
+        ) from error
+
+    import duckdb
+
+    if selected["kind"] == "default":
+        return duckdb.default_connection()
+    name = selected["name"]
+    connection = vars(importlib.import_module("__main__")).get(name)
+    if not isinstance(connection, duckdb.DuckDBPyConnection):
+        raise EngineError(
+            f"DuckDB connection {name!r} is no longer available in this notebook kernel. "
+            "Expose the originating connection as a variable, then open the relation again."
+        )
+    return connection

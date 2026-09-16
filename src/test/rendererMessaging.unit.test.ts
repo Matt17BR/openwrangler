@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionContext, NotebookDocument, NotebookEditor, Uri } from "vscode";
 import type { OpenWranglerBridge } from "../extension/dataBridge";
 import type { SessionCoordinator } from "../extension/sessionCoordinator";
+import type { DataBackend, SessionSource } from "../shared/protocol";
 import { NOTEBOOK_OUTPUT_LIMITS, normalizeNotebookOutputPayload } from "../shared/notebookOutput";
 
 interface RendererEvent {
@@ -23,6 +24,13 @@ const rendererMocks = vi.hoisted(() => ({
   kernelNotebookDocuments: [] as NotebookDocument[],
   kernelBindings: [] as unknown[],
   capture: vi.fn(),
+  prepare:
+    vi.fn<
+      (
+        source: SessionSource,
+        backend?: DataBackend
+      ) => Promise<{ source: SessionSource; backend?: DataBackend } | undefined>
+    >(),
   request: vi.fn(),
   afterInlinePost: undefined as (() => void) | undefined,
   inlinePostResult: undefined as
@@ -128,6 +136,7 @@ vi.mock("../extension/notebooks/kernelBridge", () => ({
       rendererMocks.kernelNotebookDocuments.push(document);
       rendererMocks.kernelBindings.push(requiredKernelBinding);
     }
+    prepareLiveSource = rendererMocks.prepare;
     captureExecutedCellResult = rendererMocks.capture;
     request = rendererMocks.request;
     dispose(): void {
@@ -153,7 +162,14 @@ describe("notebook renderer messaging", () => {
     rendererMocks.kernelNotebookDocuments.length = 0;
     rendererMocks.kernelBindings.length = 0;
     rendererMocks.capture.mockReset();
-    rendererMocks.capture.mockResolvedValue({ backend: "polars", label: "frame", variableName: "frame" });
+    rendererMocks.capture.mockResolvedValue({
+      backend: "polars",
+      label: "frame",
+      variableName: "frame",
+      payload: validPayload()
+    });
+    rendererMocks.prepare.mockReset();
+    rendererMocks.prepare.mockImplementation(async (source, backend) => ({ source, backend }));
     rendererMocks.request.mockReset();
     rendererMocks.afterInlinePost = undefined;
     rendererMocks.inlinePostResult = undefined;
@@ -166,7 +182,7 @@ describe("notebook renderer messaging", () => {
     rendererMocks.visibleEditorListeners.length = 0;
   });
 
-  it("opens the primary renderer action as the exact current live variable without pinning the saved backend", () => {
+  it("opens the primary renderer action as the exact current live variable without pinning the saved backend", async () => {
     const notebookA = notebook("file:///workspace/a.ipynb");
     const notebookB = notebook("file:///workspace/b.ipynb");
     const editorA = editor(notebookA);
@@ -181,6 +197,7 @@ describe("notebook renderer messaging", () => {
     const rendererPayload = normalizeNotebookOutputPayload(saved);
     expect(rendererPayload?.metadata.protocolVersion).toBe(4);
     dispatch(editorA, rendererPayload);
+    await settleMessages();
 
     expect(rendererMocks.kernelNotebookUris).toEqual(["file:///workspace/a.ipynb"]);
     expect(rendererMocks.kernelNotebookDocuments).toEqual([notebookA]);
@@ -196,7 +213,7 @@ describe("notebook renderer messaging", () => {
     expect(saved).toEqual(original);
   });
 
-  it("opens an opaque live-result handle under the readable output label", () => {
+  it("opens an opaque live-result handle under the readable output label", async () => {
     const notebookA = notebook("file:///workspace/a.ipynb");
     const editorA = editor(notebookA);
     rendererMocks.notebookDocuments.push(notebookA);
@@ -205,6 +222,7 @@ describe("notebook renderer messaging", () => {
     const handle = "__openwrangler_live_result_0123456789abcdef0123456789abcdef";
 
     dispatch(editorA, validPayload(handle));
+    await settleMessages();
 
     expect(rendererMocks.createPanel).toHaveBeenCalledWith(context, coordinatedBridge, {
       kind: "notebookVariable",
@@ -213,6 +231,39 @@ describe("notebook renderer messaging", () => {
       uri: "file:///workspace/a.ipynb"
     });
   });
+
+  it.each([false, true])(
+    "keeps the exact inline editor through explicit connection selection, replaced=%s",
+    async (replaced) => {
+      const document = notebook("file:///workspace/duck-inline.ipynb");
+      const exactEditor = editor(document);
+      rendererMocks.notebookDocuments.push(document);
+      rendererMocks.visibleNotebookEditors.push(exactEditor);
+      const { coordinatedBridge } = register();
+      rendererMocks.prepare.mockImplementationOnce(async (source) => {
+        if (replaced) rendererMocks.visibleNotebookEditors.splice(0, 1, editor(document));
+        return { source: { ...source, duckdbConnection: { kind: "variable", name: "con" } }, backend: "duckdb" };
+      });
+
+      dispatch(exactEditor, validPayload());
+      await settleMessages();
+
+      if (replaced) {
+        expect(rendererMocks.createPanel).not.toHaveBeenCalled();
+        expect(rendererMocks.bridgeDisposals).toBe(1);
+      } else {
+        expect(rendererMocks.createPanel).toHaveBeenCalledWith(
+          expect.anything(),
+          coordinatedBridge,
+          expect.objectContaining({
+            uri: document.uri.toString(),
+            duckdbConnection: { kind: "variable", name: "con" }
+          }),
+          "duckdb"
+        );
+      }
+    }
+  );
 
   it("never falls back to a snapshot when the primary action has no live variable link", () => {
     const notebookA = notebook("file:///workspace/a.ipynb");
@@ -252,7 +303,7 @@ describe("notebook renderer messaging", () => {
     expect(rendererMocks.showErrorMessage).not.toHaveBeenCalled();
   });
 
-  it("keeps the originating notebook when focus changes during dispatch", () => {
+  it("keeps the originating notebook when focus changes during dispatch", async () => {
     const notebookA = notebook("file:///workspace/a.ipynb");
     const notebookB = notebook("file:///workspace/b.ipynb");
     const notebookC = notebook("file:///workspace/c.ipynb");
@@ -269,6 +320,7 @@ describe("notebook renderer messaging", () => {
     });
 
     dispatch(editorA, validPayload());
+    await settleMessages();
 
     expect(rendererMocks.kernelNotebookUris).toEqual(["file:///workspace/a.ipynb"]);
     expect(rendererMocks.createPanel).toHaveBeenCalledWith(
@@ -385,7 +437,7 @@ describe("notebook renderer messaging", () => {
     );
   });
 
-  it("does not fall back after a live-open setup failure or retain its origin for the next action", () => {
+  it("does not fall back after a live-open setup failure or retain its origin for the next action", async () => {
     const notebookA = notebook("file:///workspace/a.ipynb");
     const notebookB = notebook("file:///workspace/b.ipynb");
     const editorA = editor(notebookA);
@@ -398,6 +450,7 @@ describe("notebook renderer messaging", () => {
     });
 
     dispatch(editorA, validPayload());
+    await settleMessages();
 
     expect(rendererMocks.createPanel).not.toHaveBeenCalled();
     expect(rendererMocks.showErrorMessage).toHaveBeenCalledWith(
@@ -405,6 +458,7 @@ describe("notebook renderer messaging", () => {
     );
 
     dispatch(editorB, validPayload());
+    await settleMessages();
 
     expect(rendererMocks.kernelNotebookUris).toEqual(["file:///workspace/a.ipynb", "file:///workspace/b.ipynb"]);
     expect(rendererMocks.createPanel).toHaveBeenCalledOnce();
@@ -416,91 +470,76 @@ describe("notebook renderer messaging", () => {
     expect(rendererMocks.activeEditorReads).toBe(0);
   });
 
-  it("publishes one canonical inline upgrade only to the exact originating editor", async () => {
-    const document = notebook("file:///workspace/inline.ipynb");
-    const exactEditor = editor(document);
-    rendererMocks.notebookDocuments.push(document);
-    rendererMocks.visibleNotebookEditors.push(exactEditor);
-    const binding = inlineBinding(document, exactEditor);
-    const tracker = { bindInlineUpgrade: vi.fn(() => binding) };
-    register(tracker);
-    const saved = validPayload() as ReturnType<typeof validPayload> & {
-      metadata: Record<string, unknown>;
-      page: Record<string, unknown>;
-    };
-    const sessionId = `inline-session-${"1".repeat(32)}`;
-    const liveMetadata = {
-      ...saved.metadata,
-      protocolVersion: 4,
-      sessionId,
-      revision: 3,
-      source: {
-        kind: "notebookVariable",
-        label: "frame",
-        variableName: "frame",
-        uri: "file:///workspace/inline.ipynb"
-      }
-    };
-    rendererMocks.request
-      .mockResolvedValueOnce({ kind: "sessionOpened", metadata: liveMetadata, page: saved.page, summaries: [] })
-      .mockResolvedValueOnce({
-        kind: "page",
-        revision: 3,
-        viewRequestId: `inline-${"1".repeat(32)}`,
-        metadata: liveMetadata,
-        page: saved.page
-      })
-      .mockResolvedValueOnce({ kind: "sessionClosed", sessionId });
-    rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("1") });
-    await settleMessages();
+  it.each(["pandas", "polars", "duckdb"] as const)(
+    "publishes one bounded %s inline upgrade only to the exact originating editor",
+    async (backend) => {
+      const document = notebook("file:///workspace/inline.ipynb");
+      const exactEditor = editor(document);
+      rendererMocks.notebookDocuments.push(document);
+      rendererMocks.visibleNotebookEditors.push(exactEditor);
+      const binding = inlineBinding(document, exactEditor, backend);
+      const tracker = { bindInlineUpgrade: vi.fn(() => binding) };
+      register(tracker);
+      const payload = validPayload() as { metadata: Record<string, unknown> };
+      payload.metadata.backend = backend;
+      if (backend === "pandas") payload.metadata.rowAxis = { kind: "positional", levelNames: [] };
+      rendererMocks.capture.mockResolvedValue({ backend, label: "frame", variableName: "frame", payload });
 
-    expect(tracker.bindInlineUpgrade).toHaveBeenCalledWith(
-      exactEditor,
-      {
-        byteLength: 37,
-        sha256: "a".repeat(64)
-      },
-      expect.anything()
-    );
-    expect(rendererMocks.request.mock.calls.map(([request]) => request.kind)).toEqual([
-      "openSession",
-      "getPage",
-      "closeSession"
-    ]);
-    expect(rendererMocks.inlinePosts).toHaveLength(1);
-    expect(rendererMocks.inlinePosts[0]?.editor).toBe(exactEditor);
-    expect(rendererMocks.inlinePosts[0]?.message).toMatchObject({
-      kind: "openWrangler.inlineUpgrade",
-      protocol: 1,
-      token: "1".repeat(32),
-      outputItemId: "output-1",
-      payload: {
-        mimeVersion: 2,
-        metadata: {
-          revision: 0,
-          source: { kind: "notebookOutput", label: "frame", variableName: "frame" }
-        }
-      }
-    });
-    expect(binding.dispose).not.toHaveBeenCalled();
-    expect(rendererMocks.bridgeDisposals).toBe(1);
-    expect(rendererMocks.activeEditorReads).toBe(0);
+      rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("1") });
+      await settleMessages();
 
-    binding.invalidate();
-    await settleMessages();
-    expect(rendererMocks.inlinePosts[1]).toEqual({
-      editor: exactEditor,
-      message: {
-        kind: "openWrangler.inlineRevoke",
+      expect(tracker.bindInlineUpgrade).toHaveBeenCalledWith(
+        exactEditor,
+        {
+          byteLength: 37,
+          sha256: "a".repeat(64)
+        },
+        expect.anything()
+      );
+      expect(rendererMocks.request).not.toHaveBeenCalled();
+      expect(rendererMocks.capture).toHaveBeenCalledWith(
+        binding.executionOrder,
+        binding.sourceFingerprint,
+        binding.kernelBinding,
+        { maxColumns: 256 }
+      );
+      expect(rendererMocks.prepare).not.toHaveBeenCalled();
+
+      expect(rendererMocks.inlinePosts).toHaveLength(1);
+      expect(rendererMocks.inlinePosts[0]?.editor).toBe(exactEditor);
+      expect(rendererMocks.inlinePosts[0]?.message).toMatchObject({
+        kind: "openWrangler.inlineUpgrade",
         protocol: 1,
         token: "1".repeat(32),
         outputItemId: "output-1",
-        byteLength: 37,
-        sha256: "a".repeat(64)
-      }
-    });
-    expect(binding.dispose).toHaveBeenCalledOnce();
-  });
+        payload: {
+          mimeVersion: 2,
+          metadata: {
+            revision: 0,
+            source: { kind: "notebookOutput", label: "frame", variableName: "frame" }
+          }
+        }
+      });
+      expect(binding.dispose).not.toHaveBeenCalled();
+      expect(rendererMocks.bridgeDisposals).toBe(1);
+      expect(rendererMocks.activeEditorReads).toBe(0);
+
+      binding.invalidate();
+      await settleMessages();
+      expect(rendererMocks.inlinePosts[1]).toEqual({
+        editor: exactEditor,
+        message: {
+          kind: "openWrangler.inlineRevoke",
+          protocol: 1,
+          token: "1".repeat(32),
+          outputItemId: "output-1",
+          byteLength: 37,
+          sha256: "a".repeat(64)
+        }
+      });
+      expect(binding.dispose).toHaveBeenCalledOnce();
+    }
+  );
 
   it("accepts the bounded upgrade protocol on the shared ordinary renderer channel", async () => {
     const document = notebook("file:///workspace/shared.ipynb");
@@ -510,28 +549,6 @@ describe("notebook renderer messaging", () => {
     const binding = inlineBinding(document, exactEditor);
     const tracker = { bindInlineUpgrade: vi.fn(() => binding) };
     register(tracker);
-    const saved = validPayload() as ReturnType<typeof validPayload> & {
-      metadata: Record<string, unknown>;
-      page: Record<string, unknown>;
-    };
-    const sessionId = `inline-session-${"3".repeat(32)}`;
-    const liveMetadata = {
-      ...saved.metadata,
-      protocolVersion: 4,
-      sessionId,
-      revision: 3,
-      source: { kind: "notebookVariable", label: "frame", variableName: "frame", uri: document.uri.toString() }
-    };
-    rendererMocks.request
-      .mockResolvedValueOnce({ kind: "sessionOpened", metadata: liveMetadata, page: saved.page, summaries: [] })
-      .mockResolvedValueOnce({
-        kind: "page",
-        revision: 3,
-        viewRequestId: `inline-${"3".repeat(32)}`,
-        metadata: liveMetadata,
-        page: saved.page
-      })
-      .mockResolvedValueOnce({ kind: "sessionClosed", sessionId });
 
     rendererMocks.listener?.({ editor: exactEditor, message: inlineCandidate("3") });
     await settleMessages();
@@ -554,7 +571,7 @@ describe("notebook renderer messaging", () => {
       editors.map((candidateEditor) => [candidateEditor, inlineBinding(candidateEditor.notebook, candidateEditor)])
     );
     register({ bindInlineUpgrade: vi.fn((candidateEditor: NotebookEditor) => bindings.get(candidateEditor)) });
-    installNearLimitRuntimeResponses();
+    installNearLimitCapture();
     const cloneSpy = vi.spyOn(globalThis, "structuredClone").mockImplementation(() => {
       throw new Error("Published inline payloads must not be cloned into operation state.");
     });
@@ -671,7 +688,7 @@ describe("notebook renderer messaging", () => {
     rendererMocks.visibleNotebookEditors.push(exactEditor);
     const binding = inlineBinding(document, exactEditor);
     register({ bindInlineUpgrade: vi.fn(async () => binding) });
-    installCanonicalRuntimeResponses(document, "6");
+    installCanonicalCapture();
 
     rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("6") });
     await settleMessages();
@@ -720,7 +737,7 @@ describe("notebook renderer messaging", () => {
     rendererMocks.visibleNotebookEditors.push(exactEditor);
     const binding = inlineBinding(document, exactEditor);
     register({ bindInlineUpgrade: vi.fn(async () => binding) });
-    installCanonicalRuntimeResponses(document, "7");
+    installCanonicalCapture();
 
     rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("7") });
     await settleMessages();
@@ -759,7 +776,7 @@ describe("notebook renderer messaging", () => {
     });
     const payloads: unknown[] = [];
     for (let index = 0; index < editors.length; index += 1) {
-      installCanonicalRuntimeResponses(documents[index]!, String(index));
+      installCanonicalCapture();
       rendererMocks.inlineListener?.({ editor: editors[index]!, message: inlineCandidate(String(index)) });
       await settleMessages();
       payloads.push((rendererMocks.inlinePosts.at(-1)?.message as { payload?: unknown }).payload);
@@ -803,7 +820,7 @@ describe("notebook renderer messaging", () => {
     const payloads: unknown[] = [];
     for (let index = 0; index < editors.length; index += 1) {
       const candidate = indexedInlineCandidate(index);
-      installCanonicalRuntimeResponses(documents[index]!, candidate.token);
+      installCanonicalCapture();
       rendererMocks.inlineListener?.({
         editor: editors[index]!,
         message: candidate
@@ -875,7 +892,7 @@ describe("notebook renderer messaging", () => {
     };
     register(tracker);
     const original = inlineCandidate("a");
-    installCanonicalRuntimeResponses(document, original.token);
+    installCanonicalCapture();
     rendererMocks.inlineListener?.({ editor: exactEditor, message: original });
     await settleMessages();
     const originalPayload = (rendererMocks.inlinePosts.at(-1)?.message as { payload?: unknown }).payload;
@@ -893,7 +910,7 @@ describe("notebook renderer messaging", () => {
       expect(originalBinding.dispose).toHaveBeenCalledOnce();
 
       const replacement = { ...inlineCandidate("b"), outputItemId: original.outputItemId };
-      installCanonicalRuntimeResponses(document, replacement.token);
+      installCanonicalCapture();
       rendererMocks.inlineListener?.({ editor: exactEditor, message: replacement });
       await settleMicrotasks();
       const replacementUpgrade = rendererMocks.inlinePosts.at(-1)?.message as { kind?: string; payload?: unknown };
@@ -926,7 +943,7 @@ describe("notebook renderer messaging", () => {
     rendererMocks.inlinePostResult = async (message) =>
       (message as { kind?: string }).kind === "openWrangler.inlineRevoke" ? terminal.promise : true;
     const { context } = register(tracker);
-    installCanonicalRuntimeResponses(document, "8");
+    installCanonicalCapture();
     const replay = inlineCandidate("8");
 
     rendererMocks.inlineListener?.({ editor: exactEditor, message: replay });
@@ -974,7 +991,7 @@ describe("notebook renderer messaging", () => {
     rendererMocks.inlinePostResult = async (message) =>
       (message as { kind?: string }).kind === "openWrangler.inlineRevoke" ? terminal.promise : true;
     register(tracker);
-    installCanonicalRuntimeResponses(document, "0");
+    installCanonicalCapture();
     const original = inlineCandidate("0");
 
     rendererMocks.inlineListener?.({ editor: exactEditor, message: original });
@@ -1030,7 +1047,7 @@ describe("notebook renderer messaging", () => {
         .mockImplementationOnce(async () => replacementBinding)
     };
     register(tracker);
-    installCanonicalRuntimeResponses(document, "b");
+    installCanonicalCapture();
     const replay = inlineCandidate("a");
 
     rendererMocks.inlineListener?.({ editor: exactEditor, message: replay });
@@ -1069,7 +1086,7 @@ describe("notebook renderer messaging", () => {
     const binding = inlineBinding(document, exactEditor);
     const tracker = { bindInlineUpgrade: vi.fn(() => binding) };
     register(tracker);
-    installCanonicalRuntimeResponses(document, "c");
+    installCanonicalCapture();
     const replay = inlineCandidate("c");
 
     rendererMocks.inlineListener?.({ editor: exactEditor, message: replay });
@@ -1100,7 +1117,7 @@ describe("notebook renderer messaging", () => {
     const binding = inlineBinding(document, exactEditor);
     const tracker = { bindInlineUpgrade: vi.fn(() => binding) };
     register(tracker);
-    installCanonicalRuntimeResponses(document, "4");
+    installCanonicalCapture();
     const first = inlineCandidate("4");
 
     rendererMocks.inlineListener?.({ editor: exactEditor, message: first });
@@ -1179,7 +1196,7 @@ describe("notebook renderer messaging", () => {
 
       rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("e") });
       binding.invalidate();
-      capture.resolve(validPayload());
+      capture.resolve({ backend: "polars", label: "frame", variableName: "frame", payload: validPayload() });
       await settleMicrotasks();
       await vi.advanceTimersByTimeAsync(20_000);
 
@@ -1200,29 +1217,6 @@ describe("notebook renderer messaging", () => {
     rendererMocks.visibleNotebookEditors.push(exactEditor);
     const binding = inlineBinding(document, exactEditor);
     register({ bindInlineUpgrade: vi.fn(() => binding) });
-    const saved = validPayload() as ReturnType<typeof validPayload> & {
-      metadata: Record<string, unknown>;
-      page: Record<string, unknown>;
-    };
-    const sessionId = `inline-session-${"9".repeat(32)}`;
-    const liveMetadata = {
-      ...saved.metadata,
-      protocolVersion: 4,
-      sessionId,
-      revision: 3,
-      source: { kind: "notebookVariable", label: "frame", variableName: "frame", uri: document.uri.toString() }
-    };
-    rendererMocks.request
-      .mockResolvedValueOnce({ kind: "sessionOpened", metadata: liveMetadata, page: saved.page, summaries: [] })
-      .mockResolvedValueOnce({
-        kind: "page",
-        revision: 3,
-        viewRequestId: `inline-${"9".repeat(32)}`,
-        metadata: liveMetadata,
-        page: saved.page
-      })
-      .mockResolvedValueOnce({ kind: "sessionClosed", sessionId });
-
     rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("9") });
     await settleMessages();
     expect(rendererMocks.inlinePosts).toHaveLength(1);
@@ -1287,7 +1281,7 @@ describe("notebook renderer messaging", () => {
     rendererMocks.previewProvider = "ask";
     rendererMocks.dataWranglerInstalled = true;
     register(tracker, providerPrompt);
-    installCanonicalRuntimeResponses(document, "2");
+    installCanonicalCapture();
 
     rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("2") });
     await settleMicrotasks();
@@ -1440,7 +1434,7 @@ describe("notebook renderer messaging", () => {
     rendererMocks.visibleNotebookEditors.push(exactEditor);
     const hungFingerprint = "c".repeat(64);
     const freshFingerprint = "d".repeat(64);
-    const never = new Promise<never>(() => undefined);
+    const release = deferred<void>();
     register({
       bindInlineUpgrade: vi.fn((_editor, candidate: { sha256: string }) => {
         const binding = inlineBinding(document, exactEditor);
@@ -1450,45 +1444,59 @@ describe("notebook renderer messaging", () => {
         };
       })
     });
-    rendererMocks.capture.mockImplementation((_order, fingerprint) =>
-      fingerprint === hungFingerprint
-        ? never
-        : Promise.resolve({ backend: "polars", label: "frame", variableName: "frame" })
-    );
-    installCanonicalRuntimeResponses(document, "f");
+    installCanonicalCapture();
+    rendererMocks.capture.mockImplementation((_order, fingerprint, _binding, options) => {
+      const result = { backend: "polars", label: "frame", variableName: "frame", payload: validPayload() };
+      if (fingerprint !== hungFingerprint) return Promise.resolve(result);
+      // Model the bridge's cancellation race while the kernel itself remains held.
+      return new Promise((resolve, reject) => {
+        const subscription = options?.cancellation?.onCancellationRequested(() =>
+          reject(new Error("capture cancelled"))
+        );
+        void release.promise.then(() => {
+          subscription?.dispose();
+          resolve(result);
+        });
+      });
+    });
 
-    for (let index = 0; index < 12; index += 1) {
-      const digit = (index % 15).toString(16);
-      const candidate = { ...inlineCandidate(digit), outputItemId: "hung-output" } as Record<string, unknown>;
-      rendererMocks.inlineListener?.({ editor: exactEditor, message: candidate });
-      await settleMessages();
+    try {
+      for (let index = 0; index < 12; index += 1) {
+        const digit = (index % 15).toString(16);
+        const candidate = { ...inlineCandidate(digit), outputItemId: "hung-output" } as Record<string, unknown>;
+        rendererMocks.inlineListener?.({ editor: exactEditor, message: candidate });
+        await settleMessages();
+        rendererMocks.inlineListener?.({
+          editor: exactEditor,
+          message: {
+            kind: "openWrangler.inlineCancel",
+            protocol: 1,
+            token: candidate.token,
+            outputItemId: candidate.outputItemId
+          }
+        });
+      }
       rendererMocks.inlineListener?.({
         editor: exactEditor,
-        message: {
-          kind: "openWrangler.inlineCancel",
-          protocol: 1,
-          token: candidate.token,
-          outputItemId: candidate.outputItemId
-        }
+        message: { ...inlineCandidate("f"), sha256: "b".repeat(64), outputItemId: "fresh-output" }
       });
-    }
-    rendererMocks.inlineListener?.({
-      editor: exactEditor,
-      message: { ...inlineCandidate("f"), sha256: "b".repeat(64), outputItemId: "fresh-output" }
-    });
-    await settleMessages();
+      await settleMessages();
 
-    expect(rendererMocks.capture.mock.calls.filter(([, fingerprint]) => fingerprint === hungFingerprint)).toHaveLength(
-      1
-    );
-    expect(
-      rendererMocks.inlinePosts.some(
-        ({ message }) => (message as { kind?: string }).kind === "openWrangler.inlineUpgrade"
-      )
-    ).toBe(true);
+      expect(
+        rendererMocks.capture.mock.calls.filter(([, fingerprint]) => fingerprint === hungFingerprint)
+      ).toHaveLength(1);
+      expect(
+        rendererMocks.inlinePosts.some(
+          ({ message }) => (message as { kind?: string }).kind === "openWrangler.inlineUpgrade"
+        )
+      ).toBe(true);
+    } finally {
+      release.resolve();
+      await settleMessages();
+    }
   });
 
-  it("rechecks a still-idle selected kernel after capture before any runtime session opens", async () => {
+  it("rechecks a still-idle selected kernel before publishing its snapshot", async () => {
     const document = notebook("file:///workspace/kernel-switch.ipynb");
     const exactEditor = editor(document);
     rendererMocks.notebookDocuments.push(document);
@@ -1515,7 +1523,7 @@ describe("notebook renderer messaging", () => {
     rendererMocks.visibleNotebookEditors.push(exactEditor);
     const binding = inlineBinding(document, exactEditor);
     register({ bindInlineUpgrade: vi.fn(() => binding) });
-    installCanonicalRuntimeResponses(document, "d");
+    installCanonicalCapture();
     rendererMocks.afterInlinePost = () => {
       binding.hasCurrentKernel.mockResolvedValue(false);
       rendererMocks.afterInlinePost = undefined;
@@ -1538,7 +1546,7 @@ describe("notebook renderer messaging", () => {
     rendererMocks.visibleNotebookEditors.push(exactEditor);
     const binding = inlineBinding(document, exactEditor);
     register({ bindInlineUpgrade: vi.fn(() => binding) });
-    installCanonicalRuntimeResponses(document, "0");
+    installCanonicalCapture();
 
     rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("0") });
     await settleMessages();
@@ -1567,7 +1575,7 @@ describe("notebook renderer messaging", () => {
     rendererMocks.visibleNotebookEditors.push(exactEditor);
     const binding = inlineBinding(document, exactEditor);
     register({ bindInlineUpgrade: vi.fn(() => binding) });
-    installCanonicalRuntimeResponses(document, "1");
+    installCanonicalCapture();
 
     rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("1") });
     await settleMessages();
@@ -1599,7 +1607,7 @@ describe("notebook renderer messaging", () => {
     rendererMocks.visibleNotebookEditors.push(exactEditor);
     const binding = inlineBinding(document, exactEditor);
     register({ bindInlineUpgrade: vi.fn(() => binding) });
-    installCanonicalRuntimeResponses(document, "3");
+    installCanonicalCapture();
 
     rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("3") });
     await settleMessages();
@@ -1628,7 +1636,7 @@ describe("notebook renderer messaging", () => {
     rendererMocks.visibleNotebookEditors.push(exactEditor);
     const binding = inlineBinding(document, exactEditor);
     register({ bindInlineUpgrade: vi.fn(() => binding) });
-    installCanonicalRuntimeResponses(document, "2");
+    installCanonicalCapture();
 
     rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("2") });
     await settleMessages();
@@ -1650,31 +1658,96 @@ describe("notebook renderer messaging", () => {
     );
   });
 
-  it("terminally revokes a capture that does not settle before the host deadline", async () => {
-    vi.useFakeTimers();
-    try {
-      const document = notebook("file:///workspace/capture-deadline.ipynb");
+  it.each([false, true])(
+    "revokes overdue capture after provider selection=%s while retaining unsettled work",
+    async (selectProvider) => {
+      vi.useFakeTimers();
+      const capture = deferred<unknown>();
+      try {
+        const document = notebook("file:///workspace/capture-deadline.ipynb");
+        const exactEditor = editor(document);
+        rendererMocks.notebookDocuments.push(document);
+        rendererMocks.visibleNotebookEditors.push(exactEditor);
+        const binding = inlineBinding(document, exactEditor);
+        if (selectProvider) {
+          rendererMocks.registerFormatters = false;
+          rendererMocks.previewProvider = "ask";
+          rendererMocks.dataWranglerInstalled = true;
+        }
+        register({ bindInlineUpgrade: vi.fn(() => binding) }, { requestProviderPrompt: vi.fn(async () => true) });
+        rendererMocks.capture.mockReturnValue(capture.promise);
+
+        rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("e") });
+        await settleMicrotasks();
+        expect(rendererMocks.capture).toHaveBeenCalledOnce();
+        expect(rendererMocks.inlinePosts.map(({ message }) => (message as { kind?: string }).kind)).toEqual(
+          selectProvider ? ["openWrangler.inlineRetain"] : []
+        );
+
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(rendererMocks.inlinePosts.at(-1)?.message).toMatchObject({
+          kind: "openWrangler.inlineRevoke",
+          token: "e".repeat(32)
+        });
+        expect(binding.dispose).toHaveBeenCalledOnce();
+        expect(rendererMocks.bridgeDisposals).toBe(0);
+        capture.resolve({ backend: "polars", label: "frame", variableName: "frame", payload: validPayload() });
+        await settleMicrotasks();
+        expect(rendererMocks.bridgeDisposals).toBe(1);
+        expect(
+          rendererMocks.inlinePosts.some(
+            ({ message }) => (message as { kind?: string }).kind === "openWrangler.inlineUpgrade"
+          )
+        ).toBe(false);
+      } finally {
+        capture.resolve(undefined);
+        await settleMicrotasks();
+        vi.useRealTimers();
+      }
+    }
+  );
+
+  it.each([false, true])(
+    "allows deliberate connection selection after 10s while rejecting stale binding=%s",
+    async (stale) => {
+      const document = notebook("file:///workspace/connection-selection.ipynb");
       const exactEditor = editor(document);
       rendererMocks.notebookDocuments.push(document);
       rendererMocks.visibleNotebookEditors.push(exactEditor);
       const binding = inlineBinding(document, exactEditor);
       register({ bindInlineUpgrade: vi.fn(() => binding) });
-      rendererMocks.capture.mockReturnValue(new Promise<never>(() => undefined));
-
-      rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("e") });
-      await settleMicrotasks();
-      expect(rendererMocks.inlinePosts).toEqual([]);
-
-      await vi.advanceTimersByTimeAsync(10_000);
-      expect(rendererMocks.inlinePosts.at(-1)?.message).toMatchObject({
-        kind: "openWrangler.inlineRevoke",
-        token: "e".repeat(32)
-      });
-      expect(binding.dispose).toHaveBeenCalledOnce();
-    } finally {
-      vi.useRealTimers();
+      rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("d") });
+      await settleMessages();
+      const published = rendererMocks.inlinePosts.at(-1)?.message as { payload: unknown };
+      const selection = deferred<{ source: SessionSource; backend: DataBackend }>();
+      rendererMocks.prepare.mockReturnValue(selection.promise);
+      vi.useFakeTimers();
+      try {
+        rendererMocks.inlineListener?.({
+          editor: exactEditor,
+          message: { kind: "openInOpenWrangler", payload: published.payload }
+        });
+        await vi.waitFor(() => expect(rendererMocks.prepare).toHaveBeenCalledOnce());
+        await vi.advanceTimersByTimeAsync(10_001);
+        if (stale) binding.invalidate();
+        selection.resolve({
+          source: { ...rendererMocks.prepare.mock.calls[0]![0], duckdbConnection: { kind: "default" } },
+          backend: "duckdb"
+        });
+        await settleMicrotasks();
+        if (stale) expect(rendererMocks.createPanel).not.toHaveBeenCalled();
+        else
+          expect(rendererMocks.createPanel).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.anything(),
+            expect.objectContaining({ duckdbConnection: { kind: "default" } }),
+            "duckdb"
+          );
+      } finally {
+        vi.useRealTimers();
+      }
     }
-  });
+  );
 
   it("reserves one fair worker for another notebook while eight operations from one owner remain stalled", async () => {
     const documentA = notebook("file:///workspace/stalled-owner.ipynb");
@@ -1689,7 +1762,7 @@ describe("notebook renderer messaging", () => {
       bindInlineUpgrade: vi.fn((candidateEditor: NotebookEditor) => (candidateEditor === editorA ? never : bindingB))
     };
     register(tracker);
-    installCanonicalRuntimeResponses(documentB, "8");
+    installCanonicalCapture();
 
     for (let index = 0; index < 8; index += 1) {
       rendererMocks.inlineListener?.({ editor: editorA, message: inlineCandidate(index.toString(16)) });
@@ -1704,194 +1777,75 @@ describe("notebook renderer messaging", () => {
     });
   });
 
-  it.each(["source", "requested session", "mode", "open page"] as const)(
-    "rejects a session-open response with the wrong %s before page capture",
-    async (mismatch) => {
-      const document = notebook(`file:///workspace/wrong-${mismatch.replace(" ", "-")}.ipynb`);
+  it.each(["missing payload", "malformed page", "wide schema"] as const)(
+    "leaves ordinary HTML intact after a %s capture",
+    async (failure) => {
+      const document = notebook("file:///workspace/capture-refusal.ipynb");
       const exactEditor = editor(document);
       rendererMocks.notebookDocuments.push(document);
       rendererMocks.visibleNotebookEditors.push(exactEditor);
       const binding = inlineBinding(document, exactEditor);
       register({ bindInlineUpgrade: vi.fn(() => binding) });
-      installCanonicalRuntimeResponses(document, "b", mismatch);
+      installCanonicalCapture(500, failure === "wide schema" ? 1_000 : 1);
+      if (failure === "missing payload") {
+        rendererMocks.capture.mockResolvedValue({ backend: "polars", label: "frame", variableName: "frame" });
+      } else if (failure === "malformed page") {
+        const payload = validPayload() as { page: { columnIds: string[] } };
+        payload.page.columnIds = ["c:missing"];
+        rendererMocks.capture.mockResolvedValue({ backend: "polars", label: "frame", variableName: "frame", payload });
+      }
 
       rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("b") });
       await settleMessages();
 
-      const openRequest = rendererMocks.request.mock.calls[0]?.[0] as { requestedSessionId?: string };
-      expect(openRequest.requestedSessionId).toMatch(/^inline-session-[a-f0-9]{32}$/u);
-      expect(rendererMocks.request.mock.calls.map(([request]) => request.kind)).toEqual([
-        "openSession",
-        "closeSession"
+      expect(rendererMocks.capture).toHaveBeenCalledWith(
+        binding.executionOrder,
+        binding.sourceFingerprint,
+        binding.kernelBinding,
+        { maxColumns: 256 }
+      );
+      expect(rendererMocks.request).not.toHaveBeenCalled();
+      expect(rendererMocks.inlinePosts.map(({ message }) => (message as { kind?: string }).kind)).toEqual([
+        "openWrangler.inlineRevoke"
       ]);
-      expect(rendererMocks.request.mock.calls[1]?.[0]).toMatchObject({
-        kind: "closeSession",
-        sessionId: openRequest.requestedSessionId
-      });
-      expect(
-        rendererMocks.inlinePosts.some(
-          ({ message }) => (message as { kind?: string }).kind === "openWrangler.inlineUpgrade"
-        )
-      ).toBe(false);
+      expect(rendererMocks.bridgeDisposals).toBe(1);
+      expect(binding.dispose).toHaveBeenCalledOnce();
     }
   );
 
-  it.each([
-    ["more than 200 rows", 500, 1, 200],
-    ["an empty schema", 500, 0, 200]
-  ] as const)("uses the canonical formatter capture bound for %s", async (_label, rows, columns, expectedLimit) => {
-    const document = notebook(`file:///workspace/capture-${columns}.ipynb`);
+  it.each([1, 0])("publishes the formatter's bounded capture with %s columns", async (columns) => {
+    const document = notebook("file:///workspace/capture-bounded.ipynb");
     const exactEditor = editor(document);
     rendererMocks.notebookDocuments.push(document);
     rendererMocks.visibleNotebookEditors.push(exactEditor);
     register({ bindInlineUpgrade: vi.fn(() => inlineBinding(document, exactEditor)) });
-    installCanonicalRuntimeResponses(document, "c", undefined, rows, columns, true);
+    installCanonicalCapture(500, columns);
 
     rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("c") });
     await settleMessages();
 
-    expect(rendererMocks.request.mock.calls.find(([request]) => request.kind === "getPage")?.[0]).toMatchObject({
-      limit: expectedLimit,
-      columnLimit: Math.max(1, columns)
+    expect(rendererMocks.request).not.toHaveBeenCalled();
+    expect(rendererMocks.inlinePosts.at(-1)?.message).toMatchObject({
+      kind: "openWrangler.inlineUpgrade",
+      payload: { metadata: { shape: { rows: 500, columns } }, page: { limit: 200 } }
     });
   });
 
-  it("bounds the live-page request and leaves a wider schema as ordinary HTML", async () => {
-    const document = notebook("file:///workspace/capture-wide.ipynb");
+  it("releases its bridge and original HTML owner when snapshot capture rejects", async () => {
+    const document = notebook("file:///workspace/capture-error.ipynb");
     const exactEditor = editor(document);
     rendererMocks.notebookDocuments.push(document);
     rendererMocks.visibleNotebookEditors.push(exactEditor);
     const binding = inlineBinding(document, exactEditor);
     register({ bindInlineUpgrade: vi.fn(() => binding) });
-    installCanonicalRuntimeResponses(document, "c", undefined, 500, 1_000);
-
-    rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("c") });
-    await settleMessages();
-
-    expect(rendererMocks.request.mock.calls[0]?.[0]).toMatchObject({
-      kind: "openSession",
-      columnOffset: 0,
-      columnLimit: 256
-    });
-    expect(rendererMocks.request.mock.calls.map(([request]) => request.kind)).toEqual(["openSession", "closeSession"]);
-    expect(rendererMocks.inlinePosts.map(({ message }) => (message as { kind?: string }).kind)).toEqual([
-      "openWrangler.inlineRevoke"
-    ]);
-    expect(binding.dispose).toHaveBeenCalledOnce();
-  });
-
-  it("closes a correlated session before rejecting mismatched runtime metadata", async () => {
-    const document = notebook("file:///workspace/mismatched.ipynb");
-    const exactEditor = editor(document);
-    rendererMocks.notebookDocuments.push(document);
-    rendererMocks.visibleNotebookEditors.push(exactEditor);
-    const binding = inlineBinding(document, exactEditor);
-    const tracker = { bindInlineUpgrade: vi.fn(() => binding) };
-    register(tracker);
-    const saved = validPayload() as ReturnType<typeof validPayload> & { metadata: Record<string, unknown> };
-    rendererMocks.request
-      .mockResolvedValueOnce({
-        kind: "sessionOpened",
-        metadata: { ...saved.metadata, protocolVersion: 4, backend: "duckdb", sessionId: "mismatch", revision: 1 }
-      })
-      .mockResolvedValueOnce({ kind: "sessionClosed", sessionId: "mismatch" });
-
-    rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("5") });
-    await settleMessages();
-
-    expect(rendererMocks.request.mock.calls.map(([request]) => request.kind)).toEqual(["openSession", "closeSession"]);
-    expect(rendererMocks.inlinePosts.map(({ message }) => (message as { kind?: string }).kind)).toEqual([
-      "openWrangler.inlineRevoke"
-    ]);
-    expect(binding.dispose).toHaveBeenCalledOnce();
-  });
-
-  it("rejects a valid page when cleanup acknowledges a different session", async () => {
-    const document = notebook("file:///workspace/wrong-close.ipynb");
-    const exactEditor = editor(document);
-    rendererMocks.notebookDocuments.push(document);
-    rendererMocks.visibleNotebookEditors.push(exactEditor);
-    const binding = inlineBinding(document, exactEditor);
-    register({ bindInlineUpgrade: vi.fn(() => binding) });
-    const saved = validPayload() as ReturnType<typeof validPayload> & {
-      metadata: Record<string, unknown>;
-      page: Record<string, unknown>;
-    };
-    const sessionId = `inline-session-${"7".repeat(32)}`;
-    const liveMetadata = {
-      ...saved.metadata,
-      protocolVersion: 4,
-      sessionId,
-      revision: 3,
-      source: { kind: "notebookVariable", label: "frame", variableName: "frame", uri: document.uri.toString() }
-    };
-    rendererMocks.request
-      .mockResolvedValueOnce({ kind: "sessionOpened", metadata: liveMetadata, page: saved.page, summaries: [] })
-      .mockResolvedValueOnce({
-        kind: "page",
-        revision: 3,
-        viewRequestId: `inline-${"7".repeat(32)}`,
-        metadata: liveMetadata,
-        page: saved.page
-      })
-      .mockResolvedValueOnce({ kind: "sessionClosed", sessionId: "different-session" });
+    rendererMocks.capture.mockRejectedValue(new Error("The captured result is no longer available."));
 
     rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("7") });
     await settleMessages();
 
-    expect(rendererMocks.inlinePosts.map(({ message }) => (message as { kind?: string }).kind)).toEqual([
-      "openWrangler.inlineRevoke"
-    ]);
-    expect(binding.dispose).toHaveBeenCalledOnce();
-  });
-
-  it.each([
-    ["missing correlation", undefined, 3, false],
-    ["stale correlation", "inline-stale", 3, false],
-    ["stale revision", `inline-${"8".repeat(32)}`, 2, false],
-    ["changed schema", `inline-${"8".repeat(32)}`, 3, true]
-  ])("rejects a private page with %s", async (_label, viewRequestId, revision, changedSchema) => {
-    const document = notebook("file:///workspace/page-correlation.ipynb");
-    const exactEditor = editor(document);
-    rendererMocks.notebookDocuments.push(document);
-    rendererMocks.visibleNotebookEditors.push(exactEditor);
-    const binding = inlineBinding(document, exactEditor);
-    register({ bindInlineUpgrade: vi.fn(() => binding) });
-    const saved = validPayload() as ReturnType<typeof validPayload> & {
-      metadata: Record<string, unknown>;
-      page: Record<string, unknown>;
-    };
-    const sessionId = `inline-session-${"8".repeat(32)}`;
-    const liveMetadata = {
-      ...saved.metadata,
-      protocolVersion: 4,
-      sessionId,
-      revision: 3,
-      source: { kind: "notebookVariable", label: "frame", variableName: "frame", uri: document.uri.toString() }
-    };
-    const pageMetadata = changedSchema
-      ? {
-          ...liveMetadata,
-          schema: [{ ...(saved.metadata.schema as Array<Record<string, unknown>>)[0], id: "c:other" }]
-        }
-      : liveMetadata;
-    rendererMocks.request
-      .mockResolvedValueOnce({ kind: "sessionOpened", metadata: liveMetadata, page: saved.page, summaries: [] })
-      .mockResolvedValueOnce({
-        kind: "page",
-        revision,
-        ...(viewRequestId ? { viewRequestId } : {}),
-        metadata: pageMetadata,
-        page: saved.page
-      })
-      .mockResolvedValueOnce({ kind: "sessionClosed", sessionId });
-
-    rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("8") });
-    await settleMessages();
-
-    expect(rendererMocks.inlinePosts.map(({ message }) => (message as { kind?: string }).kind)).toEqual([
-      "openWrangler.inlineRevoke"
-    ]);
+    expect(rendererMocks.request).not.toHaveBeenCalled();
+    expect(rendererMocks.inlinePosts.at(-1)?.message).toMatchObject({ kind: "openWrangler.inlineRevoke" });
+    expect(rendererMocks.bridgeDisposals).toBe(1);
     expect(binding.dispose).toHaveBeenCalledOnce();
   });
 
@@ -1923,7 +1877,7 @@ describe("notebook renderer messaging", () => {
         outputItemId: "output-2"
       }
     });
-    pending.resolve({ backend: "polars", label: "frame", variableName: "frame" });
+    pending.resolve({ backend: "polars", label: "frame", variableName: "frame", payload: validPayload() });
     await settleMessages();
 
     expect(rendererMocks.request).not.toHaveBeenCalled();
@@ -1947,7 +1901,7 @@ describe("notebook renderer messaging", () => {
     rendererMocks.inlineListener?.({ editor: exactEditor, message: inlineCandidate("6") });
     await Promise.resolve();
     rendererMocks.registerFormatters = false;
-    pending.resolve({ backend: "polars", label: "frame", variableName: "frame" });
+    pending.resolve({ backend: "polars", label: "frame", variableName: "frame", payload: validPayload() });
     await settleMessages();
 
     expect(rendererMocks.request).not.toHaveBeenCalled();
@@ -2086,44 +2040,30 @@ function inlineBinding(
   };
 }
 
-function installCanonicalRuntimeResponses(
-  document: NotebookDocument,
-  tokenValue: string,
-  mismatch?: "source" | "requested session" | "mode" | "open page",
-  totalRows = 1,
-  columnCount = 1,
-  stopAfterPageRequest = false
-): void {
-  const token = tokenValue.length === 1 ? tokenValue.repeat(32) : tokenValue;
-  rendererMocks.request.mockImplementation(async (request) => {
-    const schema = Array.from({ length: columnCount }, (_, position) => ({
-      id: `c:${position}`,
-      name: `column_${position}`,
-      position,
-      rawType: "Int64",
-      type: "integer",
-      nullable: false
-    }));
-    const requestedSessionId = request.requestedSessionId ?? request.sessionId ?? "live-session";
-    const sessionId = mismatch === "requested session" ? "wrong-session" : requestedSessionId;
-    const source =
-      mismatch === "source"
-        ? { kind: "notebookVariable", label: "other", variableName: "other", uri: "file:///workspace/other.ipynb" }
-        : { kind: "notebookVariable", label: "frame", variableName: "frame", uri: document.uri.toString() };
-    const metadata = {
-      ...(validPayload() as { metadata: Record<string, unknown> }).metadata,
-      protocolVersion: 4,
-      sessionId,
-      revision: 3,
-      ...(mismatch === "mode" ? { mode: "cleaning" } : {}),
-      source,
-      shape: { rows: totalRows, columns: columnCount },
-      filteredShape: { rows: totalRows, columns: columnCount },
-      schema
-    };
-    const row = {
-      id: "r:0",
-      rowNumber: 0,
+function installCanonicalCapture(totalRows = 1, columnCount = 1): void {
+  const schema = Array.from({ length: columnCount }, (_, position) => ({
+    id: `c:${position}`,
+    name: `column_${position}`,
+    position,
+    rawType: "Int64",
+    type: "integer",
+    nullable: false
+  }));
+  const payload = validPayload() as { metadata: Record<string, unknown>; page: Record<string, unknown> };
+  payload.metadata = {
+    ...payload.metadata,
+    shape: { rows: totalRows, columns: columnCount },
+    filteredShape: { rows: totalRows, columns: columnCount },
+    schema
+  };
+  payload.page = {
+    offset: 0,
+    limit: Math.min(200, totalRows),
+    totalRows,
+    columnIds: schema.map((column) => column.id),
+    rows: Array.from({ length: Math.min(200, totalRows) }, (_, rowNumber) => ({
+      id: `r:${rowNumber}`,
+      rowNumber,
       values: schema.map((_, position) => ({
         kind: "integer",
         raw: position,
@@ -2131,101 +2071,31 @@ function installCanonicalRuntimeResponses(
         isNull: false,
         isNaN: false
       }))
-    };
-    if (request.kind === "openSession") {
-      const projectedSchema = schema.slice(request.columnOffset, request.columnOffset + request.columnLimit);
-      return {
-        kind: "sessionOpened",
-        metadata,
-        page: {
-          offset: 0,
-          limit: mismatch === "open page" ? 2 : 1,
-          totalRows,
-          columnIds: projectedSchema.map((column) => column.id),
-          rows:
-            totalRows === 0
-              ? []
-              : [{ ...row, values: row.values.slice(request.columnOffset, request.columnOffset + request.columnLimit) }]
-        },
-        summaries: []
-      };
-    }
-    if (request.kind === "getPage") {
-      if (stopAfterPageRequest) return { kind: "cancelled" };
-      return {
-        kind: "page",
-        revision: request.revision,
-        viewRequestId: `inline-${token}`,
-        metadata,
-        page: {
-          offset: 0,
-          limit: request.limit,
-          totalRows,
-          columnIds: schema.map((column) => column.id),
-          rows: totalRows === 0 ? [] : [row]
-        }
-      };
-    }
-    return { kind: "sessionClosed", sessionId: request.sessionId };
-  });
+    }))
+  };
+  rendererMocks.capture.mockResolvedValue({ backend: "polars", label: "frame", variableName: "frame", payload });
 }
 
-function installNearLimitRuntimeResponses(): void {
-  const schema = [{ id: "c:0", name: "payload", position: 0, rawType: "string", type: "string", nullable: false }];
-  const display = "d".repeat(60_000);
-  const raw = "r".repeat(20_000);
-  const rows = Array.from({ length: 200 }, (_, rowNumber) => ({
-    id: `r:${rowNumber}`,
-    rowNumber,
-    values: [{ kind: "string", raw, display, isNull: false, isNaN: false }]
-  }));
-  const sources = new Map<string, { kind: "notebookVariable"; label: string; variableName: string; uri: string }>();
-  rendererMocks.request.mockImplementation(async (request) => {
-    const sessionId = request.requestedSessionId ?? request.sessionId;
-    if (!sessionId) throw new Error("The near-limit fixture requires an exact session identity.");
-    if (request.kind === "openSession") {
-      if (request.source.kind !== "notebookVariable" || request.source.variableName === undefined) {
-        throw new Error("The near-limit fixture requires a notebook-variable source.");
-      }
-      sources.set(sessionId, {
-        kind: "notebookVariable",
-        label: request.source.label,
-        variableName: request.source.variableName,
-        uri: request.source.uri
-      });
-    }
-    const source = sources.get(sessionId);
-    if (!source) throw new Error("The near-limit fixture lost its exact source.");
-    const metadata = {
-      ...(validPayload() as { metadata: Record<string, unknown> }).metadata,
-      protocolVersion: 4,
-      sessionId,
-      revision: 3,
-      source,
-      shape: { rows: 200, columns: 1 },
-      filteredShape: { rows: 200, columns: 1 },
-      schema
-    };
-    if (request.kind === "openSession") {
-      return {
-        kind: "sessionOpened",
-        metadata,
-        page: { offset: 0, limit: 1, totalRows: 200, columnIds: ["c:0"], rows: rows.slice(0, 1) },
-        summaries: []
-      };
-    }
-    if (request.kind === "getPage") {
-      return {
-        kind: "page",
-        revision: request.revision,
-        viewRequestId: request.viewRequestId,
-        metadata,
-        page: { offset: 0, limit: 200, totalRows: 200, columnIds: ["c:0"], rows }
-      };
-    }
-    sources.delete(sessionId);
-    return { kind: "sessionClosed", sessionId };
-  });
+function installNearLimitCapture(): void {
+  const payload = validPayload() as { metadata: Record<string, unknown>; page: Record<string, unknown> };
+  payload.metadata = {
+    ...payload.metadata,
+    shape: { rows: 200, columns: 1 },
+    filteredShape: { rows: 200, columns: 1 },
+    schema: [{ id: "c:0", name: "payload", position: 0, rawType: "string", type: "string", nullable: false }]
+  };
+  payload.page = {
+    offset: 0,
+    limit: 200,
+    totalRows: 200,
+    columnIds: ["c:0"],
+    rows: Array.from({ length: 200 }, (_, rowNumber) => ({
+      id: `r:${rowNumber}`,
+      rowNumber,
+      values: [{ kind: "string", raw: "r".repeat(20_000), display: "d".repeat(60_000), isNull: false, isNaN: false }]
+    }))
+  };
+  rendererMocks.capture.mockResolvedValue({ backend: "polars", label: "frame", variableName: "frame", payload });
 }
 
 async function settleMessages(): Promise<void> {

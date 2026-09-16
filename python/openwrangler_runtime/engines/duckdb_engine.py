@@ -16,6 +16,7 @@ from textwrap import indent
 from threading import RLock
 from typing import Any
 from uuid import uuid4
+from weakref import WeakSet
 
 from .._column_binding import compile_output_collision_guards
 from ..custom_code_output import append_custom_code_output, capture_custom_code_output, custom_code_error_message
@@ -161,6 +162,28 @@ def _duckdb_cast_target(dtype: str) -> str:
     }[dtype]
 
 
+@dataclass(eq=False)
+class _DuckDBCheckpoint:
+    temporary: TemporaryDirectory[str]
+    alias: str
+    ordinal: str
+    closed: bool = False
+
+    @property
+    def path(self) -> str:
+        return str(Path(self.temporary.name) / "rows.duckdb")
+
+    def attach(self, connection: Any) -> None:
+        if self.closed:
+            raise EngineError("The captured DuckDB result is closed.")
+        connection.execute(f"ATTACH {_sql_literal(self.path)} AS {_quote_ident(self.alias)} (READ_ONLY, TYPE DUCKDB)")
+
+    def close(self) -> None:
+        if not self.closed:
+            self.temporary.cleanup()
+            self.closed = True
+
+
 @dataclass(frozen=True, slots=True)
 class DuckDBSqlPlan:
     """Connection-free metadata for a replayable native DuckDB relation."""
@@ -168,6 +191,8 @@ class DuckDBSqlPlan:
     sql: str
     column_names: tuple[str, ...]
     type_names: tuple[str, ...]
+    checkpoint: _DuckDBCheckpoint | None = None
+    ordinal_sql: str | None = None
 
     @property
     def columns(self) -> list[str]:
@@ -182,20 +207,21 @@ class DuckDBSqlPlan:
 
 
 class _DuckDBNotebookRelationOwner:
-    """Retain one user-owned live relation without borrowing its connection.
+    """Retain a native notebook relation without closing its caller connection.
 
     ``DuckDBPyRelation.sql_query()`` is not a portable serialization: a query
     can refer to tables, views, or registered objects that exist only in the
-    relation's originating connection. Notebook reads therefore bind every
-    derived query back to the exact live relation through ``relation.query``.
+    relation's originating connection. Bounded captures retain the existing
+    ``relation.query`` path; retained full results use their explicit connection.
     Closing an Open Wrangler session only releases our strong reference; it
     never closes or otherwise mutates the user's relation.
     """
 
-    def __init__(self, relation: Any) -> None:
+    def __init__(self, relation: Any, connection: Any | None = None) -> None:
         self.alias = f"__open_wrangler_notebook_source_{uuid4().hex}"
         self._relation: Any | None = relation
         self._closed = False
+        self.connection = connection
 
     @contextmanager
     def terminal(self) -> Iterator[_DuckDBNotebookTerminal]:
@@ -206,6 +232,10 @@ class _DuckDBNotebookRelationOwner:
         with _DUCKDB_NOTEBOOK_RELATION_LOCK:
             if self._closed or self._relation is None:
                 raise EngineError("The live DuckDB notebook relation is closed.")
+            if self.connection is not None:
+                with _registered_native_relation(self.connection, self._relation, alias=self.alias):
+                    yield self.connection
+                return
             terminal = _DuckDBNotebookTerminal(self._relation, self.alias)
             try:
                 yield terminal
@@ -236,6 +266,7 @@ class _DuckDBNotebookRelationOwner:
             # deterministic cleanup; calling DuckDBPyRelation.close() here
             # would close a user-owned object and can execute a lazy relation.
             self._relation = None
+            self.connection = None
 
     @property
     def closed(self) -> bool:
@@ -336,7 +367,7 @@ _DUCKDB_NOTEBOOK_RELATION_LOCK = RLock()
 class DuckDBEngine(DataFrameEngine):
     """Native, lazy DuckDB SQL-plan adapter.
 
-    Session frames retain only immutable SQL and schema metadata. Native
+    File frames retain immutable SQL, schema and optional native checkpoint ownership. Native
     DuckDBPyRelation objects exist inside one bounded connection scope and are
     released before that connection closes. Every terminal read replays the
     self-contained SQL on a fresh connection for delimited and columnar files.
@@ -364,6 +395,7 @@ class DuckDBEngine(DataFrameEngine):
         self._database_query_lock = RLock()
         self._database_connection: Any | None = None
         self._database_reservation: _DuckDBDatabaseReservation | None = None
+        self._checkpoints: WeakSet[_DuckDBCheckpoint] = WeakSet()
 
     def detect(self, value: Any) -> bool:
         if isinstance(value, (DuckDBSqlPlan, DuckDBNotebookPlan)):
@@ -435,6 +467,55 @@ class DuckDBEngine(DataFrameEngine):
                 # authority for whether work completed or was cancelled.
                 continue
 
+    def capture_notebook_source(self, frame: Any, connection: Any, *, row_id_token: str) -> DuckDBNotebookPlan:
+        source = self.normalize_notebook_relation(frame)
+        self.validate_internal_row_id_namespace(source)
+        self.validate_column_addressability(source)
+        owner = source.owner
+        try:
+            with _DUCKDB_NOTEBOOK_RELATION_LOCK:
+                if owner.closed or owner._relation is None:
+                    raise EngineError("The live DuckDB notebook relation is closed.")
+                _validate_capture_columns(owner._relation)
+                with _registered_native_relation(connection, owner._relation, alias=owner.alias):
+                    row_id = INTERNAL_ROW_ID_PREFIX + row_id_token
+                    captured = connection.sql(
+                        f'SELECT *, system.main."-"(row_number() OVER (), 1) AS {_quote_ident(row_id)} '
+                        f"FROM ({source.sql}) AS captured_source WHERE ?::BOOLEAN",
+                        params=[True],
+                    )
+                captured_owner = _DuckDBNotebookRelationOwner(captured, connection)
+                with self._lifecycle_lock:
+                    if self._closed:
+                        captured_owner.close()
+                        raise EngineError("The DuckDB engine is closed.")
+                    self._notebook_relation_owners.append(captured_owner)
+                    if owner in self._notebook_relation_owners:
+                        self._notebook_relation_owners.remove(owner)
+                        owner.close()
+                return DuckDBNotebookPlan(
+                    captured_owner,
+                    f"SELECT * FROM {_quote_ident(captured_owner.alias)}",
+                    tuple(captured.columns),
+                    tuple(map(str, captured.types)),
+                )
+        except EngineError:
+            raise
+        except Exception as error:
+            raise EngineError(f"DuckDB capture failed: {error}") from error
+
+    def clone_session_source(self, frame: Any) -> Any:
+        if not isinstance(frame, DuckDBNotebookPlan) or frame.owner.connection is None:
+            return frame
+        with _DUCKDB_NOTEBOOK_RELATION_LOCK, self._lifecycle_lock:
+            if self._closed or frame.owner.closed:
+                raise EngineError("The live DuckDB notebook relation is closed.")
+            owner = _DuckDBNotebookRelationOwner(frame.owner._relation, frame.owner.connection)
+            self._notebook_relation_owners.append(owner)
+            return DuckDBNotebookPlan(
+                owner, f"SELECT * FROM {_quote_ident(owner.alias)}", frame.column_names, frame.type_names
+            )
+
     def close(self) -> None:
         # A database connection owns one cursor; close follows the full query
         # and fetch scope. Interrupt deliberately does not acquire this lock.
@@ -446,6 +527,8 @@ class DuckDBEngine(DataFrameEngine):
                 self._empty_source_frame = None
                 owners = list(self._notebook_relation_owners)
                 self._notebook_relation_owners.clear()
+                checkpoints = list(self._checkpoints)
+                self._checkpoints.clear()
             try:
                 if self._database_connection is not None:
                     self._database_connection.close()
@@ -456,6 +539,8 @@ class DuckDBEngine(DataFrameEngine):
                     _release_database(reservation)
         for owner in owners:
             owner.close()
+        for checkpoint in checkpoints:
+            checkpoint.close()
 
     def _open_database(self, path: str, *, allow_spill: bool = True) -> None:
         import duckdb
@@ -652,6 +737,14 @@ class DuckDBEngine(DataFrameEngine):
         if self._row_id_column(frame) is not None:
             return frame
         row_id = f"{INTERNAL_ROW_ID_PREFIX}{token}"
+        if isinstance(frame, DuckDBSqlPlan) and frame.ordinal_sql is not None:
+            assert frame.checkpoint is not None
+            ordinal = _quote_ident(frame.checkpoint.ordinal)
+            return self._relation_from_sql(
+                f"SELECT * EXCLUDE ({ordinal}), {ordinal} AS {_quote_ident(row_id)} "
+                f"FROM ({frame.ordinal_sql}) AS captured",
+                checkpoint=frame.checkpoint,
+            )
         return self._relation(
             frame, f'SELECT *, system.main."-"(row_number() OVER (), 1) AS {_quote_ident(row_id)} FROM ow'
         )
@@ -1445,13 +1538,7 @@ class DuckDBEngine(DataFrameEngine):
             self._validate_by_example_date_examples([step])
             return self._assign(frame, params["newColumn"], _by_example_expression(params["program"]))
         if kind == "customCode":
-            visible = self._visible_relation(frame)
-            with self._terminal_connection(visible) as (connection, source_sql):
-                result_sql = _custom_result_sql(connection, source_sql, str(params["code"]))
-            # Rebind the SQL on another hardened connection. This rejects
-            # results that depend on a custom connection's temporary objects
-            # and guarantees no custom relation owner enters session state.
-            return self._relation_from_sql(result_sql)
+            return self._capture_custom_result(frame, str(params["code"]))
         raise EngineError(f"DuckDB does not implement transformation: {kind}")
 
     def _validate_by_example_date_examples(self, steps: Iterable[Mapping[str, Any]]) -> None:
@@ -1609,9 +1696,23 @@ class DuckDBEngine(DataFrameEngine):
             helpers = select_generated_helpers(_generated_helper_source(), clean_data)
             return "\n".join([lines[0], indent(helpers, "    "), *lines[1:]]) + "\n"
         has_custom_code = any(step["kind"] == "customCode" for step in plan)
-        clean_data_lines = [f"def {function_name}(df):"]
+        signature = "df, *, connection" if has_custom_code else "df"
+        clean_data_lines = [f"def {function_name}({signature}):"]
         if plan:
             clean_data_lines.append("    _ow_check_addressability(df)")
+        if has_custom_code:
+            clean_data_lines.extend(
+                [
+                    "    _OW_CAPTURED = False",
+                    "    _ow_uncaptured_query = _ow_query",
+                    "    _ow_query = _ow_captured_query",
+                    "    _ow_validate_result = _ow_validate_captured_result",
+                    "    with _registered_native_relation(connection, df):",
+                    "        pass",
+                ]
+            )
+            if any(step["kind"] == "formula" for step in plan):
+                clean_data_lines.append("    _ow_checked_formula = _ow_checked_captured_formula")
         for index, step in enumerate(plan):
             if step["kind"] in {"denseRank", "markDuplicates"}:
                 # These native helpers already validate their fresh destinations.
@@ -1619,13 +1720,37 @@ class DuckDBEngine(DataFrameEngine):
             else:
                 output_guards, output_name = compile_output_collision_guards(step, "df.columns", index)
             clean_data_lines.extend(output_guards)
-            clean_data_lines.extend(self._compile_step(step, index, output_name=output_name))
+            kind, params = step["kind"], step["params"]
+            if has_custom_code and kind in _STRUCTURAL_TRANSFORM_KINDS:
+                if kind == "renameColumn":
+                    column = bound_column_name(params["column"], kind)
+                    projection = f"* RENAME ({_quote_ident(column)} AS "
+                    clean_data_lines.append(f"    df = df.project({projection!r} + _ow_ident({output_name}) + ')')")
+                elif kind == "dropColumns":
+                    columns = [bound_column_name(value, kind) for value in params["columns"]]
+                    clean_data_lines.append(f"    df = df.project({'* EXCLUDE (' + _identifier_list(columns) + ')'!r})")
+                else:
+                    columns = [bound_column_name(value, kind) for value in params["columns"]]
+                    clean_data_lines.append(f"    df = _ow_select_native(df, {columns!r})")
+            else:
+                clean_data_lines.extend(self._compile_step(step, index, output_name=output_name))
+            if kind == "customCode":
+                clean_data_lines.extend(
+                    [
+                        "    _validate_capture_columns(df)",
+                        "    df = _materialize_native_relation(connection, df, 'SELECT * FROM ow')",
+                        "    _OW_CAPTURED = True",
+                    ]
+                )
             clean_data_lines.append("    _ow_check_addressability(df)")
             if step["kind"] not in _STRUCTURAL_TRANSFORM_KINDS:
                 clean_data_lines.append("    _ow_validate_result(df)")
         clean_data_lines.append("    return df")
         clean_data = "\n".join(clean_data_lines)
-        generated_helpers = select_generated_helpers(_generated_helper_source(), clean_data)
+        # The Custom dispatcher retains the original query function as a local
+        # alias; include that controlled dependency without copying its owner.
+        helper_roots = clean_data + ("\n_ow_query" if has_custom_code else "")
+        generated_helpers = select_generated_helpers(_generated_helper_source(), helper_roots)
         lines = [*(custom_code_prelude_lines() if has_custom_code else [])]
         if generated_helpers:
             lines.extend([generated_helpers, ""])
@@ -1953,12 +2078,17 @@ class DuckDBEngine(DataFrameEngine):
             except Exception as error:
                 raise EngineError(f"DuckDB query failed: {error}") from error
             return DuckDBNotebookPlan(source.owner, sql, column_names, type_names)
-        return self._relation_from_sql(_compose_sql(source.sql, query))
+        return self._relation_from_sql(_compose_sql(source.sql, query), checkpoint=source.checkpoint)
 
-    def _relation_from_sql(self, sql: str) -> DuckDBSqlPlan:
+    def _relation_from_sql(
+        self, sql: str, *, checkpoint: _DuckDBCheckpoint | None = None, ordinal_sql: str | None = None
+    ) -> DuckDBSqlPlan:
         try:
             with self._tracked_connection() as connection:
-                return _snapshot_relation_factory(lambda: connection.sql(sql))
+                if checkpoint is not None:
+                    checkpoint.attach(connection)
+                result = _snapshot_relation_factory(lambda: connection.sql(sql))
+                return DuckDBSqlPlan(result.sql, result.column_names, result.type_names, checkpoint, ordinal_sql)
         except EngineError:
             raise
         except Exception as error:
@@ -1978,6 +2108,8 @@ class DuckDBEngine(DataFrameEngine):
                 raise EngineError(f"DuckDB query failed: {error}") from error
         try:
             with self._tracked_connection() as connection:
+                if source.checkpoint is not None:
+                    source.checkpoint.attach(connection)
                 yield connection, source.sql
         except EngineError:
             raise
@@ -1991,6 +2123,87 @@ class DuckDBEngine(DataFrameEngine):
     def _terminal_scalar(self, frame: Any, query: str) -> Any:
         with self._terminal_connection(frame) as (connection, source_sql):
             return _execute_scalar(connection, source_sql, query)
+
+    def _capture_custom_result(self, frame: Any, code: str) -> DuckDBSqlPlan:
+        import duckdb
+
+        if isinstance(frame, DuckDBNotebookPlan):
+            raise EngineError("DuckDB notebook relations are viewing-only.")
+        checkpoint: _DuckDBCheckpoint | None = None
+        accepted = False
+        result: Any = None
+        captured: Any = None
+        namespace: dict[str, Any] = {"duckdb": duckdb}
+        with capture_custom_code_output() as output:
+            try:
+                visible = self._visible_relation(frame)
+                with self._terminal_connection(visible) as (connection, source_sql):
+                    try:
+                        result = execute_custom_code(code, connection.sql(source_sql), namespace)
+                        if not isinstance(result, duckdb.DuckDBPyRelation):
+                            raise EngineError(
+                                append_custom_code_output(
+                                    "Custom DuckDB code must assign a DuckDBPyRelation to result.", output
+                                )
+                            )
+                        _validate_capture_columns(result)
+                        columns = tuple(map(str, result.columns))
+                        ordinal = INTERNAL_ROW_ID_PREFIX + uuid4().hex
+                        captured = _materialize_native_relation(
+                            connection,
+                            result,
+                            f'SELECT *, system.main."-"(row_number() OVER (), 1) AS {_quote_ident(ordinal)} FROM ow',
+                        )
+                        # Only this context is ours. A Custom-left transaction must
+                        # not be committed just to persist its captured result.
+                        try:
+                            connection.execute("ROLLBACK")
+                        except duckdb.TransactionException as error:
+                            if str(error) != "TransactionContext Error: cannot rollback - no transaction is active":
+                                raise
+                        checkpoint = _DuckDBCheckpoint(
+                            TemporaryDirectory(prefix="open-wrangler-duckdb-capture-"),
+                            "__open_wrangler_capture_" + uuid4().hex,
+                            ordinal,
+                        )
+                        connection.execute(
+                            f"ATTACH {_sql_literal(checkpoint.path)} AS {_quote_ident(checkpoint.alias)} (TYPE DUCKDB)"
+                        )
+                        with _registered_native_relation(connection, captured) as alias:
+                            connection.execute(
+                                f"CREATE TABLE {_quote_ident(checkpoint.alias)}.main.rows AS "
+                                f"SELECT * FROM {_quote_ident(alias)}"
+                            )
+                    except EngineError:
+                        raise
+                    except Exception as error:
+                        raise EngineError(custom_code_error_message("DuckDB", error, output)) from None
+                    finally:
+                        namespace.clear()
+                        result = captured = None
+                # The Custom context has closed before any reader opens the file.
+                ordinal_sql = (
+                    f"SELECT * FROM {_quote_ident(checkpoint.alias)}.main.rows ORDER BY {_quote_ident(ordinal)}"
+                )
+                plan = self._relation_from_sql(
+                    f"SELECT {_identifier_list(columns)} FROM ({ordinal_sql}) AS captured",
+                    checkpoint=checkpoint,
+                    ordinal_sql=ordinal_sql,
+                )
+                with self._lifecycle_lock:
+                    if self._closed:
+                        raise EngineError("The DuckDB engine is closed.")
+                    self._checkpoints.add(checkpoint)
+                accepted = True
+                return plan
+            except EngineError:
+                raise
+            except Exception as error:
+                raise EngineError(custom_code_error_message("DuckDB", error, output)) from None
+            finally:
+                if not accepted and checkpoint is not None:
+                    with suppress(Exception):
+                        checkpoint.close()
 
     def _columns(self, frame: Any) -> list[str]:
         return self.normalize(frame).columns
@@ -3003,28 +3216,65 @@ def _snapshot_relation_factory(factory: Callable[[], Any]) -> DuckDBSqlPlan:
         relation = None
 
 
-def _custom_result_sql(connection: Any, source_sql: str, code: str) -> str:
-    """Run custom code with a request-local native relation and retain only SQL."""
+def _validate_capture_columns(relation: Any) -> None:
+    names = [str(name) for name in relation.columns]
+    if not names:
+        raise ValueError("A transformation must leave at least one visible column.")
+    if any(name.casefold().startswith(INTERNAL_ROW_ID_PREFIX.casefold()) for name in names):
+        raise ValueError("Column names beginning with Open Wrangler's private row-identity prefix are reserved.")
+    if len({name.casefold() for name in names}) != len(names):
+        raise ValueError("DuckDB cannot safely address columns whose names differ only by case.")
 
+
+@contextmanager
+def _registered_native_relation(connection: Any, relation: Any, *, alias: str | None = None) -> Iterator[str]:
     import duckdb
 
-    namespace: dict[str, Any] = {"duckdb": duckdb}
-    result: Any | None = None
-    with capture_custom_code_output() as output:
+    alias = alias or "__open_wrangler_capture_input_" + uuid4().hex
+    literal = "'" + alias.lower().replace("'", "''") + "'"
+    view_oid = None
+
+    def current_oid() -> Any:
+        return connection.sql(
+            "SELECT view_oid FROM system.main.duckdb_views() "
+            "WHERE database_name='temp' AND schema_name='main' AND temporary "
+            "AND system.main.lower(view_name)=" + literal
+        ).fetchone()
+
+    def cleanup() -> None:
+        if view_oid is not None and current_oid() == view_oid:
+            connection.unregister(alias)
+
+    if connection.sql(
+        "SELECT system.main.count(*) FROM (SELECT table_name AS name FROM system.main.duckdb_tables() "
+        "UNION ALL SELECT view_name AS name FROM system.main.duckdb_views()) "
+        "WHERE system.main.lower(name)=" + literal
+    ).fetchone()[0]:
+        raise ValueError("The DuckDB capture alias already exists.")
+    try:
         try:
-            result = execute_custom_code(code, connection.sql(source_sql), namespace)
-            if not isinstance(result, duckdb.DuckDBPyRelation):
-                raise EngineError(
-                    append_custom_code_output("Custom DuckDB code must assign a DuckDBPyRelation to result.", output)
-                )
-            return str(result.sql_query())
-        except EngineError:
+            connection.register(alias, relation)
+        except duckdb.InvalidInputException as error:
+            if "created by another Connection and can therefore not be used by this Connection" in str(error):
+                raise ValueError(
+                    "The DuckDB result must use the supplied connection. Return a relation derived from df."
+                ) from error
             raise
-        except Exception as error:
-            raise EngineError(custom_code_error_message("DuckDB", error, output)) from None
-        finally:
-            namespace.clear()
-            result = None
+        view_oid = current_oid()
+        yield alias
+    except BaseException:
+        # Native failures can abort a caller transaction. Do not recover it or
+        # remove an alias without a successful ownership lookup.
+        with suppress(BaseException):
+            cleanup()
+        raise
+    cleanup()
+
+
+def _materialize_native_relation(connection: Any, relation: Any, query: str) -> Any:
+    with _registered_native_relation(connection, relation) as alias:
+        sql = _compose_sql(f"SELECT * FROM {_quote_ident(alias)}", query)
+        return connection.sql("SELECT * FROM (" + sql + ") AS captured WHERE ?::BOOLEAN", params=[True])
 
 
 def _parquet_temporal_condition(
@@ -4275,8 +4525,14 @@ def _generated_helper_source() -> str:
             getsource(_duckdb_datetime_format_expression),
             getsource(_guard_duckdb_integer_formula),
             "from typing import Any",
+            "from collections.abc import Iterator",
+            "from contextlib import contextmanager",
             f"INTERNAL_ROW_ID_PREFIX = {INTERNAL_ROW_ID_PREFIX!r}",
             getsource(_quote_ident),
+            getsource(_compose_sql),
+            getsource(_validate_capture_columns),
+            getsource(_registered_native_relation),
+            getsource(_materialize_native_relation),
             getsource(_duckdb_struct_field_projection),
             *generated_view_value_helper_lines(),
         ]
@@ -4444,6 +4700,20 @@ def _ow_validate_result(df):
     df.aggregate("system.main.bit_xor(system.main.hash(" + columns + "))").fetchone()
 
 
+def _ow_captured_query(df, query):
+    if not _OW_CAPTURED:
+        return _ow_uncaptured_query(df, query)
+    return _materialize_native_relation(connection, df, query)
+
+
+def _ow_validate_captured_result(df):
+    columns = ", ".join(_ow_ident(column) for column in df.columns)
+    with _registered_native_relation(connection, df) as alias:
+        connection.sql(
+            "SELECT system.main.bit_xor(system.main.hash(" + columns + ")) FROM " + _ow_ident(alias)
+        ).fetchone()
+
+
 def _ow_columns(df):
     return [str(column) for column in df.columns]
 
@@ -4470,6 +4740,11 @@ def _ow_select(df, columns):
     hidden = next((column for column in _ow_columns(df) if column.startswith(_OW_ROW_ID_PREFIX)), None)
     selected = ([hidden] if hidden else []) + list(columns)
     return _ow_query(df, "SELECT " + _ow_identifiers(selected) + " FROM ow")
+
+
+def _ow_select_native(df, columns):
+    hidden = next((column for column in _ow_columns(df) if column.startswith(_OW_ROW_ID_PREFIX)), None)
+    return df.project(_ow_identifiers(([hidden] if hidden else []) + list(columns)))
 
 
 def _ow_unique(existing, base):
@@ -5848,6 +6123,14 @@ def _ow_min_max(df, column, target):
 def _ow_checked_formula(df, left, right, operator, right_is_column):
     expression = _ow_formula(left, right, operator)
     types = _ow_query(df, "SELECT " + left + " AS l, " + right + " AS r, " + expression + " AS actual FROM ow").types
+    return _guard_duckdb_integer_formula(
+        "ow." + left, "ow." + right if right_is_column else right, operator, types, expression
+    )
+
+
+def _ow_checked_captured_formula(df, left, right, operator, right_is_column):
+    expression = _ow_formula(left, right, operator)
+    types = df.project(left + " AS l, " + right + " AS r, " + expression + " AS actual").types
     return _guard_duckdb_integer_formula(
         "ow." + left, "ow." + right if right_is_column else right, operator, types, expression
     )

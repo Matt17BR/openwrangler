@@ -20,7 +20,7 @@ MAX_TRANSPORT_ID_BYTES = 256
 MAX_DIAGNOSTIC_BYTES = 4 * 1024
 MAX_DIAGNOSTIC_DETAIL_BYTES = 16 * 1024
 REQUEST_PRIORITIES = {"interactive", "background"}
-SOURCE_ALLOWED_FIELDS = {"kind", "label", "path", "uri", "variableName", "importOptions"}
+SOURCE_ALLOWED_FIELDS = {"kind", "label", "path", "uri", "variableName", "importOptions", "duckdbConnection"}
 _UTF8_CHUNK_CHARACTERS = 16 * 1024
 _ECMASCRIPT_TRIM_CHARACTERS = (
     "\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000\u2001\u2002\u2003"
@@ -282,6 +282,10 @@ def decode_request(value: Any) -> dict[str, Any]:
         request = dict(request)
         request["source"] = decoded_source
         backend = request.get("backend")
+        if "duckdbConnection" in source:
+            if source["kind"] not in {"notebookVariable", "notebookOutput"} or backend != "duckdb":
+                raise ProtocolError("source.duckdbConnection requires a live DuckDB notebook source.")
+            decoded_source["duckdbConnection"] = validate_duckdb_connection_source(source["duckdbConnection"])
         if "duckdbSchema" in decoded_source.get("importOptions", {}) and backend != "duckdb":
             raise ProtocolError("DuckDB database tables require the duckdb backend.")
         if "backend" in request and (
@@ -668,6 +672,22 @@ def _validate_view_value(value: Any, label: str, depth: int = 0) -> None:
 
 def _is_non_negative_integer(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def validate_duckdb_connection_source(value: Any) -> dict[str, Any]:
+    connection = _mapping(value, "source.duckdbConnection")
+    if connection.get("kind") == "default":
+        valid = set(connection) == {"kind"}
+    else:
+        valid = (
+            set(connection) == {"kind", "name"}
+            and connection.get("kind") == "variable"
+            and isinstance(connection.get("name"), str)
+            and 1 <= len(connection["name"]) <= 128
+        )
+    if not valid:
+        raise ProtocolError("source.duckdbConnection must select the default connection or one named variable.")
+    return dict(connection)
 
 
 def _validate_import_options(value: Any, source: Mapping[str, Any]) -> dict[str, Any]:

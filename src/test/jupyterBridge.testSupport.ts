@@ -2,6 +2,7 @@ import { vi } from "vitest";
 import type { ExtensionContext, NotebookDocument, NotebookEditor } from "vscode";
 import type { OpenWranglerBridge } from "../extension/dataBridge";
 import type { SessionCoordinator } from "../extension/sessionCoordinator";
+import type { DataBackend, SessionSource } from "../shared/protocol";
 
 type CommandHandler = (...args: unknown[]) => unknown;
 interface TestNotebookKernel {
@@ -25,11 +26,19 @@ const notebookMocks = vi.hoisted(() => ({
   showInformationMessage: vi.fn(async () => undefined),
   showQuickPick: vi.fn(async (items: readonly unknown[], _options?: unknown) => items[0]),
   createPanel: vi.fn(),
+  prepare:
+    vi.fn<
+      (
+        source: SessionSource,
+        backend?: DataBackend
+      ) => Promise<{ source: SessionSource; backend?: DataBackend } | undefined>
+    >(),
   restoreEditorGroupAfterQuickPick: vi.fn(async () => undefined),
   kernelOrigins: [] as Array<{ uri: string; document: NotebookDocument | undefined }>,
   rKernelOrigins: [] as Array<{ uri: string; document: NotebookDocument | undefined }>,
   rVerifiedSelections: [] as unknown[],
   rDelegateDisposals: [] as NotebookDocument[],
+  kernelDelegateDisposals: [] as NotebookDocument[],
   tokenSources: [] as Array<{
     readonly token: { isCancellationRequested: boolean };
     disposed: boolean;
@@ -223,8 +232,15 @@ vi.mock("../extension/notebooks/kernelBridge", () => ({
     static fromDiscoveredVariable(context: ExtensionContext, document: NotebookDocument): unknown {
       return new this(context, document);
     }
-    constructor(_context: ExtensionContext, document: NotebookDocument) {
+    constructor(
+      _context: ExtensionContext,
+      private readonly document: NotebookDocument
+    ) {
       notebookMocks.kernelOrigins.push({ uri: document.uri.toString(), document });
+    }
+    prepareLiveSource = notebookMocks.prepare;
+    dispose(): void {
+      notebookMocks.kernelDelegateDisposals.push(this.document);
     }
   }
 }));
@@ -311,12 +327,15 @@ export function resetNotebookCommandTest(): void {
   notebookMocks.showQuickPick.mockReset();
   notebookMocks.showQuickPick.mockImplementation(async (items) => items[0]);
   notebookMocks.createPanel.mockReset();
+  notebookMocks.prepare.mockReset();
+  notebookMocks.prepare.mockImplementation(async (source, backend) => ({ source, backend }));
   notebookMocks.restoreEditorGroupAfterQuickPick.mockReset();
   notebookMocks.restoreEditorGroupAfterQuickPick.mockResolvedValue(undefined);
   notebookMocks.kernelOrigins.length = 0;
   notebookMocks.rKernelOrigins.length = 0;
   notebookMocks.rVerifiedSelections.length = 0;
   notebookMocks.rDelegateDisposals.length = 0;
+  notebookMocks.kernelDelegateDisposals.length = 0;
   notebookMocks.tokenSources.length = 0;
   notebookMocks.executeCode.mockReset();
   notebookMocks.executeCode.mockImplementation((code) => notebookKernelOutputs(code));

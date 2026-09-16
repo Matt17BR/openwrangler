@@ -3,12 +3,20 @@ import * as path from "node:path";
 import type { Jupyter, Kernel } from "@vscode/jupyter-extension";
 import * as vscode from "vscode";
 import type {
+  DataBackend,
   OpenSessionRequest,
   OpenWranglerRequest,
   OpenWranglerResponse,
-  RuntimeRequestEnvelope
+  RuntimeRequestEnvelope,
+  SessionSource
 } from "../../shared/protocol";
 import { PROTOCOL_VERSION } from "../../shared/protocol";
+import {
+  NOTEBOOK_OUTPUT_DEFAULT_CAPTURE_ROWS,
+  NOTEBOOK_OUTPUT_LIMITS,
+  normalizeNotebookOutputPayload,
+  type NotebookOutputPayload
+} from "../../shared/notebookOutput";
 import { isRuntimeResponseEnvelope } from "../../shared/protocolValidation";
 import { PYTHON_STDOUT_MAX_FRAME_BYTES } from "../pythonStdoutLineFramer";
 import type { SessionOpenProgressStage } from "../../shared/sessionOpenProgress";
@@ -23,13 +31,19 @@ import {
   RestartableKernel,
   withKernelTimeout,
   invalidatesKernelLifecycle,
-  type KernelGenerationBinding
+  KernelGenerationBinding
 } from "./kernelLifecycle";
 import { buildNotebookExecutionCode } from "./notebookExecutionScope";
 import { buildKernelRuntimeBundle, readRuntimeFiles } from "./kernelRuntimeBundle";
 import { getSetting, runtimeRequestTimeoutMs } from "../configuration";
+import { formatQuickPickName } from "../quickPickName";
+import { restoreEditorGroupAfterQuickPick } from "../webviewPanel";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
-import { assertSupportedPySparkNotebookPreflight, executePySparkNotebookPreflight } from "./notebookVariableDiscovery";
+import {
+  assertSupportedPySparkNotebookPreflight,
+  discoverDuckDBNotebookConnections,
+  executePySparkNotebookPreflight
+} from "./notebookVariableDiscovery";
 import {
   copySessionSource,
   exportPythonDataSafely,
@@ -50,6 +64,7 @@ export interface CapturedNotebookCellResult {
   readonly backend: "pandas" | "polars" | "duckdb" | "pyspark";
   readonly label: string;
   readonly variableName: string;
+  readonly payload?: NotebookOutputPayload;
 }
 
 export interface ExecutedNotebookCellResultBinding extends vscode.Disposable {
@@ -122,6 +137,76 @@ export class KernelBridge implements OpenWranglerBridge {
     return bridge;
   }
 
+  async prepareLiveSource(
+    source: SessionSource,
+    backend?: DataBackend
+  ): Promise<{ source: SessionSource; backend?: DataBackend } | undefined> {
+    if (source.kind !== "notebookVariable" || (backend !== undefined && backend !== "duckdb")) {
+      return { source, backend };
+    }
+    if (!source.variableName) throw new Error("The notebook source has no live variable name.");
+    if (source.uri !== undefined && source.uri !== this.notebookUri.toString()) {
+      throw new Error("The live source belongs to a different notebook.");
+    }
+    this.idleRequested = false;
+    this.assertNotebookProvenance();
+    const operation = this.lifecycle.run(
+      async (acquired) => {
+        this.assertRequiredKernelBinding(acquired);
+        this.observeKernelStatus(acquired);
+        await this.ensureKernelAgent(acquired.kernel, this.registerNotebookFormatters);
+      },
+      async (acquired) => {
+        const observation = this.requireKernelObservation(acquired);
+        await this.assertKernelStillSelected(acquired, observation);
+        const discovered = await discoverDuckDBNotebookConnections(
+          acquired.kernel,
+          this.notebookDocument,
+          source.variableName!
+        );
+        await this.assertKernelStillSelected(acquired, observation);
+        return { acquired, observation, discovered };
+      },
+      { retryAfterDispatch: false, shouldRetry: () => false }
+    );
+    const { acquired, observation, discovered } = await withKernelTimeout(
+      operation,
+      runtimeRequestTimeoutMs({ kind: "initialize" }),
+      () => this.trackDetachedKernelOperation(operation)
+    );
+    if (!discovered.isDuckDB) {
+      if (backend === "duckdb") throw new Error("The selected value is no longer a DuckDB relation. Open it again.");
+      return { source, backend };
+    }
+    if (!this.requiredKernelBinding) {
+      const binding = new KernelGenerationBinding(acquired.kernel);
+      this.requiredKernelBinding = binding;
+      this.ownedKernelBinding = binding;
+    }
+    const items = [
+      ...discovered.names.map((name) => ({
+        label: formatQuickPickName(name),
+        description: "DuckDB connection variable",
+        connection: { kind: "variable" as const, name }
+      })),
+      {
+        label: "DuckDB default connection",
+        description: "Use duckdb.default_connection()",
+        connection: { kind: "default" as const }
+      }
+    ];
+    const selected = await vscode.window.showQuickPick(items, {
+      title: "Select the DuckDB connection that created this relation",
+      placeHolder: discovered.truncated
+        ? "Connection list truncated. Bind the originating connection to a global variable if needed."
+        : "Private connections must be bound to a global variable. The selected connection will be verified."
+    });
+    if (!selected || !items.includes(selected)) return undefined;
+    await restoreEditorGroupAfterQuickPick();
+    await this.assertKernelStillSelected(acquired, observation);
+    return { source: { ...source, duckdbConnection: selected.connection }, backend: "duckdb" };
+  }
+
   onIdle(): void {
     this.idleRequested = true;
     // The user's kernel remains owned by Jupyter; Open Wrangler only releases
@@ -179,7 +264,8 @@ export class KernelBridge implements OpenWranglerBridge {
   async captureExecutedCellResult(
     executionOrder: number,
     sourceFingerprint: string,
-    binding: ExecutedNotebookCellResultBinding
+    binding: ExecutedNotebookCellResultBinding,
+    snapshot?: { maxColumns: number }
   ): Promise<CapturedNotebookCellResult> {
     if (!Number.isSafeInteger(executionOrder) || executionOrder < 1) {
       throw new Error("Open Wrangler received an invalid notebook execution order.");
@@ -219,10 +305,12 @@ export class KernelBridge implements OpenWranglerBridge {
           try {
             output = await kernelOutputsToText(
               acquired.kernel.executeCode(
-                buildNotebookCellResultCode(marker, executionOrder, sourceFingerprint),
+                buildNotebookCellResultCode(marker, executionOrder, sourceFingerprint, snapshot?.maxColumns),
                 tokenSource.token
               ),
-              NOTEBOOK_CELL_RESULT_OUTPUT_LIMIT_BYTES
+              snapshot
+                ? NOTEBOOK_OUTPUT_LIMITS.bytes + NOTEBOOK_CELL_RESULT_OUTPUT_LIMIT_BYTES
+                : NOTEBOOK_CELL_RESULT_OUTPUT_LIMIT_BYTES
             );
           } finally {
             tokenSource.dispose();
@@ -230,6 +318,14 @@ export class KernelBridge implements OpenWranglerBridge {
           this.requireKernelObservation(acquired);
           await this.assertKernelStillSelected(acquired, observation);
           const result = parseNotebookCellResult(output, marker);
+          if (
+            snapshot &&
+            (!result.payload ||
+              result.payload.metadata.schema.length > snapshot.maxColumns ||
+              result.payload.page.limit > NOTEBOOK_OUTPUT_DEFAULT_CAPTURE_ROWS)
+          ) {
+            throw new Error("Open Wrangler could not capture this bounded notebook output.");
+          }
           if (result.backend !== binding.backend) {
             throw new Error("This notebook result changed dataframe type after it was executed. Run the cell again.");
           }
@@ -252,9 +348,13 @@ export class KernelBridge implements OpenWranglerBridge {
       }
     );
     try {
-      const result = await withKernelTimeout(operation, runtimeRequestTimeoutMs({ kind: "initialize" }), () => {
-        this.trackDetachedKernelOperation(operation);
-      });
+      // Automatic snapshots have a parent publication deadline. Keep its work
+      // slot occupied until kernel execution settles, even after publication is revoked.
+      const result = snapshot
+        ? await operation
+        : await withKernelTimeout(operation, runtimeRequestTimeoutMs({ kind: "initialize" }), () => {
+            this.trackDetachedKernelOperation(operation);
+          });
       this.assertNotebookProvenance();
       return result;
     } catch (error) {
@@ -1669,7 +1769,18 @@ export function parseNotebookCellResultProbe(
   return parsed.backend;
 }
 
-export function buildNotebookCellResultCode(marker: string, executionOrder: number, sourceFingerprint: string): string {
+export function buildNotebookCellResultCode(
+  marker: string,
+  executionOrder: number,
+  sourceFingerprint: string,
+  maxColumns?: number
+): string {
+  if (
+    maxColumns !== undefined &&
+    (!Number.isSafeInteger(maxColumns) || maxColumns < 1 || maxColumns > NOTEBOOK_OUTPUT_LIMITS.columns)
+  ) {
+    throw new Error("Notebook snapshot column limit is invalid.");
+  }
   if (!/^[a-f0-9]{32}$/.test(marker)) {
     throw new Error("Notebook cell result marker must be 32 lowercase hexadecimal characters.");
   }
@@ -1709,14 +1820,25 @@ elif not isinstance(__ow_cell_history, dict) or ${executionOrder} not in __ow_ce
     }
 else:
     try:
+        __ow_cell_value = __ow_cell_history[${executionOrder}]
         __ow_cell_link = __ow_cell_notebook.link_live_result(
-            __ow_cell_history[${executionOrder}],
+            __ow_cell_value,
             __ow_cell_shell,
         )
         __ow_cell_result = {
             "ok": True,
             **__ow_cell_link,
         }
+${
+  maxColumns === undefined
+    ? ""
+    : `        __ow_cell_result["payload"] = __ow_cell_notebook.build_payload(
+            __ow_cell_value,
+            label=__ow_cell_link["label"], backend=__ow_cell_link["backend"],
+            page_size=${NOTEBOOK_OUTPUT_DEFAULT_CAPTURE_ROWS},
+            variable_name=__ow_cell_link["variableName"], max_columns=${maxColumns},
+        )`
+}
     except Exception:
         __ow_cell_result = {
             "ok": False,
@@ -1724,7 +1846,7 @@ else:
             "reason": "unsupported",
         }
 print("__OPEN_WRANGLER_CELL_RESULT_START_${marker}__")
-print(__ow_cell_json.dumps(__ow_cell_result, ensure_ascii=True, allow_nan=False, separators=(",", ":"), sort_keys=True))
+print(__ow_cell_json.dumps(__ow_cell_result, ensure_ascii=${maxColumns === undefined ? "True" : "False"}, allow_nan=False, separators=(",", ":"), sort_keys=True))
 print("__OPEN_WRANGLER_CELL_RESULT_END_${marker}__")
 del __ow_cell_result
 `);
@@ -1768,7 +1890,22 @@ export function parseNotebookCellResult(output: string, marker: string): Capture
   ) {
     throw new Error("Open Wrangler received a malformed live notebook result link.");
   }
-  return { backend: parsed.backend, label: parsed.label, variableName: parsed.variableName };
+  const payload = parsed.payload === undefined ? undefined : normalizeNotebookOutputPayload(parsed.payload);
+  if (
+    parsed.payload !== undefined &&
+    (!payload ||
+      payload.metadata.backend !== parsed.backend ||
+      payload.metadata.source.variableName !== parsed.variableName ||
+      payload.metadata.source.label !== parsed.label)
+  ) {
+    throw new Error("Open Wrangler received a malformed notebook snapshot.");
+  }
+  return {
+    backend: parsed.backend,
+    label: parsed.label,
+    variableName: parsed.variableName,
+    ...(payload ? { payload } : {})
+  };
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

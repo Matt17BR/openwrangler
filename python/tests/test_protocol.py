@@ -335,6 +335,73 @@ def test_open_session_normalizes_integral_json_sheet_indices() -> None:
     assert isinstance(decoded, int)
 
 
+@pytest.mark.parametrize("source_kind", ["notebookVariable", "notebookOutput"])
+@pytest.mark.parametrize("selection", [{"kind": "default"}, {"kind": "variable", "name": "connection"}])
+def test_duckdb_connection_selection_is_exact_and_copied(source_kind: str, selection: dict[str, str]) -> None:
+    request = {
+        "kind": "openSession",
+        "backend": "duckdb",
+        "pageSize": 20,
+        "columnOffset": 0,
+        "columnLimit": 2,
+        "source": {"kind": source_kind, "label": "frame", "variableName": "frame", "duckdbConnection": selection},
+    }
+    decoded = decode_envelope(
+        {"protocolVersion": 4, "requestId": "owner", "priority": "interactive", "request": request}
+    )[2]
+    assert decoded["source"]["duckdbConnection"] == selection
+    assert decoded["source"]["duckdbConnection"] is not selection
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [
+        None,
+        {},
+        {"kind": "default", "name": "con"},
+        {"kind": "variable"},
+        {"kind": "unknown"},
+        {"kind": "variable", "name": ""},
+        {"kind": "variable", "name": True},
+        {"kind": "variable", "name": "x" * 129},
+        {"kind": "variable", "name": "con", "extra": True},
+    ],
+)
+def test_duckdb_connection_selection_rejects_malformed_descriptors(selection: Any) -> None:
+    request = {
+        "kind": "openSession",
+        "backend": "duckdb",
+        "pageSize": 20,
+        "columnOffset": 0,
+        "columnLimit": 2,
+        "source": {
+            "kind": "notebookVariable",
+            "label": "frame",
+            "variableName": "frame",
+            "duckdbConnection": selection,
+        },
+    }
+    with pytest.raises(ProtocolError, match="duckdbConnection"):
+        decode_envelope({"protocolVersion": 4, "requestId": "owner", "priority": "interactive", "request": request})
+
+
+@pytest.mark.parametrize(
+    ("source_kind", "backend"), [("file", "duckdb"), ("notebookVariable", "pandas"), ("notebookVariable", None)]
+)
+def test_duckdb_connection_selection_cannot_be_applied_to_another_source(source_kind: str, backend: str | None) -> None:
+    request = {
+        "kind": "openSession",
+        "pageSize": 20,
+        "columnOffset": 0,
+        "columnLimit": 2,
+        "source": {"kind": source_kind, "label": "frame", "duckdbConnection": {"kind": "default"}},
+    }
+    if backend is not None:
+        request["backend"] = backend
+    with pytest.raises(ProtocolError, match="live DuckDB notebook source"):
+        decode_envelope({"protocolVersion": 4, "requestId": "owner", "priority": "interactive", "request": request})
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [

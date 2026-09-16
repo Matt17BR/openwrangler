@@ -14,6 +14,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Changed
 
+- DuckDB notebook opening asks for the relation's originating connection. Generated DuckDB plans with Custom Code require that connection and refuse Custom results from another connection.
 - Code Preview identifies the applied step being inspected when showing its generated code.
 - Operation dialogs can hide the catalog to give settings more space, preserving unfinished fields. Specific operations start collapsed; Add step keeps the catalog open.
 - Open Another File with This Plan accepts reordered columns when their names and types still match the original input.
@@ -25,6 +26,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- DuckDB notebook and file Custom results retain their rows and identities across pages, column windows and later cleaning steps. This captures complete native results, with additional memory, execution and storage costs.
 - Valid integer operands in Polars Enum filters and their generated code no longer emit numeric-cast deprecation warnings.
 - Pandas, Polars and native R keep Custom-backed step inspection consistent across pages and columns, instead of re-executing Custom Code for each request.
 - Import options keep keyboard focus while moving between questions opened from a dataframe view.

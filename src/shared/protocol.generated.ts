@@ -22,6 +22,14 @@ export type OpenWranglerRequest =
   | ExportDataRequest
   | CloseSessionRequest
   | CancelRequest;
+export type DuckDBConnectionSource =
+  | {
+      kind: "variable";
+      name: string;
+    }
+  | {
+      kind: "default";
+    };
 export type DataBackend = "polars" | "duckdb" | "pandas" | "pyspark" | "r";
 export type SessionMode = "viewing" | "editing";
 export type PageRequest = SessionRequestBase & {
@@ -568,6 +576,7 @@ export interface SessionSource {
   path?: string;
   uri?: string;
   variableName?: string;
+  duckdbConnection?: DuckDBConnectionSource;
   importOptions?: {
     delimiter?: string;
     encoding?: string;

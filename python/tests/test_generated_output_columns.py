@@ -249,7 +249,8 @@ def test_custom_code_cannot_introduce_a_later_static_output_name(engine):
     ref = source_lineage(engine.schema(middle))[1]
     public = public_step("cloneColumn", column=ref, newName="flag")
     clean_data = generated(engine, [custom, bind(engine, middle, public)])
-    assert [row[-1] for row in snapshot(clean_data(seed))[1]] == ["a-x", "b-y"]
+    options = {"connection": duckdb.default_connection()} if engine.name == "duckdb" else {}
+    assert [row[-1] for row in snapshot(clean_data(seed, **options))[1]] == ["a-x", "b-y"]
     if isinstance(engine, PandasEngine):
         frame = seed.assign(n=100.0)
     elif isinstance(engine, PolarsEngine):
@@ -262,7 +263,7 @@ def test_custom_code_cannot_introduce_a_later_static_output_name(engine):
         bind(engine, introduced, public)
     try:
         with pytest.raises(ValueError, match="collides"):
-            clean_data(frame)
+            clean_data(frame, **options)
     finally:
         assert snapshot(frame) == before
 
@@ -415,7 +416,8 @@ def test_duckdb_public_generated_plan_cannot_read_a_casefold_resident(tmp_path, 
         clean_data = namespace["clean_data"]
         seed = duckdb.sql("SELECT * FROM (VALUES (2), (3)) source(key)")
         before = snapshot(seed)
-        result = clean_data(seed)
+        options = {"connection": duckdb.default_connection()} if first_kind == "customCode" else {}
+        result = clean_data(seed, **options)
         assert result.columns == ["plus"] and result.fetchall() == [(3,), (4,)]
         assert snapshot(seed) == before
 
@@ -442,7 +444,7 @@ def test_duckdb_public_generated_plan_cannot_read_a_casefold_resident(tmp_path, 
         before = snapshot(caller)
         try:
             with pytest.raises(ValueError, match="(?i)collid|case"):
-                clean_data(caller)
+                clean_data(caller, **options)
         finally:
             assert snapshot(caller) == before
     finally:

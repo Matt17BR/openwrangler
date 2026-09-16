@@ -7,6 +7,59 @@ import { metadata, requests, responses, validateTransportSchema } from "./protoc
 const representativeRequests = [...new Map(requests.map((request) => [request.kind, request] as const)).values()];
 
 describe("protocol-v4 request validation", () => {
+  it("keeps explicit DuckDB connection selection exact at the runtime boundaries", () => {
+    const base = requests.find((request) => request.kind === "openSession")!;
+    for (const kind of ["notebookVariable", "notebookOutput"]) {
+      for (const selection of [
+        { kind: "default" },
+        { kind: "variable", name: "connection" },
+        { kind: "variable", name: "𐐀".repeat(128) }
+      ]) {
+        const request = {
+          ...base,
+          backend: "duckdb",
+          source: { kind, label: "frame", variableName: "frame", duckdbConnection: selection }
+        };
+        expect(isOpenWranglerRequest(request)).toBe(true);
+        expect(
+          validateTransportSchema({ protocolVersion: 4, requestId: "owner", priority: "interactive", request })
+        ).toBe(true);
+      }
+    }
+    for (const selection of [
+      null,
+      {},
+      { kind: "default", name: "con" },
+      { kind: "variable" },
+      { kind: "unknown" },
+      { kind: "variable", name: "" },
+      { kind: "variable", name: true },
+      { kind: "variable", name: "x".repeat(129) },
+      { kind: "variable", name: "con", extra: true }
+    ]) {
+      const request = {
+        ...base,
+        backend: "duckdb",
+        source: { kind: "notebookVariable", label: "frame", variableName: "frame", duckdbConnection: selection }
+      };
+      expect(isOpenWranglerRequest(request)).toBe(false);
+      expect(
+        validateTransportSchema({ protocolVersion: 4, requestId: "owner", priority: "interactive", request })
+      ).toBe(false);
+    }
+    for (const [kind, backend] of [
+      ["file", "duckdb"],
+      ["notebookVariable", "pandas"],
+      ["notebookVariable", undefined]
+    ]) {
+      const request = { ...base, backend, source: { kind, label: "frame", duckdbConnection: { kind: "default" } } };
+      expect(isOpenWranglerRequest(request)).toBe(false);
+      expect(
+        validateTransportSchema({ protocolVersion: 4, requestId: "owner", priority: "interactive", request })
+      ).toBe(false);
+    }
+  });
+
   it("admits confirmed viewing intent only on page and edit envelopes, never on public requests", () => {
     const viewKinds = new Set(["getPage", "previewStep", "applyDraft", "discardDraft", "undoStep", "redoStep"]);
     for (const viewChangeEpoch of [0, Number.MAX_SAFE_INTEGER]) {

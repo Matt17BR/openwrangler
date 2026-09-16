@@ -183,6 +183,38 @@ describe("executed notebook cell result action", () => {
     expect(mocks.disposed).toBe(0);
   });
 
+  it.each([false, true])(
+    "retains the executed result while connection preparation changes the cell=%s",
+    async (edited) => {
+      const document = notebook("file:///duck-result.ipynb");
+      const cell = codeCell(document, 8);
+      setCells(document, [cell]);
+      mocks.notebookDocuments.push(document);
+      mocks.visibleEditors.push({ notebook: document } as NotebookEditor);
+      registerNotebookCellResultAction({ subscriptions: [] } as unknown as ExtensionContext, coordinator());
+      await recordExecutionAndWait(cell);
+      mocks.prepare.mockImplementationOnce(async (source) => {
+        expect(mocks.createBridge).not.toHaveBeenCalled();
+        if (edited) (cell.document as unknown as { text: string }).text = "replacement";
+        return { source: { ...source, duckdbConnection: { kind: "default" } }, backend: "duckdb" };
+      });
+
+      await command()(cell);
+
+      if (edited) {
+        expect(mocks.createPanel).not.toHaveBeenCalled();
+        expect(mocks.disposed).toBe(1);
+      } else {
+        expect(mocks.createPanel).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.anything(),
+          expect.objectContaining({ uri: document.uri.toString(), duckdbConnection: { kind: "default" } }),
+          "duckdb"
+        );
+      }
+    }
+  );
+
   it("rejects an edited cell instead of using its old execution result", async () => {
     const document = notebook();
     const cell = codeCell(document, 2);

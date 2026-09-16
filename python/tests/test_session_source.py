@@ -12,6 +12,7 @@ from openwrangler_runtime.session_source import (
     LiveSourceInvalidatedError,
     SessionSource,
     SourceChangedError,
+    resolve_duckdb_connection,
     resolve_notebook_variable,
 )
 from openwrangler_runtime.trusted_pickle_to_parquet import _confirmed_source_path_fingerprint
@@ -34,6 +35,45 @@ def file_source(path: Path) -> dict[str, str]:
 
 def notebook_source() -> dict[str, str]:
     return {"kind": "notebookVariable", "label": "orders", "variableName": "orders"}
+
+
+def test_duckdb_owner_selection_uses_only_the_explicit_kernel_variable(monkeypatch):
+    import duckdb
+
+    with duckdb.connect() as connection:
+        monkeypatch.setattr(__main__, "selected_duckdb_connection", connection, raising=False)
+        source = {**notebook_source(), "duckdbConnection": {"kind": "variable", "name": "selected_duckdb_connection"}}
+        captured = SessionSource.capture("owner", source, engine("duckdb"))
+        source["duckdbConnection"]["name"] = "another_connection"
+        assert resolve_duckdb_connection(captured.metadata) is connection
+
+        def unexpected_default():
+            raise AssertionError("A named or missing selection must never create the default connection")
+
+        monkeypatch.setattr(duckdb, "default_connection", unexpected_default)
+        assert resolve_duckdb_connection(captured.metadata) is connection
+        with pytest.raises(EngineError, match="Select the DuckDB connection"):
+            resolve_duckdb_connection(notebook_source())
+        monkeypatch.setattr(__main__, "selected_duckdb_connection", object())
+        with pytest.raises(EngineError, match="no longer available"):
+            resolve_duckdb_connection(captured.metadata)
+        captured.release()
+        assert connection.sql("SELECT 17").fetchone() == (17,)
+
+
+def test_duckdb_default_connection_requires_an_explicit_selection(monkeypatch):
+    import duckdb
+
+    selected = object()
+    calls = []
+
+    def default_connection():
+        calls.append(True)
+        return selected
+
+    monkeypatch.setattr(duckdb, "default_connection", default_connection)
+    assert resolve_duckdb_connection({**notebook_source(), "duckdbConnection": {"kind": "default"}}) is selected
+    assert calls == [True]
 
 
 def test_capture_versions_only_lazy_files_and_pins_the_resolved_read_path(tmp_path: Path) -> None:

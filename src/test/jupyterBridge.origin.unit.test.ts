@@ -17,6 +17,45 @@ const { vscode } = jupyterBridgeApi();
 describe("notebook command origin provenance", () => {
   beforeEach(resetNotebookCommandTest);
 
+  it.each(["selected", "cancelled", "replaced"] as const)(
+    "keeps Variables source ownership through %s connection preparation",
+    async (outcome) => {
+      const origin = notebook("file:///workspace/duck.ipynb");
+      const replacement = notebook("file:///workspace/duck.ipynb");
+      notebookMocks.notebookDocuments.push(origin);
+      const { context, coordinator, coordinatedBridge } = register();
+      notebookMocks.prepare.mockImplementationOnce(async (source) => {
+        expect(coordinator.createBridge).not.toHaveBeenCalled();
+        if (outcome === "cancelled") return undefined;
+        if (outcome === "replaced") notebookMocks.notebookDocuments.splice(0, 1, replacement);
+        return { source: { ...source, duckdbConnection: { kind: "variable", name: "con" } }, backend: "duckdb" };
+      });
+
+      await command("openWrangler.launchDataViewer")({
+        name: "relation",
+        type: "DuckDBPyRelation",
+        fileName: origin.uri
+      });
+
+      expect(notebookMocks.prepare).toHaveBeenCalledWith(
+        { kind: "notebookVariable", label: "relation", variableName: "relation", uri: origin.uri.toString() },
+        "duckdb"
+      );
+      if (outcome === "selected") {
+        expect(notebookMocks.createPanel).toHaveBeenCalledWith(
+          context,
+          coordinatedBridge,
+          expect.objectContaining({ uri: origin.uri.toString(), duckdbConnection: { kind: "variable", name: "con" } }),
+          "duckdb"
+        );
+      } else {
+        expect(coordinator.createBridge).not.toHaveBeenCalled();
+        expect(notebookMocks.createPanel).not.toHaveBeenCalled();
+      }
+      expect(notebookMocks.activeEditorReads).toBe(0);
+    }
+  );
+
   it("binds a released IJupyterVariable fileName URI to the sole exact open document", async () => {
     const notebookA = notebook("file:///workspace/a.ipynb");
     const notebookB = notebook("file:///workspace/b.ipynb");

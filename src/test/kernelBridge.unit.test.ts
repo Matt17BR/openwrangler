@@ -17,6 +17,10 @@ import { DetachedBridgeRequestError } from "../extension/dataBridge";
 import * as kernelRuntimeBundle from "../extension/notebooks/kernelRuntimeBundle";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
 import { KernelGenerationBinding } from "../extension/notebooks/kernelLifecycle";
+import {
+  buildDuckDBConnectionDiscoveryCode,
+  parseDuckDBConnectionDiscoveryOutput
+} from "../extension/notebooks/notebookVariableDiscovery";
 import type {
   OpenSessionRequest,
   OpenWranglerRequest,
@@ -50,7 +54,178 @@ import {
   unpinnedOpenRequest
 } from "./kernelBridge.testFixtures";
 
-afterEach(resetKernelBridgeTestState);
+const connectionPicker = vi.hoisted(() => vi.fn());
+vi.mock("vscode", async (importOriginal) => {
+  const actual = await importOriginal<typeof vscode>();
+  return { ...actual, window: { ...actual.window, showQuickPick: connectionPicker } };
+});
+
+afterEach(() => {
+  resetKernelBridgeTestState();
+  connectionPicker.mockReset();
+});
+
+describe("explicit DuckDB notebook connection preparation", () => {
+  function connectionKernel(names = ["_owned", "con"], isDuckDB = true) {
+    const controller = controllableKernel((code) => {
+      const marker = code.match(/__OPEN_WRANGLER_DUCKDB_CONNECTIONS_START_([a-f0-9]{32})__/)?.[1];
+      if (!marker) return bootstrapKernelExecution(code);
+      return (async function* () {
+        yield {
+          items: [
+            {
+              mime: "application/vnd.code.notebook.stdout",
+              data: Buffer.from(
+                [
+                  `__OPEN_WRANGLER_DUCKDB_CONNECTIONS_START_${marker}__`,
+                  JSON.stringify({ isDuckDB, names, truncated: false }),
+                  `__OPEN_WRANGLER_DUCKDB_CONNECTIONS_END_${marker}__`
+                ].join("\n")
+              )
+            }
+          ]
+        };
+      })();
+    });
+    mockKernel(controller.kernel);
+    return controller;
+  }
+
+  it("discovers only bounded explicit global connection names without traversing objects or using the default", () => {
+    const marker = "0123456789abcdef0123456789abcdef";
+    const code = buildDuckDBConnectionDiscoveryCode(marker, "frame");
+    const result = spawnSync(process.env.OPEN_WRANGLER_TEST_PYTHON ?? "python3", ["-I", "-"], {
+      encoding: "utf8",
+      timeout: 30_000,
+      maxBuffer: 128 * 1024,
+      windowsHide: true,
+      input: `
+import builtins, contextlib, io, json, sys, types
+class Relation: pass
+class Connection: pass
+class Private:
+    @property
+    def connection(self): raise AssertionError("must not traverse an object's owner")
+duckdb = types.ModuleType("duckdb")
+duckdb.DuckDBPyRelation, duckdb.DuckDBPyConnection = Relation, Connection
+def default(): raise AssertionError("default connection requires explicit selection")
+duckdb.default_connection = default
+sys.modules["duckdb"] = duckdb
+runtime = types.ModuleType("openwrangler_runtime")
+resolver = types.ModuleType("openwrangler_runtime.session_source")
+frame = Relation()
+def resolve(source):
+    assert source == {"variableName": "frame"}
+    return frame
+resolver.resolve_notebook_variable = resolve
+sys.modules[runtime.__name__] = runtime
+sys.modules[resolver.__name__] = resolver
+namespace = {"__builtins__": builtins, "frame": frame, "con": Connection(), "_owned": Connection(), "private": Private(), "not valid": Connection(), "x" * 129: Connection()}
+before = dict(namespace)
+out = io.StringIO()
+with contextlib.redirect_stdout(out): exec(${JSON.stringify(code)}, namespace)
+assert namespace.keys() == before.keys() and all(namespace[key] is value for key, value in before.items())
+print(out.getvalue(), end="")
+`
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(parseDuckDBConnectionDiscoveryOutput(result.stdout, marker)).toEqual({
+      isDuckDB: true,
+      names: ["_owned", "con"],
+      truncated: false
+    });
+  });
+
+  it.each(["variable", "default"] as const)(
+    "requires an explicit %s selection before enriching the source",
+    async (kind) => {
+      const controlled = connectionKernel();
+      const bridge = createKernelBridge();
+      const source = openRequest().source;
+      const restore = vi.spyOn(vscode.commands, "executeCommand");
+      connectionPicker.mockImplementation(async (items) =>
+        items.find(
+          (item: { connection: { kind: string; name?: string } }) =>
+            item.connection.kind === kind && (kind === "default" || item.connection.name === "con")
+        )
+      );
+      try {
+        const prepared = await bridge.prepareLiveSource(source);
+        expect(prepared).toEqual({
+          source: { ...source, duckdbConnection: kind === "default" ? { kind } : { kind, name: "con" } },
+          backend: "duckdb"
+        });
+        expect(source).not.toHaveProperty("duckdbConnection");
+        expect(connectionPicker).toHaveBeenCalledOnce();
+        expect(restore).toHaveBeenCalledWith("workbench.action.focusActiveEditorGroup");
+        expect(controlled.executionTokens()).toHaveLength(2);
+        expect(controlled.executionTokens().every((token) => !token.isCancellationRequested)).toBe(true);
+      } finally {
+        bridge.dispose();
+      }
+      expect(controlled.statusListenerCount()).toBe(0);
+    }
+  );
+
+  it("does not silently select the default connection after cancellation", async () => {
+    connectionKernel([]);
+    const bridge = createKernelBridge();
+    connectionPicker.mockResolvedValue(undefined);
+    try {
+      await expect(bridge.prepareLiveSource(openRequest().source, "duckdb")).resolves.toBeUndefined();
+      expect(connectionPicker.mock.calls[0]?.[0]).toEqual([
+        expect.objectContaining({ connection: { kind: "default" } })
+      ]);
+    } finally {
+      bridge.dispose();
+    }
+  });
+
+  it.each(["kernel", "notebook"] as const)(
+    "rejects changed %s ownership after restoring picker focus",
+    async (changed) => {
+      const original = connectionKernel();
+      const document = notebookDocument();
+      setOpenNotebookDocuments(document);
+      const bridge = createKernelBridge(document);
+      connectionPicker.mockImplementation(async (items) => items[0]);
+      vi.spyOn(vscode.commands, "executeCommand").mockImplementation(async () => {
+        if (changed === "kernel") original.setStatus("restarting");
+        else setOpenNotebookDocuments(notebookDocument());
+        return undefined;
+      });
+      try {
+        await expect(bridge.prepareLiveSource(openRequest().source, "duckdb")).rejects.toThrow();
+      } finally {
+        bridge.dispose();
+      }
+    }
+  );
+
+  it("leaves other backends unpinned and refuses malformed discovered connection names", async () => {
+    connectionKernel([], false);
+    const bridge = createKernelBridge();
+    try {
+      await expect(bridge.prepareLiveSource(openRequest().source)).resolves.toEqual({
+        source: openRequest().source,
+        backend: undefined
+      });
+      expect(connectionPicker).not.toHaveBeenCalled();
+    } finally {
+      bridge.dispose();
+    }
+    connectionKernel(["duplicate", "duplicate"]);
+    const invalid = createKernelBridge();
+    try {
+      await expect(invalid.prepareLiveSource(openRequest().source, "duckdb")).rejects.toThrow();
+    } finally {
+      invalid.dispose();
+    }
+    expect(connectionPicker).not.toHaveBeenCalled();
+  });
+});
 
 it("refuses Redo on an already bootstrapped kernel when workspace trust is lost", async () => {
   const requests: string[] = [];
