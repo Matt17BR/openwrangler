@@ -4,6 +4,7 @@ import type {
   ConditionalColumnTransformStep,
   MarkDuplicatesTransformStep,
   DataDiff,
+  ExtractStructFieldsTransformStep,
   GroupByTransformStep,
   OneHotEncodeTransformStep,
   SortRowsTransformStep
@@ -118,11 +119,11 @@ describe("R kernel mutation schema", () => {
         removedRows: 3
       })
     ).toThrow("row counts");
-    const extract = {
+    const extract: ExtractStructFieldsTransformStep = {
       id: "extract",
       kind: "extractStructFields",
       params: { column: { id: "r:c:2", name: "record" }, fields: [{ field: "__proto__", newColumn: "category" }] }
-    } as const;
+    };
     expect(schemaAfterNestedStep(nested, extract)[3]).toEqual({
       id: "c:step:extract:0",
       name: "category",

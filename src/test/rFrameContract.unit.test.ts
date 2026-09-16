@@ -146,7 +146,7 @@ describe("native R frame contract decoder", () => {
     ];
     const decoded = decodeCandidate(candidate);
     expect(decoded.schema[0]!.semantics).toMatchObject({ fields });
-    expect(Object.isFrozen((decoded.schema[0]!.semantics as { fields: unknown[] }).fields[0])).toBe(true);
+    expect(Object.isFrozen((decoded.schema[0]!.semantics as { fields: readonly unknown[] }).fields[0])).toBe(true);
     fields[1]!.name = "__proto__";
     expect(() => decodeCandidate(candidate)).toThrow("unique nonempty");
     fields[1]!.name = "count";

@@ -9,6 +9,8 @@ import type {
   ConfirmedView,
   CustomCodeTransformStep,
   DataDiff,
+  ExplodeListTransformStep,
+  ExtractStructFieldsTransformStep,
   MultiLabelBinarizeTransformStep,
   OneHotEncodeTransformStep,
   OpenWranglerRequest,
@@ -202,6 +204,7 @@ describe("canonical R kernel bridge", () => {
       const base = frameContract();
       const leaf = { kind: "integer64", storageMode: "double", classes: ["integer64"] } as const;
       const scalar = base.page.rows[0]!.values[1]!;
+      if (scalar.kind !== "integer") throw new Error("The nested fixture requires an exact integer cell.");
       const nested: RColumnSchema = {
         ...base.schema[0]!,
         rawType: "list",
@@ -238,7 +241,7 @@ describe("canonical R kernel bridge", () => {
           ]
         }
       };
-      const step =
+      const step: ExplodeListTransformStep | ExtractStructFieldsTransformStep =
         kind === "explodeList"
           ? { id: "nested", kind, params: { column: { id: nested.id, name: nested.name } } }
           : {

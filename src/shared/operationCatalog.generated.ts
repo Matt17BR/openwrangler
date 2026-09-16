@@ -126,7 +126,8 @@ export const operationCatalog: readonly OperationCatalogItem[] = Object.freeze([
   Object.freeze({
     kind: "extractStructFields",
     title: "Extract Struct Fields",
-    description: "Append selected scalar fields as new columns while retaining the Struct column and rows.",
+    description:
+      "Append selected scalar fields from a Polars Struct or flat native R record column, retaining the parent and rows.",
     group: "Columns / types",
     icon: "symbol-field",
     required: Object.freeze(["column", "fields"]),
@@ -135,7 +136,8 @@ export const operationCatalog: readonly OperationCatalogItem[] = Object.freeze([
   Object.freeze({
     kind: "explodeList",
     title: "Explode List",
-    description: "Expand one Polars List column into rows while repeating the other columns.",
+    description:
+      "Expand a Polars List or homogeneous native R list column into rows while repeating the other columns.",
     group: "Rows / order",
     icon: "table",
     required: Object.freeze(["column"]),
