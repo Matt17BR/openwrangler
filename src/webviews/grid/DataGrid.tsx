@@ -107,6 +107,8 @@ const maximumRenderedCellCharacters = 4_096;
 const gridSelectionInstructions =
   "Drag across cells or use Shift+click or Shift+Arrow to select a rectangular range. Select a column header or press Ctrl/Cmd+Space on it to prepare the whole filtered and sorted column for copying. Ctrl/Cmd+click starts a new selection; non-contiguous selections are not supported.";
 const defaultViewState: GridViewState = { columnWidths: new Map(), viewport: { firstVisibleRow: 0, scrollLeft: 0 } };
+// A 150px profile area plus the cell's 16px horizontal padding and 1px collapsed border.
+const narrowHeaderStatsColumnWidth = 167;
 const ignoreViewStateChange = (): void => undefined;
 const ignoreVisibleColumnRangeChange = (): void => undefined;
 
@@ -438,6 +440,7 @@ export function DataGrid({
     () => metadata.schema.slice(visibleColumnRange.start, visibleColumnRange.end),
     [metadata.schema, visibleColumnRange.end, visibleColumnRange.start]
   );
+  const narrowHeaderStats = visibleColumns.some((column) => widths[column.position] <= narrowHeaderStatsColumnWidth);
   const loadedColumnSignature = page.columnIds.join("\u0000");
   const viewScope = `${metadata.sessionId}:${metadata.revision}:${JSON.stringify({
     logic: metadata.filterModel.logic ?? "and",
@@ -953,6 +956,7 @@ export function DataGrid({
       <div className="tableScroller" ref={scrollerRef} data-testid="data-grid-scroller">
         <table
           role="grid"
+          className={narrowHeaderStats ? "narrowHeaderStats" : undefined}
           style={{
             width: rowHeaderWidth + totalColumnWidth,
             minWidth: rowHeaderWidth + totalColumnWidth,

@@ -2195,6 +2195,7 @@ export function App() {
               {metadata.mode === "editing" && (
                 <button
                   type="button"
+                  className="toolbarPrimaryButton"
                   data-operation-focus-fallback
                   data-cleaning-plan-focus-fallback
                   disabled={loading || projectionLoading || importOptionsPending || !canStartOperation(metadata)}

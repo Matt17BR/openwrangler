@@ -221,13 +221,17 @@
   white-space: nowrap;
 }
 
-.toolbarButton {
+.toolbarButton,
+.toolbarPrimaryButton {
   align-items: center;
+  display: inline-flex;
+  gap: 5px;
+}
+
+.toolbarButton {
   color: var(--vscode-foreground);
   background: transparent;
   border: 1px solid var(--vscode-panel-border);
-  display: inline-flex;
-  gap: 5px;
 }
 
 .toolbarButton:not(:disabled):hover {
