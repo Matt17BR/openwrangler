@@ -64,6 +64,7 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+          verify-signature: true
       - uses: r-lib/actions/setup-r@465b7d8e732ca3921382b1674c59bada9cbf3399 # v2.13.0
         if: ${{ inputs.target == 'linux-all' || (github.event_name == 'workflow_dispatch' && inputs.target == 'linux-r') }}
         with:
