@@ -1875,6 +1875,12 @@ openwrangler_r_frame_contract <- local({
     unique_keys <- keys[first]
     first_indices <- present_indices[first]
     counts <- tabulate(match(keys, unique_keys), nbins = length(unique_keys))
+    result <- profile_count_summary(column, semantics, first_indices, counts, budget, label)
+    result$keys <- keys
+    result
+  }
+
+  profile_count_summary <- function(column, semantics, first_indices, counts, budget, label) {
     priority <- base::order(-counts, seq_along(counts), method = "radix")
     selected <- utils::head(priority, maximum_top_values)
     top_values <- lapply(seq_along(selected), function(result_index) {
@@ -1889,9 +1895,9 @@ openwrangler_r_frame_contract <- local({
       list(value = encoded$display, count = as.integer(counts[[selected[[result_index]]]]))
     })
     list(
-      distinctCount = as.integer(length(unique_keys)),
+      distinctCount = as.integer(length(counts)),
       topValues = json_array(top_values),
-      keys = keys
+      keys = character()
     )
   }
 
@@ -2088,18 +2094,8 @@ openwrangler_r_frame_contract <- local({
     )
   }
 
-  numeric_histogram <- function(values, distinct_count) {
-    finite_values <- values[is.finite(values)]
-    if (length(finite_values) == 0L || distinct_count == 0L) return(NULL)
-    minimum <- min(finite_values)
-    maximum <- max(finite_values)
-    bin_count <- min(maximum_histogram_bins, length(finite_values), distinct_count)
-    if (minimum == maximum) {
-      return(list(
-        kind = "numeric",
-        bins = json_array(list(list(min = as.double(minimum), max = as.double(maximum), count = length(finite_values))))
-      ))
-    }
+  numeric_histogram_edges <- function(minimum, maximum, bin_count) {
+    if (minimum == maximum) return(c(minimum, maximum))
     fractions <- seq_len(bin_count - 1L) / bin_count
     interior_edges <- vapply(
       fractions,
@@ -2109,14 +2105,25 @@ openwrangler_r_frame_contract <- local({
     edges <- c(minimum, interior_edges, maximum)
     edges <- cummax(pmin(maximum, pmax(minimum, edges)))
     if (any(!is.finite(edges))) return(NULL)
-    bin_indices <- findInterval(finite_values, edges, rightmost.closed = TRUE, all.inside = TRUE)
-    counts <- tabulate(bin_indices, nbins = bin_count)
-    edges[[1L]] <- minimum
-    edges[[length(edges)]] <- maximum
-    bins <- lapply(seq_len(bin_count), function(index) {
+    edges
+  }
+
+  numeric_histogram_from_counts <- function(edges, counts) {
+    bins <- lapply(seq_along(counts), function(index) {
       list(min = as.double(edges[[index]]), max = as.double(edges[[index + 1L]]), count = as.integer(counts[[index]]))
     })
     list(kind = "numeric", bins = json_array(bins))
+  }
+
+  numeric_histogram <- function(values, distinct_count) {
+    finite_values <- values[is.finite(values)]
+    if (length(finite_values) == 0L || distinct_count == 0L) return(NULL)
+    edges <- numeric_histogram_edges(
+      min(finite_values), max(finite_values), min(maximum_histogram_bins, length(finite_values), distinct_count)
+    )
+    if (is.null(edges)) return(NULL)
+    bin_indices <- findInterval(finite_values, edges, rightmost.closed = TRUE, all.inside = TRUE)
+    numeric_histogram_from_counts(edges, tabulate(bin_indices, nbins = length(edges) - 1L))
   }
 
   numeric_profile_median <- function(values) {
@@ -2343,8 +2350,15 @@ openwrangler_r_frame_contract <- local({
     text_min_length <- Inf
     text_max_length <- -Inf
     text_total_length <- 0
+    text_counts <- if (kind %in% c("character", "factor")) new.env(hash = TRUE, parent = emptyenv()) else NULL
+    text_keys <- character()
+    text_first_sources <- integer()
+    text_key_bytes <- 0
     numeric_minimum <- NULL
     numeric_maximum <- NULL
+    numeric_finite_minimum <- Inf
+    numeric_finite_maximum <- -Inf
+    numeric_bin_values <- NULL
     numeric_finite_count <- 0
     numeric_mean <- 0
     numeric_exact_mean <- if (kind %in% c("integer", "double", "difftime")) exact_mean_new() else NULL
@@ -2397,6 +2411,40 @@ openwrangler_r_frame_contract <- local({
           text_min_length <- min(text_min_length, min(lengths))
           text_max_length <- max(text_max_length, max(lengths))
           text_total_length <- text_total_length + sum(as.double(lengths))
+          if (!is.null(text_counts)) {
+            first <- !duplicated(text_values)
+            keys <- text_values[first]
+            sources <- present_sources[first]
+            counts <- tabulate(match(text_values, keys), nbins = length(keys))
+            new_keys <- character(length(keys))
+            new_sources <- integer(length(keys))
+            new_count <- 0L
+            for (index in seq_along(keys)) {
+              key <- keys[[index]]
+              environment_key <- paste0(":", key)
+              if (exists(environment_key, envir = text_counts, inherits = FALSE)) {
+                assign(environment_key, get(environment_key, text_counts, inherits = FALSE) + counts[[index]], text_counts)
+              } else {
+                next_bytes <- text_key_bytes + as.double(nchar(key, type = "bytes"))
+                if (length(text_keys) + new_count >= maximum_column_value_distinct_matches ||
+                    next_bytes > maximum_column_value_distinct_key_bytes) {
+                  text_counts <- NULL
+                  text_keys <- character()
+                  text_first_sources <- integer()
+                  break
+                }
+                assign(environment_key, as.double(counts[[index]]), text_counts)
+                text_key_bytes <- next_bytes
+                new_count <- new_count + 1L
+                new_keys[[new_count]] <- key
+                new_sources[[new_count]] <- sources[[index]]
+              }
+            }
+            if (!is.null(text_counts) && new_count != 0L) {
+              text_keys <- c(text_keys, new_keys[seq_len(new_count)])
+              text_first_sources <- c(text_first_sources, new_sources[seq_len(new_count)])
+            }
+          }
         } else if (kind %in% c("date", "datetime")) {
           values <- as.double(present)
           chunk_minimum <- which.min(values)
@@ -2418,6 +2466,12 @@ openwrangler_r_frame_contract <- local({
           finite_values <- values[is.finite(values)]
           numeric_has_nonfinite <- numeric_has_nonfinite || length(finite_values) != length(values)
           if (length(finite_values) != 0L) {
+            numeric_finite_minimum <- min(numeric_finite_minimum, min(finite_values))
+            numeric_finite_maximum <- max(numeric_finite_maximum, max(finite_values))
+            if (length(numeric_bin_values) < maximum_histogram_bins) {
+              bin_values <- if (kind == "integer64") profile_value_keys(present, semantics, seq_along(present)) else finite_values
+              numeric_bin_values <- utils::head(unique(c(numeric_bin_values, unique(bin_values))), maximum_histogram_bins)
+            }
             if (kind != "integer64") numeric_exact_mean <- exact_mean_add(finite_values, numeric_exact_mean)
             numeric_sum <- numeric_sum + sum(finite_values)
             chunk_finite_count <- length(finite_values)
@@ -2456,24 +2510,38 @@ openwrangler_r_frame_contract <- local({
       start <- start + count
     }
 
-    distribution_sampled <- present_count > maximum_profile_sample_rows
-    sample_size <- if (kind == "logical" || (distribution_sampled && kind %in% c("date", "datetime"))) {
+    large_population <- present_count > maximum_profile_sample_rows
+    exact_text_counts <- large_population && !is.null(text_counts)
+    histogram_edges <- if (large_population && numeric_finite_count > 0) {
+      numeric_histogram_edges(numeric_finite_minimum, numeric_finite_maximum, length(numeric_bin_values))
+    } else NULL
+    histogram_counts <- numeric(max(0L, length(histogram_edges) - 1L))
+    sample_size <- if (kind == "logical" || exact_text_counts ||
+        (large_population && !kind %in% c("character", "factor"))) {
       0L
     } else {
       as.integer(min(as.double(present_count), as.double(maximum_profile_sample_rows)))
     }
     sample_sources <- integer(sample_size)
-    if (sample_size != 0L) {
-      sample_ranks <- deterministic_sample_positions(present_count, sample_size)
+    if (sample_size != 0L || !is.null(histogram_edges)) {
+      sample_ranks <- if (sample_size != 0L) deterministic_sample_positions(present_count, sample_size) else integer()
       sampled <- 0L
       seen_present <- 0
       start <- 1
-      while (start <= row_count && sampled < sample_size) {
+      while (start <= row_count && (!is.null(histogram_edges) || sampled < sample_size)) {
         count <- min(maximum_profile_chunk_rows, row_count - start + 1)
         source_positions <- profile_chunk_source_positions(row_positions, start, count)
         chunk <- column[source_positions]
         missing <- profile_missing_masks(chunk, semantics)
-        present_sources <- source_positions[which(!missing$null & !missing$nan)]
+        present_indices <- which(!missing$null & !missing$nan)
+        if (!is.null(histogram_edges)) {
+          values <- numeric_profile_values(chunk, semantics, present_indices)
+          bin_indices <- findInterval(values[is.finite(values)], histogram_edges, rightmost.closed = TRUE, all.inside = TRUE)
+          histogram_counts <- histogram_counts + tabulate(bin_indices, nbins = length(histogram_counts))
+          start <- start + count
+          next
+        }
+        present_sources <- source_positions[present_indices]
         next_seen <- seen_present + length(present_sources)
         first_target <- findInterval(seen_present, sample_ranks) + 1L
         last_target <- findInterval(next_seen, sample_ranks)
@@ -2512,7 +2580,13 @@ openwrangler_r_frame_contract <- local({
         topValues = json_array(entries),
         keys = character()
       )
-    } else if (distribution_sampled && kind %in% c("date", "datetime")) {
+    } else if (exact_text_counts) {
+      counts <- profile_count_summary(
+        column, semantics, text_first_sources,
+        vapply(paste0(":", text_keys), get, numeric(1L), envir = text_counts, inherits = FALSE, USE.NAMES = FALSE),
+        budget, label
+      )
+    } else if (large_population && !kind %in% c("character", "factor")) {
       counts <- list(distinctCount = NULL, topValues = json_array(list()), keys = character())
     } else {
       counts <- profile_value_counts(sample_column, semantics, sample_indices, budget, label)
@@ -2526,13 +2600,13 @@ openwrangler_r_frame_contract <- local({
       totalCount = as.double(row_count),
       nullCount = as.integer(null_count),
       nanCount = as.integer(nan_count),
-      topValues = if (distribution_sampled && kind %in% c("integer", "integer64", "double", "difftime")) {
+      topValues = if (large_population && kind %in% c("integer", "integer64", "double", "difftime")) {
         json_array(list())
       } else {
         counts$topValues
       }
     )
-    if (!distribution_sampled || kind == "logical") summary$distinctCount <- counts$distinctCount
+    if (!large_population || kind == "logical" || exact_text_counts) summary$distinctCount <- counts$distinctCount
 
     if (kind %in% c("integer", "integer64", "double", "difftime")) {
       numeric <- list()
@@ -2558,7 +2632,7 @@ openwrangler_r_frame_contract <- local({
         }
       }
       sample_values <- numeric_profile_values(sample_column, semantics, sample_indices)
-      if (!distribution_sampled && length(sample_values) != 0L) {
+      if (!large_population && length(sample_values) != 0L) {
         median_value <- finite_statistic(suppressWarnings(numeric_profile_median(sample_values)))
         if (!is.null(median_value)) numeric$median <- median_value
       }
@@ -2568,9 +2642,9 @@ openwrangler_r_frame_contract <- local({
       }
       if (length(numeric) != 0L) summary$numeric <- numeric
       finite_keys <- counts$keys[is.finite(sample_values)]
-      visualization <- numeric_histogram(sample_values, length(unique(finite_keys)))
+      visualization <- if (!is.null(histogram_edges)) numeric_histogram_from_counts(histogram_edges, histogram_counts) else
+        numeric_histogram(sample_values, length(unique(finite_keys)))
       if (!is.null(visualization)) {
-        if (distribution_sampled) visualization$sampled <- TRUE
         summary$visualization <- visualization
       }
     } else if (kind == "logical") {
@@ -2603,9 +2677,10 @@ openwrangler_r_frame_contract <- local({
       visualization <- list(
         kind = "categorical",
         categories = counts$topValues,
-        otherCount = as.integer(sample_size - sum(vapply(counts$topValues, `[[`, integer(1L), "count")))
+        otherCount = as.integer((if (exact_text_counts) present_count else sample_size) -
+          sum(vapply(counts$topValues, `[[`, integer(1L), "count")))
       )
-      if (distribution_sampled) visualization$sampled <- TRUE
+      if (large_population && !exact_text_counts) visualization$sampled <- TRUE
       summary$visualization <- visualization
     }
     summary

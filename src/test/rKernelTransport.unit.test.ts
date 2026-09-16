@@ -391,6 +391,19 @@ describe("native R kernel protocol", () => {
       kind: "summary",
       summaries: [{ totalCount: 1_500_001, visualization: { sampled: true } }]
     });
+    const exactHistogram = JSON.parse(sampledSummary);
+    exactHistogram.summaries[0].visualization = {
+      kind: "numeric",
+      bins: [{ min: 1, max: 1_500_001, count: 1_500_001 }]
+    };
+    expect(decodeRKernelResponseJson(JSON.stringify(exactHistogram), summaryRequestId)).toMatchObject({
+      kind: "summary",
+      summaries: [{ topValues: [], visualization: { bins: [{ count: 1_500_001 }] } }]
+    });
+    exactHistogram.summaries[0].visualization.bins[0].count++;
+    expect(() => decodeRKernelResponseJson(JSON.stringify(exactHistogram), summaryRequestId)).toThrow(
+      "histogram counts outside the column"
+    );
     expect(() =>
       decodeRKernelResponseJson(
         JSON.stringify({
