@@ -12327,7 +12327,13 @@ async function capturePackagedExportOutcomeScenes(
     sourceBytes,
     "Applying the product workflow must preserve the source."
   );
-  assert.equal(await testing.synchronizePanel(sessionId), true, "Export capture must synchronize its applied plan.");
+  await synchronizedSessionApp(
+    workbench,
+    testing,
+    sessionId,
+    "Export capture must observe the applied plan's production publication.",
+    10_000
+  );
   const active = testing.activeSession();
   assert.equal(active?.sessionId, sessionId);
   const generatedCode = active?.code ?? "";
@@ -12578,7 +12584,13 @@ async function capturePackagedEditAndUndoScenes(
     "the edited latest step to apply without appending another plan entry"
   );
   assertExactBytes(readFileSync(fixture.fsPath), sourceBytes, "Editing the latest step must preserve the source.");
-  assert.equal(await testing.synchronizePanel(sessionId), true);
+  await synchronizedSessionApp(
+    workbench,
+    testing,
+    sessionId,
+    "Latest-step capture must observe the edited plan's production publication.",
+    10_000
+  );
   await fitPackagedWorkflowFormulaDraftGrid(testing, workbench, sessionId);
   let codePreview = await waitForCodePreview(workbench, "pl.lit(750)");
   let sidebar = await arrangePackagedProductSidebar(workbench, "workflow");
@@ -12626,7 +12638,13 @@ async function capturePackagedEditAndUndoScenes(
     "Undo to remove exactly the edited latest formula step"
   );
   assertExactBytes(readFileSync(fixture.fsPath), sourceBytes, "Undoing the latest step must preserve the source.");
-  assert.equal(await testing.synchronizePanel(sessionId), true);
+  await synchronizedSessionApp(
+    workbench,
+    testing,
+    sessionId,
+    "Undo capture must observe the remaining plan's production publication.",
+    10_000
+  );
   await fitPackagedUppercasePlanGrid(testing, workbench, sessionId);
   codePreview = await waitForCodePreview(workbench, "market_upper");
   sidebar = await arrangePackagedProductSidebar(workbench, "workflow");
@@ -12681,7 +12699,13 @@ async function capturePackagedEditAndUndoScenes(
     30_000,
     "the original 500-unit formula to return after edit and undo media"
   );
-  assert.equal(await testing.synchronizePanel(sessionId), true);
+  await synchronizedSessionApp(
+    workbench,
+    testing,
+    sessionId,
+    "Media restoration must observe the restored plan's production publication.",
+    10_000
+  );
   await fitPackagedWorkflowFormulaDraftGrid(testing, workbench, sessionId);
   await waitForCodePreview(workbench, "pl.lit(500)");
   await arrangePackagedProductSidebar(workbench, "workflow");
