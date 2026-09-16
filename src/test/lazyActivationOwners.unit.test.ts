@@ -676,6 +676,32 @@ describe("lazy activation owners", () => {
     expect(owners.bridgeShutdown).toHaveBeenCalledOnce();
   });
 
+  it("binds a copied plan to its new native file delegate and releases a rejected binding", async () => {
+    active = createOwners();
+    active.startBeforeFirstYield();
+    await host.executeCommand("openWrangler.openFile");
+    const factory = owners.fileRegistered.mock.calls[0]![2] as import("../extension/files/fileOpen").RFileBridgeFactory;
+    const source = { kind: "file" as const, label: "target.csv", path: "/target.csv", uri: "file:///target.csv" };
+    const request = vi.fn();
+    const bind = vi.fn(() => ({ request }));
+    const target = await factory(source, bind);
+    const first = owners.rFileCreated.mock.results[0]!.value;
+    expect(bind).toHaveBeenCalledExactlyOnceWith(first);
+    expect(target.request).toBe(request);
+    expect(owners.coordinatedBridge).toHaveBeenCalledOnce();
+    await expect(
+      factory(source, () => {
+        throw new Error("origin retired");
+      })
+    ).rejects.toThrow("origin retired");
+    const failed = owners.rFileCreated.mock.results[1]!.value;
+    expect(failed.onIdle).toHaveBeenCalledOnce();
+    expect(first.onIdle).not.toHaveBeenCalled();
+    target.onIdle?.();
+    expect(first.onIdle).toHaveBeenCalledOnce();
+    expect(failed.request).not.toHaveBeenCalled();
+  });
+
   it("retains the provider until shutdown when file-command registration rolls back", async () => {
     active = createOwners();
     active.startBeforeFirstYield();

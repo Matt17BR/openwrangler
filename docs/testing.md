@@ -146,6 +146,9 @@ Use the existing owners to choose a focused source check:
   [panel publication](../src/test/webviewPanel.unit.test.ts) own confirmed state, stale responses, failed saves,
   replay and retirement. [Plan rewrites](../src/test/sessionCoordinator.planRewrite.unit.test.ts) own viewing-state
   restoration. Initial restoration must stop dispatch and fallback when its opening owner retires.
+  Native R plan reuse also uses the existing real managed-process owner: two separate source-pinned file delegates
+  replay a reordered Rename, Formula and Floor plan through the coordinator, then execute generated R in a fresh
+  process. It checks target values, original state/source preservation and independent close on minimum/current R.
   File-plan reuse uses coordinator persistence, the [persistence store](../src/test/sessionPersistenceStore.unit.test.ts)
   and [file commands](../src/test/fileOpen.unit.test.ts) for private target publication, captured picker ownership,
   engine/import settings and failure restoration. Native operation semantics stay in their engine owners.

@@ -12,7 +12,10 @@ import { captureSessionSourceProtection, confirmSessionSourceProtection } from "
 
 const CUSTOM_EDITOR_ID = "openWrangler.viewer";
 type FileDataBackend = Extract<DataBackend, "polars" | "duckdb" | "pandas" | "r">;
-export type RFileBridgeFactory = (source: SessionSource) => Promise<OpenWranglerBridge>;
+export type RFileBridgeFactory = (
+  source: SessionSource,
+  bindDelegate?: (delegate: OpenWranglerBridge) => OpenWranglerBridge
+) => Promise<OpenWranglerBridge>;
 
 async function selectFileBridge(
   source: SessionSource,
@@ -115,6 +118,7 @@ export const registerFileCommands = (
   bridge: OpenWranglerBridge,
   createRBridge?: RFileBridgeFactory
 ): void => {
+  let disposed = false;
   const openSource = async (
     source: SessionSource,
     backendPreference: FileDataBackend | "auto",
@@ -173,6 +177,7 @@ export const registerFileCommands = (
   const databaseOpens = new Set<vscode.CancellationTokenSource>();
   context.subscriptions.push({
     dispose: () => {
+      disposed = true;
       for (const attempt of databaseOpens) attempt.cancel();
     }
   });
@@ -331,15 +336,24 @@ export const registerFileCommands = (
         filters: { "Data files": enabledFileTypes }
       });
       const selected = files?.[0];
-      if (!selected || !(await validateFileTarget(selected))) return;
-      OpenWranglerPanel.create(
-        context,
-        captured.bridge,
-        fileSource(selected, captured.importOptions),
-        captured.backend,
-        captured.backend,
-        "editing"
-      );
+      if (!selected || disposed || !captured.isCurrent() || !(await validateFileTarget(selected))) return;
+      const source = fileSource(selected, captured.importOptions);
+      let targetBridge: OpenWranglerBridge | undefined;
+      let handedOff = false;
+      try {
+        if (disposed || !captured.isCurrent()) return;
+        if (captured.backend === "r") {
+          if (!createRBridge) throw new Error("Native R file opening is unavailable in this extension host.");
+          targetBridge = await createRBridge(source, captured.createBridge);
+        } else targetBridge = captured.createBridge();
+        if (disposed || !captured.isCurrent()) return;
+        OpenWranglerPanel.create(context, targetBridge, source, captured.backend, captured.backend, "editing");
+        handedOff = true;
+      } catch (error) {
+        if (!disposed) await vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
+      } finally {
+        if (!handedOff && captured.backend === "r") targetBridge?.onIdle?.();
+      }
     })
   );
 

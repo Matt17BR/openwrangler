@@ -6,6 +6,7 @@ import type { SessionSourceProtection } from "../extension/files/safeFileExport"
 import type { SessionSource } from "../shared/protocol";
 import { FileBackendUnavailableError } from "../extension/dataBridge";
 import { isSessionSource } from "../shared/protocolValidation";
+import type { RFileBridgeFactory } from "../extension/files/fileOpen";
 
 type CommandHandler = (...args: unknown[]) => unknown;
 
@@ -381,7 +382,8 @@ describe("file launch command", () => {
     const captured: FilePlanOpenContext = {
       backend: "pandas",
       importOptions: { delimiter: ";", encoding: "windows-1252", quoteChar: "'", hasHeader: false },
-      bridge: targetBridge
+      isCurrent: () => true,
+      createBridge: () => targetBridge
     };
     const capture = vi.fn(() => captured);
     bridge.captureActiveFilePlan = capture;
@@ -389,7 +391,12 @@ describe("file launch command", () => {
       expect(capture).toHaveBeenCalledOnce();
       fileMocks.defaultBackend = "duckdb";
       fileMocks.activeTextUri = vscode.Uri.file("/workspace/unrelated.parquet");
-      capture.mockReturnValue({ backend: "polars", importOptions: undefined, bridge });
+      capture.mockReturnValue({
+        backend: "polars",
+        importOptions: undefined,
+        isCurrent: () => true,
+        createBridge: () => bridge
+      });
       return [target];
     });
 
@@ -414,6 +421,85 @@ describe("file launch command", () => {
       "editing"
     );
     expect(fileMocks.bridgeRequest).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "success",
+    "cancelled",
+    "stale before",
+    "stale after",
+    "disposed",
+    "factory failure",
+    "panel failure"
+  ] as const)("keeps an R plan target owned through factory handoff: %s", async (outcome) => {
+    let current = true;
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const native: OpenWranglerBridge = { request: vi.fn(), onIdle: vi.fn() };
+    const targetBridge: OpenWranglerBridge = { request: vi.fn(), onIdle: native.onIdle };
+    const bind = vi.fn(() => targetBridge);
+    const factory = vi.fn<RFileBridgeFactory>(async (_source, bindDelegate) => {
+      if (outcome === "factory failure") throw new Error("factory failed");
+      const result = bindDelegate!(native);
+      await pending;
+      return result;
+    });
+    const { context, bridge } = register(factory);
+    bridge.captureActiveFilePlan = () => ({
+      backend: "r",
+      importOptions: { delimiter: ";" },
+      isCurrent: () => current,
+      createBridge: bind
+    });
+    const uri = vscode.Uri.file("/workspace/target.csv");
+    fileMocks.showOpenDialog.mockImplementationOnce(async () => {
+      if (outcome === "stale before") current = false;
+      return outcome === "cancelled" ? undefined : [uri];
+    });
+    const opening = command("openWrangler.openFileWithPlan")();
+    if (outcome === "cancelled" || outcome === "stale before") {
+      await opening;
+      expect(factory).not.toHaveBeenCalled();
+    } else if (outcome === "factory failure") {
+      await opening;
+      expect(factory).toHaveBeenCalledOnce();
+      expect(bind).not.toHaveBeenCalled();
+      expect(fileMocks.showErrorMessage).toHaveBeenCalledWith("factory failed");
+      expect(native.onIdle).not.toHaveBeenCalled();
+    } else {
+      await vi.waitFor(() => expect(factory).toHaveBeenCalledOnce());
+      expect(factory).toHaveBeenCalledWith(
+        expect.objectContaining({ path: uri.fsPath, uri: uri.toString(), importOptions: { delimiter: ";" } }),
+        bind
+      );
+      expect(bind).toHaveBeenCalledExactlyOnceWith(native);
+      if (outcome === "stale after") current = false;
+      if (outcome === "disposed") for (const subscription of context.subscriptions) subscription.dispose();
+      if (outcome === "panel failure")
+        fileMocks.createPanel.mockImplementationOnce(() => {
+          throw new Error("panel failed");
+        });
+      finish();
+      await opening;
+    }
+    if (outcome === "success") {
+      expect(fileMocks.createPanel).toHaveBeenCalledExactlyOnceWith(
+        context,
+        targetBridge,
+        expect.objectContaining({ path: uri.fsPath }),
+        "r",
+        "r",
+        "editing"
+      );
+      expect(native.onIdle).not.toHaveBeenCalled();
+    } else if (outcome === "stale after" || outcome === "disposed" || outcome === "panel failure") {
+      expect(native.onIdle).toHaveBeenCalledOnce();
+      expect(fileMocks.createPanel).toHaveBeenCalledTimes(outcome === "panel failure" ? 1 : 0);
+    } else expect(fileMocks.createPanel).not.toHaveBeenCalled();
+    expect(fileMocks.bridgeRequest).not.toHaveBeenCalled();
+    expect(native.request).not.toHaveBeenCalled();
   });
 
   it.each(["unavailable", "busy"])("explains a %s plan source before opening the picker", async (reason) => {
@@ -441,7 +527,12 @@ describe("file launch command", () => {
 
   it.each(["cancelled", "unsupported"])("does not open a plan target when its selection is %s", async (reason) => {
     const { bridge } = register();
-    bridge.captureActiveFilePlan = () => ({ backend: "polars", importOptions: undefined, bridge });
+    bridge.captureActiveFilePlan = () => ({
+      backend: "polars",
+      importOptions: undefined,
+      isCurrent: () => true,
+      createBridge: () => bridge
+    });
     fileMocks.showOpenDialog.mockResolvedValueOnce(
       reason === "cancelled" ? undefined : [vscode.Uri.file("/workspace/private.pkl")]
     );
@@ -1296,7 +1387,7 @@ function resolutionToken(cancelled = false) {
   return { isCancellationRequested: cancelled, onCancellationRequested: () => ({ dispose: () => undefined }) };
 }
 
-function register(createRBridge?: (source: SessionSource) => Promise<OpenWranglerBridge>): {
+function register(createRBridge?: RFileBridgeFactory): {
   context: ExtensionContext;
   bridge: OpenWranglerBridge;
 } {

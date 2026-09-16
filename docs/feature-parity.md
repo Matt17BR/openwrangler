@@ -633,7 +633,7 @@ Local R files use a base `data.frame` with the existing R cleaning operations. F
 live R notebook, document and terminal sessions do not use workspace persistence.
 Select R explicitly in the engine picker or `openWrangler.defaultBackend`, or let Auto select R when no compatible
 Python interpreter or file engine is available. Switching between R and Python opens a separate session and retains the original plan.
-R import-options changes also create a separate session. **Open Another File with This Plan** remains Python-only.
+R import-options changes also create a separate session. **Open Another File with This Plan** also accepts confirmed built-in R file plans.
 
 R CSV/TSV imports accept UTF-8, explicit UTF-8-lossy, UTF-16LE/BE, ISO-8859-1 and Windows-1252, with distinct ASCII
 delimiter/quote choices and LF, CRLF or CR records. Quoted CR/CRLF normalize to LF. Headerless input and duplicate/empty
@@ -849,14 +849,14 @@ the contract.
 ## Reuse a file cleaning plan
 
 **Open Wrangler: Open Another File with This Plan** opens a separate Editing session with a confirmed built-in
-plan from a Pandas, Polars or DuckDB file session. The selected file must have matching original column names and
+plan from a Pandas, Polars, DuckDB or native R file session. The selected file must have matching original column names and
 types, in any order, and uses the same engine and import options. The target keeps its column order unless a cleaning
 step changes it. An unfinished draft, Custom Code, ambiguous column names, a target already open in Open Wrangler,
 or saved target work prevents reuse. Full replay must succeed before the new session is shown. Viewing filters and
 sorts are not copied, and both source files remain unchanged.
 
 Mapping renamed columns, notebook inputs, recipe files and batch execution remain unavailable. DuckDB keeps its
-experimental file-editing status. Source evidence: test:src/test/fileOpen.unit.test.ts;
+experimental file-editing status. Local R file support remains Preview. Source evidence: test:src/test/fileOpen.unit.test.ts;
 test:src/test/sessionCoordinator.persistence.unit.test.ts; test:src/test/sessionPersistenceStore.unit.test.ts.
 The [architecture contract](architecture.md#sources-sessions-and-data-flow) records source identity and late-cancellation
 semantics. The existing daily-core journey owns the installed command, file picker and rendered target interaction.

@@ -19,6 +19,7 @@ import {
   SESSION_STORAGE_KEY
 } from "../extension/sessionPersistence";
 import {
+  type OpenWranglerBridge,
   type BridgeRequestOptions,
   type CancellationTokenLike,
   DetachedBridgeRequestError
@@ -32,6 +33,10 @@ import {
   previewFor
 } from "./sessionReconfigurationTestFixtures";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
+import { RKernelBridge } from "../extension/r/rKernelBridge";
+import { RKernelDiagnosticError } from "../extension/r/rKernelTransport";
+import { R_KERNEL_TRANSPORT_VERSION } from "../extension/r/rKernelProtocol";
+import { fakeRKernelTransport, rKernelFrameContract } from "./rKernelBridgeTestFixtures";
 import { SessionPersistenceStore } from "../extension/sessionPersistenceStore";
 import { isOpenWranglerRequest, isOpenWranglerResponse } from "../shared/protocolValidation";
 import type { GridViewState } from "../shared/viewState";
@@ -1597,6 +1602,135 @@ function presentationOpenedResponse(): ReturnType<typeof openedResponse> {
 }
 
 describe("SessionCoordinator file-plan reuse", () => {
+  it.each(["ordinary", "detached"] as const)(
+    "disposes only the abandoned R file target after %s close failure settles",
+    async (failure) => {
+      const fixture = await filePlanFixture(false, "r");
+      const sample = rKernelFrameContract();
+      const schema = ["value", "other"].map((name, position) => ({
+        ...sample.schema[0],
+        id: `r:c:${position}`,
+        name,
+        position
+      }));
+      const contract = {
+        ...sample,
+        schema,
+        shape: { ...sample.shape, columns: 2 },
+        page: {
+          ...sample.page,
+          limit: fixture.targetRequest.pageSize,
+          columnLimit: fixture.targetRequest.columnLimit,
+          columnIds: schema.map(({ id }) => id),
+          rows: sample.page.rows.map((row) => ({ ...row, values: [row.values[0], row.values[0]] }))
+        }
+      };
+      const transport = fakeRKernelTransport(contract);
+      transport.open.mockImplementation(async (_variable, _page, options) => ({
+        sessionId: options!.requestedSessionId!,
+        page: contract,
+        exportFormats: ["csv"]
+      }));
+      transport.previewStep.mockRejectedValueOnce(
+        new RKernelDiagnosticError({
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
+          requestId: "target-preview",
+          kind: "error",
+          code: "runtime_error",
+          message: "target replay failed",
+          recoverable: true
+        })
+      );
+      const close = rejectingDeferred<void>();
+      const settlement = deferred<void>();
+      transport.close.mockImplementationOnce(() =>
+        failure === "detached"
+          ? Promise.reject(new DetachedBridgeRequestError("target close detached", "timeout", true, settlement.promise))
+          : close.promise
+      );
+      const diagnostics = vi.fn();
+      const target = new RKernelBridge(
+        {} as vscode.ExtensionContext,
+        transport,
+        undefined,
+        diagnostics,
+        undefined,
+        {},
+        undefined,
+        fixture.targetRequest.source
+      );
+      try {
+        const pending = fixture.capture(target).bridge.request(fixture.targetRequest);
+        await vi.waitFor(() => expect(transport.close).toHaveBeenCalledTimes(1));
+        expect(transport.previewStep).toHaveBeenCalledTimes(1);
+        expect(transport.dispose).not.toHaveBeenCalled();
+        expect(fixture.coordinator.diagnostics().sessionCount).toBe(1);
+        if (failure === "detached") settlement.resolve();
+        else close.reject(new Error("target close failed"));
+        await expect(pending).resolves.toMatchObject({ kind: "error", code: "file_plan_replay_failed" });
+        await vi.waitFor(() => expect(transport.dispose).toHaveBeenCalledTimes(1));
+        expect(fixture.coordinator.activeSession()?.sessionId).toBe(fixture.originId);
+        expect(fixture.coordinator.sessionSnapshot(fixture.originId)).toEqual(fixture.originSnapshot);
+        expect(fixture.stored[fixture.originKey]).toEqual(fixture.savedOrigin);
+        expect(Object.hasOwn(fixture.stored, fixture.targetKey)).toBe(false);
+        expect(await readFile(fixture.originPath, "utf8")).toBe("value,other\n1.2,10\n2.3,20\n");
+        expect(await readFile(fixture.targetPath, "utf8")).toBe("value,other\n4.5,30\n6.7,40\n");
+      } finally {
+        close.resolve();
+        settlement.resolve();
+        await target.dispose();
+        await fixture.close();
+      }
+    }
+  );
+
+  it.each(["compatible", "schema", "replay failure", "cancellation", "target replacement"] as const)(
+    "reuses the exact active R file through a separate target delegate: %s",
+    async (outcome) => {
+      const fixture = await filePlanFixture(true, "r");
+      const cancellation = new vscode.CancellationTokenSource();
+      try {
+        const captured = fixture.capture();
+        if (outcome === "schema") fixture.targetSchemaMismatch = true;
+        fixture.beforeTargetPreview = async () => {
+          if (outcome === "cancellation") cancellation.cancel();
+          if (outcome === "target replacement") fixture.targetRuntimeOwnerCurrent = false;
+          if (outcome === "replay failure")
+            return { kind: "error", code: "engine_error", message: "Cannot replay", recoverable: true };
+          return undefined;
+        };
+        const result = await captured.bridge.request(fixture.targetRequest, { cancellation: cancellation.token });
+        if (outcome === "compatible") {
+          expect(result).toMatchObject({
+            kind: "sessionOpened",
+            metadata: { backend: "r", source: fixture.targetRequest.source }
+          });
+          expect(fixture.coordinator.activeSession()?.metadata.schema.map(({ id, name }) => [id, name])).toEqual([
+            ["r:c:0", "other"],
+            ["r:c:1", "amount"],
+            ["c:step:total:0", "total"]
+          ]);
+          expect(fixture.coordinator.activeSession()?.metadata.steps[1]).toMatchObject({
+            params: { leftColumn: { id: "r:c:1", name: "amount" }, rightColumn: { id: "r:c:0", name: "other" } }
+          });
+          expect(fixture.coordinator.activeSession()?.code).toBe("# target.csv");
+        } else {
+          expect(result.kind).toBe(outcome === "cancellation" ? "cancelled" : "error");
+          expect(fixture.coordinator.activeSession()?.sessionId).toBe(fixture.originId);
+          expect(fixture.targetRequests.filter(({ kind }) => kind === "closeSession")).toHaveLength(1);
+          expect(Object.hasOwn(fixture.stored, fixture.targetKey)).toBe(false);
+        }
+        expect(fixture.coordinator.sessionSnapshot(fixture.originId)).toEqual(fixture.originSnapshot);
+        expect(fixture.stored[fixture.originKey]).toEqual(fixture.savedOrigin);
+        expect(await readFile(fixture.originPath, "utf8")).toBe("value,other\n1.2,10\n2.3,20\n");
+        expect(await readFile(fixture.targetPath, "utf8")).toBe("other,value\n30,4.5\n40,6.7\n");
+      } finally {
+        cancellation.dispose();
+        await fixture.close();
+      }
+    }
+  );
+
   it.each([false, true])("keeps a copied plan private until saved with reordered input %s", async (reordered) => {
     const fixture = await filePlanFixture(reordered);
     const finalWrite = deferred<void>();
@@ -1866,7 +2000,8 @@ describe("SessionCoordinator file-plan reuse", () => {
   );
 });
 
-async function filePlanFixture(reordered = false) {
+async function filePlanFixture(reordered = false, backend: "polars" | "r" = "polars") {
+  const columnId = (position: number): string => `${backend === "r" ? "r:c" : "c:source"}:${position}`;
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-file-plan-"));
   const originPath = join(directory, "origin.csv");
   const targetPath = join(directory, "target.csv");
@@ -1884,23 +2019,23 @@ async function filePlanFixture(reordered = false) {
     {
       id: "rename-value",
       kind: "renameColumn",
-      params: { column: { id: "c:source:0", name: "value" }, newName: "amount" }
+      params: { column: { id: columnId(0), name: "value" }, newName: "amount" }
     },
     {
       id: "total",
       kind: "formula",
       params: {
-        leftColumn: { id: "c:source:0", name: "amount" },
-        rightColumn: { id: "c:source:1", name: "other" },
+        leftColumn: { id: columnId(0), name: "amount" },
+        rightColumn: { id: columnId(1), name: "other" },
         operator: "add",
         newColumn: "total"
       }
     },
     { id: "floor-total", kind: "floorNumber", params: { column: { id: "c:step:total:0", name: "total" } } }
   ];
-  const originKey = persistenceKey(originSource, "polars");
-  const targetKey = persistenceKey(targetSource, "polars");
-  const originMetadata = metadataFor({ runtimeId: "seed", source: originSource, steps });
+  const originKey = persistenceKey(originSource, backend);
+  const targetKey = persistenceKey(targetSource, backend);
+  const originMetadata = { ...metadataFor({ runtimeId: "seed", source: originSource, steps }), backend };
   const savedOrigin = serializePersistedSession(
     persistedSessionState(originMetadata, { columnWidths: new Map(), viewport: { firstVisibleRow: 0, scrollLeft: 0 } })
   );
@@ -1937,7 +2072,7 @@ async function filePlanFixture(reordered = false) {
   const sessions = new Map<string, SessionMetadata>();
   const targetRequests: OpenWranglerRequest[] = [];
   let ordinal = 0;
-  const bridge = coordinator.createBridge({
+  const delegate: OpenWranglerBridge = {
     captureFileSessionOwner: (sessionId) => {
       const owner = sessions.get(sessionId);
       const available = () =>
@@ -1949,12 +2084,18 @@ async function filePlanFixture(reordered = false) {
     },
     request: async (request: OpenWranglerRequest, _options?: BridgeRequestOptions): Promise<OpenWranglerResponse> => {
       if (request.kind === "openSession") {
-        const metadata = metadataFor({ runtimeId: `runtime-${++ordinal}`, source: request.source });
+        const metadata = { ...metadataFor({ runtimeId: `runtime-${++ordinal}`, source: request.source }), backend };
         metadata.schema = (
           request.source.path !== originPath
             ? (controls.targetColumnNames ?? (reordered ? ["other", "value"] : ["value", "other"]))
             : ["value", "other"]
-        ).map((name, position) => ({ ...metadata.schema[0], id: `c:source:${position}`, name, position }));
+        ).map((name, position) => ({
+          ...metadata.schema[0],
+          rawType: backend === "r" ? "double" : metadata.schema[0].rawType,
+          id: columnId(position),
+          name,
+          position
+        }));
         metadata.shape.columns = metadata.filteredShape.columns = metadata.schema.length;
         if (request.source.path !== originPath) {
           targetRequests.push(request);
@@ -2014,8 +2155,20 @@ async function filePlanFixture(reordered = false) {
       }
       throw new Error(`Unexpected fixture request ${request.kind}`);
     }
+  };
+  const bindSource = (source: SessionSource): OpenWranglerBridge => ({
+    ...delegate,
+    request: (request, options) => {
+      if (request.kind === "openSession" && request.source.path !== source.path)
+        throw new Error("R delegate received another file");
+      return delegate.request(request, options);
+    }
   });
-  const originRequest = { ...openRequest, source: originSource };
+  const originDelegate = backend === "r" ? bindSource(originSource) : delegate;
+  const targetDelegate = backend === "r" ? bindSource(targetSource) : undefined;
+  const bridge = coordinator.createBridge(originDelegate);
+  const commandBridge = backend === "r" ? coordinator.createBridge({ request: vi.fn() }) : bridge;
+  const originRequest = { ...openRequest, source: originSource, backend };
   const origin = await bridge.request(originRequest);
   if (origin.kind !== "sessionOpened") {
     await coordinator.shutdown();
@@ -2041,11 +2194,11 @@ async function filePlanFixture(reordered = false) {
     originId: origin.metadata.sessionId,
     originSnapshot,
     targetRequests,
-    targetRequest: { ...openRequest, source: targetSource },
-    capture() {
-      const selected = bridge.captureActiveFilePlan!();
+    targetRequest: { ...openRequest, source: targetSource, backend },
+    capture(delegate = targetDelegate) {
+      const selected = commandBridge.captureActiveFilePlan!();
       if ("kind" in selected) throw new Error(selected.message);
-      return selected;
+      return { ...selected, bridge: selected.createBridge(delegate) };
     },
     async close() {
       await coordinator.shutdown();

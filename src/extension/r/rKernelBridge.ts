@@ -144,6 +144,20 @@ export class RKernelBridge implements OpenWranglerBridge {
     };
   }
 
+  captureFileSessionOwner(sessionId: string): (() => boolean) | undefined {
+    const session = this.sessions.get(sessionId);
+    if (!this.fileSource || session?.source.kind !== "file") return undefined;
+    const generation = this.kernelGeneration;
+    const isCurrent = (): boolean =>
+      !this.disposed &&
+      !session.invalidated &&
+      generation === this.kernelGeneration &&
+      this.sessions.get(sessionId) === session &&
+      !this.closeOperations.has(sessionId) &&
+      this.transport.isSessionMapped(sessionId);
+    return isCurrent() ? isCurrent : undefined;
+  }
+
   async request(request: OpenWranglerRequest, options: BridgeRequestOptions = {}): Promise<OpenWranglerResponse> {
     if (this.disposed) throw new Error("The Open Wrangler R bridge has been disposed.");
     this.idleRequested = false;
@@ -345,6 +359,7 @@ export class RKernelBridge implements OpenWranglerBridge {
       return await completion;
     } finally {
       this.closeOperations.delete(sessionId);
+      this.releaseIdleStateIfSafe();
     }
   }
 
@@ -412,14 +427,15 @@ export class RKernelBridge implements OpenWranglerBridge {
     if (
       !this.idleRequested ||
       this.disposed ||
-      this.sessions.size > 0 ||
+      (this.sessions.size > 0 && !this.fileSource) ||
       this.openingSessionIds.size > 0 ||
       this.closeOperations.size > 0
     ) {
       return;
     }
-    // Transport disposal waits for accepted work and owns its exact-kernel
-    // terminal cleanup. Keep failures visible in the R diagnostics channel.
+    // Coordinator idle follows accepted work and detached cleanup. A file process
+    // can retire a failed close's local mapping; notebook mappings remain retryable.
+    // Keep exact-transport cleanup failures visible in the R diagnostics channel.
     void this.dispose().catch((error: unknown) => {
       this.reportDiagnostic(
         `Open Wrangler could not finish R kernel cleanup: ${error instanceof Error ? error.message : String(error)}`

@@ -132,7 +132,7 @@ Excel imports accept exactly one nonempty worksheet name or zero-based sheet ind
 whitespace-only names. Discovery, picker selections, manual input and remembered file settings retain that exact
 identity through runtime validation and native reading. Empty names and conflicting selectors remain invalid.
 
-**Open Another File with This Plan** captures one confirmed, draft-free Pandas, Polars or DuckDB file plan before
+**Open Another File with This Plan** captures one confirmed, draft-free Pandas, Polars, DuckDB or native R file plan before
 the picker opens. It excludes Custom Code and requires unique, non-empty original column names. The host retains
 the validated original file schema through ordinary edits, refreshing it on source/runtime replacement. This receipt
 is private and is not persisted. Target columns must have the same names, semantic types and raw types; observed
@@ -144,9 +144,12 @@ current input schema. Target column order is preserved unless a cleaning step ch
 target's input-order requirements. Both files use the same concrete backend and
 import options. Renamed, extra or missing columns and notebook inputs remain outside this command's scope.
 
-The captured session, Python process, environment selection and revision must remain current through replay and
-persistence staging; switching active editors cannot retarget the action. The target's exact Python process and
-environment selection are retained from its confirmed open through final publication.
+The captured session, runtime owner and revision must remain current through replay and persistence staging;
+switching active editors cannot retarget the action. Python retains its exact process and environment selection.
+R retains its exact bridge session, transport mapping and kernel generation. The global file command captures the
+active session's actual delegate; ordinary request authorization remains bound to each bridge. A target R file receives
+its own source-pinned process through the existing factory and coordinator replay path. Source ownership never moves
+to the selected target. The target's runtime owner is retained from confirmed open through final publication.
 The origin's already-loaded data is not re-executed. The selected target follows ordinary eager-snapshot or lazy-file
 fingerprint rules. Current and retained file identities prevent selecting
 the origin or another open file session through a path, symlink or hard-link alias. Unverifiable identities are refused.
@@ -156,6 +159,8 @@ configuration keys are preserved. The existing store repeats that absence check 
 The existing restorer replays the complete plan privately, with one-row intermediate responses, and obtains the final
 page before saving. Small responses do not bound native scans or temporary memory. The candidate becomes an ordinary
 Editing session only after durable success. Failure closes only that candidate, after detached execution settles.
+A failed native close cannot strand an unpublished R file process: coordinator idle retires that exact file delegate
+once its pending and detached work settles. Notebook mappings keep their retryable close behavior.
 The failure response is selected before terminal cleanup, preserving an already-observed cancellation or stale owner;
 closing the failed candidate does not replace a schema, replay or storage diagnostic with a runtime-change error.
 Cancellation, runtime retirement or file replacement during the final durable write can leave the copied plan saved

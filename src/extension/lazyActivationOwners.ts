@@ -571,11 +571,17 @@ export class LazyActivationOwners implements vscode.Disposable {
     ]);
     this.assertActive();
     this.replaceCommandGroup("file");
-    const createRBridge: import("./files/fileOpen").RFileBridgeFactory = async (source) => {
+    const createRBridge: import("./files/fileOpen").RFileBridgeFactory = async (source, bindDelegate) => {
       const [rFile, session] = await Promise.all([this.moduleLoaders.rFileSource(), this.ensureSessionOwner()]);
       this.assertActive();
       const native = rFile.createRFileBridge(this.context, source);
-      return { ...session.coordinator.createBridge(native), onIdle: () => native.onIdle() };
+      try {
+        const coordinated = bindDelegate ? bindDelegate(native) : session.coordinator.createBridge(native);
+        return { ...coordinated, onIdle: () => native.onIdle() };
+      } catch (error) {
+        native.onIdle();
+        throw error;
+      }
     };
     this.captureOwnerRegistration("file", () =>
       fileOpenModule.registerFileCommands(this.context, coordinatedBridge, createRBridge)

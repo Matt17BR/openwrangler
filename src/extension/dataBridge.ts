@@ -97,9 +97,10 @@ export interface SessionRuntimeReplacement {
 
 /** A confirmed file plan captured before choosing its target; replay stays owned by the coordinator. */
 export interface FilePlanOpenContext {
-  readonly backend: Extract<DataBackend, "pandas" | "polars" | "duckdb">;
+  readonly backend: Extract<DataBackend, "pandas" | "polars" | "duckdb" | "r">;
   readonly importOptions: SessionSource["importOptions"];
-  readonly bridge: OpenWranglerBridge;
+  isCurrent(): boolean;
+  createBridge(targetDelegate?: OpenWranglerBridge): OpenWranglerBridge;
 }
 
 export interface DuckDBTableDiscovery {
@@ -118,9 +119,9 @@ export class FileBackendUnavailableError extends Error {}
 
 export interface OpenWranglerBridge {
   request(request: OpenWranglerRequest, options?: BridgeRequestOptions): Promise<OpenWranglerResponse>;
-  /** Retains a liveness check for the exact Python process and selection owning a file session. */
+  /** Retains a liveness check for the exact runtime owner of a file session. */
   captureFileSessionOwner?(sessionId: string): (() => boolean) | undefined;
-  /** Pins the active confirmed file plan and returns its initial-open bridge, or an eligibility diagnostic. */
+  /** Pins the active confirmed file plan and its target bridge factory, or returns an eligibility diagnostic. */
   captureActiveFilePlan?(): FilePlanOpenContext | ErrorResponse;
   prepareFileAutoFallback?(
     source: SessionSource,
