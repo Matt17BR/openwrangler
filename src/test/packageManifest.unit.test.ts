@@ -45,6 +45,8 @@ interface PackageManifest {
     };
     configurationDefaults?: Record<string, unknown>;
     commands?: CommandContribution[];
+    views?: Record<string, Array<{ id: string; name: string }>>;
+    viewsWelcome?: Array<{ view: string; contents: string }>;
     jupyterVariableViewers?: Array<{
       command?: string;
       dataTypes?: string[];
@@ -509,9 +511,18 @@ describe("notebook launch contributions", () => {
       );
       expect(entry?.when).not.toContain("jupyter.hascodecells");
     }
+    expect(manifest.activationEvents).toContain("onView:openWrangler.dataSources");
+    expect(manifest.contributes?.views?.openWrangler).toEqual([
+      { id: "openWrangler.dataSources", name: "Data sources" },
+      { id: "openWrangler.operations", name: "Operations" },
+      { id: "openWrangler.summary", name: "Summary" },
+      { id: "openWrangler.filters", name: "Filters / Sorts" },
+      { id: "openWrangler.cleaningSteps", name: "Cleaning Steps" }
+    ]);
+    expect(manifest.contributes?.viewsWelcome?.map((entry) => entry.view)).toEqual(["openWrangler.dataSources"]);
     expect(manifest.contributes?.menus?.["view/title"]).toContainEqual({
       command: "openWrangler.refreshLiveDataframes",
-      when: "view == openWrangler.operations",
+      when: "view == openWrangler.dataSources",
       group: "navigation@1"
     });
     expect(manifest.contributes?.menus?.commandPalette).toContainEqual({

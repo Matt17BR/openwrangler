@@ -360,6 +360,8 @@ cases retain zero-based worksheet indexes.
 Ordinary installed R actions, picker acquisition, Explorer and editor-title file launches, completed import-option
 changes, and public Apply/Undo actions in gallery captures observe the exact session/revision and committed renderer
 receipt without forcing another panel publication.
+Cached Python and R row-click journeys expand Data sources; cleaning captures expand Operations. Both use the existing
+native view providers, and source selections retain their exact notebook or terminal handles.
 Once acquired, Add and Edit operation dialogs retain their physical node, frame, session and revision through an
 opaque test marker. A new publication for the same dialog can continue configuration; a replacement dialog or changed
 revision cannot satisfy the old locator. Mutation-result assertions still require the exact acknowledged publication.

@@ -168,7 +168,9 @@ Syntax errors refer to the entered code's lines.
 Discovery selections remain bound to their originating Python kernel until the initial session opens. Direct active-R
 opens likewise retain the terminal selected when the command starts. Replacing either runtime before that open
 completes requires a new open action.
-With no notebook open, the Operations view offers **Start R and show dataframes…** after the R terminal closes.
+Data sources lists cached Python and R dataframes and keeps **Open a data file** available while a dataframe is open.
+Operations contains the cleaning catalog for the active dataframe.
+With no notebook open, Data sources offers **Start R and show dataframes…** after the R terminal closes.
 R terminal discovery can start before R's first prompt; short command lines avoid truncation by terminal startup input.
 Terminal commands honor vscode-R's `r.bracketedPaste` setting. Enable it when using radian so multiline commands
 arrive as one expression. Canceling a request stops waiting; R may still be running that work.

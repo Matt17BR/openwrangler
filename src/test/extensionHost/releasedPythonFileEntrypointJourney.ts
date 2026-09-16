@@ -37,7 +37,7 @@ interface ReleasedPythonFileVariableExpectation {
 export interface ReleasedPythonFileEntrypointJourneyDependencies {
   readonly RELEASED_JUPYTER_VARIABLE_DISCOVERY_TIMEOUT_MS: number;
   readonly WORKBENCH_PLAYWRIGHT_TIMEOUT_MS: number;
-  readonly arrangePackagedProductSidebar: (workbench: Page, scene: "operation-catalog") => Promise<Locator>;
+  readonly arrangePackagedProductSidebar: (workbench: Page, scene: "data-sources") => Promise<Locator>;
   readonly assertExactOpenNotebookDocument: (notebook: vscode.NotebookDocument, checkpoint: string) => void;
   readonly assertExactVisibleReleasedNotebookEditor: (
     notebook: vscode.NotebookDocument,
@@ -345,17 +345,17 @@ export function createReleasedPythonFileEntrypointJourney({
         "before invoking its Open Wrangler toolbar action"
       );
 
-      const sidebar = await arrangePackagedProductSidebar(workbench, "operation-catalog");
-      const operations = sidebar.getByRole("tree", { name: /Operations/u }).first();
-      const liveFrame = operations.getByRole("treeitem", { name: /^python_entry_frame\b/u });
+      const sidebar = await arrangePackagedProductSidebar(workbench, "data-sources");
+      const sources = sidebar.getByRole("tree", { name: /Data sources/u }).first();
+      const liveFrame = sources.getByRole("treeitem", { name: /^python_entry_frame\b/u });
       await liveFrame.waitFor({ state: "visible", timeout: 90_000 });
       assert.match(
         (await liveFrame.innerText()).replace(/\s+/gu, " "),
         /python_entry_frame.*Polars · DataFrame/u,
-        "Operations must expose the dataframe from the exact active Python Interactive kernel."
+        "Data sources must expose the dataframe from the exact active Python Interactive kernel."
       );
       assert.equal(
-        await operations.getByRole("treeitem", { name: /^python_entry_not_run\b/u }).count(),
+        await sources.getByRole("treeitem", { name: /^python_entry_not_run\b/u }).count(),
         0,
         "Opening the first Python cell must not execute a later cell in the source file."
       );
@@ -364,7 +364,7 @@ export function createReleasedPythonFileEntrypointJourney({
       assertExactVisibleReleasedNotebookEditor(
         interactive,
         interactiveEditor,
-        "after checking its Operations dataframe list"
+        "after checking its Data sources dataframe list"
       );
 
       const originalInteractiveDocuments = vscode.workspace.notebookDocuments.filter(

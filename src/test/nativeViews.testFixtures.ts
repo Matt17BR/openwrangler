@@ -326,6 +326,7 @@ function register(
   } as unknown as ExtensionContext;
   const nativeViews = registerNativeViews(context, coordinator, pythonVariables, rVariables);
   for (const id of [
+    "openWrangler.dataSources",
     "openWrangler.operations",
     "openWrangler.summary",
     "openWrangler.filters",

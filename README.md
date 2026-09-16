@@ -107,6 +107,7 @@ _Inspect an applied step alongside its scoped code without changing the confirme
 
 Run the cell that creates your dataframe, choose **Open in Open Wrangler** from the notebook toolbar, and select
 its variable. Supported dataframe outputs also offer an inline preview with an action to open the full workbench.
+The sidebar's **Data sources** view lists discovered Python and R dataframes; **Operations** holds the cleaning catalog.
 Pandas and Polars notebook sessions support the same viewing and cleaning workflow as files.
 
 Jupyter's separate Variables view can intermittently remain blank. The toolbar entry above does not use that view.

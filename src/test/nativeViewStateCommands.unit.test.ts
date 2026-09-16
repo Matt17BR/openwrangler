@@ -311,12 +311,82 @@ describe("native state and presentation commands", () => {
     const registered = register(noDraftSnapshot());
     registered.setActiveSession(undefined);
 
-    expect(treeChildren("openWrangler.operations").map((node) => [node.label, node.command])).toEqual([
+    expect(treeChildren("openWrangler.operations").map(nodePresentation)).toEqual([
+      ["No active dataframe", "Open a source from Data sources"]
+    ]);
+    expect(treeChildren("openWrangler.dataSources").map((node) => [node.label, node.command])).toEqual([
       ["Open a data file", expect.objectContaining({ command: "openWrangler.openPath" })]
     ]);
+    registered.setActiveSession(noDraftSnapshot());
+    expect(treeChildren("openWrangler.operations").map((node) => node.label)).toContain("Rename column");
+    expect(
+      treeChildren("openWrangler.operations").every(
+        (node) => (node.command as { command: string }).command === "openWrangler.startOperation"
+      )
+    ).toBe(true);
+    expect(treeChildren("openWrangler.dataSources").map((node) => node.label)).toEqual(["Open a data file"]);
   });
 
-  it("shows cached variables from the exact active notebook in Operations", () => {
+  it("updates source discovery states without refreshing Operations and releases both subscriptions", () => {
+    let state: "loading" | "empty" | "error" = "loading";
+    const notebookListeners = new Set<() => unknown>();
+    const rListeners = new Set<() => unknown>();
+    const notebookProvider: NotebookLiveVariableProvider = {
+      onDidChangeVariables: (listener) => {
+        notebookListeners.add(listener);
+        return { dispose: () => notebookListeners.delete(listener) };
+      },
+      snapshot: () => ({ state, notebookLabel: "analysis.ipynb", message: `Notebook ${state}`, variables: [] }),
+      refreshFromCommand: async () => undefined,
+      dispose: () => undefined
+    };
+    const rProvider: RLiveVariableProvider = {
+      onDidChangeVariables: (listener) => {
+        rListeners.add(listener);
+        return { dispose: () => rListeners.delete(listener) };
+      },
+      startAutomaticDiscovery: () => undefined,
+      snapshot: () => ({ state, terminalLabel: "R", message: `R ${state}`, variables: [] }),
+      refreshFromCommand: async () => true,
+      shutdown: async () => undefined,
+      dispose: () => undefined
+    };
+    register(noDraftSnapshot(), undefined, undefined, notebookProvider, rProvider);
+    const sources = nativeMocks.treeDataProviders.get("openWrangler.dataSources")!;
+    const sourceChanges = vi.fn();
+    const operationChanges = vi.fn();
+    const operations = treeChildren("openWrangler.operations").map((node) => node.label);
+    expect(operations).toContain("Rename column");
+    sources.onDidChangeTreeData!(sourceChanges);
+    nativeMocks.treeDataProviders.get("openWrangler.operations")!.onDidChangeTreeData!(operationChanges);
+    expect(notebookListeners.size).toBe(1);
+    expect(rListeners.size).toBe(1);
+    for (state of ["loading", "empty", "error"] as const) {
+      for (const listener of [...notebookListeners, ...rListeners]) listener();
+      expect(treeChildren("openWrangler.dataSources").map((node) => [node.label, node.command])).toEqual([
+        [`Notebook ${state}`, undefined],
+        ["Refresh notebook dataframes", expect.objectContaining({ command: "openWrangler.refreshNotebookVariables" })],
+        ...(state === "loading"
+          ? []
+          : [
+              [
+                "Refresh R dataframes",
+                expect.objectContaining({ command: "openWrangler.refreshRInteractiveVariables" })
+              ]
+            ]),
+        [`R ${state}`, undefined],
+        ["Open a data file", expect.objectContaining({ command: "openWrangler.openPath" })]
+      ]);
+      expect(treeChildren("openWrangler.operations").map((node) => node.label)).toEqual(operations);
+    }
+    expect(sourceChanges).toHaveBeenCalledTimes(6);
+    expect(operationChanges).not.toHaveBeenCalled();
+    (sources as typeof sources & { dispose(): void }).dispose();
+    expect(notebookListeners.size).toBe(0);
+    expect(rListeners.size).toBe(0);
+  });
+
+  it("shows cached variables from the exact active notebook in Data sources", () => {
     const variableProvider: NotebookLiveVariableProvider = {
       onDidChangeVariables: () => ({ dispose: () => undefined }),
       snapshot: () => ({
@@ -338,7 +408,7 @@ describe("native state and presentation commands", () => {
     const registered = register(noDraftSnapshot(), undefined, undefined, variableProvider);
     registered.setActiveSession(undefined);
 
-    expect(treeChildren("openWrangler.operations").map((node) => [node.label, node.command])).toEqual([
+    expect(treeChildren("openWrangler.dataSources").map((node) => [node.label, node.command])).toEqual([
       [
         "orders",
         expect.objectContaining({
@@ -349,6 +419,11 @@ describe("native state and presentation commands", () => {
       ["Refresh notebook dataframes", expect.objectContaining({ command: "openWrangler.refreshNotebookVariables" })],
       ["Open a data file", expect.objectContaining({ command: "openWrangler.openPath" })]
     ]);
+    registered.setActiveSession(exportableSnapshot("different-file", "other.csv", 2));
+    expect(treeChildren("openWrangler.dataSources")[0]!.command).toMatchObject({
+      command: "openWrangler.openCachedNotebookVariable",
+      arguments: ["live-frame-handle"]
+    });
   });
 
   it("shows IRkernel dataframes without an unrelated terminal prompt and refreshes that notebook", async () => {
@@ -388,7 +463,7 @@ describe("native state and presentation commands", () => {
     const registered = register(noDraftSnapshot(), undefined, undefined, notebookProvider, terminalProvider);
     registered.setActiveSession(undefined);
 
-    expect(treeChildren("openWrangler.operations").map((node) => node.label)).toEqual([
+    expect(treeChildren("openWrangler.dataSources").map((node) => node.label)).toEqual([
       "orders_tbl",
       "Refresh notebook dataframes",
       "Open a data file"
@@ -435,7 +510,7 @@ describe("native state and presentation commands", () => {
     };
     register(noDraftSnapshot(), undefined, undefined, notebookProvider, terminalProvider);
 
-    expect(treeChildren("openWrangler.operations").map((node) => node.label)).toContain(
+    expect(treeChildren("openWrangler.dataSources").map((node) => node.label)).toContain(
       "Automatic notebook inspection is paused for the selected preview provider. Refresh to inspect it."
     );
     await command("openWrangler.refreshLiveDataframes")();
@@ -444,7 +519,7 @@ describe("native state and presentation commands", () => {
     expect(refreshTerminal).not.toHaveBeenCalled();
   });
 
-  it("routes the Operations refresh action to the active R terminal when no notebook is active", async () => {
+  it("routes the Data sources refresh action to the active R terminal when no notebook is active", async () => {
     const refreshTerminal = vi.fn(async () => true);
     const terminalProvider: RLiveVariableProvider = {
       onDidChangeVariables: () => ({ dispose: () => undefined }),
@@ -502,36 +577,41 @@ describe("native state and presentation commands", () => {
     const registered = register(noDraftSnapshot(), undefined, undefined, undefined, variableProvider);
     registered.setActiveSession(undefined);
 
-    expect(treeChildren("openWrangler.operations").map((node) => [node.label, node.description, node.command])).toEqual(
+    expect(
+      treeChildren("openWrangler.dataSources").map((node) => [node.label, node.description, node.command])
+    ).toEqual([
       [
-        [
-          "Refresh R dataframes",
-          "R · 2 loaded",
-          expect.objectContaining({ command: "openWrangler.refreshRInteractiveVariables" })
-        ],
-        [
-          "shots",
-          "R · tibble",
-          expect.objectContaining({
-            command: "openWrangler.openCachedRInteractiveVariable",
-            arguments: ["r-frame-handle"]
-          })
-        ],
-        [
-          "accounts",
-          "R · data.table",
-          expect.objectContaining({
-            command: "openWrangler.openCachedRInteractiveVariable",
-            arguments: ["r-table-handle"]
-          })
-        ],
-        [
-          "Open a data file",
-          "Choose CSV, Parquet, Excel, or JSONL",
-          expect.objectContaining({ command: "openWrangler.openPath" })
-        ]
+        "Refresh R dataframes",
+        "R · 2 loaded",
+        expect.objectContaining({ command: "openWrangler.refreshRInteractiveVariables" })
+      ],
+      [
+        "shots",
+        "R · tibble",
+        expect.objectContaining({
+          command: "openWrangler.openCachedRInteractiveVariable",
+          arguments: ["r-frame-handle"]
+        })
+      ],
+      [
+        "accounts",
+        "R · data.table",
+        expect.objectContaining({
+          command: "openWrangler.openCachedRInteractiveVariable",
+          arguments: ["r-table-handle"]
+        })
+      ],
+      [
+        "Open a data file",
+        "Choose CSV, Parquet, Excel, or JSONL",
+        expect.objectContaining({ command: "openWrangler.openPath" })
       ]
-    );
+    ]);
+    registered.setActiveSession(exportableSnapshot("different-file", "other.csv", 2));
+    expect(treeChildren("openWrangler.dataSources")[1]!.command).toMatchObject({
+      command: "openWrangler.openCachedRInteractiveVariable",
+      arguments: ["r-frame-handle"]
+    });
   });
 
   it("puts an explicit R discovery action first while the active terminal has not been read", () => {
@@ -551,16 +631,16 @@ describe("native state and presentation commands", () => {
     const registered = register(noDraftSnapshot(), undefined, undefined, undefined, variableProvider);
     registered.setActiveSession(undefined);
 
-    expect(treeChildren("openWrangler.operations").map((node) => [node.label, node.description, node.command])).toEqual(
+    expect(
+      treeChildren("openWrangler.dataSources").map((node) => [node.label, node.description, node.command])
+    ).toEqual([
+      ["Show R dataframes…", "R", expect.objectContaining({ command: "openWrangler.refreshRInteractiveVariables" })],
       [
-        ["Show R dataframes…", "R", expect.objectContaining({ command: "openWrangler.refreshRInteractiveVariables" })],
-        [
-          "Open a data file",
-          "Choose CSV, Parquet, Excel, or JSONL",
-          expect.objectContaining({ command: "openWrangler.openPath" })
-        ]
+        "Open a data file",
+        "Choose CSV, Parquet, Excel, or JSONL",
+        expect.objectContaining({ command: "openWrangler.openPath" })
       ]
-    );
+    ]);
   });
 
   it("offers one action that starts R after the previous terminal closed", () => {
@@ -580,20 +660,20 @@ describe("native state and presentation commands", () => {
     const registered = register(noDraftSnapshot(), undefined, undefined, undefined, variableProvider);
     registered.setActiveSession(undefined);
 
-    expect(treeChildren("openWrangler.operations").map((node) => [node.label, node.description, node.command])).toEqual(
+    expect(
+      treeChildren("openWrangler.dataSources").map((node) => [node.label, node.description, node.command])
+    ).toEqual([
       [
-        [
-          "Start R and show dataframes…",
-          "R session",
-          expect.objectContaining({ command: "openWrangler.openRInteractiveVariable" })
-        ],
-        [
-          "Open a data file",
-          "Choose CSV, Parquet, Excel, or JSONL",
-          expect.objectContaining({ command: "openWrangler.openPath" })
-        ]
+        "Start R and show dataframes…",
+        "R session",
+        expect.objectContaining({ command: "openWrangler.openRInteractiveVariable" })
+      ],
+      [
+        "Open a data file",
+        "Choose CSV, Parquet, Excel, or JSONL",
+        expect.objectContaining({ command: "openWrangler.openPath" })
       ]
-    );
+    ]);
   });
 
   it("keeps saved Formula outputs in native context after later Rename and Drop steps", () => {

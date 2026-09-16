@@ -31,7 +31,8 @@ Native tree views, Code Preview and file custom editors keep their original lazy
 Loading an owner supplies its delegate without unregistering a view or disposing its document while VS Code resolves it.
 Walkthrough, Settings and Report Issue commands retain their lightweight owner when native views load.
 Lazy variable providers show a pending snapshot only until their owner loads. A loaded owner's absent notebook
-snapshot remains absent, allowing the Operations view to offer the idle R action.
+snapshot remains absent, allowing Data sources to offer the idle R action. Data sources owns file-opening and cached
+Python/R discovery rows and their refresh subscriptions; Operations shows only the active dataframe's cleaning catalog.
 Editor and Code Preview resolution retain VS Code's exact cancellation token through loading and file preflight.
 Canceled resolution leaves existing view ownership intact and does not start panel setup or publish late file errors.
 Activation installs its lightweight gates before the first yield. Elapsed setup time does not invalidate successful

@@ -694,7 +694,13 @@ export async function run(): Promise<void> {
   );
   assert.deepEqual(
     contributions.views?.openWrangler?.map((view) => view.id),
-    ["openWrangler.operations", "openWrangler.summary", "openWrangler.filters", "openWrangler.cleaningSteps"]
+    [
+      "openWrangler.dataSources",
+      "openWrangler.operations",
+      "openWrangler.summary",
+      "openWrangler.filters",
+      "openWrangler.cleaningSteps"
+    ]
   );
   assert.ok(contributions.configuration?.properties?.["openWrangler.fetchBlockSize"]);
   assert.ok(contributions.configuration?.properties?.["openWrangler.fetchColumnBlockSize"]);
@@ -7339,7 +7345,7 @@ async function exercisePackagedPlatformSmoke(
   const activityAction = page.getByRole("tab", { name: /Open Wrangler/iu }).first();
   await activityAction.waitFor({ state: "visible", timeout: 10_000 });
   const sidebar = page.locator(".part.sidebar:visible");
-  for (const label of ["Operations", "Summary", "Filters / Sorts", "Cleaning Steps"]) {
+  for (const label of ["Data sources", "Operations", "Summary", "Filters / Sorts", "Cleaning Steps"]) {
     await sidebar.getByText(label, { exact: true }).first().waitFor({ state: "visible", timeout: 10_000 });
   }
   assert.equal(extension.isActive, true);
@@ -8830,7 +8836,7 @@ async function prepareReleasedRNotebookScreenshotWorkbench(
         return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
       }),
       PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT,
-      "The R notebook Operations scene requires the standard 1440 by 900 editor viewport."
+      "The R notebook Data sources scene requires the standard 1440 by 900 editor viewport."
     );
     const requiredCommands = ["notebook.cell.collapseCellInput", "notebook.cell.collapseCellOutput"] as const;
     const commands = new Set(await vscode.commands.getCommands(true));
@@ -8861,7 +8867,7 @@ async function prepareReleasedRNotebookScreenshotWorkbench(
             visible.start <= RELEASED_JUPYTER_R_SHOWCASE_CELL && visible.end > RELEASED_JUPYTER_R_SHOWCASE_CELL
         ),
       WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
-      "the public R notebook cell to be visible before Operations capture"
+      "the public R notebook cell to be visible before Data sources capture"
     );
     await workbench.waitForTimeout(600);
     await assertReleasedRPrivateNotebookContentHidden(workbench);
@@ -8879,7 +8885,7 @@ async function captureReleasedRJupyterOperations(
 ): Promise<void> {
   if (process.platform !== "linux") return;
   assert.equal(path.isAbsolute(outputDirectory), true, "R notebook screenshot output must be one absolute directory.");
-  const operations = sidebar.getByRole("tree", { name: /Operations/u }).first();
+  const sources = sidebar.getByRole("tree", { name: /Data sources/u }).first();
   const expected = [
     ["orders_frame", "R · data.frame"],
     ["orders_tibble", "R · tibble"],
@@ -8889,10 +8895,10 @@ async function captureReleasedRJupyterOperations(
     ["collapse_table", "R · data.table"]
   ] as const;
   for (const [name, typeLabel] of expected) {
-    const row = operations.getByRole("treeitem", { name: new RegExp(`^${name}\\b`, "u") }).first();
+    const row = sources.getByRole("treeitem", { name: new RegExp(`^${name}\\b`, "u") }).first();
     await row.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
     const label = (await row.innerText()).replace(/\s+/gu, " ");
-    assert.ok(label.includes(typeLabel), `R notebook Operations must label ${name} as ${typeLabel}.`);
+    assert.ok(label.includes(typeLabel), `R notebook Data sources must label ${name} as ${typeLabel}.`);
   }
   await assertPackagedProductSidebarGeometry(sidebar);
   await assertReleasedRPrivateNotebookContentHidden(workbench);
@@ -13568,7 +13574,8 @@ async function fitPackagedWorkflowFormulaDraftGrid(
 
 async function arrangePackagedProductSidebar(
   workbench: Page,
-  scene: "explore" | "filter-result" | "workflow" | "sidebar-overview" | "operation-catalog" | "inspection"
+  scene:
+    "explore" | "filter-result" | "workflow" | "sidebar-overview" | "operation-catalog" | "data-sources" | "inspection"
 ): Promise<Locator> {
   await vscode.commands.executeCommand("workbench.view.extension.openWrangler");
   if ((process.env.OPEN_WRANGLER_TEST_EDITOR ?? "vscode") !== "cursor") {
@@ -13598,6 +13605,7 @@ async function arrangePackagedProductSidebar(
   await sidebar.waitFor({ state: "visible", timeout: 10_000 });
   await ensurePackagedProductSidebarWidth(workbench, sidebar);
   const sections = [
+    ["Data sources", /Data sources/u],
     ["Operations", /Operations/u],
     ["Summary", /Summary/u],
     ["Filters / Sorts", /Filters\s*\/\s*Sorts/u],
@@ -13609,11 +13617,13 @@ async function arrangePackagedProductSidebar(
   const expanded =
     scene === "explore" || scene === "sidebar-overview"
       ? new Set(["Operations", "Summary", "Filters / Sorts", "Cleaning Steps"])
-      : scene === "operation-catalog"
-        ? new Set(["Operations"])
-        : scene === "filter-result"
-          ? new Set(["Filters / Sorts"])
-          : new Set(["Filters / Sorts", "Cleaning Steps"]);
+      : scene === "data-sources"
+        ? new Set(["Data sources"])
+        : scene === "operation-catalog"
+          ? new Set(["Operations"])
+          : scene === "filter-result"
+            ? new Set(["Filters / Sorts"])
+            : new Set(["Filters / Sorts", "Cleaning Steps"]);
   for (const [label, treeName] of sections) {
     const tree = sidebar.getByRole("tree", { name: treeName }).first();
     const isExpanded = await tree.isVisible().catch(() => false);

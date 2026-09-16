@@ -6,6 +6,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Changed
 
+- Data sources groups file opening and discovered Python/R dataframes; Operations contains the cleaning catalog.
 - Formula steps show their saved output names in Cleaning Steps tooltips and accessible names.
 - Applied-step inspection collapses paused viewing filters into a disclosure, with full rules available on demand.
 - Narrow editors let the source name share a toolbar row with actions, leaving more room for data.
