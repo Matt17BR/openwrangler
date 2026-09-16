@@ -2575,8 +2575,7 @@ function validateRColumnSummaries(summaries: readonly ColumnSummary[]): void {
           (binCount === 0 ||
             binCount > R_FRAME_CONTRACT_LIMITS.profileSampleRows ||
             summary.distinctCount !== undefined ||
-            summary.topValues.length !== 0)) ||
-        (!sampledDistribution && summary.distinctCount === undefined)
+            summary.topValues.length !== 0))
       ) {
         fail(`${label} has histogram counts outside the column.`);
       }

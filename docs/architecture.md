@@ -1500,10 +1500,13 @@ Optional value-filter search must be text when present. Invalid viewing requests
 R header profiles honor `openWrangler.insightsOnOpen`; automatic demand covers only the visible column window.
 The existing post-mutation quiet period still gives immediate Undo and Redo priority over background profiles.
 
-Cheap column/missing statistics scan in bounded chunks. Histograms and categorical distributions sample at most
-100,000 non-missing values; omitted exact statistics show `n/a`. Sampled charts label the distribution approximate
-and show the sample count used alongside the full non-missing population. Numeric bins omit infinities, so their
-count can be smaller than the selected sample.
+Cheap column/missing statistics scan in bounded chunks. Numeric histograms count every finite value into at most
+20 bins; integer64 chart positions retain their double projection while typed extrema remain exact. Character and
+factor distributions retain exact counts and distinct values within 10,000 keys and 16 MiB of UTF-8 key text.
+Above either bound, distributions sample at most 100,000 non-missing values. Large frames with at most 100,000
+non-missing values keep their exact distribution regardless of those aggregation bounds. Numeric medians and general
+numeric distinct counts remain omitted above that population limit; omitted statistics show `n/a`. Sampled charts
+label the distribution approximate and show the sample count used alongside the full non-missing population.
 Dataset missing counts remain exact; bounded duplicate-row estimates name the sampled population. Sampling uses a
 private fixed seed and restores the user's random state. Unsearched value discovery samples at most 100,000 rows;
 a nonempty search scans exactly in bounded chunks and refuses more than 10,000 distinct matches or 16 MiB of key text.

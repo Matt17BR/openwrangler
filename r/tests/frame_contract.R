@@ -6371,18 +6371,20 @@ assert_identical(
 )
 assert_true(is.null(bounded_work_summaries[[1L]]$numeric$median), "a sampled profile mislabeled its median as exact")
 assert_true(is.null(bounded_work_summaries[[1L]]$distinctCount), "a sampled profile invented an exact distinct count")
-assert_identical(bounded_work_summaries[[1L]]$visualization$sampled, TRUE, "large histogram lacked a sample label")
+assert_true(is.null(bounded_work_summaries[[1L]]$visualization$sampled), "exact large histogram was labeled sampled")
 assert_identical(
   sum(vapply(bounded_work_summaries[[1L]]$visualization$bins, `[[`, integer(1L), "count")),
-  openwrangler_r_frame_contract$limits$profileSampleRows,
-  "large histogram exceeded its sample"
+  work_row_count,
+  "large histogram did not count the complete domain"
 )
 assert_identical(bounded_work_summaries[[2L]]$text$minLength, 4L, "large exact text minimum changed")
 assert_identical(bounded_work_summaries[[2L]]$text$maxLength, 5L, "large exact text maximum changed")
+assert_true(is.null(bounded_work_summaries[[2L]]$visualization$sampled), "exact categories were labeled sampled")
+assert_identical(bounded_work_summaries[[2L]]$distinctCount, 2L, "large low-cardinality distinct count was omitted")
 assert_identical(
-  bounded_work_summaries[[2L]]$visualization$sampled,
-  TRUE,
-  "large categorical distribution lacked a sample label"
+  vapply(bounded_work_summaries[[2L]]$topValues, `[[`, integer(1L), "count"),
+  c(50009L, 50008L),
+  "large categories did not count the complete domain"
 )
 assert_identical(
   bounded_work_summaries[[3L]]$visualization$trueCount,
@@ -6481,17 +6483,117 @@ assert_identical(stats::runif(1L), expected_random_value, "profile sampling chan
 for (index in seq_along(periodic_periods)) {
   period <- periodic_periods[[index]]
   counts <- vapply(periodic_summaries[[index]]$visualization$categories, `[[`, integer(1L), "count")
-  expected_count <- openwrangler_r_frame_contract$limits$profileSampleRows / period
-  assert_identical(
-    sum(counts),
-    openwrangler_r_frame_contract$limits$profileSampleRows,
-    sprintf("the period-%d profile sample changed size", period)
-  )
-  assert_true(
-    length(counts) == period && max(abs(counts - expected_count)) <= ceiling(expected_count * 0.03),
-    sprintf("deterministic profile sampling aliased a period-%d column", period)
-  )
+  expected_counts <- tabulate(rep(seq_len(period), length.out = periodic_row_count), nbins = period)
+  assert_identical(counts, expected_counts, sprintf("the period-%d exact counts changed", period))
+  assert_identical(periodic_summaries[[index]]$distinctCount, period, "periodic exact distinct count changed")
+  assert_true(is.null(periodic_summaries[[index]]$visualization$sampled), "exact periodic counts were sampled")
 }
+# Large profiles count the full finite domain, retaining native missing/type rules.
+local({
+  repeats <- 40001L
+  cases <- list(
+    c(-Inf, 0, 1, 2, Inf, NA_real_, NaN),
+    c(-Inf, Inf, -Inf, Inf, NA_real_, NaN),
+    c(1, 1 + .Machine$double.eps, 1 + 2 * .Machine$double.eps),
+    as.difftime(c(0, 1, 2), units = "hours"),
+    bit64::as.integer64(c("9007199254740992", "9007199254740993", "9007199254740994"))
+  )
+  for (values in cases) {
+    frame <- data.frame(value = rep(values, repeats))
+    before <- serialize(frame, NULL, version = 3L)
+    capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
+    summary <- openwrangler_r_frame_contract$materialize_summaries(capture, list(profile_reference(capture, 1L)))[[1L]]
+    projected <- suppressWarnings(as.double(values))
+    finite <- projected[is.finite(projected)]
+    assert_identical(summary$nullCount, as.integer(sum(is.na(projected) & !is.nan(projected)) * repeats), "large null count changed")
+    assert_identical(summary$nanCount, as.integer(sum(is.nan(projected)) * repeats), "large NaN count changed")
+    assert_true(is.null(summary$numeric$median), "large numeric median was mislabeled exact")
+    assert_true(is.null(summary$visualization$sampled), "complete numeric histogram was sampled")
+    bins <- summary$visualization$bins
+    if (length(finite) == 0L) {
+      assert_true(is.null(summary$visualization), "non-finite values invented histogram bins")
+    } else {
+      assert_identical(bins[[1L]]$min, min(finite), "histogram lost its finite minimum")
+      assert_identical(bins[[length(bins)]]$max, max(finite), "histogram lost its finite maximum")
+      for (i in seq_along(bins)) {
+        bin <- bins[[i]]
+        matches <- finite >= bin$min & (finite < bin$max | (i == length(bins) & finite <= bin$max))
+        assert_identical(bin$count, as.integer(sum(matches) * repeats), "histogram lost interval membership or final inclusivity")
+      }
+      assert_identical(sum(vapply(bins, `[[`, integer(1L), "count")), as.integer(length(finite) * repeats), "histogram omitted finite rows")
+    }
+    if (inherits(values, "integer64")) {
+      assert_identical(summary$numeric$exactMin$display, "9007199254740992", "chart projection changed exact integer64 minimum")
+      assert_identical(summary$numeric$exactMax$display, "9007199254740994", "chart projection changed exact integer64 maximum")
+    }
+    assert_identical(serialize(frame, NULL, version = 3L), before, "chunked histogram mutated its source")
+  }
+})
+
+# Equal counts use first visible occurrence, including empty text and late values;
+# unused factor levels do not create categories.
+local({
+  values <- c(rep(c("β", "", "Alpha"), 40000L), NA_character_, "late")
+  frame <- data.frame(text = values, factor = factor(values, levels = c("unused", "late", "Alpha", "", "β")))
+  before <- serialize(frame, NULL, version = 3L)
+  capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
+  summaries <- openwrangler_r_frame_contract$materialize_summaries(capture, lapply(1:2, function(i) profile_reference(capture, i)))
+  for (summary in summaries) {
+    assert_identical(summary$nullCount, 1L, "categorical missing value changed")
+    assert_identical(summary$text$emptyCount, 40000L, "empty category became missing")
+    assert_identical(summary$distinctCount, 4L, "unused factor level or late category changed distinct count")
+    assert_identical(vapply(summary$topValues, `[[`, character(1L), "value"), c("β", "", "Alpha", "late"), "categorical ties lost first-occurrence order")
+    assert_identical(vapply(summary$topValues, `[[`, integer(1L), "count"), c(40000L, 40000L, 40000L, 1L), "categorical exact counts changed")
+    assert_identical(summary$visualization$otherCount, 0L, "exact low-cardinality profile invented Other")
+    assert_true(is.null(summary$visualization$sampled), "exact categories were labeled sampled")
+  }
+  assert_identical(serialize(frame, NULL, version = 3L), before, "categorical profiling mutated source or factor levels")
+})
+
+# Either aggregation bound falls back to a sample of the full population, while
+# sparse large frames retain their existing exact <=100k-present result.
+local({
+  cases <- list(
+    rep(sprintf("key-%05d", seq_len(10001L)), length.out = 120001L),
+    rep(paste0(sprintf("%04d", seq_len(4097L)), strrep("x", 4092L)), length.out = 100001L)
+  )
+  sampler <- get("deterministic_sample_positions", contract_environment, inherits = FALSE)
+  for (values in cases) {
+    frame <- data.frame(value = values)
+    capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
+    set.seed(541L)
+    rng <- .Random.seed
+    summary <- openwrangler_r_frame_contract$materialize_summaries(capture, list(profile_reference(capture, 1L)))[[1L]]
+    assert_identical(.Random.seed, rng, "fallback sampling changed caller RNG")
+    sample <- values[sampler(length(values), 100000L)]
+    keys <- unique(sample)
+    counts <- tabulate(match(sample, keys), nbins = length(keys))
+    top <- head(order(-counts, seq_along(counts)), 10L)
+    assert_identical(vapply(summary$topValues, `[[`, character(1L), "value"), keys[top], "fallback sampled only a partial domain")
+    assert_identical(vapply(summary$topValues, `[[`, integer(1L), "count"), counts[top], "fallback counts changed")
+    assert_identical(summary$visualization$otherCount, as.integer(100000L - sum(counts[top])), "sample Other used full-population counts")
+    assert_identical(summary$visualization$sampled, TRUE, "bounded fallback lost its sample label")
+    assert_true(is.null(summary$distinctCount), "bounded fallback invented exact distinct count")
+  }
+  sparse <- data.frame(value = c(sprintf("key-%05d", seq_len(10001L)), rep(NA_character_, 100000L)))
+  capture <- openwrangler_r_frame_contract$capture_live_frame(function() sparse)
+  summary <- openwrangler_r_frame_contract$materialize_summaries(capture, list(profile_reference(capture, 1L)))[[1L]]
+  assert_identical(summary$distinctCount, 10001L, "bounded tracking downgraded an exact sparse profile")
+  assert_identical(summary$visualization$otherCount, 9991L, "exact sparse Other changed")
+  assert_true(is.null(summary$visualization$sampled), "exact sparse profile was labeled sampled")
+})
+
+local({
+  frame <- data.frame(number = seq_len(150001L), category = rep(c("Alpha", "Beta", "Gamma"), length.out = 150001L), keep = seq_len(150001L) <= 120001L)
+  capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
+  query <- list(filters = list(list(column = profile_reference(capture, 3L), type = "boolean", predicates = list(list(kind = "predicate", operator = "equals", value = TRUE)))), sorts = list())
+  summaries <- openwrangler_r_frame_contract$materialize_summaries(capture, lapply(1:2, function(i) profile_reference(capture, i)), query)
+  assert_identical(summaries[[1L]]$totalCount, 120001, "numeric profile ignored filtered population")
+  assert_identical(summaries[[1L]]$numeric$max, 120001, "histogram extrema included excluded rows")
+  assert_identical(sum(vapply(summaries[[1L]]$visualization$bins, `[[`, integer(1L), "count")), 120001L, "filtered histogram lost rows")
+  assert_identical(vapply(summaries[[2L]]$topValues, `[[`, integer(1L), "count"), c(40001L, 40000L, 40000L), "categorical counts ignored filtered membership")
+})
+
 periodic_stats <- openwrangler_r_frame_contract$materialize_dataset_stats(periodic_capture)$stats
 assert_identical(
   periodic_stats$duplicateRowsSampleSize,
@@ -6533,7 +6635,8 @@ assert_identical(
   as.character(former_row_limit),
   "large sampled-distribution profile lost its exact integer Sum"
 )
-assert_identical(large_sum_summary$visualization$sampled, TRUE, "large Sum regression did not exercise sampling")
+assert_true(is.null(large_sum_summary$visualization$sampled), "large constant distribution was sampled")
+assert_identical(large_sum_summary$visualization$bins[[1L]]$count, former_row_limit, "constant bin lost rows")
 too_tall_stats <- openwrangler_r_frame_contract$materialize_dataset_stats(too_tall_capture)$stats
 assert_identical(
   too_tall_stats$duplicateRowsSampleSize,
