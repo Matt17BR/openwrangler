@@ -1435,6 +1435,45 @@ describe("PythonBridge dependency installation", () => {
     }
   );
 
+  it.each([
+    { name: "engine", requirements: ["duckdb>=1.5.4,<1.6"], modules: ["duckdb"], supporting: false },
+    {
+      name: "supporting packages",
+      requirements: ["fsspec==2026.7.0", "pytz>=2026.3.post1,<2027"],
+      modules: ["fsspec", "pytz"],
+      supporting: true
+    }
+  ])("explains unmet DuckDB $name requirements and installs only that subset", async (testCase) => {
+    const { bridge, internals, launchDependencyInstall } = createDependencyHarness();
+    const source = remoteFileSource();
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: testCase.requirements });
+    const warning = vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
+
+    const response = await internals.prepareRequest({ ...openSessionRequest(source), backend: "duckdb" });
+    expect(response).toMatchObject({ kind: "error", code: "missing_dependencies", recoverable: true });
+    if (response.kind !== "error") throw new Error("Expected unmet dependency requirements.");
+    expect(response.message).toContain(`Missing or incompatible packages: ${testCase.requirements.join(", ")}.`);
+    expect(response.message.includes("DuckDB is available.")).toBe(testCase.supporting);
+    if (testCase.supporting) {
+      expect(response.message).toContain("fsspec for exports and pytz for timezone-aware values");
+      expect(response.message).not.toContain("duckdb>=");
+    }
+    expect(internals.lastMissingDependencies?.requirements).toEqual(testCase.requirements);
+
+    await expect(bridge.installFileDependencies(source, "duckdb")).resolves.toBe(true);
+
+    expect(warning).toHaveBeenCalledExactlyOnceWith(
+      `Install ${testCase.requirements.join(", ")} into ${missingDependencies().environment.executable}?`,
+      { modal: true, detail: "Open Wrangler never installs packages without this confirmation." },
+      "Install"
+    );
+    expect(launchDependencyInstall).toHaveBeenCalledExactlyOnceWith(
+      missingDependencies().environment,
+      requiredDependencies("duckdb", source).filter((dependency) => testCase.modules.includes(dependency.importModule)),
+      { helperPath: join("/extension", "python", "openwrangler_runtime", "dependency_guard.py") }
+    );
+  });
+
   it.each(["ready", "declined"] as const)(
     "rechecks a file whose dependency action is %s without package writes",
     async (state) => {
@@ -3747,7 +3786,9 @@ describe("PythonBridge environment resource selection", () => {
       recoverable: true
     });
     if (response.kind !== "error") throw new Error("Expected missing dependencies.");
-    expect(response.message).toContain("cannot open this source with Polars. Missing: fastexcel>=0.20.2,<1.");
+    expect(response.message).toContain(
+      "cannot open this source with Polars. Missing or incompatible packages: fastexcel>=0.20.2,<1."
+    );
     expect(response.message).not.toContain("openpyxl");
     expect(internals.lastMissingDependencies).toMatchObject({
       requirements: ["fastexcel>=0.20.2,<1"]
@@ -3795,7 +3836,9 @@ describe("PythonBridge environment resource selection", () => {
       if (response.kind !== "error") throw new Error("Expected missing dependencies.");
       expect(response.message).toContain(`Python ${selected.version} at "${selected.executable}"`);
       expect(response.message).toContain(reason);
-      expect(response.message).toContain("cannot open this source with Polars. Missing: polars>=1.35.2,!=1.44.0,<2.");
+      expect(response.message).toContain(
+        "cannot open this source with Polars. Missing or incompatible packages: polars>=1.35.2,!=1.44.0,<2."
+      );
       expect(response.message).toContain("Command Palette");
       expect(response.message).toContain("Open Wrangler: Change Runtime");
       expect(response.message).toContain("Open Wrangler: Install Runtime Dependencies");

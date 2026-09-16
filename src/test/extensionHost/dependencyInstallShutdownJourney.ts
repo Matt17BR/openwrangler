@@ -81,7 +81,12 @@ export function createDependencyInstallShutdownJourney({
           assert.equal(rejected.kind, "error");
           if (rejected.kind === "error") {
             assert.equal(rejected.code, "missing_dependencies");
-            assert.equal(rejected.message.endsWith(`Missing: ${requirementList}.`), true);
+            assert.ok(
+              rejected.message.includes(
+                `cannot open this source with Pandas. Missing or incompatible packages: ${requirementList}.`
+              )
+            );
+            assert.ok(rejected.message.includes(lifecycle.executable));
             assert.doesNotMatch(rejected.message, /openpyxl/);
           }
           assert.equal(testing.runtimeRunning(), false, "The fake pip target must fail before runtime startup.");

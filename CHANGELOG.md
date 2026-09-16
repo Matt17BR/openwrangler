@@ -22,7 +22,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 - Pandas profiles avoid per-value Python loops for bounded integer sums and native string missing counts.
 - Integer histogram bins create valid whole-number filters; rounded large-integer bins explain why filtering is unavailable.
 - Header profiles align statistics and chart groups across mixed column types; Add step keeps its icon beside its label.
-- Missing-package errors identify the selected Python environment and offer installation followed by retry of a failed engine change.
+- Dependency errors identify the selected Python environment, explain unmet DuckDB supporting-package requirements, and offer installation followed by retry of a failed engine change.
 - Open Source File reports immediately when no dataframe is active, avoiding unexpected navigation when another dataframe opens.
 - Cleaning plan actions wrap in very narrow editor panes so Redo remains fully visible.
 - Cleaning Steps avoids unrelated refreshes when viewing filters, column selection or profiles change.
