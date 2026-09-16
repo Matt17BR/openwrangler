@@ -174,8 +174,8 @@ Omitted LF defaults preserve existing saved-state keys, including normal file re
 uses the existing import replacement and persistence owners.
 
 This file-only option stays in protocol v4 because file commands use the owned runtime bundled with the current
-extension. Native R accepts LF/CRLF and refuses an explicit CR-only setting. Non-file and non-delimited sources reject it,
-so it cannot reach a retained notebook runtime. A manually
+extension. Native R recognizes CR, LF and CRLF records; its scanner normalizes quoted CR and CRLF to LF.
+Non-file and non-delimited sources reject the option, so it cannot reach a retained notebook runtime. A manually
 mixed older decoder rejects the new key; this is not a compatibility promise for every historical v4 binary.
 
 Import prompts belong to one host-owned request. An accepted native Quick Input stays visible until its successor
