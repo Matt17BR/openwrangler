@@ -1660,6 +1660,12 @@ const exerciseReleasedRDocumentGrid = createReleasedRDocumentGrid({
 });
 
 const exerciseReleasedRDocumentJourney = createReleasedRDocumentJourney({
+  acceptQuickPickOptionWithKeyboard,
+  acceptSearchableExcelSheet,
+  waitForImportQuickInput,
+  openReleasedROperationPicker,
+  executeReleasedNotebookCell,
+  releasedNotebookJsonResult,
   RELEASED_R_SUPPORTED_OPERATIONS,
   WORKBENCH_OPERATION_TIMEOUT_MS,
   acceptanceProcessIsAlive,

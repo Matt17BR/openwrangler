@@ -12,6 +12,7 @@ import { exportCleanedDataThroughWorkbench } from "./cleanedDataExport";
 import {
   releasedRDocumentCleanedCsv,
   writeReleasedRDocumentFixture,
+  writeReleasedRFileFixtures,
   type ReleasedRDocumentFixture
 } from "./releasedDocumentFixtures";
 import { assertReleasedRGeneratedCode } from "./releasedRGeneratedCode";
@@ -22,6 +23,43 @@ type ReleasedRDocumentActiveSession = NonNullable<ReturnType<TestApi["activeSess
 type ReleasedRDocumentPage = Extract<OpenWranglerResponse, { kind: "page" }>;
 
 interface ReleasedRDocumentJourneyDependencies {
+  readonly acceptQuickPickOptionWithKeyboard: (
+    page: Page,
+    picker: Locator,
+    title: string,
+    option: string
+  ) => Promise<void>;
+  readonly acceptSearchableExcelSheet: (
+    page: Page,
+    testing: TestApi,
+    source: vscode.Uri,
+    sessionId: string,
+    sheetName: string
+  ) => Promise<void>;
+  readonly waitForImportQuickInput: (
+    page: Page,
+    testing: TestApi,
+    source: vscode.Uri,
+    title: string,
+    sessionId?: string
+  ) => Promise<Locator>;
+  readonly openReleasedROperationPicker: (
+    testing: TestApi,
+    page: Page,
+    sessionId: string
+  ) => Promise<{ app: Locator; dialog: Locator }>;
+  readonly executeReleasedNotebookCell: (
+    notebook: vscode.NotebookDocument,
+    index: number,
+    output: string,
+    checkpoint: string,
+    editor?: vscode.NotebookEditor
+  ) => Promise<void>;
+  readonly releasedNotebookJsonResult: (
+    cell: vscode.NotebookCell,
+    marker: string,
+    description: string
+  ) => Record<string, unknown>;
   readonly RELEASED_R_SUPPORTED_OPERATIONS: readonly string[];
   readonly WORKBENCH_OPERATION_TIMEOUT_MS: number;
   readonly acceptanceProcessIsAlive: (processId: number) => boolean;
@@ -83,6 +121,12 @@ interface ReleasedRDocumentJourneyDependencies {
 }
 
 export function createReleasedRDocumentJourney({
+  acceptQuickPickOptionWithKeyboard,
+  acceptSearchableExcelSheet,
+  waitForImportQuickInput,
+  openReleasedROperationPicker,
+  executeReleasedNotebookCell,
+  releasedNotebookJsonResult,
   RELEASED_R_SUPPORTED_OPERATIONS,
   WORKBENCH_OPERATION_TIMEOUT_MS,
   acceptanceProcessIsAlive,
@@ -103,11 +147,391 @@ export function createReleasedRDocumentJourney({
   waitForReleasedRDocumentSession,
   withBoundedAcceptancePromise
 }: ReleasedRDocumentJourneyDependencies) {
+  async function exerciseFileRecovery(
+    testing: TestApi,
+    workbench: Page,
+    confirmed: ReleasedRDocumentActiveSession,
+    fixture: ReleasedRDocumentFixture,
+    initialRoots: readonly string[]
+  ): Promise<void> {
+    const runtimeId = testing
+      .diagnostics()
+      .sessions.find((session) => session.publicId === confirmed.sessionId)?.runtimeId;
+    assert.ok(runtimeId);
+    const oldRoots = releasedRProcessRoots().filter((root) => !initialRoots.includes(root));
+    assert.equal(oldRoots.length, 1);
+    const picker = await openReleasedROperationPicker(testing, workbench, confirmed.sessionId);
+    await picker.dialog.getByRole("button", { name: /^Custom code\b/u }).click();
+    await picker.dialog
+      .getByLabel("Engine-native R", { exact: true })
+      .fill(
+        `base::writeLines(base::as.character(base::Sys.getpid()), ${JSON.stringify(fixture.processIdPath)})\nbase::quit(save = "no")`
+      );
+    await picker.dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+    await picker.dialog.getByRole("alert").waitFor({ state: "visible", timeout: 30_000 });
+    const processId = readReleasedRDocumentProcessId(fixture.processIdPath);
+    await waitFor(() => !acceptanceProcessIsAlive(processId), 10_000, "the deliberately exited private file R process");
+    await picker.dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await picker.dialog.waitFor({ state: "hidden", timeout: 10_000 });
+    // Public navigation requests an idempotent page; it must not repeat the failed Custom preview.
+    const grid = picker.app.locator('[data-testid="data-grid-scroller"]');
+    await grid.focus();
+    await workbench.keyboard.press("Control+End");
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        const current = testing.diagnostics().sessions.find((session) => session.publicId === confirmed.sessionId);
+        return (
+          active?.sessionId === confirmed.sessionId &&
+          current !== undefined &&
+          current.runtimeId !== runtimeId &&
+          isDeepStrictEqual(active.metadata.steps, confirmed.metadata.steps) &&
+          active.metadata.draftStep === undefined
+        );
+      },
+      30_000,
+      "the exact confirmed R file plan and public page to use a fresh runtime"
+    );
+    const recovered = testing.activeSession();
+    assert.ok(recovered);
+    assert.deepEqual(recovered.metadata.source, confirmed.metadata.source);
+    assert.deepEqual(recovered.metadata.schema, confirmed.metadata.schema);
+    assert.equal(recovered.code, confirmed.code);
+    const app = await releasedRSessionApp(workbench, testing, confirmed.sessionId, "the recovered file renderer");
+    await app.locator('td[data-grid-row="239"][data-grid-column="3"]').waitFor({ state: "visible", timeout: 10_000 });
+    assert.equal(
+      await app.locator('td[data-grid-row="239"][data-grid-column="3"] .gridCellText').textContent(),
+      "order-240"
+    );
+    await waitFor(
+      () => oldRoots.every((root) => !existsSync(root)),
+      10_000,
+      "the retired R process root to be removed after recovery"
+    );
+    assert.equal(releasedRProcessRoots().filter((root) => !initialRoots.includes(root)).length, 1);
+    assertReleasedRDocumentFixtureUnchanged(fixture);
+  }
+
+  async function exerciseWindowsFileInputs(
+    testing: TestApi,
+    workbench: Page,
+    directory: string,
+    notebook: vscode.NotebookDocument,
+    notebookProcessId: number,
+    initialRoots: readonly string[]
+  ): Promise<void> {
+    assert.equal(testing.diagnostics().sessionCount, 0);
+    const workspace = vscode.workspace.workspaceFolders?.[0];
+    assert.ok(workspace);
+    const inputs = writeReleasedRFileFixtures(
+      path.join(directory, "file-inputs"),
+      path.join(workspace.uri.fsPath, "fixtures")
+    );
+    const source = (name: string): vscode.Uri => {
+      const input = inputs.find((file) => path.basename(file.path) === name);
+      assert.ok(input);
+      return vscode.Uri.file(input.path);
+    };
+    const ownedSessions = new Set<string>();
+    const ownedTabs = new Set<vscode.Tab>();
+    const retainTab = (): void => {
+      const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
+      assert.ok(tab);
+      ownedTabs.add(tab);
+    };
+    const preserve = (): void => assertReleasedRDocumentFixtureUnchanged({ immutableFiles: inputs });
+    async function closeSessions(): Promise<void> {
+      for (const id of [...ownedSessions]) {
+        await disposePackagedSessionPanel(testing, id, "the qualified R file session");
+        ownedSessions.delete(id);
+      }
+      await waitFor(
+        () => isDeepStrictEqual(releasedRProcessRoots(), initialRoots),
+        10_000,
+        "all qualified R file private roots to close"
+      );
+      assert.equal(testing.diagnostics().sessionCount, 0);
+      preserve();
+    }
+    async function open(uri: vscode.Uri, restore = false): Promise<ReleasedRDocumentActiveSession> {
+      await withBoundedAcceptancePromise(
+        restore
+          ? vscode.commands.executeCommand("vscode.openWith", uri, "openWrangler.viewer", vscode.ViewColumn.One)
+          : vscode.commands.executeCommand("openWrangler.openFile", uri),
+        WORKBENCH_OPERATION_TIMEOUT_MS,
+        restore
+          ? "restoring the exact R input through its custom editor"
+          : "opening the exact R input through its public command"
+      );
+      retainTab();
+      await waitFor(
+        () => testing.activeSession()?.metadata.source.uri === uri.toString(),
+        30_000,
+        "the exact R file source to publish"
+      );
+      const active = testing.activeSession();
+      assert.ok(active);
+      ownedSessions.add(active.sessionId);
+      assert.equal(active.metadata.backend, "r");
+      assert.equal(active.metadata.source.path, uri.fsPath);
+      assert.equal(active.metadata.source.kind, "file");
+      assert.equal(active.metadata.rDataframeFlavor, "r.data.frame");
+      assert.equal(active.metadata.capabilities.notebookInsert, false);
+      assert.notEqual(active.metadata.capabilities.documentInsert, true);
+      return active;
+    }
+    async function checkCells(
+      active: ReleasedRDocumentActiveSession,
+      names: readonly string[],
+      rows: readonly (readonly string[])[]
+    ): Promise<Locator> {
+      assert.deepEqual(
+        active.metadata.schema.map((column) => column.name),
+        names
+      );
+      assert.deepEqual(active.metadata.shape, { rows: rows.length, columns: names.length });
+      const page = await assertReleasedSessionPage(testing, active, rows[0]![0]!, "jupyter-r-file-input-page");
+      assert.deepEqual(
+        page.page.rows.map((row) => row.values.map((cell) => cell.display)),
+        rows
+      );
+      const app = await releasedRSessionApp(workbench, testing, active.sessionId, "the exact native file grid");
+      assert.equal(await app.locator('[data-session-badge="backend"]').innerText(), "R");
+      for (let column = 0; column < Math.min(2, names.length); column += 1) {
+        const cell = app.locator(`td[data-grid-row="0"][data-grid-column="${column}"] .gridCellText`);
+        await cell.waitFor({ state: "visible", timeout: 10_000 });
+        assert.equal(await cell.textContent(), rows[0]![column]);
+      }
+      preserve();
+      return app;
+    }
+    try {
+      const csvUri = source("options.csv");
+      const detected = await open(csvUri);
+      assert.equal(detected.metadata.source.importOptions?.encoding, "windows-1252");
+      const detectedApp = await releasedRSessionApp(
+        workbench,
+        testing,
+        detected.sessionId,
+        "the detected CP1252 source"
+      );
+      await detectedApp.getByRole("button", { name: "Import options", exact: true }).click();
+      for (const [title, choice] of [
+        ["Delimiter", "Semicolon"],
+        ["Text encoding", "windows-1252"],
+        ["Header row", "Generate column names"]
+      ] as const) {
+        const prompt = await waitForImportQuickInput(workbench, testing, csvUri, title, detected.sessionId);
+        await acceptQuickPickOptionWithKeyboard(workbench, prompt, title, choice);
+      }
+      const quote = await waitForImportQuickInput(workbench, testing, csvUri, "Quote character", detected.sessionId);
+      await quote.locator(".quick-input-box input").fill("'");
+      await quote.locator(".quick-input-box input").press("Enter");
+      const lineEnding = await waitForImportQuickInput(workbench, testing, csvUri, "Line ending", detected.sessionId);
+      await acceptQuickPickOptionWithKeyboard(workbench, lineEnding, "Line ending", "CR");
+      await waitFor(
+        () =>
+          testing.activeSession()?.metadata.source.uri === csvUri.toString() &&
+          testing.activeSession()?.sessionId !== detected.sessionId,
+        30_000,
+        "the publicly selected native R CSV options"
+      );
+      retainTab();
+      const configured = testing.activeSession();
+      assert.ok(configured);
+      ownedSessions.add(configured.sessionId);
+      assert.equal(configured.metadata.backend, "r");
+      assert.deepEqual(configured.metadata.source.importOptions, {
+        delimiter: ";",
+        encoding: "windows-1252",
+        hasHeader: false,
+        quoteChar: "'",
+        lineEnding: "cr"
+      });
+      const csvRows = [
+        ["1", "  €  "],
+        ["2", "two;parts"],
+        ["3", "two\r\nlines"]
+      ];
+      let app = await checkCells(configured, ["V1", "V2"], csvRows);
+      const preview = await previewReleasedRRename(testing, workbench, app, configured.sessionId, "V1", "record_id");
+      await preview.app
+        .getByRole("region", { name: "Draft review" })
+        .getByRole("button", { name: "Apply step", exact: true })
+        .click();
+      await waitFor(
+        () =>
+          testing.activeSession()?.sessionId === configured.sessionId &&
+          testing.activeSession()?.metadata.steps[0]?.id === preview.stepId &&
+          testing.activeSession()?.metadata.draftStep === undefined,
+        30_000,
+        "the configured CSV Rename to commit"
+      );
+      const applied = testing.activeSession();
+      assert.ok(applied);
+      const generatedCode = applied.code;
+      assert.ok(generatedCode);
+      await closeSessions();
+      const reopened = await open(csvUri, true);
+      assert.notEqual(reopened.sessionId, applied.sessionId);
+      assert.deepEqual(reopened.metadata.source, applied.metadata.source);
+      assert.deepEqual(reopened.metadata.steps, applied.metadata.steps);
+      assert.equal(reopened.code, generatedCode);
+      await checkCells(reopened, ["record_id", "V2"], csvRows);
+      await closeSessions();
+
+      const cellIndex = notebook.cellCount;
+      const marker = "__OW_RELEASED_R_FILE_GENERATED__";
+      const code = `local({\n e <- base::new.env(parent = base::baseenv())\n base::eval(base::parse(text = ${JSON.stringify(generatedCode)}), envir = e)\n base::stopifnot(base::identical(e$open_wrangler_result, base::data.frame(record_id = 1:3, V2 = c("  €  ", "two;parts", "two\\r\\nlines"))))\n base::cat(${JSON.stringify(marker)}, jsonlite::toJSON(list(ok = TRUE, pid = base::Sys.getpid()), auto_unbox = TRUE), "\\n", sep = "")\n})`;
+      const edit = new vscode.WorkspaceEdit();
+      edit.set(notebook.uri, [
+        vscode.NotebookEdit.insertCells(cellIndex, [
+          new vscode.NotebookCellData(vscode.NotebookCellKind.Code, code, "r")
+        ])
+      ]);
+      assert.equal(await vscode.workspace.applyEdit(edit), true);
+      try {
+        const editor = await vscode.window.showNotebookDocument(notebook, { viewColumn: vscode.ViewColumn.One });
+        await executeReleasedNotebookCell(notebook, cellIndex, marker, "jupyter-r:file:generated", editor);
+        const result = releasedNotebookJsonResult(notebook.cellAt(cellIndex), marker, "generated native file code");
+        assert.equal(result.ok, true);
+        assert.equal(
+          result.pid,
+          notebookProcessId,
+          "Private file recovery must preserve the original notebook kernel."
+        );
+        assert.deepEqual(releasedRProcessRoots(), initialRoots);
+        preserve();
+      } finally {
+        assert.equal(
+          notebook.cellAt(cellIndex).document.getText(),
+          code,
+          "Only the owned generated-code cell may be removed."
+        );
+        const remove = new vscode.WorkspaceEdit();
+        remove.set(notebook.uri, [vscode.NotebookEdit.deleteCells(new vscode.NotebookRange(cellIndex, cellIndex + 1))]);
+        assert.equal(await vscode.workspace.applyEdit(remove), true);
+      }
+
+      for (const scenario of [
+        {
+          name: "source.ndjson",
+          columns: ["id", "text", "flag", "amount"],
+          rows: [
+            ["1", "  é  ", "TRUE", "1.5"],
+            ["2", "", "FALSE", "NA"],
+            ["3", "NA", "NA", "2.5"]
+          ]
+        },
+        { name: "legacy.xls", columns: ["name", "value", "active"], rows: [["first", "1", "TRUE"]] }
+      ]) {
+        const active = await open(source(scenario.name));
+        await checkCells(active, scenario.columns, scenario.rows);
+        await closeSessions();
+      }
+      const parquet = await open(source("r-file-input.parquet"));
+      assert.deepEqual(
+        parquet.metadata.schema.map((column) => column.name),
+        ["id", "text", "flag", "amount", "at", "date", "unsigned32", "unsigned64"]
+      );
+      assert.deepEqual(parquet.metadata.shape, { rows: 3, columns: 8 });
+      const parquetPage = await assertReleasedSessionPage(testing, parquet, "1", "jupyter-r-file-parquet");
+      assert.deepEqual(
+        parquetPage.page.rows.map((row) => row.values.slice(0, 4).map((cell) => cell.display)),
+        [
+          ["1", "  é  ", "TRUE", "2.5"],
+          ["NA", "", "FALSE", "NaN"],
+          ["9007199254740991", "NA", "NA", "NA"]
+        ]
+      );
+      assert.deepEqual(
+        parquetPage.page.rows.slice(0, 2).map((row) => row.values[7]?.display),
+        ["0", "9223372036854775807"]
+      );
+      app = await releasedRSessionApp(workbench, testing, parquet.sessionId, "the native Parquet grid");
+      assert.equal(
+        await app.locator('td[data-grid-row="0"][data-grid-column="1"] .gridCellText').textContent(),
+        "  é  "
+      );
+      await closeSessions();
+
+      const excelUri = source("r-file-input.xlsx");
+      const excel = await open(excelUri);
+      assert.deepEqual(
+        excel.metadata.schema.map((column) => column.name),
+        ["id", "text", "flag", "amount", "at", "same", "same", ""]
+      );
+      assert.deepEqual(excel.metadata.shape, { rows: 3, columns: 8 });
+      const excelPage = await assertReleasedSessionPage(testing, excel, "1", "jupyter-r-file-excel");
+      assert.deepEqual(
+        excelPage.page.rows.map((row) => row.values.slice(0, 4).map((cell) => cell.display)),
+        [
+          ["1", "  é  ", "TRUE", "2.5"],
+          ["2", "NA", "FALSE", "NA"],
+          ["3", "NA", "NA", "-0.5"]
+        ]
+      );
+      assert.equal(excelPage.page.rows[1]?.values[1]?.kind, "string");
+      assert.equal(excelPage.page.rows[2]?.values[1]?.kind, "null");
+      app = await releasedRSessionApp(
+        workbench,
+        testing,
+        excel.sessionId,
+        "the native Excel grid before its actual sheet picker"
+      );
+      await app.getByRole("button", { name: "Import options", exact: true }).click();
+      await acceptSearchableExcelSheet(workbench, testing, excelUri, excel.sessionId, "cached");
+      await waitFor(
+        () =>
+          testing.activeSession()?.sessionId !== excel.sessionId &&
+          testing.activeSession()?.metadata.source.importOptions?.sheetName === "cached",
+        30_000,
+        "the selected nonfirst worksheet to own a separate native R session"
+      );
+      retainTab();
+      const selected = testing.activeSession();
+      assert.ok(selected);
+      ownedSessions.add(selected.sessionId);
+      assert.equal(selected.metadata.backend, "r");
+      assert.equal(selected.metadata.source.uri, excelUri.toString());
+      assert.equal(selected.metadata.source.path, excelUri.fsPath);
+      assert.deepEqual(selected.metadata.source.importOptions, { sheetName: "cached" });
+      assert.deepEqual(testing.sessionSnapshot(excel.sessionId)?.metadata.source, excel.metadata.source);
+      assert.deepEqual(testing.sessionSnapshot(excel.sessionId)?.metadata.schema, excel.metadata.schema);
+      app = await checkCells(
+        selected,
+        ["true_zero", "cached_zero", "cached_three", "uncached", "error", "whitespace"],
+        [["0", "0", "3", "NA", "NA", "NA"]]
+      );
+      const cachedThree = app.locator('td[data-grid-row="0"][data-grid-column="2"] .gridCellText');
+      await cachedThree.waitFor({ state: "visible", timeout: 10_000 });
+      assert.equal(await cachedThree.textContent(), "3");
+      const search = app.getByRole("combobox", { name: "Column", exact: true });
+      await search.fill("whitespace");
+      await app.getByRole("option", { name: /^whitespace,/u }).waitFor({ state: "visible", timeout: 10_000 });
+      await search.press("Enter");
+      for (const column of [3, 4, 5]) {
+        const cell = app.locator(`td[data-grid-row="0"][data-grid-column="${column}"]`);
+        await cell.waitFor({ state: "visible", timeout: 10_000 });
+        assert.equal(await cell.getAttribute("aria-label"), "Null value");
+      }
+      await closeSessions();
+    } finally {
+      await closeSessions();
+      const remainingTabs = vscode.window.tabGroups.all
+        .flatMap((group) => group.tabs)
+        .filter((tab) => ownedTabs.has(tab));
+      if (remainingTabs.length) assert.equal(await vscode.window.tabGroups.close(remainingTabs, true), true);
+      preserve();
+    }
+  }
+
   return async function exerciseReleasedRDocumentJourney(
     testing: TestApi,
     workbench: Page,
     directory: string,
-    entry: "document" | "document-and-file" | "file" = "document"
+    entry: "document" | "document-and-file" | "file" = "document",
+    notebook?: Readonly<{ document: vscode.NotebookDocument; processId: number }>
   ): Promise<void> {
     recordAcceptanceProgress("jupyter-r:document:create");
     assert.equal(vscode.workspace.isTrusted, true, "Running a plain R file requires the trusted packaged workspace.");
@@ -545,10 +969,47 @@ export function createReleasedRDocumentJourney({
                 : (csvApplied.metadata.source.importOptions?.encoding ?? "utf-8"),
             quoteChar: csvApplied.metadata.source.importOptions?.quoteChar ?? '"'
           });
+          if (entry === "file") {
+            csvApp = await releasedRSessionApp(workbench, testing, csvSessionId, "the R CSV before Undo");
+            await csvApp.getByRole("button", { name: "Undo", exact: true }).click();
+            await waitFor(
+              () => {
+                const active = testing.activeSession();
+                return (
+                  active !== undefined &&
+                  active.sessionId === csvSessionId &&
+                  active.metadata.steps.length === 0 &&
+                  active.metadata.schema[0]?.name === "row_id" &&
+                  active.metadata.draftStep === undefined
+                );
+              },
+              30_000,
+              "R CSV Undo to restore the original schema"
+            );
+            csvApp = await releasedRSessionApp(workbench, testing, csvSessionId, "the R CSV before Redo");
+            await csvApp.getByRole("button", { name: "Redo", exact: true }).click();
+            await waitFor(
+              () => {
+                const active = testing.activeSession();
+                return (
+                  active !== undefined &&
+                  active.sessionId === csvSessionId &&
+                  active.metadata.steps[0]?.id === renamed.stepId &&
+                  active.metadata.schema[0]?.name === "record_id" &&
+                  active.metadata.draftStep === undefined
+                );
+              },
+              30_000,
+              "R CSV Redo to restore the exact committed Rename"
+            );
+            assert.equal(testing.activeSession()?.code, csvApplied.code);
+          }
+          const exportSession = testing.activeSession();
+          assert.ok(exportSession);
           await assert.rejects(
             testing.request(
               persistedReplayExportRequest(
-                { backend: "r", sessionId: csvSessionId, revision: csvApplied.metadata.revision },
+                { backend: "r", sessionId: csvSessionId, revision: exportSession.metadata.revision },
                 csvPath,
                 "csv"
               )
@@ -569,6 +1030,27 @@ export function createReleasedRDocumentJourney({
           );
           assert.deepEqual(readdirSync(csvExportDirectory), ["orders-cleaned.csv"]);
           assertReleasedRDocumentFixtureUnchanged(fixture);
+          if (entry === "file") {
+            const confirmed = testing.activeSession();
+            assert.ok(confirmed);
+            await exerciseFileRecovery(testing, workbench, confirmed, fixture, initialProcessRoots);
+            await disposePackagedSessionPanel(testing, csvSessionId, "the recovered native R CSV");
+            csvSessionId = undefined;
+            await waitFor(
+              () => isDeepStrictEqual(releasedRProcessRoots(), initialProcessRoots),
+              10_000,
+              "the recovered CSV owner to close"
+            );
+            assert.ok(notebook, "Windows file generated-code checks require the exact existing R notebook.");
+            await exerciseWindowsFileInputs(
+              testing,
+              workbench,
+              directory,
+              notebook.document,
+              notebook.processId,
+              initialProcessRoots
+            );
+          }
         } finally {
           try {
             if (csvSessionId) await disposePackagedSessionPanel(testing, csvSessionId, "the native R CSV session");

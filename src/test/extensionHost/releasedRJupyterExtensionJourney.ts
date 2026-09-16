@@ -75,7 +75,8 @@ interface ReleasedRJupyterExtensionJourneyDependencies {
     testing: TestApi,
     workbench: Page,
     directory: string,
-    entry?: "document" | "document-and-file" | "file"
+    entry?: "document" | "document-and-file" | "file",
+    notebook?: Readonly<{ document: vscode.NotebookDocument; processId: number }>
   ) => Promise<void>;
   readonly exerciseReleasedREditingCoverage: (
     testing: TestApi,
@@ -343,7 +344,10 @@ export function createReleasedRJupyterExtensionJourney({
       if (phase === "jupyter-r" && process.platform === "win32") {
         assert.equal(supportsRFileExecution(), true, "The Windows R gate requires the owned file transport.");
         recordReleasedRAcceptanceSection(phase, coverage, "file", "start");
-        await exerciseReleasedRDocumentJourney(testing, workbench, path.join(directory, "R files café"), "file");
+        await exerciseReleasedRDocumentJourney(testing, workbench, path.join(directory, "R files café"), "file", {
+          document: notebook,
+          processId: Number(setup.pid)
+        });
         assert.equal(testing.diagnostics().sessionCount, 0, "The R file journey must release its private process.");
         recordReleasedRAcceptanceSection(phase, coverage, "file", "complete");
       }

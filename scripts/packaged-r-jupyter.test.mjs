@@ -30,7 +30,19 @@ import { resolvePackagedRJourneySelection } from "./packaged-r-journey.mjs";
 import { editorAcceptancePrivateRootIdentityLost } from "./packaged-editor-orchestration.mjs";
 import { acquireExactArtifact, prepareREditorAcceptanceTooling } from "./r-editor-acceptance-tooling.mjs";
 
-const notebookPackages = ["IRkernel", "jsonlite", "rlang", "Rcpp", "tibble", "data.table", "collapse", "nanoparquet"];
+const notebookPackages = [
+  "IRkernel",
+  "jsonlite",
+  "rlang",
+  "Rcpp",
+  "tibble",
+  "data.table",
+  "collapse",
+  "nanoparquet",
+  "readxl",
+  "readr",
+  "bit64"
+];
 const editorPackages = [
   "IRkernel",
   "jsonlite",
@@ -637,7 +649,9 @@ for (const [scope, selection, packages] of [
     assert.equal(prepared.dependencyProbe.options.timeoutMs, 30_000);
     assert.equal(prepared.dependencyInstall.options.timeoutMs, 1_200_000);
     assert.ok(Object.isFrozen(R_ACCEPTANCE_PACKAGE_VERSIONS));
-    assert.equal(prepared.packages.includes("bit64"), false);
+    assert.equal(prepared.packages.includes("bit64"), scope === "notebook");
+    assert.equal(prepared.packages.includes("readxl"), scope === "notebook");
+    assert.equal(prepared.packages.includes("readr"), scope === "notebook");
     await assert.rejects(
       prepareJupyterAcceptanceREnvironment(fixture.directory, fixture.rscript, fixture.options),
       /new contained private environment/u
@@ -754,10 +768,11 @@ for (const platform of ["linux", "darwin", "win32"]) {
       purpose: "source-contracts",
       platform
     });
-    const packages = ["jsonlite", "bit64"];
+    const packages = ["jsonlite", "readr", "bit64"];
     const versions = Object.fromEntries(packages.map((name) => [name, R_ACCEPTANCE_PACKAGE_VERSIONS[name]]));
     assert.deepEqual(prepared.packages, packages);
     assert.equal(versions.bit64, "4.6.0.1");
+    assert.equal(versions.readr, "2.2.0");
     assert.deepEqual(preparedPackageInputs(prepared), { packages, versions });
     assert.deepEqual(prepared.packageVersions, versions);
     assert.equal(prepared.packageRecord, packages.map((name) => `${name}=${versions[name]}`).join("\n"));

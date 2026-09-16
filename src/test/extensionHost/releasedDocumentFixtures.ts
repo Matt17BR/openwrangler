@@ -1,5 +1,6 @@
 import * as assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { gunzipSync } from "node:zlib";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { R_KERNEL_RUNTIME_BINDING } from "../../extension/r/rKernelRuntimeBundle";
@@ -96,6 +97,35 @@ export function writeReleasedRDocumentFixture(directory: string): ReleasedRDocum
       { path: csvPath, bytes: csvBytes }
     ]
   };
+}
+
+export function writeReleasedRFileFixtures(
+  directory: string,
+  sourceDirectory: string
+): ReleasedRDocumentFixture["immutableFiles"] {
+  mkdirSync(directory, { recursive: true });
+  const inputs = [
+    ["options.csv", Buffer.from("1;'  \x80  '\r2;'two;parts'\r3;'two\r\nlines'\r", "latin1")],
+    [
+      "source.ndjson",
+      Buffer.from(
+        '{"id":1,"text":"  é  ","flag":true,"amount":1.5}\n\n{"id":2,"text":"","flag":false}\n{"id":3,"text":null,"amount":2.5}\n',
+        "utf8"
+      )
+    ],
+    ["r-file-input.parquet", readFileSync(path.join(sourceDirectory, "r-file-input.parquet"))],
+    ["r-file-input.xlsx", readFileSync(path.join(sourceDirectory, "r-file-input.xlsx"))],
+    [
+      "legacy.xls",
+      gunzipSync(Buffer.from(readFileSync(path.join(sourceDirectory, "legacy.xls.gz.base64"), "utf8").trim(), "base64"))
+    ],
+    ["unrelated.txt", Buffer.from("Preserve this unrelated fixture.\n", "utf8")]
+  ] as const;
+  return inputs.map(([name, bytes]) => {
+    const filePath = path.join(directory, name);
+    writeFileSync(filePath, bytes, { flag: "wx" });
+    return { path: filePath, bytes };
+  });
 }
 
 export function releasedRDocumentCleanedCsv(): Buffer {

@@ -687,7 +687,7 @@ remain in their existing source cases.
 The two focused cases run serially in separate R processes through the warning-strict wrapper, each with a two-minute
 limit and bounded output. Their synthetic fixtures and operations do not launch subprocesses; ordinary direct-child
 execution is sufficient and does not qualify general process-tree cleanup. Both reuse one preparation by the existing
-private-library owner with pinned jsonlite and bit64 roots, including version and namespace checks. The separate
+private-library owner with pinned jsonlite, readr and bit64 roots, including version and namespace checks. The separate
 export case requires nanoparquet; source preparation skips the empty supplemental package install. Any preparation
 or test failure retains the private root; successful preparation and both child exits permit its removal.
 The subsequent installed-editor journey keeps its separate environment, nanoparquet dependency and lifetime.
@@ -701,8 +701,15 @@ core to prepare for Drop Columns. The macOS profile also retains all three colla
 direct-document execution and kernel restart/recovery. The macOS managed-document stage and Windows file-only stage open the same existing 240-row,
 four-column CSV through the public file command with temporary R selection, checks default-on header statistics, native cells and Rename
 Preview/Apply, the full rendered generated code's exact file read, all-row CSV export and source-destination refusal.
-It restores the setting, preserves fixture bytes and checks session/private-process-root cleanup. It uses the existing
-profile, preparation dependencies and phase deadline. Its original hosted run records phase-relative checkpoints;
+It restores the setting, preserves fixture bytes and checks session/private-process-root cleanup. The Windows file branch
+also checks Undo/Redo, persisted reopening, a failed Custom preview that exits only its private R process, and recovery
+of the confirmed plan followed by public grid navigation. A tiny CP1252 CSV uses the public encoding, delimiter,
+header, quote and CR controls after its encoding is automatically detected, retaining quoted CRLF bytes; its saved options/plan restore through the public custom editor and its generated program executes
+in the original R notebook kernel with exact PID equality. The same branch opens the existing Parquet, JSONL, XLSX and BIFF fixtures and selects
+the nonfirst XLSX worksheet through the real picker. Exact native cells, source bytes, an unrelated sentinel and owned
+session/private-root cleanup remain asserted. Default notebook preparation includes pinned readr, readxl and bit64 for these
+file inputs; focused and terminal package sets stay unchanged. Source-only preparation also includes readr for the CSV case. This adds small file launches and reader
+preparation within the existing profile and phase deadline; hosted checkpoints must establish the actual additional cost. Its original hosted run records phase-relative checkpoints;
 polling can miss quick transitions, so these are not exact per-action timings.
 The Linux core catalog retains the Dense Rank form,
 Preview/Apply/Undo and three direct page samples for exact ranks, missing cells and row identities. The macOS profile
