@@ -22,11 +22,13 @@ const mocks = vi.hoisted(() => ({
   discovery: vi.fn(),
   transportDispose: vi.fn(async () => undefined),
   transportOptions: [] as unknown[],
+  bridgeOptions: [] as unknown[][],
   transportConstructorError: undefined as Error | undefined,
   bridgeDispose: vi.fn(async () => undefined),
+  bridgeDiagnostic: vi.fn(),
   panelCreate: vi.fn(),
   restoreEditorGroupAfterQuickPick: vi.fn(async () => undefined),
-  resolveExecutable: vi.fn(() => "/usr/bin/Rscript"),
+  resolveExecutable: vi.fn((): string | undefined => "/usr/bin/Rscript"),
   executeCommand: vi.fn(async () => undefined),
   getCommands: vi.fn(async () => [] as string[]),
   reticulateCells: true
@@ -122,7 +124,11 @@ vi.mock("../extension/r/rProcessTransport", () => ({
 
 vi.mock("../extension/r/rKernelBridge", () => ({
   RKernelBridge: class {
+    constructor(...args: unknown[]) {
+      mocks.bridgeOptions.push(args);
+    }
     dispose = mocks.bridgeDispose;
+    reportDiagnostic = mocks.bridgeDiagnostic;
   }
 }));
 
@@ -132,11 +138,12 @@ vi.mock("../extension/webviewPanel", () => ({
 }));
 
 import * as vscode from "vscode";
+import { createRFileBridge } from "../extension/r/rFileSource";
+import { supportsRscriptExecution } from "../extension/r/rscriptPath";
 import {
   OPEN_LITERATE_DOCUMENT_CURSOR_COMMAND,
   OPEN_R_DOCUMENT_COMMAND,
-  registerRDocumentCommands,
-  supportsRDocumentExecution
+  registerRDocumentCommands
 } from "../extension/r/rDocumentCommands";
 
 describe("R document command", () => {
@@ -163,6 +170,8 @@ describe("R document command", () => {
     mocks.transportOptions.length = 0;
     mocks.transportConstructorError = undefined;
     mocks.bridgeDispose.mockClear();
+    mocks.bridgeDiagnostic.mockClear();
+    mocks.bridgeOptions.length = 0;
     mocks.panelCreate.mockReset();
     mocks.restoreEditorGroupAfterQuickPick.mockReset();
     mocks.restoreEditorGroupAfterQuickPick.mockResolvedValue(undefined);
@@ -173,6 +182,67 @@ describe("R document command", () => {
     mocks.getCommands.mockReset();
     mocks.getCommands.mockResolvedValue([]);
     mocks.reticulateCells = true;
+  });
+
+  it("prepares an exact lazy CSV/TSV file owner and pins its runtime and source through recovery", async () => {
+    const context = { asAbsolutePath: (part: string) => `/extension/${part}` } as unknown as ExtensionContext;
+    const source = {
+      kind: "file" as const,
+      label: "orders.tsv",
+      path: "/workspace/orders.tsv",
+      uri: "file:///workspace/orders.tsv",
+      importOptions: { hasHeader: false }
+    };
+    createRFileBridge(context, source);
+    expect(mocks.bridgeDiagnostic.mock.calls).toEqual([['R file runtime selected: "/usr/bin/Rscript".']]);
+    expect(mocks.discovery).not.toHaveBeenCalled();
+    expect(mocks.transportOptions[0]).toMatchObject({
+      fileSource: { path: source.path, header: false, delimiter: "\t" },
+      rscriptPath: "/usr/bin/Rscript",
+      workingDirectory: "/workspace"
+    });
+    expect(mocks.transportOptions[0]).not.toHaveProperty("documentText");
+    source.importOptions.hasHeader = true;
+    mocks.resolveExecutable.mockReturnValue("/different/Rscript");
+    const recovery = mocks.bridgeOptions[0]?.[6] as () => Promise<unknown>;
+    await recovery();
+    expect(mocks.transportOptions[1]).toEqual(mocks.transportOptions[0]);
+    expect(mocks.bridgeOptions[1]?.[7]).toMatchObject({ ...source, importOptions: { hasHeader: false } });
+    expect(mocks.resolveExecutable).toHaveBeenCalledTimes(1);
+    expect(mocks.bridgeDiagnostic.mock.calls).toEqual([
+      ['R file runtime selected: "/usr/bin/Rscript".'],
+      ['R file runtime selected: "/usr/bin/Rscript".']
+    ]);
+  });
+
+  it("refuses unsupported native file options and trust before constructing a process owner", () => {
+    const context = { asAbsolutePath: (part: string) => `/extension/${part}` } as unknown as ExtensionContext;
+    const source = {
+      kind: "file" as const,
+      label: "orders.csv",
+      path: "/workspace/orders.csv",
+      uri: "file:///workspace/orders.csv"
+    };
+    expect(supportsRscriptExecution("linux")).toBe(true);
+    expect(supportsRscriptExecution("darwin")).toBe(true);
+    expect(supportsRscriptExecution("win32")).toBe(false);
+    for (const importOptions of [
+      { encoding: "utf8-lossy" },
+      { quoteChar: "'" },
+      { lineEnding: "cr" as const },
+      { sheetIndex: 0 }
+    ]) {
+      expect(() => createRFileBridge(context, { ...source, importOptions })).toThrow();
+    }
+    expect(() => createRFileBridge(context, { ...source, uri: "file:///workspace/other.csv" })).toThrow(
+      "matching local"
+    );
+    mocks.resolveExecutable.mockReturnValue(undefined);
+    expect(() => createRFileBridge(context, source)).toThrow("Set Open Wrangler: Rscript Path");
+    mocks.trusted = false;
+    expect(() => createRFileBridge(context, source)).toThrow("Trust this workspace");
+    expect(mocks.transportOptions).toEqual([]);
+    expect(mocks.bridgeDiagnostic).not.toHaveBeenCalled();
   });
 
   it("disposes the first real R-document command when the grouped second registration throws", () => {
@@ -804,10 +874,10 @@ describe("R document command", () => {
   });
 
   it("keeps plain R execution disabled on Windows until it can own the complete process tree", () => {
-    expect(supportsRDocumentExecution("linux")).toBe(true);
-    expect(supportsRDocumentExecution("darwin")).toBe(true);
-    expect(supportsRDocumentExecution("win32")).toBe(false);
-    expect(supportsRDocumentExecution("freebsd")).toBe(false);
+    expect(supportsRscriptExecution("linux")).toBe(true);
+    expect(supportsRscriptExecution("darwin")).toBe(true);
+    expect(supportsRscriptExecution("win32")).toBe(false);
+    expect(supportsRscriptExecution("freebsd")).toBe(false);
   });
 
   it("reports an invalid R source capture instead of rejecting the command", async () => {

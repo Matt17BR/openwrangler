@@ -89,6 +89,8 @@ export const EDITOR_DOWNLOAD_RESULT_MAX_BYTES = 32 * 1024;
 const EDITOR_ACCEPTANCE_POLL_INTERVAL_MS = 100;
 // Live timing output uses only these fixed fixture labels from correlated progress.
 const R_ACCEPTANCE_TIMED_CHECKPOINTS = new Set([
+  "jupyter-r:file:start",
+  "jupyter-r:file:complete",
   ...["comprehensive", "platform-lifecycle", "representative"].flatMap((profile) =>
     ["notebook", "grid", "editing", "collapse-open", "native-viewing", "native-editing", "document", "restart"].flatMap(
       (section) => ["start", "complete"].map((boundary) => `jupyter-r:coverage:${profile}:${section}:${boundary}`)

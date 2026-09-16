@@ -1,11 +1,10 @@
 import * as path from "node:path";
-import { accessSync, constants as fsConstants, statSync } from "node:fs";
 import * as vscode from "vscode";
 import { formatQuickPickName } from "../quickPickName";
 import type { SessionSource } from "../../shared/protocol";
-import { getSetting, runtimeRequestTimeoutMs } from "../configuration";
+import { runtimeRequestTimeoutMs } from "../configuration";
 import { DetachedBridgeRequestError } from "../dataBridge";
-import { resolveExecutableCommand } from "../pythonPath";
+import { configuredRscriptPath, supportsRscriptExecution } from "./rscriptPath";
 import { type TextDocumentSessionOrigin, SessionCoordinator } from "../sessionCoordinator";
 import { OpenWranglerPanel, restoreEditorGroupAfterQuickPick } from "../webviewPanel";
 import { prepareRDocumentSource, rDocumentKind, rDocumentLabel } from "./rDocumentSource";
@@ -50,7 +49,7 @@ export function registerRDocumentCommands(
           void vscode.window.showWarningMessage("Trust this workspace before running an R document in Open Wrangler.");
           return false;
         }
-        if (!supportsRDocumentExecution()) {
+        if (!supportsRscriptExecution()) {
           void vscode.window.showWarningMessage(
             "Running R documents in Open Wrangler currently requires macOS or Linux. Open the dataframe from an IRkernel notebook instead."
           );
@@ -413,10 +412,6 @@ function showChangedReticulateSetting(): void {
   );
 }
 
-export function supportsRDocumentExecution(platform: NodeJS.Platform = process.platform): boolean {
-  return platform === "linux" || platform === "darwin";
-}
-
 export function captureRDocumentOrigin(document: vscode.TextDocument): TextDocumentSessionOrigin | undefined {
   if (!isSupportedRDocument(document) || !isSoleOpenTextDocument(document)) return undefined;
   return {
@@ -487,21 +482,6 @@ function isSoleOpenTextDocument(document: vscode.TextDocument): boolean {
   const serialized = document.uri.toString();
   const matches = vscode.workspace.textDocuments.filter((candidate) => candidate.uri.toString() === serialized);
   return matches.length === 1 && matches[0] === document;
-}
-
-function configuredRscriptPath(resource: vscode.Uri): string | undefined {
-  const configured = getSetting<string>("rscriptPath", "", resource).trim() || "Rscript";
-  return resolveExecutableCommand(configured, process.env, isExecutableFile);
-}
-
-function isExecutableFile(candidate: string): boolean {
-  try {
-    if (!statSync(candidate).isFile()) return false;
-    accessSync(candidate, fsConstants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function rDocumentQuickPickItem(variable: RProcessVariableDescriptor, fileName: string): RDocumentQuickPickItem {

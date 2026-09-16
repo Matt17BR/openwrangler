@@ -22,6 +22,28 @@ import {
 const sessionId = "11111111-1111-4111-8111-111111111111";
 
 describe("R kernel bridge contract", () => {
+  it("admits only the exact file/options bound to a managed R owner and protects that source on export", () => {
+    const source = {
+      kind: "file" as const,
+      label: "orders.csv",
+      path: "/workspace/orders.csv",
+      uri: "file:///workspace/orders.csv",
+      importOptions: { hasHeader: true }
+    };
+    const request = { ...openRequest(), source };
+    expect(validateOpenRequest(request)).toMatchObject({ code: "unsupported_source" });
+    expect(validateOpenRequest(request, source)).toBeUndefined();
+    expect(
+      validateOpenRequest({ ...request, source: { ...source, importOptions: { hasHeader: false } } }, source)
+    ).toMatchObject({ code: "r_file_source_changed" });
+    expect(validateOpenRequest(openRequest(), source)).toMatchObject({ code: "r_file_source_changed" });
+    expect(isExportableRSource(source)).toBe(true);
+    expect(rExportProtectedSourceUris(source).map((uri) => uri.toString())).toEqual([source.uri]);
+    const session = sessionFromContract(sessionId, source, "editing", frameContract(), ["csv"]);
+    expect(metadataFor(session).capabilities).toMatchObject({ notebookInsert: false });
+    expect(metadataFor(session).capabilities.documentInsert).toBeUndefined();
+  });
+
   it("assigns and validates exact host-owned open-session identity", () => {
     const request = openRequest();
     expect(withHostSessionIdentity(request, () => "unused")).toBe(request);
@@ -178,7 +200,7 @@ describe("R kernel bridge contract", () => {
     expect(rExportProtectedSourceUris(source).map((uri) => uri.toString())).toEqual(["file:///workspace/orders.ipynb"]);
     expect(isExportableRSource({ ...source, uri: "vscode-remote://host/workspace/orders.ipynb" })).toBe(false);
     expect(() => rExportProtectedSourceUris({ ...source, uri: "vscode-remote://host/workspace/orders.ipynb" })).toThrow(
-      "requires a local R notebook"
+      "requires a local source"
     );
     expect(() =>
       assertRExportResult({ sessionId, revision: 3, format: "csv", rows: 1, columns: 1 }, sessionId, 3, "csv", 1, 1)

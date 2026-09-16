@@ -139,6 +139,11 @@ const owners = vi.hoisted(() => ({
   bridgeShutdown: vi.fn(),
   coordinatorShutdown: vi.fn(),
   customEditorResolved: vi.fn(),
+  customEditorConstructed: vi.fn(),
+  fileRegistered: vi.fn(),
+  coordinatedBridge: vi.fn(),
+  rFileLoaded: vi.fn(),
+  rFileCreated: vi.fn(),
   nativeRegistered: vi.fn(),
   nativeWebviewResolved: vi.fn(),
   notebookVariablesDisposed: vi.fn(),
@@ -180,7 +185,7 @@ vi.mock("../extension/sessionCoordinator", () => ({
     owners.sessionConstructed();
     return {
       shutdown: owners.coordinatorShutdown,
-      createBridge: vi.fn(() => ({ request: vi.fn() }))
+      createBridge: owners.coordinatedBridge
     };
   })
 }));
@@ -199,20 +204,27 @@ vi.mock("../extension/runtimeCommands", () => ({
 
 vi.mock("../extension/files/fileOpen", () => ({
   OpenWranglerCustomEditorProvider: class {
+    constructor(...args: unknown[]) {
+      owners.customEditorConstructed(...args);
+    }
     async resolveCustomEditor(...args: unknown[]): Promise<void> {
       owners.customEditorResolved(...args);
     }
   },
-  registerFileCommands: vi.fn((context: MockExtensionContext) => {
+  registerFileCommands: vi.fn((context: MockExtensionContext, ...args: unknown[]) => {
+    owners.fileRegistered(context, ...args);
     registerMockCommands(context, [
       "openWrangler.changeImportOptions",
       "openWrangler.openFile",
       "openWrangler.openPath",
       "openWrangler.openDuckDBTable",
-      "openWrangler.openFileWithPlan"
+      "openWrangler.openFileWithPlan",
+      "openWrangler.internal.openFileWithEngine"
     ]);
   })
 }));
+
+vi.mock("../extension/r/rFileSource", () => ({ createRFileBridge: owners.rFileCreated }));
 
 vi.mock("../extension/files/trustedPickleConversion", () => ({
   registerTrustedPickleConversion: (context: MockExtensionContext) =>
@@ -401,6 +413,9 @@ describe("lazy activation owners", () => {
     owners.bridgeShutdown.mockResolvedValue(undefined);
     owners.coordinatorShutdown.mockResolvedValue(undefined);
     owners.rShutdown.mockResolvedValue(undefined);
+    owners.coordinatedBridge.mockImplementation(() => ({ request: vi.fn() }));
+    owners.rFileLoaded.mockImplementation(() => import("../extension/r/rFileSource"));
+    owners.rFileCreated.mockImplementation(() => ({ request: vi.fn(), onIdle: vi.fn() }));
     owners.notebookSnapshot.mockReturnValue(undefined);
     owners.notebookRefresh.mockResolvedValue(undefined);
     rVariables.snapshot.mockReset().mockReturnValue({
@@ -428,6 +443,8 @@ describe("lazy activation owners", () => {
     expect(owners.pythonConstructed).not.toHaveBeenCalled();
     expect(owners.sessionConstructed).not.toHaveBeenCalled();
     expect(owners.rDiscovery).not.toHaveBeenCalled();
+    expect(owners.rFileLoaded).not.toHaveBeenCalled();
+    expect(owners.rFileCreated).not.toHaveBeenCalled();
     expect(packageMetadata.contributes.commands.every(({ command }) => host.commands.has(command))).toBe(true);
   });
 
@@ -574,6 +591,8 @@ describe("lazy activation owners", () => {
       expect(owners.pythonConstructed).toHaveBeenCalledOnce();
       expect(owners.sessionConstructed).toHaveBeenCalledOnce();
       expect(owners.rDiscovery).not.toHaveBeenCalled();
+      expect(owners.rFileLoaded).not.toHaveBeenCalled();
+      expect(owners.rFileCreated).not.toHaveBeenCalled();
       expect(host.customEditorProviders).toEqual([provider]);
       expect(host.registerCustomEditorProvider).toHaveBeenCalledExactlyOnceWith("openWrangler.viewer", provider, {
         supportsMultipleEditorsPerDocument: false,
@@ -584,6 +603,78 @@ describe("lazy activation owners", () => {
       expect(host.registerCustomEditorProvider.mock.results[0].value.dispose).toHaveBeenCalledOnce();
     }
   );
+
+  it("shares one lazy R file factory while preserving each source, coordinated bridge and idle owner", async () => {
+    active = createOwners();
+    active.startBeforeFirstYield();
+    await host.executeCommand("openWrangler.openFile");
+    const [context, pythonBridge, createRBridge] = owners.fileRegistered.mock.calls[0] as [
+      vscode.ExtensionContext,
+      unknown,
+      import("../extension/files/fileOpen").RFileBridgeFactory
+    ];
+    const provider = host.customEditorProviders[0] as {
+      resolveCustomEditor(document: unknown, panel: unknown, token: vscode.CancellationToken): Promise<void>;
+    };
+    await provider.resolveCustomEditor({ uri: { scheme: "file", path: "/python.csv" } }, {}, resolutionToken());
+    expect(owners.customEditorConstructed).toHaveBeenCalledExactlyOnceWith(context, pythonBridge, createRBridge);
+    expect(owners.rFileLoaded).not.toHaveBeenCalled();
+    expect(owners.rFileCreated).not.toHaveBeenCalled();
+    expect(owners.pythonConstructed).toHaveBeenCalledOnce();
+
+    const firstSource = {
+      kind: "file" as const,
+      label: "first.csv",
+      path: "/first.csv",
+      uri: "file:///first.csv",
+      importOptions: { delimiter: ";", hasHeader: true }
+    };
+    const secondSource = { ...firstSource, label: "second.csv", path: "/second.csv", uri: "file:///second.csv" };
+    const first = await createRBridge(firstSource);
+    const second = await createRBridge(secondSource);
+    expect(owners.rFileCreated).toHaveBeenNthCalledWith(1, context, firstSource);
+    expect(owners.rFileCreated).toHaveBeenNthCalledWith(2, context, secondSource);
+    expect(owners.rFileCreated.mock.calls[0]![1]).toBe(firstSource);
+    expect(owners.rFileCreated.mock.calls[1]![1]).toBe(secondSource);
+    const firstNative = owners.rFileCreated.mock.results[0]!.value;
+    const secondNative = owners.rFileCreated.mock.results[1]!.value;
+    expect(owners.coordinatedBridge.mock.calls.slice(-2).map(([delegate]) => delegate)).toEqual([
+      firstNative,
+      secondNative
+    ]);
+    expect(first.request).toBe(owners.coordinatedBridge.mock.results.at(-2)!.value.request);
+    expect(second.request).toBe(owners.coordinatedBridge.mock.results.at(-1)!.value.request);
+    expect(firstNative.request).not.toHaveBeenCalled();
+    expect(secondNative.request).not.toHaveBeenCalled();
+    first.onIdle?.();
+    expect(firstNative.onIdle).toHaveBeenCalledOnce();
+    expect(firstNative.onIdle.mock.contexts).toEqual([firstNative]);
+    expect(secondNative.onIdle).not.toHaveBeenCalled();
+    second.onIdle?.();
+    expect(secondNative.onIdle).toHaveBeenCalledOnce();
+    expect(owners.pythonConstructed).toHaveBeenCalledOnce();
+    expect(owners.rDiscovery).not.toHaveBeenCalled();
+  });
+
+  it("refuses an R file factory whose activation owner shuts down during module loading", async () => {
+    active = createOwners();
+    active.startBeforeFirstYield();
+    await host.executeCommand("openWrangler.openFile");
+    const createRBridge = owners.fileRegistered.mock
+      .calls[0]![2] as import("../extension/files/fileOpen").RFileBridgeFactory;
+    const module = deferred<typeof import("../extension/r/rFileSource")>();
+    owners.rFileLoaded.mockReturnValueOnce(module.promise);
+    const source = { kind: "file" as const, label: "held.csv", path: "/held.csv", uri: "file:///held.csv" };
+    const opening = createRBridge(source);
+    const rejected = expect(opening).rejects.toThrow("disposed");
+    await active.shutdown();
+    module.resolve(await import("../extension/r/rFileSource"));
+    await rejected;
+    expect(owners.rFileCreated).not.toHaveBeenCalled();
+    expect(owners.coordinatedBridge).toHaveBeenCalledOnce();
+    expect(owners.coordinatorShutdown).toHaveBeenCalledOnce();
+    expect(owners.bridgeShutdown).toHaveBeenCalledOnce();
+  });
 
   it("retains the provider until shutdown when file-command registration rolls back", async () => {
     active = createOwners();
@@ -737,6 +828,9 @@ describe("lazy activation owners", () => {
     });
     expect(nativeVariables.notebook?.snapshot()).toBe(notebookSnapshot);
     expect(nativeVariables.r?.snapshot()).toBe(rVariables.snapshot());
+    owners.coordinatedBridge.mockImplementation(() => ({ request: vi.fn() }));
+    owners.rFileLoaded.mockImplementation(() => import("../extension/r/rFileSource"));
+    owners.rFileCreated.mockImplementation(() => ({ request: vi.fn(), onIdle: vi.fn() }));
     owners.notebookSnapshot.mockReturnValue(undefined);
     expect(nativeVariables.notebook?.snapshot()).toBeUndefined();
     expect(owners.notebookRegistered).toHaveBeenCalledOnce();
@@ -1025,6 +1119,7 @@ function createOwners(
       rendererMessaging: () => import("../extension/notebooks/rendererMessaging"),
       rInteractiveCommands: () => import("../extension/r/rInteractiveCommands"),
       rDocumentCommands: () => import("../extension/r/rDocumentCommands"),
+      rFileSource: () => owners.rFileLoaded(),
       runtimeCommands: () => import("../extension/runtimeCommands"),
       nativeViews: () => import("../extension/nativeViews"),
       webviewPanel: () => import("../extension/webviewPanel")

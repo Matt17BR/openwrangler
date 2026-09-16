@@ -21,6 +21,147 @@ const runtimeRoot = resolve(root, "r/openwrangler_runtime");
 const rscriptPath = process.env.RSCRIPT ?? "Rscript";
 
 describe.skipIf(!enabled)("plain R process transport", () => {
+  it("opens a genuine TSV source, preserves its original through clone/replay/export, and closes before reopening", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-file-test-"));
+    const filePath = resolve(temporaryParent, "orders.tsv");
+    const bytes = 'id\tlabel\n9007199254740992\tone\n9007199254740993\t"two\nlines"\n3\t';
+    await writeFile(filePath, bytes, "utf8");
+    const source = {
+      kind: "file" as const,
+      label: "orders.tsv",
+      path: filePath,
+      uri: vscode.Uri.file(filePath).toString(),
+      importOptions: { delimiter: "\t", hasHeader: true }
+    };
+    const options = {
+      runtimeRoot,
+      rscriptPath,
+      temporaryParent,
+      workingDirectory: temporaryParent,
+      fileSource: { path: filePath, header: true, delimiter: "\t" }
+    };
+    const transport = new RProcessSessionTransport(options);
+    const context = {
+      extension: { packageJSON: { version: "2.6.0" } },
+      subscriptions: []
+    } as unknown as vscode.ExtensionContext;
+    const bridge = new RKernelBridge(context, transport, randomUUID, () => undefined, undefined, {}, undefined, source);
+    const sessionId = randomUUID();
+    const window = { offset: 0, limit: 10, columnOffset: 0, columnLimit: 10 };
+    try {
+      const opened = await bridge.request({
+        kind: "openSession",
+        backend: "r",
+        source,
+        mode: "editing",
+        requestedSessionId: sessionId,
+        pageSize: 10,
+        columnOffset: 0,
+        columnLimit: 10
+      });
+      expect(opened.kind, JSON.stringify(opened)).toBe("sessionOpened");
+      expect(isOpenWranglerResponse(opened)).toBe(true);
+      if (opened.kind !== "sessionOpened") throw new Error("R file did not open");
+      expect(opened.metadata).toMatchObject({
+        source,
+        backend: "r",
+        rDataframeFlavor: "r.data.frame",
+        shape: { rows: 3, columns: 2 },
+        capabilities: { notebookInsert: false, exportCsv: true }
+      });
+      expect(opened.page.rows.map((row) => row.values.map((value) => value.raw))).toEqual([
+        ["9007199254740992", "one"],
+        ["9007199254740993", "two\nlines"],
+        ["3", null]
+      ]);
+      const preview = await bridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 0,
+        ...window,
+        step: {
+          id: "copy-label",
+          kind: "cloneColumn",
+          params: { column: { id: "r:c:1", name: "label" }, newName: "copied" }
+        }
+      });
+      expect(preview.kind, JSON.stringify(preview)).toBe("stepPreview");
+      if (preview.kind !== "stepPreview") throw new Error("R file did not preview");
+      expect(preview.code).toContain(".ow_read_csv");
+      const applied = await bridge.request({
+        kind: "applyDraft",
+        sessionId,
+        revision: preview.metadata.revision,
+        ...window
+      });
+      expect(applied.kind).toBe("planUpdated");
+      if (applied.kind !== "planUpdated") throw new Error("R file did not apply");
+      expect(applied.metadata.shape.columns).toBe(3);
+      const cloneId = randomUUID();
+      const clone = await bridge.request({
+        kind: "openSession",
+        source,
+        backend: "r",
+        mode: "editing",
+        requestedSessionId: cloneId,
+        cloneFrom: { sessionId, revision: applied.metadata.revision },
+        pageSize: 10,
+        columnOffset: 0,
+        columnLimit: 10
+      });
+      expect(clone.kind, JSON.stringify(clone)).toBe("sessionOpened");
+      if (clone.kind !== "sessionOpened") throw new Error("R original clone did not open");
+      expect(clone.metadata.shape.columns).toBe(2);
+      expect(clone.page.rows.map((row) => row.values)).toEqual(opened.page.rows.map((row) => row.values));
+      await expect(
+        transport.open(".ow_csv_source", pageWindow(), {
+          requestedSessionId: randomUUID(),
+          cloneFrom: { sessionId, revision: applied.metadata.revision - 1 }
+        })
+      ).rejects.toThrow("revision");
+      await bridge.request({ kind: "closeSession", sessionId: cloneId, revision: clone.metadata.revision });
+      expect(transport.isSessionMapped(sessionId)).toBe(true);
+      await expect(
+        bridge.request({
+          kind: "exportData",
+          sessionId,
+          revision: applied.metadata.revision,
+          path: filePath,
+          options: rCsvExportOptions
+        })
+      ).rejects.toThrow("never overwrites");
+      const chunks: Uint8Array[] = [];
+      await transport.exportData(sessionId, applied.metadata.revision, rCsvExportOptions, async (chunk) => {
+        chunks.push(Uint8Array.from(chunk));
+      });
+      expect(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8")).toBe(
+        '"id","label","copied"\n"9007199254740992","one","one"\n"9007199254740993","two\nlines","two\nlines"\n"3",,\n'
+      );
+      expect(await readFile(filePath, "utf8")).toBe(bytes);
+      await bridge.request({ kind: "closeSession", sessionId, revision: applied.metadata.revision });
+      await bridge.dispose();
+      expect(await readdir(temporaryParent)).toEqual(["orders.tsv"]);
+      const reopened = new RProcessSessionTransport(options);
+      try {
+        const result = await reopened.open(".ow_csv_source", pageWindow());
+        expect(result.page.shape).toMatchObject({ rows: 3, columns: 2 });
+        expect(result.page.page.rows.map((row) => row.values[0]?.raw)).toEqual([
+          "9007199254740992",
+          "9007199254740993",
+          "3"
+        ]);
+        await reopened.close(result.sessionId);
+      } finally {
+        await reopened.dispose();
+      }
+      expect(await readdir(temporaryParent)).toEqual(["orders.tsv"]);
+      expect(await readFile(filePath, "utf8")).toBe(bytes);
+    } finally {
+      await bridge.dispose();
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it.each([
     { kind: "denseRank", expected: ["2", "1", "2", null], rawType: "integer", type: "integer", nullable: true },
     {

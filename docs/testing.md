@@ -146,6 +146,8 @@ Use the existing owners to choose a focused source check:
   File-plan reuse uses coordinator persistence, the [persistence store](../src/test/sessionPersistenceStore.unit.test.ts)
   and [file commands](../src/test/fileOpen.unit.test.ts) for private target publication, captured picker ownership,
   engine/import settings and failure restoration. Native operation semantics stay in their engine owners.
+  The same persistence owners check R-file replay and Reset through a fresh verified delegate, including failed
+  storage, stale choices and candidate cleanup. Live R sources remain excluded from workspace persistence.
   See [protocol and publication](architecture.md#protocol-and-publication) for the live contract.
 - **UI state and interactions:** [App draft state](../src/test/appDraftState.component.test.tsx),
   [operation forms](../src/test/operationBuilder.component.test.tsx),
@@ -172,6 +174,12 @@ Use the existing owners to choose a focused source check:
   Native R exports belong in the [frame owner's](../r/tests/frame_contract.R) `capture-and-export` case and the
   [kernel owner's](../r/tests/kernel_agent.R) `group-pivot-and-export` case. Retain refusal before writer opening,
   destination/source preservation, bounded conversion and lazy-streaming assertions in these existing owners.
+  Native CSV/TSV load and generated-code agreement belong to that kernel owner's `lifecycle-and-structure` case;
+  the [managed process owner](../src/test/rProcessTransport.cross.test.ts) checks actual file loading, editing,
+  cloning, export, close and fresh reopen. Existing R-document/factory tests check the shared process boundary and
+  exact file/executable admission. File commands, lazy activation, confirmed configuration and panel tests own R
+  selection/defaults, cancellation and separate-session handoff. These source checks do not qualify installed hosts
+  or measure whole-session allocation; retain separate installed evidence for the advertised platforms.
   DuckDB engine and SessionSource tests own database selection, native WAL/source preservation, query serialization,
   shared reader lifetime and writer refusal. File-command, PythonBridge and discovery-adapter tests own picker,
   interpreter and dependency admission, including package-write exclusion through actual child closure.
@@ -450,8 +458,9 @@ prove that the current script executed or React mounted. These passive diagnosti
 The R collapse-frame journey records notebook display, toolbar selection submission and session-open completion
 separately. Failure metadata reports the last stage reached when progress is read after shutdown. During the R editor
 phase, the existing progress poll also logs changed, allowlisted fixture milestones with elapsed time from phase
-launch. These include editing, the fixed collapse-frame opening stages, document execution and restart. Polling may miss
-quick transitions; these observations are not a complete trace or exact operation durations. Windows retains its
+launch. These include editing, the fixed collapse-frame opening stages, document execution and restart, plus the macOS
+CSV leg's start and completion. Polling may miss quick transitions; these observations are not a complete trace or exact
+operation durations. Windows retains its
 metadata-only live progress reader. Fixed preparation, editor completion or failure, and profile-cleanup messages
 distinguish setup and cleanup cost from editor execution. When needed, VS Code acquisition and private R dependency installation also report
 their start and completion against the same preparation clock. Successful R installer processes also report bounded elapsed
@@ -658,7 +667,12 @@ column reveal and focus, and Rename inspection, Edit, Undo/Redo, all-row exports
 refusal, Save, clipboard and source-bound notebook insertion. Its editing sequence ends after verifying Rename Redo,
 followed by source integrity checks and session disposal. The additional Undo after Redo runs in Linux
 core to prepare for Drop Columns. The macOS profile also retains all three collapse-frame opens,
-direct-document execution and kernel restart/recovery. The Linux core catalog retains the Dense Rank form,
+direct-document execution and kernel restart/recovery. Its managed-document stage also opens the existing 240-row,
+four-column CSV through the public file command with temporary R selection, checks native cells and Rename
+Preview/Apply, the full rendered generated code's exact file read, all-row CSV export and source-destination refusal.
+It restores the setting, preserves fixture bytes and checks session/private-process-root cleanup. This adds no
+profile, preparation dependency or deadline; its added macOS cost must be measured in the original hosted run.
+The Linux core catalog retains the Dense Rank form,
 Preview/Apply/Undo and three direct page samples for exact ranks, missing cells and row identities. The macOS profile
 does not check the Dense Rank form and its native nullable integer result together. Both paths restore the first column
 before Rename. The native kernel owner checks all original Mark Duplicates columns, and the real-process owner checks

@@ -199,6 +199,12 @@ function decodeFileConfiguration(
     return undefined;
   }
   const extension = fileExtension(uri);
+  if (
+    backend === "r" &&
+    (uri.scheme !== "file" || (extension !== ".csv" && extension !== ".tsv") || backendPreference !== "r")
+  ) {
+    return undefined;
+  }
   if (extension === ".csv" || extension === ".tsv" || extension === ".xlsx" || extension === ".xls") {
     const decoded = decodeFormatImportOptions(uri, importOptions);
     return decoded ? { backend, backendPreference, importOptions: decoded } : undefined;
@@ -230,7 +236,7 @@ function cloneImportOptions(importOptions: ImportOptions): ImportOptions {
 }
 
 function isDataBackend(value: unknown): value is DataBackend {
-  return value === "polars" || value === "pandas" || value === "duckdb";
+  return value === "polars" || value === "pandas" || value === "duckdb" || value === "r";
 }
 
 function isBackendPreference(value: unknown): value is DataBackend | "auto" {

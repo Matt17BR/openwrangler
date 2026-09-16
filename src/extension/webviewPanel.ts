@@ -30,6 +30,7 @@ import { rememberConfirmedFileConfiguration } from "./files/confirmedFileConfigu
 import { ImportCancelledError, promptImportOptions } from "./files/importOptions";
 import { dependencyGuardRecoveryGuidance } from "./pythonDependencyState";
 import { automaticBackends, type FileDataBackend } from "./pythonEnvironmentModel";
+import { supportsRscriptExecution } from "./r/rscriptPath";
 import {
   RendererSynchronizationCoordinator,
   type RendererImportPreparation,
@@ -1106,6 +1107,9 @@ export class OpenWranglerPanel {
     const cancellation = new vscode.CancellationTokenSource();
     this.importChangeCancellation?.dispose();
     this.importChangeCancellation = cancellation;
+    const originalSource = this.source;
+    const originalSessionId = this.sessionId;
+    const originalRevision = this.sessionRevision;
     const announceBusy = !this.changingImportOptions;
     this.changingImportOptions = true;
     try {
@@ -1166,6 +1170,21 @@ export class OpenWranglerPanel {
         ...this.source,
         ...(importOptions === undefined ? { importOptions: undefined } : { importOptions })
       };
+      if ((this.snapshot?.metadata.backend ?? this.backend) === "r") {
+        await vscode.commands.executeCommand(
+          "openWrangler.internal.openFileWithEngine",
+          nextSource,
+          "r",
+          () =>
+            !this.disposed &&
+            generation === this.openAttemptGeneration &&
+            originalSource === this.source &&
+            originalSessionId === this.sessionId &&
+            originalRevision === this.sessionRevision &&
+            !cancellation.token.isCancellationRequested
+        );
+        return;
+      }
       if (!this.sessionId) {
         const previousSource = this.source;
         this.source = nextSource;
@@ -1255,7 +1274,6 @@ export class OpenWranglerPanel {
       isDuckDBTableSource(this.source) ||
       !this.sessionId ||
       !this.snapshot ||
-      !this.bridge.reconfigureFileSession ||
       (retry !== undefined && !this.isCurrentBackendChange(retry))
     ) {
       return;
@@ -1271,7 +1289,21 @@ export class OpenWranglerPanel {
     this.changingImportOptions = true;
     try {
       await this.postRendererMessage({ kind: "importOptionsState", busy: true });
-      const compatibleBackends = automaticBackends(this.source);
+      const source = this.source;
+      const sessionId = this.sessionId;
+      const revision = this.sessionRevision;
+      const current = (): boolean =>
+        !this.disposed &&
+        generation === this.openAttemptGeneration &&
+        source === this.source &&
+        sessionId === this.sessionId &&
+        revision === this.sessionRevision &&
+        !cancellation.token.isCancellationRequested;
+      const compatibleBackends: Array<FileDataBackend | "r"> = automaticBackends(source);
+      if (fileSourceUri(source)?.scheme === "file" && /\.(csv|tsv)$/iu.test(source.path ?? "")) {
+        if (!current()) return;
+        if (supportsRscriptExecution()) compatibleBackends.push("r");
+      }
       const currentBackend = this.snapshot.metadata.backend;
       const backend =
         retry?.backend ??
@@ -1279,7 +1311,16 @@ export class OpenWranglerPanel {
           await vscode.window.showQuickPick(
             compatibleBackends.map((candidate) => ({
               label: backendDisplayName(candidate),
-              description: candidate === currentBackend ? "Current" : undefined,
+              description:
+                candidate === currentBackend
+                  ? "Current"
+                  : candidate === "r" || currentBackend === "r"
+                    ? "Open in a separate session"
+                    : undefined,
+              detail:
+                candidate !== currentBackend && (candidate === "r" || currentBackend === "r")
+                  ? "Keeps this session and its steps. Opens the source with its own saved plan, if any."
+                  : undefined,
               backend: candidate
             })),
             {
@@ -1290,12 +1331,7 @@ export class OpenWranglerPanel {
             cancellation.token
           )
         )?.backend;
-      if (
-        !backend ||
-        cancellation.token.isCancellationRequested ||
-        this.disposed ||
-        generation !== this.openAttemptGeneration
-      ) {
+      if (!backend || !current()) {
         return;
       }
       if (!compatibleBackends.includes(backend)) {
@@ -1309,6 +1345,12 @@ export class OpenWranglerPanel {
         return;
       }
       if (backend === currentBackend) return;
+
+      if (backend === "r" || currentBackend === "r") {
+        await vscode.commands.executeCommand("openWrangler.internal.openFileWithEngine", source, backend, current);
+        return;
+      }
+      if (!this.bridge.reconfigureFileSession) return;
 
       const metadata = this.snapshot.metadata;
       if (!retry && (metadata.steps.length > 0 || metadata.draftStep)) {

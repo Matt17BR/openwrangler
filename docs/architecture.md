@@ -92,6 +92,12 @@ file format and import options. This happens before the native read; a read erro
 **Open Wrangler: Open File Path** reads the configured default and creates a fresh panel, including after a failed
 open. Restoring a custom editor instead preserves its previously confirmed backend.
 
+Explicit R selection opens a local CSV or TSV through an owned `Rscript` process on Linux or macOS. Auto remains
+Python-only. Choosing between R and a Python engine opens a separate panel with that engine's own saved plan, if any;
+it does not translate the original panel's steps or discard its state. The host carries the exact file, session and
+revision through the picker and cancels an unhanded runtime when that owner retires. R file import-options changes
+also open a separate session because the native process is bound to its original source and options.
+
 **Open DuckDB Table** resolves a local regular file, its resource-scoped Python interpreter and a bounded native
 base-table catalog before asking for a table. Discovery closes its reader before the picker opens. The file source
 retains only the exact `duckdbSchema` and `duckdbTable` import options, with both required and other import options
@@ -157,15 +163,16 @@ be a partial CRLF. Import Options can set the value explicitly. Polars still req
 Omitted LF defaults preserve existing saved-state keys, including normal file reopen; changing an explicit value
 uses the existing import replacement and persistence owners.
 
-This file-only option stays in protocol v4 because file commands use the owned Python server bundled with the current
-extension. Non-file and non-delimited sources reject it, so it cannot reach a retained notebook runtime. A manually
+This file-only option stays in protocol v4 because file commands use the owned runtime bundled with the current
+extension. Native R accepts LF/CRLF and refuses an explicit CR-only setting. Non-file and non-delimited sources reject it,
+so it cannot reach a retained notebook runtime. A manually
 mixed older decoder rejects the new key; this is not a compatibility promise for every historical v4 binary.
 
 Import prompts belong to one host-owned request. An accepted native Quick Input stays visible until its successor
 replaces it, avoiding editor-focus restoration between questions. Cancellation remains effective through the final
 answer; completion, cancellation and failure dispose the request's inputs and listeners.
 
-Changing import options is a host-owned session swap. The coordinator quiesces accepted work, opens a private
+Changing Python file import options is a host-owned session swap. The coordinator quiesces accepted work, opens a private
 candidate against the same immutable source, replays the confirmed plan, draft, and view, publishes the replacement
 once, and then retires the prior runtime. Failure before publication leaves the prior confirmed session unchanged.
 A failed final save rolls back only while the replacement still owns the live session. The public session identity
@@ -1436,6 +1443,28 @@ R-terminal, and owned `Rscript` transports share the same native frame contract 
 including generated R. Extract Struct Fields and Explode List are unavailable for R. The runtime never routes an R frame through Python.
 [Feature parity](feature-parity.md#native-r-support) defines support and limitations for each entry path.
 
+#### CSV and TSV files
+
+A file owner captures the exact local path, URI, import options and resource-scoped Rscript executable before launch.
+It checks Workspace Trust, supported platform and format before creating its lazy bridge. Its private process holds
+the loaded base `data.frame`; no notebook, document or terminal binding is fabricated. Recovery reuses the captured
+descriptor and executable in a fresh process and rechecks trust. File sessions offer copy/save of generated R and
+native exports, with no document insertion target.
+
+The native loader uses `scan()` and `type.convert(numerals = "no.loss")`. The same helper is emitted into generated
+code, which reads the source again when executed. Input is strict UTF-8 with double-quote escaping, LF/CRLF records,
+an optional header and a supported single-byte delimiter. Blank leading records are skipped in either header mode;
+headerless columns are named `V1`, `V2`, and so on. Duplicate and empty header names remain intact. Header-only inputs
+produce zero-row logical columns; empty files, malformed row widths, unclosed quotes, NUL and invalid UTF-8 are refused.
+Scanner warnings are errors, so truncated records cannot become an apparently successful dataframe.
+
+Empty fields and `NA`, including quoted forms, become missing. Field whitespace is preserved; native type inference
+recognizes logical and numeric values, retains precision-losing integers as text and leaves dates as text. The complete
+frame is loaded into R memory before the bounded page/capture path. First editing isolation, profiles and operations
+can allocate additional complete vectors or frames. This is an eager native reader, without a page-sized memory
+guarantee. Reopening, recovery and generated code reread the current file, matching ordinary eager-source behavior.
+Source and destination identity checks still protect the input from exports.
+
 #### Frame and source ownership
 
 The producer and host independently validate canonical frame classes, column IDs, row names, typed values and
@@ -1870,6 +1899,12 @@ source and backend, and an available source-identity receipt. The existing persi
 saved cleaning still matches the user's choice; newer saved work or retirement before commit prevents the reset.
 Failed reset storage preserves the previous recovery record and closes the unpublished candidate. Once a reset
 commits, later cancellation does not undo that explicit choice. Normal viewing and cleaning saves then resume.
+
+Native R file sessions use this same source/backend/options persistence key and transaction. Live R notebook,
+document and terminal sessions remain excluded from workspace replay. R files retain the original input schema
+before saved steps are restored. A failed replay closes its process; an accepted Reset obtains a distinct verified
+delegate before reopening, rather than reusing the retired bridge. Stale or failed candidates close after their native
+work settles. Recovery captures the original schema before replay; Reset captures the newly opened original schema.
 
 Confirmed file configuration stores both the concrete backend that produced the session and the user's logical
 choice of `auto` or an explicit engine. Recovery pins the concrete backend so an automatic fallback cannot reinterpret

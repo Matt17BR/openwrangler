@@ -2383,7 +2383,7 @@
                 "required": ["kind"],
                 "properties": {
                   "kind": {
-                    "not": { "enum": ["notebookVariable", "documentVariable", "rInteractiveVariable"] }
+                    "not": { "enum": ["file", "notebookVariable", "documentVariable", "rInteractiveVariable"] }
                   }
                 }
               }
@@ -2540,7 +2540,7 @@
               "backend": { "const": "r" },
               "source": {
                 "required": ["kind"],
-                "properties": { "kind": { "enum": ["file", "notebookOutput"] } }
+                "properties": { "kind": { "enum": ["notebookOutput"] } }
               }
             }
           }

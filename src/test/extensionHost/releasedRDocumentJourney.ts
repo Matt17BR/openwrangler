@@ -15,6 +15,7 @@ import {
   type ReleasedRDocumentFixture
 } from "./releasedDocumentFixtures";
 import { assertReleasedRGeneratedCode } from "./releasedRGeneratedCode";
+import { persistedReplayExportRequest } from "./persistedReplayExport";
 import type { TestApi } from "./extensionHostTestApi";
 
 type ReleasedRDocumentActiveSession = NonNullable<ReturnType<TestApi["activeSession"]>>;
@@ -105,7 +106,8 @@ export function createReleasedRDocumentJourney({
   return async function exerciseReleasedRDocumentJourney(
     testing: TestApi,
     workbench: Page,
-    directory: string
+    directory: string,
+    includeCsvFile = false
   ): Promise<void> {
     recordAcceptanceProgress("jupyter-r:document:create");
     assert.equal(vscode.workspace.isTrusted, true, "Running a plain R file requires the trusted packaged workspace.");
@@ -434,6 +436,140 @@ export function createReleasedRDocumentJourney({
       assert.equal(testing.diagnostics().sessionCount, 0);
       assertReleasedRDocumentFixtureUnchanged(fixture);
       assert.equal(sourceDocument.isDirty, true, "The generated source edit must still be unsaved before cleanup.");
+
+      if (includeCsvFile) {
+        assert.equal(process.platform, "darwin", "The CSV tail belongs to the existing macOS platform lifecycle.");
+        recordAcceptanceProgress("jupyter-r:file:start");
+        const csvPath = path.join(path.dirname(fixture.sourceUri.fsPath), "orders.csv");
+        const csvUri = vscode.Uri.file(csvPath);
+        const csvConfiguration = vscode.workspace.getConfiguration("openWrangler", csvUri);
+        const originalBackend = csvConfiguration.inspect<string>("defaultBackend")?.workspaceValue;
+        let csvSessionId: string | undefined;
+        await waitFor(
+          () => isDeepStrictEqual(releasedRProcessRoots(), initialProcessRoots),
+          10_000,
+          "the document process roots to settle before opening CSV"
+        );
+        const csvExportDirectory = mkdtempSync(path.join(tmpdir(), "openwrangler-file-export-"));
+        try {
+          await csvConfiguration.update("defaultBackend", "r", vscode.ConfigurationTarget.Workspace);
+          await withBoundedAcceptancePromise(
+            vscode.commands.executeCommand("openWrangler.openFile", csvUri),
+            WORKBENCH_OPERATION_TIMEOUT_MS,
+            "opening the existing CSV fixture through the public native R file command"
+          );
+          await waitFor(
+            () => {
+              const active = testing.activeSession();
+              return active?.metadata.source.kind === "file" && active.metadata.source.uri === csvUri.toString();
+            },
+            30_000,
+            "the source-bound native R CSV session"
+          );
+          const csv = testing.activeSession();
+          assert.ok(csv);
+          csvSessionId = csv.sessionId;
+          assert.equal(csv.metadata.source.path, csvPath);
+          assert.equal(csv.metadata.backend, "r");
+          assert.equal(csv.metadata.rDataframeFlavor, "r.data.frame");
+          assert.equal(csv.metadata.mode, "editing");
+          assert.deepEqual(csv.metadata.shape, { rows: 240, columns: 4 });
+          assert.deepEqual(
+            csv.metadata.schema.map((column) => column.name),
+            ["row_id", "group", "score", "label"]
+          );
+          assert.equal(
+            csv.metadata.capabilities.documentInsert === true,
+            false,
+            "An R CSV session must not enable source-document insertion."
+          );
+          assert.equal(csv.metadata.capabilities.notebookInsert, false);
+          assert.equal(releasedRProcessRoots().filter((root) => !initialProcessRoots.includes(root)).length, 1);
+          const csvPage = await assertReleasedSessionPage(testing, csv, "1", "jupyter-r-file-page");
+          assert.deepEqual(
+            csvPage.page.rows.map((row) => row.values.map((cell) => ({ kind: cell.kind, raw: cell.raw }))),
+            Array.from({ length: 10 }, (_, index) => {
+              const row = index + 1;
+              return [
+                { kind: "integer", raw: String(row) },
+                { kind: "string", raw: row % 2 === 0 ? "B" : "A" },
+                { kind: "integer", raw: String(row) },
+                { kind: "string", raw: `order-${String(row).padStart(3, "0")}` }
+              ];
+            })
+          );
+          recordAcceptanceProgress("jupyter-r:file:rename");
+          let csvApp = await releasedRSessionApp(workbench, testing, csvSessionId, "the native R CSV renderer");
+          const renamed = await previewReleasedRRename(testing, workbench, csvApp, csvSessionId, "row_id", "record_id");
+          csvApp = renamed.app;
+          await csvApp
+            .getByRole("region", { name: "Draft review" })
+            .getByRole("button", { name: "Apply step", exact: true })
+            .click();
+          await waitFor(
+            () => {
+              const active = testing.activeSession();
+              return (
+                active?.sessionId === csv.sessionId &&
+                active.metadata.draftStep === undefined &&
+                active.metadata.steps.length === 1 &&
+                active.metadata.steps[0]?.id === renamed.stepId &&
+                active.metadata.schema[0]?.name === "record_id"
+              );
+            },
+            30_000,
+            "the committed native R CSV Rename"
+          );
+          const csvApplied = testing.activeSession();
+          assert.ok(csvApplied);
+          assertReleasedRGeneratedCode(csvApplied.code ?? "", "record_id", {
+            path: csvPath,
+            header: true,
+            delimiter: ","
+          });
+          await assert.rejects(
+            testing.request(
+              persistedReplayExportRequest(
+                { backend: "r", sessionId: csvSessionId, revision: csvApplied.metadata.revision },
+                csvPath,
+                "csv"
+              )
+            ),
+            /never overwrites the active source/u,
+            "R file export must refuse the original CSV destination."
+          );
+          assertReleasedRDocumentFixtureUnchanged(fixture);
+          recordAcceptanceProgress("jupyter-r:file:export");
+          csvApp = await releasedRSessionApp(workbench, testing, csvSessionId, "the applied native R CSV session");
+          const csvExportPath = path.join(csvExportDirectory, "orders-cleaned.csv");
+          await exportCleanedDataThroughWorkbench(csvApp, workbench, csvExportPath);
+          await waitFor(() => existsSync(csvExportPath), 30_000, "the cleaned R file CSV export");
+          assertExactBytes(
+            readFileSync(csvExportPath),
+            releasedRDocumentCleanedCsv(),
+            "R file export must retain all 240 cleaned rows."
+          );
+          assert.deepEqual(readdirSync(csvExportDirectory), ["orders-cleaned.csv"]);
+          assertReleasedRDocumentFixtureUnchanged(fixture);
+        } finally {
+          try {
+            if (csvSessionId) await disposePackagedSessionPanel(testing, csvSessionId, "the native R CSV session");
+            await waitFor(
+              () => isDeepStrictEqual(releasedRProcessRoots(), initialProcessRoots),
+              10_000,
+              "the native R CSV private process root to be removed"
+            );
+            assert.equal(testing.diagnostics().sessionCount, 0);
+          } finally {
+            try {
+              await csvConfiguration.update("defaultBackend", originalBackend, vscode.ConfigurationTarget.Workspace);
+            } finally {
+              cleanupAcceptanceTemporaryDirectory(csvExportDirectory);
+            }
+          }
+        }
+        recordAcceptanceProgress("jupyter-r:file:complete");
+      }
     } finally {
       try {
         await configuration.update("rscriptPath", originalRscriptPath, vscode.ConfigurationTarget.Workspace);

@@ -20,12 +20,17 @@ import { DetachedBridgeRequestError, type BridgeRequestOptions, type OpenWrangle
 import type { CoordinatedSessionOrigin } from "./sessionOrigin";
 import { captureSessionSourceFiles, sessionOriginMismatch } from "./sessionOrigin";
 import { confirmSessionSourceProtection, type SessionSourceProtection } from "./files/safeFileExport";
-import { SessionPersistenceStore, type SessionPersistenceCommitResult } from "./sessionPersistenceStore";
+import { SessionPersistenceStore } from "./sessionPersistenceStore";
 import { persistedSessionState } from "./sessionPersistence";
 import { sessionOpenedResponseMismatch } from "./sessionResponseValidation";
 import { protocolError, type SessionResponseState } from "./sessionResponseCommitter";
 import { SessionRequestScheduler } from "./sessionRequestScheduler";
 import { SessionRuntimeCleanup } from "./sessionRuntimeCleanup";
+import {
+  discardRuntimeRecoveryCandidate,
+  runtimeRecoveryDelegateFactory,
+  type RuntimeRecoveryDelegateCandidate
+} from "./sessionRuntimeRecovery";
 import { confirmedReplayOpenRequest, publicOpenedResponse } from "./sessionRuntimeReconfigurer";
 import {
   initialViewingState,
@@ -286,44 +291,51 @@ export class SessionRuntimeEstablisher {
     }
 
     session.sourceSchema =
-      request.source.kind === "file" && isFileDataBackend(response.metadata.backend)
+      request.source.kind === "file" &&
+      (isFileDataBackend(response.metadata.backend) || response.metadata.backend === "r")
         ? structuredClone(response.metadata.schema)
         : undefined;
     const restored = initialFilePlan
       ? await this.restoreInitialFilePlan(session, request, initialFilePlan, currentFailure, options)
       : await this.restorePersistedSession(session, request, response, currentFailure, options);
     if (!restored.established) return restored;
-    if (session.sourceProtection) {
-      session.sourceProtection = await confirmSessionSourceProtection(session.sourceProtection);
-    }
-    if (initialFilePlan && !session.sourceProtection?.available) {
-      await this.runtimeCleanup.close(session, "late-open runtime");
+    let established = false;
+    try {
+      if (session.sourceProtection) {
+        session.sourceProtection = await confirmSessionSourceProtection(session.sourceProtection);
+      }
+      if (initialFilePlan && !session.sourceProtection?.available) {
+        await this.runtimeCleanup.close(session, "late-open runtime");
+        return {
+          established: false,
+          response: protocolError(
+            "file_plan_target_changed",
+            "The selected file changed while its plan was being saved. The copied plan may be saved; reopen the file to inspect it.",
+            true
+          )
+        };
+      }
+      if (options?.requiredSourceProtection && !session.sourceProtection?.available) {
+        await this.runtimeCleanup.close(session, "late-open runtime");
+        return {
+          established: false,
+          response: protocolError("source_changed", "The selected file changed. Choose the file again.", true)
+        };
+      }
+      const beforePublication = currentFailure();
+      if (beforePublication) {
+        await this.runtimeCleanup.close(session, "late-open runtime");
+        return { established: false, response: beforePublication };
+      }
+      established = true;
       return {
-        established: false,
-        response: protocolError(
-          "file_plan_target_changed",
-          "The selected file changed while its plan was being saved. The copied plan may be saved; reopen the file to inspect it.",
-          true
-        )
+        established: true,
+        session,
+        response: publicOpenedResponse(restored.response, publicId, session.publicRevision, session.openRequest.source)
       };
+    } finally {
+      if (!established && session.delegate !== delegate) this.runtimeCleanup.releaseIfIdle(session.delegate);
     }
-    if (options?.requiredSourceProtection && !session.sourceProtection?.available) {
-      await this.runtimeCleanup.close(session, "late-open runtime");
-      return {
-        established: false,
-        response: protocolError("source_changed", "The selected file changed. Choose the file again.", true)
-      };
-    }
-    const beforePublication = currentFailure();
-    if (beforePublication) {
-      await this.runtimeCleanup.close(session, "late-open runtime");
-      return { established: false, response: beforePublication };
-    }
-    return {
-      established: true,
-      session,
-      response: publicOpenedResponse(restored.response, publicId, session.publicRevision, session.openRequest.source)
-    };
   }
 
   private async restoreInitialFilePlan(
@@ -512,82 +524,110 @@ export class SessionRuntimeEstablisher {
       );
       if (choice !== resetAction || !resetIsCurrent())
         return { established: false, response: currentFailure() ?? restoreFailure };
-      const clean = await session.delegate.request(session.openRequest, options);
-      if (clean.kind === "error" || clean.kind === "cancelled") return { established: false, response: clean };
-      if (clean.kind !== "sessionOpened") {
-        return {
-          established: false,
-          response: protocolError(
-            "invalid_runtime_response",
-            `The runtime returned ${clean.kind} while reopening the immutable source.`,
-            true
-          )
-        };
-      }
-      session.runtimeId = clean.metadata.sessionId;
-      session.runtimeRevision = clean.metadata.revision;
-      session.publicRevision = clean.metadata.revision;
-      session.metadata = clean.metadata;
-      session.sourceSchema =
-        request.source.kind === "file" && isFileDataBackend(clean.metadata.backend)
-          ? structuredClone(clean.metadata.schema)
-          : undefined;
-      session.code = "";
-      session.draftPresentation = undefined;
-      session.draftBaseView = undefined;
-      session.viewChangeEpoch = 0;
-      session.viewState = initialViewingState(clean.metadata);
-      const cleanMismatch = sessionOpenedResponseMismatch(session.openRequest, clean);
-      if (cleanMismatch) {
-        await this.runtimeCleanup.close(session, "invalid open runtime");
-        return {
-          established: false,
-          response: protocolError(
-            "invalid_runtime_response",
-            `Ignored an invalid openSession response while reopening the immutable source: ${cleanMismatch}`,
-            true
-          )
-        };
-      }
-      opened = { ...clean, summaries: [] };
-      const afterFallback = currentFailure();
-      if (afterFallback) {
-        await this.runtimeCleanup.close(session, "late-open runtime");
-        return { established: false, response: afterFallback };
-      }
-      if (session.sourceProtection)
-        session.sourceProtection = await confirmSessionSourceProtection(session.sourceProtection);
-      if (!session.sourceProtection?.available) {
-        await this.runtimeCleanup.close(session, "failed saved-state runtime");
-        return { established: false, response: currentFailure() ?? restoreFailure };
-      }
-      let reset: SessionPersistenceCommitResult;
+      let replacementDelegate: RuntimeRecoveryDelegateCandidate | undefined;
+      let cleanSessionOpened = false;
+      let accepted = false;
       try {
-        reset = await this.persistence.commitCurrent(
+        if (session.metadata.backend === "r") {
+          const factory = runtimeRecoveryDelegateFactory(session.delegate);
+          if (!factory) return { established: false, response: restoreFailure };
+          const created = await factory.createRuntimeRecoveryDelegate();
+          if (created.delegate === session.delegate)
+            throw new Error("Native-R reset must use a fresh verified runtime delegate.");
+          replacementDelegate = created;
+          if (!resetIsCurrent()) return { established: false, response: currentFailure() ?? restoreFailure };
+          session.delegate = created.delegate;
+        }
+        const clean = await session.delegate.request(session.openRequest, options);
+        if (clean.kind === "error" || clean.kind === "cancelled") return { established: false, response: clean };
+        if (clean.kind !== "sessionOpened") {
+          return {
+            established: false,
+            response: protocolError(
+              "invalid_runtime_response",
+              `The runtime returned ${clean.kind} while reopening the immutable source.`,
+              true
+            )
+          };
+        }
+        cleanSessionOpened = true;
+        session.runtimeId = clean.metadata.sessionId;
+        session.runtimeRevision = clean.metadata.revision;
+        session.publicRevision = clean.metadata.revision;
+        session.metadata = clean.metadata;
+        session.sourceSchema =
+          request.source.kind === "file" &&
+          (isFileDataBackend(clean.metadata.backend) || clean.metadata.backend === "r")
+            ? structuredClone(clean.metadata.schema)
+            : undefined;
+        session.code = "";
+        session.draftPresentation = undefined;
+        session.draftBaseView = undefined;
+        session.viewChangeEpoch = 0;
+        session.viewState = initialViewingState(clean.metadata);
+        const cleanMismatch = sessionOpenedResponseMismatch(session.openRequest, clean);
+        if (cleanMismatch) {
+          return {
+            established: false,
+            response: protocolError(
+              "invalid_runtime_response",
+              `Ignored an invalid openSession response while reopening the immutable source: ${cleanMismatch}`,
+              true
+            )
+          };
+        }
+        opened = { ...clean, summaries: [] };
+        const afterFallback = currentFailure();
+        if (afterFallback) {
+          return { established: false, response: afterFallback };
+        }
+        if (session.sourceProtection)
+          session.sourceProtection = await confirmSessionSourceProtection(session.sourceProtection);
+        if (!session.sourceProtection?.available) {
+          return { established: false, response: currentFailure() ?? restoreFailure };
+        }
+        const reset = await this.persistence.commitCurrent(
           request.source,
           () => persistedSessionState(session.metadata, session.viewState),
           resetIsCurrent,
           // The candidate is unpublished, so a failed storage write has no live state to roll back.
           () => () => undefined
         );
+        if (reset.kind !== "committed") {
+          return {
+            established: false,
+            response:
+              currentFailure() ??
+              (reset.kind === "unavailable"
+                ? protocolError(
+                    "persistence_unavailable",
+                    "Open Wrangler could not save the cleaning-plan reset. Retry after workspace storage is available.",
+                    true
+                  )
+                : restoreFailure)
+          };
+        }
+        accepted = true;
       } catch (error) {
-        await this.runtimeCleanup.close(session, "failed saved-state runtime");
+        if (error instanceof DetachedBridgeRequestError) {
+          const candidate = cleanSessionOpened ? { ...session } : undefined;
+          const replacement = replacementDelegate;
+          this.runtimeCleanup.trackDelegateSettlement(
+            replacement?.delegate ?? session.delegate,
+            error.settlement.then(() => discardRuntimeRecoveryCandidate(this.runtimeCleanup, candidate, replacement))
+          );
+          cleanSessionOpened = false;
+          replacementDelegate = undefined;
+          return { established: false, response: currentFailure() ?? restoreFailure };
+        }
         throw error;
-      }
-      if (reset.kind !== "committed") {
-        await this.runtimeCleanup.close(session, "failed saved-state runtime");
-        return {
-          established: false,
-          response:
-            currentFailure() ??
-            (reset.kind === "unavailable"
-              ? protocolError(
-                  "persistence_unavailable",
-                  "Open Wrangler could not save the cleaning-plan reset. Retry after workspace storage is available.",
-                  true
-                )
-              : restoreFailure)
-        };
+      } finally {
+        if (!accepted)
+          await discardRuntimeRecoveryCandidate(
+            this.runtimeCleanup,
+            cleanSessionOpened ? session : undefined,
+            replacementDelegate
+          );
       }
     }
 

@@ -475,7 +475,17 @@ export function createReleasedROperationPreviews(dependencies: ReleasedROperatio
     const stepId = active.metadata.draftStep.id;
     if (replacement) assert.equal(stepId, replacement.replaceStepId);
     const expectedCode = active.code ?? "";
-    assertReleasedRGeneratedCode(expectedCode, newName, variableName);
+    const source = active.metadata.source;
+    if (source.kind === "file") assert.ok(source.path, "The R file preview must retain its exact input path.");
+    const generatedSource =
+      source.kind === "file"
+        ? {
+            path: source.path!,
+            header: source.importOptions?.hasHeader ?? true,
+            delimiter: source.importOptions?.delimiter ?? (/\.tsv$/iu.test(source.path!) ? "\t" : ",")
+          }
+        : variableName;
+    assertReleasedRGeneratedCode(expectedCode, newName, generatedSource);
     const expectedCodeReceipt = codePreviewDocumentReceipt(expectedCode);
     await releasedRSessionApp(
       workbench,
@@ -500,7 +510,7 @@ export function createReleasedROperationPreviews(dependencies: ReleasedROperatio
       expectedCodeReceipt,
       Date.now() + WORKBENCH_PLAYWRIGHT_TIMEOUT_MS
     );
-    assertReleasedRGeneratedCode(await revealCodePreviewText(exactCodePreview, newName), newName, variableName);
+    assertReleasedRGeneratedCode(await revealCodePreviewText(exactCodePreview, newName), newName, generatedSource);
     return {
       app: await releasedRSessionApp(workbench, testing, sessionId, "the native R rename preview"),
       stepId

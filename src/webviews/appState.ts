@@ -511,7 +511,7 @@ export function filterModelForColumnValues(model: FilterModel, column: string): 
 }
 
 export function isSwitchableFileBackend(backend: SessionMetadata["backend"]): boolean {
-  return backend === "pandas" || backend === "polars" || backend === "duckdb";
+  return backend === "pandas" || backend === "polars" || backend === "duckdb" || backend === "r";
 }
 
 function filterModelScope(model: FilterModel): string {

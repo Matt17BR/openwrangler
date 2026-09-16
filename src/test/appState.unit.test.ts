@@ -294,9 +294,10 @@ describe("App view-state model", () => {
   it("keeps metadata stripping, backend switching, and progress decoding exact", () => {
     expect(withoutDatasetStats(metadata)).toEqual(expect.not.objectContaining({ stats: expect.anything() }));
     expect(metadata.stats).toBeDefined();
-    expect(["pandas", "polars", "duckdb"].every((backend) => isSwitchableFileBackend(backend as "pandas"))).toBe(true);
+    expect(["pandas", "polars", "duckdb", "r"].every((backend) => isSwitchableFileBackend(backend as "pandas"))).toBe(
+      true
+    );
     expect(isSwitchableFileBackend("pyspark")).toBe(false);
-    expect(isSwitchableFileBackend("r")).toBe(false);
 
     expect(isSessionOpenProgressStage("acquiringKernel")).toBe(true);
     expect(isSessionOpenProgressStage("preparingSparkView")).toBe(true);

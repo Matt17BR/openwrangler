@@ -5,7 +5,7 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import type { Jupyter, JupyterServerCollection } from "@vscode/jupyter-extension";
 import type { Page } from "playwright-core";
-import { supportsRDocumentExecution } from "../../extension/r/rDocumentCommands";
+import { supportsRscriptExecution } from "../../extension/r/rscriptPath";
 import { cleanupAcceptanceTemporaryDirectory } from "./acceptanceTemporaryDirectory";
 import {
   RELEASED_JUPYTER_R_KERNEL_RESULT,
@@ -71,7 +71,12 @@ interface ReleasedRJupyterExtensionJourneyDependencies {
     phase: "jupyter-r" | "jupyter-r-remote",
     coverage: ReleasedRAcceptanceCoverageProfile
   ) => Promise<void>;
-  readonly exerciseReleasedRDocumentJourney: (testing: TestApi, workbench: Page, directory: string) => Promise<void>;
+  readonly exerciseReleasedRDocumentJourney: (
+    testing: TestApi,
+    workbench: Page,
+    directory: string,
+    includeCsvFile?: boolean
+  ) => Promise<void>;
   readonly exerciseReleasedREditingCoverage: (
     testing: TestApi,
     workbench: Page,
@@ -320,12 +325,12 @@ export function createReleasedRJupyterExtensionJourney({
 
       if (phase === "jupyter-r" && process.platform === "darwin") {
         assert.equal(
-          supportsRDocumentExecution(process.platform),
+          supportsRscriptExecution(process.platform),
           true,
           "The ordinary macOS R gate requires the product's direct-document transport."
         );
         recordReleasedRAcceptanceSection(phase, coverage, "document", "start");
-        await exerciseReleasedRDocumentJourney(testing, workbench, directory);
+        await exerciseReleasedRDocumentJourney(testing, workbench, directory, coverage.name === "platform-lifecycle");
         assert.equal(testing.diagnostics().sessionCount, 0, "The plain R journey must release its private processes.");
         recordReleasedRAcceptanceSection(phase, coverage, "document", "complete");
       }

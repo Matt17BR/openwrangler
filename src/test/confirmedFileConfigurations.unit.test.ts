@@ -58,6 +58,84 @@ describe("confirmed file configurations", () => {
     expect(persistenceKey(reloadedSource, "polars")).not.toBe(persistenceKey(confirmedSource, "pandas"));
   });
 
+  it.each(["csv", "tsv"])("retains explicit local R %s configuration under its own plan key", async (extension) => {
+    const workspaceState = new MemoryMemento();
+    const uri = vscode.Uri.file(`/workspace/orders.${extension}`);
+    const importOptions = {
+      delimiter: extension === "tsv" ? "\t" : ",",
+      encoding: "utf-8",
+      quoteChar: '"',
+      hasHeader: true
+    };
+    await rememberConfirmedFileConfiguration(workspaceState, uri, importOptions, "r", "r");
+    const restored = confirmedFileConfiguration(workspaceState, uri);
+    expect(restored).toEqual({ backend: "r", backendPreference: "r", importOptions });
+    const source = {
+      kind: "file" as const,
+      label: `orders.${extension}`,
+      path: uri.fsPath,
+      uri: uri.toString(),
+      importOptions
+    };
+    expect(persistenceKey({ ...source, importOptions: restored?.importOptions }, "r")).toBe(
+      persistenceKey(source, "r")
+    );
+    expect(persistenceKey(source, "r")).not.toBe(persistenceKey(source, "polars"));
+    expect(workspaceState.get(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY)).toEqual({
+      version: 2,
+      entries: [{ uri: uri.toString(), backend: "r", backendPreference: "r", importOptions }]
+    });
+  });
+
+  it.each([
+    { label: "automatic R", resource: "file:///workspace/orders.csv", backend: "r", preference: "auto" },
+    { label: "mismatched R preference", resource: "file:///workspace/orders.csv", backend: "polars", preference: "r" },
+    {
+      label: "mismatched Python preference",
+      resource: "file:///workspace/orders.csv",
+      backend: "r",
+      preference: "polars"
+    },
+    {
+      label: "remote R",
+      resource: "vscode-remote://ssh-remote+host/workspace/orders.csv",
+      backend: "r",
+      preference: "r"
+    },
+    { label: "R Parquet", resource: "file:///workspace/orders.parquet", backend: "r", preference: "r" },
+    { label: "R Excel", resource: "file:///workspace/orders.xlsx", backend: "r", preference: "r" },
+    {
+      label: "mixed import options",
+      resource: "file:///workspace/orders.csv",
+      backend: "r",
+      preference: "r",
+      mixed: true
+    }
+  ] as const)("rejects stored and newly confirmed $label", async ({ resource, backend, preference, ...extra }) => {
+    const workspaceState = new MemoryMemento();
+    const uri = vscode.Uri.parse(resource);
+    const importOptions = resource.endsWith(".parquet")
+      ? undefined
+      : resource.endsWith(".xlsx")
+        ? { sheetName: "Sheet1" }
+        : {
+            delimiter: ",",
+            encoding: "utf-8",
+            quoteChar: '"',
+            hasHeader: true,
+            ...("mixed" in extra ? { sheetName: "Sheet1" } : {})
+          };
+    await rememberConfirmedFileConfiguration(workspaceState, uri, importOptions, backend, preference);
+    expect(workspaceState.get(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY)).toBeUndefined();
+    await workspaceState.update(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY, {
+      version: 2,
+      entries: [
+        { uri: uri.toString(), backend, backendPreference: preference, ...(importOptions ? { importOptions } : {}) }
+      ]
+    });
+    expect(confirmedFileConfiguration(workspaceState, uri)).toBeUndefined();
+  });
+
   it.each(["cr", "lf"] as const)(
     "round-trips explicit %s record intent without changing registry version",
     async (lineEnding) => {

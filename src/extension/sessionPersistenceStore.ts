@@ -731,7 +731,7 @@ function isPersistenceRoot(value: unknown): value is Record<string, unknown> {
 
 function isPersistentSession(source: SessionSource, backend: DataBackend): boolean {
   // Saved notebook outputs are bounded value snapshots, not reopenable source
-  // data. Distributed Spark and native R frames belong to one exact live
-  // notebook kernel, so workspace replay must never try to reacquire them.
-  return source.kind !== "notebookOutput" && backend !== "pyspark" && backend !== "r";
+  // data. Distributed Spark and live native R frames belong to one exact
+  // execution owner. Only native R files can be reacquired for workspace replay.
+  return backend === "r" ? source.kind === "file" : source.kind !== "notebookOutput" && backend !== "pyspark";
 }

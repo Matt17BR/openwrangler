@@ -4,6 +4,10 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ## [Unreleased]
 
+### Added
+
+- Native R opens local UTF-8 CSV and TSV files on Linux and macOS as a Preview, with native cleaning, generated R and saved plans. Choosing R from a Python file session preserves the original in a separate tab.
+
 ### Changed
 
 - Data sources groups file opening and discovered Python/R dataframes; Operations contains the cleaning catalog.

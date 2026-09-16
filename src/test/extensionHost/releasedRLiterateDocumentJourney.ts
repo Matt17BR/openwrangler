@@ -2,7 +2,7 @@ import * as assert from "node:assert/strict";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import type { Locator, Page } from "playwright-core";
-import { supportsRDocumentExecution } from "../../extension/r/rDocumentCommands";
+import { supportsRscriptExecution } from "../../extension/r/rscriptPath";
 import type { OpenWranglerResponse } from "../../shared/protocol";
 import {
   writeReleasedPythonQuartoDocumentFixture,
@@ -150,7 +150,7 @@ export function createReleasedRLiterateDocumentJourneys({
       }
       if (process.platform === "linux") {
         assert.equal(
-          supportsRDocumentExecution(process.platform),
+          supportsRscriptExecution(process.platform),
           true,
           "The focused Linux literate gate requires the product's direct-document transport."
         );

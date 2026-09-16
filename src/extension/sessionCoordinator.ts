@@ -742,7 +742,10 @@ export class SessionCoordinator implements vscode.Disposable {
       );
       const result = attempt.value;
       if (attempt.readFailure) {
-        if (result.established) await this.runtimeCleanup.close(result.session, "failed saved-state runtime");
+        if (result.established) {
+          await this.runtimeCleanup.close(result.session, "failed saved-state runtime");
+          this.runtimeCleanup.releaseIfIdle(result.session.delegate);
+        }
         return persistenceReadUnavailableError();
       }
       if (!result.established) return result.response;
