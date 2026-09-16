@@ -178,7 +178,7 @@ export function createReleasedRInteractiveTerminalJourney({
           );
         },
         SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-        "the base data.frame selected from Data sources to open",
+        "the base data.frame selected through the R title action and picker to open",
         () => JSON.stringify(testing.diagnostics())
       );
       const opened = testing.activeSession();

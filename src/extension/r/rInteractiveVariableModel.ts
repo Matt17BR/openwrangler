@@ -15,7 +15,14 @@ export interface RLiveVariableItem {
 
 export type RLiveVariableSnapshot =
   | {
-      readonly state: "idle" | "loading" | "empty" | "error";
+      readonly state: "idle";
+      readonly action: "start" | "refresh";
+      readonly terminalLabel: string;
+      readonly message: string;
+      readonly variables: readonly [];
+    }
+  | {
+      readonly state: "loading" | "empty" | "error";
       readonly terminalLabel: string;
       readonly message: string;
       readonly variables: readonly [];
@@ -55,6 +62,7 @@ export function idleRLiveVariableSnapshot(
 ): RLiveVariableSnapshot {
   return {
     state: "idle",
+    action: isOfficial && terminal ? "refresh" : "start",
     terminalLabel: isOfficial && terminal ? terminal.name : "R session",
     message: isOfficial
       ? "Dataframes appear here after the R prompt returns."
@@ -66,6 +74,7 @@ export function idleRLiveVariableSnapshot(
 export function watcherFallbackRLiveVariableSnapshot(terminal: Pick<vscode.Terminal, "name">): RLiveVariableSnapshot {
   return {
     state: "idle",
+    action: "refresh",
     terminalLabel: terminal.name,
     message: "Choose Refresh R dataframes.",
     variables: []

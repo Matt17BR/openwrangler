@@ -1362,7 +1362,9 @@ function dataSourceNodes(
 ): ViewNode[] {
   return [
     ...notebookLiveVariableNodes(notebookVariables),
-    ...rLiveVariableNodes(notebookVariables && rVariables?.state === "idle" ? undefined : rVariables),
+    ...rLiveVariableNodes(
+      notebookVariables && rVariables?.state === "idle" && rVariables.action === "start" ? undefined : rVariables
+    ),
     new ViewNode("Open a data file", "Choose CSV, Parquet, Excel, or JSONL", "folder-opened", {
       command: "openWrangler.openPath",
       title: "Open a data file"
@@ -1421,7 +1423,7 @@ function notebookLiveVariableNodes(snapshot: NotebookLiveVariableSnapshot | unde
 function rLiveVariableNodes(snapshot: RLiveVariableSnapshot | undefined): ViewNode[] {
   if (!snapshot) return [];
   if (snapshot.state === "idle") {
-    const startsSession = snapshot.terminalLabel === "R session";
+    const startsSession = snapshot.action === "start";
     const label = startsSession ? "Start R and show dataframes…" : "Show R dataframes…";
     return [
       new ViewNode(label, snapshot.terminalLabel, "database", {

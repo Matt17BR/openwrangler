@@ -452,6 +452,7 @@ describe("native state and presentation commands", () => {
       startAutomaticDiscovery: () => undefined,
       snapshot: () => ({
         state: "idle",
+        action: "start",
         terminalLabel: "R session",
         message: "Start or select an R session.",
         variables: []
@@ -614,13 +615,14 @@ describe("native state and presentation commands", () => {
     });
   });
 
-  it("puts an explicit R discovery action first while the active terminal has not been read", () => {
+  it.each(["R", "R session"])("keeps unread terminal %s discoverable alongside a notebook", (terminalLabel) => {
     const variableProvider: RLiveVariableProvider = {
       onDidChangeVariables: () => ({ dispose: () => undefined }),
       startAutomaticDiscovery: () => undefined,
       snapshot: () => ({
         state: "idle",
-        terminalLabel: "R",
+        action: "refresh",
+        terminalLabel,
         message: "Dataframes appear here after the R prompt returns.",
         variables: []
       }),
@@ -628,13 +630,38 @@ describe("native state and presentation commands", () => {
       shutdown: async () => undefined,
       dispose: () => undefined
     };
-    const registered = register(noDraftSnapshot(), undefined, undefined, undefined, variableProvider);
+    const notebookProvider: NotebookLiveVariableProvider = {
+      onDidChangeVariables: () => ({ dispose: () => undefined }),
+      snapshot: () => ({
+        state: "ready",
+        notebookLabel: "analysis.ipynb",
+        message: "Live dataframes",
+        variables: [{ handle: "notebook-owner", label: "orders", description: "Pandas", detail: "analysis.ipynb" }]
+      }),
+      refreshFromCommand: async () => undefined,
+      dispose: () => undefined
+    };
+    const registered = register(noDraftSnapshot(), undefined, undefined, notebookProvider, variableProvider);
     registered.setActiveSession(undefined);
 
     expect(
       treeChildren("openWrangler.dataSources").map((node) => [node.label, node.description, node.command])
     ).toEqual([
-      ["Show R dataframes…", "R", expect.objectContaining({ command: "openWrangler.refreshRInteractiveVariables" })],
+      [
+        "orders",
+        "Pandas",
+        expect.objectContaining({ command: "openWrangler.openCachedNotebookVariable", arguments: ["notebook-owner"] })
+      ],
+      [
+        "Refresh notebook dataframes",
+        "analysis.ipynb",
+        expect.objectContaining({ command: "openWrangler.refreshNotebookVariables" })
+      ],
+      [
+        "Show R dataframes…",
+        terminalLabel,
+        expect.objectContaining({ command: "openWrangler.refreshRInteractiveVariables" })
+      ],
       [
         "Open a data file",
         "Choose CSV, Parquet, Excel, or JSONL",
@@ -649,6 +676,7 @@ describe("native state and presentation commands", () => {
       startAutomaticDiscovery: () => undefined,
       snapshot: () => ({
         state: "idle",
+        action: "start",
         terminalLabel: "R session",
         message: "The R terminal closed. Start or select another R session.",
         variables: []
