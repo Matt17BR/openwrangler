@@ -2085,6 +2085,22 @@ export function App() {
   // the only recovery action permanently disabled. The host revalidates the
   // exact missing-dependency response before it offers confirmation.
   const installDependencyDisabled = runtimeDependencyInstallPending || importOptionsPending;
+  const installDependencyAction =
+    foregroundError?.code === "missing_dependencies" || foregroundError?.code === "dependency_install_failed" ? (
+      <button
+        type="button"
+        className="toolbarButton"
+        disabled={installDependencyDisabled}
+        aria-busy={runtimeDependencyInstallPending || undefined}
+        onClick={(event) => {
+          event.currentTarget.blur();
+          setRuntimeDependencyInstallPending(true);
+          vscode.postMessage({ kind: "installRuntimeDependencies" });
+        }}
+      >
+        <span className="codicon codicon-cloud-download" aria-hidden="true" /> Install required packages
+      </button>
+    ) : null;
   const visibleShape = metadata ? (displayMetadata ?? metadata).filteredShape : undefined;
   const visibleShapeText = visibleShape
     ? visibleShape.rows === null
@@ -2104,21 +2120,7 @@ export function App() {
         <h1>Open Wrangler</h1>
         <p role="alert">{foregroundError.message}</p>
         <div className="errorActions">
-          {foregroundError.code === "missing_dependencies" && (
-            <button
-              type="button"
-              className="toolbarButton"
-              disabled={installDependencyDisabled}
-              aria-busy={runtimeDependencyInstallPending || undefined}
-              onClick={(event) => {
-                event.currentTarget.blur();
-                setRuntimeDependencyInstallPending(true);
-                vscode.postMessage({ kind: "installRuntimeDependencies" });
-              }}
-            >
-              <span className="codicon codicon-cloud-download" aria-hidden="true" /> Install required dependency
-            </button>
-          )}
+          {installDependencyAction}
           {webviewConfig.canChangeImportOptions && (
             <button
               type="button"
@@ -2463,6 +2465,12 @@ export function App() {
             {foregroundError && !foregroundError.form && (
               <div className="errorBanner" role="alert">
                 <span>{foregroundError.message}</span>
+                {installDependencyAction}
+                {runtimeDependencyInstallPending && (
+                  <span role="status" aria-live="polite">
+                    Waiting for dependency confirmation…
+                  </span>
+                )}
                 {foregroundError.code === "pyspark_connect_state_lost" &&
                   metadata?.backend === "pyspark" &&
                   metadata.source.kind === "notebookVariable" && (

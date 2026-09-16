@@ -1493,6 +1493,21 @@ describe("PythonBridge dependency installation", () => {
     );
   });
 
+  it("refuses a source-bound install when its environment changes during confirmation", async () => {
+    const { bridge, launchDependencyInstall } = createDependencyHarness();
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: ["pandas>=2.3.3,<4"] });
+    const choice = deferred<"Install">();
+    const warning = vi
+      .spyOn(vscode.window, "showWarningMessage")
+      .mockReturnValue(choice.promise as unknown as Thenable<never>);
+    const action = bridge.installFileDependencies(remoteFileSource(), "pandas");
+    await vi.waitFor(() => expect(warning).toHaveBeenCalledOnce());
+    bridge.clearRuntimeSelection();
+    choice.resolve("Install");
+    await expect(action).resolves.toBe(false);
+    expect(launchDependencyInstall).not.toHaveBeenCalled();
+  });
+
   it("aborts a cancelled file install at READY without authorizing writes", async () => {
     const { bridge, raw, launchDependencyInstall } = createDependencyHarness();
     vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: ["pandas>=2.3.3,<4"] });
@@ -3725,19 +3740,74 @@ describe("PythonBridge environment resource selection", () => {
       .mockResolvedValueOnce({ missing: ["fastexcel>=0.20.2,<1"] })
       .mockResolvedValueOnce({ missing: ["openpyxl>=3.1.5,<4"] });
 
-    await expect(internals.prepareRequest(automaticOpenSessionRequest(source))).resolves.toEqual({
+    const response = await internals.prepareRequest(automaticOpenSessionRequest(source));
+    expect(response).toMatchObject({
       kind: "error",
       code: "missing_dependencies",
-      message:
-        "The selected Python 3.12.4 environment cannot open this source with Polars. Missing: fastexcel>=0.20.2,<1.",
-      detail:
-        "Install the required dependency from this error, or run Open Wrangler: Install Runtime Dependencies, then review and confirm the exact environment change.",
       recoverable: true
     });
+    if (response.kind !== "error") throw new Error("Expected missing dependencies.");
+    expect(response.message).toContain("cannot open this source with Polars. Missing: fastexcel>=0.20.2,<1.");
+    expect(response.message).not.toContain("openpyxl");
     expect(internals.lastMissingDependencies).toMatchObject({
       requirements: ["fastexcel>=0.20.2,<1"]
     });
   });
+
+  it.each([
+    ["configuration", "openWrangler.pythonPath setting"],
+    ["pythonExtension", "Python extension's active environment for this file"],
+    ["system", "system Python fallback"]
+  ] as const)(
+    "keeps %s provenance and recovery with the failed backend across another open",
+    async (origin, reason) => {
+      const { internals } = createEnvironmentHarness();
+      const selected = { ...environment, source: origin };
+      const other = {
+        ...environment,
+        executable: testPythonExecutablePath("/other/python"),
+        executableIdentity: testExecutableIdentity("/other/python"),
+        packageRoot: "/other",
+        packageRootIdentity: testPackageRootIdentity("/other"),
+        version: "3.13.9",
+        source: "configuration" as const
+      };
+      vi.mocked(pythonEnvironment.resolvePythonEnvironment)
+        .mockResolvedValueOnce(selected)
+        .mockResolvedValueOnce(other);
+      const pendingProbe = deferred<pythonEnvironment.DependencyProbe>();
+      vi.mocked(pythonEnvironment.probeDependencies).mockImplementation(async (target) =>
+        target === selected ? pendingProbe.promise : { missing: ["duckdb>=1.5.4,<1.6"] }
+      );
+
+      const first = internals.prepareRequest(openSessionRequest(remoteSourceAt("/data/first.csv")));
+      await vi.waitFor(() => expect(pythonEnvironment.probeDependencies).toHaveBeenCalledOnce());
+      const second = await internals.prepareRequest({
+        ...openSessionRequest(remoteSourceAt("/data/second.csv")),
+        backend: "duckdb",
+        mode: "viewing"
+      });
+      pendingProbe.resolve({ missing: ["polars>=1.35.2,!=1.44.0,<2"] });
+      const response = await first;
+
+      expect(second).toMatchObject({ kind: "error", message: expect.stringContaining(other.executable) });
+      expect(response).toMatchObject({ kind: "error", code: "missing_dependencies", recoverable: true });
+      if (response.kind !== "error") throw new Error("Expected missing dependencies.");
+      expect(response.message).toContain(`Python ${selected.version} at "${selected.executable}"`);
+      expect(response.message).toContain(reason);
+      expect(response.message).toContain("cannot open this source with Polars. Missing: polars>=1.35.2,!=1.44.0,<2.");
+      expect(response.message).toContain("Command Palette");
+      expect(response.message).toContain("Open Wrangler: Change Runtime");
+      expect(response.message).toContain("Open Wrangler: Install Runtime Dependencies");
+      expect(response.message).not.toContain(other.executable);
+      expect(response.message).not.toContain("DuckDB");
+      expect(internals.lastMissingDependencies).toMatchObject({
+        environment: selected,
+        requirements: ["polars>=1.35.2,!=1.44.0,<2"]
+      });
+      expect(internals.spawnProcess).not.toHaveBeenCalled();
+    }
+  );
 
   it.each([
     {

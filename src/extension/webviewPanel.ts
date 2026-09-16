@@ -29,7 +29,7 @@ import { getSetting, readWebviewBootstrapSettings, type WebviewBootstrapSettings
 import { rememberConfirmedFileConfiguration } from "./files/confirmedFileConfigurations";
 import { ImportCancelledError, promptImportOptions } from "./files/importOptions";
 import { dependencyGuardRecoveryGuidance } from "./pythonDependencyState";
-import { automaticBackends } from "./pythonEnvironmentModel";
+import { automaticBackends, type FileDataBackend } from "./pythonEnvironmentModel";
 import {
   RendererSynchronizationCoordinator,
   type RendererImportPreparation,
@@ -52,6 +52,14 @@ interface PendingRuntimeReplacement {
   refresh?: Promise<void>;
   attemptedContext?: SessionRecoveryContext;
   offer?: { message: SessionRecoveryMessage; snapshot: SessionOpenedResponse; isCurrent(): boolean };
+}
+
+interface FailedBackendChange {
+  readonly source: SessionSource;
+  readonly backend: FileDataBackend;
+  readonly sessionId: string;
+  readonly revision: number;
+  readonly generation: number;
 }
 
 export async function restoreEditorGroupAfterQuickPick(): Promise<void> {
@@ -78,6 +86,7 @@ export class OpenWranglerPanel {
   private currentImportChangeTask: Promise<void> | undefined;
   private nativeImportCommand: Promise<boolean> | undefined;
   private runtimeDependencyInstallTask: Promise<void> | undefined;
+  private failedBackendChange: FailedBackendChange | undefined;
   private sessionModeChangeTask: Promise<void> | undefined;
   private reconnectingLiveSource = false;
   private importChangeCancellation: vscode.CancellationTokenSource | undefined;
@@ -483,6 +492,7 @@ export class OpenWranglerPanel {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.failedBackendChange = undefined;
     this.pendingRuntimeReplacement = undefined;
     this.openAttemptGeneration += 1;
     this.activeSessionOpenProgressGeneration = undefined;
@@ -930,6 +940,7 @@ export class OpenWranglerPanel {
   }
 
   private enqueueImportOptionsChange(): Promise<void> {
+    this.failedBackendChange = undefined;
     const generation = ++this.openAttemptGeneration;
     this.sessionOpenCancellation?.cancel();
     this.importChangeCancellation?.cancel();
@@ -947,11 +958,12 @@ export class OpenWranglerPanel {
     return task;
   }
 
-  private enqueueBackendChange(): Promise<void> {
-    const generation = ++this.openAttemptGeneration;
+  private enqueueBackendChange(retry?: FailedBackendChange): Promise<void> {
+    const generation = retry?.generation ?? ++this.openAttemptGeneration;
+    if (!retry) this.failedBackendChange = undefined;
     this.sessionOpenCancellation?.cancel();
     this.importChangeCancellation?.cancel();
-    const task = this.importChangeTail.catch(() => undefined).then(() => this.changeBackend(generation));
+    const task = this.importChangeTail.catch(() => undefined).then(() => this.changeBackend(generation, retry));
     this.importChangeTail = task.catch(() => undefined);
     this.currentImportChangeTask = task;
     void task.then(
@@ -998,6 +1010,16 @@ export class OpenWranglerPanel {
   private installRuntimeDependencies(): Promise<void> {
     if (this.runtimeDependencyInstallTask) return this.runtimeDependencyInstallTask;
     const task = (async () => {
+      const retry = this.failedBackendChange;
+      if (retry) {
+        try {
+          if (this.isCurrentBackendChange(retry)) await this.enqueueBackendChange(retry);
+          else this.failedBackendChange = undefined;
+        } finally {
+          if (!this.disposed) await this.postRendererMessage({ kind: "runtimeDependencyInstallState", busy: false });
+        }
+        return;
+      }
       const generation = this.openAttemptGeneration;
       const source = this.source;
       const backend = this.backend;
@@ -1010,6 +1032,7 @@ export class OpenWranglerPanel {
         this.openResponse?.kind !== "error" ||
         this.openResponse.code !== "missing_dependencies"
       ) {
+        if (!this.disposed) await this.postRendererMessage({ kind: "runtimeDependencyInstallState", busy: false });
         return;
       }
       const cancellation = new vscode.CancellationTokenSource();
@@ -1213,7 +1236,17 @@ export class OpenWranglerPanel {
     }
   }
 
-  private async changeBackend(generation: number): Promise<void> {
+  private isCurrentBackendChange(attempt: FailedBackendChange): boolean {
+    return (
+      !this.disposed &&
+      attempt.generation === this.openAttemptGeneration &&
+      attempt.source === this.source &&
+      attempt.sessionId === this.sessionId &&
+      attempt.revision === this.sessionRevision
+    );
+  }
+
+  private async changeBackend(generation: number, retry?: FailedBackendChange): Promise<void> {
     if (
       this.disposed ||
       generation !== this.openAttemptGeneration ||
@@ -1221,7 +1254,8 @@ export class OpenWranglerPanel {
       isDuckDBTableSource(this.source) ||
       !this.sessionId ||
       !this.snapshot ||
-      !this.bridge.reconfigureFileSession
+      !this.bridge.reconfigureFileSession ||
+      (retry !== undefined && !this.isCurrentBackendChange(retry))
     ) {
       return;
     }
@@ -1238,21 +1272,23 @@ export class OpenWranglerPanel {
       await this.postRendererMessage({ kind: "importOptionsState", busy: true });
       const compatibleBackends = automaticBackends(this.source);
       const currentBackend = this.snapshot.metadata.backend;
-      const backend = (
-        await vscode.window.showQuickPick(
-          compatibleBackends.map((candidate) => ({
-            label: backendDisplayName(candidate),
-            description: candidate === currentBackend ? "Current" : undefined,
-            backend: candidate
-          })),
-          {
-            title: "Dataframe engine",
-            placeHolder: `Current engine: ${backendDisplayName(currentBackend)}`,
-            matchOnDescription: true
-          },
-          cancellation.token
-        )
-      )?.backend;
+      const backend =
+        retry?.backend ??
+        (
+          await vscode.window.showQuickPick(
+            compatibleBackends.map((candidate) => ({
+              label: backendDisplayName(candidate),
+              description: candidate === currentBackend ? "Current" : undefined,
+              backend: candidate
+            })),
+            {
+              title: "Dataframe engine",
+              placeHolder: `Current engine: ${backendDisplayName(currentBackend)}`,
+              matchOnDescription: true
+            },
+            cancellation.token
+          )
+        )?.backend;
       if (
         !backend ||
         cancellation.token.isCancellationRequested ||
@@ -1274,7 +1310,7 @@ export class OpenWranglerPanel {
       if (backend === currentBackend) return;
 
       const metadata = this.snapshot.metadata;
-      if (metadata.steps.length > 0 || metadata.draftStep) {
+      if (!retry && (metadata.steps.length > 0 || metadata.draftStep)) {
         const applied = metadata.steps.length;
         const planDescription = [
           applied > 0 ? `${applied} applied ${applied === 1 ? "step" : "steps"}` : undefined,
@@ -1305,14 +1341,37 @@ export class OpenWranglerPanel {
         this.disposed ||
         generation !== this.openAttemptGeneration ||
         cancellation.token.isCancellationRequested ||
-        !this.sessionId
+        !this.sessionId ||
+        (retry !== undefined && !this.isCurrentBackendChange(retry))
       ) {
         return;
       }
-      const response = await this.bridge.reconfigureFileSession(this.sessionId, this.sessionRevision, this.source, {
+      const attempt = retry ?? {
+        source: this.source,
+        backend,
+        sessionId: this.sessionId,
+        revision: this.sessionRevision,
+        generation
+      };
+      if (retry) {
+        await this.postRendererMessage({ kind: "runtimeDependencyInstallState", busy: true });
+        if (!this.isCurrentBackendChange(attempt) || cancellation.token.isCancellationRequested) return;
+        const ready = await this.bridge.installFileDependencies?.(attempt.source, attempt.backend, {
+          cancellation: cancellation.token
+        });
+        if (!ready || !this.isCurrentBackendChange(attempt) || cancellation.token.isCancellationRequested) return;
+        if (ready !== true) {
+          await this.postImportResponse(ready);
+          return;
+        }
+      }
+      const response = await this.bridge.reconfigureFileSession(attempt.sessionId, attempt.revision, attempt.source, {
         cancellation: cancellation.token,
         backendPreference: backend
       });
+      if (!this.isCurrentBackendChange(attempt) || cancellation.token.isCancellationRequested) return;
+      this.failedBackendChange =
+        response.kind === "error" && response.code === "missing_dependencies" ? attempt : undefined;
       if (response.kind === "sessionOpened") {
         this.invalidateRendererSynchronization();
         this.backendPreference = backend;
@@ -1337,12 +1396,17 @@ export class OpenWranglerPanel {
         await this.postViewState();
       }
     } catch (error) {
-      if (this.disposed || generation !== this.openAttemptGeneration) return;
+      if (this.disposed || generation !== this.openAttemptGeneration || (retry && !this.isCurrentBackendChange(retry)))
+        return;
       await this.postUnpublishedAuthoritativeSnapshot();
       await this.postImportResponse({
         kind: "error",
-        code: "bridge_error",
-        message: error instanceof Error ? error.message : String(error),
+        code: retry ? "dependency_install_failed" : "bridge_error",
+        message: retry
+          ? dependencyGuardRecoveryGuidance(error)
+          : error instanceof Error
+            ? error.message
+            : String(error),
         recoverable: true,
         sessionId: this.sessionId
       });

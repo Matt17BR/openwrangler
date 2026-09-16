@@ -187,13 +187,14 @@ export function createPackagedExcelDependencyInstallJourney({
       );
       assert.equal(initialInput.viewType, "openWrangler.viewer");
       assert.equal(initialInput.uri.toString(), workbook.toString());
-      const install = await waitForOpenWranglerWebviewAction(workbench, "Install required dependency", true);
+      const install = await waitForOpenWranglerWebviewAction(workbench, "Install required packages", true);
       const errorAlert = install.target.frame.getByRole("alert").filter({ hasText: "openpyxl>=3.1.5,<4" }).first();
       await errorAlert.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
       assert.match(
         await errorAlert.innerText(),
-        /cannot open this source with Pandas\. Missing: openpyxl>=3\.1\.5,<4\.$/u
+        /cannot open this source with Pandas\. Missing: openpyxl>=3\.1\.5,<4\./u
       );
+      assert.ok((await errorAlert.innerText()).includes(dependency.executable));
 
       recordAcceptanceProgress("excel-dependency-install:request");
       await withAcceptanceOperationDeadline(

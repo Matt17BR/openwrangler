@@ -4283,44 +4283,64 @@ describe("App file import options", () => {
     expect(action).not.toHaveAttribute("aria-busy");
   });
 
-  it("offers a direct confirmed dependency install only for a structured missing-dependency error", async () => {
-    const { unmount } = render(<App />);
-    dispatchAppMessage({
-      kind: "error",
-      code: "missing_dependencies",
-      message: "Polars is missing fastexcel>=0.9.",
-      recoverable: true
-    });
+  it.each(["initial", "retained"])(
+    "offers confirmed dependency installation for an %s session error",
+    async (state) => {
+      const { unmount } = render(<App />);
+      if (state === "retained") {
+        dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+        await screen.findByRole("cell", { name: "Milan" });
+        dispatchAppMessage({ kind: "importOptionsState", busy: true });
+      }
+      dispatchAppMessage({
+        kind: "error",
+        code: "missing_dependencies",
+        message: "Polars is missing fastexcel>=0.9.",
+        recoverable: true
+      });
 
-    const action = await screen.findByRole("button", { name: "Install required dependency" });
-    expect(action).toBeEnabled();
-    expect(action).not.toHaveAttribute("aria-busy");
-    dispatchAppMessage({ kind: "importOptionsState", busy: true });
-    expect(action).toBeDisabled();
-    dispatchAppMessage({ kind: "importOptionsState", busy: false });
-    expect(action).toBeEnabled();
-    webviewPostMessage.mockClear();
-    fireEvent.click(action);
+      dispatchAppMessage({ kind: "importOptionsState", busy: false });
+      const action = await screen.findByRole("button", { name: "Install required packages" });
+      expect(action).toBeEnabled();
+      expect(action).not.toHaveAttribute("aria-busy");
+      dispatchAppMessage({ kind: "importOptionsState", busy: true });
+      expect(action).toBeDisabled();
+      dispatchAppMessage({ kind: "importOptionsState", busy: false });
+      expect(action).toBeEnabled();
+      webviewPostMessage.mockClear();
+      fireEvent.click(action);
 
-    expect(webviewPostMessage).toHaveBeenCalledWith({ kind: "installRuntimeDependencies" });
-    expect(action).toBeDisabled();
-    expect(action).toHaveAttribute("aria-busy", "true");
-    expect(screen.getByRole("status")).toHaveTextContent("Waiting for dependency confirmation");
+      expect(webviewPostMessage).toHaveBeenCalledWith({ kind: "installRuntimeDependencies" });
+      expect(action).toBeDisabled();
+      expect(action).toHaveAttribute("aria-busy", "true");
+      expect(screen.getByText("Waiting for dependency confirmation…")).toHaveAttribute("role", "status");
 
-    dispatchAppMessage({ kind: "runtimeDependencyInstallState", busy: false });
-    expect(action).toBeEnabled();
-    expect(action).not.toHaveAttribute("aria-busy");
+      dispatchAppMessage({ kind: "runtimeDependencyInstallState", busy: false });
+      expect(action).toBeEnabled();
+      expect(action).not.toHaveAttribute("aria-busy");
+      dispatchAppMessage({
+        kind: "error",
+        code: "dependency_install_failed",
+        message: "Installation could not finish.",
+        recoverable: true
+      });
+      expect(screen.getByRole("button", { name: "Install required packages" })).toBeEnabled();
+      if (state === "retained") {
+        expect(screen.getByRole("cell", { name: "Milan" })).toBeVisible();
+        expect(screen.getByRole("grid")).toHaveAttribute("aria-busy", "false");
+      }
 
-    unmount();
-    render(<App />);
-    dispatchAppMessage({
-      kind: "error",
-      code: "invalid_import_options",
-      message: "Choose a valid delimiter.",
-      recoverable: true
-    });
-    expect(screen.queryByRole("button", { name: "Install required dependency" })).toBeNull();
-  });
+      unmount();
+      render(<App />);
+      dispatchAppMessage({
+        kind: "error",
+        code: "invalid_import_options",
+        message: "Choose a valid delimiter.",
+        recoverable: true
+      });
+      expect(screen.queryByRole("button", { name: "Install required packages" })).toBeNull();
+    }
+  );
 
   it("commits and blurs a pointer-triggered import action before dispatch, then restores it after completion", async () => {
     const frames: FrameRequestCallback[] = [];

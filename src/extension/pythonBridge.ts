@@ -2347,12 +2347,18 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       selectionEpoch: selection.epoch
     };
     this.lastMissingDependencies = missingTarget;
+    const selectionOrigin =
+      environment.source === "configuration"
+        ? "openWrangler.pythonPath setting"
+        : environment.source === "pythonExtension"
+          ? "Python extension's active environment for this file"
+          : "system Python fallback";
     return {
       missingTarget,
       request: {
         kind: "error",
         code: "missing_dependencies",
-        message: `The selected Python ${environment.version} environment cannot open this source with ${backendDisplayName(selectedFailure?.backend)}. Missing: ${selectedRequirements.join(", ")}.`,
+        message: `Open Wrangler is using Python ${environment.version} at "${environment.executable}" (${selectionOrigin}). It cannot open this source with ${backendDisplayName(selectedFailure?.backend)}. Missing: ${selectedRequirements.join(", ")}. In the Command Palette, run Open Wrangler: Change Runtime to choose another interpreter, or Open Wrangler: Install Runtime Dependencies to review and confirm an installation.`,
         detail:
           "Install the required dependency from this error, or run Open Wrangler: Install Runtime Dependencies, then review and confirm the exact environment change.",
         recoverable: true

@@ -1923,6 +1923,12 @@ If dependencies are already available, the panel retries its normal open without
 changing its open attempt invalidates pre-write authorization and reopening; an already authorized install retains
 its existing process settlement and environment-validation ownership. The global install command still uses the most
 recent missing target.
+Missing-dependency errors identify the captured Python executable, version, selection source and requested engine.
+A failed engine change keeps its confirmed grid and offers the same install action in the error banner. The host
+retains the requested engine with the source, session, revision and open-attempt generation, then rechecks that tuple
+before retrying the existing file reconfiguration. A later plan revision can allow an already confirmed installation
+to finish, but cannot receive the obsolete engine retry. Installing into a shared environment can stop its runtimes;
+the existing confirmed-state recovery handles their next requests.
 Custom code is trusted arbitrary code in the selected environment, not a sandbox.
 
 Excel sheet discovery, DuckDB table discovery and trusted Pickle conversion hold a read lease on their captured Python
