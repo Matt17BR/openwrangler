@@ -910,10 +910,67 @@ async function verifyInsightsDrawerWorkflow(browser) {
     ["summary-families-dark-zoom-200.html", 1280]
   ]) {
     const page = await browser.newPage();
-    await page.setViewportSize({ width, height: 760 });
+    await page.setViewportSize({ width: width === 1280 ? 1000 : width, height: 760 });
     await page.goto(pathToFileURL(resolve(harnessDir, harness)).href, { waitUntil: "load" });
 
     if (width === 1280) {
+      // Start with an uncached offscreen column; closing the public drawer must
+      // update demand without another window resize or grid scroll.
+      await page.locator('th[data-column="when"] > .columnInsight:not(.emptyInsight)').waitFor();
+      await page.getByRole("button", { name: "Column profiles and filters" }).click();
+      const close = page.getByRole("button", { name: "Close panel", exact: true });
+      await close.waitFor();
+      const scroller = page.getByTestId("data-grid-scroller");
+      await scroller.hover();
+      await page.mouse.wheel(280, 0);
+      await page.waitForFunction(() => document.querySelector('[data-testid="data-grid-scroller"]').scrollLeft >= 139);
+      await page.locator('th[data-column="account_note"]').waitFor({ state: "detached" });
+      const beforeClose = await scroller.evaluate((element) => ({
+        width: element.clientWidth,
+        scrollLeft: element.scrollLeft,
+        scrollTop: element.scrollTop
+      }));
+      const alreadyRequested = await page.evaluate(() =>
+        window.openWranglerMessages.some(
+          (message) => message.kind === "runtimeRequest" && message.request.columnIds?.includes("c:source:4")
+        )
+      );
+      if (alreadyRequested) throw new Error(`${harness} preloaded the offscreen drawer-resize control.`);
+      await close.click();
+      await page.locator('th[data-column="account_note"] > .columnInsight:not(.emptyInsight)').waitFor();
+      const afterClose = await scroller.evaluate((element) => {
+        const bounds = element.getBoundingClientRect();
+        const scale = bounds.width / element.offsetWidth;
+        const right = bounds.left + (element.clientLeft + element.clientWidth) * scale;
+        const header = element.querySelector('th[data-column="account_note"]').getBoundingClientRect();
+        return {
+          width: element.clientWidth,
+          scrollLeft: element.scrollLeft,
+          scrollTop: element.scrollTop,
+          partial: header.left < right && header.right > right,
+          requestCount: window.openWranglerMessages.filter(
+            (message) =>
+              message.kind === "runtimeRequest" &&
+              message.request.kind === "getSummary" &&
+              message.request.columnIds?.includes("c:source:4")
+          ).length,
+          harnessErrors: window.openWranglerHarnessErrors
+        };
+      });
+      if (
+        afterClose.width <= beforeClose.width ||
+        afterClose.scrollLeft !== beforeClose.scrollLeft ||
+        afterClose.scrollTop !== beforeClose.scrollTop ||
+        !afterClose.partial ||
+        afterClose.requestCount !== 1 ||
+        afterClose.harnessErrors.length !== 0
+      ) {
+        throw new Error(`${harness} did not profile the newly exposed partial header: ${JSON.stringify(afterClose)}.`);
+      }
+      await scroller.hover();
+      await page.mouse.wheel(-280, 0);
+      await page.waitForFunction(() => document.querySelector('[data-testid="data-grid-scroller"]').scrollLeft === 0);
+      await page.setViewportSize({ width, height: 760 });
       await page.locator(".columnInsight.compact .exactSummaryStats").first().waitFor();
       const compact = await shortGridProfileState(page);
       if (

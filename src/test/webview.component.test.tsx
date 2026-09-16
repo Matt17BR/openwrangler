@@ -464,6 +464,7 @@ describe("DataGrid", () => {
       expect(fitStatus).toHaveAccessibleName("Header profile layout");
       expect(fitStatus).toBeEmptyDOMElement();
       let scrollerHeight = 124;
+      let scrollerWidth = 500;
       let expandedNaturalHeight = 166;
       let bareHeaderHeight = 58;
       // Model the native scrollbar separately from the existing profile-fit viewport.
@@ -475,7 +476,7 @@ describe("DataGrid", () => {
         configurable: true,
         get: () => scrollerHeight
       });
-      Object.defineProperty(scroller, "clientWidth", { configurable: true, value: 500 });
+      Object.defineProperty(scroller, "clientWidth", { configurable: true, get: () => scrollerWidth });
       fireEvent(window, new Event("resize"));
       Object.defineProperty(tableHeader, "offsetHeight", {
         configurable: true,
@@ -512,6 +513,16 @@ describe("DataGrid", () => {
       );
       expect(screen.getByRole("columnheader", { name: /^sales/u })).toHaveTextContent("Missing 1");
       expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:0", "c:1"]);
+
+      // A drawer changes the element width without a window resize or scroll.
+      scrollerWidth = 248;
+      signalResize();
+      expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:0"]);
+      scrollerWidth = 249;
+      signalResize();
+      expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:0", "c:1"]);
+      scrollerWidth = 500;
+      signalResize();
 
       // A one-pixel restoration margin keeps the two layouts from oscillating.
       scrollerHeight = 150;
@@ -554,12 +565,17 @@ describe("DataGrid", () => {
       expect(scroller.style.minHeight).toBe("100px");
       bareHeaderHeight = 76;
       scrollerHeight = 240;
+      scrollerWidth = 248;
       signalResize();
       expect(scroller.style.minHeight).toBe("118px");
       expect(document.querySelector(".columnInsight")).not.toBeInTheDocument();
       fireEvent.click(headerProfiles);
       await waitFor(() => expect(document.querySelector(".columnInsight:not(.compact)")).toBeInTheDocument());
       expect(headerProfiles).toHaveAttribute("aria-pressed", "true");
+      expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:0"]);
+      scrollerWidth = 500;
+      signalResize();
+      expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:0", "c:1"]);
 
       expandedNaturalHeight = 190;
       scrollerHeight = 196;

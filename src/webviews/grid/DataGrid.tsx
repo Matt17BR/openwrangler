@@ -829,6 +829,8 @@ export function DataGrid({
       update();
     };
     update();
+    const resizeObserver = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(rebaseAfterResize);
+    resizeObserver?.observe(scroller);
     scroller.addEventListener("scroll", update, { passive: true });
     scroller.addEventListener("wheel", interruptColumnReveal, { passive: true });
     scroller.addEventListener("pointerdown", interruptColumnReveal, { passive: true });
@@ -837,6 +839,7 @@ export function DataGrid({
     window.addEventListener("focus", resumeViewportUpdates);
     window.addEventListener("resize", rebaseAfterResize);
     return () => {
+      resizeObserver?.disconnect();
       scroller.removeEventListener("scroll", update);
       scroller.removeEventListener("wheel", interruptColumnReveal);
       scroller.removeEventListener("pointerdown", interruptColumnReveal);
