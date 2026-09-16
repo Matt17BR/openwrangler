@@ -17,6 +17,8 @@ import {
 } from "../extension/r/rKernelRuntimeBundle";
 import { assertReleasedRGeneratedSourceBoundary } from "./extensionHost/releasedRGeneratedCode";
 import { rParquetExportOptions } from "./rExportTestOptions";
+import { schemaFromRContract } from "../extension/r/rKernelFrameMapping";
+import { assertMutationDiff, inspectionDiff } from "../extension/r/rKernelMutationDiff";
 
 const enabled = process.env.OPEN_WRANGLER_R_CONTRACT_TESTS === "1";
 const root = resolve(__dirname, "../..");
@@ -746,6 +748,304 @@ stopifnot(identical(frame, frame_before))
 cat("generated-ok\n")
 `);
     expect(generated.stdout.trim()).toBe("generated-ok");
+  });
+
+  it("inspects a no-op Fill using one evaluation of its preceding Custom result", () => {
+    const sessionId = "1c000000-0000-4000-8000-000000000001";
+    const ids = {
+      open: "1c000000-0000-4000-8000-000000000002",
+      customPreview: "1c000000-0000-4000-8000-000000000003",
+      customApply: "1c000000-0000-4000-8000-000000000004",
+      fillPreview: "1c000000-0000-4000-8000-000000000005",
+      fillApply: "1c000000-0000-4000-8000-000000000006",
+      inspect: "1c000000-0000-4000-8000-000000000007",
+      page: "1c000000-0000-4000-8000-000000000008",
+      close: "1c000000-0000-4000-8000-000000000009",
+      afterInfo: "1c000000-0000-4000-8000-00000000000a",
+      ordinaryPreview: "1c000000-0000-4000-8000-000000000010",
+      ordinaryApply: "1c000000-0000-4000-8000-000000000011",
+      ordinaryInspect: "1c000000-0000-4000-8000-000000000012",
+      secondInput: "1c000000-0000-4000-8000-000000000013",
+      secondOutput: "1c000000-0000-4000-8000-000000000014",
+      failedInspection: "1c000000-0000-4000-8000-000000000015",
+      preview: "1c000000-0000-4000-8000-000000000016",
+      discard: "1c000000-0000-4000-8000-000000000017",
+      refreshed: "1c000000-0000-4000-8000-000000000018",
+      afterClose: "1c000000-0000-4000-8000-000000000019"
+    } as const;
+    const bootstrap = buildRKernelBootstrapCode(readRRuntimeFiles(resolve(root, "r")));
+    const customStep = {
+      id: "volatile-prefix",
+      kind: "customCode",
+      params: { code: "result <- df; result$value <- result$value + next_tick()" }
+    } as const;
+    const fillStep = {
+      id: "noop-fill",
+      kind: "fillMissingValues",
+      params: { column: { id: "r:c:0", name: "value" }, replacement: { kind: "integer", value: "0" } }
+    } as const;
+    const open = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.open,
+      kind: "openSession",
+      payload: { sessionId, variableName: "frame", page: pageWindow() }
+    });
+    const ordinaryStep = { ...fillStep, id: "ordinary-fill" };
+    const ordinaryPreview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.ordinaryPreview,
+      kind: "previewStep",
+      payload: { sessionId, revision: 0, step: ordinaryStep, page: pageWindow() }
+    });
+    const ordinaryApply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.ordinaryApply,
+      kind: "applyDraft",
+      payload: { sessionId, revision: 1, page: pageWindow() }
+    });
+    const ordinaryInspect = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.ordinaryInspect,
+      kind: "inspectStepPage",
+      payload: { sessionId, revision: 2, stepId: ordinaryStep.id, side: "output", page: pageWindow() }
+    });
+    const customPreview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.customPreview,
+      kind: "previewStep",
+      payload: { sessionId, revision: 2, step: customStep, page: pageWindow() }
+    });
+    const customApply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.customApply,
+      kind: "applyDraft",
+      payload: { sessionId, revision: 3, page: pageWindow() }
+    });
+    const fillPreview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.fillPreview,
+      kind: "previewStep",
+      payload: { sessionId, revision: 4, step: fillStep, page: pageWindow() }
+    });
+    const fillApply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.fillApply,
+      kind: "applyDraft",
+      payload: { sessionId, revision: 5, page: pageWindow() }
+    });
+    const inspect = inspectionRequestCodes(ids.inspect, {
+      sessionId,
+      revision: 6,
+      stepId: fillStep.id,
+      page: pageWindow()
+    });
+    const page = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.page,
+      kind: "getPage",
+      payload: { sessionId, page: pageWindow() }
+    });
+    const afterInfo = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.afterInfo,
+      kind: "inspectStepInfo",
+      payload: { sessionId, revision: 6, stepId: fillStep.id }
+    });
+    const secondPage = { ...pageWindow(), rowOffset: 1, rowLimit: 1, columnLimit: 1 };
+    const secondInput = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.secondInput,
+      kind: "inspectStepPage",
+      payload: { sessionId, revision: 6, stepId: fillStep.id, side: "input", page: secondPage }
+    });
+    const secondOutput = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.secondOutput,
+      kind: "inspectStepPage",
+      payload: { sessionId, revision: 6, stepId: fillStep.id, side: "output", page: secondPage }
+    });
+    const failedInspection = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.failedInspection,
+      kind: "inspectStepPage",
+      payload: { sessionId, revision: 6, stepId: customStep.id, side: "output", page: pageWindow() }
+    });
+    const preview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.preview,
+      kind: "previewStep",
+      payload: { sessionId, revision: 6, step: { ...fillStep, id: "another-fill" }, page: pageWindow() }
+    });
+    const discard = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.discard,
+      kind: "discardDraft",
+      payload: { sessionId, revision: 7, page: pageWindow() }
+    });
+    const refreshed = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.refreshed,
+      kind: "inspectStepPage",
+      payload: { sessionId, revision: 8, stepId: fillStep.id, side: "output", page: pageWindow() }
+    });
+    const close = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.close,
+      kind: "closeSession",
+      payload: { sessionId }
+    });
+    const afterClose = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.afterClose,
+      kind: "inspectStepPage",
+      payload: { sessionId, revision: 8, stepId: fillStep.id, side: "input", page: pageWindow() }
+    });
+    const result = runR(`
+frame <- data.frame(value = c(1L, 2L), control = c("a", "b"))
+source_before <- serialize(frame, NULL, version = 3L)
+fail_tick <- FALSE
+next_tick <- local({ tick <- 0L; function() {
+  if (fail_tick) stop("controlled inspection failure", call. = FALSE)
+  tick <<- tick + 1L
+  tick
+} })
+${bootstrap}
+inspection_agent <- get("${R_KERNEL_RUNTIME_BINDING}", envir = .GlobalEnv)$agent
+inspection_sessions <- get("sessions", envir = environment(inspection_agent$dispatch_json), inherits = FALSE)
+${open.code}
+${ordinaryPreview.code}
+${ordinaryApply.code}
+${ordinaryInspect.code}
+stopifnot(is.null(get("${sessionId}", envir = inspection_sessions)$inspectionBoundary))
+${customPreview.code}
+${customApply.code}
+${fillPreview.code}
+${fillApply.code}
+${inspect.info.code}
+${inspect.input.code}
+${inspect.output.code}
+${page.code}
+${afterInfo.code}
+fail_tick <- TRUE
+${failedInspection.code}
+${secondOutput.code}
+${secondInput.code}
+fail_tick <- FALSE
+${preview.code}
+stopifnot(is.null(get("${sessionId}", envir = inspection_sessions)$inspectionBoundary))
+${discard.code}
+${refreshed.code}
+stopifnot(!is.null(get("${sessionId}", envir = inspection_sessions)$inspectionBoundary))
+inspection_agent$dispose()
+stopifnot(is.null(get("${sessionId}", envir = inspection_sessions)$inspectionBoundary))
+stopifnot(identical(serialize(frame, NULL, version = 3L), source_before))
+${close.code}
+stopifnot(!exists("${sessionId}", envir = inspection_sessions, inherits = FALSE))
+${afterClose.code}
+`);
+    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open, {
+      expectExportFormats: true
+    });
+    if (opened.kind !== "page") throw new Error("Expected an opened R inspection session.");
+    const ordinaryApplied = decodeRKernelResponseJson(marked(result.stdout, ordinaryApply.marker), ids.ordinaryApply);
+    if (ordinaryApplied.kind !== "planUpdated") throw new Error("Expected the ordinary R Fill to apply.");
+    const ordinary = decodeRKernelResponseJson(marked(result.stdout, ordinaryInspect.marker), ids.ordinaryInspect, {
+      outputSchema: ordinaryApplied.page.schema,
+      inspectionSide: "output"
+    });
+    expect(ordinary.kind).toBe("stepInspectionPage");
+    const custom = decodeRKernelResponseJson(marked(result.stdout, customPreview.marker), ids.customPreview, {
+      inputSchema: ordinaryApplied.page.schema,
+      previewStep: customStep
+    });
+    if (custom.kind !== "stepPreview") throw new Error("Expected the volatile R Custom preview.");
+    expect(decodeRKernelResponseJson(marked(result.stdout, customApply.marker), ids.customApply)).toMatchObject({
+      kind: "planUpdated",
+      action: "apply",
+      revision: 4
+    });
+    const filled = decodeRKernelResponseJson(marked(result.stdout, fillPreview.marker), ids.fillPreview, {
+      inputSchema: custom.page.schema,
+      previewStep: fillStep
+    });
+    expect(filled).toMatchObject({ kind: "stepPreview", revision: 5, diff: { changedCells: 0, cells: [] } });
+    const applied = decodeRKernelResponseJson(marked(result.stdout, fillApply.marker), ids.fillApply);
+    if (applied.kind !== "planUpdated") throw new Error("Expected the applied no-op R Fill.");
+    expect(applied).toMatchObject({ action: "apply", revision: 6 });
+    expect(decodeRKernelResponseJson(marked(result.stdout, inspect.info.marker), inspect.infoRequestId)).toMatchObject({
+      kind: "stepInspectionInfo",
+      revision: 6,
+      stepIndex: 2,
+      stepId: fillStep.id
+    });
+    const input = decodeRKernelResponseJson(marked(result.stdout, inspect.input.marker), inspect.inputRequestId, {
+      inputSchema: custom.page.schema,
+      inspectionSide: "input"
+    });
+    const output = decodeRKernelResponseJson(marked(result.stdout, inspect.output.marker), inspect.outputRequestId, {
+      outputSchema: applied.page.schema,
+      inspectionSide: "output"
+    });
+    if (input.kind !== "stepInspectionPage" || output.kind !== "stepInspectionPage") {
+      throw new Error("Expected both R Fill inspection pages.");
+    }
+    expect(input.revision).toBe(6);
+    expect(output.revision).toBe(6);
+    const current = decodeRKernelResponseJson(marked(result.stdout, page.marker), ids.page);
+    if (current.kind !== "page") throw new Error("Expected the unchanged committed R page.");
+    expect(current.page).toEqual(applied.page);
+    expect(decodeRKernelResponseJson(marked(result.stdout, afterInfo.marker), ids.afterInfo)).toMatchObject({
+      kind: "stepInspectionInfo",
+      revision: 6,
+      stepIndex: 2,
+      stepId: fillStep.id
+    });
+    expect(decodeRKernelResponseJson(marked(result.stdout, close.marker), ids.close).kind).toBe("closed");
+    expect(
+      decodeRKernelResponseJson(marked(result.stdout, failedInspection.marker), ids.failedInspection)
+    ).toMatchObject({
+      kind: "error",
+      code: "invalid_request",
+      recoverable: true
+    });
+    for (const [request, requestId, side, whole] of [
+      [secondInput, ids.secondInput, "input", input],
+      [secondOutput, ids.secondOutput, "output", output]
+    ] as const) {
+      const window = decodeRKernelResponseJson(marked(result.stdout, request.marker), requestId, {
+        inputSchema: custom.page.schema,
+        outputSchema: applied.page.schema,
+        inspectionSide: side
+      });
+      if (window.kind !== "stepInspectionPage") throw new Error("Expected the retained projected R inspection window.");
+      expect(window.page.page.columnIds).toEqual(["r:c:0"]);
+      expect(window.page.page.rows).toEqual([
+        { ...whole.page.page.rows[1], values: whole.page.page.rows[1]!.values.slice(0, 1) }
+      ]);
+    }
+    expect(decodeRKernelResponseJson(marked(result.stdout, discard.marker), ids.discard)).toMatchObject({
+      kind: "planUpdated",
+      action: "discard",
+      revision: 8
+    });
+    const fresh = decodeRKernelResponseJson(marked(result.stdout, refreshed.marker), ids.refreshed, {
+      outputSchema: applied.page.schema,
+      inspectionSide: "output"
+    });
+    if (fresh.kind !== "stepInspectionPage")
+      throw new Error("Expected a fresh R inspection after the revision changed.");
+    expect(fresh.page.page.rows.map((row) => row.values[0]?.raw)).toEqual(["4", "5"]);
+    expect(decodeRKernelResponseJson(marked(result.stdout, afterClose.marker), ids.afterClose)).toMatchObject({
+      kind: "error",
+      code: "unknown_session"
+    });
+    const inputSchema = schemaFromRContract(input.page);
+    const outputSchema = schemaFromRContract(output.page);
+    const diff = inspectionDiff(fillStep, inputSchema, outputSchema, input.page, output.page, 2, 2);
+    expect(() =>
+      assertMutationDiff(fillStep, inputSchema, outputSchema, 2, 2, output.page, diff, emptyView())
+    ).not.toThrow();
+    expect(diff).toMatchObject({ changedCells: 0, cells: [] });
   });
 
   it("round-trips native R by-example null literals through saved replay and generated code", () => {

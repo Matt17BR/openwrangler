@@ -9965,6 +9965,7 @@ openwrangler_r_kernel_agent <- local({
           plan = list(),
           redoPlan = list(),
           boundPlan = list(),
+          inspectionBoundary = NULL,
           revision = 0L,
           editing = FALSE
         )
@@ -10199,6 +10200,7 @@ openwrangler_r_kernel_agent <- local({
         candidate$replaceStepId <- replace_step_id
         candidate$editing <- TRUE
         candidate$revision <- next_revision(session)
+        candidate$inspectionBoundary <- NULL
         candidate_bound_plan <- c(retained_bound_plan, list(applied$bound))
         effective_view <- if (identical(applied$bound$kind, "customCode")) {
           reconcile_custom_code_view(page$view, view_schema_base, candidate$draft)
@@ -10303,20 +10305,45 @@ openwrangler_r_kernel_agent <- local({
           abort("invalid_request", "request.payload.side must be input or output")
         }
         page <- decode_page(payload$page, frame_contract$limits)
-        inspected <- replay_plan(
-          frame_contract,
-          session$original,
-          utils::head(session$plan, step_index - if (identical(side, "input")) 1L else 0L),
-          source_environment,
-          session$variableName
-        )
+        prefix <- utils::head(session$plan, step_index)
+        boundary <- session$inspectionBoundary
+        if (any(vapply(prefix, function(step) identical(step$kind, "customCode"), logical(1L)))) {
+          if (is.null(boundary) || !identical(boundary$revision, session$revision) ||
+            !identical(boundary$stepId, step_id)) {
+            input <- replay_plan(
+              frame_contract,
+              session$original,
+              utils::head(prefix, step_index - 1L),
+              source_environment,
+              session$variableName
+            )$capture
+            output <- apply_step(
+              frame_contract,
+              input,
+              prefix[[step_index]],
+              source_environment,
+              session$variableName
+            )$capture
+            boundary <- list(revision = session$revision, stepId = step_id, input = input, output = output)
+          }
+          inspected_capture <- boundary[[side]]
+        } else {
+          inspected_capture <- replay_plan(
+            frame_contract,
+            session$original,
+            utils::head(prefix, step_index - if (identical(side, "input")) 1L else 0L),
+            source_environment,
+            session$variableName
+          )$capture
+          boundary <- NULL
+        }
         inspection_page <- materialize(
           frame_contract,
-          inspected$capture,
+          inspected_capture,
           page
         )
         inspection_page$schema <- NULL
-        return(list(
+        response <- list(
           transportVersion = transport_version,
           requestId = request_id,
           kind = "stepInspectionPage",
@@ -10326,7 +10353,13 @@ openwrangler_r_kernel_agent <- local({
           stepIndex = as.integer(step_index - 1L),
           side = side,
           page = inspection_page
-        ))
+        )
+        if (!identical(boundary, session$inspectionBoundary)) {
+          preflight_response(response)
+          session$inspectionBoundary <- boundary
+          assign(session_id, session, envir = sessions)
+        }
+        return(response)
       }
 
       if (identical(kind, "applyDraft")) {
@@ -10367,6 +10400,7 @@ openwrangler_r_kernel_agent <- local({
         candidate$draftBound <- NULL
         candidate$replaceStepId <- NULL
         candidate$revision <- next_revision(session)
+        candidate$inspectionBoundary <- NULL
         response <- plan_response(request_id, session_id, "apply", candidate, page, frame_contract)
         preflight_response(response)
         assign(session_id, candidate, envir = sessions)
@@ -10389,6 +10423,7 @@ openwrangler_r_kernel_agent <- local({
         candidate$draftBound <- NULL
         candidate$replaceStepId <- NULL
         candidate$revision <- next_revision(session)
+        candidate$inspectionBoundary <- NULL
         response <- plan_response(request_id, session_id, "discard", candidate, page, frame_contract)
         preflight_response(response)
         assign(session_id, candidate, envir = sessions)
@@ -10425,6 +10460,7 @@ openwrangler_r_kernel_agent <- local({
         candidate$committed <- replayed$capture
         candidate$editing <- TRUE
         candidate$revision <- next_revision(session)
+        candidate$inspectionBoundary <- NULL
         response <- plan_response(request_id, session_id, "undo", candidate, page, frame_contract)
         preflight_response(response)
         assign(session_id, candidate, envir = sessions)
@@ -10628,8 +10664,18 @@ openwrangler_r_kernel_agent <- local({
     }
 
     environment(dispatch_json) <- environment()
+    dispose <- function() {
+      on.exit({
+        for (session_id in ls(sessions, all.names = TRUE)) {
+          session <- get(session_id, envir = sessions, inherits = FALSE)
+          session$inspectionBoundary <- NULL
+          assign(session_id, session, envir = sessions)
+        }
+      }, add = TRUE)
+      export_lifecycle$dispose()
+    }
     construction_complete <- TRUE
-    list(dispatch_json = dispatch_json, dispose = export_lifecycle$dispose)
+    list(dispatch_json = dispatch_json, dispose = dispose)
   }
 
   list(new_agent = new_agent, transport_version = transport_version)

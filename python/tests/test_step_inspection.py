@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import gc
 import threading
+import weakref
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from copy import deepcopy
 from pathlib import Path
@@ -11,6 +14,7 @@ import pytest
 
 from openwrangler_runtime.engines import EngineError, EngineRegistry, PandasEngine
 from openwrangler_runtime.session import Session, SessionManager
+from openwrangler_runtime.session_source import SourceChangedError
 
 
 def step(step_id: str, kind: str, **params: Any) -> dict[str, Any]:
@@ -221,8 +225,191 @@ def test_inspect_applied_step_replays_only_its_prefix_without_publishing_state(
     assert "name_length" not in inspection["code"]
     assert applied_during_inspection == ["add-double", "round-value"]
     assert observable_state(session) == before
+    manager.inspect_step(session_id, revision, "round-value", 0, 1)
+    assert applied_during_inspection == ["add-double", "round-value"] * 2
+    assert session.inspection_boundary is None
 
     manager.close_session(session_id, revision)
+
+
+@pytest.fixture
+def custom_inspection_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[tuple[SessionManager, Session, Path]]:
+    import __main__
+
+    path = tmp_path / "alternating-inspection.csv"
+    path.write_text("id,mirror\n0,0\n1,10\n2,20\n3,30\n", encoding="utf-8")
+    monkeypatch.setattr(__main__, "inspection_calls", 0, raising=False)
+    manager = SessionManager()
+    try:
+        opened = manager.open_session(
+            {"kind": "file", "label": path.name, "path": str(path)}, backend="polars", mode="editing", page_size=4
+        )
+        session_id = opened["metadata"]["sessionId"]
+        revision = apply_step(
+            manager,
+            session_id,
+            0,
+            step(
+                "alternate-order",
+                "customCode",
+                code=(
+                    "import __main__\n"
+                    "__main__.inspection_calls += 1\n"
+                    "result = df.sort([pl.col('id')], descending=[__main__.inspection_calls % 2 == 0], "
+                    "nulls_last=[True], maintain_order=True)\n"
+                    "result = result if isinstance(result, pl.LazyFrame) else result.lazy()"
+                ),
+            ),
+        )
+        session = manager.sessions[session_id]
+        id_column = next(column for column in session.committed_lineage if column["name"] == "id")
+        apply_step(
+            manager,
+            session_id,
+            revision,
+            step("copy-id", "cloneColumn", column={"id": id_column["id"], "name": "id"}, newName="id_copy"),
+        )
+        yield manager, session, path
+    finally:
+        manager.close_all()
+
+
+def test_custom_inspection_keeps_row_identity_across_row_and_column_windows(custom_inspection_session) -> None:
+    import __main__
+
+    manager, session, path = custom_inspection_session
+    original = path.read_bytes()
+    before = observable_state(session)
+    assert __main__.inspection_calls == 1
+    for offset in range(4):
+        identity = manager.inspect_step(session.session_id, session.revision, "copy-id", offset, 1, 0, 1)
+        mirror = manager.inspect_step(session.session_id, session.revision, "copy-id", offset, 1, 1, 1)
+        for side in ("inputPage", "outputPage"):
+            id_row = identity[side]["rows"][0]
+            mirror_row = mirror[side]["rows"][0]
+            assert id_row["id"] == mirror_row["id"]
+            assert id_row["rowNumber"] == mirror_row["rowNumber"] == offset
+            assert id_row["values"][0]["raw"] == 3 - offset
+            assert mirror_row["values"][0]["raw"] == id_row["values"][0]["raw"] * 10
+        assert identity["diff"]["changedCells"] == mirror["diff"]["changedCells"] == 0
+    assert __main__.inspection_calls == 2
+    assert observable_state(session) == before
+    assert path.read_bytes() == original
+
+
+def test_custom_inspection_boundary_survives_failed_edits_but_retires_with_its_owner(
+    custom_inspection_session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import __main__
+    import openwrangler_runtime.session as session_runtime
+
+    manager, session, _path = custom_inspection_session
+    session_id, revision = session.session_id, session.revision
+    original = manager.inspect_step(session_id, revision, "copy-id", 0, 1)
+    boundary = session.inspection_boundary
+    assert boundary is not None
+    frames = [weakref.ref(boundary.before), weakref.ref(boundary.after)]
+
+    def reject(_response: Any, *_args: Any, **_kwargs: Any) -> None:
+        raise EngineError("rejected response")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(session_runtime, "strict_response_payload_size", reject)
+        with pytest.raises(EngineError, match="rejected response"):
+            manager.inspect_step(session_id, revision, "alternate-order", 0, 1)
+    assert session.inspection_boundary is boundary
+
+    before = observable_state(session)
+    id_column = next(column for column in session.committed_lineage if column["name"] == "id")
+    edit = step("more", "cloneColumn", column={"id": id_column["id"], "name": "id"}, newName="more")
+    with pytest.raises(EngineError, match="rejected response"):
+        manager.preview_step(session_id, revision, edit, 0, 1, response_preflight=reject)
+    assert observable_state(session) == before
+    assert session.inspection_boundary is boundary
+    manager.get_page(
+        session_id,
+        revision,
+        0,
+        1,
+        {"logic": "and", "filters": [], "sort": [{"column": "id", "direction": "asc", "nulls": "last"}]},
+    )
+    assert manager.inspect_step(session_id, revision, "copy-id", 0, 1) == original
+    assert __main__.inspection_calls == 3  # The refused different inspection ran Custom once.
+    del boundary
+
+    manager.inspect_step(session_id, revision, "alternate-order", 0, 1, 0, 1)
+    manager.inspect_step(session_id, revision, "alternate-order", 0, 1, 1, 1)
+    assert __main__.inspection_calls == 4  # The selected Custom itself is also retained.
+    gc.collect()
+    assert all(frame() is None for frame in frames)
+
+    manager.inspect_step(session_id, revision, "copy-id", 0, 1)
+    assert __main__.inspection_calls == 5
+    assert session.inspection_boundary is not None
+    frames = [weakref.ref(session.inspection_boundary.before), weakref.ref(session.inspection_boundary.after)]
+    preview = manager.preview_step(session_id, revision, edit, 0, 1)
+    assert session.inspection_boundary is None
+    gc.collect()
+    assert all(frame() is None for frame in frames)
+    manager.inspect_step(session_id, preview["revision"], "copy-id", 0, 1)
+    assert session.inspection_boundary is not None
+    frames = [weakref.ref(session.inspection_boundary.before), weakref.ref(session.inspection_boundary.after)]
+    discarded = manager.discard_draft(session_id, preview["revision"], 0, 1)
+    assert session.inspection_boundary is None
+    gc.collect()
+    assert all(frame() is None for frame in frames)
+
+    manager.inspect_step(session_id, discarded["revision"], "copy-id", 0, 1)
+    assert session.inspection_boundary is not None
+    frames = [weakref.ref(session.inspection_boundary.before), weakref.ref(session.inspection_boundary.after)]
+    manager.close_session(session_id, discarded["revision"])
+    assert session.inspection_boundary is None
+    gc.collect()
+    assert all(frame() is None for frame in frames)
+
+
+@pytest.mark.parametrize("invalidation", ["before-read", "during-read", "failed-edit"])
+def test_custom_inspection_source_invalidation_releases_retained_frames(
+    custom_inspection_session, monkeypatch: pytest.MonkeyPatch, invalidation: str
+) -> None:
+    manager, session, path = custom_inspection_session
+    session_id, revision = session.session_id, session.revision
+    manager.inspect_step(session_id, revision, "copy-id", 0, 1)
+    assert session.inspection_boundary is not None
+    frames = [weakref.ref(session.inspection_boundary.before), weakref.ref(session.inspection_boundary.after)]
+
+    def replace_source() -> None:
+        replacement = path.with_name("replacement.csv")
+        replacement.write_bytes(path.read_bytes())
+        replacement.replace(path)
+
+    if invalidation == "before-read":
+        replace_source()
+    elif invalidation == "during-read":
+        page = session.engine.page
+
+        def replace_after_page(*args: Any, **kwargs: Any) -> Any:
+            result = page(*args, **kwargs)
+            replace_source()
+            return result
+
+        monkeypatch.setattr(session.engine, "page", replace_after_page)
+
+    def fail_after_replacement(_response: Any) -> None:
+        replace_source()
+        raise EngineError("edit response failed after source replacement")
+
+    with pytest.raises(SourceChangedError, match="Reopen"):
+        if invalidation == "failed-edit":
+            manager.undo_step(session_id, revision, 0, 1, response_preflight=fail_after_replacement)
+        else:
+            manager.inspect_step(session_id, revision, "copy-id", 0, 1)
+    assert session.revision == revision
+    assert session.inspection_boundary is None
+    gc.collect()
+    assert all(frame() is None for frame in frames)
 
 
 @pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])

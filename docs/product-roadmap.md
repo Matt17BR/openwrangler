@@ -13,9 +13,11 @@ in desktop VS Code on Linux, macOS and Windows.
 [Open Wrangler 2.6](https://github.com/Matt17BR/openwrangler/milestone/16) is the next selected release. It requires
 an outcome for [DuckDB row consistency](https://github.com/Matt17BR/openwrangler/issues/1487).
 The [macOS import-options focus](https://github.com/Matt17BR/openwrangler/issues/1482) issue is fixed on main.
-The [notebook entry-point failure](https://github.com/Matt17BR/openwrangler/issues/1498) also requires a release decision:
-a verified fix or a specific, evidence-backed support limitation with independently working supported entry points.
-The milestone links the required outcomes and records the release decision.
+Custom-backed [step inspection](https://github.com/Matt17BR/openwrangler/issues/1526) now reuses its input/output pair
+in Pandas, Polars and native R.
+The [Jupyter Variables failure](https://github.com/Matt17BR/openwrangler/issues/1498) remains open under the
+[documented support limitation](feature-parity.md#sessions-and-generated-code).
+The milestone links the required outcomes and records that release decision.
 
 After these outcomes, freeze scope and qualify one immutable 2.6.0 candidate under [Releasing](releasing.md#release-candidate).
 Qualification and publication remain separate; no release date or automatic publication is promised.

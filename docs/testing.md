@@ -124,6 +124,11 @@ data lane must expose that lane; the panel must not cover the grid, and its shor
 
 Use the existing owners to choose a focused source check:
 
+- **Applied-step inspection:** [Python inspection](../python/tests/test_step_inspection.py) checks Custom-backed row
+  identity across windows, failed publication, source invalidation and retained-frame release. The
+  [native R transport owner](../src/test/rKernelTransport.cross.test.ts) checks the actual producer and decoder with
+  the host diff, including a no-op Fill after changing Custom output. Keep these cases in the existing owners;
+  ordinary deterministic inspection remains uncached.
 - **Value and profile actions:** [filter panel](../src/test/filterPanel.component.test.tsx) and
   [filter summaries](../src/test/filterSummary.component.test.tsx) check exact, unavailable and raw-compatible choices,
   keyboard behavior and removal of saved selections. The response validator checks the same three states in value
