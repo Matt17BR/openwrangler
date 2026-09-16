@@ -1242,10 +1242,12 @@ Read-only recovery of a native WAL is supported without changing its bytes. Meta
 or protection against every same-size in-place change. Cleaning, code generation, export and cloning are unavailable.
 
 DuckDB viewing counts, profiles, value-choice search, filter predicates, row identities and timestamp display
-resolve their own calculations from the built-in catalog. Shared missing-value and interpolation finite checks use
-the same native functions in live and generated code. Expressions in the caller's source relation retain their
-declared function bindings; Open Wrangler does not change the caller's search path, macros or connection to compute
-its statistics.
+resolve their own calculations from the built-in catalog. Lowercase, Uppercase, Capitalize, Strip, Split, Find and
+Replace, and Split Text into Columns also bind their native text functions, concatenation and list extraction in
+live and generated code. Empty literal replacement uses the native list aggregate directly, avoiding caller-bound
+functions inside DuckDB's array-to-string macro. Shared missing-value and interpolation finite checks use the same
+native functions in live and generated code. Expressions in the caller's source relation retain their declared
+function bindings; Open Wrangler does not change the caller's search path, macros or connection.
 
 Page queries limit selected top-level `VARCHAR` values to 65,537 Unicode code points before Python fetch, in the
 outer projection after `LIMIT`/`OFFSET`. The same projection bounds top-level `BLOB` values to 49,153 native bytes

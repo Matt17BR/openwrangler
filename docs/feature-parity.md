@@ -198,6 +198,9 @@ inputs and output bounds.
 Find and Replace uses the selected engine's native regex syntax. In regex replacements, `$1` inserts the first
 capture group in Polars; Pandas, DuckDB and R use `\1`. With regular expressions off, replacement text is literal.
 Extract regex group uses its separate portable pattern subset.
+DuckDB's Lowercase, Uppercase, Capitalize, Strip, Split, Find and Replace, and Split Text into Columns use built-in
+text functions even when generated code runs on a connection with caller-defined functions of the same names.
+Functions deliberately used by the input relation retain their caller-defined behavior.
 
 Dense Rank appends ranks from a numeric column without reordering rows. For `[20, 10, 20, missing]`, ascending ranks
 are `[2, 1, 2, missing]`; descending ranks are `[1, 2, 1, missing]`. It ranks the cleaning input independently of viewing

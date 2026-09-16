@@ -2994,6 +2994,96 @@ def test_duckdb_value_adapters_reject_unbound_public_references(operation: dict[
 
 
 @pytest.mark.parametrize(
+    ("kind", "params", "expected"),
+    [
+        ("lowerText", {}, [(" ab|cd ",), ("",), (None,), ("é🙂",)]),
+        ("upperText", {}, [(" AB|CD ",), ("",), (None,), ("É🙂",)]),
+        ("capitalizeText", {}, [(" ab|cd ",), ("",), (None,), ("É🙂",)]),
+        ("stripText", {}, [("aB|cD",), ("",), (None,), ("é🙂",)]),
+        ("splitText", {"delimiter": "|", "index": 1}, [("cD ",), (None,), (None,), (None,)]),
+        (
+            "splitTextColumns",
+            {"delimiter": "|", "newColumns": ["first", "second"]},
+            [(" aB", "cD "), ("", None), (None, None), ("é🙂", None)],
+        ),
+        ("findReplace", {"find": "B", "replacement": "!"}, [(" a!|cD ",), ("",), (None,), ("é🙂",)]),
+        (
+            "findReplace",
+            {"find": "[A-Z]", "replacement": "!", "regex": True},
+            [(" a!|c! ",), ("",), (None,), ("é🙂",)],
+        ),
+        (
+            "findReplace",
+            {"find": "", "replacement": "-"},
+            [("- -a-B-|-c-D- -",), ("-",), (None,), ("-é-🙂-",)],
+        ),
+    ],
+)
+def test_duckdb_text_primitives_preserve_caller_functions_and_retained_results(
+    kind: str, params: dict[str, Any], expected: list[tuple[str | None, ...]]
+) -> None:
+    engine = DuckDBEngine()
+    with duckdb.connect() as connection:
+        try:
+            connection.execute(
+                "CREATE TABLE text_source AS SELECT * FROM (VALUES "
+                "(0, ' aB|cD '), (1, ''), (2, NULL), (3, 'é🙂')) input(id,text)"
+            )
+            connection.execute(
+                "CREATE MACRO caller_text(x) AS CASE WHEN x IS NULL THEN 'caller-null' ELSE 'caller-value' END"
+            )
+            connection.execute("CREATE TEMP VIEW ow AS SELECT 123 AS sentinel")
+            source = connection.sql("SELECT *, caller_text(text) AS declared FROM text_source ORDER BY id")
+            before = source.fetchall()
+            catalog_sql = "SELECT view_name,view_oid FROM system.main.duckdb_views() WHERE NOT internal ORDER BY ALL"
+            views = connection.sql(catalog_sql).fetchall()
+            operation = bound_step(
+                kind,
+                column=bound_ref("c:source:1", "text", 1),
+                **({"newColumn": "output"} if kind != "splitTextColumns" else {}),
+                **params,
+            )
+            live = generated = None
+            for marker in ("first", "second"):
+                for signature, body in (
+                    ("lower(x)", f"'{marker}'"),
+                    ("upper(x)", f"'{marker}'"),
+                    ("substr(x, y)", f"'{marker}'"),
+                    ("trim(x, y)", f"'{marker}'"),
+                    ("string_split(x, y)", f"['{marker}']"),
+                    ("array_extract(x, y)", f"'{marker}'"),
+                    ("list_extract(x, y)", f"'{marker}'"),
+                    ("replace(x, y, z)", f"'{marker}'"),
+                    ("regexp_replace(x, y, z, w)", f"'{marker}'"),
+                    ('"||"(x, y)', f"'{marker}'"),
+                    ("array_to_string(x, y)", f"'{marker}'"),
+                    ("len(x)", "0"),
+                    ("list_aggr(x, y, z)", f"'{marker}'"),
+                    ("string_agg(x, y)", f"'{marker}'"),
+                ):
+                    connection.execute(f"CREATE OR REPLACE MACRO {signature} AS {body}")
+                if live is None:
+                    live = engine.apply_transform(engine.normalize_notebook_relation(source), operation)
+                    generated = execute_generated(engine, source, [operation])
+                assert generated is not None
+                expected_rows = [(*row, *values) for row, values in zip(before, expected, strict=True)]
+                assert engine._terminal_rows(live, "SELECT * FROM ow ORDER BY id") == expected_rows
+                assert generated.order("id").fetchall() == expected_rows
+                expected_columns = ["id", "text", "declared", *params.get("newColumns", ["output"])]
+                assert live.columns == generated.columns == expected_columns
+                expected_types = ["INTEGER", *("VARCHAR" for _ in expected_columns[1:])]
+                assert list(map(str, live.types)) == list(map(str, generated.types)) == expected_types
+                assert source.fetchall() == before
+                assert connection.sql("SELECT lower('ALPHA'), caller_text(NULL)").fetchone() == (marker, "caller-null")
+            engine.close()
+            assert connection.sql(catalog_sql).fetchall() == views
+            assert connection.sql("SELECT sentinel FROM ow").fetchone() == (123,)
+            assert connection.sql("SELECT * FROM text_source ORDER BY id").fetchall() == [row[:2] for row in before]
+        finally:
+            engine.close()
+
+
+@pytest.mark.parametrize(
     ("replacement", "expected"),
     [
         ("\\", ["\\a\\b\\", "\\", None, "\\é\\🙂\\"]),
@@ -3023,7 +3113,7 @@ def test_duckdb_empty_literal_find_replaces_boundaries_and_matches_generated_cod
 
         assert [row["expanded"] for row in records(transformed)] == expected
         assert_same_relation(transformed, generated)
-        assert "array_to_string" in engine.compile_plan([operation])
+        assert list(map(str, transformed.types)) == list(map(str, generated.types)) == ["VARCHAR", "VARCHAR"]
         assert rows(frame) == before
     finally:
         engine.close()

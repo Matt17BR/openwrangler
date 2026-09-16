@@ -13,6 +13,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Generated DuckDB text-cleaning steps preserve their built-in behavior when caller-defined functions use the same names.
 - Open Source File reports immediately when no dataframe is active, avoiding unexpected navigation when another dataframe opens.
 - Cleaning plan actions wrap in very narrow editor panes so Redo remains fully visible.
 - Cleaning Steps avoids unrelated refreshes when viewing filters, column selection or profiles change.
