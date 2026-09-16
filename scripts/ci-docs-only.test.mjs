@@ -10,6 +10,14 @@ import { proveRuntimeOmissions } from "./ci-docs-only.mjs";
 import { createRContractPhases, selectRContractPhases } from "./run-r-contract-tests.mjs";
 
 const script = resolve(import.meta.dirname, "ci-docs-only.mjs");
+const allChecksRequired = {
+  docsOnly: false,
+  rOmittable: false,
+  rRuntimeOmittable: false,
+  pythonOmittable: false,
+  rEditorOmittable: false,
+  nativeSparkOmittable: false
+};
 const arrowFormulaHelper = "python/openwrangler_runtime/engines/_pandas_arrow_formula_helpers.py";
 const arrowFormulaTests = ["python/tests/test_operation_edges.py", "python/tests/test_session_transactions.py"];
 const pandasFilterTests = ["python/tests/test_pandas_engine.py", "python/tests/test_filter_logic.py"];
@@ -185,14 +193,7 @@ test("keeps all owners for documentary additions, removals or report data mixed 
       if (status === "D") rmSync(join(cwd, document));
       else write(cwd, document);
       write(cwd, file);
-      assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), {
-        docsOnly: false,
-        rOmittable: false,
-        rRuntimeOmittable: false,
-        pythonOmittable: false,
-        rEditorOmittable: false,
-        nativeSparkOmittable: false
-      });
+      assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), allChecksRequired);
     });
   }
 });
@@ -541,7 +542,7 @@ test("proves Python omissions with selective native R source checks", async (con
       modified: [screenshot, "python/openwrangler_runtime/engines/duckdb_engine.py"],
       pythonOmittable: false
     },
-    { added: [], modified: ["r/openwrangler_runtime/frame_contract.R"], checkCli: true },
+    { added: [], modified: ["r/openwrangler_runtime/frame_contract.R"] },
     { added: ["r/openwrangler_runtime/helper.R"], modified: [] },
     { added: ["r/tests/new_contract.R"], modified: [] },
     { added: ["r/tests/kernel_agent.R"], modified: [] },
@@ -560,8 +561,7 @@ test("proves Python omissions with selective native R source checks", async (con
     {
       added: [],
       modified: [...hostSourceFiles, "docs/architecture.md", "docs/testing.md", "CHANGELOG.md"],
-      runtimeOmittable: true,
-      checkCli: true
+      runtimeOmittable: true
     },
     { added: [], modified: [hostSourceFiles[0], "r/openwrangler_runtime/kernel_agent.R"] },
     { added: [], modified: [importPromptFile, "r/openwrangler_runtime/kernel_agent.R"] },
@@ -674,14 +674,7 @@ test("keeps both runtimes required for R and CHANGELOG changes with Python sourc
         write(cwd, webview);
         write(cwd, other);
         write(cwd, "CHANGELOG.md");
-        assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), {
-          docsOnly: false,
-          rOmittable: false,
-          rRuntimeOmittable: false,
-          pythonOmittable: false,
-          rEditorOmittable: false,
-          nativeSparkOmittable: false
-        });
+        assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), allChecksRequired);
       });
     }
   }
@@ -715,14 +708,7 @@ test("requires full owners for deleted or renamed source, including alongside ad
         if (change === "rename") renameSync(join(cwd, file), join(cwd, destination));
         if (change === "rename into runtime") renameSync(join(cwd, "src/runtime.py"), join(cwd, destination));
         const env = merge(cwd);
-        assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
-          docsOnly: false,
-          rOmittable: false,
-          rRuntimeOmittable: false,
-          pythonOmittable: false,
-          rEditorOmittable: false,
-          nativeSparkOmittable: false
-        });
+        assert.deepEqual(proveRuntimeOmissions({ cwd, env }), allChecksRequired);
       });
     }
   }
@@ -759,14 +745,7 @@ test("requires full owners for source mode changes and existing executable or sy
             git(cwd, "update-index", "--cacheinfo", `${mode},${changed},${file}`);
           }
           const env = merge(cwd, false);
-          assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
-            docsOnly: false,
-            rOmittable: false,
-            rRuntimeOmittable: false,
-            pythonOmittable: false,
-            rEditorOmittable: false,
-            nativeSparkOmittable: false
-          });
+          assert.deepEqual(proveRuntimeOmissions({ cwd, env }), allChecksRequired);
         });
       }
     }
@@ -785,14 +764,7 @@ test("requires full owners for added executable or symlink runtime source", asyn
         const cwd = repository(child);
         const blob = git(cwd, "rev-parse", "HEAD:README.md");
         git(cwd, "update-index", "--add", "--cacheinfo", `${mode},${blob},${file}`);
-        assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd, false) }), {
-          docsOnly: false,
-          rOmittable: false,
-          rRuntimeOmittable: false,
-          pythonOmittable: false,
-          rEditorOmittable: false,
-          nativeSparkOmittable: false
-        });
+        assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd, false) }), allChecksRequired);
       });
     }
   }
@@ -826,14 +798,7 @@ test("requires full owners for additions outside the documentary and runtime sou
     await context.test(file, (child) => {
       const cwd = repository(child);
       write(cwd, file);
-      assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), {
-        docsOnly: false,
-        rOmittable: false,
-        rRuntimeOmittable: false,
-        pythonOmittable: false,
-        rEditorOmittable: false,
-        nativeSparkOmittable: false
-      });
+      assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), allChecksRequired);
     });
   }
 });
@@ -851,14 +816,7 @@ test("requires full owners for control characters in source paths", async (conte
       await context.test(`${file}, added=${added}`, (child) => {
         const cwd = repository(child, added ? [] : [file]);
         write(cwd, file);
-        assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), {
-          docsOnly: false,
-          rOmittable: false,
-          rRuntimeOmittable: false,
-          pythonOmittable: false,
-          rEditorOmittable: false,
-          nativeSparkOmittable: false
-        });
+        assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), allChecksRequired);
       });
     }
   }
@@ -895,14 +853,7 @@ test("requires full owners for an added runtime source path with invalid UTF-8",
             CI_MERGE_SHA: merged
           }
         }),
-        {
-          docsOnly: false,
-          rOmittable: false,
-          rRuntimeOmittable: false,
-          pythonOmittable: false,
-          rEditorOmittable: false,
-          nativeSparkOmittable: false
-        }
+        allChecksRequired
       );
     });
   }
@@ -1011,14 +962,7 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
       write(cwd, "CONTRIBUTING.md");
       write(cwd, file);
       const env = merge(cwd);
-      assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
-        docsOnly: false,
-        rOmittable: false,
-        rRuntimeOmittable: false,
-        pythonOmittable: false,
-        rEditorOmittable: false,
-        nativeSparkOmittable: false
-      });
+      assert.deepEqual(proveRuntimeOmissions({ cwd, env }), allChecksRequired);
     });
   }
 });
@@ -1055,14 +999,7 @@ test("does not hide source deletions or moves behind documentary destinations", 
         mkdirSync(dirname(join(cwd, destination)), { recursive: true });
         renameSync(join(cwd, "src/runtime.py"), join(cwd, destination));
       }
-      assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), {
-        docsOnly: false,
-        rOmittable: false,
-        rRuntimeOmittable: false,
-        pythonOmittable: false,
-        rEditorOmittable: false,
-        nativeSparkOmittable: false
-      });
+      assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), allChecksRequired);
     });
   }
 });
@@ -1082,14 +1019,7 @@ test("requires full owners for executable or symlink documentary entries", async
         const blob = git(cwd, "rev-parse", `HEAD:${file}`);
         git(cwd, "update-index", "--cacheinfo", `${mode},${blob},${file}`);
         const env = merge(cwd, false);
-        assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
-          docsOnly: false,
-          rOmittable: false,
-          rRuntimeOmittable: false,
-          pythonOmittable: false,
-          rEditorOmittable: false,
-          nativeSparkOmittable: false
-        });
+        assert.deepEqual(proveRuntimeOmissions({ cwd, env }), allChecksRequired);
       });
     }
   }
@@ -1109,14 +1039,7 @@ test("requires full owners for executable or symlink documentary entries", async
         git(cwd, "branch", "--force", "main", "HEAD");
         git(cwd, "rm", "--cached", file);
       }
-      assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd, false) }), {
-        docsOnly: false,
-        rOmittable: false,
-        rRuntimeOmittable: false,
-        pythonOmittable: false,
-        rEditorOmittable: false,
-        nativeSparkOmittable: false
-      });
+      assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd, false) }), allChecksRequired);
     });
   }
 });
@@ -1126,14 +1049,7 @@ test("handles NUL-delimited paths without treating newline paths as documentatio
     await context.test(file, (child) => {
       const cwd = repository(child, [file]);
       write(cwd, file);
-      assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), {
-        docsOnly: false,
-        rOmittable: false,
-        rRuntimeOmittable: false,
-        pythonOmittable: false,
-        rEditorOmittable: false,
-        nativeSparkOmittable: false
-      });
+      assert.deepEqual(proveRuntimeOmissions({ cwd, env: merge(cwd) }), allChecksRequired);
     });
   }
 });
@@ -1144,14 +1060,7 @@ test("examines changes beyond a 300-file API or workflow filter limit", (context
   for (const file of files) write(cwd, file);
   write(cwd, "src/runtime.py");
   const env = merge(cwd);
-  assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
-    docsOnly: false,
-    rOmittable: false,
-    rRuntimeOmittable: false,
-    pythonOmittable: false,
-    rEditorOmittable: false,
-    nativeSparkOmittable: false
-  });
+  assert.deepEqual(proveRuntimeOmissions({ cwd, env }), allChecksRequired);
 });
 
 test("falls back to full owners when the bounded Git output is exceeded", (context) => {
@@ -1160,14 +1069,7 @@ test("falls back to full owners when the bounded Git output is exceeded", (conte
   for (const file of files) write(cwd, file);
   const env = merge(cwd);
   assert.ok(git(cwd, "diff", "--raw", "--no-abbrev", "-z", env.CI_BASE_SHA, env.CI_MERGE_SHA).length > 256 * 1024);
-  assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
-    docsOnly: false,
-    rOmittable: false,
-    rRuntimeOmittable: false,
-    pythonOmittable: false,
-    rEditorOmittable: false,
-    nativeSparkOmittable: false
-  });
+  assert.deepEqual(proveRuntimeOmissions({ cwd, env }), allChecksRequired);
 });
 
 test("requires exact event identities, protected base and two merge parents", (context) => {
@@ -1185,32 +1087,11 @@ test("requires exact event identities, protected base and two merge parents", (c
     { CI_MERGE_SHA: "a".repeat(40) },
     { CI_BASE_SHA: env.CI_HEAD_SHA, CI_HEAD_SHA: env.CI_BASE_SHA }
   ]) {
-    assert.deepEqual(proveRuntimeOmissions({ cwd, env: { ...env, ...change } }), {
-      docsOnly: false,
-      rOmittable: false,
-      rRuntimeOmittable: false,
-      pythonOmittable: false,
-      rEditorOmittable: false,
-      nativeSparkOmittable: false
-    });
+    assert.deepEqual(proveRuntimeOmissions({ cwd, env: { ...env, ...change } }), allChecksRequired);
   }
   git(cwd, "checkout", "--quiet", env.CI_HEAD_SHA);
-  assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
-    docsOnly: false,
-    rOmittable: false,
-    rRuntimeOmittable: false,
-    pythonOmittable: false,
-    rEditorOmittable: false,
-    nativeSparkOmittable: false
-  });
-  assert.deepEqual(proveRuntimeOmissions({ cwd, env: { ...env, CI_MERGE_SHA: env.CI_HEAD_SHA } }), {
-    docsOnly: false,
-    rOmittable: false,
-    rRuntimeOmittable: false,
-    pythonOmittable: false,
-    rEditorOmittable: false,
-    nativeSparkOmittable: false
-  });
+  assert.deepEqual(proveRuntimeOmissions({ cwd, env }), allChecksRequired);
+  assert.deepEqual(proveRuntimeOmissions({ cwd, env: { ...env, CI_MERGE_SHA: env.CI_HEAD_SHA } }), allChecksRequired);
 });
 
 test("uses the protected base of the tested merge and rejects stale base identities", (context) => {
@@ -1230,14 +1111,7 @@ test("uses the protected base of the tested merge and rejects stale base identit
     rEditorOmittable: false,
     nativeSparkOmittable: false
   });
-  assert.deepEqual(proveRuntimeOmissions({ cwd, env: { ...env, CI_BASE_SHA: earlierBase } }), {
-    docsOnly: false,
-    rOmittable: false,
-    rRuntimeOmittable: false,
-    pythonOmittable: false,
-    rEditorOmittable: false,
-    nativeSparkOmittable: false
-  });
+  assert.deepEqual(proveRuntimeOmissions({ cwd, env: { ...env, CI_BASE_SHA: earlierBase } }), allChecksRequired);
 });
 
 test("sufficient merge history permits omissions while missing parents require full checks", (context) => {
@@ -1263,23 +1137,9 @@ test("sufficient merge history permits omissions while missing parents require f
 test("empty diffs and Git failures select full checks", (context) => {
   const cwd = repository(context);
   const env = merge(cwd);
-  assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
-    docsOnly: false,
-    rOmittable: false,
-    rRuntimeOmittable: false,
-    pythonOmittable: false,
-    rEditorOmittable: false,
-    nativeSparkOmittable: false
-  });
+  assert.deepEqual(proveRuntimeOmissions({ cwd, env }), allChecksRequired);
   rmSync(join(cwd, ".git"), { recursive: true });
-  assert.deepEqual(proveRuntimeOmissions({ cwd, env }), {
-    docsOnly: false,
-    rOmittable: false,
-    rRuntimeOmittable: false,
-    pythonOmittable: false,
-    rEditorOmittable: false,
-    nativeSparkOmittable: false
-  });
+  assert.deepEqual(proveRuntimeOmissions({ cwd, env }), allChecksRequired);
   const output = join(cwd, "action-output");
   execFileSync(process.execPath, [script], { cwd, env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
   assert.equal(
