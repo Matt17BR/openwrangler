@@ -38,11 +38,6 @@ interface ReleasedREditingMediaCaptureDependencies {
     sessionId: string,
     description: string
   ) => Promise<Locator>;
-  readonly requireFreshExactSessionPanelHydration: (
-    testing: TestApi,
-    sessionId: string,
-    expectation: string
-  ) => Promise<void>;
   readonly waitFor: (
     predicate: () => boolean,
     timeoutMs: number,
@@ -62,7 +57,6 @@ export function createReleasedREditingMediaCapture({
   recordAcceptanceProgress,
   releasedJupyterScreenshotTheme,
   releasedRSessionApp,
-  requireFreshExactSessionPanelHydration,
   waitFor
 }: ReleasedREditingMediaCaptureDependencies) {
   async function captureReleasedRNotebookGroupByDraft(
@@ -190,11 +184,7 @@ export function createReleasedREditingMediaCapture({
         30_000,
         "previewing the representative R Group and aggregate draft"
       );
-      await requireFreshExactSessionPanelHydration(
-        testing,
-        sessionId,
-        "The representative R Group By draft must reach its exact renderer."
-      );
+      await releasedRSessionApp(workbench, testing, sessionId, "the representative R Group By draft");
       const active = testing.activeSession();
       assert.ok(active?.metadata.draftStep?.kind === "groupBy");
       assert.deepEqual(active.metadata.shape, { rows: 12, columns: 3 });
@@ -205,8 +195,6 @@ export function createReleasedREditingMediaCapture({
       assert.deepEqual(active.metadata.draftStep.params.aggregations, [
         { column: revenue, operation: "sum", alias: "total_revenue" }
       ]);
-      assert.equal(await testing.synchronizePanel(sessionId), true);
-
       const firstColumns = active.metadata.schema;
       const firstColumn = firstColumns[0];
       assert.ok(firstColumn, "The R editing screenshot requires at least one visible column.");

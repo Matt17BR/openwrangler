@@ -2089,7 +2089,6 @@ const captureReleasedRNotebookGroupByDraft = createReleasedREditingMediaCapture(
   recordAcceptanceProgress,
   releasedJupyterScreenshotTheme,
   releasedRSessionApp,
-  requireFreshExactSessionPanelHydration,
   waitFor
 });
 
