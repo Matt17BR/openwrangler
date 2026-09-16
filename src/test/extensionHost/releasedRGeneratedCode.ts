@@ -1,4 +1,5 @@
 import * as assert from "node:assert/strict";
+import { R_FRAME_CONTRACT_LIMITS } from "../../extension/r/rFrameContract";
 import { assertCodePreviewDocumentChecks } from "./playwrightLifecycle";
 
 export type ReleasedRCategoricalGeneratedExpectation =
@@ -53,7 +54,7 @@ export function assertReleasedRGeneratedSourceBoundary(
           ? code.includes(`base::get(${JSON.stringify(source)}, envir = .ow_source_environment, inherits = FALSE)`)
           : code.includes(".ow_read_csv <- function") &&
             code.includes(
-              `.ow_source <- .ow_read_csv(${JSON.stringify(source.path)}, header = ${source.header ? "TRUE" : "FALSE"}, delimiter = ${JSON.stringify(source.delimiter)}, encoding = ${JSON.stringify(source.encoding ?? "utf-8")}, quote_char = ${JSON.stringify(source.quoteChar ?? '"')})`
+              `.ow_source <- .ow_read_csv(${JSON.stringify(source.path)}, header = ${source.header ? "TRUE" : "FALSE"}, delimiter = ${JSON.stringify(source.delimiter)}, encoding = ${JSON.stringify(source.encoding ?? "utf-8")}, quote_char = ${JSON.stringify(source.quoteChar ?? '"')}, maximum_columns = ${R_FRAME_CONTRACT_LIMITS.columns}L)`
             ) &&
             !code.includes(".ow_source <- base::get(")
     },

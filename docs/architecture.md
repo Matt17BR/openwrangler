@@ -1482,14 +1482,20 @@ unconfirmed cleanup and retains the private root. The job-empty receipt covers t
 
 #### CSV and TSV files
 
-The native loader uses `scan()` and `type.convert(numerals = "no.loss")`. Live and generated code use the same helper
-and captured import options. It accepts strict UTF-8, explicit UTF-8-lossy replacement, UTF-16LE/BE, ISO-8859-1 and
-Windows-1252. Delimiter and quote must be different single tab or printable ASCII characters. LF, CRLF and CR delimit records;
-native scanning normalizes CR and CRLF inside quoted fields to LF. Blank leading records are skipped in either
-header mode; headerless columns are named `V1`, `V2`, and so on. Duplicate and empty header names remain intact.
-Header-only inputs produce zero-row logical columns. Empty files, malformed row widths, unclosed quotes and NUL are
-refused. Invalid or incomplete selected-encoding text is refused unless UTF-8-lossy replacement is explicitly selected.
-Scanner warnings are errors, so truncated records cannot become an apparently successful dataframe.
+The native loader tokenizes CSV bytes with R's compiled regular-expression engine and uses
+`type.convert(numerals = "no.loss")` for column types. Live and generated code use the same helper, captured import
+options and frame column limit. It accepts strict UTF-8, explicit UTF-8-lossy replacement, UTF-16LE/BE, ISO-8859-1 and
+Windows-1252. Delimiter and quote must be different single tab or printable ASCII characters. LF, CRLF and CR delimit
+records and remain exact inside quoted fields. Quotes must enclose a whole field, with embedded quotes doubled.
+Literal quotes in unquoted fields and text after a closing quote are refused.
+
+Empty unquoted records are skipped. Before the first record, single unquoted fields containing only ASCII spaces or
+tabs are also skipped; quoted empty fields, quoted whitespace and delimiter-only records remain data. Body whitespace
+remains data or causes a row-width refusal. Headerless columns are named `V1`, `V2`, and so on. Header whitespace,
+duplicate and empty names remain intact. Header-only inputs produce zero-row logical columns. Empty or padding-only
+files, malformed row widths, unclosed quotes and NUL are refused. Invalid or incomplete selected-encoding text is
+refused unless UTF-8-lossy replacement is explicitly selected. Parser warnings are errors; invalid-input diagnostics
+exclude source text.
 
 Default strict UTF-8 reads the source directly without an extra conversion pass. Other encodings and explicit lossy
 mode decode in 64 KiB chunks, retaining only an incomplete encoding suffix, into an owned temporary UTF-8 file.

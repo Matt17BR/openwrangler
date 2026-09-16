@@ -113,7 +113,7 @@ local({
   for (case in cases) local({
     sources <- new.env(parent = baseenv())
     variable <- if (case$file) ".ow_csv_source" else "package_frame"
-    sources[[variable]] <- if (case$file) openwrangler_r_kernel_agent$load_csv_source(file_path) else case$source
+    sources[[variable]] <- if (case$file) openwrangler_r_kernel_agent$load_csv_source(file_path, maximum_columns = openwrangler_r_frame_contract$limits$columns) else case$source
     before <- serialize(sources[[variable]], NULL, version = 3L)
     agent <- openwrangler_r_kernel_agent$new_agent(
       openwrangler_r_frame_contract, sources,

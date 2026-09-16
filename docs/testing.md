@@ -183,8 +183,9 @@ Use the existing owners to choose a focused source check:
   [kernel owner's](../r/tests/kernel_agent.R) `group-pivot-and-export` case. Retain refusal before writer opening,
   destination/source preservation, bounded conversion and lazy-streaming assertions in these existing owners.
   Native CSV/TSV loading and generated-code agreement belong to that kernel owner's `csv-import` case. It covers
-  encoding boundaries, strict/lossy decoding, configured quoting, CR records, headerless first-record retention,
-  source preservation and temporary-file cleanup. Parquet, JSONL and Excel remain in `lifecycle-and-structure`.
+  encoding and parser block boundaries, strict/lossy decoding, configured quoting, exact embedded CR/LF/CRLF,
+  blank and quoted-empty records, headerless first-record retention, source preservation and temporary-file cleanup.
+  Parquet, JSONL and Excel remain in `lifecycle-and-structure`.
   Small synthetic cross-writer fixtures cover reader precision and sheet identity;
   the native dependency locks include readxl for this owner.
   The [managed process owner](../src/test/rProcessTransport.cross.test.ts) checks actual file loading, editing,

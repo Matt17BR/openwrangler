@@ -636,8 +636,9 @@ Python interpreter or file engine is available. Switching between R and Python o
 R import-options changes also create a separate session. **Open Another File with This Plan** also accepts confirmed built-in R file plans.
 
 R CSV/TSV imports accept UTF-8, explicit UTF-8-lossy, UTF-16LE/BE, ISO-8859-1 and Windows-1252, with distinct ASCII
-delimiter/quote choices and LF, CRLF or CR records. Quoted CR/CRLF normalize to LF. Headerless input and duplicate/empty
-column names are supported; malformed records and strict decoding failures are refused. Empty and `NA` fields are
+delimiter/quote choices and LF, CRLF or CR records, including exact line endings inside quoted fields. Quotes must
+enclose a whole field, with embedded quotes doubled. Headerless input and duplicate/empty column names are supported;
+malformed records and strict decoding failures are refused. Empty and `NA` fields are
 missing; dates and integers that would lose precision stay text. R loads the full file into memory before returning
 bounded pages, and editing can require additional copies. It needs Rscript, not Python. Parquet and JSONL/NDJSON
 also admit flat scalar data; Excel opens the selected worksheet. Parquet requires `nanoparquet`, Excel requires

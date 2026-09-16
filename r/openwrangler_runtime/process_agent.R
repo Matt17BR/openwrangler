@@ -175,7 +175,7 @@ initialize <- function() {
   kernel_agent <- get("openwrangler_r_kernel_agent", envir = runtime_environment, inherits = FALSE)
   if (!is.null(file_source)) {
     file_source <- kernel_agent$validate_file_source(file_source)
-    document_environment$.ow_csv_source <- kernel_agent$load_file_source(file_source)
+    document_environment$.ow_csv_source <- kernel_agent$load_file_source(file_source, frame_contract$limits$columns)
   }
   agent <- kernel_agent$new_agent(frame_contract, document_environment, export_root, file_source)
 

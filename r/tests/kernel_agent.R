@@ -88,6 +88,7 @@ local({
   dir.create(root)
   on.exit(unlink(root, recursive = TRUE), add = TRUE)
   load_csv <- openwrangler_r_kernel_agent$load_csv_source
+  maximum_columns <- openwrangler_r_frame_contract$limits$columns
   stopifnot(is.function(load_csv))
   cases <- list(
     list(text = "id,value,flag\n1,2.5,TRUE\n2,NA,FALSE\n", expected = data.frame(id = 1:2, value = c(2.5, NA_real_), flag = c(TRUE, FALSE))),
@@ -124,7 +125,7 @@ local({
   cases <- c(cases, list(
     list(text = "id,label\n1,€\n", encoding = "windows-1252", expected = data.frame(id = 1L, label = "€")),
     list(bytes = c(charToRaw("id,label\n1,"), as.raw(c(255L, 195L, 40L)), charToRaw("\n")), encoding = "utf8-lossy", expected = data.frame(id = 1L, label = "\ufffd\ufffd(")),
-    list(text = "id;label\r1;'two\r\nlines'\r", delimiter = ";", quote = "'", expected = data.frame(id = 1L, label = "two\nlines"))
+    list(text = "id;label\r1;'two\r\nlines'\r", delimiter = ";", quote = "'", expected = data.frame(id = 1L, label = "two\r\nlines"))
   ))
   for (character in c("é", "€", "😀")) for (split in seq_len(nchar(character, type = "bytes") - 1L)) {
     value <- paste0(strrep("a", 65536L - 6L - split), character)
@@ -139,6 +140,32 @@ local({
     list(text = " a ,  b \n", header = FALSE, expected = data.frame(V1 = " a ", V2 = "  b ")),
     list(text = "\ufeff\n \n1,x\n", header = FALSE, expected = data.frame(V1 = 1L, V2 = "x"))
   ))
+  cases <- c(cases, list(
+    list(text = "value\nx\n\n \n\t\n\"\"", expected = data.frame(value = c("x", " ", "\t", NA_character_))),
+    list(text = " \n\n\t\nx\n\n \n\"\"", header = FALSE, expected = data.frame(V1 = c("x", " ", NA_character_))),
+    list(text = "\"\"\nx\n", header = FALSE, expected = data.frame(V1 = c(NA_character_, "x"))),
+    list(text = "a b\n'one two' 3\n", delimiter = " ", quote = "'", expected = data.frame(a = "one two", b = 3L)),
+    list(text = "a,b\n one,two ,x\n", quote = " ", expected = data.frame(a = "one,two", b = "x")),
+    list(text = "a,b\n\tone,two\t,x\n", quote = "\t", expected = data.frame(a = "one,two", b = "x"))
+  ))
+  # Split multibyte text, CRLF and doubled quotes at the actual fixed native read boundary.
+  for (token in c("é", "€", "😀", "\r\n", "\"\"")) for (split in seq_len(nchar(token, type = "bytes") - 1L)) {
+    prefix <- strrep("x", 65536L - 7L - split)
+    encoded <- paste0(prefix, token, "tail")
+    value <- paste0(prefix, if (token == "\"\"") "\"" else token, "tail")
+    cases <- c(cases, list(list(text = paste0("label\n\"", encoded, "\"\n"), expected = data.frame(label = value))))
+  }
+  wide_names <- paste0("column", seq_len(maximum_columns))
+  cases <- c(cases, list(list(text = paste(wide_names, collapse = ","),
+    expected = structure(rep(list(logical()), maximum_columns), names = wide_names, row.names = integer(), class = "data.frame"))))
+  generated_case_index <- length(cases) + 1L
+  cases <- c(cases, list(
+    list(text = "  id  ,\"  quoted  \",label\r\n1,x,\"one\rtwo\r\nthree\nfour\"\r\n",
+      expected = structure(list(1L, "x", "one\rtwo\r\nthree\nfour"), names = c("  id  ", "  quoted  ", "label"), row.names = 1L, class = "data.frame")),
+    list(text = "\"first\rname\",\"second\r\nname\"\n1,2", expected = structure(list(1L, 2L), names = c("first\rname", "second\r\nname"), row.names = 1L, class = "data.frame")),
+    list(text = "\"one\rtwo\",\"three\r\nfour\"\r", header = FALSE, expected = data.frame(V1 = "one\rtwo", V2 = "three\r\nfour")),
+    list(text = "id,label\n1,\"literal\\n\\t\\\\text\"\n2,\"double\"\"quote\"", expected = data.frame(id = 1:2, label = c("literal\\n\\t\\\\text", "double\"quote")))
+  ))
   normalized_before <- list.files(tempdir(), pattern = "^openwrangler-csv-", full.names = TRUE)
   for (index in seq_along(cases)) {
     case <- cases[[index]]
@@ -149,6 +176,7 @@ local({
     arguments <- list(path, if (is.null(case$header)) TRUE else case$header, if (is.null(case$delimiter)) "," else case$delimiter)
     if (!is.null(case$encoding)) arguments$encoding <- case$encoding
     if (!is.null(case$quote)) arguments$quote_char <- case$quote
+    arguments$maximum_columns <- maximum_columns
     actual <- do.call(load_csv, arguments)
     assert_identical(getAllConnections(), connections, "CSV accepted input retained a connection")
     assert_identical(actual, case$expected, sprintf("CSV accepted case %d lost native values/types/names", index))
@@ -164,14 +192,22 @@ local({
     charToRaw(paste0("a,b\n", paste0(1:8, ",x\n", collapse = ""), "9,x,extra\n"))
   )
   rejected <- c(rejected, list(charToRaw('"unclosed,header\n1,x\n'), charToRaw('a,b\n1,"unclosed'), charToRaw('a,b\n1,"unclosed\n2,x\n')))
+  rejected <- c(rejected, list(
+    charToRaw("a,b\n1,\"x\"junk\n"), charToRaw("a,b\n1,a\"b\n"),
+    charToRaw(paste0(paste(rep("column", maximum_columns + 1L), collapse = ","), "\n"))
+  ))
+  for (invalid in list(as.raw(255L), as.raw(c(192L, 175L)), as.raw(c(237L, 160L, 128L)))) {
+    rejected <- c(rejected, list(c(charToRaw("a,"), invalid, charToRaw("\n1,x\n")), c(charToRaw("a,b\n1,"), invalid, charToRaw("\n"))))
+  }
   for (index in seq_along(rejected)) {
     path <- file.path(root, sprintf("refused-%d.csv", index))
     bytes <- rejected[[index]]
     writeBin(bytes, path)
     connections <- getAllConnections()
-    error <- tryCatch({ load_csv(path); NULL }, error = identity)
+    error <- tryCatch({ load_csv(path, maximum_columns = maximum_columns); NULL }, error = identity)
     assert_identical(getAllConnections(), connections, "CSV refused input retained a connection")
     if (!inherits(error, "error")) stop(sprintf("CSV refused case %d unexpectedly accepted", index), call. = FALSE)
+    assert_identical(conditionMessage(error), "CSV input has invalid text, quoting or field counts, or exceeds native R limits. Check the selected encoding, delimiter and quote character.", "CSV refusal exposed source text")
     assert_identical(readBin(path, "raw", length(bytes) + 1L), bytes, "Refused CSV changed source bytes")
   }
   for (encoding in c("utf-16le", "utf-16be")) {
@@ -181,20 +217,20 @@ local({
       path <- file.path(root, "invalid-encoding.csv")
       bytes <- c(valid, tail)
       writeBin(bytes, path)
-      error <- tryCatch(load_csv(path, encoding = encoding), error = identity)
+      error <- tryCatch(load_csv(path, encoding = encoding, maximum_columns = maximum_columns), error = identity)
       stopifnot(inherits(error, "error"))
       assert_identical(readBin(path, "raw", length(bytes) + 1L), bytes, "Failed conversion changed source bytes")
     }
     bom <- if (encoding == "utf-16le") as.raw(c(255L, 254L)) else as.raw(c(254L, 255L))
     writeBin(c(bom, valid), path)
-    assert_identical(load_csv(path, encoding = encoding), data.frame(id = 1L, label = "ok"), "UTF16 BOM changed decoded values")
+    assert_identical(load_csv(path, encoding = encoding, maximum_columns = maximum_columns), data.frame(id = 1L, label = "ok"), "UTF16 BOM changed decoded values")
   }
   for (case in list(
     list(encoding = "windows-1252", bytes = as.raw(c(194L, 129L))),
     list(encoding = "utf8-lossy", bytes = as.raw(0L))
   )) {
     writeBin(c(charToRaw("id,label\n1,"), case$bytes, charToRaw("\n")), path)
-    stopifnot(inherits(tryCatch(load_csv(path, encoding = case$encoding), error = identity), "error"))
+    stopifnot(inherits(tryCatch(load_csv(path, encoding = case$encoding, maximum_columns = maximum_columns), error = identity), "error"))
   }
   for (encoding in c("utf8-lossy", "windows-1252", "utf-16le", "utf-16be")) for (after_boundary in 0:1) {
     width <- if (startsWith(encoding, "utf-16")) 2L else 1L
@@ -202,15 +238,18 @@ local({
     from <- if (encoding == "utf8-lossy") "UTF-8" else encoding
     bytes <- c(iconv(prefix, from = "UTF-8", to = from, toRaw = TRUE)[[1L]], rep(as.raw(0L), width), iconv("private text\n", from = "UTF-8", to = from, toRaw = TRUE)[[1L]])
     writeBin(bytes, path)
-    error <- tryCatch(load_csv(path, encoding = encoding), error = identity)
+    error <- tryCatch(load_csv(path, encoding = encoding, maximum_columns = maximum_columns), error = identity)
     stopifnot(inherits(error, "error"))
     assert_identical(conditionMessage(error), "CSV input has invalid or incomplete text in the selected encoding", "CSV conversion exposed input text in its diagnostic")
   }
+  writeBin(charToRaw('a,b\n1,"unfinished'), path)
+  stopifnot(inherits(tryCatch(load_csv(path, encoding = "windows-1252", maximum_columns = maximum_columns), error = identity), "error"))
   assert_identical(getAllConnections(), connections, "CSV conversion failure retained a connection")
   assert_identical(list.files(tempdir(), pattern = "^openwrangler-csv-", full.names = TRUE), normalized_before, "CSV conversion failure retained a private temporary file")
-  path <- file.path(root, "accepted-1.csv")
+  case <- cases[[generated_case_index]]
+  path <- file.path(root, sprintf("accepted-%d.csv", generated_case_index))
   environment <- new.env(parent = baseenv())
-  environment$.ow_csv_source <- load_csv(path)
+  environment$.ow_csv_source <- load_csv(path, maximum_columns = maximum_columns)
   file_agent <- openwrangler_r_kernel_agent$new_agent(
     openwrangler_r_frame_contract, environment,
     file_source = list(path = path, format = "csv", header = TRUE, delimiter = ",", encoding = "utf-8", quoteChar = "\"")
@@ -218,19 +257,32 @@ local({
   on.exit(file_agent$dispose(), add = TRUE)
   opened <- dispatch_with(file_agent, "openSession", list(sessionId = session_id, variableName = ".ow_csv_source", page = page_window()))
   assert_identical(opened$kind, "page", "CSV session did not open")
+  stale <- dispatch_with(file_agent, "previewStep", list(
+    sessionId = session_id, revision = 0L, page = page_window(),
+    step = list(id = "csv-old-header", kind = "cloneColumn", params = list(column = list(id = "r:c:0", name = "id"), newName = "copied"))
+  ))
+  assert_identical(stale$code, "stale_column", "CSV preserved header whitespace silently retargeted an old column reference")
   preview <- dispatch_with(file_agent, "previewStep", list(
     sessionId = session_id, revision = 0L, page = page_window(),
-    step = list(id = "csv-clone", kind = "cloneColumn", params = list(column = list(id = "r:c:0", name = "id"), newName = "copied"))
+    step = list(id = "csv-clone", kind = "cloneColumn", params = list(column = list(id = "r:c:0", name = "  id  "), newName = "copied"))
   ))
   assert_identical(preview$kind, "stepPreview", "CSV cleaning did not preview")
   generated <- new.env(parent = baseenv())
   eval(parse(text = preview$code), envir = generated)
-  expected <- cases[[1L]]$expected
-  expected$copied <- 1:2
+  expected <- case$expected
+  expected$copied <- 1L
   assert_identical(generated$open_wrangler_result, expected, "Generated CSV loader/cleaning changed expected native output")
   assert_identical(ls(generated, all.names = TRUE), "open_wrangler_result", "Generated CSV leaked loader bindings")
-  assert_identical(environment$.ow_csv_source, cases[[1L]]$expected, "CSV cleaning mutated loaded source")
-  assert_identical(readBin(path, "raw", 1024L), charToRaw(cases[[1L]]$text), "Generated CSV changed source bytes")
+  assert_identical(environment$.ow_csv_source, case$expected, "CSV cleaning mutated loaded source")
+  assert_identical(readBin(path, "raw", 1024L), charToRaw(case$text), "Generated CSV changed source bytes")
+  bytes <- charToRaw('a,b\n1,"unfinished')
+  writeBin(bytes, path)
+  failed <- new.env(parent = baseenv())
+  error <- tryCatch(eval(parse(text = preview$code), envir = failed), error = identity)
+  stopifnot(inherits(error, "error"))
+  assert_identical(ls(failed, all.names = TRUE), character(), "Failed generated CSV load published bindings")
+  assert_identical(readBin(path, "raw", length(bytes) + 1L), bytes, "Failed generated CSV changed source bytes")
+  assert_identical(getAllConnections(), connections, "Failed generated CSV retained a connection")
 })
 agent$dispose()
 }
@@ -244,11 +296,12 @@ local({
   dir.create(root)
   on.exit(unlink(root, recursive = TRUE), add = TRUE)
   load_file <- openwrangler_r_kernel_agent$load_file_source
+  maximum_columns <- openwrangler_r_frame_contract$limits$columns
   stopifnot(is.function(load_file), requireNamespace("readxl", quietly = TRUE), requireNamespace("nanoparquet", quietly = TRUE))
   check_file <- function(descriptor, expected) {
     bytes <- readBin(descriptor$path, "raw", file.size(descriptor$path))
     connections <- getAllConnections()
-    loaded <- load_file(descriptor)
+    loaded <- load_file(descriptor, maximum_columns = maximum_columns)
     assert_identical(loaded, expected, "Native file reader lost source values, types, names or nulls")
     environment <- new.env(parent = baseenv())
     environment$.ow_csv_source <- loaded
@@ -284,7 +337,7 @@ local({
     assert_identical(chunk$bytes, exported$bytes, "Tiny native file export was truncated")
     output <- file.path(root, "export.parquet")
     writeBin(jsonlite::base64_dec(chunk$data), output)
-    assert_identical(load_file(list(path = output, format = "parquet")), expected, "Export/reopen differs from generated file cleaning")
+    assert_identical(load_file(list(path = output, format = "parquet"), maximum_columns = maximum_columns), expected, "Export/reopen differs from generated file cleaning")
     assert_identical(environment$.ow_csv_source, loaded, "Native file cleaning mutated its captured source")
     assert_identical(readBin(descriptor$path, "raw", length(bytes) + 1L), bytes, "Native/generated file cleaning modified source bytes")
     file_agent$dispose()
@@ -292,9 +345,9 @@ local({
     assert_identical(getAllConnections(), connections, "Native file workflow retained a connection")
   }
   csv_path <- file.path(root, "options.csv")
-  writeBin(iconv("1;'  é  '\r2;'two\nlines'\r", from = "UTF-8", to = "UTF-16BE", toRaw = TRUE)[[1L]], csv_path)
+  writeBin(iconv("1;'  é  '\r2;'two\r\nlines'\r", from = "UTF-8", to = "UTF-16BE", toRaw = TRUE)[[1L]], csv_path)
   check_file(list(path = csv_path, format = "csv", header = FALSE, delimiter = ";", encoding = "utf-16be", quoteChar = "'"),
-    data.frame(V1 = 1:2, V2 = c("  é  ", "two\nlines")))
+    data.frame(V1 = 1:2, V2 = c("  é  ", "two\r\nlines")))
   writeBin(c(charToRaw("id,label\n1,"), as.raw(255L), charToRaw("\n2,text\n")), csv_path)
   check_file(list(path = csv_path, format = "csv", header = TRUE, delimiter = ",", encoding = "utf8-lossy", quoteChar = "\""),
     data.frame(id = 1:2, label = c("\ufffd", "text")))
@@ -312,7 +365,7 @@ local({
     structure(c(1789561800.123, NA, 946684800), class = c("POSIXct", "POSIXt"), tzone = "UTC"),
     c(1, 4, 7), c(2, 5, 8), c(3, 6, 9)), names = c("id", "text", "flag", "amount", "at", "same", "same", ""), class = "data.frame", row.names = .set_row_names(3L))
   check_file(list(path = excel_path, format = "excel", sheetName = " values é "), excel)
-  assert_identical(load_file(list(path = excel_path, format = "excel", sheetIndex = 0L)), excel, "Excel zero-based sheet index changed the selected source")
+  assert_identical(load_file(list(path = excel_path, format = "excel", sheetIndex = 0L), maximum_columns = maximum_columns), excel, "Excel zero-based sheet index changed the selected source")
   # Metadata reads the retained file afresh without replacing the already captured dataframe.
   metadata_path <- file.path(root, "metadata.xlsx")
   file.copy(excel_path, metadata_path)
@@ -334,22 +387,22 @@ local({
   legacy_path <- file.path(root, "legacy.xls")
   writeBin(memDecompress(jsonlite::base64_dec(paste(readLines("fixtures/legacy.xls.gz.base64"), collapse = "")), type = "gzip"), legacy_path)
   check_file(list(path = legacy_path, format = "excel", sheetName = "second"), data.frame(name = c("second", "résumé"), value = c(2, 3), active = c(FALSE, TRUE)))
-  cached <- load_file(list(path = excel_path, format = "excel", sheetName = "cached"))
+  cached <- load_file(list(path = excel_path, format = "excel", sheetName = "cached"), maximum_columns = maximum_columns)
   assert_identical(cached, data.frame(true_zero = 0, cached_zero = 0, cached_three = 3, uncached = NA, error = NA, whitespace = NA), "Excel cached values, zero, errors or blank semantics changed")
   for (sheet in list(list(sheetName = "mixed"), list(sheetName = "missing"), list(sheetIndex = 99L))) {
-    error <- tryCatch(load_file(c(list(path = excel_path, format = "excel"), sheet)), error = identity)
+    error <- tryCatch(load_file(c(list(path = excel_path, format = "excel"), sheet), maximum_columns = maximum_columns), error = identity)
     stopifnot(inherits(error, "error"))
   }
   for (name in c("r-file-int64-boundary.parquet", "r-file-int32-sentinel.parquet", "r-file-timestamp-boundary.parquet", "r-file-uint32-overflow.parquet", "r-file-uint64-overflow.parquet")) {
     path <- normalizePath(file.path("fixtures", name))
     bytes <- readBin(path, "raw", file.size(path))
-    error <- tryCatch(load_file(list(path = path, format = "parquet")), error = identity)
+    error <- tryCatch(load_file(list(path = path, format = "parquet"), maximum_columns = maximum_columns), error = identity)
     stopifnot(inherits(error, "error"))
     assert_identical(readBin(path, "raw", length(bytes) + 1L), bytes, "Refused Parquet changed source bytes")
   }
   for (text in c('{"x":9007199254740993}\n{"x":null}', '{"x":-0}\n{"x":-0.0}', '{"x":"\\ud800\\udc00"}\n{"x":"literal\\\\u0000"}', '{"":1}\n{}')) {
     writeLines(text, json_path, useBytes = TRUE)
-    value <- load_file(list(path = json_path, format = "jsonl"))
+    value <- load_file(list(path = json_path, format = "jsonl"), maximum_columns = maximum_columns)
     if (startsWith(text, '{"x":9007')) assert_identical(as.character(value$x), c("9007199254740993", NA), "JSONL rounded an exact integer64")
     if (startsWith(text, '{"x":-0}')) assert_identical(1 / value$x, c(-Inf, -Inf), "JSONL lost negative zero")
     if (startsWith(text, '{"x":"')) assert_identical(value$x, c("𐀀", "literal\\u0000"), "JSONL changed valid Unicode or literal escape text")
@@ -358,7 +411,7 @@ local({
   for (text in c('{"x":1e309}', '{"x":1e-999}', '{"x":-9223372036854775808}', '{"x":9007199254740993}\n{"x":1.5}', '{"x":9007199254740993}\n{"x":-0}', '{"x":1}\n{"x":"1"}', '{"x":[1]}', '{"x":{}}', '{"x":1,"x":2}', '{"x":"\\u0000"}', '{"x":"\\ud800"}', '{"x":"\\udc00"}', '[1]', '{"x":1} trailing')) {
     writeLines(text, json_path, useBytes = TRUE)
     connections <- getAllConnections()
-    error <- tryCatch(load_file(list(path = json_path, format = "jsonl")), error = identity)
+    error <- tryCatch(load_file(list(path = json_path, format = "jsonl"), maximum_columns = maximum_columns), error = identity)
     stopifnot(inherits(error, "error"))
     assert_identical(getAllConnections(), connections, "Refused JSONL retained a connection")
   }
@@ -369,20 +422,20 @@ local({
   for (ticks in list(c(-(2^51 - 1), NA, 2^51 - 1), c(-(2^51), NA, 2^51), c(2^51 + 1, NA, 2^51 + 2))) {
     frame <- data.frame(elapsed = as.difftime(ticks / 1e9, units = "secs"))
     nanoparquet::write_parquet(frame, duration_path)
-    actual <- tryCatch(load_file(list(path = duration_path, format = "parquet")), error = identity)
+    actual <- tryCatch(load_file(list(path = duration_path, format = "parquet"), maximum_columns = maximum_columns), error = identity)
     if (all(abs(ticks) < 2^51, na.rm = TRUE)) assert_identical(actual, frame, "Exact duration tick boundary lost precision") else stopifnot(inherits(actual, "error"))
   }
   writeLines(c('{"id":1,"label":"a","all":null}', sprintf('{"id":%d}', 2:1024), '{"new":3,"id":1025,"label":"b"}', '{}'), json_path)
-  assert_identical(load_file(list(path = json_path, format = "jsonl")), data.frame(id = c(1:1025, NA_integer_), label = c("a", rep(NA_character_, 1023L), "b", NA_character_), all = rep(NA, 1026L), new = c(rep(NA_integer_, 1024L), 3L, NA_integer_)), "JSONL batch boundaries changed first-seen fields, reordered keys or missing values")
+  assert_identical(load_file(list(path = json_path, format = "jsonl"), maximum_columns = maximum_columns), data.frame(id = c(1:1025, NA_integer_), label = c("a", rep(NA_character_, 1023L), "b", NA_character_), all = rep(NA, 1026L), new = c(rep(NA_integer_, 1024L), 3L, NA_integer_)), "JSONL batch boundaries changed first-seen fields, reordered keys or missing values")
   for (last in c('{"x":-0}', '{"x":"text"}')) {
     writeLines(c('{"x":9007199254740993}', rep('{}', 1023L), last), json_path)
-    stopifnot(inherits(tryCatch(load_file(list(path = json_path, format = "jsonl")), error = identity), "error"))
+    stopifnot(inherits(tryCatch(load_file(list(path = json_path, format = "jsonl"), maximum_columns = maximum_columns), error = identity), "error"))
   }
   # Native writer controls protect empty/all-null input and R-export factor metadata without extra binary fixtures.
   for (frame in list(data.frame(id = integer(), label = character()), data.frame(id = c(NA_integer_, NA_integer_), label = c(NA_character_, NA_character_)), data.frame(id = 1:3, label = factor(c("b", NA, "a"), levels = c("a", "b", "unused"))))) {
     path <- file.path(root, "native.parquet")
     nanoparquet::write_parquet(frame, path)
-    assert_identical(load_file(list(path = path, format = "parquet")), frame, "Native Parquet empty/null/factor metadata changed")
+    assert_identical(load_file(list(path = path, format = "parquet"), maximum_columns = maximum_columns), frame, "Native Parquet empty/null/factor metadata changed")
   }
 })
 

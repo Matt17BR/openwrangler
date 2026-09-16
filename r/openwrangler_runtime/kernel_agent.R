@@ -7728,7 +7728,7 @@ openwrangler_r_kernel_agent <- local({
     )
   }
 
-  load_csv_source <- function(path, header = TRUE, delimiter = ",", encoding = "utf-8", quote_char = "\"") {
+  load_csv_source <- function(path, header = TRUE, delimiter = ",", encoding = "utf-8", quote_char = "\"", maximum_columns) {
     if (!encoding %in% c("utf-8", "utf8")) {
       normalized <- base::tempfile("openwrangler-csv-", tmpdir = base::tempdir(), fileext = ".csv")
       base::on.exit(base::unlink(normalized), add = TRUE)
@@ -7776,33 +7776,126 @@ openwrangler_r_kernel_agent <- local({
       })
       path <- normalized
     }
-    connection <- base::file(path, open = "rt")
-    base::on.exit(base::close(connection), add = TRUE)
-    base::withCallingHandlers({
-      first_line <- TRUE
+    fail <- function() base::stop("CSV input has invalid text, quoting or field counts, or exceeds native R limits. Check the selected encoding, delimiter and quote character.", call. = FALSE)
+    input <- base::file(path, "rb")
+    base::on.exit(base::close(input), add = TRUE)
+    hex <- function(value) base::sprintf("\\x%02x", base::as.integer(base::charToRaw(value)))
+    d <- hex(delimiter)
+    q <- hex(quote_char)
+    # Disjoint, possessive field alternatives keep incomplete/malformed quoted input from backtracking.
+    field <- base::paste0("(?:", q, "(?:[^", q, "]++|", q, q, ")*+", q, "|[^", q, d, "\\r\\n]*+)")
+    prefix <- base::paste0("\\A(?:", q, "(?:[^", q, "]++|", q, q, ")*+", q, "?|[^", q, d, "\\r\\n]*+)(?:\\r)?\\z")
+    carry <- ""
+    pending <- base::character()
+    columns <- NULL
+    names <- NULL
+    width <- NULL
+    chunk_index <- 0L
+    trailing_delimiter <- FALSE
+    first <- TRUE
+    base::tryCatch(base::withCallingHandlers({
       repeat {
-        line <- base::readLines(connection, n = 1L, warn = FALSE)
-        if (!base::length(line)) base::stop("CSV has no header or records", call. = FALSE)
-        if (first_line) line <- base::sub("^\ufeff", "", line)
-        first_line <- FALSE
-        if (base::nzchar(base::trimws(line)) || base::grepl(delimiter, line, fixed = TRUE) || base::grepl(quote_char, line, fixed = TRUE)) break
+        carried <- base::nchar(carry, type = "bytes")
+        # Geometric carry growth avoids rescanning a long unfinished field in fixed-size increments.
+        read_size <- base::min(base::max(65536L, carried), base::.Machine$integer.max - carried)
+        if (read_size < 1) fail()
+        raw <- base::readBin(input, "raw", read_size)
+        if (base::any(raw == base::as.raw(0L))) fail()
+        final <- base::length(raw) < read_size
+        text <- base::paste0(carry, base::rawToChar(raw))
+        size <- base::nchar(text, type = "bytes")
+        if (first) {
+          first <- FALSE
+          if (size >= 3L && base::identical(base::charToRaw(text)[1:3], base::as.raw(base::c(239L, 187L, 191L)))) {
+            text <- base::rawToChar(base::charToRaw(text)[-base::seq_len(3L)])
+            size <- size - 3L
+          }
+        }
+        # Token offsets and substring positions must use the same byte units, including split UTF-8.
+        base::Encoding(text) <- "bytes"
+        token <- base::paste0("\\G", field, "(?:", d, "|\\r\\n|\\r|\\n", if (final) "|\\z" else "", ")")
+        match <- base::gregexpr(token, text, perl = TRUE, useBytes = TRUE)[[1L]]
+        values <- base::character()
+        separators <- base::character()
+        quoted <- base::logical()
+        consumed <- 0L
+        if (match[[1L]] != -1L) {
+          ends <- match + base::attr(match, "match.length") - 1L
+          last <- base::substring(text, ends, ends)
+          term_length <- base::as.integer(last %in% base::c(delimiter, "\r", "\n")) + base::as.integer(last == "\n" & base::substring(text, ends - 1L, ends - 1L) == "\r")
+          # A terminal CR needs the next byte before choosing CR versus CRLF.
+          keep <- match <= size & (final | !(last == "\r" & ends == size))
+          if (base::any(keep)) {
+            starts <- match[keep]
+            ends <- ends[keep]
+            term_length <- term_length[keep]
+            quoted <- base::substring(text, starts, starts) == quote_char
+            values <- base::substring(text, starts + quoted, ends - term_length - quoted)
+            values[quoted] <- base::gsub(base::paste0(quote_char, quote_char), quote_char, values[quoted], fixed = TRUE, useBytes = TRUE)
+            separators <- base::substring(text, ends - term_length + 1L, ends)
+            consumed <- base::max(ends)
+          }
+        }
+        carry <- if (consumed < size) base::rawToChar(base::charToRaw(text)[base::seq.int(consumed + 1L, size)]) else ""
+        if (base::nzchar(carry) && (final || !base::grepl(prefix, carry, perl = TRUE, useBytes = TRUE))) fail()
+        if (final && !base::nzchar(carry) && ((base::length(separators) && utils::tail(separators, 1L) == delimiter) || (!base::length(separators) && trailing_delimiter))) {
+          values <- base::c(values, "")
+          separators <- base::c(separators, "")
+          quoted <- base::c(quoted, FALSE)
+        }
+        if (base::length(values)) {
+          ends <- base::which(separators != delimiter)
+          if (base::length(ends)) {
+            counts <- base::diff(base::c(-base::length(pending), ends))
+            # Skip only whole unquoted blank records; quoted-empty and delimiter-only records retain their fields.
+            skip <- counts == 1L & !quoted[ends] & values[ends] == ""
+            if (base::is.null(width)) {
+              padding <- counts == 1L & !quoted[ends] & base::grepl("^[ \t]*$", values[ends], perl = TRUE, useBytes = TRUE)
+              first_record <- base::which(!padding)
+              prefix_count <- if (base::length(first_record)) first_record[[1L]] - 1L else base::length(ends)
+              if (prefix_count) skip[base::seq_len(prefix_count)] <- TRUE
+            }
+            complete <- base::c(pending, values[base::seq_len(utils::tail(ends, 1L))])
+            if (base::any(skip)) complete <- complete[-(base::length(pending) + ends[skip])]
+            retained_counts <- counts[!skip]
+            if (base::length(retained_counts)) {
+              if (base::is.null(width)) width <- retained_counts[[1L]]
+              if (width > maximum_columns || base::any(retained_counts != width)) fail()
+              if (base::is.null(names)) {
+                names <- if (header) complete[base::seq_len(width)] else base::paste0("V", base::seq_len(width))
+                if (!base::all(base::validUTF8(names))) fail()
+                base::Encoding(names) <- "UTF-8"
+                if (header) complete <- complete[-base::seq_len(width)]
+                columns <- base::rep(base::list(base::list()), width)
+              }
+              if (base::length(complete)) {
+                if (!base::all(base::validUTF8(complete))) fail()
+                base::Encoding(complete) <- "UTF-8"
+                complete[complete %in% base::c("", "NA")] <- NA_character_
+                base::dim(complete) <- base::c(width, base::length(complete) / width)
+                chunk_index <- chunk_index + 1L
+                for (index in base::seq_len(width)) {
+                  columns[[index]][[chunk_index]] <- complete[index, ]
+                }
+              }
+            }
+            pending <- if (utils::tail(ends, 1L) < base::length(values)) values[base::seq.int(utils::tail(ends, 1L) + 1L, base::length(values))] else base::character()
+          } else {
+            pending <- base::c(pending, values)
+          }
+          if (base::length(pending) >= maximum_columns || (!base::is.null(width) && base::length(pending) >= width)) fail()
+          trailing_delimiter <- utils::tail(separators, 1L) == delimiter
+        }
+        if (final) break
       }
-      base::pushBack(line, connection, encoding = "bytes")
-      first <- base::scan(connection, what = character(), nlines = 1L, sep = delimiter,
-        quote = quote_char, quiet = TRUE, strip.white = header, blank.lines.skip = TRUE,
-        na.strings = if (header) character() else c("", "NA"), comment.char = "", encoding = "UTF-8",
-        allowEscapes = FALSE, skipNul = FALSE)
-      columns <- base::scan(connection, what = base::rep(base::list(""), base::length(first)),
-        sep = delimiter, quote = quote_char, quiet = TRUE, fill = FALSE, multi.line = FALSE,
-        strip.white = FALSE, blank.lines.skip = TRUE, na.strings = c("", "NA"),
-        comment.char = "", encoding = "UTF-8", allowEscapes = FALSE, skipNul = FALSE)
-      if (!header) columns <- base::lapply(base::seq_along(columns), function(index) c(first[[index]], columns[[index]]))
-      names <- if (header) first else base::paste0("V", base::seq_along(first))
-      if (!base::all(base::validUTF8(names))) base::stop("CSV header is not valid UTF-8", call. = FALSE)
-      for (column in columns) if (!base::all(base::validUTF8(column))) base::stop("CSV text is not valid UTF-8", call. = FALSE)
-      columns <- base::lapply(columns, utils::type.convert, as.is = TRUE, numerals = "no.loss", na.strings = character())
+      if (base::is.null(width) || base::length(pending) || base::nzchar(carry)) fail()
+      for (index in base::seq_len(width)) {
+        values <- base::unlist(columns[[index]], use.names = FALSE)
+        if (base::is.null(values)) values <- base::character()
+        columns[[index]] <- utils::type.convert(values, as.is = TRUE, numerals = "no.loss", na.strings = base::character())
+      }
       base::structure(columns, names = names, class = "data.frame", row.names = base::.set_row_names(base::length(columns[[1L]])))
-    }, warning = function(warning) base::stop(base::conditionMessage(warning), call. = FALSE))
+    }, warning = function(warning) fail()), error = function(error) fail())
   }
 
   load_parquet_source <- function(path) {
@@ -8081,10 +8174,10 @@ openwrangler_r_kernel_agent <- local({
     source
   }
 
-  load_file_source <- function(source) {
+  load_file_source <- function(source, maximum_columns) {
     source <- validate_file_source(source)
     switch(source$format,
-      csv = load_csv_source(source$path, source$header, source$delimiter, source$encoding, source$quoteChar),
+      csv = load_csv_source(source$path, source$header, source$delimiter, source$encoding, source$quoteChar, maximum_columns),
       parquet = load_parquet_source(source$path),
       jsonl = load_jsonl_source(source$path),
       excel = load_excel_source(source$path, if ("sheetName" %in% names(source)) source$sheetName else source$sheetIndex + 1)
@@ -8109,7 +8202,7 @@ openwrangler_r_kernel_agent <- local({
         jsonl = load_jsonl_source, excel = load_excel_source)
       arguments <- r_string(file_source$path)
       if (identical(file_source$format, "csv")) {
-        arguments <- sprintf("%s, header = %s, delimiter = %s, encoding = %s, quote_char = %s", arguments, if (file_source$header) "TRUE" else "FALSE", r_string(file_source$delimiter), r_string(file_source$encoding), r_string(file_source$quoteChar))
+        arguments <- sprintf("%s, header = %s, delimiter = %s, encoding = %s, quote_char = %s, maximum_columns = %dL", arguments, if (file_source$header) "TRUE" else "FALSE", r_string(file_source$delimiter), r_string(file_source$encoding), r_string(file_source$quoteChar), maximum_columns)
       } else if (identical(file_source$format, "excel")) {
         sheet <- if ("sheetName" %in% names(file_source)) r_string(file_source$sheetName) else sprintf("%.0f", file_source$sheetIndex + 1)
         arguments <- sprintf("%s, sheet = %s", arguments, sheet)
