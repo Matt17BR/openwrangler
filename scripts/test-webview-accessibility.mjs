@@ -913,6 +913,28 @@ async function verifyInsightsDrawerWorkflow(browser) {
     await page.setViewportSize({ width, height: 760 });
     await page.goto(pathToFileURL(resolve(harnessDir, harness)).href, { waitUntil: "load" });
 
+    if (width === 1280) {
+      await page.locator(".columnInsight.compact .exactSummaryStats").first().waitFor();
+      const compact = await shortGridProfileState(page);
+      if (
+        compact.profilePreference !== "true" ||
+        compact.profileStatusText !==
+          "Header profile distributions are temporarily hidden until the grid has enough room." ||
+        compact.insightCount === 0 ||
+        compact.compactInsightCount !== compact.insightCount ||
+        compact.visibleDistributionCount !== 0 ||
+        !compact.exposedCell?.centerHitsCell ||
+        !compact.exposedCell.fullyExposedVertically ||
+        !compact.exposedCell.rowFullyExposedVertically
+      ) {
+        throw new Error(
+          `${harness} did not retain exact header statistics and an exposed row: ${JSON.stringify(compact)}.`
+        );
+      }
+      // Four category rows need more height at 200% zoom. Keep the chart checks in a naturally expanded grid.
+      await page.setViewportSize({ width, height: 1200 });
+    }
+
     await page
       .getByRole("img", { name: /numeric distribution/u })
       .first()
