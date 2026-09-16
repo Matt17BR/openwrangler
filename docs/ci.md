@@ -256,9 +256,10 @@ R dependencies or editor preparation. These exercise real file cleanup and refus
 on each platform without launching R or an editor. The macOS job also runs the existing native process cancellation
 owner through default helper preparation, before private R dependency installation or editor preparation.
 Windows runs the existing supervisor native owner before dependency preparation, including production binary R input
-and PowerShell source startup. The installed Windows journey also opens the shared native CSV editing/export case.
+and PowerShell source startup. Its installed file stage checks native formats, import restoration and private-process
+recovery through the existing notebook journey; [Testing](testing.md#native-r-editor-dependencies) defines its scope.
 Unless the source omission applies, the released-Jupyter jobs then run the canonical `kernel:numeric-portability`
-and `kernel:csv-import` source cases with the same private jsonlite and bit64 dependencies before opening the editor.
+and `kernel:csv-import` source cases with the same private jsonlite, readr and bit64 dependencies before opening the editor.
 Parquet dependencies remain with the separate export and editor owners.
 These cases check platform-sensitive arithmetic, text conversion, selections and generated programs without
 repeating the broad Linux operation and export suites. macOS uses the bounded `platform-lifecycle` journey; Windows
