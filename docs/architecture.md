@@ -179,7 +179,7 @@ Omitted LF defaults preserve existing saved-state keys, including normal file re
 uses the existing import replacement and persistence owners.
 
 This file-only option stays in protocol v4 because file commands use the owned runtime bundled with the current
-extension. Native R recognizes CR, LF and CRLF records; its scanner normalizes quoted CR and CRLF to LF.
+extension. Native R follows its [CSV and TSV reader contract](#csv-and-tsv-files).
 Non-file and non-delimited sources reject the option, so it cannot reach a retained notebook runtime. A manually
 mixed older decoder rejects the new key; this is not a compatibility promise for every historical v4 binary.
 
@@ -1671,6 +1671,9 @@ Generated Formula and By Example code encode finite double literals from their b
 hexadecimal text, preserving the bound value across platforms. Subnormal and zero spellings use exponent -1022,
 and the emitted conversion preserves signed zero when compiled. Integer literals retain integer storage;
 public admission rules and generated-code limits remain unchanged.
+
+Generated R preserves exact Unicode in paths, column names and text values. Strings that would require R Unicode
+escapes use integer codepoint expressions, avoiding Windows supplementary-character corruption and R's escaped-literal limits.
 
 Generated R follows the live operation's native column-metadata behavior at each step. It normalizes element names
 on its already-isolated `data.table` result without making another full data copy; Clone, Dense Rank, Mark Duplicates

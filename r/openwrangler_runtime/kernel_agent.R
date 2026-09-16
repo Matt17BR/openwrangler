@@ -5823,7 +5823,15 @@ openwrangler_r_kernel_agent <- local({
   }
 
   r_string <- function(value) {
-    encodeString(value, quote = "\"", justify = "none", na.encode = FALSE)
+    encoded <- encodeString(value, quote = "\"", justify = "none", na.encode = FALSE)
+    # Unicode-escaped literals can corrupt supplementary characters on Windows and cannot mix with octal escapes.
+    unpaired <- gsub(r"{\\}", "", encoded, fixed = TRUE)
+    affected <- which(!is.na(encoded) & grepl(r"{\\[uU]}", unpaired))
+    for (index in affected) {
+      points <- utf8ToInt(enc2utf8(as.character(value)[[index]]))
+      encoded[[index]] <- paste0("base::intToUtf8(base::c(", paste(points, collapse = ", "), "))")
+    }
+    encoded
   }
 
   r_number <- function(value) {

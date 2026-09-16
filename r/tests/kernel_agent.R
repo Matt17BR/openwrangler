@@ -96,7 +96,7 @@ local({
     list(text = "same,same,\n1,2,3", expected = structure(list(1L, 2L, 3L), names = c("same", "same", ""), row.names = 1L, class = "data.frame")),
     list(text = "1,alpha\n2,beta", header = FALSE, expected = data.frame(V1 = 1:2, V2 = c("alpha", "beta"))),
     list(text = "id\tlabel\n1\tZürich\n2\t\"two\nlines\"\n", delimiter = "\t", expected = data.frame(id = 1:2, label = c("Zürich", "two\nlines"))),
-    list(text = "\ufeffid,label\r\n1,😀\r\n", expected = data.frame(id = 1L, label = "😀")),
+    list(text = "\ufeffid,label\r\n1,\U0001f600\r\n", expected = data.frame(id = 1L, label = "😀")),
     list(text = "\"first\nname\",value\n1,x\n", expected = structure(list(1L, "x"), names = c("first\nname", "value"), row.names = 1L, class = "data.frame")),
     list(text = "id,value", expected = data.frame(id = logical(), value = logical())),
     list(text = "id,value\n\n1,\n2,\"NA\"\n3,\"\"\n4, \n5,text\n", expected = data.frame(id = 1:5, value = c(NA_character_, NA_character_, NA_character_, " ", "text"))),

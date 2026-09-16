@@ -23,6 +23,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Generated R preserves supplementary Unicode characters alongside escaped control characters in paths, column names and values.
 - R header profiles honor the opening preference. Sampled charts identify the sample count used and full non-missing population.
 - Large R numeric histograms count every finite value, and numeric distinct counts stay exact through 10,000 values. Categorical profiles use exact counts within bounded memory; larger sets retain labeled sampling.
 - Large R text columns profile faster.
