@@ -81,7 +81,7 @@ thead:has(.sampledLabel) {
 }
 
 .sampledLabel {
-  color: var(--vscode-charts-yellow, #cca700);
+  color: var(--vscode-descriptionForeground);
   font-size: 9px;
   letter-spacing: 0.04em;
   min-width: 0;
