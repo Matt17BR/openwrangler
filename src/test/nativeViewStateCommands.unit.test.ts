@@ -1281,14 +1281,24 @@ describe("native state and presentation commands", () => {
         )
       )
     ).toBe(true);
-    expect(treeChildren("openWrangler.summary").map(nodePresentation)).toEqual([
+    const summaryRows = treeChildren("openWrangler.summary");
+    expect(summaryRows.map(nodePresentation)).toEqual([
       ["Saved sales preview", "Polars · viewing"],
       ["Shape", "4 × 3"],
       ["Columns", "3"],
       ["Selected column", "score"],
-      ["Missing cells", "Profiling…"],
-      ["Duplicate rows", "Profiling…"]
+      ["Missing cells", "Not calculated yet"],
+      ["Duplicate rows", "Not calculated yet"]
     ]);
+    for (const node of summaryRows.slice(-2)) {
+      const detail =
+        "Not calculated yet. From Current view, choose Dataset in Column profiles to calculate these statistics.";
+      expect(node).toMatchObject({
+        tooltip: `${node.label}: ${detail}`,
+        accessibilityInformation: { label: `${node.label}, ${detail}` },
+        command: undefined
+      });
+    }
     expect(treeChildren("openWrangler.filters").map(nodePresentation)).toEqual([
       ["No filters or sorts", "Current view"]
     ]);

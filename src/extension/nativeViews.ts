@@ -1524,8 +1524,18 @@ function summaryNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
     nodes.push(new ViewNode("Profiles unavailable", "This dataframe does not support profiling", "info"));
     return nodes;
   }
+  const statsGuidance = stats
+    ? undefined
+    : "From Current view, choose Dataset in Column profiles to calculate these statistics.";
   nodes.push(
-    new ViewNode("Missing cells", stats ? stats.missingCells.toLocaleString() : "Profiling…", "question"),
+    new ViewNode(
+      "Missing cells",
+      stats ? stats.missingCells.toLocaleString() : "Not calculated yet",
+      "question",
+      undefined,
+      undefined,
+      statsGuidance
+    ),
     new ViewNode(
       stats?.duplicateRowsSampleSize === undefined
         ? "Duplicate rows"
@@ -1534,8 +1544,11 @@ function summaryNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
         ? stats.duplicateRows === null
           ? "Unavailable for these column values"
           : stats.duplicateRows.toLocaleString()
-        : "Profiling…",
-      "copy"
+        : "Not calculated yet",
+      "copy",
+      undefined,
+      undefined,
+      statsGuidance
     )
   );
   return nodes;
