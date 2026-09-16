@@ -39,156 +39,209 @@ const valuesRequestId = "f2222222-2222-4222-8222-222222222222";
 const numericValuesRequestId = "f3333333-3333-4333-8333-333333333333";
 
 describe.skipIf(!enabled)("R kernel bootstrap to TypeScript transport", () => {
-  it.each([
-    { label: "automatic base", setup: "", positions: [0, 2], mode: "explicit" },
-    {
-      label: "named base",
-      setup: 'row.names(frame) <- c("left", "missing", "right")',
-      positions: [0, 2],
-      mode: "explicit"
-    },
-    {
-      label: "named tibble",
-      setup: 'frame <- tibble::as_tibble(frame); attr(frame, "row.names") <- c("left", "missing", "right")',
-      positions: [0, 2],
-      mode: "positional"
-    },
-    {
-      label: "named data.table",
-      setup:
-        'frame <- data.table::as.data.table(frame); data.table::setattr(frame, "row.names", c("left", "missing", "right"))',
-      positions: [0, 2],
-      mode: "positional"
-    },
-    { label: "all retained", setup: "frame$amount[[2L]] <- 4", positions: [0, 1, 2], mode: "explicit" },
-    { label: "automatic empty", setup: "frame$amount[] <- NA_real_", positions: [], mode: "positional" },
-    {
-      label: "named empty",
-      setup: 'row.names(frame) <- c("left", "missing", "right"); frame$amount[] <- NA_real_',
-      positions: [],
-      mode: "explicit"
-    },
-    { label: "zero columns missing", setup: "frame <- frame[integer()]", positions: [0, 1, 2], mode: "explicit" },
-    { label: "zero columns duplicates", setup: "frame <- frame[integer()]", positions: [0, 1, 2], mode: "explicit" }
-  ] as const)("admits $label row reduction with native/generated row-name agreement", (fixture) => {
-    const step =
-      fixture.label === "zero columns duplicates"
-        ? ({ id: "reduce", kind: "dropDuplicates", params: { keep: "first" } } as const)
-        : ({ id: "reduce", kind: "dropMissingRows", params: { how: "any" } } as const);
-    const bootstrap = buildRKernelBootstrapCode(readRRuntimeFiles(resolve(root, "r")));
-    const open = requestCode({
-      transportVersion: R_KERNEL_TRANSPORT_VERSION,
-      requestId: openRequestId,
-      kind: "openSession",
-      payload: { sessionId, variableName: "frame", page: pageWindow() }
-    });
-    const preview = requestCode({
-      transportVersion: R_KERNEL_TRANSPORT_VERSION,
-      requestId: pageRequestId,
-      kind: "previewStep",
-      payload: { sessionId, revision: 0, step, page: pageWindow() }
-    });
-    const apply = requestCode({
-      transportVersion: R_KERNEL_TRANSPORT_VERSION,
-      requestId: namedRowsRequestId,
-      kind: "applyDraft",
-      payload: { sessionId, revision: 1, page: pageWindow() }
-    });
-    const close = requestCode({
-      transportVersion: R_KERNEL_TRANSPORT_VERSION,
-      requestId: closeRequestId,
-      kind: "closeSession",
-      payload: { sessionId }
-    });
-    const setup = `frame <- read.csv(text = "id,amount\n1,2.5\n2,NA\n3,7.25")
+  it("admits row reductions with native/generated row-name agreement for every frame fixture", () => {
+    const fixtures = [
+      { label: "automatic base", setup: "", positions: [0, 2], mode: "explicit" },
+      {
+        label: "named base",
+        setup: 'row.names(frame) <- c("left", "missing", "right")',
+        positions: [0, 2],
+        mode: "explicit"
+      },
+      {
+        label: "named tibble",
+        setup: 'frame <- tibble::as_tibble(frame); attr(frame, "row.names") <- c("left", "missing", "right")',
+        positions: [0, 2],
+        mode: "positional"
+      },
+      {
+        label: "named data.table",
+        setup:
+          'frame <- data.table::as.data.table(frame); data.table::setattr(frame, "row.names", c("left", "missing", "right"))',
+        positions: [0, 2],
+        mode: "positional"
+      },
+      { label: "all retained", setup: "frame$amount[[2L]] <- 4", positions: [0, 1, 2], mode: "explicit" },
+      { label: "automatic empty", setup: "frame$amount[] <- NA_real_", positions: [], mode: "positional" },
+      {
+        label: "named empty",
+        setup: 'row.names(frame) <- c("left", "missing", "right"); frame$amount[] <- NA_real_',
+        positions: [],
+        mode: "explicit"
+      },
+      { label: "zero columns missing", setup: "frame <- frame[integer()]", positions: [0, 1, 2], mode: "explicit" },
+      { label: "zero columns duplicates", setup: "frame <- frame[integer()]", positions: [0, 1, 2], mode: "explicit" }
+    ] as const;
+    const files = readRRuntimeFiles(resolve(root, "r"));
+    const bootstrap = buildRKernelBootstrapCode(files);
+    const cases = fixtures.map((fixture, index) => {
+      const suffix = (index + 1).toString(16).padStart(12, "0");
+      const fixtureSessionId = `a1111111-1111-4111-8111-${suffix}`;
+      const ids = {
+        open: `a2222222-2222-4222-8222-${suffix}`,
+        preview: `a3333333-3333-4333-8333-${suffix}`,
+        apply: `a4444444-4444-4444-8444-${suffix}`,
+        close: `a5555555-5555-4555-8555-${suffix}`
+      };
+      const sourceName = `row_name_source_${index}`;
+      const step =
+        fixture.label === "zero columns duplicates"
+          ? ({ id: "reduce", kind: "dropDuplicates", params: { keep: "first" } } as const)
+          : ({ id: "reduce", kind: "dropMissingRows", params: { how: "any" } } as const);
+      const open = requestCode({
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
+        requestId: ids.open,
+        kind: "openSession",
+        payload: { sessionId: fixtureSessionId, variableName: sourceName, page: pageWindow() }
+      });
+      const preview = requestCode({
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
+        requestId: ids.preview,
+        kind: "previewStep",
+        payload: { sessionId: fixtureSessionId, revision: 0, step, page: pageWindow() }
+      });
+      const apply = requestCode({
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
+        requestId: ids.apply,
+        kind: "applyDraft",
+        payload: { sessionId: fixtureSessionId, revision: 1, page: pageWindow() }
+      });
+      const close = requestCode({
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
+        requestId: ids.close,
+        kind: "closeSession",
+        payload: { sessionId: fixtureSessionId }
+      });
+      const setup = `frame <- read.csv(text = "id,amount\n1,2.5\n2,NA\n3,7.25")
 ${fixture.setup}
 frame_before <- serialize(frame, NULL, version = 3L)`;
-    const result = runR(`${setup}
-${bootstrap}
-${open.code}
-${preview.code}
-${apply.code}
+      return { ...fixture, step, sessionId: fixtureSessionId, ids, sourceName, setup, open, preview, apply, close };
+    });
+    const result = runR(`${bootstrap}
+${cases
+  .map(
+    (fixture) => `base::local({
+  tryCatch({
+${fixture.setup}
+base::assign("${fixture.sourceName}", frame, envir = .GlobalEnv)
+${fixture.open.code}
+${fixture.preview.code}
+${fixture.apply.code}
 stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
-${close.code}`);
-    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), openRequestId, {
-      expectExportFormats: true
-    });
-    if (opened.kind !== "page") throw new Error("Expected native source admission.");
-    const previewed = decodeRKernelResponseJson(marked(result.stdout, preview.marker), pageRequestId, {
-      inputSchema: opened.page.schema,
-      previewStep: step
-    });
-    if (previewed.kind !== "stepPreview") throw new Error("Expected native row reduction.");
-    expect(previewed.page.frameSemantics.rowNames).toBe(fixture.mode);
-    expect(previewed.page.page.rows.map((row) => row.id)).toEqual(
-      fixture.positions.map((position) => `r:r:${position}`)
-    );
-    const labels =
-      fixture.mode === "positional"
-        ? fixture.positions.map(() => undefined)
-        : fixture.positions.map((position) =>
-            fixture.label.startsWith("named") ? ["left", "missing", "right"][position] : String(position + 1)
-          );
-    expect(previewed.page.page.rows.map((row) => row.rowLabel)).toEqual(labels);
-    const applied = decodeRKernelResponseJson(marked(result.stdout, apply.marker), namedRowsRequestId);
-    if (applied.kind !== "planUpdated") throw new Error("Expected applied native row reduction.");
-    expect(applied.page).toEqual(previewed.page);
-    const positions =
-      fixture.positions.length === 0
-        ? "integer()"
-        : `c(${fixture.positions.map((position) => `${position + 1}L`).join(", ")})`;
-    runR(`${setup}
+stopifnot(identical(serialize(base::get("${fixture.sourceName}", envir = .GlobalEnv, inherits = FALSE), NULL, version = 3L), frame_before))
+${fixture.close.code}
+base::rm(list = "${fixture.sourceName}", envir = .GlobalEnv)
+  }, error = function(error) stop(paste("${fixture.label}:", conditionMessage(error)), call. = FALSE))
+})`
+  )
+  .join("\n")}
+${buildRKernelTeardownCode(files)}
+stopifnot(!base::exists("${R_KERNEL_RUNTIME_BINDING}", envir = .GlobalEnv, inherits = FALSE))`);
+    const generatedCases: string[] = [];
+    for (const fixture of cases) {
+      const { open, preview, apply, close, ids, step, setup } = fixture;
+      const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open, {
+        expectExportFormats: true
+      });
+      if (opened.kind !== "page") throw new Error(`${fixture.label}: expected native source admission.`);
+      const previewed = decodeRKernelResponseJson(marked(result.stdout, preview.marker), ids.preview, {
+        inputSchema: opened.page.schema,
+        previewStep: step
+      });
+      if (previewed.kind !== "stepPreview") throw new Error(`${fixture.label}: expected native row reduction.`);
+      expect(previewed.page.frameSemantics.rowNames, fixture.label).toBe(fixture.mode);
+      expect(
+        previewed.page.page.rows.map((row) => row.id),
+        fixture.label
+      ).toEqual(fixture.positions.map((position) => `r:r:${position}`));
+      const labels =
+        fixture.mode === "positional"
+          ? fixture.positions.map(() => undefined)
+          : fixture.positions.map((position) =>
+              fixture.label.startsWith("named") ? ["left", "missing", "right"][position] : String(position + 1)
+            );
+      expect(
+        previewed.page.page.rows.map((row) => row.rowLabel),
+        fixture.label
+      ).toEqual(labels);
+      const applied = decodeRKernelResponseJson(marked(result.stdout, apply.marker), ids.apply);
+      if (applied.kind !== "planUpdated") throw new Error(`${fixture.label}: expected applied native row reduction.`);
+      expect(applied.page, fixture.label).toEqual(previewed.page);
+      expect(decodeRKernelResponseJson(marked(result.stdout, close.marker), ids.close), fixture.label).toEqual({
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
+        requestId: ids.close,
+        kind: "closed",
+        sessionId: fixture.sessionId
+      });
+      const positions =
+        fixture.positions.length === 0
+          ? "integer()"
+          : `c(${fixture.positions.map((position) => `${position + 1}L`).join(", ")})`;
+      generatedCases.push(`base::local({
+  tryCatch({
+${setup}
+base::assign("${fixture.sourceName}", frame, envir = base::environment())
 expected_positions <- ${positions}
 expected <- if (inherits(frame, "data.table")) frame[expected_positions] else frame[expected_positions, , drop = FALSE]
 ${applied.code}
 stopifnot(identical(open_wrangler_result, expected), identical(serialize(frame, NULL, version = 3L), frame_before))
-${fixture.positions.length > 0 ? `stopifnot(identical(base::.row_names_info(open_wrangler_result, 1L) > 0L, ${fixture.mode === "explicit" ? "TRUE" : "FALSE"}))` : ""}`);
-    const host = sessionFromContract(
-      sessionId,
-      { kind: "rInteractiveVariable", label: "frame", variableName: "frame" },
-      "editing",
-      opened.page,
-      []
-    );
-    const expectedMode = rowNamesAfterRStep(
-      opened.page.frameSemantics.rowNames,
-      step,
-      opened.page.dataframeFlavor,
-      fixture.positions.length
-    );
-    const window = { offset: 0, limit: 100, columnOffset: 0, columnLimit: 100 };
-    expect(() =>
-      assertMutationContract(
-        host,
-        applied.page,
-        window,
-        host.schema,
-        fixture.positions.length,
-        3,
-        [],
-        expectedMode,
-        emptyView()
-      )
-    ).not.toThrow();
-    expect(() =>
-      assertMutationContract(
-        host,
-        {
-          ...applied.page,
-          frameSemantics: {
-            ...applied.page.frameSemantics,
-            rowNames: fixture.mode === "explicit" ? "positional" : "explicit"
-          }
-        },
-        window,
-        host.schema,
-        fixture.positions.length,
-        3,
-        [],
-        expectedMode,
-        emptyView()
-      )
-    ).toThrow("row-name semantics");
+stopifnot(identical(serialize(base::get("${fixture.sourceName}", envir = base::environment(), inherits = FALSE), NULL, version = 3L), frame_before))
+${fixture.positions.length > 0 ? `stopifnot(identical(base::.row_names_info(open_wrangler_result, 1L) > 0L, ${fixture.mode === "explicit" ? "TRUE" : "FALSE"}))` : ""}
+  }, error = function(error) stop(paste("${fixture.label}:", conditionMessage(error)), call. = FALSE))
+}, envir = base::new.env(parent = .GlobalEnv))`);
+      const host = sessionFromContract(
+        fixture.sessionId,
+        { kind: "rInteractiveVariable", label: fixture.sourceName, variableName: fixture.sourceName },
+        "editing",
+        opened.page,
+        []
+      );
+      const expectedMode = rowNamesAfterRStep(
+        opened.page.frameSemantics.rowNames,
+        step,
+        opened.page.dataframeFlavor,
+        fixture.positions.length
+      );
+      const window = { offset: 0, limit: 100, columnOffset: 0, columnLimit: 100 };
+      expect(
+        () =>
+          assertMutationContract(
+            host,
+            applied.page,
+            window,
+            host.schema,
+            fixture.positions.length,
+            3,
+            [],
+            expectedMode,
+            emptyView()
+          ),
+        fixture.label
+      ).not.toThrow();
+      expect(
+        () =>
+          assertMutationContract(
+            host,
+            {
+              ...applied.page,
+              frameSemantics: {
+                ...applied.page.frameSemantics,
+                rowNames: fixture.mode === "explicit" ? "positional" : "explicit"
+              }
+            },
+            window,
+            host.schema,
+            fixture.positions.length,
+            3,
+            [],
+            expectedMode,
+            emptyView()
+          ),
+        fixture.label
+      ).toThrow("row-name semantics");
+    }
+    // A separate clean child cannot satisfy generated dependencies from the live runtime.
+    runR(generatedCases.join("\n"));
   });
 
   it("pages current same-schema values, rejects structural changes, and closes the live session", () => {

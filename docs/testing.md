@@ -303,6 +303,8 @@ Min-max scale's adjacent integer64 and missing-value results belong to the nativ
 owner. The text-replacement transport chain also checks factor-to-character inspection and Undo restoration.
 The same native transport owner checks row-name modes after row subsetting, including zero-column generated results;
 ordinary R dataframe equality alone does not distinguish automatic from explicit row names.
+Its row-name matrix shares one native bootstrap with separate case frames, sessions and request identities. Generated
+programs run in a second clean process with a fresh environment for each case; runtime helpers cannot satisfy their dependencies.
 Edits confined to `r/tests/kernel_agent.R` and `r/tests/frame_contract.R`, with permitted Markdown, may omit the hosted
 macOS and Windows editor steps. Source, package and harness checks remain required; see the exact [CI scope](ci.md#pull-requests).
 Linux interactive transport controls use a real PTY;
