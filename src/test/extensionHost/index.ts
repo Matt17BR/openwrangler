@@ -12099,6 +12099,23 @@ async function capturePackagedOperationDialogScenes(
       .waitFor({ state: "visible" });
     await dialog.getByRole("heading", { name: "Fill missing values", exact: true }).waitFor({ state: "visible" });
     await dialog.getByRole("button", { name: "Preview changes", exact: true }).waitFor({ state: "visible" });
+    await assertPackagedOperationDialogGeometry(dialog, "catalog");
+    const chooseOperation = dialog.getByRole("button", { name: "Choose operation", exact: true });
+    assert.equal(await chooseOperation.getAttribute("aria-expanded"), "true");
+    await chooseOperation.click();
+    assert.equal(await chooseOperation.getAttribute("aria-expanded"), "false");
+    await dialog
+      .getByRole("navigation", { name: "Operation catalog", includeHidden: true })
+      .waitFor({ state: "hidden" });
+    assert.equal(
+      await dialog.getByLabel("Column", { exact: true }).inputValue(),
+      columnReference(active.metadata, "revenue").id
+    );
+    assert.equal(await dialog.getByLabel("Method", { exact: true }).inputValue(), "groupedMean");
+    assert.equal(await dialog.getByLabel("Search group columns", { exact: true }).inputValue(), "market");
+    assert.equal(await groupBy.getByRole("checkbox", { name: "market", exact: true }).isChecked(), true);
+    await groupBy.getByText("Selected (2): market, segment", { exact: true }).waitFor({ state: "visible" });
+    assert.equal(await dialog.getByRole("button", { name: "Preview changes", exact: true }).isEnabled(), true);
     await assertPackagedOperationDialogGeometry(dialog, "configuration");
     await clearPackagedProductSceneTransientUi(workbench);
     await captureWorkbenchScreenshot(
@@ -12157,6 +12174,8 @@ async function assertPackagedOperationDialogGeometry(
       headerOverflow: header.scrollWidth - header.clientWidth,
       catalogVisible: catalog.getBoundingClientRect().width > 0,
       formVisible: form.getBoundingClientRect().width > 0,
+      formWidth: form.getBoundingClientRect().width,
+      bodyWidth: body.getBoundingClientRect().width,
       searchIconContained:
         searchIconBounds.left >= searchInputBounds.left - 1 &&
         searchIconBounds.right <= searchInputBounds.right + 1 &&
@@ -12178,11 +12197,16 @@ async function assertPackagedOperationDialogGeometry(
   );
   assert.ok(geometry.bodyOverflow <= 1, `${scene} operation dialog must not overflow horizontally.`);
   assert.ok(geometry.headerOverflow <= 1, `${scene} operation dialog header must not clip.`);
-  assert.equal(geometry.catalogVisible, scene !== "saved-step");
+  assert.equal(geometry.catalogVisible, scene === "catalog");
   assert.equal(geometry.formVisible, true);
-  if (scene !== "saved-step") {
+  if (scene === "catalog") {
     assert.equal(geometry.searchIconContained, true, `${scene} search icon must stay inside its input.`);
     assert.ok(geometry.searchIconCenterDelta <= 1, `${scene} search icon must be vertically centered in its input.`);
+  } else if (scene === "configuration") {
+    assert.ok(
+      Math.abs(geometry.formWidth - geometry.bodyWidth) <= 1,
+      `${scene} form must use the complete dialog body.`
+    );
   }
 }
 
@@ -12421,7 +12445,29 @@ async function capturePackagedAppliedStepInspectionScene(
       30_000,
       "the exact latest applied-step inspection"
     );
-    await assertPackagedAppliedStepInspectionScene(workbench, testing, sessionId, sidebar, latestStep.id);
+    await vscode.commands.executeCommand("openWrangler.codePreview.focus");
+    const inspectedCode = await waitForCodePreview(workbench, "projected_revenue");
+    const inspectedScope = inspectedCode.locator("xpath=ancestor::*[@id='root']").locator("[data-code-scope]");
+    await inspectedScope.waitFor({ state: "visible", timeout: 10_000 });
+    await waitForLocatorText(
+      inspectedScope,
+      (text) => text === "Python · Inspecting step 2 of 2",
+      10_000,
+      "the exact applied-step Code Preview scope"
+    );
+    assert.equal(
+      await revealCodePreviewText(inspectedCode, "pl.col('revenue') + pl.lit(500)"),
+      testing.activeSession()?.stepInspection?.code,
+      "Applied-step capture must expose the exact inspected code and its Formula expression."
+    );
+    await assertPackagedAppliedStepInspectionScene(
+      workbench,
+      testing,
+      sessionId,
+      sidebar,
+      latestStep.id,
+      inspectedCode
+    );
     await clearPackagedProductSceneTransientUi(workbench);
     mkdirSync(outputDirectory, { recursive: true });
     await captureWorkbenchScreenshot(
@@ -13724,15 +13770,21 @@ async function assertPackagedAppliedStepInspectionScene(
   testing: TestApi,
   sessionId: string,
   sidebar: Locator,
-  stepId: string
+  stepId: string,
+  codePreview: Locator
 ): Promise<void> {
+  assert.equal(testing.activeSession()?.sessionId, sessionId);
   assert.equal(testing.activeSession()?.stepInspection?.stepId, stepId);
   const filters = sidebar.getByRole("tree", { name: /Filters\s*\/\s*Sorts/u }).first();
   const steps = sidebar.getByRole("tree", { name: /Cleaning Steps/u }).first();
   await filters
     .getByRole("treeitem", { name: /Filters and sorts paused, Inspecting an applied step/u })
     .waitFor({ state: "visible", timeout: 10_000 });
-  for (const expected of [/Current view/u, /1\. Uppercase/u, /2\. Formula column, Selected · latest applied step/u]) {
+  for (const expected of [
+    /Current view/u,
+    /1\. Uppercase/u,
+    /^2\. Formula column, Output at this step: projected_revenue · Selected · latest applied step$/u
+  ]) {
     await steps.getByRole("treeitem", { name: expected }).first().waitFor({ state: "visible", timeout: 10_000 });
   }
   await assertPackagedProductSidebarGeometry(sidebar);
@@ -13750,13 +13802,57 @@ async function assertPackagedAppliedStepInspectionScene(
   await inspection.getByText(/confirmed dataframe view and filters are unchanged/u).waitFor({ state: "visible" });
   await inspection.getByText("+1 columns", { exact: true }).waitFor({ state: "visible" });
   await inspection.getByRole("button", { name: "Show confirmed data", exact: true }).waitFor({ state: "visible" });
+  await inspection.getByRole("button", { name: "Edit step", exact: true }).waitFor({ state: "visible" });
+  await inspection.getByRole("button", { name: "Delete step", exact: true }).waitFor({ state: "visible" });
   await app.getByRole("button", { name: "Edit latest", exact: true }).waitFor({ state: "visible" });
   await app.getByRole("button", { name: "Undo", exact: true }).waitFor({ state: "visible" });
   const geometry = await measurePackagedOverviewGrid(app);
   assert.deepEqual(geometry.partialHeaders, []);
   assert.deepEqual(geometry.clippedTitles, []);
   assert.deepEqual(geometry.visibleColumns, ["account_note", "market_upper", "projected_revenue"]);
-  assert.equal(await workbench.locator(".part.panel:visible").count(), 0);
+  assert.ok(geometry.completeVisibleRows > 0, "Inspection must retain complete visible data rows beside its code.");
+  assert.equal(await workbench.locator(".part.panel:visible").count(), 1);
+  const codeLayout = await codePreview.evaluate((element) => {
+    type CodeElement = {
+      readonly textContent: string | null;
+      readonly hidden?: boolean;
+      readonly clientWidth: number;
+      readonly scrollWidth: number;
+      readonly ownerDocument: {
+        readonly defaultView: { readonly innerWidth: number; readonly innerHeight: number };
+        querySelector(selector: string): CodeElement | null;
+      };
+      getBoundingClientRect(): {
+        left: number;
+        right: number;
+        top: number;
+        bottom: number;
+        width: number;
+        height: number;
+      };
+    };
+    const document = (element as unknown as CodeElement).ownerDocument;
+    const scope = document.querySelector("[data-code-scope]");
+    const editor = document.querySelector(".cm-editor");
+    if (!scope || !editor) throw new Error("Applied-step capture requires Code Preview and its scope label.");
+    return {
+      scope: scope.textContent,
+      hidden: scope.hidden,
+      scopeOverflow: scope.scrollWidth - scope.clientWidth,
+      bounds: [scope.getBoundingClientRect(), editor.getBoundingClientRect()],
+      viewport: { width: document.defaultView.innerWidth, height: document.defaultView.innerHeight }
+    };
+  });
+  assert.equal(codeLayout.scope, "Python · Inspecting step 2 of 2");
+  assert.equal(codeLayout.hidden, false);
+  assert.ok(codeLayout.scopeOverflow <= 1, "The inspected-code scope must not clip horizontally.");
+  for (const bounds of codeLayout.bounds) {
+    assert.ok(bounds.width > 0 && bounds.height > 0, "Inspected code and scope must remain visible.");
+    assert.ok(bounds.left >= -1 && bounds.top >= -1);
+    assert.ok(bounds.right <= codeLayout.viewport.width + 1 && bounds.bottom <= codeLayout.viewport.height + 1);
+  }
+  assert.equal(testing.activeSession()?.sessionId, sessionId);
+  assert.equal(testing.activeSession()?.stepInspection?.stepId, stepId);
 }
 
 async function assertPackagedProductToolbarIdentity(app: Locator): Promise<void> {
@@ -13783,13 +13879,18 @@ async function measurePackagedOverviewGrid(app: Locator): Promise<{
   partialHeaders: string[];
   clippedTitles: string[];
   visibleColumns: string[];
+  completeVisibleRows: number;
 }> {
   return app.evaluate((root) => {
     type OverviewElement = {
       readonly clientWidth: number;
+      readonly clientHeight: number;
+      readonly clientLeft: number;
+      readonly clientTop: number;
       readonly scrollWidth: number;
+      readonly ownerDocument: { readonly defaultView: { readonly innerWidth: number; readonly innerHeight: number } };
       getAttribute(name: string): string | null;
-      getBoundingClientRect(): { left: number; right: number };
+      getBoundingClientRect(): { left: number; right: number; top: number; bottom: number; height: number };
       querySelector(selector: string): OverviewElement | null;
       querySelectorAll(selector: string): ArrayLike<OverviewElement>;
     };
@@ -13803,7 +13904,42 @@ async function measurePackagedOverviewGrid(app: Locator): Promise<{
       const headerBounds = header.getBoundingClientRect();
       return headerBounds.right > dataLeft + 1 && headerBounds.left < bounds.right - 1;
     });
+    const appBounds = appRoot.getBoundingClientRect();
+    const viewport = appRoot.ownerDocument.defaultView;
+    const scrollerTop = bounds.top + scroller.clientTop;
+    const appTop = appBounds.top + appRoot.clientTop;
+    const scrollerLeft = bounds.left + scroller.clientLeft;
+    const appLeft = appBounds.left + appRoot.clientLeft;
+    // Sticky cells, rather than the scrolling thead box, cover the first rows.
+    const visibleTop = Math.max(
+      0,
+      scrollerTop,
+      appTop,
+      rowHeader.getBoundingClientRect().bottom,
+      ...visible.map((header) => header.getBoundingClientRect().bottom)
+    );
+    const visibleBottom = Math.min(
+      viewport.innerHeight,
+      scrollerTop + scroller.clientHeight,
+      appTop + appRoot.clientHeight
+    );
+    const visibleLeft = Math.max(0, scrollerLeft, appLeft, dataLeft);
+    const visibleRight = Math.min(
+      viewport.innerWidth,
+      scrollerLeft + scroller.clientWidth,
+      appLeft + appRoot.clientWidth
+    );
     return {
+      completeVisibleRows: Array.from(scroller.querySelectorAll("tbody tr[aria-rowindex]")).filter((row) => {
+        const rowBounds = row.getBoundingClientRect();
+        return (
+          visibleRight > visibleLeft &&
+          visibleBottom > visibleTop &&
+          rowBounds.height > 0 &&
+          rowBounds.top >= visibleTop - 1 &&
+          rowBounds.bottom <= visibleBottom + 1
+        );
+      }).length,
       partialHeaders: visible
         .filter((header) => {
           const headerBounds = header.getBoundingClientRect();
