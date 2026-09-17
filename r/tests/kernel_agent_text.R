@@ -484,9 +484,6 @@ lower_in_place_apply <- dispatch(
 )
 assert_identical(lower_in_place_apply$action, "apply", "in-place R Lowercase did not apply")
 assert_identical(lower_in_place_apply$page$schema[[1L]]$id, "r:c:0", "applied R Lowercase changed lineage")
-if (!grepl(".ow_output <- tolower(.ow_utf8)", lower_in_place_apply$code, fixed = TRUE)) {
-  stop("generated R Lowercase code lost its native tolower expression", call. = FALSE)
-}
 assign("lower_frame", source_environment$lower_frame, envir = .GlobalEnv)
 eval(parse(text = lower_in_place_apply$code), envir = .GlobalEnv)
 lower_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
@@ -784,9 +781,6 @@ find_regex_apply <- dispatch(
   list(sessionId = text_cleanup_session_id, revision = 3L, page = page_window())
 )
 assert_identical(find_regex_apply$action, "apply", "regex R Find and Replace did not apply")
-if (!grepl(".ow_output <- toupper(.ow_utf8)", find_regex_apply$code, fixed = TRUE)) {
-  stop("generated R Uppercase lost its native toupper expression", call. = FALSE)
-}
 assert_identical(
   sum(grepl("^  \\.ow_prepare_find_replace_regex <-", strsplit(find_regex_apply$code, "\n", fixed = TRUE)[[1L]])),
   1L,
@@ -1689,6 +1683,65 @@ for (find_index in seq_along(repeated_find_cases)) {
 assert_identical(source_environment$text_cleanup_frame, text_cleanup_before, "repeated live R Find mutated its source")
 repeated_find_closed <- dispatch("closeSession", list(sessionId = text_cleanup_session_id))
 assert_identical(repeated_find_closed$kind, "closed", "the repeated R Find session did not close")
+
+local({
+  latin1 <- rawToChar(as.raw(c(0x43, 0x41, 0x46, 0xc9)))
+  Encoding(latin1) <- "latin1"
+  invalid <- rawToChar(as.raw(0xff))
+  Encoding(invalid) <- "bytes"
+  for (kind in c("lowerText", "upperText")) {
+    lower <- identical(kind, "lowerText")
+    owner <- if (lower) openwrangler_r_frame_contract$lower_text_column_at else openwrangler_r_frame_contract$upper_text_column_at
+    output_name <- if (lower) NULL else "upper category"
+    source_name <- if (lower) "lower_frame" else "text_cleanup_frame"
+    column_name <- if (lower) "text" else "category"
+    position <- if (lower) 1L else 2L
+    source <- if (lower) lower_source_before else text_cleanup_before
+    code <- if (lower) lower_in_place_apply$code else upper_apply$code
+    expanding <- strrep(if (lower) "\u023a" else "\u023f", 4096L)
+    cases <- list(
+      batches = rep(c("MiXÉd", latin1, NA_character_, ""), length.out = 2051L),
+      all_missing = rep(NA_character_, 1025L),
+      empty = character(),
+      output_before_input = c(expanding, invalid),
+      input_before_output = c(invalid, expanding),
+      late_input = c(rep("OK", 1024L), invalid)
+    )
+    for (label in names(cases)) {
+      values <- cases[[label]]
+      input <- source[rep(seq_len(nrow(source)), length.out = length(values)), , drop = FALSE]
+      input[[column_name]] <- values
+      before <- serialize(input, NULL, version = 3L)
+      live <- tryCatch(owner(input, position, column_name, output_name), error = identity)
+      generated_environment <- new.env(parent = baseenv())
+      assign(source_name, unserialize(before), envir = generated_environment)
+      generated_environment$case_text_values <- function(...) stop("caller replaced the case kernel")
+      generated_environment$tolower <- function(...) stop("caller replaced native Lowercase")
+      generated_environment$toupper <- function(...) stop("caller replaced native Uppercase")
+      sentinel <- list(unchanged = TRUE)
+      generated_environment$open_wrangler_result <- sentinel
+      generated <- tryCatch({
+        eval(parse(text = code), envir = generated_environment)
+        generated_environment$open_wrangler_result
+      }, error = identity)
+      if (inherits(live, "error")) {
+        assert_identical(inherits(generated, "openwrangler_r_frame_error"), TRUE, paste(kind, label, "lost generated refusal"))
+        assert_identical(generated$code, live$code, paste(kind, label, "changed generated refusal code"))
+        assert_identical(conditionMessage(generated), conditionMessage(live), paste(kind, label, "changed generated first-error order"))
+        assert_identical(generated_environment$open_wrangler_result, sentinel, paste(kind, label, "published a failed result"))
+      } else {
+        assert_identical(generated, live, paste(kind, label, "generated values or metadata diverged"))
+        transformed_name <- if (is.null(output_name)) column_name else output_name
+        assert_identical(
+          Encoding(generated[[transformed_name]]), Encoding(live[[transformed_name]]),
+          paste(kind, label, "generated UTF-8 normalization diverged")
+        )
+      }
+      assert_identical(serialize(input, NULL, version = 3L), before, paste(kind, label, "changed the live source"))
+      assert_identical(serialize(get(source_name, envir = generated_environment), NULL, version = 3L), before, paste(kind, label, "changed the generated source"))
+    }
+  }
+})
 
 source_environment$fill_frame <- data.frame(
   amount = c(1L, NA_integer_, 3L),

@@ -3411,6 +3411,88 @@ assert_identical(row.names(upper_result), row.names(lower_frame), "upperText cha
 assert_identical(upper_capture$descriptor$schema[[4L]]$id, "c:step:upper-step:0", "upperText lost output lineage")
 assert_identical(upper_capture$descriptor$schema[[4L]]$rawType, "character", "upperText returned the wrong type")
 
+local({
+  latin1 <- rawToChar(as.raw(c(0x43, 0x41, 0x46, 0xc9)))
+  Encoding(latin1) <- "latin1"
+  unmarked <- enc2utf8("MiXÉd")
+  Encoding(unmarked) <- "unknown"
+  values <- rep(c("ALPHA", latin1, unmarked, NA_character_, ""), length.out = 2051L)
+  frame <- data.frame(value = values, row.names = paste0("case-", seq_along(values)))
+  before <- serialize(frame, NULL, version = 3L)
+  conversion_widths <- integer()
+  assign("iconv", function(x, ...) {
+    conversion_widths <<- c(conversion_widths, length(x))
+    base::iconv(x, ...)
+  }, envir = contract_environment)
+  on.exit(rm("iconv", envir = contract_environment), add = TRUE)
+  for (operation in c("lower", "upper")) {
+    owner <- openwrangler_r_frame_contract[[paste0(operation, "_text_column_at")]]
+    transform <- if (operation == "lower") base::tolower else base::toupper
+    expected <- vapply(seq_along(values), function(index) {
+      if (is.na(values[[index]])) return(NA_character_)
+      text <- get("bounded_utf8", contract_environment)(values[[index]], "test text")
+      get("bounded_operation_output", contract_environment)(transform(text), "test case")
+    }, character(1L), USE.NAMES = FALSE)
+    conversion_widths <- integer()
+    result <- owner(frame, 1L, "value")
+    assert_identical(result$value, expected, paste(operation, "changed normalized text or missing values"))
+    assert_identical(Encoding(result$value), Encoding(expected), paste(operation, "changed UTF-8 normalization"))
+    assert_identical(row.names(result), row.names(frame), paste(operation, "changed row labels"))
+    assert_identical(serialize(frame, NULL, version = 3L), before, paste(operation, "changed its source"))
+    assert_true(any(conversion_widths > 1L), paste(operation, "still validates every text value separately"))
+    assert_true(all(conversion_widths <= 1024L), paste(operation, "exceeded the text operation batch bound"))
+    for (empty_values in list(character(), rep(NA_character_, 1025L))) {
+      empty <- data.frame(value = empty_values)
+      assert_identical(owner(empty, 1L, "value")$value, empty_values, paste(operation, "changed empty or all-missing text"))
+    }
+  }
+})
+
+local({
+  invalid <- rawToChar(as.raw(0xff))
+  Encoding(invalid) <- "bytes"
+  malformed <- rawToChar(as.raw(c(0xc3, 0x28)))
+  Encoding(malformed) <- "UTF-8"
+  old_locale <- Sys.getlocale("LC_CTYPE")
+  on.exit(Sys.setlocale("LC_CTYPE", old_locale), add = TRUE)
+  for (locale in unique(c(old_locale, "C"))) {
+    Sys.setlocale("LC_CTYPE", locale)
+    for (operation in c("lower", "upper")) {
+      owner <- openwrangler_r_frame_contract[[paste0(operation, "_text_column_at")]]
+      transform <- if (operation == "lower") base::tolower else base::toupper
+      operation_name <- if (operation == "lower") "Lowercase" else "Uppercase"
+      expanding <- strrep(if (operation == "lower") "\u023a" else "\u023f", 4096L)
+      cases <- list(
+        exact_limit = c(strrep("A", 8192L), NA_character_),
+        input_limit = c(strrep("A", 8193L), invalid),
+        output_before_bad_input = c(expanding, invalid),
+        bad_input_before_output = c(invalid, expanding),
+        malformed = c("OK", malformed),
+        batch_boundary = c(rep("OK", 1024L), NA_character_, invalid)
+      )
+      for (label in names(cases)) {
+        values <- cases[[label]]
+        frame <- data.frame(value = values)
+        before <- serialize(frame, NULL, version = 3L)
+        expected <- tryCatch(vapply(seq_along(values), function(index) {
+          if (is.na(values[[index]])) return(NA_character_)
+          text <- get("bounded_utf8", contract_environment)(values[[index]], sprintf("%sText value %d", operation, index))
+          get("bounded_operation_output", contract_environment)(transform(text), operation_name)
+        }, character(1L), USE.NAMES = FALSE), error = identity)
+        actual <- tryCatch(owner(frame, 1L, "value")$value, error = identity)
+        if (inherits(expected, "error")) {
+          assert_true(inherits(actual, "openwrangler_r_frame_error"), paste(operation, label, "lost its typed refusal"))
+          assert_identical(actual$code, expected$code, paste(operation, label, "changed refusal code"))
+          assert_identical(conditionMessage(actual), conditionMessage(expected), paste(operation, label, "changed first-error order or row label"))
+        } else {
+          assert_identical(actual, expected, paste(operation, label, "changed locale or byte-bound behavior"))
+        }
+        assert_identical(serialize(frame, NULL, version = 3L), before, paste(operation, label, "mutated its source"))
+      }
+    }
+  }
+})
+
 text_tools_frame <- data.frame(
   text = c("  hÉLLO world  ", "..[MiXeD]..", "left||||right", "tail||", NA_character_),
   category = factor(c("fIRST", "sECOND", NA, "", "éLAN"), levels = c("fIRST", "sECOND", "", "éLAN")),

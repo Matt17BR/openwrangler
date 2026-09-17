@@ -5598,6 +5598,42 @@ openwrangler_r_frame_contract <- local({
     result
   }
 
+  case_text_values <- function(values, operation) {
+    transform <- switch(
+      operation,
+      lowerText = base::tolower,
+      upperText = base::toupper,
+      abort("internal-error", "the R case transform is unsupported")
+    )
+    operation_name <- if (identical(operation, "lowerText")) "Lowercase" else "Uppercase"
+    transformed <- rep(NA_character_, length(values))
+    start <- 1
+    while (start <= length(values)) {
+      count <- min(maximum_operation_output_chunk_rows, length(values) - start + 1L)
+      selected <- seq.int(start, length.out = count)
+      present <- selected[!is.na(values[selected])]
+      if (length(present) > 0L) {
+        converted <- tryCatch({
+          normalized <- profile_text_values(values[present], present, paste0(operation, " value"))
+          output <- transform(normalized)
+          if (anyNA(output)) NULL else profile_text_values(output, present)
+        }, openwrangler_r_frame_error = function(error) {
+          if (error$code %in% c("invalid-text", "text-too-large")) NULL else stop(error)
+        })
+        if (is.null(converted)) {
+          # Replay this batch in row order: an earlier output failure precedes a later input failure.
+          converted <- vapply(present, function(index) {
+            text <- bounded_utf8(values[[index]], sprintf("%s value %d", operation, index))
+            bounded_operation_output(transform(text), operation_name)
+          }, character(1L), USE.NAMES = FALSE)
+        }
+        transformed[present] <- converted
+      }
+      start <- start + count
+    }
+    transformed
+  }
+
   transform_text_column_at <- function(value, position, old_name, new_name, operation, transform) {
     operation_name <- switch(
       operation,
@@ -5663,20 +5699,24 @@ openwrangler_r_frame_contract <- local({
 
     result <- isolated_snapshot(value, inspected$flavor)
     source_values <- as.character(result[[position]])
-    transformed <- vapply(seq_along(source_values), function(index) {
-      if (is.na(source_values[[index]])) return(NA_character_)
-      source_value <- bounded_utf8(source_values[[index]], sprintf("%s value %d", operation, index))
-      output <- transform(source_value)
-      if (
-        identical(operation, "splitText") &&
-          is.character(output) &&
-          length(output) == 1L &&
-          is.na(output)
-      ) {
-        return(NA_character_)
-      }
-      bounded_operation_output(output, operation_name)
-    }, character(1L), USE.NAMES = FALSE)
+    transformed <- if (operation %in% c("lowerText", "upperText")) {
+      case_text_values(source_values, operation)
+    } else {
+      vapply(seq_along(source_values), function(index) {
+        if (is.na(source_values[[index]])) return(NA_character_)
+        source_value <- bounded_utf8(source_values[[index]], sprintf("%s value %d", operation, index))
+        output <- transform(source_value)
+        if (
+          identical(operation, "splitText") &&
+            is.character(output) &&
+            length(output) == 1L &&
+            is.na(output)
+        ) {
+          return(NA_character_)
+        }
+        bounded_operation_output(output, operation_name)
+      }, character(1L), USE.NAMES = FALSE)
+    }
     if (in_place) {
       if (identical(inspected$flavor, "r.data.table")) {
         data.table::set(result, j = position, value = transformed)
@@ -10808,6 +10848,17 @@ openwrangler_r_frame_contract <- local({
   }
 
   list(
+    text_case_helpers = list(
+      case_text_values = case_text_values,
+      profile_text_values = profile_text_values,
+      bounded_utf8 = bounded_utf8,
+      bounded_operation_output = bounded_operation_output,
+      abort = abort,
+      storage_length = storage_length,
+      maximum_text_bytes = maximum_text_bytes,
+      maximum_profile_chunk_rows = maximum_profile_chunk_rows,
+      maximum_operation_output_chunk_rows = maximum_operation_output_chunk_rows
+    ),
     nested_operation_helpers = list(
       nested_scalar_vector = nested_scalar_vector,
       charge_repeated_native_column = charge_repeated_native_column,
