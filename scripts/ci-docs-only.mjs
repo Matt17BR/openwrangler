@@ -7,6 +7,7 @@ const runtimeOmissionScriptFiles = new Set([
   "scripts/ci-docs-only.test.mjs",
   "scripts/capture-screenshots.mjs",
   "scripts/capture-screenshots-readiness.mjs",
+  "scripts/compose-readme-media.mjs",
   "scripts/release-metadata.mjs",
   "scripts/release-documents.mjs",
   "scripts/release-readiness.mjs",
@@ -141,7 +142,12 @@ export function proveRuntimeOmissions({ cwd = process.cwd(), env = process.env }
       continue;
     }
     rEditorOmittable = false;
-    if (componentTest || (modified && runtimeOmissionScriptFiles.has(path))) continue;
+    if (
+      componentTest ||
+      (modified && runtimeOmissionScriptFiles.has(path)) ||
+      (modified && /^docs\/images\/[^\p{Cc}]+\.png$/u.test(path))
+    )
+      continue;
     if (pythonSource) {
       pythonOmittable = false;
       continue;
@@ -150,7 +156,6 @@ export function proveRuntimeOmissions({ cwd = process.cwd(), env = process.env }
       rSource ||
       webviewSource ||
       hostSource ||
-      (modified && /^docs\/images\/[^\p{Cc}]+\.png$/u.test(path)) ||
       (modified &&
         (path === "src/test/progressiveProfilingLifecycle.unit.test.tsx" ||
           /^src\/test\/extensionHost\/[^/\p{Cc}]+\.ts$/u.test(path) ||
