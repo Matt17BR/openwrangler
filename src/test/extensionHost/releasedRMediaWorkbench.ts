@@ -86,20 +86,25 @@ export function createReleasedRMediaWorkbench({
           getAttribute(name: string): string | null;
           getBoundingClientRect(): { left: number; right: number };
         };
-        type ScrollerElement = HeaderElement & { querySelectorAll(selector: string): ArrayLike<HeaderElement> };
+        type ScrollerElement = HeaderElement & {
+          readonly clientLeft: number;
+          readonly clientWidth: number;
+          querySelectorAll(selector: string): ArrayLike<HeaderElement>;
+        };
         const scroller = element as unknown as ScrollerElement;
         const bounds = scroller.getBoundingClientRect();
-        const viewportRight = Math.min(bounds.right, clipRight);
+        const viewportLeft = bounds.left + scroller.clientLeft;
+        const viewportRight = Math.min(viewportLeft + scroller.clientWidth, clipRight);
         return Array.from(scroller.querySelectorAll("th[data-column]")).flatMap((header) => {
           const rectangle = header.getBoundingClientRect();
-          if (rectangle.right <= bounds.left + 0.5 || rectangle.left >= viewportRight - 0.5) return [];
+          if (rectangle.right <= viewportLeft + 0.5 || rectangle.left >= viewportRight - 0.5) return [];
           return [
             {
               name: header.getAttribute("data-column"),
-              complete: rectangle.left >= bounds.left - 0.5 && rectangle.right <= viewportRight + 0.5,
+              complete: rectangle.left >= viewportLeft - 0.5 && rectangle.right <= viewportRight + 0.5,
               left: rectangle.left,
               right: rectangle.right,
-              viewportLeft: bounds.left,
+              viewportLeft,
               viewportRight
             }
           ];
@@ -108,7 +113,7 @@ export function createReleasedRMediaWorkbench({
     assert.deepEqual(
       visible.map((header) => header.name),
       expectedNames,
-      `${scene} must show exactly three complete columns.`
+      `${scene} must show exactly three complete columns: ${JSON.stringify(visible)}.`
     );
     assert.ok(
       visible.every((header) => header.complete),
