@@ -4407,22 +4407,45 @@ describe("App file import options", () => {
       expect(webviewPostMessage).toHaveBeenCalledWith({ kind: "installRuntimeDependencies" });
       expect(action).toBeDisabled();
       expect(action).toHaveAttribute("aria-busy", "true");
-      expect(screen.getByText("Waiting for dependency confirmation…")).toHaveAttribute("role", "status");
+      const setupStatus = "Package setup in progress. Confirm installation in the editor if prompted.";
+      dispatchAppMessage({ kind: "runtimeDependencyInstallState", busy: true });
+      if (state === "retained") {
+        dispatchAppMessage({ kind: "importOptionsState", busy: true });
+        expect(screen.getByRole("grid")).toHaveAttribute("aria-busy", "true");
+        expect(screen.queryByText("Loading...", { exact: true })).toBeNull();
+        expect(screen.getByRole("cell", { name: "Milan" })).toBeVisible();
+      }
 
+      expect(screen.getByText(setupStatus)).toHaveAttribute("role", "status");
+      dispatchAppMessage({ kind: "importOptionsState", busy: false });
       dispatchAppMessage({ kind: "runtimeDependencyInstallState", busy: false });
       expect(action).toBeEnabled();
       expect(action).not.toHaveAttribute("aria-busy");
+      expect(screen.queryByText(setupStatus)).toBeNull();
+      fireEvent.click(action);
+      if (state === "retained") dispatchAppMessage({ kind: "importOptionsState", busy: true });
       dispatchAppMessage({
         kind: "error",
         code: "dependency_install_failed",
         message: "Installation could not finish.",
         recoverable: true
       });
+      dispatchAppMessage({ kind: "importOptionsState", busy: false });
+      dispatchAppMessage({ kind: "runtimeDependencyInstallState", busy: false });
       expect(screen.getByRole("button", { name: "Install required packages" })).toBeEnabled();
+      expect(screen.queryByText(setupStatus)).toBeNull();
       if (state === "retained") {
         expect(screen.getByRole("cell", { name: "Milan" })).toBeVisible();
         expect(screen.getByRole("grid")).toHaveAttribute("aria-busy", "false");
       }
+
+      fireEvent.click(screen.getByRole("button", { name: "Install required packages" }));
+      dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+      expect(screen.getByRole("cell", { name: "Milan" })).toBeVisible();
+      expect(screen.getByRole("grid")).toHaveAttribute("aria-busy", "false");
+      expect(screen.queryByRole("button", { name: "Install required packages" })).toBeNull();
+      expect(screen.queryByText(setupStatus)).toBeNull();
+      expect(screen.queryByRole("alert")).toBeNull();
 
       unmount();
       render(<App />);

@@ -25,6 +25,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 ### Fixed
 
 - R opens supported Parquet integer columns carrying legacy annotations, including DuckDB files. Refusals identify the field, its actual annotations and the representation that cannot be preserved.
+- Package setup keeps its status and install action readable beside long errors, without an overlapping loading badge.
 - R startup preserves Unicode runtime paths, and reticulate chunks preserve Unicode text without expanding ordinary strings.
 - Generated R preserves supplementary Unicode characters alongside escaped control characters in paths, column names and values.
 - R header profiles honor the opening preference. Sampled charts identify the sample count used and full non-missing population.

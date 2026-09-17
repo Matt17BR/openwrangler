@@ -82,6 +82,7 @@ try {
   await verifyGridStatusBarBrowserAcceptance(browser, harnessDir);
   await verifyGridColumnHeaderBrowserAcceptance(browser, harnessDir);
   await verifySessionModeDisclosure(browser);
+  await verifyDependencyRecoveryLayout(browser);
   await verifyShortGridProfileResponsiveness(browser);
   await verifyGridClipboardBrowserAcceptance(browser, harnessDir);
   await verifyHoveredRowGutter(browser);
@@ -1410,6 +1411,122 @@ async function verifyInsightsDrawerWorkflow(browser) {
 
   console.log(
     "Column profiles drawer focus, duplicate labels, histogram pointer/keyboard inspection, numeric/text summary-family semantics, and bounded exact extrema verified."
+  );
+}
+
+async function verifyDependencyRecoveryLayout(browser) {
+  for (const { width, zoom } of [
+    { width: 1280, zoom: 1 },
+    { width: 620, zoom: 1 },
+    { width: 720, zoom: 2 }
+  ]) {
+    const page = await browser.newPage();
+    page.setDefaultTimeout(15_000);
+    try {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto(pathToFileURL(resolve(harnessDir, "grid-view.html")).href, { waitUntil: "load" });
+      await page.getByRole("grid").waitFor();
+      await page.addStyleTag({
+        content: `body { zoom: ${zoom}; height: ${100 / zoom}vh; overflow: hidden; } #root, .app { height: 100%; }`
+      });
+      const post = (data) =>
+        page.evaluate((message) => {
+          globalThis.dispatchEvent(new MessageEvent("message", { data: message, origin: globalThis.location.origin }));
+        }, data);
+      const error = {
+        kind: "error",
+        code: "missing_dependencies",
+        message:
+          'Open Wrangler cannot open this source with Pandas using Python at "/synthetic-workspace/environments/a-long-environment-name-for-dependency-recovery/bin/python". Missing or incompatible packages: pyarrow>=25,<26. Install the required packages or choose another interpreter.',
+        recoverable: true
+      };
+      await post(error);
+      const banner = page.getByRole("alert");
+      const action = banner.getByRole("button", { name: "Install required packages" });
+      await action.click();
+      await post({ kind: "importOptionsState", busy: true });
+      await post({ kind: "runtimeDependencyInstallState", busy: true });
+      await page.waitForFunction(() => document.querySelector('[role="grid"]')?.getAttribute("aria-busy") === "true");
+      const layout = await banner.evaluate((element) => {
+        const bounds = element.getBoundingClientRect();
+        const children = [...element.children].map((child) => child.getBoundingClientRect());
+        const button = element.querySelector("button");
+        const text = [...button.childNodes].find((node) => node.nodeType === Node.TEXT_NODE && node.textContent.trim());
+        const range = document.createRange();
+        range.selectNode(text);
+        return {
+          contained: children.every(
+            (child) =>
+              child.left >= bounds.left &&
+              child.right <= bounds.right &&
+              child.top >= bounds.top &&
+              child.bottom <= bounds.bottom
+          ),
+          buttonLines: range.getClientRects().length,
+          loading: [...document.querySelectorAll(".loading")].map((status) => status.textContent)
+        };
+      });
+      if (!layout.contained || layout.buttonLines > 2 || layout.loading.length > 0 || !(await action.isDisabled())) {
+        throw new Error(
+          `Dependency confirmation layout is obscured or redundant at ${width}px / ${zoom}x: ${JSON.stringify(layout)}`
+        );
+      }
+      if ((await page.locator("td[data-grid-row][data-grid-column]").count()) === 0)
+        throw new Error("Dependency recovery discarded the retained grid.");
+      await page.evaluate(() => {
+        globalThis.dispatchEvent(
+          new MessageEvent("message", {
+            data: globalThis.openWranglerSessionPayload,
+            origin: globalThis.location.origin
+          })
+        );
+      });
+      await banner.waitFor({ state: "hidden" });
+      await page.waitForFunction(() => document.querySelector('[role="grid"]')?.getAttribute("aria-busy") === "false");
+
+      const cell = page.locator('[data-grid-row="0"][data-grid-column="0"]');
+      await cell.click();
+      const scroller = page.getByTestId("data-grid-scroller");
+      await scroller.evaluate((element) => {
+        element.scrollLeft = Math.min(60, element.scrollWidth - element.clientWidth);
+      });
+      const viewport = () =>
+        scroller.evaluate((element) => {
+          const bounds = element.getBoundingClientRect();
+          return {
+            x: bounds.x,
+            y: bounds.y,
+            width: bounds.width,
+            height: bounds.height,
+            scrollLeft: element.scrollLeft,
+            scrollTop: element.scrollTop
+          };
+        });
+      const before = await viewport();
+      await post({ kind: "importOptionsState", busy: true });
+      await page.getByText("Loading...", { exact: true }).waitFor();
+      if (
+        JSON.stringify(before) !== JSON.stringify(await viewport()) ||
+        (await cell.getAttribute("aria-selected")) !== "true"
+      ) {
+        throw new Error(`Ordinary refresh moved the grid viewport or selection at ${width}px / ${zoom}x.`);
+      }
+      await post({ ...error, code: "invalid_import_options" });
+      await banner.waitFor();
+      const separate = await page.evaluate(() => {
+        const banner = document.querySelector(".errorBanner").getBoundingClientRect();
+        const status = document.querySelector(".loading").getBoundingClientRect();
+        const shell = document.querySelector(".gridShell").getBoundingClientRect();
+        return status.top >= banner.bottom && status.left >= shell.left && status.right <= shell.right;
+      });
+      if (!separate) throw new Error(`A real loading status overlaps its diagnostic at ${width}px / ${zoom}x.`);
+      await post({ kind: "importOptionsState", busy: false });
+    } finally {
+      await page.close();
+    }
+  }
+  console.log(
+    "Dependency recovery preserves its retained grid and busy barrier with readable, non-overlapping status at narrow widths and 200% zoom."
   );
 }
 
