@@ -10299,7 +10299,9 @@ async function captureReleasedJupyterPySparkLive(
     assert.ok(firstPassGridBox, "The first PySpark media fit requires a measurable grid viewport.");
     assert.ok(firstPassChannelBox, "The first PySpark media fit requires a measurable channel header.");
     const widthCorrection = Math.round(
-      firstPassGridBox.x + firstPassGridBox.width - (firstPassChannelBox.x + firstPassChannelBox.width)
+      firstPassGridBox.x +
+        (await gridScroller.evaluate((scroller) => scroller.clientLeft + scroller.clientWidth)) -
+        (firstPassChannelBox.x + firstPassChannelBox.width)
     );
     if (Math.abs(widthCorrection) > 1) {
       const correctedChannelWidth = alignedColumnWidths.get(channelColumn.id)! + widthCorrection;
@@ -10352,7 +10354,8 @@ async function captureReleasedJupyterPySparkLive(
     assert.ok(orderIdBox, "The PySpark media scene requires the complete order_id header.");
     assert.ok(channelBox, "The PySpark media scene requires the complete channel header.");
     const dataViewportLeft = rowHeaderBox.x + rowHeaderBox.width;
-    const gridRight = gridBox.x + gridBox.width;
+    const gridRight =
+      gridBox.x + (await gridScroller.evaluate((scroller) => scroller.clientLeft + scroller.clientWidth));
     const channelRight = channelBox.x + channelBox.width;
     assert.ok(
       Math.abs(orderIdBox.x - dataViewportLeft) <= 1,
@@ -10715,8 +10718,10 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
     );
     const orderDate = columnReference(active.metadata, "order_date");
     const trailingGap = await app.evaluate((root, columnName) => {
-      type ScreenshotRect = { readonly right: number };
+      type ScreenshotRect = { readonly left: number; readonly right: number };
       type ScreenshotElement = {
+        readonly clientLeft: number;
+        readonly clientWidth: number;
         readonly dataset: Readonly<Record<string, string | undefined>>;
         getBoundingClientRect(): ScreenshotRect;
         querySelector(selector: string): ScreenshotElement | null;
@@ -10728,7 +10733,12 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
         (candidate) => candidate.dataset.column === columnName
       );
       if (!scroller || !header) throw new Error("The screenshot grid fit geometry is incomplete.");
-      return scroller.getBoundingClientRect().right - header.getBoundingClientRect().right;
+      return (
+        scroller.getBoundingClientRect().left +
+        scroller.clientLeft +
+        scroller.clientWidth -
+        header.getBoundingClientRect().right
+      );
     }, orderDate.name);
     assert.ok(trailingGap >= -1, "The final featured screenshot column must not extend beyond the live grid.");
     if (trailingGap > 1) {
@@ -11895,6 +11905,7 @@ async function assertPackagedFilterResultGeometry(app: Locator, sidebar: Locator
     type SceneElement = {
       readonly clientHeight: number;
       readonly clientTop: number;
+      readonly clientLeft: number;
       readonly clientWidth: number;
       readonly scrollWidth: number;
       readonly textContent: string | null;
@@ -11920,7 +11931,7 @@ async function assertPackagedFilterResultGeometry(app: Locator, sidebar: Locator
     );
     const drawerBounds = drawer.getBoundingClientRect();
     const dataLeft = rowHeader.getBoundingClientRect().right;
-    const visibleRight = Math.min(scrollerBounds.right, drawerBounds.left);
+    const visibleRight = Math.min(scrollerBounds.left + scroller.clientLeft + scroller.clientWidth, drawerBounds.left);
     const visibleHeaders = Array.from(appRoot.querySelectorAll("th[data-column]")).filter((header) => {
       const bounds = header.getBoundingClientRect();
       return bounds.right > dataLeft + 1 && bounds.left < visibleRight - 1;
@@ -13206,16 +13217,15 @@ async function fitPackagedProductSceneGrid(
       '#openwrangler-insights-panel[aria-label="Column profiles and filters"]'
     );
     const scrollerBounds = scroller.getBoundingClientRect();
+    const scrollerLeft = scrollerBounds.left + scroller.clientLeft;
+    const scrollerRight = scrollerLeft + scroller.clientWidth;
     const drawerBounds = drawer?.getBoundingClientRect();
     const visibleRight =
-      drawerBounds &&
-      drawerBounds.width > 0 &&
-      drawerBounds.left > scrollerBounds.left &&
-      drawerBounds.left < scrollerBounds.right
+      drawerBounds && drawerBounds.width > 0 && drawerBounds.left > scrollerLeft && drawerBounds.left < scrollerRight
         ? drawerBounds.left
-        : scrollerBounds.right;
+        : scrollerRight;
     return {
-      visibleWidth: visibleRight - scrollerBounds.left,
+      visibleWidth: visibleRight - scrollerLeft,
       rowHeaderWidth: rowHeader.getBoundingClientRect().width
     };
   });
@@ -13249,6 +13259,8 @@ async function fitPackagedProductSceneGrid(
   const revenue = columnReference(active.metadata, "revenue");
   const trailingGap = await app.evaluate((root, columnName) => {
     type ProductSceneElement = {
+      readonly clientLeft: number;
+      readonly clientWidth: number;
       getAttribute(name: string): string | null;
       getBoundingClientRect(): { left: number; right: number; width: number };
       querySelector(selector: string): ProductSceneElement | null;
@@ -13262,14 +13274,13 @@ async function fitPackagedProductSceneGrid(
     );
     if (!scroller || !header) throw new Error("The product-scene grid fit geometry is incomplete.");
     const scrollerBounds = scroller.getBoundingClientRect();
+    const scrollerLeft = scrollerBounds.left + scroller.clientLeft;
+    const scrollerRight = scrollerLeft + scroller.clientWidth;
     const drawerBounds = drawer?.getBoundingClientRect();
     const visibleRight =
-      drawerBounds &&
-      drawerBounds.width > 0 &&
-      drawerBounds.left > scrollerBounds.left &&
-      drawerBounds.left < scrollerBounds.right
+      drawerBounds && drawerBounds.width > 0 && drawerBounds.left > scrollerLeft && drawerBounds.left < scrollerRight
         ? drawerBounds.left
-        : scrollerBounds.right;
+        : scrollerRight;
     return visibleRight - header.getBoundingClientRect().right;
   }, revenue.name);
   if (Math.abs(trailingGap) > 1) {
@@ -13412,8 +13423,10 @@ async function fitPackagedUppercasePlanGrid(testing: TestApi, workbench: Page, s
   assert.ok(app, "The final uppercase-plan width adjustment requires the exact production renderer.");
   const trailingGap = await app.evaluate((root, columnName) => {
     type UppercaseSceneElement = {
+      readonly clientLeft: number;
+      readonly clientWidth: number;
       getAttribute(name: string): string | null;
-      getBoundingClientRect(): { right: number };
+      getBoundingClientRect(): { left: number; right: number };
       querySelector(selector: string): UppercaseSceneElement | null;
       querySelectorAll(selector: string): ArrayLike<UppercaseSceneElement>;
     };
@@ -13423,7 +13436,12 @@ async function fitPackagedUppercasePlanGrid(testing: TestApi, workbench: Page, s
       (candidate) => candidate.getAttribute("data-column") === columnName
     );
     if (!scroller || !header) throw new Error("The uppercase-plan fit geometry is incomplete.");
-    return scroller.getBoundingClientRect().right - header.getBoundingClientRect().right;
+    return (
+      scroller.getBoundingClientRect().left +
+      scroller.clientLeft +
+      scroller.clientWidth -
+      header.getBoundingClientRect().right
+    );
   }, marketUpper.name);
   if (Math.abs(trailingGap) > 1) {
     const adjusted = (columnWidths.get(marketUpper.id) ?? widths.at(-1)!) + Math.floor(trailingGap);
@@ -13793,8 +13811,10 @@ async function fitPackagedSidebarOverviewGrid(testing: TestApi, workbench: Page,
   assert.ok(app, "The native-view overview must retain its renderer for its final width adjustment.");
   const trailingGap = await app.evaluate((root, finalColumnName) => {
     type OverviewElement = {
+      readonly clientLeft: number;
+      readonly clientWidth: number;
       getAttribute(name: string): string | null;
-      getBoundingClientRect(): { right: number };
+      getBoundingClientRect(): { left: number; right: number };
       querySelector(selector: string): OverviewElement | null;
       querySelectorAll(selector: string): ArrayLike<OverviewElement>;
     };
@@ -13804,7 +13824,12 @@ async function fitPackagedSidebarOverviewGrid(testing: TestApi, workbench: Page,
       (candidate) => candidate.getAttribute("data-column") === finalColumnName
     );
     if (!scroller || !finalHeader) throw new Error("The overview grid width geometry is incomplete.");
-    return scroller.getBoundingClientRect().right - finalHeader.getBoundingClientRect().right;
+    return (
+      scroller.getBoundingClientRect().left +
+      scroller.clientLeft +
+      scroller.clientWidth -
+      finalHeader.getBoundingClientRect().right
+    );
   }, names.at(-1)!);
   if (Math.abs(trailingGap) > 1) {
     const adjusted = (columnWidths.get(selected.id) ?? widths.at(-1)!) + Math.floor(trailingGap);
@@ -13996,9 +14021,10 @@ async function measurePackagedOverviewGrid(app: Locator): Promise<{
     if (!scroller || !rowHeader) throw new Error("The overview grid geometry is incomplete.");
     const bounds = scroller.getBoundingClientRect();
     const dataLeft = rowHeader.getBoundingClientRect().right;
+    const scrollerRight = bounds.left + scroller.clientLeft + scroller.clientWidth;
     const visible = Array.from(appRoot.querySelectorAll("th[data-column]")).filter((header) => {
       const headerBounds = header.getBoundingClientRect();
-      return headerBounds.right > dataLeft + 1 && headerBounds.left < bounds.right - 1;
+      return headerBounds.right > dataLeft + 1 && headerBounds.left < scrollerRight - 1;
     });
     const appBounds = appRoot.getBoundingClientRect();
     const viewport = appRoot.ownerDocument.defaultView;
@@ -14039,7 +14065,7 @@ async function measurePackagedOverviewGrid(app: Locator): Promise<{
       partialHeaders: visible
         .filter((header) => {
           const headerBounds = header.getBoundingClientRect();
-          return headerBounds.left < dataLeft - 1 || headerBounds.right > bounds.right + 1;
+          return headerBounds.left < dataLeft - 1 || headerBounds.right > scrollerRight + 1;
         })
         .map((header) => header.getAttribute("data-column") ?? ""),
       clippedTitles: visible
@@ -14114,6 +14140,7 @@ async function assertPackagedExploreScene(
   const measurement = await app.evaluate((root) => {
     type ProductSceneRect = { left: number; right: number; width: number };
     type ProductSceneElement = {
+      readonly clientLeft: number;
       readonly clientWidth: number;
       readonly scrollLeft: number;
       readonly scrollWidth: number;
@@ -14134,12 +14161,14 @@ async function assertPackagedExploreScene(
       throw new Error("The Explore product layout is incomplete.");
     }
     const scrollerBounds = scroller.getBoundingClientRect();
+    const scrollerLeft = scrollerBounds.left + scroller.clientLeft;
+    const scrollerRight = scrollerLeft + scroller.clientWidth;
     const dataLeft = rowHeader.getBoundingClientRect().right;
     const drawerBounds = drawer.getBoundingClientRect();
     const visibleRight =
-      drawerBounds.width > 0 && drawerBounds.left > scrollerBounds.left && drawerBounds.left < scrollerBounds.right
+      drawerBounds.width > 0 && drawerBounds.left > scrollerLeft && drawerBounds.left < scrollerRight
         ? drawerBounds.left
-        : scrollerBounds.right;
+        : scrollerRight;
     const visibleHeaders = Array.from(appRoot.querySelectorAll("th[data-column]")).filter((header) => {
       const bounds = header.getBoundingClientRect();
       return bounds.right > dataLeft + 1 && bounds.left < visibleRight - 1;
@@ -14238,6 +14267,7 @@ async function assertPackagedWorkflowScene(
   const measurement = await app.evaluate((root) => {
     type ProductSceneRect = { bottom: number; height: number; left: number; right: number; top: number; width: number };
     type ProductSceneElement = {
+      readonly clientLeft: number;
       readonly clientWidth: number;
       readonly scrollLeft: number;
       readonly scrollWidth: number;
@@ -14258,10 +14288,11 @@ async function assertPackagedWorkflowScene(
       throw new Error("The Workflow product layout is incomplete.");
     }
     const scrollerBounds = scroller.getBoundingClientRect();
+    const scrollerRight = scrollerBounds.left + scroller.clientLeft + scroller.clientWidth;
     const dataLeft = rowHeader.getBoundingClientRect().right;
     const visibleHeaders = Array.from(appRoot.querySelectorAll("th[data-column]")).filter((header) => {
       const bounds = header.getBoundingClientRect();
-      return bounds.right > dataLeft + 1 && bounds.left < scrollerBounds.right - 1;
+      return bounds.right > dataLeft + 1 && bounds.left < scrollerRight - 1;
     });
     return {
       layoutOverflow: layout.scrollWidth - layout.clientWidth,
@@ -14275,7 +14306,7 @@ async function assertPackagedWorkflowScene(
       partialHeaders: visibleHeaders
         .filter((header) => {
           const bounds = header.getBoundingClientRect();
-          return bounds.left < dataLeft - 1 || bounds.right > scrollerBounds.right + 1;
+          return bounds.left < dataLeft - 1 || bounds.right > scrollerRight + 1;
         })
         .map((header) => header.getAttribute("data-column") ?? ""),
       clippedTitles: visibleHeaders
