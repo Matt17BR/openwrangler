@@ -44,17 +44,19 @@ reports and update this pointer when the new results are reviewed and merged. Th
 
 ## Workbench design
 
-[Open Wrangler 3.0](https://github.com/Matt17BR/openwrangler/milestone/17) records the workbench design direction.
-[Design selection](https://github.com/Matt17BR/openwrangler/issues/1397) retains native navigation and cleaning history
+[The selected workbench improvements](https://github.com/Matt17BR/openwrangler/issues/1397) belong to 2.6. They retain native navigation and cleaning history
 beside the central grid, the column-profile drawer, modal operation settings and native Code Preview. Draft and
 inspection actions stay beside their result. Compared alternatives added scrolling or obscured useful context without
 demonstrating a task advantage. At narrow widths, open native sidebars and Code Preview reduce the data area and require
 scrolling or panel resizing.
 
-The selected corrections, wide and narrow workflow checks, keyboard/accessibility checks and refreshed media landed
-in [#1539](https://github.com/Matt17BR/openwrangler/pull/1539) and are included in the current 2.6 source. They are no
-longer pending work held until after 2.6. The design issue retains the observations and tradeoffs; any remaining 3.0
-scope needs separate selection. The milestone does not authorize a major-version bump or publication.
+The corrections, wide and narrow workflow checks, keyboard/accessibility checks and earlier media landed in
+[#1539](https://github.com/Matt17BR/openwrangler/pull/1539). The remaining delivery check uses
+[#1554](https://github.com/Matt17BR/openwrangler/issues/1554) to review the final product's public images and captions.
+The design issue retains the observations and tradeoffs; it does not require another redesign or duplicate capture.
+
+A materially different [future visual direction](https://github.com/Matt17BR/openwrangler/milestone/17) remains
+unselected. The implemented improvements do not establish that direction or authorize a major-version bump.
 
 ## Feature proposals
 
