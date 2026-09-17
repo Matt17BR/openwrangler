@@ -1224,6 +1224,86 @@ def test_pandas_string_profiles_count_native_missing_sentinels_without_boxing(
     pd.testing.assert_frame_equal(source, before)
 
 
+@pytest.mark.parametrize("scalar_owner", ["_scalar_mask", "_pandas_numeric_key_value"])
+def test_pandas_object_string_profiles_avoid_scalar_fallbacks(
+    monkeypatch: pytest.MonkeyPatch, scalar_owner: str
+) -> None:
+    source = pd.DataFrame({"value": pd.Series(["abc", "abc", "", "nan", "é", "😀"], dtype=object)})
+    source.index = pd.Index([4, 4, 2, 1, 1, 0], name="retained")
+    source.attrs["origin"] = "retained"
+    before = source.copy(deep=True)
+    engine = PandasEngine()
+    expected = engine.summaries(source)
+    summary = expected[0]
+    assert (summary["totalCount"], summary["nullCount"], summary["nanCount"], summary["distinctCount"]) == (6, 0, 0, 5)
+    assert summary["text"] == {"emptyCount": 1, "minLength": 0, "maxLength": 3, "meanLength": 11 / 6}
+    assert summary["topValues"] == [
+        {"value": value, "count": count, "selectionValue": engine_base.typed_selection_value(value, "string")}
+        for value, count in [("abc", 2), ("", 1), ("nan", 1), ("é", 1), ("😀", 1)]
+    ]
+
+    def reject_scalar_fallback(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("Nonmissing object strings must not enter per-value missing or numeric-key helpers")
+
+    monkeypatch.setattr(pandas_engine_module, scalar_owner, reject_scalar_fallback)
+    assert engine.summaries(source) == expected
+    assert engine.missing_count(source, 0) == 0
+    helpers: dict[str, Any] = {"np": np, "pd": pd}
+    exec("\n".join(pandas_engine_module._generated_pandas_numeric_key_helpers()), helpers)
+    helpers["_open_wrangler_numeric_key_value"] = reject_scalar_fallback
+    series = source["value"]
+    assert helpers["_open_wrangler_numeric_key"](series) is series
+    schema = engine.schema(source)
+    lineage = source_lineage(schema)
+    operation = bind_step(
+        {"id": "mark", "kind": "markDuplicates", "params": {"columns": lineage, "newColumn": "duplicate"}},
+        schema,
+        lineage,
+    )
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([operation]), namespace)
+    marked = source.assign(duplicate=[True, True, False, False, False, False])
+    for actual in [engine.apply_transform(source, operation), namespace["clean_data"](source)]:
+        pd.testing.assert_frame_equal(actual, marked)
+    pd.testing.assert_frame_equal(source, before)
+    assert source.attrs == before.attrs
+
+
+@pytest.mark.parametrize(
+    ("outlier", "expected_missing"),
+    [
+        (None, (1, 0)),
+        (pd.NA, (1, 0)),
+        (pd.NaT, (1, 0)),
+        (np.datetime64("NaT", "ns"), (1, 0)),
+        (np.nan, (0, 1)),
+        (Decimal("NaN"), (0, 1)),
+        (Decimal("sNaN"), (0, 1)),
+        (np.uint64(2**63 + 1), (0, 0)),
+        (np.float32(0.5), (0, 0)),
+    ],
+)
+def test_pandas_object_string_fast_path_does_not_skip_late_outliers(
+    outlier: Any, expected_missing: tuple[int, int]
+) -> None:
+    series = pd.Series(["ordinary"] * 4096 + [outlier], dtype=object)
+    before = series.copy(deep=True)
+    assert pandas_engine_module._missing_value_counts(series) == expected_missing
+    expected = pandas_engine_module._pandas_numeric_key_value(outlier)
+    namespace: dict[str, Any] = {"np": np, "pd": pd}
+    exec("\n".join(pandas_engine_module._generated_pandas_numeric_key_helpers()), namespace)
+    for keys in [pandas_engine_module._pandas_numeric_key(series), namespace["_open_wrangler_numeric_key"](series)]:
+        assert keys.iloc[:-1].eq("ordinary").all()
+        actual = keys.iloc[-1]
+        if expected is outlier:
+            assert actual is outlier
+        else:
+            assert type(actual) is type(expected) and actual == expected
+    assert series.dtype == before.dtype
+    pd.testing.assert_index_equal(series.index, before.index)
+    assert all(actual is original for actual, original in zip(series.array, before.array, strict=True))
+
+
 @pytest.mark.parametrize("use_inf_as_na", [False, True])
 @pytest.mark.filterwarnings("ignore:use_inf_as_na option is deprecated:FutureWarning")
 def test_pandas_native_missing_counts_agree_with_filter_and_fill(use_inf_as_na: bool) -> None:
@@ -1365,6 +1445,14 @@ def test_pandas_missing_classification_preserves_subclass_overrides() -> None:
     assert pandas_engine_module._missing_value_counts(series) == (0, 3)
     assert pandas_engine_module._null_mask(series).tolist() == [False, False, False]
     assert pandas_engine_module._nan_mask(series).tolist() == [False, True, False]
+
+    class CustomObjectSeries(pd.Series):
+        @property
+        def array(self) -> Any:
+            return pd.array([None] * len(self), dtype=object)
+
+    objects = CustomObjectSeries(["ordinary", "text"], dtype=object)
+    assert pandas_engine_module._missing_value_counts(objects) == (2, 0)
 
     class CustomFrame(pd.DataFrame):
         _constructor_sliced: Any = CustomSeries

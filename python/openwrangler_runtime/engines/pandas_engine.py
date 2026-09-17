@@ -610,6 +610,8 @@ def _pandas_numeric_key(series: Any) -> Any:
         _pandas_validate_query_values(series)
         return series
     values = series.to_numpy(copy=False)
+    if type(series) is pd.Series and pd.api.types.infer_dtype(values, skipna=False) == "string":
+        return series
     converted = None
     for position, value in enumerate(values):
         replacement = _pandas_numeric_key_value(value)
@@ -6378,6 +6380,8 @@ def _generated_pandas_numeric_key_helpers() -> list[str]:
         "        _open_wrangler_validate_query_values(series)",
         "        return series",
         "    values = series.to_numpy(copy=False)",
+        '    if type(series) is pd.Series and pd.api.types.infer_dtype(values, skipna=False) == "string":',
+        "        return series",
         "    converted = None",
         "    for position, value in enumerate(values):",
         "        replacement = _open_wrangler_numeric_key_value(value)",
@@ -6862,12 +6866,16 @@ def _pandas_numeric_visualization(series: Any, max_bins: int = 20) -> dict[str, 
 
 
 def _missing_value_counts(series: Any) -> tuple[int, int]:
-    # NumPy-backed and StringDtype values have unambiguous missing storage.
-    # Other extension and object dtypes retain exact scalar classification.
     import numpy as np
     import pandas as pd
 
     dtype = series.dtype
+    if (
+        type(series) is pd.Series
+        and pd.api.types.is_object_dtype(dtype)
+        and pd.api.types.infer_dtype(series.to_numpy(copy=False), skipna=False) == "string"
+    ):
+        return 0, 0
     if type(series) is pd.Series and isinstance(dtype, pd.StringDtype):
         if dtype.na_value is pd.NA:
             return int(series.isna().sum()), 0
