@@ -1,8 +1,8 @@
-export type PackagedEvidenceTheme = "dark" | "light" | "high-contrast";
+export type PackagedEvidenceTheme = "dark" | "high-contrast";
 
 export type PackagedEvidenceRunnerKey = "workbench" | "notebook-output" | "notebook-workbench";
 
-export type PackagedEvidenceViewportKey = "showcase" | "product" | "pandas-output" | "notebook";
+export type PackagedEvidenceViewportKey = "product" | "pandas-output" | "notebook";
 
 interface PackagedEvidenceSceneDefinition {
   readonly id: string;
@@ -12,7 +12,6 @@ interface PackagedEvidenceSceneDefinition {
 }
 
 export const PACKAGED_EVIDENCE_SCENES = [
-  { id: "hero", runnerKey: "workbench", viewportKey: "showcase", themes: ["dark", "light"] },
   { id: "file-explorer-action", runnerKey: "workbench", viewportKey: "product", themes: ["dark"] },
   { id: "explore", runnerKey: "workbench", viewportKey: "product", themes: ["dark"] },
   {
