@@ -9491,16 +9491,14 @@ async function captureReleasedJupyterPolarsDraft(
   );
   const codePreview = await waitForCodePreview(workbench, "double_units");
   assert.equal(await codePreview.count(), 1, "The Polars notebook screenshot must render one Code Preview editor.");
-  const codeText = await codePreview.innerText();
-  assert.ok(codeText.includes("import polars as pl"), "The Polars notebook screenshot must show its native import.");
+  const codeText = await revealCodePreviewText(codePreview, "double_units");
+  assert.equal(codeText, active.code, "The Polars notebook screenshot must retain the exact draft code.");
+  assert.ok(codeText.includes("import polars as pl"), "The generated Polars code must include its native import.");
   assert.ok(
     codeText.includes("pl.col('units') * pl.lit(2)"),
-    "The Polars notebook screenshot must show its native formula expression."
+    "The generated Polars code must include its native formula expression."
   );
-  assert.ok(
-    codeText.includes(".alias('double_units')"),
-    "The Polars notebook screenshot must show the generated output alias."
-  );
+  await revealCodePreviewOperationLine(codePreview, "df = df.with_columns(", "return df");
   const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
   const app = await exactSessionApp(target.frame, sessionId);
   assert.ok(app, "The Polars notebook screenshot requires the exact live Open Wrangler renderer.");
