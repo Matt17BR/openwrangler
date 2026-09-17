@@ -1820,6 +1820,11 @@ add in decimal text before final double conversion. Dense Rank appends integer r
 bound: missing values stay missing, signed zeros tie and infinities remain present. Mark Duplicates appends a nonmissing
 logical flag for every member of a selected-key duplicate group. Both preserve original rows and compatible keys.
 
+Lowercase and Uppercase normalize and convert text in batches of at most 1,024 source rows. They share their
+value kernel with generated code and retain R's locale-sensitive case rules. A batch with invalid or oversized text
+replays in source order so an earlier output refusal still precedes a later input refusal. Generated failures use
+the live error codes and source-row labels. Other text operations retain their own scalar rules.
+
 Text operations accept character/factor input and preserve `NA`; transformed factors become character. Text Length
 counts Unicode characters and appends integer output. Split uses a literal delimiter and yields `NA` for an absent
 part. Strip uses whitespace or a literal character set. In-place text changes to a data-table key are refused; a new

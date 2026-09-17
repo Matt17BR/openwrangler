@@ -33,6 +33,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 - R header profiles honor the opening preference. Sampled charts identify the sample count used and full non-missing population.
 - Large R numeric histograms count every finite value, and numeric distinct counts stay exact through 10,000 values. Categorical profiles use exact counts within bounded memory; larger sets retain labeled sampling.
 - R text profiles avoid repeated conversion work for small, large and filtered columns.
+- R Lowercase and Uppercase convert text in bounded batches, with matching generated code and ordered error reporting.
 - Offscreen columns no longer trigger header profiling.
 - Compact categorical headers include all omitted categories in Other.
 - R terminal commands honor bracketed paste, preventing radian from interpreting private command fragments as global assignments.

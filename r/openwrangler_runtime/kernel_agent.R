@@ -8558,6 +8558,17 @@ openwrangler_r_kernel_agent <- local({
         "  .ow_data_table_alloccol <- if (base::identical(.ow_source_flavor, \"r.data.table\")) .ow_prepare_data_table_alloccol() else NULL"
       )
     }
+    if (any(vapply(bound_plan, function(step) step$kind %in% c("lowerText", "upperText"), logical(1L)))) {
+      lines <- c(lines, "  .ow_text_case <- base::evalq({")
+      for (name in names(frame_contract$text_case_helpers)) {
+        lines <- c(
+          lines,
+          sprintf("    %s <-", name),
+          paste0("    ", deparse(frame_contract$text_case_helpers[[name]], width.cutoff = 500L))
+        )
+      }
+      lines <- c(lines, "    case_text_values", "  }, base::new.env(parent = base::baseenv()))")
+    }
     if (any(vapply(bound_plan, function(step) {
       identical(step$kind, "findReplace") && isTRUE(step$regex)
     }, logical(1L)))) {
@@ -9499,106 +9510,106 @@ openwrangler_r_kernel_agent <- local({
             sprintf("  .ow_text_part_index <- %.0f", step$index)
           )
         }
-        lines <- c(
-          lines,
-          "  .ow_text_values <- vapply(seq_along(.ow_text_source), function(.ow_index) {",
-          "    .ow_value <- .ow_text_source[[.ow_index]]",
-          "    if (is.na(.ow_value)) return(NA_character_)",
-          sprintf(
-            "    if (identical(Encoding(.ow_value), \"bytes\")) stop(\"Open Wrangler %s requires valid UTF-8 text\", call. = FALSE)",
-            operation_name
-          ),
-          "    .ow_encoding <- Encoding(.ow_value)",
-          "    .ow_from <- if (identical(.ow_encoding, \"latin1\")) \"latin1\" else \"UTF-8\"",
-          "    .ow_utf8 <- iconv(.ow_value, from = .ow_from, to = \"UTF-8\", sub = NA_character_)",
-          sprintf(
-            "    if (is.na(.ow_utf8) || nchar(.ow_utf8, type = \"bytes\") > 8192L) stop(\"Open Wrangler %s requires bounded valid UTF-8 text\", call. = FALSE)",
-            operation_name
-          )
-        )
-        if (identical(step$kind, "lowerText")) {
-          lines <- c(lines, "    .ow_output <- tolower(.ow_utf8)")
-        } else if (identical(step$kind, "upperText")) {
-          lines <- c(lines, "    .ow_output <- toupper(.ow_utf8)")
-        } else if (identical(step$kind, "capitalizeText")) {
-          lines <- c(
-            lines,
-            "    .ow_characters <- strsplit(.ow_utf8, \"\", fixed = TRUE)[[1L]]",
-            "    .ow_output <- if (length(.ow_characters) == 0L) \"\" else paste0(toupper(.ow_characters[[1L]]), if (length(.ow_characters) == 1L) \"\" else tolower(paste0(.ow_characters[-1L], collapse = \"\")))"
-          )
-        } else if (identical(step$kind, "stripText")) {
-          lines <- c(
-            lines,
-            "    .ow_characters <- strsplit(.ow_utf8, \"\", fixed = TRUE)[[1L]]",
-            "    .ow_retained <- which(!.ow_characters %in% .ow_text_strip_characters)",
-            "    .ow_output <- if (length(.ow_retained) == 0L) \"\" else paste0(.ow_characters[seq.int(.ow_retained[[1L]], .ow_retained[[length(.ow_retained)]])], collapse = \"\")"
-          )
-        } else if (identical(step$kind, "splitText")) {
-          lines <- c(
-            lines,
-            "    .ow_matches <- gregexpr(.ow_text_delimiter, .ow_utf8, fixed = TRUE)[[1L]]",
-            "    if (length(.ow_matches) == 1L && identical(as.integer(.ow_matches[[1L]]), -1L)) {",
-            "      .ow_output <- if (identical(.ow_text_part_index, 0)) .ow_utf8 else NA_character_",
-            "    } else if (.ow_text_part_index >= length(.ow_matches) + 1L) {",
-            "      .ow_output <- NA_character_",
-            "    } else {",
-            "      .ow_part <- as.integer(.ow_text_part_index) + 1L",
-            "      .ow_match_lengths <- attr(.ow_matches, \"match.length\", exact = TRUE)",
-            "      .ow_start <- if (.ow_part == 1L) 1L else .ow_matches[[.ow_part - 1L]] + .ow_match_lengths[[.ow_part - 1L]]",
-            "      .ow_end <- if (.ow_part <= length(.ow_matches)) .ow_matches[[.ow_part]] - 1L else nchar(.ow_utf8, type = \"chars\")",
-            "      .ow_output <- if (.ow_start > .ow_end) \"\" else substr(.ow_utf8, .ow_start, .ow_end)",
-            "    }"
-          )
-        } else if (isTRUE(step$regex)) {
-          lines <- c(
-            lines,
-            "    .ow_output <- .ow_replace_regex(.ow_utf8)"
-          )
+        if (step$kind %in% c("lowerText", "upperText")) {
+          lines <- c(lines, sprintf("  .ow_text_values <- .ow_text_case(.ow_text_source, %s)", r_string(step$kind)))
         } else {
           lines <- c(
             lines,
-            "    .ow_input_bytes <- as.double(nchar(.ow_utf8, type = \"bytes\"))",
-            "    .ow_replacement_bytes <- as.double(nchar(.ow_text_replacement, type = \"bytes\"))",
-            "    if (identical(.ow_text_find, \"\")) {",
-            "      .ow_projected_bytes <- .ow_input_bytes + (nchar(.ow_utf8, type = \"chars\") + 1) * .ow_replacement_bytes",
-            "      if (!is.finite(.ow_projected_bytes) || .ow_projected_bytes > 8192L) stop(\"Open Wrangler Find and Replace would produce text longer than 8192 UTF-8 bytes\", call. = FALSE)",
-            "      .ow_text_literal_replacement <- gsub(\"\\\\\", \"\\\\\\\\\", .ow_text_replacement, fixed = TRUE)",
-            "      .ow_output <- gsub(\"\", .ow_text_literal_replacement, .ow_utf8, perl = TRUE)",
-            "    } else {",
-            "      .ow_literal_matches <- gregexpr(.ow_text_find, .ow_utf8, fixed = TRUE)[[1L]]",
-            "      .ow_match_count <- if (length(.ow_literal_matches) == 1L && identical(as.integer(.ow_literal_matches[[1L]]), -1L)) 0 else length(.ow_literal_matches)",
-            "      .ow_projected_bytes <- .ow_input_bytes + .ow_match_count * (.ow_replacement_bytes - nchar(.ow_text_find, type = \"bytes\"))",
-            "      if (!is.finite(.ow_projected_bytes) || .ow_projected_bytes > 8192L) stop(\"Open Wrangler Find and Replace would produce text longer than 8192 UTF-8 bytes\", call. = FALSE)",
-            "      .ow_output <- if (.ow_match_count == 0L) .ow_utf8 else gsub(.ow_text_find, .ow_text_replacement, .ow_utf8, fixed = TRUE)",
-            "    }"
+            "  .ow_text_values <- vapply(seq_along(.ow_text_source), function(.ow_index) {",
+            "    .ow_value <- .ow_text_source[[.ow_index]]",
+            "    if (is.na(.ow_value)) return(NA_character_)",
+            sprintf(
+              "    if (identical(Encoding(.ow_value), \"bytes\")) stop(\"Open Wrangler %s requires valid UTF-8 text\", call. = FALSE)",
+              operation_name
+            ),
+            "    .ow_encoding <- Encoding(.ow_value)",
+            "    .ow_from <- if (identical(.ow_encoding, \"latin1\")) \"latin1\" else \"UTF-8\"",
+            "    .ow_utf8 <- iconv(.ow_value, from = .ow_from, to = \"UTF-8\", sub = NA_character_)",
+            sprintf(
+              "    if (is.na(.ow_utf8) || nchar(.ow_utf8, type = \"bytes\") > 8192L) stop(\"Open Wrangler %s requires bounded valid UTF-8 text\", call. = FALSE)",
+              operation_name
+            )
+          )
+          if (identical(step$kind, "capitalizeText")) {
+            lines <- c(
+              lines,
+              "    .ow_characters <- strsplit(.ow_utf8, \"\", fixed = TRUE)[[1L]]",
+              "    .ow_output <- if (length(.ow_characters) == 0L) \"\" else paste0(toupper(.ow_characters[[1L]]), if (length(.ow_characters) == 1L) \"\" else tolower(paste0(.ow_characters[-1L], collapse = \"\")))"
+            )
+          } else if (identical(step$kind, "stripText")) {
+            lines <- c(
+              lines,
+              "    .ow_characters <- strsplit(.ow_utf8, \"\", fixed = TRUE)[[1L]]",
+              "    .ow_retained <- which(!.ow_characters %in% .ow_text_strip_characters)",
+              "    .ow_output <- if (length(.ow_retained) == 0L) \"\" else paste0(.ow_characters[seq.int(.ow_retained[[1L]], .ow_retained[[length(.ow_retained)]])], collapse = \"\")"
+            )
+          } else if (identical(step$kind, "splitText")) {
+            lines <- c(
+              lines,
+              "    .ow_matches <- gregexpr(.ow_text_delimiter, .ow_utf8, fixed = TRUE)[[1L]]",
+              "    if (length(.ow_matches) == 1L && identical(as.integer(.ow_matches[[1L]]), -1L)) {",
+              "      .ow_output <- if (identical(.ow_text_part_index, 0)) .ow_utf8 else NA_character_",
+              "    } else if (.ow_text_part_index >= length(.ow_matches) + 1L) {",
+              "      .ow_output <- NA_character_",
+              "    } else {",
+              "      .ow_part <- as.integer(.ow_text_part_index) + 1L",
+              "      .ow_match_lengths <- attr(.ow_matches, \"match.length\", exact = TRUE)",
+              "      .ow_start <- if (.ow_part == 1L) 1L else .ow_matches[[.ow_part - 1L]] + .ow_match_lengths[[.ow_part - 1L]]",
+              "      .ow_end <- if (.ow_part <= length(.ow_matches)) .ow_matches[[.ow_part]] - 1L else nchar(.ow_utf8, type = \"chars\")",
+              "      .ow_output <- if (.ow_start > .ow_end) \"\" else substr(.ow_utf8, .ow_start, .ow_end)",
+              "    }"
+            )
+          } else if (isTRUE(step$regex)) {
+            lines <- c(
+              lines,
+              "    .ow_output <- .ow_replace_regex(.ow_utf8)"
+            )
+          } else {
+            lines <- c(
+              lines,
+              "    .ow_input_bytes <- as.double(nchar(.ow_utf8, type = \"bytes\"))",
+              "    .ow_replacement_bytes <- as.double(nchar(.ow_text_replacement, type = \"bytes\"))",
+              "    if (identical(.ow_text_find, \"\")) {",
+              "      .ow_projected_bytes <- .ow_input_bytes + (nchar(.ow_utf8, type = \"chars\") + 1) * .ow_replacement_bytes",
+              "      if (!is.finite(.ow_projected_bytes) || .ow_projected_bytes > 8192L) stop(\"Open Wrangler Find and Replace would produce text longer than 8192 UTF-8 bytes\", call. = FALSE)",
+              "      .ow_text_literal_replacement <- gsub(\"\\\\\", \"\\\\\\\\\", .ow_text_replacement, fixed = TRUE)",
+              "      .ow_output <- gsub(\"\", .ow_text_literal_replacement, .ow_utf8, perl = TRUE)",
+              "    } else {",
+              "      .ow_literal_matches <- gregexpr(.ow_text_find, .ow_utf8, fixed = TRUE)[[1L]]",
+              "      .ow_match_count <- if (length(.ow_literal_matches) == 1L && identical(as.integer(.ow_literal_matches[[1L]]), -1L)) 0 else length(.ow_literal_matches)",
+              "      .ow_projected_bytes <- .ow_input_bytes + .ow_match_count * (.ow_replacement_bytes - nchar(.ow_text_find, type = \"bytes\"))",
+              "      if (!is.finite(.ow_projected_bytes) || .ow_projected_bytes > 8192L) stop(\"Open Wrangler Find and Replace would produce text longer than 8192 UTF-8 bytes\", call. = FALSE)",
+              "      .ow_output <- if (.ow_match_count == 0L) .ow_utf8 else gsub(.ow_text_find, .ow_text_replacement, .ow_utf8, fixed = TRUE)",
+              "    }"
+            )
+          }
+          lines <- c(
+            lines,
+            if (identical(step$kind, "splitText")) {
+              "    if (is.character(.ow_output) && length(.ow_output) == 1L && is.na(.ow_output)) return(NA_character_)"
+            } else {
+              character()
+            },
+            "    if (!is.character(.ow_output) || length(.ow_output) != 1L || is.na(.ow_output)) stop(\"Open Wrangler text transform returned an invalid result\", call. = FALSE)",
+            sprintf(
+              "    if (identical(Encoding(.ow_output), \"bytes\")) stop(\"Open Wrangler %s produced invalid UTF-8 text\", call. = FALSE)",
+              operation_name
+            ),
+            "    .ow_encoding <- Encoding(.ow_output)",
+            "    .ow_from <- if (identical(.ow_encoding, \"latin1\")) \"latin1\" else \"UTF-8\"",
+            "    .ow_output_utf8 <- iconv(.ow_output, from = .ow_from, to = \"UTF-8\", sub = NA_character_)",
+            sprintf(
+              "    if (is.na(.ow_output_utf8)) stop(\"Open Wrangler %s produced invalid UTF-8 text\", call. = FALSE)",
+              operation_name
+            ),
+            sprintf(
+              "    if (nchar(.ow_output_utf8, type = \"bytes\") > 8192L) stop(\"Open Wrangler %s would produce text longer than 8192 UTF-8 bytes\", call. = FALSE)",
+              operation_name
+            ),
+            "    .ow_output_utf8",
+            "  }, character(1L), USE.NAMES = FALSE)"
           )
         }
-        lines <- c(
-          lines,
-          if (identical(step$kind, "splitText")) {
-            "    if (is.character(.ow_output) && length(.ow_output) == 1L && is.na(.ow_output)) return(NA_character_)"
-          } else {
-            character()
-          },
-          "    if (!is.character(.ow_output) || length(.ow_output) != 1L || is.na(.ow_output)) stop(\"Open Wrangler text transform returned an invalid result\", call. = FALSE)",
-          sprintf(
-            "    if (identical(Encoding(.ow_output), \"bytes\")) stop(\"Open Wrangler %s produced invalid UTF-8 text\", call. = FALSE)",
-            operation_name
-          ),
-          "    .ow_encoding <- Encoding(.ow_output)",
-          "    .ow_from <- if (identical(.ow_encoding, \"latin1\")) \"latin1\" else \"UTF-8\"",
-          "    .ow_output_utf8 <- iconv(.ow_output, from = .ow_from, to = \"UTF-8\", sub = NA_character_)",
-          sprintf(
-            "    if (is.na(.ow_output_utf8)) stop(\"Open Wrangler %s produced invalid UTF-8 text\", call. = FALSE)",
-            operation_name
-          ),
-          sprintf(
-            "    if (nchar(.ow_output_utf8, type = \"bytes\") > 8192L) stop(\"Open Wrangler %s would produce text longer than 8192 UTF-8 bytes\", call. = FALSE)",
-            operation_name
-          ),
-          "    .ow_output_utf8",
-          "  }, character(1L), USE.NAMES = FALSE)"
-        )
         if (isTRUE(step$inPlace)) {
           lines <- c(
             lines,
