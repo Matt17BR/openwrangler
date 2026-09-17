@@ -9813,7 +9813,7 @@ async function captureReleasedJupyterDuckDbRelation(
     await backendBadge.waitFor({ state: "visible", timeout: 10_000 });
     await modeBadge.waitFor({ state: "visible", timeout: 10_000 });
     assert.equal((await backendBadge.innerText()).trim().toUpperCase(), "DUCKDB");
-    assert.equal((await modeBadge.innerText()).trim().toUpperCase(), "VIEWING");
+    assert.equal((await modeBadge.innerText()).trim().toUpperCase(), "VIEWING ONLY");
     const toolbarBox = await app.locator(".toolbar").boundingBox();
     const allBadges = app.locator("[data-session-badge]");
     assert.equal(await allBadges.count(), 2, "The DuckDB notebook scene must expose only its mode and backend badges.");
