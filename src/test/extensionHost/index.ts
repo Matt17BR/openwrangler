@@ -5892,6 +5892,37 @@ async function captureReleasedJupyterCodeInsertion(
     );
     await vscode.commands.executeCommand("notebook.cell.edit");
     assertExactVisibleReleasedNotebookEditor(notebook, editor, "after entering the generated notebook cell editor");
+    const insertedDocument = notebook.cellAt(insertedIndex).document;
+    await waitFor(
+      () => vscode.window.activeTextEditor?.document === insertedDocument,
+      WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
+      "the exact inserted notebook cell's text editor to become active"
+    );
+    const textEditor = vscode.window.activeTextEditor;
+    assert.equal(textEditor?.document, insertedDocument);
+    assert.ok(textEditor);
+    const operationText =
+      options.languageId === "python"
+        ? "    df = pd.concat("
+        : '  if (inherits(.ow_result, "data.table")) data.table::setnames';
+    const operationOffset = code.lastIndexOf(operationText);
+    assert.notEqual(operationOffset, -1, "Inserted-code media must reveal the fixture's actual native cleaning step.");
+    const resultText = options.languageId === "python" ? "    return df" : "  .ow_result";
+    const resultOffset = code.indexOf(`\n${resultText}\n`, operationOffset) + 1;
+    assert.ok(resultOffset > operationOffset, "Inserted-code media must reveal the cleaning step's result.");
+    const operationPosition = insertedDocument.positionAt(operationOffset);
+    const resultPosition = insertedDocument.positionAt(resultOffset + resultText.length);
+    const cleaningRange = new vscode.Range(operationPosition, resultPosition);
+    const revealStart = new vscode.Position(
+      Math.max(0, operationPosition.line - (options.languageId === "python" ? 3 : 0)),
+      0
+    );
+    textEditor.revealRange(new vscode.Range(revealStart, resultPosition), vscode.TextEditorRevealType.AtTop);
+    await waitFor(
+      () => textEditor.visibleRanges.some((visible) => visible.contains(cleaningRange)),
+      WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
+      "the inserted native cleaning step and result to become visible"
+    );
     await workbench.waitForTimeout(600);
     const notebookSurface = workbench.locator(".notebook-editor:visible").first();
     await notebookSurface.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
@@ -5903,6 +5934,13 @@ async function captureReleasedJupyterCodeInsertion(
       "The public notebook editor must still report the inserted cell as visible immediately before capture."
     );
     await clearReleasedJupyterScreenshotTransientUi(workbench);
+    assert.equal(textEditor.document, insertedDocument);
+    assertExactVisibleReleasedNotebookEditor(notebook, editor, "immediately before inserted-code capture");
+    assert.equal(
+      textEditor.visibleRanges.some((visible) => visible.contains(cleaningRange)),
+      true,
+      "The exact inserted notebook cell must show its native cleaning step and result immediately before capture."
+    );
     mkdirSync(outputDirectory, { recursive: true });
     await captureNotebookWorkbenchScreenshot(
       workbench,
