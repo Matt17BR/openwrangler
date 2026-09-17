@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionContext, TextDocument, TextEditor } from "vscode";
 import type { SessionCoordinator } from "../extension/sessionCoordinator";
+import { rStringExpression } from "../extension/r/rCode";
 import type { LiterateDocumentVariableProviders } from "../extension/r/rDocumentCommands";
 
 type CommandHandler = (resource?: unknown) => Promise<unknown>;
@@ -111,7 +112,8 @@ vi.mock("../extension/pythonPath", () => ({
   resolveExecutableCommand: mocks.resolveExecutable
 }));
 
-vi.mock("../extension/r/rProcessTransport", () => ({
+vi.mock("../extension/r/rProcessTransport", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../extension/r/rProcessTransport")>()),
   RProcessSessionTransport: class {
     constructor(options: unknown) {
       if (mocks.transportConstructorError) throw mocks.transportConstructorError;
@@ -140,7 +142,7 @@ vi.mock("../extension/webviewPanel", () => ({
 import * as vscode from "vscode";
 import { createRFileBridge } from "../extension/r/rFileSource";
 import { FileBackendUnavailableError } from "../extension/dataBridge";
-import { supportsRscriptExecution } from "../extension/r/rscriptPath";
+import { supportsRFileExecution, supportsRscriptExecution } from "../extension/r/rscriptPath";
 import {
   OPEN_LITERATE_DOCUMENT_CURSOR_COMMAND,
   OPEN_R_DOCUMENT_COMMAND,
@@ -192,13 +194,20 @@ describe("R document command", () => {
       label: "orders.tsv",
       path: "/workspace/orders.tsv",
       uri: "file:///workspace/orders.tsv",
-      importOptions: { hasHeader: false }
+      importOptions: { hasHeader: false, encoding: "utf-16be", quoteChar: "'", lineEnding: "cr" as const }
     };
     createRFileBridge(context, source);
     expect(mocks.bridgeDiagnostic.mock.calls).toEqual([['R file runtime selected: "/usr/bin/Rscript".']]);
     expect(mocks.discovery).not.toHaveBeenCalled();
     expect(mocks.transportOptions[0]).toMatchObject({
-      fileSource: { path: source.path, format: "csv", header: false, delimiter: "\t" },
+      fileSource: {
+        path: source.path,
+        format: "csv",
+        header: false,
+        delimiter: "\t",
+        encoding: "utf-16be",
+        quoteChar: "'"
+      },
       rscriptPath: "/usr/bin/Rscript",
       workingDirectory: "/workspace"
     });
@@ -208,7 +217,10 @@ describe("R document command", () => {
     const recovery = mocks.bridgeOptions[0]?.[6] as () => Promise<unknown>;
     await recovery();
     expect(mocks.transportOptions[1]).toEqual(mocks.transportOptions[0]);
-    expect(mocks.bridgeOptions[1]?.[7]).toMatchObject({ ...source, importOptions: { hasHeader: false } });
+    expect(mocks.bridgeOptions[1]?.[7]).toMatchObject({
+      ...source,
+      importOptions: { hasHeader: false, encoding: "utf-16be", quoteChar: "'", lineEnding: "cr" }
+    });
     expect(mocks.resolveExecutable).toHaveBeenCalledTimes(1);
     expect(mocks.bridgeDiagnostic.mock.calls).toEqual([
       ['R file runtime selected: "/usr/bin/Rscript".'],
@@ -263,10 +275,7 @@ describe("R document command", () => {
       path: "/workspace/orders.csv",
       uri: "file:///workspace/orders.csv"
     };
-    expect(supportsRscriptExecution("linux")).toBe(true);
-    expect(supportsRscriptExecution("darwin")).toBe(true);
-    expect(supportsRscriptExecution("win32")).toBe(false);
-    for (const importOptions of [{ encoding: "utf8-lossy" }, { quoteChar: "'" }, { lineEnding: "cr" as const }]) {
+    for (const importOptions of [{ encoding: "unknown" }, { quoteChar: "§" }, { delimiter: "§" }]) {
       expect(() => createRFileBridge(context, { ...source, importOptions })).toThrow(FileBackendUnavailableError);
     }
     expect(() => createRFileBridge(context, { ...source, importOptions: { sheetIndex: 0 } })).toThrow(
@@ -584,9 +593,10 @@ describe("R document command", () => {
   });
 
   it("runs an R Markdown Python chunk through reticulate without fabricating an Interactive cell", async () => {
+    const chunk = 'label = "\u0001😀"\norders = make_frame()\n';
     const document = rDocument(
       "/workspace/orders.Rmd",
-      "---\ntitle: Reticulate\n---\n\n```{python}\norders = make_frame()\n```\n"
+      `---\ntitle: Reticulate\n---\n\n\`\`\`{python}\n${chunk}\`\`\`\n`
     );
     const editor = textEditor(document, 5);
     mocks.textDocuments.push(document);
@@ -604,8 +614,28 @@ describe("R document command", () => {
     expect(providers.r.runLiterateChunkAndOpen).toHaveBeenCalledWith(
       expect.anything(),
       providers.rSession,
-      'reticulate::repl_python(quiet = TRUE, input = "orders = make_frame()\\n")'
+      `reticulate::repl_python(quiet = TRUE, input = ${rStringExpression(chunk)})`
     );
+  });
+
+  it.each([
+    { chunk: `label = "${"\u0001😀".repeat(Math.ceil((1_024 * 1_024) / 5))}"\n`, diagnostic: "1 MiB" },
+    { chunk: 'label = "\0"\n', diagnostic: "valid Unicode without NUL" }
+  ])("refuses a reticulate chunk before quoting or running it ($diagnostic)", async ({ chunk, diagnostic }) => {
+    const document = rDocument("/workspace/orders.Rmd", `\`\`\`{python}\n${chunk}\`\`\`\n`);
+    mocks.textDocuments.push(document);
+    mocks.activeEditor = textEditor(document, 1);
+    mocks.getCommands.mockResolvedValue(["r.runSelection"]);
+    const providers = literateProviders();
+    providers.r.captureActiveSession.mockReturnValue(providers.rSession);
+    register(coordinatorMock(), providers.value);
+
+    await expect(cursorCommand()()).resolves.toBe(false);
+
+    expect(providers.r.runLiterateChunkAndOpen.mock.calls.length).toBe(0);
+    expect(mocks.showErrorMessage).toHaveBeenCalledWith(expect.stringContaining(diagnostic));
+    expect(providers.python.runLiterateChunkAndOpen).not.toHaveBeenCalled();
+    expect(mocks.executeCommand).not.toHaveBeenCalled();
   });
 
   it("runs only the cursor-owned Quarto R chunk through the official Quarto command", async () => {
@@ -927,6 +957,10 @@ describe("R document command", () => {
     expect(supportsRscriptExecution("linux")).toBe(true);
     expect(supportsRscriptExecution("darwin")).toBe(true);
     expect(supportsRscriptExecution("win32")).toBe(false);
+    expect(supportsRFileExecution("linux")).toBe(true);
+    expect(supportsRFileExecution("darwin")).toBe(true);
+    expect(supportsRFileExecution("win32")).toBe(true);
+    expect(supportsRFileExecution("freebsd")).toBe(false);
     expect(supportsRscriptExecution("freebsd")).toBe(false);
   });
 

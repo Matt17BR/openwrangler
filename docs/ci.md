@@ -88,12 +88,12 @@ Required-document, generated-reference and release-document checks still run and
   `docs_only=false` and retain Source, R, Windows and installed-editor execution. Other image paths remain outside
   this permission. Screenshot changes still require
   [local browser acceptance](testing.md#direct-source-checks); this omission does not qualify their visual content.
-- The Linux R workers, platform R numeric source step and Windows filesystem and process job may also be omitted for modifications to existing
-  `src/webviews/` files, optionally with the allowed component-test and Markdown edits. This additional omission does
+- The Linux R workers, platform R numeric and CSV source step and Windows filesystem and process job may also be
+  omitted for modifications to existing `src/webviews/` files, optionally with the allowed component-test and Markdown edits. This additional omission does
   not extend to the lifecycle unit test, installed harness, scripts or runtime source.
   Both platform R jobs still run their cleanup, package and installed-editor checks.
-- The same Python, Linux R source, platform numeric source and Windows source omissions apply to modifications of
-  the existing `src/extension/nativeViews.ts`, `src/extension/nativeViewsExportOptions.ts`,
+- The same Python, Linux R source, platform numeric and CSV source and Windows source omissions apply to modifications
+  of the existing `src/extension/nativeViews.ts`, `src/extension/nativeViewsExportOptions.ts`,
   `src/test/nativeViewStateCommands.unit.test.ts`, `src/test/nativeViewExportCommands.unit.test.ts`,
   `src/extension/files/importOptions.ts`, `src/test/importOptions.unit.test.ts` and
   `src/test/webviewPanel.unit.test.ts` files, alone or with other edits eligible for those omissions. Other host
@@ -139,7 +139,7 @@ The Linux R phases load native R assets and the selected Node transport owners, 
 listed host files.
 The kernel-transport phase also runs native notebook discovery, selection and dependency checks with the same selected R executable.
 Native Vitest phases report completed test names and durations, so a phase timeout retains more than a file summary.
-Their separate `r_runtime_omittable` result permits the Linux matrix and each platform's numeric-portability step to be
+Their separate `r_runtime_omittable` result permits the Linux matrix and each platform's numeric and CSV source step to be
 skipped. The platform step loads native R assets and its source-test helpers, without loading renderer source or the
 listed host files.
 Its `omit_source` Boolean workflow input defaults to false, so manual dispatch retains this execution. Skipping it
@@ -199,7 +199,7 @@ otherwise reports success.
 
 The separate `r_editor_omittable` result leaves both platform jobs running. Its Boolean workflow input defaults to false;
 manual dispatch retains editor execution. An omitted editor step reports no fresh editor result. These two R test files
-are excluded from the VSIX and installed harness, but the platform numeric-portability case loads `kernel_agent.R`,
+are excluded from the VSIX and installed harness, but the platform numeric and CSV source cases load `kernel_agent.R`,
 so its source execution remains required. This omission can delay discovery of unrelated Jupyter or hosted-environment
 failures; source and package checks do not replace the editor journey.
 
@@ -255,10 +255,13 @@ The `macos-r` and `windows-r` jobs run the existing private R artifact filesyste
 R dependencies or editor preparation. These exercise real file cleanup and refusal of replaced files and directories
 on each platform without launching R or an editor. The macOS job also runs the existing native process cancellation
 owner through default helper preparation, before private R dependency installation or editor preparation.
+Windows runs the existing supervisor native owner before dependency preparation, including production binary R input
+and PowerShell source startup. Its installed file stage checks native formats, import restoration and private-process
+recovery through the existing notebook journey; [Testing](testing.md#native-r-editor-dependencies) defines its scope.
 Unless the source omission applies, the released-Jupyter jobs then run the canonical `kernel:numeric-portability`
-source case with private jsonlite and bit64 dependencies before opening the editor.
+and `kernel:csv-import` source cases with the same private jsonlite and bit64 dependencies before opening the editor.
 Parquet dependencies remain with the separate export and editor owners.
-It checks the platform-sensitive arithmetic, selections and generated programs without
+These cases check platform-sensitive arithmetic, text conversion, selections and generated programs without
 repeating the broad Linux operation and export suites. macOS uses the bounded `platform-lifecycle` journey; Windows
 keeps its representative journey and opens the three ordinary collapse fixtures. Cursor, remote and focused profiles
 are unchanged. See [Testing](testing.md#native-r-editor-dependencies) for their coverage and bounds.

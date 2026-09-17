@@ -243,19 +243,28 @@ describe("VSIX production entry allowlist", () => {
       "extension/r/openwrangler_runtime/interactive_agent.R",
       "extension/r/openwrangler_runtime/kernel_agent.R",
       "extension/r/openwrangler_runtime/kernel_exports.R",
-      "extension/r/openwrangler_runtime/process_agent.R"
+      "extension/r/openwrangler_runtime/process_agent.R",
+      "extension/r/openwrangler_runtime/windows-job-supervisor.ps1"
     ];
     const entries = requiredVsixEntries.filter((entry) => !rRuntimeEntries.includes(entry));
 
     expect(vscodeIgnore).toContain("r/tests/**");
+    expect(vscodeIgnore).toContain("scripts/**");
     expect(inspectVsixEntries(entries).missing).toEqual(rRuntimeEntries);
-    expect(
-      inspectVsixEntries([
-        ...requiredVsixEntries,
-        "extension/r/tests/frame_contract.R",
-        "extension/r/tests/kernel_agent.R"
-      ]).forbidden
-    ).toEqual(["extension/r/tests/frame_contract.R", "extension/r/tests/kernel_agent.R"]);
+    expect(inspectVsixEntries([...entries, ...rRuntimeEntries])).toEqual({
+      forbidden: [],
+      missing: [],
+      duplicates: []
+    });
+    const forbiddenEntries = [
+      "extension/r/tests/frame_contract.R",
+      "extension/r/tests/kernel_agent.R",
+      "extension/r/openwrangler_runtime/unexpected.ps1",
+      "extension/r/openwrangler_runtime/windows-job-supervisor.psm1",
+      "extension/r/openwrangler_runtime/nested/windows-job-supervisor.ps1",
+      "extension/scripts/windows-job-supervisor.ps1"
+    ];
+    expect(inspectVsixEntries([...requiredVsixEntries, ...forbiddenEntries]).forbidden).toEqual(forbiddenEntries);
   });
 
   it("permits the missing R contract only for an authenticated historical release", () => {
@@ -267,7 +276,8 @@ describe("VSIX production entry allowlist", () => {
       "extension/r/openwrangler_runtime/interactive_agent.R",
       "extension/r/openwrangler_runtime/kernel_agent.R",
       "extension/r/openwrangler_runtime/kernel_exports.R",
-      "extension/r/openwrangler_runtime/process_agent.R"
+      "extension/r/openwrangler_runtime/process_agent.R",
+      "extension/r/openwrangler_runtime/windows-job-supervisor.ps1"
     ]);
     expect(inspectVsixEntries(withoutR, { requireRFrameContract: false })).toEqual({
       forbidden: [],
@@ -278,6 +288,20 @@ describe("VSIX production entry allowlist", () => {
       "extension/python/openwrangler_runtime/server.py"
     ]);
     expect(() => inspectVsixEntries(withoutR, { requireRFrameContract: "false" as never })).toThrow(TypeError);
+    const withoutSupervisor = requiredVsixEntries.filter(
+      (entry) => entry !== "extension/r/openwrangler_runtime/windows-job-supervisor.ps1"
+    );
+    expect(inspectVsixEntries(withoutSupervisor).missing).toEqual([
+      "extension/r/openwrangler_runtime/windows-job-supervisor.ps1"
+    ]);
+    expect(inspectVsixEntries(withoutSupervisor, { requireRWindowsJobSupervisor: false })).toEqual({
+      forbidden: [],
+      missing: [],
+      duplicates: []
+    });
+    expect(() => inspectVsixEntries(withoutSupervisor, { requireRWindowsJobSupervisor: "false" as never })).toThrow(
+      TypeError
+    );
   });
 });
 

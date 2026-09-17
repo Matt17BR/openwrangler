@@ -453,6 +453,7 @@ export const R_ACCEPTANCE_PACKAGE_VERSIONS = Object.freeze({
   "data.table": "1.18.2.1",
   collapse: "2.1.7",
   nanoparquet: "0.5.1",
+  readxl: "1.4.5",
   bit64: "4.6.0.1" // packageVersion() renders the archive's 4.6.0-1 with dots.
 });
 const R_ACCEPTANCE_MACOS_COLLAPSE_BINARY = Object.freeze({
@@ -2046,7 +2047,7 @@ export async function prepareJupyterAcceptanceREnvironment(
 
   const packageEntries = Object.entries(R_ACCEPTANCE_PACKAGE_VERSIONS).filter(([packageName]) => {
     if (purpose === "source-contracts") return ["jsonlite", "bit64"].includes(packageName);
-    if (packageName === "bit64") return false;
+    if (["readxl", "bit64"].includes(packageName)) return purpose === "notebook";
     if (focusedNotebook && ["Rcpp", "collapse"].includes(packageName)) return false;
     if (
       purpose === "interactive-terminal" &&

@@ -1,19 +1,33 @@
 import { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, mkdtemp, readFile, readdir, rm, unlink, utimes, writeFile } from "node:fs/promises";
+import {
+  cp,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  unlink,
+  utimes,
+  writeFile
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import * as vscode from "vscode";
+import { SessionCoordinator } from "../extension/sessionCoordinator";
 import { DetachedBridgeRequestError } from "../extension/dataBridge";
 import { prepareRDocumentSource } from "../extension/r/rDocumentSource";
 import { RKernelBridge } from "../extension/r/rKernelBridge";
-import type { TransformStep } from "../shared/protocol";
+import type { SessionSource, TransformStep } from "../shared/protocol";
 import { isOpenWranglerResponse } from "../shared/protocolValidation";
 import { RProcessSessionTransport, type RProcessFileSource } from "../extension/r/rProcessTransport";
 import type { RKernelPageWindow } from "../extension/r/rKernelProtocol";
 import { rCsvExportOptions, rExportOptions } from "./rExportTestOptions";
+import { rKernelOpenRequest } from "./rKernelBridgeTestFixtures";
 
 const enabled = process.env.OPEN_WRANGLER_R_CONTRACT_TESTS === "1";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -21,11 +35,91 @@ const runtimeRoot = resolve(root, "r/openwrangler_runtime");
 const rscriptPath = process.env.RSCRIPT ?? "Rscript";
 
 describe.skipIf(!enabled)("plain R process transport", () => {
+  it.skipIf(process.platform !== "win32")(
+    "preserves the fixed Windows bootstrap diagnostic through public file opening",
+    async () => {
+      const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-bootstrap-diagnostic-"));
+      const controlledRuntime = resolve(temporaryParent, "runtime");
+      const processParent = resolve(temporaryParent, "processes");
+      await mkdir(controlledRuntime);
+      await mkdir(processParent);
+      for (const file of ["frame_contract.R", "kernel_exports.R", "kernel_agent.R", "process_agent.R"])
+        await writeFile(resolve(controlledRuntime, file), await readFile(resolve(runtimeRoot, file)));
+      await writeFile(
+        resolve(controlledRuntime, "windows-job-supervisor.ps1"),
+        '[Console]::Error.WriteLine("OPEN_WRANGLER_WINDOWS_SUPERVISOR_ERROR:bootstrap"); exit 125'
+      );
+      const filePath = resolve(temporaryParent, "source.csv");
+      await writeFile(filePath, "value\n1\n");
+      const source = {
+        kind: "file" as const,
+        path: filePath,
+        uri: vscode.Uri.file(filePath).toString(),
+        label: "source.csv"
+      };
+      const transport = new RProcessSessionTransport({
+        runtimeRoot: controlledRuntime,
+        rscriptPath,
+        temporaryParent: processParent,
+        workingDirectory: temporaryParent,
+        fileSource: { path: filePath, format: "csv", header: true, delimiter: ",", encoding: "utf-8", quoteChar: '"' }
+      });
+      const context = {
+        extension: { packageJSON: { version: "2.6.0" } },
+        subscriptions: []
+      } as unknown as vscode.ExtensionContext;
+      const bridge = new RKernelBridge(
+        context,
+        transport,
+        randomUUID,
+        () => undefined,
+        undefined,
+        {},
+        undefined,
+        source
+      );
+      try {
+        await expect(bridge.request({ ...rKernelOpenRequest(), source, backend: "r" })).rejects.toThrow(
+          /Windows PowerShell could not compile.*private files were retained/u
+        );
+        expect(await readdir(processParent)).toHaveLength(1);
+        expect(await readFile(filePath, "utf8")).toBe("value\n1\n");
+      } finally {
+        await expect(bridge.dispose()).rejects.toThrow("private files were retained");
+        // The controlled script never launches R or another child and its exact process has closed.
+        await rm(temporaryParent, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it("retains an initial process exit diagnostic through the public bridge", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-startup-diagnostic-"));
+    const transport = new RProcessSessionTransport({
+      runtimeRoot,
+      rscriptPath,
+      temporaryParent,
+      workingDirectory: temporaryParent,
+      documentText: "base::quit(save = 'no', status = 7L)"
+    });
+    const context = {
+      extension: { packageJSON: { version: "2.6.0" } },
+      subscriptions: []
+    } as unknown as vscode.ExtensionContext;
+    const bridge = new RKernelBridge(context, transport, randomUUID, () => undefined);
+    try {
+      await expect(bridge.request(rKernelOpenRequest())).rejects.toThrow("stopped unexpectedly (exit 7)");
+      expect(await readdir(temporaryParent)).toEqual([]);
+    } finally {
+      await bridge.dispose();
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  });
+
   it("validates exact file descriptors before acquiring a process", async () => {
     const options = { runtimeRoot, rscriptPath: resolve("/selected/Rscript"), workingDirectory: root };
     const sourcePath = resolve(root, "orders.data");
     for (const fileSource of [
-      { path: sourcePath, format: "csv", header: false, delimiter: "\t" },
+      { path: sourcePath, format: "csv", header: false, delimiter: "\t", encoding: "utf-16be", quoteChar: "'" },
       { path: sourcePath, format: "parquet" },
       { path: sourcePath, format: "jsonl" },
       { path: sourcePath, format: "excel", sheetName: "  $(sheet)  " },
@@ -37,6 +131,11 @@ describe.skipIf(!enabled)("plain R process transport", () => {
     for (const descriptor of [
       { header: true, delimiter: "," },
       { format: "csv", header: true, delimiter: ",", sheetIndex: 0 },
+      { format: "csv", header: true, delimiter: ",", encoding: "unknown", quoteChar: '"' },
+      { format: "csv", header: true, delimiter: ",", encoding: "utf-8", quoteChar: "§" },
+      { format: "csv", header: true, delimiter: "§", encoding: "utf-8", quoteChar: '"' },
+      { format: "csv", header: true, delimiter: ",", encoding: "utf-8", quoteChar: "," },
+      { format: "csv", header: true, delimiter: ",", encoding: "utf-8", quoteChar: "\n" },
       { format: "parquet", header: true },
       { format: "jsonl", sheetName: "Sheet1" },
       { format: "excel" },
@@ -62,12 +161,12 @@ describe.skipIf(!enabled)("plain R process transport", () => {
 
   it("opens a genuine TSV source, preserves its original through clone/replay/export, and closes before reopening", async () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-file-test-"));
-    const filePath = resolve(temporaryParent, "orders.tsv");
+    const filePath = resolve(temporaryParent, "orders café.tsv");
     const bytes = 'id\tlabel\n9007199254740992\tone\n9007199254740993\t"two\nlines"\n3\t';
     await writeFile(filePath, bytes, "utf8");
     const source = {
       kind: "file" as const,
-      label: "orders.tsv",
+      label: "orders café.tsv",
       path: filePath,
       uri: vscode.Uri.file(filePath).toString(),
       importOptions: { delimiter: "\t", hasHeader: true }
@@ -77,7 +176,14 @@ describe.skipIf(!enabled)("plain R process transport", () => {
       rscriptPath,
       temporaryParent,
       workingDirectory: temporaryParent,
-      fileSource: { path: filePath, format: "csv" as const, header: true, delimiter: "\t" }
+      fileSource: {
+        path: filePath,
+        format: "csv" as const,
+        header: true,
+        delimiter: "\t",
+        encoding: "utf-8",
+        quoteChar: '"'
+      }
     };
     const transport = new RProcessSessionTransport(options);
     const context = {
@@ -169,17 +275,28 @@ describe.skipIf(!enabled)("plain R process transport", () => {
           options: rCsvExportOptions
         })
       ).rejects.toThrow("never overwrites");
-      const chunks: Uint8Array[] = [];
-      await transport.exportData(sessionId, applied.metadata.revision, rCsvExportOptions, async (chunk) => {
-        chunks.push(Uint8Array.from(chunk));
+      const expectedCsv =
+        '"id","label","copied"\n"9007199254740992","one","one"\n"9007199254740993","two\nlines","two\nlines"\n"3",,\n';
+      const destinationPath = resolve(temporaryParent, "orders cleaned.csv");
+      const exported = await bridge.request({
+        kind: "exportData",
+        sessionId,
+        revision: applied.metadata.revision,
+        path: destinationPath,
+        options: rCsvExportOptions
       });
-      expect(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8")).toBe(
-        '"id","label","copied"\n"9007199254740992","one","one"\n"9007199254740993","two\nlines","two\nlines"\n"3",,\n'
-      );
+      expect(exported).toEqual({
+        kind: "dataExported",
+        revision: applied.metadata.revision,
+        path: destinationPath,
+        format: "csv",
+        shape: { rows: 3, columns: 3 }
+      });
+      expect(await readFile(destinationPath, "utf8")).toBe(expectedCsv);
       expect(await readFile(filePath, "utf8")).toBe(bytes);
       await bridge.request({ kind: "closeSession", sessionId, revision: applied.metadata.revision });
       await bridge.dispose();
-      expect(await readdir(temporaryParent)).toEqual(["orders.tsv"]);
+      expect((await readdir(temporaryParent)).sort()).toEqual(["orders café.tsv", "orders cleaned.csv"]);
       const reopened = new RProcessSessionTransport(options);
       try {
         const result = await reopened.open(".ow_csv_source", pageWindow());
@@ -193,10 +310,204 @@ describe.skipIf(!enabled)("plain R process transport", () => {
       } finally {
         await reopened.dispose();
       }
-      expect(await readdir(temporaryParent)).toEqual(["orders.tsv"]);
+      expect((await readdir(temporaryParent)).sort()).toEqual(["orders café.tsv", "orders cleaned.csv"]);
       expect(await readFile(filePath, "utf8")).toBe(bytes);
     } finally {
       await bridge.dispose();
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("reuses a confirmed native file plan on a reordered second file with matching generated R", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-file-plan-test-"));
+    const originPath = resolve(temporaryParent, "origin.csv");
+    const targetPath = resolve(temporaryParent, "target.csv");
+    const originBytes = "amount,other\n1.2,10.1\n2.3,20.2\n";
+    const targetBytes = "other,amount\n30.2,4.5\n40.3,6.7\n";
+    await writeFile(originPath, originBytes);
+    await writeFile(targetPath, targetBytes);
+    const source = (path: string): SessionSource => ({
+      kind: "file",
+      path,
+      uri: vscode.Uri.file(path).toString(),
+      label: path
+    });
+    const originSource = source(originPath);
+    const targetSource = source(targetPath);
+    const context = {
+      extension: { packageJSON: { version: "2.6.0" } },
+      subscriptions: []
+    } as unknown as vscode.ExtensionContext;
+    const native = (selected: SessionSource, path: string): RKernelBridge =>
+      new RKernelBridge(
+        context,
+        new RProcessSessionTransport({
+          runtimeRoot,
+          rscriptPath,
+          temporaryParent,
+          workingDirectory: temporaryParent,
+          fileSource: { path, format: "csv", header: true, delimiter: ",", encoding: "utf-8", quoteChar: '"' }
+        }),
+        randomUUID,
+        () => undefined,
+        undefined,
+        {},
+        undefined,
+        selected
+      );
+    const storage = new Map<string, unknown>();
+    const coordinator = new SessionCoordinator({
+      get: (key: string) => storage.get(key),
+      update: async (key: string, value: unknown) => {
+        storage.set(key, value);
+      },
+      keys: () => [...storage.keys()]
+    } as vscode.Memento);
+    const originNative = native(originSource, originPath);
+    const targetNative = native(targetSource, targetPath);
+    const origin = coordinator.createBridge(originNative);
+    const window = { offset: 0, limit: 10, columnOffset: 0, columnLimit: 10 };
+    let generated: RProcessSessionTransport | undefined;
+    try {
+      const opened = await origin.request({
+        kind: "openSession",
+        backend: "r",
+        source: originSource,
+        mode: "editing",
+        pageSize: 10,
+        columnOffset: 0,
+        columnLimit: 10
+      });
+      expect(opened.kind, JSON.stringify(opened)).toBe("sessionOpened");
+      if (opened.kind !== "sessionOpened") throw new Error("Origin did not open");
+      let metadata = opened.metadata;
+      const steps: TransformStep[] = [
+        { id: "rename", kind: "renameColumn", params: { column: { id: "r:c:0", name: "amount" }, newName: "value" } },
+        {
+          id: "total",
+          kind: "formula",
+          params: {
+            leftColumn: { id: "r:c:0", name: "value" },
+            rightColumn: { id: "r:c:1", name: "other" },
+            operator: "add",
+            newColumn: "total"
+          }
+        },
+        { id: "floor", kind: "floorNumber", params: { column: { id: "c:step:total:0", name: "total" } } }
+      ];
+      for (const step of steps) {
+        const preview = await origin.request({
+          kind: "previewStep",
+          sessionId: metadata.sessionId,
+          revision: metadata.revision,
+          step,
+          ...window
+        });
+        expect(preview.kind, JSON.stringify(preview)).toBe("stepPreview");
+        if (preview.kind !== "stepPreview") throw new Error("Origin did not preview");
+        const applied = await origin.request({
+          kind: "applyDraft",
+          sessionId: metadata.sessionId,
+          revision: preview.metadata.revision,
+          ...window
+        });
+        expect(applied.kind, JSON.stringify(applied)).toBe("planUpdated");
+        if (applied.kind !== "planUpdated") throw new Error("Origin did not apply");
+        metadata = applied.metadata;
+      }
+      const snapshot = coordinator.activeSession()!;
+      const originSnapshot = {
+        ...snapshot,
+        metadata: structuredClone(snapshot.metadata),
+        viewState: structuredClone(snapshot.viewState)
+      };
+      const commandBridge = coordinator.createBridge({ request: vi.fn() });
+      const captured = commandBridge.captureActiveFilePlan!();
+      if ("kind" in captured) throw new Error(captured.message);
+      expect(captured.backend).toBe("r");
+      expect(() => captured.createBridge(originNative)).toThrow("own matching target runtime");
+      const target = captured.createBridge(targetNative);
+      const replayed = await target.request({
+        kind: "openSession",
+        backend: "r",
+        source: targetSource,
+        mode: "editing",
+        pageSize: 10,
+        columnOffset: 0,
+        columnLimit: 10
+      });
+      expect(replayed.kind, JSON.stringify(replayed)).toBe("sessionOpened");
+      if (replayed.kind !== "sessionOpened") throw new Error("Target did not replay");
+      expect(replayed.metadata).toMatchObject({
+        backend: "r",
+        source: targetSource,
+        shape: { rows: 2, columns: 3 },
+        steps: [
+          { params: { column: { id: "r:c:1", name: "amount" } } },
+          { params: { leftColumn: { id: "r:c:1", name: "value" }, rightColumn: { id: "r:c:0", name: "other" } } },
+          { params: { column: { id: "c:step:total:0", name: "total" } } }
+        ]
+      });
+      expect(replayed.metadata.schema.map(({ id, name, type }) => ({ id, name, type }))).toEqual([
+        { id: "r:c:0", name: "other", type: "float" },
+        { id: "r:c:1", name: "value", type: "float" },
+        { id: "c:step:total:0", name: "total", type: "float" }
+      ]);
+      const expected = [
+        [30.2, 4.5, 34],
+        [40.3, 6.7, 47]
+      ];
+      expect(replayed.page.rows.map((row) => row.values.map((value) => value.raw))).toEqual(expected);
+      const code = coordinator.activeSession()!.code;
+      expect(code).toContain(targetPath);
+      expect(code).not.toContain(originPath);
+      origin.setActiveSession!(metadata.sessionId);
+      expect(coordinator.activeSession()).toEqual(originSnapshot);
+      await origin.request({ kind: "closeSession", sessionId: metadata.sessionId, revision: metadata.revision });
+      expect(captured.isCurrent()).toBe(false);
+      const page = await target.request({
+        kind: "getPage",
+        viewRequestId: "target-after-origin-close",
+        filterModel: replayed.metadata.filterModel,
+        sessionId: replayed.metadata.sessionId,
+        revision: replayed.metadata.revision,
+        ...window
+      });
+      expect(page.kind, JSON.stringify(page)).toBe("page");
+      if (page.kind !== "page") throw new Error("Target did not survive origin close");
+      expect(page.page.rows.map((row) => row.values.map((value) => value.raw))).toEqual(expected);
+      await target.request({
+        kind: "closeSession",
+        sessionId: replayed.metadata.sessionId,
+        revision: replayed.metadata.revision
+      });
+      generated = new RProcessSessionTransport({
+        runtimeRoot,
+        rscriptPath,
+        temporaryParent,
+        workingDirectory: temporaryParent,
+        documentText: code
+      });
+      const result = await generated.open("open_wrangler_result", pageWindow());
+      expect(result.page.schema.map((column) => column.name)).toEqual(["other", "value", "total"]);
+      expect(result.page.page.rows.map((row) => row.values.map((value) => value.kind))).toEqual([
+        ["number", "number", "number"],
+        ["number", "number", "number"]
+      ]);
+      expect(result.page.page.rows.map((row) => row.values.map((value) => Number(value.raw)))).toEqual(expected);
+      await generated.close(result.sessionId);
+      await generated.dispose();
+      await coordinator.shutdown();
+      await originNative.dispose();
+      await targetNative.dispose();
+      expect(await readdir(temporaryParent)).toEqual(["origin.csv", "target.csv"]);
+      expect(await readFile(originPath, "utf8")).toBe(originBytes);
+      expect(await readFile(targetPath, "utf8")).toBe(targetBytes);
+    } finally {
+      await coordinator.shutdown();
+      await originNative.dispose();
+      await targetNative.dispose();
+      await generated?.dispose();
       await rm(temporaryParent, { recursive: true, force: true });
     }
   }, 30_000);
@@ -1407,64 +1718,103 @@ not_a_frame <- matrix(1:4, nrow = 2L)
     }
   });
 
-  it("parses Unicode source and request text under a non-UTF-8 process locale", async () => {
-    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-process-unicode-test-"));
-    const previousLocale = process.env.LC_ALL;
-    process.env.LC_ALL = "C";
-    const transport = new RProcessSessionTransport({
-      runtimeRoot,
-      rscriptPath,
-      temporaryParent,
-      workingDirectory: temporaryParent,
-      documentText: 'cafe_frame <- data.frame(label = c("München", "Zürich"), stringsAsFactors = FALSE)\n'
-    });
-    try {
-      const discovery = await transport.discoverVariables({ timeoutMs: 10_000 });
-      expect(discovery.variables).toEqual([{ backend: "r", dataframeFlavor: "r.data.frame", name: "cafe_frame" }]);
-      const sessionId = randomUUID();
-      const opened = await transport.open("cafe_frame", pageWindow(), {
-        requestedSessionId: sessionId,
-        timeoutMs: 10_000
+  it.each([
+    { locale: "C", runtimeDirectory: "runtime" },
+    { locale: process.platform === "linux" ? "C.UTF-8" : undefined, runtimeDirectory: "runtime-\u2028😀" }
+  ])(
+    "parses Unicode source and request text with $runtimeDirectory ($locale)",
+    async ({ locale, runtimeDirectory }) => {
+      const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-process-unicode-test-"));
+      const controlledRuntime = resolve(temporaryParent, runtimeDirectory);
+      const processParent = resolve(temporaryParent, "processes");
+      await cp(runtimeRoot, controlledRuntime, { recursive: true });
+      await mkdir(processParent);
+      const previousLocale = process.env.LC_ALL;
+      if (locale !== undefined) process.env.LC_ALL = locale;
+      const transport = new RProcessSessionTransport({
+        runtimeRoot: controlledRuntime,
+        rscriptPath,
+        temporaryParent: processParent,
+        workingDirectory: temporaryParent,
+        documentText: 'cafe_frame <- data.frame(label = c("München", "Zürich"), stringsAsFactors = FALSE)\n'
       });
-      expect(opened.page.page.rows[0]?.values[0]?.raw).toBe("München");
-      const values = await transport.getColumnValues(
-        sessionId,
-        { id: "r:c:0", name: "label" },
-        { filters: [], sorts: [] },
-        "Mü",
-        20,
-        { timeoutMs: 10_000 }
-      );
-      expect(values).toMatchObject({
-        column: "label",
-        values: [{ value: "München", count: 1 }],
-        hasMore: false
-      });
-      await transport.close(sessionId, { timeoutMs: 10_000 });
-      expect(await readdir(temporaryParent)).toEqual([]);
-    } finally {
-      await transport.dispose().catch(() => undefined);
-      if (previousLocale === undefined) delete process.env.LC_ALL;
-      else process.env.LC_ALL = previousLocale;
-      await rm(temporaryParent, { recursive: true, force: true });
-    }
-  }, 30_000);
+      try {
+        const discovery = await transport.discoverVariables({ timeoutMs: 10_000 });
+        expect(discovery.variables).toEqual([{ backend: "r", dataframeFlavor: "r.data.frame", name: "cafe_frame" }]);
+        const sessionId = randomUUID();
+        const opened = await transport.open("cafe_frame", pageWindow(), {
+          requestedSessionId: sessionId,
+          timeoutMs: 10_000
+        });
+        expect(opened.page.page.rows[0]?.values[0]?.raw).toBe("München");
+        const values = await transport.getColumnValues(
+          sessionId,
+          { id: "r:c:0", name: "label" },
+          { filters: [], sorts: [] },
+          "Mü",
+          20,
+          { timeoutMs: 10_000 }
+        );
+        expect(values).toMatchObject({
+          column: "label",
+          values: [{ value: "München", count: 1 }],
+          hasMore: false
+        });
+        await transport.close(sessionId, { timeoutMs: 10_000 });
+        expect(await readdir(processParent)).toEqual([]);
+      } finally {
+        await transport.dispose().catch(() => undefined);
+        if (previousLocale === undefined) delete process.env.LC_ALL;
+        else process.env.LC_ALL = previousLocale;
+        await rm(temporaryParent, { recursive: true, force: true });
+      }
+    },
+    30_000
+  );
 
-  it("terminates the exact owned child when disposal interrupts document execution", async () => {
+  it("terminates the exact owned child and removes native temporary files during interrupted execution", async () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-process-dispose-test-"));
+    const marker = resolve(temporaryParent, "temporary-path.txt");
+    const sentinel = resolve(temporaryParent, "unrelated.txt");
+    await writeFile(sentinel, "preserve this fixture");
     const transport = new RProcessSessionTransport({
       runtimeRoot,
       rscriptPath,
       temporaryParent,
       workingDirectory: temporaryParent,
-      documentText: "Sys.sleep(60); frame <- data.frame(value = 1L)"
+      documentText: `
+private_copy <- tempfile("openwrangler-csv-", fileext = ".csv")
+writeLines("fixture contents", private_copy)
+writeLines(private_copy, ${JSON.stringify(marker)})
+Sys.sleep(60)
+frame <- data.frame(value = 1L)
+`
     });
     const startup = transport.discoverVariables({ timeoutMs: 60_000 }).catch(() => undefined);
-    await sleep(100);
-    await transport.dispose();
-    await startup;
-    expect(await readdir(temporaryParent)).toEqual([]);
-    await rm(temporaryParent, { recursive: true, force: true });
+    let privateCopy: string | undefined;
+    try {
+      await vi.waitFor(
+        async () => {
+          privateCopy = (await readFile(marker, "utf8")).trim();
+        },
+        { timeout: 5_000, interval: 20 }
+      );
+      const roots = (await readdir(temporaryParent)).filter((name) => name.startsWith("openwrangler-r-"));
+      expect(roots).toHaveLength(1);
+      const ownedRoot = resolve(temporaryParent, roots[0]!);
+      expect((await realpath(privateCopy!)).startsWith((await realpath(ownedRoot)) + sep)).toBe(true);
+      expect(await readFile(privateCopy!, "utf8")).toContain("fixture contents");
+      await transport.dispose();
+      await startup;
+      await expect(lstat(privateCopy!)).rejects.toMatchObject({ code: "ENOENT" });
+      expect((await readdir(temporaryParent)).sort()).toEqual(["temporary-path.txt", "unrelated.txt"]);
+      expect(await readFile(sentinel, "utf8")).toBe("preserve this fixture");
+    } finally {
+      await transport.dispose().catch(() => undefined);
+      await startup;
+      if (privateCopy) await rm(privateCopy, { force: true });
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
   }, 10_000);
 
   it.skipIf(process.platform === "win32")(

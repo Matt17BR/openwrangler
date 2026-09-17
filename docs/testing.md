@@ -146,6 +146,9 @@ Use the existing owners to choose a focused source check:
   [panel publication](../src/test/webviewPanel.unit.test.ts) own confirmed state, stale responses, failed saves,
   replay and retirement. [Plan rewrites](../src/test/sessionCoordinator.planRewrite.unit.test.ts) own viewing-state
   restoration. Initial restoration must stop dispatch and fallback when its opening owner retires.
+  Native R plan reuse also uses the existing real managed-process owner: two separate source-pinned file delegates
+  replay a reordered Rename, Formula and Floor plan through the coordinator, then execute generated R in a fresh
+  process. It checks target values, original state/source preservation and independent close on minimum/current R.
   File-plan reuse uses coordinator persistence, the [persistence store](../src/test/sessionPersistenceStore.unit.test.ts)
   and [file commands](../src/test/fileOpen.unit.test.ts) for private target publication, captured picker ownership,
   engine/import settings and failure restoration. Native operation semantics stay in their engine owners.
@@ -179,11 +182,15 @@ Use the existing owners to choose a focused source check:
   Native R exports belong in the [frame owner's](../r/tests/frame_contract.R) `capture-and-export` case and the
   [kernel owner's](../r/tests/kernel_agent.R) `group-pivot-and-export` case. Retain refusal before writer opening,
   destination/source preservation, bounded conversion and lazy-streaming assertions in these existing owners.
-  Native CSV/TSV, Parquet, JSONL and Excel loading and generated-code agreement belong to that kernel owner's
-  `lifecycle-and-structure` case. Small synthetic cross-writer fixtures cover reader precision and sheet identity;
+  Native CSV/TSV loading and generated-code agreement belong to that kernel owner's `csv-import` case. It covers
+  encoding and parser block boundaries, strict/lossy decoding, configured quoting, exact embedded CR/LF/CRLF,
+  blank and quoted-empty records, headerless first-record retention, source preservation and temporary-file cleanup.
+  Parquet, JSONL and Excel remain in `lifecycle-and-structure`.
+  Small synthetic cross-writer fixtures cover reader precision and sheet identity;
   the native dependency locks include readxl for this owner.
   The [managed process owner](../src/test/rProcessTransport.cross.test.ts) checks actual file loading, editing,
-  cloning, export, close and fresh reopen. Existing R-document/factory tests check the shared process boundary and
+  cloning, export, close and fresh reopen, including native temporary-file containment and removal on forced disposal.
+  Existing R-document/factory tests check the shared process boundary and
   exact file/executable admission. File commands, lazy activation, confirmed configuration and panel tests own R
   selection/defaults, cancellation and separate-session handoff. These source checks do not qualify installed hosts
   or measure whole-session allocation; retain separate installed evidence for the advertised platforms.
@@ -290,6 +297,10 @@ contracts fail on unexpected warnings even if they handle a later error. Preserv
 The Windows supervisor owner also checks preparation deadlines, shared callers and both compiler-settlement windows
 with controlled children and native timers on every platform. These controls preserve process ownership and unsafe-root
 retention; the Windows-only case separately qualifies actual Job Object containment and termination.
+The supervisor is bundled at `r/openwrangler_runtime/windows-job-supervisor.ps1` and shared with native R file sessions.
+Its existing native owner also checks binary requests (including NUL), malformed framing, blocked stdin with host EOF,
+direct target exit, helper death, an unrelated surviving session, and source-based PowerShell startup/cancellation.
+These controls require actual Windows; a skipped Linux run establishes no Windows behavior.
 
 The [complete R catalog](../r/tests/complete_catalog_contract.R) compares native live and complete generated frames,
 including source and metadata preservation. Numeric portability uses independent binary64 references and raw-bit
@@ -670,30 +681,39 @@ including those three focused notebook selectors; omitting the purpose retains t
 Artifact acquisition refuses an existing destination and verifies the file it created. Failed partial archives remain
 under the caller's existing private-root cleanup owner. A replaced file or directory withholds cleanup.
 
-The macOS and Windows R jobs first run `kernel:numeric-portability`, subject to the
-[renderer source omission](ci.md#pull-requests). It is the same case included in the canonical Linux kernel suite
-and owns the platform-sensitive mean, decimal parsing, selection and generated-literal assertions
-in `r/tests/kernel_agent_numeric_portability.R`. Broad operation, export, cold-process and dataframe-class matrices
+The macOS and Windows R jobs first run `kernel:numeric-portability` and `kernel:csv-import`, subject to the
+[renderer source omission](ci.md#pull-requests). Each case also runs once in the canonical Linux kernel suite.
+Numeric portability owns the platform-sensitive mean, decimal parsing, selection and generated-literal assertions
+in `r/tests/kernel_agent_numeric_portability.R`; CSV import checks the platform's actual text conversion and native
+reader using the same CSV cases described above. Broad operation, export, cold-process and dataframe-class matrices
 remain in their existing source cases.
 
-This focused case runs in one R process through the warning-strict wrapper, with a two-minute limit and bounded
-output. Its synthetic fixtures and operations do not launch subprocesses; ordinary direct-child execution is sufficient
-and does not qualify general process-tree cleanup. Preparation uses the existing private-library owner with pinned
-jsonlite and bit64 roots, including version and namespace checks. The separate export case requires nanoparquet;
-numeric preparation skips the empty supplemental package install. Any preparation or test failure retains
-the private root; successful preparation and child exit permit its removal. The subsequent installed-editor journey
-keeps its separate environment, nanoparquet dependency and lifetime. The separate R 4.4 qualification remains unchanged.
+The two focused cases run serially in separate R processes through the warning-strict wrapper, each with a two-minute
+limit and bounded output. Their synthetic fixtures and operations do not launch subprocesses; ordinary direct-child
+execution is sufficient and does not qualify general process-tree cleanup. Both reuse one preparation by the existing
+private-library owner with pinned jsonlite and bit64 roots, including version and namespace checks. The separate
+export case requires nanoparquet; source preparation skips the empty supplemental package install. Any preparation
+or test failure retains the private root; successful preparation and both child exits permit its removal.
+The subsequent installed-editor journey keeps its separate environment, nanoparquet dependency and lifetime.
+The separate R 4.4 qualification remains unchanged.
 
 The macOS default is `platform-lifecycle`. It keeps a paging round trip, the Mark Duplicates form, compact
 column reveal and focus, and Rename inspection, Edit, Undo/Redo, all-row exports, source
 refusal, Save, clipboard and source-bound notebook insertion. Its editing sequence ends after verifying Rename Redo,
 followed by source integrity checks and session disposal. The additional Undo after Redo runs in Linux
 core to prepare for Drop Columns. The macOS profile also retains all three collapse-frame opens,
-direct-document execution and kernel restart/recovery. Its managed-document stage also opens the existing 240-row,
+direct-document execution and kernel restart/recovery. The macOS managed-document stage and Windows file-only stage open the same existing 240-row,
 four-column CSV through the public file command with temporary R selection, checks default-on header statistics, native cells and Rename
 Preview/Apply, the full rendered generated code's exact file read, all-row CSV export and source-destination refusal.
-It restores the setting, preserves fixture bytes and checks session/private-process-root cleanup. It uses the existing
-profile, preparation dependencies and phase deadline. Its original hosted run records phase-relative checkpoints;
+It restores the setting, preserves fixture bytes and checks session/private-process-root cleanup. The Windows file branch
+also checks Undo/Redo, persisted reopening, a failed Custom preview that exits only its private R process, and recovery
+of the confirmed plan followed by public grid navigation. A tiny CP1252 CSV uses the public encoding, delimiter,
+header, quote and CR controls after its encoding is automatically detected, retaining quoted CRLF bytes; its saved options/plan restore through the public custom editor and its generated program executes
+in the original R notebook kernel with exact PID equality. The same branch opens the existing Parquet, JSONL, XLSX and BIFF fixtures and selects
+the nonfirst XLSX worksheet through the real picker. Exact native cells, source bytes, an unrelated sentinel and owned
+session/private-root cleanup remain asserted. Default notebook preparation includes pinned readxl and bit64 for these
+file inputs; focused, terminal and source-only package sets stay unchanged. This adds small file launches and reader
+preparation within the existing profile and phase deadline; hosted checkpoints must establish the actual additional cost. Its original hosted run records phase-relative checkpoints;
 polling can miss quick transitions, so these are not exact per-action timings.
 The Linux core catalog retains the Dense Rank form,
 Preview/Apply/Undo and three direct page samples for exact ranks, missing cells and row identities. The macOS profile

@@ -95,7 +95,7 @@ and generated code follow the updated plan.
 
 In **2.6**, use **Open Wrangler: Open Another File with This Plan** to repeat confirmed steps on a file matching the
 plan's original column names and types, even when their order changes. It opens a separate Editing session using the
-same engine and import options. This supports Pandas, Polars, and DuckDB file plans without Custom Code or an
+same engine and import options. This supports Pandas, Polars, DuckDB and native R file plans without Custom Code or an
 unfinished draft. Choose a file that is not already open in Open Wrangler and has no saved work for those import
 options. Both source files remain unchanged.
 
@@ -152,11 +152,13 @@ CSV export is available; Parquet export requires `nanoparquet` and has type and 
 
 _Preview grouped R results alongside the cleaning history and generated R code._
 
-Local R file support is **Preview**. On Linux/macOS, choose R from the dataframe engine picker to open CSV, TSV,
+Local R file support is **Preview**. On Linux, macOS and Windows, choose R from the dataframe engine picker to open CSV, TSV,
 Parquet, JSONL/NDJSON or an Excel worksheet, or set `openWrangler.defaultBackend` to `r` before opening a file.
 Auto also tries R when no compatible Python interpreter or file engine is available. An explicit Python engine choice
-or a file-read error does not switch to R. Parquet needs `nanoparquet`; Excel needs `readxl`. R loads the complete file into memory;
-it requires an installed Rscript and does not need Python. The **Open Wrangler R** output channel records the selected
+or a file-read error does not switch to R. CSV/TSV import options include UTF-16 and single-byte encodings,
+ASCII delimiter/quote choices and headerless input. Quoted text retains its embedded line endings.
+Parquet needs `nanoparquet`; Excel needs `readxl`. R loads the complete file into memory and requires an installed
+Rscript; it does not need Python. The **Open Wrangler R** output channel records the selected
 Rscript path. Choosing R from a Python session opens a separate tab and
 preserves the existing steps. Changing an R file's import options also opens a separate session.
 

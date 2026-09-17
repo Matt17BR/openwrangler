@@ -169,7 +169,7 @@ export class SessionCoordinator implements vscode.Disposable {
         if (request.kind === "openSession" && response.kind === "sessionOpened") initialFilePlan = undefined;
         return response;
       },
-      captureActiveFilePlan: () => this.captureActiveFilePlan(delegate),
+      captureActiveFilePlan: () => this.captureActiveFilePlan(),
       prepareFileAutoFallback: (source, options) =>
         delegate.prepareFileAutoFallback?.(source, options) ?? Promise.resolve(undefined),
       discoverDuckDBTables: (source, options) =>
@@ -203,14 +203,13 @@ export class SessionCoordinator implements vscode.Disposable {
     };
   }
 
-  private captureActiveFilePlan(delegate: OpenWranglerBridge): FilePlanOpenContext | ErrorResponse {
+  private captureActiveFilePlan(): FilePlanOpenContext | ErrorResponse {
     const session = this.activeSessionId ? this.sessions.get(this.activeSessionId) : undefined;
     if (
       !session ||
       !this.isLiveSession(session) ||
-      this.sessionOwnerDelegates.get(session) !== delegate ||
       session.openRequest.source.kind !== "file" ||
-      !isFileDataBackend(session.metadata.backend) ||
+      (!isFileDataBackend(session.metadata.backend) && session.metadata.backend !== "r") ||
       session.metadata.mode !== "editing" ||
       !session.metadata.capabilities.editable ||
       session.metadata.steps.length === 0 ||
@@ -232,7 +231,7 @@ export class SessionCoordinator implements vscode.Disposable {
         "Plan reuse requires unique, non-empty source column names.",
         true
       );
-    const { runtimeId, runtimeRevision, publicRevision, openRequest, sourceSchema } = session;
+    const { delegate, runtimeId, runtimeRevision, publicRevision, openRequest, sourceSchema } = session;
     const ready = (): boolean => {
       const state = session.scheduler.snapshot();
       return (
@@ -257,7 +256,7 @@ export class SessionCoordinator implements vscode.Disposable {
     if (!runtimeIsCurrent?.())
       return protocolError(
         "file_plan_runtime_unavailable",
-        "The Python runtime that supplied this plan is no longer available. Reopen the original file before reusing its plan.",
+        "The runtime that supplied this plan is no longer available. Reopen the original file before reusing its plan.",
         true
       );
     const backend = session.metadata.backend;
@@ -268,6 +267,7 @@ export class SessionCoordinator implements vscode.Disposable {
       sourceSchema: structuredClone(sourceSchema),
       steps: structuredClone(session.metadata.steps),
       isCurrent: () =>
+        vscode.workspace.isTrusted &&
         this.isLiveSession(session) &&
         runtimeIsCurrent() &&
         ready() &&
@@ -293,7 +293,13 @@ export class SessionCoordinator implements vscode.Disposable {
     return {
       backend,
       importOptions: structuredClone(plan.importOptions),
-      bridge: this.createBridge(delegate, undefined, undefined, plan)
+      isCurrent: plan.isCurrent,
+      createBridge: (targetDelegate) => {
+        if (!plan.isCurrent()) throw new Error("The session that supplied this plan changed. Capture its plan again.");
+        if (backend === "r" ? !targetDelegate || targetDelegate === delegate : targetDelegate !== undefined)
+          throw new Error("The copied plan requires its own matching target runtime.");
+        return this.createBridge(targetDelegate ?? delegate, undefined, undefined, plan);
+      }
     };
   }
 

@@ -9,6 +9,7 @@ import type { ColumnSummary, ExportOptions, ValueCount } from "../../shared/prot
 import { DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS } from "../configuration";
 import { DetachedBridgeRequestError, type DetachedBridgeRequestReason } from "../dataBridge";
 import { KernelRequestCancelledError, withKernelTimeout } from "../notebooks/kernelLifecycle";
+import { assertREvaluationCode } from "./rCode";
 import type { RKernelBridgeTransport } from "./rKernelBridgeTransport";
 import {
   decodeRKernelResponseJson,
@@ -47,7 +48,6 @@ import {
 const INTERACTIVE_PROTOCOL_VERSION = 1;
 const RESPONSE_POLL_MS = 20;
 const MAX_DISCOVERY_BYTES = 64 * 1_024;
-const MAX_EVALUATION_CODE_BYTES = 1_024 * 1_024;
 const MAX_WORKING_DIRECTORY_BYTES = 32 * 1_024;
 const MAX_DISCOVERY_VARIABLES = 256;
 const MAX_VARIABLE_NAME_BYTES = 1_024;
@@ -242,9 +242,7 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
     options: RInteractiveEvaluationOptions = {}
   ): Promise<RProcessVariableDiscovery> {
     this.assertActive();
-    if (typeof code !== "string" || code.length === 0 || Buffer.byteLength(code, "utf8") > MAX_EVALUATION_CODE_BYTES) {
-      throw new TypeError("The R code chunk must contain between 1 byte and 1 MiB of UTF-8 text.");
-    }
+    assertREvaluationCode(code);
     const { workingDirectory, isRequestCurrent } = options;
     if (
       workingDirectory !== undefined &&

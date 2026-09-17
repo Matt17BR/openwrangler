@@ -333,11 +333,18 @@ function decodeUtf8(contents, name) {
   }
 }
 
-export async function inspectVsixArchive(bytes, { requireRFrameContract = true, requireVendoredJsYaml = true } = {}) {
+export async function inspectVsixArchive(
+  bytes,
+  { requireRFrameContract = true, requireRWindowsJobSupervisor = true, requireVendoredJsYaml = true } = {}
+) {
   if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > MAX_VSIX_BYTES) {
     throw new Error(`VSIX input must be one non-empty Buffer no larger than ${MAX_VSIX_BYTES} bytes.`);
   }
-  const requiredEntries = requiredVsixEntriesForRelease({ requireRFrameContract, requireVendoredJsYaml });
+  const requiredEntries = requiredVsixEntriesForRelease({
+    requireRFrameContract,
+    requireRWindowsJobSupervisor,
+    requireVendoredJsYaml
+  });
   const archive = await openArchive(bytes);
   const entries = [];
   const entryKinds = new Map();
@@ -411,7 +418,11 @@ export async function inspectVsixArchive(bytes, { requireRFrameContract = true, 
     archive.readEntry();
   });
 
-  const inventory = inspectVsixEntries(entries, { requireRFrameContract, requireVendoredJsYaml });
+  const inventory = inspectVsixEntries(entries, {
+    requireRFrameContract,
+    requireRWindowsJobSupervisor,
+    requireVendoredJsYaml
+  });
   if (inventory.forbidden.length > 0 || inventory.missing.length > 0 || inventory.duplicates.length > 0) {
     throw new Error(
       [

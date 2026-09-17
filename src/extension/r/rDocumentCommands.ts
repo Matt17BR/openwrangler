@@ -8,6 +8,7 @@ import { configuredRscriptPath, supportsRscriptExecution } from "./rscriptPath";
 import { type TextDocumentSessionOrigin, SessionCoordinator } from "../sessionCoordinator";
 import { OpenWranglerPanel, restoreEditorGroupAfterQuickPick } from "../webviewPanel";
 import { prepareRDocumentSource, rDocumentKind, rDocumentLabel } from "./rDocumentSource";
+import { assertREvaluationCode, rStringExpression } from "./rCode";
 import { RKernelBridge } from "./rKernelBridge";
 import { RProcessSessionTransport, type RProcessVariableDescriptor } from "./rProcessTransport";
 import {
@@ -328,7 +329,15 @@ async function routeActiveLiterateDocument(providers: LiterateDocumentVariablePr
       showChangedReticulateSetting();
       return false;
     }
-    const code = chunk.language === "python" ? reticulateSelection(chunk.code) : chunk.code;
+    let code = chunk.code;
+    if (chunk.language === "python") {
+      try {
+        code = reticulateSelection(code);
+      } catch (error) {
+        void vscode.window.showErrorMessage(`Could not prepare the current code chunk: ${errorMessage(error)}`);
+        return false;
+      }
+    }
     return await providers.r.runLiterateChunkAndOpen(origin, rSession, code);
   }
 
@@ -387,7 +396,8 @@ function reticulateCellsEnabled(origin: LiterateDocumentOrigin): boolean {
 }
 
 function reticulateSelection(code: string): string {
-  return `reticulate::repl_python(quiet = TRUE, input = ${JSON.stringify(code)})`;
+  assertREvaluationCode(code);
+  return `reticulate::repl_python(quiet = TRUE, input = ${rStringExpression(code)})`;
 }
 
 function missingExtensionGuidance(missing: readonly string[]): string {

@@ -66,7 +66,7 @@ export interface RuntimeEstablishmentHooks {
 
 /** A host-owned plan captured before the user chooses another file. */
 export interface InitialFilePlan {
-  readonly backend: Extract<DataBackend, "pandas" | "polars" | "duckdb">;
+  readonly backend: Extract<DataBackend, "pandas" | "polars" | "duckdb" | "r">;
   readonly importOptions: SessionSource["importOptions"];
   readonly sourceSchema: readonly ColumnSchema[];
   readonly steps: readonly TransformStep[];
@@ -158,7 +158,7 @@ export class SessionRuntimeEstablisher {
       if (targetRuntimeIsCurrent && !targetRuntimeIsCurrent())
         return protocolError(
           "file_plan_target_runtime_changed",
-          "The Python runtime opening this file changed or stopped. Reopen the target to inspect any saved plan.",
+          "The runtime opening this file changed or stopped. Reopen the target to inspect any saved plan.",
           true
         );
       return mismatch ? protocolError("invalid_source_origin", mismatch, true) : undefined;

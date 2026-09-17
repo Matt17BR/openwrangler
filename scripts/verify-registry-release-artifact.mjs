@@ -64,6 +64,7 @@ function sourcePackageJson(root, commit) {
 }
 
 const R_FRAME_CONTRACT_SOURCE = "r/openwrangler_runtime/frame_contract.R";
+const R_WINDOWS_JOB_SUPERVISOR_SOURCE = "r/openwrangler_runtime/windows-job-supervisor.ps1";
 const VENDORED_JS_YAML_MARKER = "scripts/copy-extension-vendor-assets.mjs";
 
 function releaseTreeHasRFrameContract(root, commit) {
@@ -83,6 +84,25 @@ function releaseTreeHasRFrameContract(root, commit) {
   );
   if (!expected.test(output)) {
     throw new Error("The selected release has an invalid R frame-contract source entry.");
+  }
+  return true;
+}
+
+function releaseTreeHasRWindowsJobSupervisor(root, commit) {
+  const output = execFileSync("git", ["ls-tree", "-z", "--full-tree", commit, "--", R_WINDOWS_JOB_SUPERVISOR_SOURCE], {
+    cwd: root,
+    encoding: "utf8",
+    maxBuffer: 4096,
+    timeout: 10_000,
+    windowsHide: true
+  });
+  if (output.length === 0) return false;
+  const expected = new RegExp(
+    `^100(?:644|755) blob [0-9a-f]{40}\\t${R_WINDOWS_JOB_SUPERVISOR_SOURCE.replaceAll(".", "\\.")}\\0$`,
+    "u"
+  );
+  if (!expected.test(output)) {
+    throw new Error("The selected release has an invalid R Windows job-supervisor source entry.");
   }
   return true;
 }
@@ -173,6 +193,7 @@ export async function verifyPinnedPreviewReleaseArtifact({
   expectedCommit,
   pinned,
   requireRFrameContract = true,
+  requireRWindowsJobSupervisor = true,
   requireVendoredJsYaml = true,
   releaseTag,
   sourcePackageJson
@@ -212,7 +233,11 @@ export async function verifyPinnedPreviewReleaseArtifact({
   ) {
     throw new Error("The canonical pre-release files do not describe one exact preview artifact.");
   }
-  const archive = await inspectVsixArchive(candidateAsset.bytes, { requireRFrameContract, requireVendoredJsYaml });
+  const archive = await inspectVsixArchive(candidateAsset.bytes, {
+    requireRFrameContract,
+    requireRWindowsJobSupervisor,
+    requireVendoredJsYaml
+  });
   const packaged = releaseSource(archive.packagedPackageJson, releaseTag, true);
   const preReleaseProblems = inspectVsixPreReleaseMetadata(archive.packagedPackageJson, archive.vsixManifest);
   if (
@@ -250,6 +275,7 @@ export async function verifyRegistryReleaseArtifact({
   expectedCommit,
   prerelease,
   requireRFrameContract = true,
+  requireRWindowsJobSupervisor = true,
   requireVendoredJsYaml = true,
   releaseTag,
   sourcePackageJson
@@ -269,6 +295,7 @@ export async function verifyRegistryReleaseArtifact({
       expectedCommit,
       releaseTag,
       requireRFrameContract,
+      requireRWindowsJobSupervisor,
       requireVendoredJsYaml,
       sourcePackageJson
     });
@@ -278,6 +305,7 @@ export async function verifyRegistryReleaseArtifact({
     expectedCommit,
     releaseTag,
     requireRFrameContract,
+    requireRWindowsJobSupervisor,
     requireVendoredJsYaml,
     sourceCommit: expectedCommit,
     sourcePackageJson
@@ -311,6 +339,7 @@ export async function verifyRegistryReleaseArtifactFromCheckout({
   const packageJson = sourcePackageJson(canonicalRoot, tagCommit);
   const source = releaseSource(packageJson, releaseTag, prerelease);
   const requireRFrameContract = releaseTreeHasRFrameContract(canonicalRoot, tagCommit);
+  const requireRWindowsJobSupervisor = releaseTreeHasRWindowsJobSupervisor(canonicalRoot, tagCommit);
   const requireVendoredJsYaml = releaseTreeHasVendoredJsYaml(canonicalRoot, tagCommit);
   if (releaseVersionRequiresRFrameContract(source.version) && !requireRFrameContract) {
     throw new Error("Open Wrangler 2 release sources must include the native R frame contract.");
@@ -323,11 +352,12 @@ export async function verifyRegistryReleaseArtifactFromCheckout({
     expectedCommit: tagCommit,
     prerelease,
     requireRFrameContract,
+    requireRWindowsJobSupervisor,
     requireVendoredJsYaml,
     releaseTag,
     sourcePackageJson: packageJson
   });
-  return Object.freeze({ ...receipt, requireRFrameContract, requireVendoredJsYaml });
+  return Object.freeze({ ...receipt, requireRFrameContract, requireRWindowsJobSupervisor, requireVendoredJsYaml });
 }
 
 async function runCli() {

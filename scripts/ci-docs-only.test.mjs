@@ -1683,6 +1683,10 @@ test("CI schedules every existing native R phase on two workers and cancellation
   ]);
   assert.equal(kernelTransport.environment.OPEN_WRANGLER_R_CONTRACT_TESTS, "1");
   assert.equal(kernelTransport.environment.RSCRIPT, "unused-Rscript");
+  const csvPhases = selectRContractPhases(phases, { kind: "phase", id: "kernel:csv-import" });
+  assert.equal(csvPhases.length, 1);
+  assert.equal(csvPhases[0].timeoutMs, 120_000);
+  assert.equal(csvPhases[0].environment.OPEN_WRANGLER_R_KERNEL_CASE, "csv-import");
   const scheduled = [];
   for (const entry of entries) {
     assert.equal(typeof entry.native_cancellation, "boolean");
@@ -1694,6 +1698,7 @@ test("CI schedules every existing native R phase on two workers and cancellation
     scheduled.push(...selected.map((phase) => phase.id));
   }
   assert.equal(entries.filter((entry) => entry.native_cancellation).length, 1);
+  assert.equal(scheduled.filter((id) => id === "kernel:csv-import").length, 1);
   assert.deepEqual(scheduled.sort(), phases.map((phase) => phase.id).sort());
 });
 
@@ -1895,7 +1900,7 @@ test("released Jupyter investigation targets preserve installed R calls and actu
     assert.equal(platform.steps[0].with["persist-credentials"], false);
     const editor = platform.steps.find((step) => step.id === "packaged_editor_r");
     const omission = platform.steps.find((step) => step.name === "Record omitted R editor journey");
-    const source = platform.steps.find((step) => step.name === "Check native R numeric portability");
+    const source = platform.steps.find((step) => step.name === "Check native R numeric and CSV portability");
     const sourceOmission = platform.steps.find((step) => step.name === "Record omitted R source check");
     assert.equal(editor.if, "${{ !inputs.omit_editor }}");
     assert.equal(editor.run, "node scripts/run-packaged-editor-tests.mjs openwrangler.vsix");
@@ -1903,9 +1908,9 @@ test("released Jupyter investigation targets preserve installed R calls and actu
     assert.equal(omission.if, "${{ inputs.omit_editor }}");
     assert.match(omission.run, /no fresh editor execution is claimed/u);
     assert.equal(source.if, "${{ !inputs.omit_source }}");
-    assert.match(source.run, /id: "kernel:numeric-portability"/u);
+    assert.match(source.run, /for \(const id of \["kernel:numeric-portability", "kernel:csv-import"\]\)/u);
     assert.equal(sourceOmission.if, "${{ inputs.omit_source }}");
-    assert.match(sourceOmission.run, /no fresh numeric-portability execution is claimed/u);
+    assert.match(sourceOmission.run, /no fresh numeric or CSV source execution is claimed/u);
     for (const step of platform.steps) {
       assert.equal(step["continue-on-error"], undefined);
       if (

@@ -4,16 +4,14 @@ import type { SessionSource } from "../../shared/protocol";
 import { isSessionSource } from "../../shared/protocolValidation";
 import { FileBackendUnavailableError } from "../dataBridge";
 import { RKernelBridge } from "./rKernelBridge";
-import { RProcessSessionTransport, type RProcessFileSource } from "./rProcessTransport";
-import { configuredRscriptPath, supportsRscriptExecution } from "./rscriptPath";
+import { RProcessSessionTransport, supportsRCsvImportOptions, type RProcessFileSource } from "./rProcessTransport";
+import { configuredRscriptPath, supportsRFileExecution } from "./rscriptPath";
 
 /** Creates a lazy, exact-file native R owner; the coordinator owns opening and replay. */
 export function createRFileBridge(context: vscode.ExtensionContext, source: SessionSource): RKernelBridge {
   if (!vscode.workspace.isTrusted) throw new Error("Trust this workspace before opening a file with R.");
-  if (!supportsRscriptExecution())
-    throw new FileBackendUnavailableError(
-      "Opening files with native R is supported on Linux and macOS. R notebooks remain available on Windows."
-    );
+  if (!supportsRFileExecution())
+    throw new FileBackendUnavailableError("Opening files with native R is supported on Linux, macOS and Windows.");
   if (
     !isSessionSource(source) ||
     source.kind !== "file" ||
@@ -39,21 +37,24 @@ export function createRFileBridge(context: vscode.ExtensionContext, source: Sess
     if (
       Object.keys(options).some(
         (key) => !["delimiter", "encoding", "quoteChar", "hasHeader", "lineEnding"].includes(key)
-      ) ||
-      (options.encoding !== undefined && options.encoding !== "utf-8" && options.encoding !== "utf8") ||
-      (options.quoteChar !== undefined && options.quoteChar !== '"') ||
-      options.lineEnding === "cr"
+      )
     ) {
-      throw new FileBackendUnavailableError(
-        "Native R CSV/TSV uses strict UTF-8, double-quote escaping and LF or CRLF records. Choose compatible import options."
-      );
+      throw new FileBackendUnavailableError("Native R CSV/TSV requires delimited-text import options.");
     }
+    const encoding = (options.encoding ?? "utf-8").toLowerCase();
     fileSource = Object.freeze({
       path: source.path,
       format: "csv",
       header: options.hasHeader ?? true,
-      delimiter: options.delimiter ?? (extension === ".tsv" ? "\t" : ",")
+      delimiter: options.delimiter ?? (extension === ".tsv" ? "\t" : ","),
+      encoding: encoding === "utf8" ? "utf-8" : encoding,
+      quoteChar: options.quoteChar ?? '"'
     });
+    if (!supportsRCsvImportOptions(fileSource.delimiter, fileSource.quoteChar, fileSource.encoding)) {
+      throw new FileBackendUnavailableError(
+        "Native R CSV/TSV requires a supported text encoding and different ASCII delimiter and quote characters."
+      );
+    }
   } else if (extension === ".xlsx" || extension === ".xls") {
     if (Object.keys(options).some((key) => key !== "sheetName" && key !== "sheetIndex")) {
       throw new FileBackendUnavailableError(

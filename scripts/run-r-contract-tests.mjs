@@ -23,7 +23,7 @@ const R_CONTRACT_PHASE_OUTPUT_MAX_BYTES = 4 * 1024 * 1024;
 const WINDOWS_JOB_SETTLEMENT_MS = 15_000;
 const WINDOWS_JOB_LAUNCH_FRAME_MAX_BYTES = 256 * 1024;
 const WINDOWS_JOB_ATTESTATION_PREFIX = "OPEN_WRANGLER_WINDOWS_JOB_EMPTY:";
-const WINDOWS_JOB_SUPERVISOR_PATH = resolve(root, "scripts/windows-job-supervisor.ps1");
+const WINDOWS_JOB_SUPERVISOR_PATH = resolve(root, "r/openwrangler_runtime/windows-job-supervisor.ps1");
 const LINUX_SIGNAL_HELPER_PATH = resolve(root, "scripts/r-contract-signal.py");
 const LINUX_SIGNAL_MAX_TARGETS = 256;
 const LINUX_SIGNAL_INPUT_MAX_BYTES = 64 * 1024;
@@ -89,6 +89,7 @@ export const R_FRAME_CONTRACT_CASES = Object.freeze([
 
 export const R_KERNEL_AGENT_CASES = Object.freeze([
   "numeric-portability",
+  "csv-import",
   "lifecycle-and-structure",
   "text-fill-and-cast",
   "rows-numeric-datetime-and-by-example",
@@ -222,7 +223,7 @@ export function createRContractPhases({
       `kernel:${caseId}`,
       `native kernel-agent contract: ${caseId}`,
       "r/tests/kernel_agent.R",
-      caseId === "numeric-portability" ? 120_000 : KERNEL_AGENT_TIMEOUT_MS,
+      caseId === "numeric-portability" || caseId === "csv-import" ? 120_000 : KERNEL_AGENT_TIMEOUT_MS,
       {
         environment: rEnvironment,
         phaseEnvironment: { OPEN_WRANGLER_R_KERNEL_CASE: caseId },

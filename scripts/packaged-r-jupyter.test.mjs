@@ -30,7 +30,18 @@ import { resolvePackagedRJourneySelection } from "./packaged-r-journey.mjs";
 import { editorAcceptancePrivateRootIdentityLost } from "./packaged-editor-orchestration.mjs";
 import { acquireExactArtifact, prepareREditorAcceptanceTooling } from "./r-editor-acceptance-tooling.mjs";
 
-const notebookPackages = ["IRkernel", "jsonlite", "rlang", "Rcpp", "tibble", "data.table", "collapse", "nanoparquet"];
+const notebookPackages = [
+  "IRkernel",
+  "jsonlite",
+  "rlang",
+  "Rcpp",
+  "tibble",
+  "data.table",
+  "collapse",
+  "nanoparquet",
+  "readxl",
+  "bit64"
+];
 const editorPackages = [
   "IRkernel",
   "jsonlite",
@@ -637,7 +648,8 @@ for (const [scope, selection, packages] of [
     assert.equal(prepared.dependencyProbe.options.timeoutMs, 30_000);
     assert.equal(prepared.dependencyInstall.options.timeoutMs, 1_200_000);
     assert.ok(Object.isFrozen(R_ACCEPTANCE_PACKAGE_VERSIONS));
-    assert.equal(prepared.packages.includes("bit64"), false);
+    assert.equal(prepared.packages.includes("bit64"), scope === "notebook");
+    assert.equal(prepared.packages.includes("readxl"), scope === "notebook");
     await assert.rejects(
       prepareJupyterAcceptanceREnvironment(fixture.directory, fixture.rscript, fixture.options),
       /new contained private environment/u

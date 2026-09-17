@@ -5,7 +5,7 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import type { Jupyter, JupyterServerCollection } from "@vscode/jupyter-extension";
 import type { Page } from "playwright-core";
-import { supportsRscriptExecution } from "../../extension/r/rscriptPath";
+import { supportsRFileExecution, supportsRscriptExecution } from "../../extension/r/rscriptPath";
 import { cleanupAcceptanceTemporaryDirectory } from "./acceptanceTemporaryDirectory";
 import {
   RELEASED_JUPYTER_R_KERNEL_RESULT,
@@ -75,7 +75,8 @@ interface ReleasedRJupyterExtensionJourneyDependencies {
     testing: TestApi,
     workbench: Page,
     directory: string,
-    includeCsvFile?: boolean
+    entry?: "document" | "document-and-file" | "file",
+    notebook?: Readonly<{ document: vscode.NotebookDocument; processId: number }>
   ) => Promise<void>;
   readonly exerciseReleasedREditingCoverage: (
     testing: TestApi,
@@ -330,9 +331,25 @@ export function createReleasedRJupyterExtensionJourney({
           "The ordinary macOS R gate requires the product's direct-document transport."
         );
         recordReleasedRAcceptanceSection(phase, coverage, "document", "start");
-        await exerciseReleasedRDocumentJourney(testing, workbench, directory, coverage.name === "platform-lifecycle");
+        await exerciseReleasedRDocumentJourney(
+          testing,
+          workbench,
+          directory,
+          coverage.name === "platform-lifecycle" ? "document-and-file" : "document"
+        );
         assert.equal(testing.diagnostics().sessionCount, 0, "The plain R journey must release its private processes.");
         recordReleasedRAcceptanceSection(phase, coverage, "document", "complete");
+      }
+
+      if (phase === "jupyter-r" && process.platform === "win32") {
+        assert.equal(supportsRFileExecution(), true, "The Windows R gate requires the owned file transport.");
+        recordReleasedRAcceptanceSection(phase, coverage, "file", "start");
+        await exerciseReleasedRDocumentJourney(testing, workbench, path.join(directory, "R files café"), "file", {
+          document: notebook,
+          processId: Number(setup.pid)
+        });
+        assert.equal(testing.diagnostics().sessionCount, 0, "The R file journey must release its private process.");
+        recordReleasedRAcceptanceSection(phase, coverage, "file", "complete");
       }
 
       await exerciseReleasedRNativeFrameSessions(testing, workbench, notebook, configuration, phase, coverage);

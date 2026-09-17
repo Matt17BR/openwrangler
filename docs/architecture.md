@@ -103,7 +103,7 @@ retain their concrete backend and logical Auto preference on restore; they do no
 **Open Wrangler: Open File Path** reads the configured default and creates a fresh panel, including after a failed
 open. Restoring a custom editor instead preserves its previously confirmed backend.
 
-R selection opens local CSV, TSV, Parquet, JSONL/NDJSON or Excel files through an owned `Rscript` process on Linux or macOS. Choosing between R and a Python engine opens a separate panel with that engine's own saved plan, if any;
+R selection opens local CSV, TSV, Parquet, JSONL/NDJSON or Excel files through an owned `Rscript` process on Linux, macOS or Windows. Choosing between R and a Python engine opens a separate panel with that engine's own saved plan, if any;
 it does not translate the original panel's steps or discard its state. The host carries the exact file, session and
 revision through the picker and cancels an unhanded runtime when that owner retires. R file import-options changes
 also open a separate session because the native process is bound to its original source and options.
@@ -132,7 +132,7 @@ Excel imports accept exactly one nonempty worksheet name or zero-based sheet ind
 whitespace-only names. Discovery, picker selections, manual input and remembered file settings retain that exact
 identity through runtime validation and native reading. Empty names and conflicting selectors remain invalid.
 
-**Open Another File with This Plan** captures one confirmed, draft-free Pandas, Polars or DuckDB file plan before
+**Open Another File with This Plan** captures one confirmed, draft-free Pandas, Polars, DuckDB or native R file plan before
 the picker opens. It excludes Custom Code and requires unique, non-empty original column names. The host retains
 the validated original file schema through ordinary edits, refreshing it on source/runtime replacement. This receipt
 is private and is not persisted. Target columns must have the same names, semantic types and raw types; observed
@@ -144,9 +144,12 @@ current input schema. Target column order is preserved unless a cleaning step ch
 target's input-order requirements. Both files use the same concrete backend and
 import options. Renamed, extra or missing columns and notebook inputs remain outside this command's scope.
 
-The captured session, Python process, environment selection and revision must remain current through replay and
-persistence staging; switching active editors cannot retarget the action. The target's exact Python process and
-environment selection are retained from its confirmed open through final publication.
+The captured session, runtime owner and revision must remain current through replay and persistence staging;
+switching active editors cannot retarget the action. Python retains its exact process and environment selection.
+R retains its exact bridge session, transport mapping and kernel generation. The global file command captures the
+active session's actual delegate; ordinary request authorization remains bound to each bridge. A target R file receives
+its own source-pinned process through the existing factory and coordinator replay path. Source ownership never moves
+to the selected target. The target's runtime owner is retained from confirmed open through final publication.
 The origin's already-loaded data is not re-executed. The selected target follows ordinary eager-snapshot or lazy-file
 fingerprint rules. Current and retained file identities prevent selecting
 the origin or another open file session through a path, symlink or hard-link alias. Unverifiable identities are refused.
@@ -156,6 +159,8 @@ configuration keys are preserved. The existing store repeats that absence check 
 The existing restorer replays the complete plan privately, with one-row intermediate responses, and obtains the final
 page before saving. Small responses do not bound native scans or temporary memory. The candidate becomes an ordinary
 Editing session only after durable success. Failure closes only that candidate, after detached execution settles.
+A failed native close cannot strand an unpublished R file process: coordinator idle retires that exact file delegate
+once its pending and detached work settles. Notebook mappings keep their retryable close behavior.
 The failure response is selected before terminal cleanup, preserving an already-observed cancellation or stale owner;
 closing the failed candidate does not replace a schema, replay or storage diagnostic with a runtime-change error.
 Cancellation, runtime retirement or file replacement during the final durable write can leave the copied plan saved
@@ -174,8 +179,8 @@ Omitted LF defaults preserve existing saved-state keys, including normal file re
 uses the existing import replacement and persistence owners.
 
 This file-only option stays in protocol v4 because file commands use the owned runtime bundled with the current
-extension. Native R accepts LF/CRLF and refuses an explicit CR-only setting. Non-file and non-delimited sources reject it,
-so it cannot reach a retained notebook runtime. A manually
+extension. Native R follows its [CSV and TSV reader contract](#csv-and-tsv-files).
+Non-file and non-delimited sources reject the option, so it cannot reach a retained notebook runtime. A manually
 mixed older decoder rejects the new key; this is not a compatibility promise for every historical v4 binary.
 
 Import prompts belong to one host-owned request. An accepted native Quick Input stays visible until its successor
@@ -1462,16 +1467,46 @@ descriptor and executable in a fresh process and rechecks trust. File sessions o
 native exports, with no document insertion target. The private descriptor identifies the format and its exact options;
 Excel retains either a sheet name or a zero-based sheet index. Live and generated loading use the same native helper.
 
+On Windows, the bundled PowerShell supervisor creates `Rscript` suspended, assigns it to a private Job Object with
+kill-on-close, then resumes it. Only the selected stdin/stdout/stderr handles cross into the child. The host relays
+bounded binary R requests through the supervisor; stdin closure, target exit or a failed pipe retires the entire job,
+including descendants. A blocked child writer cannot block lease-loss detection. Cleanup removes the private root only
+after the supervisor reports the exact job-empty token and closes. Forced supervisor termination without that receipt
+preserves the root and reports unconfirmed cleanup. The supervisor compiles its bundled C# owner through Windows
+PowerShell `Add-Type`, after loading its built-in Utility module directly from `$PSHOME` so inherited module search
+paths do not delay startup. Policy or compilation failure stops opening with a diagnostic. An initial startup failure keeps
+its cause through cleanup; only an established runtime publishes invalidation. This file path does not enable
+Windows document or terminal execution. PowerShell’s temporary compiler runs before the R Job Object exists.
+Abrupt helper termination during compilation does not establish compiler-child containment; the host reports
+unconfirmed cleanup and retains the private root. The job-empty receipt covers the subsequently launched R tree.
+
 #### CSV and TSV files
 
-The native loader uses `scan()` and `type.convert(numerals = "no.loss")`. The same helper is emitted into generated
-code, which reads the source again when executed. Input is strict UTF-8 with double-quote escaping, LF/CRLF records,
-an optional header and a supported single-byte delimiter. Blank leading records are skipped in either header mode;
-headerless columns are named `V1`, `V2`, and so on. Duplicate and empty header names remain intact. Header-only inputs
-produce zero-row logical columns; empty files, malformed row widths, unclosed quotes, NUL and invalid UTF-8 are refused.
-Scanner warnings are errors, so truncated records cannot become an apparently successful dataframe.
+The native loader tokenizes CSV bytes with R's compiled regular-expression engine and uses
+`type.convert(numerals = "no.loss")` for column types. Live and generated code use the same helper, captured import
+options and frame column limit. It accepts strict UTF-8, explicit UTF-8-lossy replacement, UTF-16LE/BE, ISO-8859-1 and
+Windows-1252. Delimiter and quote must be different single tab or printable ASCII characters. LF, CRLF and CR delimit
+records and remain exact inside quoted fields. Quotes must enclose a whole field, with embedded quotes doubled.
+Literal quotes in unquoted fields and text after a closing quote are refused.
 
-Empty fields and `NA`, including quoted forms, become missing. Field whitespace is preserved; native type inference
+Empty unquoted records are skipped. Before the first record, single unquoted fields containing only ASCII spaces or
+tabs are also skipped; quoted empty fields, quoted whitespace and delimiter-only records remain data. Body whitespace
+remains data or causes a row-width refusal. Headerless columns are named `V1`, `V2`, and so on. Header whitespace,
+duplicate and empty names remain intact. Header-only inputs produce zero-row logical columns. Empty or padding-only
+files, malformed row widths, unclosed quotes and NUL are refused. Invalid or incomplete selected-encoding text is
+refused unless UTF-8-lossy replacement is explicitly selected. Parser warnings are errors; invalid-input diagnostics
+exclude source text.
+Windows-1252 decoding refuses its five undefined bytes consistently across platforms; ISO-8859-1 retains the
+corresponding control characters.
+
+Default strict UTF-8 reads the source directly without an extra conversion pass. Other encodings and explicit lossy
+mode decode in 64 KiB chunks, retaining only an incomplete encoding suffix, into an owned temporary UTF-8 file.
+This adds a decoding pass and temporary I/O. Normal completion and errors close and remove the temporary file.
+Managed R processes place their native temporary directory beneath the exact owned process root, so forced process
+cleanup also removes interrupted conversion files. Generated code uses its R temporary directory and the same
+normal/error cleanup. Neither path modifies the source.
+
+Empty fields and `NA`, including quoted forms, become missing. Text columns preserve field whitespace; native type inference
 recognizes logical and numeric values, retains precision-losing integers as text and leaves dates as text. The complete
 frame is loaded into R memory before the bounded page/capture path. First editing isolation, profiles and operations
 can allocate additional complete vectors or frames. This is an eager native reader, without a page-sized memory
@@ -1638,6 +1673,9 @@ Generated Formula and By Example code encode finite double literals from their b
 hexadecimal text, preserving the bound value across platforms. Subnormal and zero spellings use exponent -1022,
 and the emitted conversion preserves signed zero when compiled. Integer literals retain integer storage;
 public admission rules and generated-code limits remain unchanged.
+
+Generated R preserves exact Unicode in paths, column names and text values. Strings that would require R Unicode
+escapes use integer codepoint expressions, avoiding Windows supplementary-character corruption and R's escaped-literal limits.
 
 Generated R follows the live operation's native column-metadata behavior at each step. It normalizes element names
 on its already-isolated `data.table` result without making another full data copy; Clone, Dense Rank, Mark Duplicates
@@ -1946,7 +1984,11 @@ indeterminate: Open Wrangler does not retry, roll it back, or claim success agai
 R terminal sessions apply the equivalent rule to the exact terminal object and process ID. Direct active-R opens
 capture that terminal before cleaning up a previous transport; changing terminals requires a new open action.
 Terminal dispatch is one correlated R expression with short physical lines, so a new terminal can accept it before
-R changes its input mode. Long path literals remain escaped and are split into bounded string expressions.
+R changes its input mode. Long paths are split into bounded string expressions. Process and terminal paths and
+reticulate chunk text share an R string emitter that preserves exact Unicode, including control characters next to
+supplementary characters; NUL and unpaired surrogates are refused. JSON mailbox transport remains separate.
+Paths must also be representable in the selected R process's filesystem encoding. Reticulate rejects source over the
+existing 1 MiB R evaluation limit before quoting and checks the resulting wrapped code against that same limit.
 R and Quarto document commands retain the exact editor, document, version, URI, selection, parsed chunk, and resolved
 executor across every activation, discovery, picker, execution, and focus-restoration await.
 

@@ -482,7 +482,9 @@ export function createReleasedROperationPreviews(dependencies: ReleasedROperatio
         ? {
             path: source.path!,
             header: source.importOptions?.hasHeader ?? true,
-            delimiter: source.importOptions?.delimiter ?? (/\.tsv$/iu.test(source.path!) ? "\t" : ",")
+            delimiter: source.importOptions?.delimiter ?? (/\.tsv$/iu.test(source.path!) ? "\t" : ","),
+            encoding: source.importOptions?.encoding === "utf8" ? "utf-8" : (source.importOptions?.encoding ?? "utf-8"),
+            quoteChar: source.importOptions?.quoteChar ?? '"'
           }
         : variableName;
     assertReleasedRGeneratedCode(expectedCode, newName, generatedSource);

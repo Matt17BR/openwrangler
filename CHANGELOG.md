@@ -6,8 +6,10 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Added
 
+- R CSV/TSV imports honor encoding, ASCII delimiter and quote, headerless and CR record options, with matching generated code.
+- Native R file sessions can reuse confirmed built-in cleaning plans on another file with compatible columns.
 - R Custom Code accepts results that change between supported base data.frame, tibble and data.table classes, with matching Preview, history and generated code.
-- Local R file support is Preview on Linux and macOS: CSV, TSV, flat Parquet and JSONL/NDJSON, and selected Excel worksheets, with native cleaning, generated R and saved plans. Choosing R from a Python file session preserves the original in a separate tab.
+- Local R file support is Preview on Linux, macOS and Windows: CSV, TSV, flat Parquet and JSONL/NDJSON, and selected Excel worksheets, with native cleaning, generated R and saved plans. Choosing R from a Python file session preserves the original in a separate tab.
 
 ### Changed
 
@@ -21,6 +23,8 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- R startup preserves Unicode runtime paths, and reticulate chunks preserve Unicode text without expanding ordinary strings.
+- Generated R preserves supplementary Unicode characters alongside escaped control characters in paths, column names and values.
 - R header profiles honor the opening preference. Sampled charts identify the sample count used and full non-missing population.
 - Large R numeric histograms count every finite value, and numeric distinct counts stay exact through 10,000 values. Categorical profiles use exact counts within bounded memory; larger sets retain labeled sampling.
 - Large R text columns profile faster.

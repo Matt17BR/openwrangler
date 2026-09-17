@@ -623,7 +623,7 @@ limits below. Support labels describe the qualification commitment for each entr
 | IRkernel notebook in desktop VS Code                | Stable since 2.5.0 on Linux, macOS and Windows; exact notebook, kernel and variable ownership | Copy, save, notebook insertion, CSV and Parquet        |
 | Active terminal managed by the official R extension | Preview on Linux; exact terminal and process ownership                                        | Copy, save, CSV and Parquet; no document for insertion |
 | Managed `.R`, `.Rmd` or `.qmd` document             | Preview on Linux and macOS; exact document/version and owned R process                        | Copy, save, source-document insertion, CSV and Parquet |
-| Local CSV, TSV, Parquet, JSONL or Excel file        | Preview on Linux and macOS; exact file/options and owned R process                            | Copy, save, CSV and Parquet; no document insertion     |
+| Local CSV, TSV, Parquet, JSONL or Excel file        | Preview on Linux, macOS and Windows; exact file/options and owned R process                   | Copy, save, CSV and Parquet; no document insertion     |
 | IRkernel notebook in Cursor on Linux                | Experimental editor compatibility with narrower coverage                                      | Only the capabilities of its documented execution path |
 
 The [architecture](architecture.md#native-r) defines frame, precision, source and transport guarantees.
@@ -633,20 +633,22 @@ Local R files use a base `data.frame` with the existing R cleaning operations. F
 live R notebook, document and terminal sessions do not use workspace persistence.
 Select R explicitly in the engine picker or `openWrangler.defaultBackend`, or let Auto select R when no compatible
 Python interpreter or file engine is available. Switching between R and Python opens a separate session and retains the original plan.
-R import-options changes also create a separate session. **Open Another File with This Plan** remains Python-only.
+R import-options changes also create a separate session. **Open Another File with This Plan** also accepts confirmed built-in R file plans.
 
-The R reader requires UTF-8, double-quote escaping and LF/CRLF records. It supports custom single-byte delimiters and
-headerless input, preserves duplicate/empty column names, and refuses malformed records. Empty and `NA` fields are
+R CSV/TSV imports accept UTF-8, explicit UTF-8-lossy, UTF-16LE/BE, ISO-8859-1 and Windows-1252, with distinct ASCII
+delimiter/quote choices and LF, CRLF or CR records, including exact line endings inside quoted fields. Quotes must
+enclose a whole field, with embedded quotes doubled. Headerless input and duplicate/empty column names are supported;
+malformed records and strict decoding failures are refused. Empty and `NA` fields are
 missing; dates and integers that would lose precision stay text. R loads the full file into memory before returning
 bounded pages, and editing can require additional copies. It needs Rscript, not Python. Parquet and JSONL/NDJSON
 also admit flat scalar data; Excel opens the selected worksheet. Parquet requires `nanoparquet`, Excel requires
 `readxl`, and large integer input requires `bit64`. The [reader contract](architecture.md#parquet-jsonl-and-excel-files)
-describes type and precision limits, spreadsheet missing-value rules and eager loading. Windows file execution
-remains unavailable.
+describes type and precision limits, spreadsheet missing-value rules and eager loading.
 Installed CSV workflows have been verified in desktop VS Code on Linux and macOS. The
 [macOS check](https://github.com/Matt17BR/openwrangler/actions/runs/35094083555/job/104787104263) covers native cells,
 Rename Preview/Apply, generated R, protected all-row CSV export and session/process cleanup. Local R file support is
-Preview; this evidence does not qualify Windows file execution or every parser option.
+Preview. Windows uses the same CSV journey and native Job Object controls; its hosted verification must pass before release.
+Parser options beyond this reader contract remain unsupported.
 
 ### First stable R notebook scope
 
@@ -848,14 +850,14 @@ the contract.
 ## Reuse a file cleaning plan
 
 **Open Wrangler: Open Another File with This Plan** opens a separate Editing session with a confirmed built-in
-plan from a Pandas, Polars or DuckDB file session. The selected file must have matching original column names and
+plan from a Pandas, Polars, DuckDB or native R file session. The selected file must have matching original column names and
 types, in any order, and uses the same engine and import options. The target keeps its column order unless a cleaning
 step changes it. An unfinished draft, Custom Code, ambiguous column names, a target already open in Open Wrangler,
 or saved target work prevents reuse. Full replay must succeed before the new session is shown. Viewing filters and
 sorts are not copied, and both source files remain unchanged.
 
 Mapping renamed columns, notebook inputs, recipe files and batch execution remain unavailable. DuckDB keeps its
-experimental file-editing status. Source evidence: test:src/test/fileOpen.unit.test.ts;
+experimental file-editing status. Local R file support remains Preview. Source evidence: test:src/test/fileOpen.unit.test.ts;
 test:src/test/sessionCoordinator.persistence.unit.test.ts; test:src/test/sessionPersistenceStore.unit.test.ts.
 The [architecture contract](architecture.md#sources-sessions-and-data-flow) records source identity and late-cancellation
 semantics. The existing daily-core journey owns the installed command, file picker and rendered target interaction.

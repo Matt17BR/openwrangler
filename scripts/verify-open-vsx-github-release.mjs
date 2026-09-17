@@ -24,6 +24,7 @@ async function runCli() {
     candidateSha256: receipt.candidateSha256,
     channel: receipt.prerelease ? "preview" : "stable",
     requireRFrameContract: receipt.requireRFrameContract,
+    requireRWindowsJobSupervisor: receipt.requireRWindowsJobSupervisor,
     requireVendoredJsYaml: receipt.requireVendoredJsYaml,
     version: receipt.version
   };

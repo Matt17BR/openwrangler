@@ -9,6 +9,7 @@ import type * as vscode from "vscode";
 import { describe, expect, it } from "vitest";
 import type { RKernelPageWindow } from "../extension/r/rKernelProtocol";
 import { RInteractiveSessionTransport } from "../extension/r/rInteractiveSessionTransport";
+import { rStringExpression } from "../extension/r/rCode";
 import { buildRInteractiveDispatchCode } from "../extension/r/rInteractiveRuntime";
 import { rCsvExportOptions, rParquetExportOptions } from "./rExportTestOptions";
 
@@ -20,37 +21,41 @@ describe.skipIf(!enabled)("official R extension interactive transport", () => {
   it("preserves escaped long paths as exact literals in one R expression", async () => {
     const directory = await mkdtemp(resolve(tmpdir(), "ow-r-terminal-literals-"));
     try {
-      const cases = ["x".repeat(768), 'é漢😀\\"\n\r\t\u0001\u2028\u2029'.repeat(100)].map((component) => {
-        const source = resolve(directory, `${component}'); assign('injected', TRUE); #`);
-        const requestId = randomUUID();
-        const context = {
-          runtimeRoot: source,
-          ownerToken: "terminal-literal-regression",
-          bundleId: "1234567890abcdef",
-          requestPath: resolve(source, "requests", `${requestId}.json`),
-          responsePath: resolve(source, "responses", `${requestId}.json`),
-          notificationPath: resolve(source, "notification.json"),
-          notificationSentinelPath: resolve(source, "sentinel.json"),
-          notificationRequestId: randomUUID(),
-          attachmentPath: resolve(source, "attachment.json"),
-          attachmentNonce: randomUUID(),
-          expectedProcessId: 1,
-          bootstrapDispatcher: true
-        };
-        return {
-          code: buildRInteractiveDispatchCode(context),
-          expected: [
-            resolve(source, "openwrangler_runtime", "interactive_agent.R"),
-            resolve(source, "openwrangler_runtime"),
-            dirname(context.requestPath),
-            dirname(context.responsePath),
-            context.responsePath,
-            context.notificationPath,
-            context.notificationSentinelPath,
-            context.attachmentPath
-          ]
-        };
-      });
+      const cases = ["x".repeat(768), "\u2028😀", "\u0001😀", 'é漢😀\\"\n\r\t\u0001\u2028\u2029'.repeat(100)].map(
+        (component) => {
+          const source = resolve(directory, `${component}'); assign('injected', TRUE); #`);
+          const requestId = randomUUID();
+          const context = {
+            runtimeRoot: source,
+            ownerToken: "terminal-literal-regression",
+            bundleId: "1234567890abcdef",
+            requestPath: resolve(source, "requests", `${requestId}.json`),
+            responsePath: resolve(source, "responses", `${requestId}.json`),
+            notificationPath: resolve(source, "notification.json"),
+            notificationSentinelPath: resolve(source, "sentinel.json"),
+            notificationRequestId: randomUUID(),
+            attachmentPath: resolve(source, "attachment.json"),
+            attachmentNonce: randomUUID(),
+            expectedProcessId: 1,
+            bootstrapDispatcher: true
+          };
+          return {
+            code: buildRInteractiveDispatchCode(context),
+            expected: [
+              resolve(source, "openwrangler_runtime", "interactive_agent.R"),
+              resolve(source, "openwrangler_runtime"),
+              dirname(context.requestPath),
+              dirname(context.responsePath),
+              context.responsePath,
+              context.notificationPath,
+              context.notificationSentinelPath,
+              context.attachmentPath
+            ]
+          };
+        }
+      );
+      const longText = "\u0001😀".repeat(5_001);
+      cases.push({ code: rStringExpression(longText), expected: [longText] });
       const fixturePath = resolve(directory, "literals.json");
       await writeFile(fixturePath, JSON.stringify(cases));
       const result = spawnSync(
@@ -61,12 +66,18 @@ describe.skipIf(!enabled)("official R extension interactive transport", () => {
           "-e",
           `
 cases <- jsonlite::fromJSON(${JSON.stringify(fixturePath)}, simplifyVector = FALSE)
-literal_values <- function(node) {
-  if (is.character(node)) return(node)
-  if (is.call(node) && identical(node[[1L]], quote(base::paste0)) &&
-      all(vapply(as.list(node)[-1L], is.character, logical(1L)))) {
-    return(eval(node, envir = baseenv()))
+is_literal <- function(node) {
+  if (is.character(node)) return(length(node) == 1L)
+  if (!is.call(node)) return(FALSE)
+  if (identical(node[[1L]], quote(base::paste0))) {
+    return(all(vapply(as.list(node)[-1L], is_literal, logical(1L))))
   }
+  if (length(node) != 2L || !identical(node[[1L]], quote(base::intToUtf8)) ||
+      !is.call(node[[2L]]) || !identical(node[[2L]][[1L]], quote(base::c))) return(FALSE)
+  all(vapply(as.list(node[[2L]])[-1L], function(point) is.numeric(point) && length(point) == 1L, logical(1L)))
+}
+literal_values <- function(node) {
+  if (is_literal(node)) return(eval(node, envir = baseenv()))
   if (is.recursive(node)) return(unlist(lapply(as.list(node), literal_values), use.names = FALSE))
   character()
 }
@@ -82,7 +93,7 @@ cat("exact-literals:ok")
         ],
         { encoding: "utf8", timeout: 10_000, maxBuffer: 4096, windowsHide: true }
       );
-      expect(result.status).toBe(0);
+      expect(result.status, result.stderr).toBe(0);
       expect(result.stderr).toBe("");
       expect(result.stdout).toBe("exact-literals:ok");
     } finally {

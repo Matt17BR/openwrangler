@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import type * as vscode from "vscode";
+import { RKernelBridge } from "../extension/r/rKernelBridge";
 import { DetachedBridgeRequestError } from "../extension/dataBridge";
 import {
   createRKernelBridge as createBridge,
@@ -14,6 +16,37 @@ import {
 } from "./rKernelBridgeTestFixtures";
 
 describe("R kernel bridge lifecycle", () => {
+  it.each(["close", "generation"] as const)(
+    "retires an exact file-owner receipt after %s even if transport remaps its ID",
+    async (retirement) => {
+      const transport = fakeTransport(frameContract());
+      const source = { kind: "file" as const, label: "data.csv", path: "/data.csv", uri: "file:///data.csv" };
+      const bridge = new RKernelBridge(
+        {} as vscode.ExtensionContext,
+        transport,
+        () => sessionId,
+        () => undefined,
+        undefined,
+        {},
+        undefined,
+        source
+      );
+      try {
+        expect(bridge.captureFileSessionOwner(sessionId)).toBeUndefined();
+        await expect(bridge.request({ ...openRequest(), source })).resolves.toMatchObject({ kind: "sessionOpened" });
+        const owner = bridge.captureFileSessionOwner(sessionId);
+        expect(owner?.()).toBe(true);
+        if (retirement === "close") await bridge.request({ kind: "closeSession", sessionId, revision: 0 });
+        else transport.invalidate();
+        transport.isSessionMapped.mockReturnValue(true);
+        expect(owner?.()).toBe(false);
+        expect(bridge.captureFileSessionOwner(sessionId)).toBeUndefined();
+      } finally {
+        await bridge.dispose();
+      }
+    }
+  );
+
   it("does not migrate a restart-invalidated session and performs terminal cleanup once", async () => {
     const transport = fakeTransport(frameContract());
     const bridge = createBridge(transport);
@@ -148,7 +181,6 @@ describe("R kernel bridge lifecycle", () => {
       { kind: "sessionClosed", sessionId }
     ]);
     expect(transport.close).toHaveBeenCalledTimes(1);
-    bridge.onIdle();
     await vi.waitFor(() => expect(transport.dispose).toHaveBeenCalledTimes(1));
   });
 
@@ -160,6 +192,8 @@ describe("R kernel bridge lifecycle", () => {
 
     const close = { kind: "closeSession", sessionId, revision: 0 } as const;
     await expect(bridge.request(close)).rejects.toThrow("close transport failed");
+    bridge.onIdle();
+    expect(transport.dispose).not.toHaveBeenCalled();
     await expect(bridge.request(close)).resolves.toEqual({ kind: "sessionClosed", sessionId });
 
     expect(transport.close).toHaveBeenCalledTimes(2);

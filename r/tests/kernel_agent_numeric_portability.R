@@ -1,4 +1,67 @@
-# Native numeric representation contracts shared by canonical and platform qualification.
+# Native representation contracts shared by canonical and platform qualification.
+
+# Unicode escapes must not change supplementary text or impose R's escaped-literal size limit.
+local({
+  owner <- environment(openwrangler_r_kernel_agent$new_agent)
+  encode_text <- get("r_string", envir = owner, inherits = FALSE)
+  ordinary <- c(empty = "", plain = "readable", escapes = "\t\r\n\"\\", path = "C:\\Users\\name",
+    literal_lower = "\\u0378", literal_upper = "\\U0001f600", missing = NA_character_)
+  assert_identical(encode_text(ordinary), encodeString(ordinary, quote = "\"", justify = "none", na.encode = FALSE),
+    "ordinary R literals, escaped backslashes or missing values changed")
+  assert_identical(encode_text(character()), character(), "empty R literal vector changed")
+  special <- intToUtf8(c(1L, 0x0378L, 0x1f600L))
+  long_code <- paste0("# ", strrep("x", 10001L), special, "\nresult <- df")
+  stopifnot(nchar(long_code, type = "bytes") < get("maximum_custom_code_bytes", owner, inherits = FALSE))
+  values <- c(intToUtf8(c(0x0378L, 0x1f600L)), intToUtf8(c(0x0085L, 0x1f600L)), special,
+    vapply(0:3, function(count) paste0(strrep("\\", count), intToUtf8(c(0x0378L, 0x1f600L))), character(1L)), long_code)
+  encoded <- encode_text(c(values, NA_character_))
+  assert_identical(encoded[[length(encoded)]], NA_character_, "mixed literal vector changed missing text")
+  for (index in seq_along(values)) {
+    actual <- eval(parse(text = encoded[[index]]), envir = baseenv())
+    assert_identical(charToRaw(enc2utf8(actual)), charToRaw(values[[index]]),
+      "generated R text changed control, supplementary or long source text")
+  }
+})
+
+local({
+  root <- tempfile("ow-literal-file-")
+  dir.create(root)
+  on.exit(unlink(root, recursive = TRUE), add = TRUE)
+  suffix <- intToUtf8(c(0x0378L, 0x1f600L))
+  column_name <- paste0("value_", suffix)
+  # The macOS R qualification rejects U+0378 in paths; U+0085 still exercises escaped path text.
+  path <- file.path(root, paste0("source_", intToUtf8(c(0x0085L, 0x1f600L)), ".csv"))
+  bytes <- charToRaw(paste0(column_name, "\nkeep\nNA\n"))
+  writeBin(bytes, path)
+  source <- openwrangler_r_kernel_agent$load_csv_source(path, maximum_columns = openwrangler_r_frame_contract$limits$columns)
+  sources <- new.env(parent = baseenv())
+  sources$.ow_csv_source <- source
+  before <- serialize(source, NULL, version = 3L)
+  agent <- openwrangler_r_kernel_agent$new_agent(instrumented_frame_contract, sources,
+    file_source = list(path = path, format = "csv", header = TRUE, delimiter = ",", encoding = "utf-8", quoteChar = "\""))
+  on.exit(agent$dispose(), add = TRUE)
+  session <- "95959595-9595-4595-8595-959595959595"
+  opened <- dispatch_with(agent, "openSession", list(sessionId = session, variableName = ".ow_csv_source", page = page_window()))
+  assert_identical(opened$kind, "page", "Unicode path/schema file did not open")
+  replacement <- intToUtf8(c(1L, 0x0378L, 0x1f600L))
+  expected <- source
+  expected[[1L]][[2L]] <- replacement
+  preview <- dispatch_with(agent, "previewStep", list(sessionId = session, revision = 0L, page = page_window(),
+    step = fill_step("unicode-fill", "r:c:0", column_name, list(kind = "string", value = replacement))))
+  assert_identical(preview$kind, "stepPreview", "Unicode string Fill did not preview")
+  assert_identical(get("snapshot", envir = latest_full_capture, inherits = FALSE), expected,
+    "live Unicode Fill changed exact values or schema")
+  applied <- dispatch_with(agent, "applyDraft", list(sessionId = session, revision = preview$revision, page = page_window()))
+  assert_identical(applied$page, preview$page, "Unicode Fill changed on Apply")
+  copied <- new.env(parent = baseenv())
+  eval(parse(text = applied$code), envir = copied)
+  assert_identical(copied$open_wrangler_result, expected, "generated Unicode file/Fill changed path, schema or values")
+  assert_identical(serialize(sources$.ow_csv_source, NULL, version = 3L), before, "Unicode Fill changed its retained source")
+  assert_identical(readBin(path, "raw", length(bytes) + 1L), bytes, "generated Unicode Fill changed source bytes")
+  undone <- dispatch_with(agent, "undoStep", list(sessionId = session, revision = applied$revision, page = page_window()))
+  assert_identical(undone$page, opened$page, "Unicode Fill Undo did not restore the original view")
+  invisible(dispatch_with(agent, "closeSession", list(sessionId = session)))
+})
 
 local({
   tiny <- 2^-1074

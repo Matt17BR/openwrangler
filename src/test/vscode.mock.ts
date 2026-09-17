@@ -1,3 +1,6 @@
+import { posix, win32 } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
 type Listener<T> = (event: T) => unknown;
 
 const configurationListeners = new Set<(event: { affectsConfiguration(section: string): boolean }) => unknown>();
@@ -99,15 +102,12 @@ export const commands = {
   executeCommand: async (): Promise<undefined> => undefined
 };
 
+const windowsFilePathPattern = /^(?:[A-Za-z]:[\\/]|[\\/]{2})/u;
+
 export const Uri = {
   file(path: string): { scheme: string; authority: string; path: string; fsPath: string; toString(): string } {
-    return {
-      scheme: "file",
-      authority: "",
-      path,
-      fsPath: path,
-      toString: () => `file://${path}`
-    };
+    // Abstract POSIX fixtures stay portable; explicit drive and UNC paths use Windows rules.
+    return Uri.parse(pathToFileURL(path, { windows: windowsFilePathPattern.test(path) }).href);
   },
   parse(
     value: string,
@@ -117,12 +117,19 @@ export const Uri = {
     if (!match && strict) throw new Error(`Invalid URI: ${value}`);
     const scheme = match?.[1] ?? "";
     const authority = match?.[2] ?? "";
-    const path = match?.[3] ?? value;
+    const encodedPath = match?.[3] ?? value;
+    const path = scheme === "file" ? decodeURIComponent(encodedPath) : encodedPath;
+    const fsPath =
+      scheme === "file" && path
+        ? fileURLToPath(value, {
+            windows: (authority !== "" && authority.toLowerCase() !== "localhost") || /^\/[A-Za-z]:\//u.test(path)
+          })
+        : path;
     return {
       scheme,
       authority,
       path,
-      fsPath: path,
+      fsPath,
       toString: () => value
     };
   },
@@ -130,6 +137,10 @@ export const Uri = {
     base: { scheme: string; authority: string; path: string; fsPath: string },
     ...parts: string[]
   ): { scheme: string; authority: string; path: string; fsPath: string; toString(): string } {
+    if (base.scheme === "file") {
+      const paths = windowsFilePathPattern.test(base.fsPath) ? win32 : posix;
+      return Uri.file(paths.join(base.fsPath, ...parts));
+    }
     const suffix = parts
       .map((part) => part.replace(/^\/+|\/+$/gu, ""))
       .filter(Boolean)
