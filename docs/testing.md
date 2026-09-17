@@ -586,6 +586,14 @@ requires both cases to pass without skips.
 The smoke catches production-bundle, VSIX-installation, public CSV action, grid rendering, sort, and terminal cleanup
 failures that source tests cannot observe. It must not rebuild or substitute the VSIX after verification.
 
+For Linux public file-gallery captures, use the same verified VSIX and compiled harness with
+`OPEN_WRANGLER_PACKAGED_MODE=platform-smoke`, `OPEN_WRANGLER_TEST_SELECTOR=public-media` and
+`OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS` set to an absolute output directory. This runs the existing file-launch
+and gallery journeys without the unrelated functional and dependency-installation journeys. It does not replace
+platform smoke or release qualification. The published high-contrast scene also checks toolbar and status controls
+at 200% native editor zoom in its existing session; it does not create a separate image. Browser acceptance owns
+light-theme rendering.
+
 ## Focused Python notebook checks
 
 Kernel bridge and variable-discovery tests cover notebook preflight byte, output and item limits, malformed UTF-8

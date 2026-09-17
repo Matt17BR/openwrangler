@@ -237,16 +237,13 @@ import {
   PACKAGED_PANDAS_NOTEBOOK_VIEWPORT,
   PACKAGED_PRODUCT_VIEWPORT,
   PACKAGED_SCREENSHOT_COLUMNS,
-  PACKAGED_SCREENSHOT_FEATURED_COLUMNS,
   PACKAGED_SCREENSHOT_ROW_COUNT,
   PACKAGED_SCREENSHOT_VIEWPORT,
   PACKAGED_WIDE_SCHEMA_COLUMN_COUNT,
   PACKAGED_WIDE_SCHEMA_ROW_COUNT,
-  packagedScreenshotFeaturedColumnWidths,
   packagedViewportHeightWithoutPartialBottomRow,
   packagedFirstUseFixtureCsv,
   packagedProductFixtureCsv,
-  packagedScreenshotFixtureCsv,
   packagedScreenshotRow,
   packagedWideSchemaColumns,
   packagedWideSchemaFixtureCsv
@@ -996,6 +993,17 @@ export async function run(): Promise<void> {
         await exercisePackagedGridRangeCopyAcceptance(testing, firstUseFixture);
         recordAcceptanceProgress("platform-smoke:complete");
         console.log("Open Wrangler packaged grid range-copy acceptance passed.");
+      },
+      publicMedia: async () => {
+        const screenshotOutput = process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS;
+        assert.ok(screenshotOutput, "Public media capture requires an output directory.");
+        const testing = await extensionApi.getTestingApi();
+        recordAcceptanceProgress("platform-smoke:public-media:file-launch");
+        await exercisePackagedFileLaunchSurfaces(testing, firstUseFixture, screenshotOutput);
+        recordAcceptanceProgress("platform-smoke:public-media:gallery");
+        await capturePackagedEditorScreenshots(testing, screenshotOutput);
+        recordAcceptanceProgress("platform-smoke:public-media:complete");
+        console.log("Open Wrangler public media capture completed.");
       },
       standard: async () => {
         const testing = await extensionApi.getTestingApi();
@@ -10453,703 +10461,9 @@ async function captureReleasedJupyterPySparkLive(
 
 async function capturePackagedEditorScreenshots(testing: TestApi, outputDirectory: string): Promise<void> {
   if (process.platform !== "linux") return;
-  const fixtureDirectory = mkdtempSync(path.join(tmpdir(), "openwrangler-screenshot-evidence-"));
-  const fixture = vscode.Uri.file(path.join(fixtureDirectory, "regional-orders-2024-2025.csv"));
-  writeFileSync(fixture.fsPath, packagedScreenshotFixtureCsv(), { encoding: "utf8", flag: "wx" });
-  const workbench = vscode.workspace.getConfiguration("workbench");
-  const breadcrumbs = vscode.workspace.getConfiguration("breadcrumbs");
-  const windowConfiguration = vscode.workspace.getConfiguration("window");
-  const scm = vscode.workspace.getConfiguration("scm");
-  const typescript = vscode.workspace.getConfiguration("typescript");
-  const javascript = vscode.workspace.getConfiguration("javascript");
-  const originalTheme = workbench.get<string>("colorTheme");
-  const originalStatusBarVisible = workbench.get<boolean>("statusBar.visible");
-  const originalBreadcrumbsEnabled = breadcrumbs.get<boolean>("enabled");
-  const originalZoom = windowConfiguration.get<number>("zoomLevel");
-  const originalTitle = windowConfiguration.get<string>("title");
-  const originalCommandCenter = windowConfiguration.get<boolean>("commandCenter");
-  const originalAutoDetectColorScheme = windowConfiguration.get<boolean>("autoDetectColorScheme");
-  const originalAutoDetectHighContrast = windowConfiguration.get<boolean>("autoDetectHighContrast");
-  const originalScmCountBadge = scm.get<string>("countBadge");
-  const originalTypescriptValidation = typescript.get<boolean>("validate.enable");
-  const originalJavascriptValidation = javascript.get<boolean>("validate.enable");
-  const editor = process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor";
-  let capturePage: Page;
-  try {
-    capturePage = await connectToEditorWorkbench();
-    await capturePage.setViewportSize(PACKAGED_SCREENSHOT_VIEWPORT);
-    const captureViewport = await capturePage.evaluate(() => {
-      const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
-      return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
-    });
-    assert.deepEqual(
-      captureViewport,
-      PACKAGED_SCREENSHOT_VIEWPORT,
-      `README evidence requires the deterministic ${PACKAGED_SCREENSHOT_VIEWPORT.width} by ${PACKAGED_SCREENSHOT_VIEWPORT.height} packaged-editor viewport.`
-    );
-    await prepareWorkbenchForEvidence();
-    await hideCodePreviewPanel();
-    await vscode.commands.executeCommand("workbench.view.extension.openWrangler");
-    recordAcceptanceProgress("verify:screenshots:open");
-    mkdirSync(outputDirectory, { recursive: true });
-    await vscode.commands.executeCommand("vscode.openWith", fixture, "openWrangler.viewer", vscode.ViewColumn.One);
-    await waitFor(
-      () => testing.activeSession()?.metadata.source.path === fixture.fsPath,
-      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-      "the custom editor before screenshot capture"
-    );
-    const opened = testing.activeSession();
-    assert.ok(opened, "The screenshot fixture must publish one active session.");
-    assert.deepEqual(opened.metadata.shape, {
-      rows: PACKAGED_SCREENSHOT_ROW_COUNT,
-      columns: PACKAGED_SCREENSHOT_COLUMNS.length
-    });
-    assert.deepEqual(opened.metadata.filterModel, { logic: "and", filters: [], sort: [] });
-    assert.deepEqual(opened.metadata.steps, []);
-    assert.equal(opened.metadata.draftStep, undefined);
-    assert.deepEqual(opened.viewState, {
-      filterModel: { logic: "and", filters: [], sort: [] },
-      columnWidths: new Map(),
-      viewport: { firstVisibleRow: 0, scrollLeft: 0 }
-    });
-    await waitFor(
-      () => testing.panelHydrated(opened.sessionId),
-      OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
-      "the screenshot fixture panel to hydrate"
-    );
-    assert.equal(
-      await testing.synchronizePanel(opened.sessionId),
-      true,
-      "The clean screenshot fixture must publish its initial renderer snapshot."
-    );
-    const gridTarget = await waitForOpenWranglerGridTarget(capturePage, testing, opened.sessionId);
-    const app = await exactSessionApp(gridTarget.frame, opened.sessionId);
-    assert.ok(app, "The screenshot fixture must expose its exact live application root.");
-    const revenue = columnReference(opened.metadata, "revenue");
-    await testing.updateViewState(opened.sessionId, {
-      ...opened.viewState,
-      selectedColumnId: revenue.id
-    });
-    assert.equal(
-      await testing.synchronizePanel(opened.sessionId),
-      true,
-      "The screenshot fixture must synchronize its selected revenue column."
-    );
-    assert.equal(testing.activeSession()?.viewState.selectedColumnId, revenue.id);
-  } catch (error) {
-    const active = testing.activeSession();
-    if (active?.metadata.source.path === fixture.fsPath) {
-      await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
-      await waitFor(
-        () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
-        10_000,
-        "the failed screenshot session and runtime to close"
-      );
-    }
-    if (testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning()) {
-      rmSync(fixtureDirectory, { recursive: true, force: true });
-    }
-    throw error;
-  }
-
-  const darkTheme = contributedTheme("vs-dark", "Default Dark Modern");
-  const lightTheme = contributedTheme("vs", "Default Light Modern");
-  const highContrastTheme = contributedTheme("hc-black", "Default High Contrast");
-  try {
-    recordAcceptanceProgress("verify:screenshots:prepare");
-    await workbench.update("statusBar.visible", false, vscode.ConfigurationTarget.Global);
-    await breadcrumbs.update("enabled", false, vscode.ConfigurationTarget.Global);
-    await windowConfiguration.update(
-      "title",
-      "${activeEditorShort}${separator}Open Wrangler",
-      vscode.ConfigurationTarget.Global
-    );
-    await windowConfiguration.update("commandCenter", false, vscode.ConfigurationTarget.Global);
-    await scm.update("countBadge", "off", vscode.ConfigurationTarget.Global);
-    await typescript.update("validate.enable", false, vscode.ConfigurationTarget.Global);
-    await javascript.update("validate.enable", false, vscode.ConfigurationTarget.Global);
-    await windowConfiguration.update("autoDetectColorScheme", false, vscode.ConfigurationTarget.Global);
-    await windowConfiguration.update("autoDetectHighContrast", false, vscode.ConfigurationTarget.Global);
-    await prepareWorkbenchForEvidence();
-    await hideCodePreviewPanel();
-    const hero = testing.activeSession();
-    assert.ok(hero, "The screenshot fixture must remain active while selected-column Insights is composed.");
-    await closeVisibleWorkbenchPart(capturePage, ".part.sidebar", [
-      "workbench.action.closeSidebar",
-      "workbench.action.toggleSidebarVisibility"
-    ]);
-    await openSelectedColumnInsights(hero.sessionId, "revenue");
-    assert.equal(
-      await testing.synchronizePanel(hero.sessionId),
-      true,
-      "Selected-column Insights must synchronize with the exact renderer."
-    );
-    await fitFeaturedGridColumns(hero.sessionId, columnReference(hero.metadata, "revenue").id);
-    recordAcceptanceProgress("verify:screenshots:hero-dark");
-    await captureTheme(
-      darkTheme,
-      vscode.ColorThemeKind.Dark,
-      0,
-      packagedScreenshotFileName(editor, "hero", "dark"),
-      "hero"
-    );
-    recordAcceptanceProgress("verify:screenshots:hero-light");
-    await captureTheme(
-      lightTheme,
-      vscode.ColorThemeKind.Light,
-      0,
-      packagedScreenshotFileName(editor, "hero", "light"),
-      "hero"
-    );
-    recordAcceptanceProgress("verify:screenshots:high-contrast");
-    await captureTheme(
-      highContrastTheme,
-      vscode.ColorThemeKind.HighContrast,
-      4,
-      `${editor}-high-contrast-zoom-200.png`,
-      "responsive"
-    );
-    recordAcceptanceProgress("verify:screenshots:restore");
-  } finally {
-    await workbench.update("colorTheme", originalTheme, vscode.ConfigurationTarget.Global);
-    await workbench.update("statusBar.visible", originalStatusBarVisible, vscode.ConfigurationTarget.Global);
-    await breadcrumbs.update("enabled", originalBreadcrumbsEnabled, vscode.ConfigurationTarget.Global);
-    await windowConfiguration.update("zoomLevel", originalZoom, vscode.ConfigurationTarget.Global);
-    await windowConfiguration.update("title", originalTitle, vscode.ConfigurationTarget.Global);
-    await windowConfiguration.update("commandCenter", originalCommandCenter, vscode.ConfigurationTarget.Global);
-    await scm.update("countBadge", originalScmCountBadge, vscode.ConfigurationTarget.Global);
-    await typescript.update("validate.enable", originalTypescriptValidation, vscode.ConfigurationTarget.Global);
-    await javascript.update("validate.enable", originalJavascriptValidation, vscode.ConfigurationTarget.Global);
-    await windowConfiguration.update(
-      "autoDetectColorScheme",
-      originalAutoDetectColorScheme,
-      vscode.ConfigurationTarget.Global
-    );
-    await windowConfiguration.update(
-      "autoDetectHighContrast",
-      originalAutoDetectHighContrast,
-      vscode.ConfigurationTarget.Global
-    );
-    await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
-    await waitFor(
-      () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
-      10_000,
-      "the screenshot session and runtime to close"
-    );
-    rmSync(fixtureDirectory, { recursive: true, force: true });
-  }
   await capturePackagedFileWorkflowScenes(testing, outputDirectory);
   await capturePackagedWideSchemaColumnSearchScene(testing, outputDirectory);
   recordAcceptanceProgress("verify:screenshots:complete");
-
-  async function captureTheme(
-    theme: string,
-    expectedKind: vscode.ColorThemeKind,
-    zoomLevel: number,
-    fileName: string,
-    scene?: "hero" | "responsive"
-  ): Promise<void> {
-    await workbench.update("colorTheme", theme, vscode.ConfigurationTarget.Global);
-    await windowConfiguration.update("zoomLevel", zoomLevel, vscode.ConfigurationTarget.Global);
-    await waitFor(
-      () => vscode.window.activeColorTheme.kind === expectedKind,
-      10_000,
-      `${theme} to activate before screenshot capture`
-    );
-    await clearNotifications();
-    await vscode.commands.executeCommand("workbench.action.focusActiveEditorGroup");
-    await new Promise((resolve) => setTimeout(resolve, 800));
-    const destination = path.resolve(outputDirectory, fileName);
-    await capturePage.bringToFront();
-    const viewport = await capturePage.evaluate(() => {
-      const pageWindow = globalThis as unknown as {
-        innerWidth: number;
-        innerHeight: number;
-        devicePixelRatio: number;
-      };
-      return {
-        width: pageWindow.innerWidth,
-        height: pageWindow.innerHeight,
-        scale: Math.max(1, pageWindow.devicePixelRatio)
-      };
-    });
-    await capturePage.keyboard.press("Escape");
-    await capturePage.mouse.move(Math.max(1, Math.floor(viewport.width * 0.75)), 40);
-    await clearNotifications();
-    assert.equal(
-      await pollAcceptanceCondition(async () => (await capturePage.locator(".monaco-hover:visible").count()) === 0, {
-        timeoutMs: 3_000,
-        intervalMs: 50
-      }),
-      true,
-      "Screenshot capture must dismiss every workbench hover."
-    );
-    const transientUi = await inspectCaptureTransientUi();
-    assert.equal(
-      transientUi.length,
-      0,
-      `A packaged screenshot must not contain transient workbench UI: ${JSON.stringify(transientUi)}`
-    );
-    if (scene === "hero") await assertPackagedScreenshotScene(scene);
-    if (scene === "responsive") await assertResponsivePackagedControls();
-    await captureWorkbenchScreenshot(capturePage, destination);
-  }
-
-  async function inspectCaptureTransientUi(): Promise<Array<{ kind: string; text: string }>> {
-    const selectors = [
-      ["hover", ".monaco-hover:visible"],
-      ["quick input", ".quick-input-widget:visible"],
-      ["dialog", ".monaco-dialog-box:visible"],
-      ["menu", ".context-view.monaco-menu-container:visible"],
-      [
-        "notification",
-        ".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible"
-      ]
-    ] as const;
-    const entries = await Promise.all(
-      selectors.map(async ([kind, selector]) =>
-        (await capturePage.locator(selector).allInnerTexts()).map((text) => ({
-          kind,
-          text: text.replace(/\s+/gu, " ").trim().slice(0, 500)
-        }))
-      )
-    );
-    return entries.flat();
-  }
-
-  async function fitFeaturedGridColumns(
-    sessionId: string,
-    selectedColumnId: string
-  ): Promise<ReadonlyMap<string, number>> {
-    const active = testing.activeSession();
-    assert.equal(active?.sessionId, sessionId, "Screenshot grid fitting requires the exact active session.");
-    assert.ok(active, "Screenshot grid fitting requires one active dataframe session.");
-    const target = await waitForOpenWranglerGridTarget(capturePage, testing, sessionId);
-    const app = await exactSessionApp(target.frame, sessionId);
-    assert.ok(app, "Screenshot grid fitting requires the exact live Open Wrangler renderer.");
-    const gridDimensions = await app.locator('[data-testid="data-grid-scroller"]').evaluate((scroller) => {
-      const rowHeader = scroller.querySelector("th.rowHeader");
-      if (!rowHeader) throw new Error("The screenshot grid row header is unavailable.");
-      return {
-        clientWidth: scroller.clientWidth,
-        rowHeaderWidth: rowHeader.getBoundingClientRect().width
-      };
-    });
-    const widthsByName = packagedScreenshotFeaturedColumnWidths(
-      gridDimensions.clientWidth,
-      gridDimensions.rowHeaderWidth
-    );
-    let columnWidths = new Map(
-      active.metadata.schema
-        .filter((column) => column.name in widthsByName)
-        .map((column) => [column.id, widthsByName[column.name as keyof typeof widthsByName]] as const)
-    );
-    await testing.updateViewState(sessionId, {
-      columnWidths,
-      selectedColumnId,
-      viewport: { firstVisibleRow: 0, scrollLeft: 0 }
-    });
-    assert.equal(
-      await testing.synchronizePanel(sessionId),
-      true,
-      "The fitted screenshot grid must synchronize with its exact renderer."
-    );
-    const orderDate = columnReference(active.metadata, "order_date");
-    const trailingGap = await app.evaluate((root, columnName) => {
-      type ScreenshotRect = { readonly left: number; readonly right: number };
-      type ScreenshotElement = {
-        readonly clientLeft: number;
-        readonly clientWidth: number;
-        readonly dataset: Readonly<Record<string, string | undefined>>;
-        getBoundingClientRect(): ScreenshotRect;
-        querySelector(selector: string): ScreenshotElement | null;
-        querySelectorAll(selector: string): ArrayLike<ScreenshotElement>;
-      };
-      const appRoot = root as unknown as ScreenshotElement;
-      const scroller = appRoot.querySelector('[data-testid="data-grid-scroller"]');
-      const header = Array.from(appRoot.querySelectorAll("th[data-column]")).find(
-        (candidate) => candidate.dataset.column === columnName
-      );
-      if (!scroller || !header) throw new Error("The screenshot grid fit geometry is incomplete.");
-      return (
-        scroller.getBoundingClientRect().left +
-        scroller.clientLeft +
-        scroller.clientWidth -
-        header.getBoundingClientRect().right
-      );
-    }, orderDate.name);
-    assert.ok(trailingGap >= -1, "The final featured screenshot column must not extend beyond the live grid.");
-    if (trailingGap > 1) {
-      const adjustedWidth = (columnWidths.get(orderDate.id) ?? widthsByName.order_date) + Math.floor(trailingGap);
-      assert.ok(adjustedWidth <= 640, "The live screenshot grid fit must retain the maximum column width.");
-      columnWidths = new Map([...columnWidths, [orderDate.id, adjustedWidth]]);
-      await testing.updateViewState(sessionId, {
-        columnWidths,
-        selectedColumnId,
-        viewport: { firstVisibleRow: 0, scrollLeft: 0 }
-      });
-      assert.equal(
-        await testing.synchronizePanel(sessionId),
-        true,
-        "The final measured screenshot grid fit must synchronize with its exact renderer."
-      );
-    }
-    assert.deepEqual(testing.activeSession()?.viewState.columnWidths, columnWidths);
-    assert.equal(testing.activeSession()?.viewState.selectedColumnId, selectedColumnId);
-    return columnWidths;
-  }
-
-  async function openSelectedColumnInsights(sessionId: string, expectedColumn: string): Promise<void> {
-    const target = await waitForOpenWranglerGridTarget(capturePage, testing, sessionId);
-    const app = await exactSessionApp(target.frame, sessionId);
-    assert.ok(app, "Selected-column Insights requires the exact live Open Wrangler renderer.");
-    const toggle = app.getByRole("button", { name: "Column profiles and filters" });
-    if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
-    const drawer = app.getByRole("complementary", { name: "Column profiles and filters" });
-    await drawer.waitFor({ state: "visible", timeout: 10_000 });
-    await drawer.getByRole("tab", { name: "Column" }).waitFor({ state: "visible", timeout: 10_000 });
-    await drawer.getByRole("heading", { name: expectedColumn }).waitFor({ state: "visible", timeout: 10_000 });
-    const deadline = Date.now() + 30_000;
-    do {
-      const summary = await drawer.innerText();
-      if (
-        !summary.includes("Profiling selected column") &&
-        ["Min", "Max", "Mean", "Median"].every((label) => new RegExp(`\\b${label}\\b`, "u").test(summary))
-      ) {
-        return;
-      }
-      await capturePage.waitForTimeout(50);
-    } while (Date.now() < deadline);
-    throw new Error(`Selected-column Insights did not publish complete numeric statistics for ${expectedColumn}.`);
-  }
-
-  async function assertPackagedScreenshotScene(scene: "hero"): Promise<void> {
-    assert.equal(
-      await capturePage.locator(".part.sidebar:visible").count(),
-      0,
-      "The compact hero must not retain a competing native sidebar."
-    );
-    const active = testing.activeSession();
-    assert.ok(active, "Screenshot geometry requires the active packaged dataframe session.");
-    const target = await waitForOpenWranglerGridTarget(capturePage, testing, active.sessionId);
-    const app = await exactSessionApp(target.frame, active.sessionId);
-    assert.ok(app, "Screenshot geometry requires the exact live Open Wrangler renderer.");
-    const deadline = Date.now() + 15_000;
-    let measurement:
-      | {
-          workspaceOverflow: number;
-          gridOverflow: number;
-          gridScrollLeft: number;
-          renderedColumns: string[];
-          missingFeaturedColumns: string[];
-          partialColumns: string[];
-          clippedColumnTitles: string[];
-          clippedColumnStats: string[];
-          clippedColumnVisualizations: string[];
-          clippedCells: number;
-          clippedControls: string[];
-          revenueSummary: string;
-          insightsHeading: string;
-          insightsStats: Record<string, string>;
-          insightsOverflow: number;
-          insightsContained: boolean;
-          draftVisible: boolean;
-          columnSearchOpen: boolean;
-        }
-      | undefined;
-    do {
-      measurement = await app.evaluate(
-        (root, expected) => {
-          type ScreenshotRect = {
-            readonly bottom: number;
-            readonly left: number;
-            readonly right: number;
-            readonly top: number;
-          };
-          type ScreenshotElement = {
-            readonly className: string;
-            readonly clientLeft: number;
-            readonly clientWidth: number;
-            readonly dataset: Readonly<Record<string, string | undefined>>;
-            readonly innerText: string;
-            readonly scrollLeft: number;
-            readonly scrollWidth: number;
-            getBoundingClientRect(): ScreenshotRect;
-            querySelector(selector: string): ScreenshotElement | null;
-            querySelectorAll(selector: string): ArrayLike<ScreenshotElement>;
-          };
-          const appRoot = root as unknown as ScreenshotElement;
-          const workspace = appRoot.querySelector(".layout");
-          const scroller = appRoot.querySelector('[data-testid="data-grid-scroller"]');
-          if (!workspace || !scroller) throw new Error("The packaged screenshot layout is incomplete.");
-          const scrollerBounds = scroller.getBoundingClientRect();
-          const clientLeft = scrollerBounds.left + scroller.clientLeft;
-          const clientRight = clientLeft + scroller.clientWidth;
-          const headers = Array.from(appRoot.querySelectorAll("th[data-column]"));
-          const renderedColumns = headers.map((header) => header.dataset.column ?? "");
-          const featuredHeaders = expected.featured.map((name) =>
-            headers.find((header) => header.dataset.column === name)
-          );
-          const nextHeader = headers.find((header) => header.dataset.column === expected.nextColumn);
-          const partialColumns = headers
-            .filter((header) => {
-              const bounds = header.getBoundingClientRect();
-              const intersects = bounds.right > clientLeft + 1 && bounds.left < clientRight - 1;
-              const contained = bounds.left >= clientLeft - 1 && bounds.right <= clientRight + 1;
-              return intersects && !contained;
-            })
-            .map((header) => header.dataset.column ?? "");
-          if (nextHeader) {
-            const bounds = nextHeader.getBoundingClientRect();
-            if (bounds.left < clientRight - 1 && bounds.right > clientLeft + 1) {
-              partialColumns.push(expected.nextColumn);
-            }
-          }
-          const clippedColumnTitles = featuredHeaders.flatMap((header, index) => {
-            const title = header?.querySelector(".columnTitle");
-            return title && title.scrollWidth > title.clientWidth + 1 ? [expected.featured[index] ?? ""] : [];
-          });
-          const clippedColumnStats = featuredHeaders.flatMap((header, index) => {
-            const clipped = Array.from(header?.querySelectorAll(".exactSummaryStats span") ?? []).some(
-              (item) => item.scrollWidth > item.clientWidth + 1
-            );
-            return clipped ? [expected.featured[index] ?? ""] : [];
-          });
-          const clippedColumnVisualizations = featuredHeaders.flatMap((header, index) => {
-            if (!header) return [];
-            const headerBounds = header.getBoundingClientRect();
-            const clipped = Array.from(
-              header.querySelectorAll(
-                ".categoryMiniRow small, .datetimeMiniChart span, .numericMiniChart text, .booleanMiniChart span"
-              )
-            ).some((item) => {
-              const bounds = item.getBoundingClientRect();
-              return (
-                item.scrollWidth > item.clientWidth + 1 ||
-                bounds.left < headerBounds.left - 1 ||
-                bounds.right > headerBounds.right + 1
-              );
-            });
-            return clipped ? [expected.featured[index] ?? ""] : [];
-          });
-          const visibleCells = Array.from(appRoot.querySelectorAll("td[data-grid-column]")).filter((cell) => {
-            const bounds = cell.getBoundingClientRect();
-            return bounds.right > clientLeft && bounds.left < clientRight;
-          });
-          const controls = Array.from(appRoot.querySelectorAll(".toolbar, .toolbarPlan, .gridStatusBar, .draftReview"));
-          const clippedControls = controls
-            .filter((element) => element.scrollWidth > element.clientWidth + 1)
-            .map((element) => element.className);
-          const revenueHeader = headers.find((header) => header.dataset.column === "revenue");
-          const insights = appRoot.querySelector("#openwrangler-insights-panel");
-          const insightLabels = Array.from(insights?.querySelectorAll(".summaryStatGrid dt") ?? []);
-          const insightValues = Array.from(insights?.querySelectorAll(".summaryStatGrid dd") ?? []);
-          const insightsBounds = insights?.getBoundingClientRect();
-          const workspaceBounds = workspace.getBoundingClientRect();
-          const draft = appRoot.querySelector('.draftReview[aria-label="Draft review"]');
-          const columnSearch = appRoot.querySelector(".columnSearchPopup");
-          return {
-            workspaceOverflow: workspace.scrollWidth - workspace.clientWidth,
-            gridOverflow: scroller.scrollWidth - scroller.clientWidth,
-            gridScrollLeft: scroller.scrollLeft,
-            renderedColumns,
-            missingFeaturedColumns: expected.featured.filter((_, index) => !featuredHeaders[index]),
-            partialColumns: [...new Set(partialColumns)],
-            clippedColumnTitles,
-            clippedColumnStats,
-            clippedColumnVisualizations,
-            clippedCells: visibleCells.filter((cell) => cell.scrollWidth > cell.clientWidth + 1).length,
-            clippedControls,
-            revenueSummary: revenueHeader?.querySelector(".exactSummaryStats")?.innerText ?? "",
-            insightsHeading: insights?.querySelector(".summaryColumnHeader h2")?.innerText ?? "",
-            insightsStats: Object.fromEntries(
-              insightLabels.map((label, index) => [label.innerText, insightValues[index]?.innerText ?? ""])
-            ),
-            insightsOverflow: insights ? insights.scrollWidth - insights.clientWidth : Number.POSITIVE_INFINITY,
-            insightsContained: Boolean(
-              insightsBounds &&
-              insightsBounds.left >= workspaceBounds.left - 1 &&
-              insightsBounds.right <= workspaceBounds.right + 1
-            ),
-            draftVisible: Boolean(draft),
-            columnSearchOpen: Boolean(columnSearch)
-          };
-        },
-        {
-          featured: [...PACKAGED_SCREENSHOT_FEATURED_COLUMNS],
-          nextColumn: PACKAGED_SCREENSHOT_COLUMNS[PACKAGED_SCREENSHOT_FEATURED_COLUMNS.length]
-        }
-      );
-      const ready =
-        measurement.workspaceOverflow <= 1 &&
-        measurement.gridOverflow > 0 &&
-        measurement.gridScrollLeft <= 1 &&
-        measurement.missingFeaturedColumns.length === 0 &&
-        measurement.partialColumns.length === 0 &&
-        measurement.clippedColumnTitles.length === 0 &&
-        measurement.clippedColumnStats.length === 0 &&
-        measurement.clippedColumnVisualizations.length === 0 &&
-        measurement.clippedCells === 0 &&
-        measurement.clippedControls.length === 0 &&
-        /\bMin\b/u.test(measurement.revenueSummary) &&
-        /\bMax\b/u.test(measurement.revenueSummary) &&
-        measurement.insightsHeading === "revenue" &&
-        ["Min", "Max", "Mean", "Median"].every((label) => {
-          const value = measurement?.insightsStats[label];
-          return typeof value === "string" && value.length > 0 && value !== "n/a";
-        }) &&
-        measurement.insightsOverflow <= 1 &&
-        measurement.insightsContained &&
-        !measurement.draftVisible &&
-        !measurement.columnSearchOpen;
-      if (ready) return;
-      await capturePage.waitForTimeout(50);
-    } while (Date.now() < deadline);
-    throw new Error(`The ${scene} screenshot scene is clipped or incomplete: ${JSON.stringify(measurement)}`);
-  }
-
-  async function assertResponsivePackagedControls(): Promise<void> {
-    const active = testing.activeSession();
-    assert.ok(active, "Responsive screenshot geometry requires the active packaged dataframe session.");
-    const target = await waitForOpenWranglerGridTarget(capturePage, testing, active.sessionId);
-    const app = await exactSessionApp(target.frame, active.sessionId);
-    assert.ok(app, "Responsive screenshot geometry requires the exact live Open Wrangler renderer.");
-    const measurement = await app.evaluate((root) => {
-      const appBounds = root.getBoundingClientRect();
-      const toolbar = root.querySelector(".toolbar");
-      const toolbarActions = root.querySelector(".toolbarActions");
-      const gridStatusBar = root.querySelector(".gridStatusBar");
-      if (!toolbar || !toolbarActions || !gridStatusBar) {
-        throw new Error("Responsive screenshot controls are incomplete.");
-      }
-      const clippedChildren = (containerSelector: string, selector: string): string[] => {
-        const container = root.querySelector(containerSelector);
-        if (!container) return [`Missing ${containerSelector}`];
-        const containerBounds = container.getBoundingClientRect();
-        return [...container.querySelectorAll(selector)]
-          .filter((element) => {
-            const style = element.ownerDocument.defaultView?.getComputedStyle(element);
-            if (!style || style.display === "none" || style.visibility === "hidden") return false;
-            const bounds = element.getBoundingClientRect();
-            return (
-              bounds.left < Math.max(appBounds.left, containerBounds.left) - 1 ||
-              bounds.right > Math.min(appBounds.right, containerBounds.right) + 1 ||
-              bounds.top < containerBounds.top - 1 ||
-              bounds.bottom > containerBounds.bottom + 1
-            );
-          })
-          .map(
-            (element) =>
-              element.getAttribute("aria-label") ?? element.textContent?.replace(/\s+/gu, " ").trim() ?? element.tagName
-          );
-      };
-      return {
-        appOverflow: root.scrollWidth - root.clientWidth,
-        toolbarOverflow: toolbar.scrollWidth - toolbar.clientWidth,
-        gridStatusBarOverflow: gridStatusBar.scrollWidth - gridStatusBar.clientWidth,
-        clippedToolbarControls: clippedChildren(".toolbar", ":scope > .toolbarActions > *"),
-        clippedGridStatusBar: clippedChildren(".gridStatusBar", ":scope > *")
-      };
-    });
-    assert.ok(
-      measurement.appOverflow <= 1 && measurement.toolbarOverflow <= 1 && measurement.gridStatusBarOverflow <= 1,
-      `The 200% zoom layout must not overflow horizontally: ${JSON.stringify(measurement)}`
-    );
-    assert.deepEqual(
-      measurement.clippedToolbarControls,
-      [],
-      "Every toolbar action must remain completely visible at 200% zoom."
-    );
-    assert.deepEqual(
-      measurement.clippedGridStatusBar,
-      [],
-      "Every grid status control and the visible-row range must remain completely visible at 200% zoom."
-    );
-  }
-
-  async function prepareWorkbenchForEvidence(): Promise<void> {
-    const commands = new Set(await vscode.commands.getCommands(true));
-    const auxiliaryBar = capturePage.locator(".part.auxiliarybar");
-    if ((await auxiliaryBar.count()) > 0 && (await auxiliaryBar.isVisible())) {
-      const closeCommand = commands.has("workbench.action.closeAuxiliaryBar")
-        ? "workbench.action.closeAuxiliaryBar"
-        : commands.has("workbench.action.toggleAuxiliaryBar")
-          ? "workbench.action.toggleAuxiliaryBar"
-          : undefined;
-      if (closeCommand) {
-        await vscode.commands.executeCommand(closeCommand);
-        await auxiliaryBar.waitFor({ state: "hidden", timeout: 10_000 });
-      }
-    }
-    await clearNotifications(commands);
-  }
-
-  async function hideCodePreviewPanel(): Promise<void> {
-    const panel = capturePage.locator(".part.panel").first();
-    if ((await panel.count()) === 0 || !(await panel.isVisible())) return;
-    const commands = new Set(await vscode.commands.getCommands(true));
-    assert.equal(
-      commands.has("workbench.action.closePanel"),
-      true,
-      "The workbench must expose its panel close command."
-    );
-    await vscode.commands.executeCommand("workbench.action.closePanel");
-    await panel.waitFor({ state: "hidden", timeout: 10_000 });
-  }
-
-  async function clearNotifications(commands?: Set<string>): Promise<void> {
-    const availableCommands = commands ?? new Set(await vscode.commands.getCommands(true));
-    if (availableCommands.has("notifications.clearAll")) {
-      await vscode.commands.executeCommand("notifications.clearAll");
-    }
-    if (availableCommands.has("notifications.hideList")) {
-      await vscode.commands.executeCommand("notifications.hideList");
-    }
-    const notificationItems = capturePage.locator(
-      ".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible"
-    );
-    await capturePage
-      .locator(
-        ".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible"
-      )
-      .first()
-      .waitFor({ state: "hidden", timeout: 10_000 })
-      .catch(async (error: unknown) => {
-        const visible = (await notificationItems.allInnerTexts()).map((text) =>
-          text.replace(/\s+/gu, " ").trim().slice(0, 500)
-        );
-        throw new Error(
-          `Visible notifications remained after deterministic workbench cleanup: ${JSON.stringify(visible)}`,
-          {
-            cause: error
-          }
-        );
-      });
-  }
-
-  function contributedTheme(uiTheme: string, fallback: string): string {
-    const themes = vscode.extensions.all.flatMap(
-      (extension) =>
-        (extension.packageJSON.contributes?.themes ?? []) as Array<{
-          id?: string;
-          label?: string;
-          uiTheme?: string;
-        }>
-    );
-    const candidates = themes.filter((theme) => theme.uiTheme === uiTheme);
-    if (editor === "cursor") {
-      const cursorTheme = candidates.find((theme) =>
-        uiTheme === "vs-dark"
-          ? theme.label === "Cursor Dark"
-          : uiTheme === "vs"
-            ? theme.label === "Cursor Light"
-            : theme.label === "Cursor Dark High Contrast"
-      );
-      if (cursorTheme) return cursorTheme.id ?? cursorTheme.label ?? fallback;
-    }
-    const preferred = candidates.find((theme) => /default|modern/i.test(theme.label ?? theme.id ?? ""));
-    return preferred?.id ?? preferred?.label ?? candidates[0]?.id ?? candidates[0]?.label ?? fallback;
-  }
 }
 
 async function capturePackagedFileWorkflowScenes(testing: TestApi, outputDirectory: string): Promise<void> {
@@ -11541,6 +10855,8 @@ async function capturePackagedHighContrastExploreScene(
 ): Promise<void> {
   recordAcceptanceProgress("verify:screenshots:file-scenes:high-contrast-explore");
   const configuration = vscode.workspace.getConfiguration("workbench");
+  const windowConfiguration = vscode.workspace.getConfiguration("window");
+  const originalZoom = windowConfiguration.get<number>("zoomLevel");
   const darkTheme = contributedProductSceneTheme(editor, "vs-dark", "Default Dark Modern");
   const highContrastTheme = contributedProductSceneTheme(editor, "hc-black", "Default High Contrast");
   try {
@@ -11579,7 +10895,18 @@ async function capturePackagedHighContrastExploreScene(
       workbench,
       path.resolve(outputDirectory, packagedScreenshotFileName(editor, "high-contrast-explore", "high-contrast"))
     );
+    recordAcceptanceProgress("verify:screenshots:file-scenes:high-contrast-zoom-200");
+    await workbench.setViewportSize(PACKAGED_SCREENSHOT_VIEWPORT);
+    await closeVisibleWorkbenchPart(workbench, ".part.sidebar", [
+      "workbench.action.closeSidebar",
+      "workbench.action.toggleSidebarVisibility"
+    ]);
+    await windowConfiguration.update("zoomLevel", 4, vscode.ConfigurationTarget.Global);
+    await vscode.commands.executeCommand("workbench.action.focusActiveEditorGroup");
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    await assertResponsivePackagedControls(workbench, testing, sessionId);
   } finally {
+    await windowConfiguration.update("zoomLevel", originalZoom, vscode.ConfigurationTarget.Global);
     await workbench.setViewportSize(PACKAGED_PRODUCT_VIEWPORT);
     await configuration.update("colorTheme", darkTheme, vscode.ConfigurationTarget.Global);
     await waitFor(
@@ -11589,6 +10916,68 @@ async function capturePackagedHighContrastExploreScene(
     );
     await arrangePackagedProductSidebar(workbench, "explore");
   }
+}
+
+async function assertResponsivePackagedControls(workbench: Page, testing: TestApi, sessionId: string): Promise<void> {
+  assert.equal(
+    testing.activeSession()?.sessionId,
+    sessionId,
+    "Responsive screenshot geometry requires the exact packaged dataframe session."
+  );
+  const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+  const app = await exactSessionApp(target.frame, sessionId);
+  assert.ok(app, "Responsive screenshot geometry requires the exact live Open Wrangler renderer.");
+  const measurement = await app.evaluate((root) => {
+    const appBounds = root.getBoundingClientRect();
+    const toolbar = root.querySelector(".toolbar");
+    const toolbarActions = root.querySelector(".toolbarActions");
+    const gridStatusBar = root.querySelector(".gridStatusBar");
+    if (!toolbar || !toolbarActions || !gridStatusBar) {
+      throw new Error("Responsive screenshot controls are incomplete.");
+    }
+    const clippedChildren = (containerSelector: string, selector: string): string[] => {
+      const container = root.querySelector(containerSelector);
+      if (!container) return [`Missing ${containerSelector}`];
+      const containerBounds = container.getBoundingClientRect();
+      return [...container.querySelectorAll(selector)]
+        .filter((element) => {
+          const style = element.ownerDocument.defaultView?.getComputedStyle(element);
+          if (!style || style.display === "none" || style.visibility === "hidden") return false;
+          const bounds = element.getBoundingClientRect();
+          return (
+            bounds.left < Math.max(appBounds.left, containerBounds.left) - 1 ||
+            bounds.right > Math.min(appBounds.right, containerBounds.right) + 1 ||
+            bounds.top < containerBounds.top - 1 ||
+            bounds.bottom > containerBounds.bottom + 1
+          );
+        })
+        .map(
+          (element) =>
+            element.getAttribute("aria-label") ?? element.textContent?.replace(/\s+/gu, " ").trim() ?? element.tagName
+        );
+    };
+    return {
+      appOverflow: root.scrollWidth - root.clientWidth,
+      toolbarOverflow: toolbar.scrollWidth - toolbar.clientWidth,
+      gridStatusBarOverflow: gridStatusBar.scrollWidth - gridStatusBar.clientWidth,
+      clippedToolbarControls: clippedChildren(".toolbar", ":scope > .toolbarActions > *"),
+      clippedGridStatusBar: clippedChildren(".gridStatusBar", ":scope > *")
+    };
+  });
+  assert.ok(
+    measurement.appOverflow <= 1 && measurement.toolbarOverflow <= 1 && measurement.gridStatusBarOverflow <= 1,
+    `The 200% zoom layout must not overflow horizontally: ${JSON.stringify(measurement)}`
+  );
+  assert.deepEqual(
+    measurement.clippedToolbarControls,
+    [],
+    "Every toolbar action must remain completely visible at 200% zoom."
+  );
+  assert.deepEqual(
+    measurement.clippedGridStatusBar,
+    [],
+    "Every grid status control and the visible-row range must remain completely visible at 200% zoom."
+  );
 }
 
 async function capturePackagedHistogramInteractionScene(

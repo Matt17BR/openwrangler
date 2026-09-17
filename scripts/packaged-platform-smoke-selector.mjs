@@ -1,13 +1,18 @@
 export const PACKAGED_DAILY_CORE_SELECTOR = "daily-core";
 export const PACKAGED_GRID_RANGE_COPY_SELECTOR = "grid-range-copy";
+export const PACKAGED_PUBLIC_MEDIA_SELECTOR = "public-media";
 
-const supportedSelectors = new Set([PACKAGED_DAILY_CORE_SELECTOR, PACKAGED_GRID_RANGE_COPY_SELECTOR]);
+const supportedSelectors = new Set([
+  PACKAGED_DAILY_CORE_SELECTOR,
+  PACKAGED_GRID_RANGE_COPY_SELECTOR,
+  PACKAGED_PUBLIC_MEDIA_SELECTOR
+]);
 
 export function resolvePackagedPlatformSmokeSelector({ acceptanceMode, selector }) {
   if (selector === undefined) return undefined;
   if (!supportedSelectors.has(selector) || acceptanceMode !== "platform-smoke") {
     throw new Error(
-      'OPEN_WRANGLER_TEST_SELECTOR may be "daily-core" or "grid-range-copy" only when OPEN_WRANGLER_PACKAGED_MODE is "platform-smoke".'
+      'OPEN_WRANGLER_TEST_SELECTOR may be "daily-core", "grid-range-copy", or "public-media" only when OPEN_WRANGLER_PACKAGED_MODE is "platform-smoke".'
     );
   }
   return selector;

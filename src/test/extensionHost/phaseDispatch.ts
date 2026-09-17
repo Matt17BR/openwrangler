@@ -1,3 +1,4 @@
+import { isAbsolute } from "node:path";
 import {
   EXTENSION_HOST_TEST_SELECTORS as RELEASED_JUPYTER_TEST_SELECTORS,
   PYSPARK_PRERELEASE_DENIAL_SELECTOR,
@@ -7,13 +8,18 @@ import type { ExtensionHostTestSelector, ReleasedJupyterDispatchPhase } from "./
 
 export const GRID_RANGE_COPY_SELECTOR = "grid-range-copy";
 export const DAILY_CORE_SELECTOR = "daily-core";
+export const PUBLIC_MEDIA_SELECTOR = "public-media";
 export const EXTENSION_HOST_TEST_SELECTORS = Object.freeze([
   ...RELEASED_JUPYTER_TEST_SELECTORS,
   DAILY_CORE_SELECTOR,
-  GRID_RANGE_COPY_SELECTOR
+  GRID_RANGE_COPY_SELECTOR,
+  PUBLIC_MEDIA_SELECTOR
 ] as const);
 type ExtensionHostPhaseSelector =
-  ExtensionHostTestSelector | typeof DAILY_CORE_SELECTOR | typeof GRID_RANGE_COPY_SELECTOR;
+  | ExtensionHostTestSelector
+  | typeof DAILY_CORE_SELECTOR
+  | typeof GRID_RANGE_COPY_SELECTOR
+  | typeof PUBLIC_MEDIA_SELECTOR;
 export { PYSPARK_PRERELEASE_DENIAL_SELECTOR };
 export type { ExtensionHostTestSelector, ReleasedJupyterDispatchPhase };
 
@@ -28,6 +34,7 @@ export interface ExtensionHostPhaseEnvironment {
   readonly OPEN_WRANGLER_TEST_PHASE?: string;
   readonly OPEN_WRANGLER_TEST_PYTHON?: string;
   readonly OPEN_WRANGLER_TEST_SELECTOR?: string;
+  readonly OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS?: string;
 }
 
 export interface ExtensionHostPhaseSelection {
@@ -55,14 +62,15 @@ export interface ExtensionHostPhaseHandlers {
 export interface PlatformSmokeJourneyHandlers {
   readonly dailyCore: () => Promise<void>;
   readonly gridRangeCopy: () => Promise<void>;
+  readonly publicMedia: () => Promise<void>;
   readonly standard: () => Promise<void>;
 }
 
 export const EXTENSION_HOST_TEST_SELECTOR_ERROR =
-  'OPEN_WRANGLER_TEST_SELECTOR must be unset, "pyspark-prerelease-denial", "core-operations", "categorical-operations", "value-operations", "pivot-wider", "kernel-restart", "native-frames", "interactive-terminal", "literate-documents", "daily-core", or "grid-range-copy".';
+  'OPEN_WRANGLER_TEST_SELECTOR must be unset, "pyspark-prerelease-denial", "core-operations", "categorical-operations", "value-operations", "pivot-wider", "kernel-restart", "native-frames", "interactive-terminal", "literate-documents", "daily-core", "grid-range-copy", or "public-media".';
 
 export const EXTENSION_HOST_TEST_SELECTOR_ELIGIBILITY_ERROR =
-  "pyspark-prerelease-denial requires jupyter-pyspark in VS Code; every R selector requires jupyter-r; daily-core and grid-range-copy require platform-smoke.";
+  "pyspark-prerelease-denial requires jupyter-pyspark in VS Code; every R selector requires jupyter-r; daily-core, grid-range-copy, and public-media require platform-smoke.";
 
 const extensionHostTestSelectors = new Set<string>(EXTENSION_HOST_TEST_SELECTORS);
 
@@ -76,13 +84,25 @@ export function parseExtensionHostPhaseSelection(
     throw new Error(EXTENSION_HOST_TEST_SELECTOR_ERROR);
   }
   const selector = rawSelector as ExtensionHostPhaseSelector | undefined;
-  if ((selector === DAILY_CORE_SELECTOR || selector === GRID_RANGE_COPY_SELECTOR) && phase !== "platform-smoke") {
+  if (
+    (selector === DAILY_CORE_SELECTOR || selector === GRID_RANGE_COPY_SELECTOR || selector === PUBLIC_MEDIA_SELECTOR) &&
+    phase !== "platform-smoke"
+  ) {
     throw new Error(EXTENSION_HOST_TEST_SELECTOR_ELIGIBILITY_ERROR);
+  }
+  if (
+    selector === PUBLIC_MEDIA_SELECTOR &&
+    (platform !== "linux" || !isAbsolute(environment.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS ?? ""))
+  ) {
+    throw new Error(
+      "The public-media selector requires Linux and an absolute OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS output directory."
+    );
   }
   if (
     selector !== undefined &&
     selector !== DAILY_CORE_SELECTOR &&
     selector !== GRID_RANGE_COPY_SELECTOR &&
+    selector !== PUBLIC_MEDIA_SELECTOR &&
     !releasedJupyterScenario({
       editor: environment.OPEN_WRANGLER_TEST_EDITOR,
       phaseId: phase,
@@ -123,7 +143,9 @@ export async function dispatchExtensionHostPhase(
     phaseId: selection.phase,
     platform: selection.platform,
     selector:
-      selection.selector === DAILY_CORE_SELECTOR || selection.selector === GRID_RANGE_COPY_SELECTOR
+      selection.selector === DAILY_CORE_SELECTOR ||
+      selection.selector === GRID_RANGE_COPY_SELECTOR ||
+      selection.selector === PUBLIC_MEDIA_SELECTOR
         ? undefined
         : selection.selector
   });
@@ -174,6 +196,10 @@ export async function dispatchPlatformSmokeJourney(
   }
   if (selection.selector === DAILY_CORE_SELECTOR) {
     await handlers.dailyCore();
+    return;
+  }
+  if (selection.selector === PUBLIC_MEDIA_SELECTOR) {
+    await handlers.publicMedia();
     return;
   }
   await handlers.standard();

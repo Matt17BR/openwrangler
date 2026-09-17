@@ -46,6 +46,7 @@ const TEMP_ROOT_ENV = "OPEN_WRANGLER_EDITOR_TEMP_ROOT";
 const PYTHON_EXTENSION_VSIX_ENV = "OPEN_WRANGLER_PYTHON_EXTENSION_VSIX";
 const DAILY_CORE_SELECTOR = "daily-core";
 const GRID_RANGE_COPY_SELECTOR = "grid-range-copy";
+const PUBLIC_MEDIA_SELECTOR = "public-media";
 const PYSPARK_PRERELEASE_DENIAL_SELECTOR = "pyspark-prerelease-denial";
 export const REAL_JUPYTER_EXTENSION_ENV = "OPEN_WRANGLER_REAL_JUPYTER_EXTENSION";
 export const JUPYTER_EXTENSION_VSIX_ENV = "OPEN_WRANGLER_JUPYTER_EXTENSION_VSIX";
@@ -4076,17 +4077,28 @@ export async function runEditorAcceptancePhase(
     testSelector !== "interactive-terminal" &&
     testSelector !== "literate-documents" &&
     testSelector !== DAILY_CORE_SELECTOR &&
-    testSelector !== GRID_RANGE_COPY_SELECTOR
+    testSelector !== GRID_RANGE_COPY_SELECTOR &&
+    testSelector !== PUBLIC_MEDIA_SELECTOR
   ) {
     throw new Error(
-      'An editor acceptance test selector must be unset, "pyspark-prerelease-denial", "core-operations", "categorical-operations", "value-operations", "pivot-wider", "kernel-restart", "native-frames", "interactive-terminal", "literate-documents", "daily-core", or "grid-range-copy".'
+      'An editor acceptance test selector must be unset, "pyspark-prerelease-denial", "core-operations", "categorical-operations", "value-operations", "pivot-wider", "kernel-restart", "native-frames", "interactive-terminal", "literate-documents", "daily-core", "grid-range-copy", or "public-media".'
     );
   }
   if (
-    (testSelector === DAILY_CORE_SELECTOR || testSelector === GRID_RANGE_COPY_SELECTOR) &&
+    (testSelector === DAILY_CORE_SELECTOR ||
+      testSelector === GRID_RANGE_COPY_SELECTOR ||
+      testSelector === PUBLIC_MEDIA_SELECTOR) &&
     phase !== "platform-smoke"
   ) {
     throw new Error('A focused platform-smoke selector requires the "platform-smoke" phase.');
+  }
+  if (
+    testSelector === PUBLIC_MEDIA_SELECTOR &&
+    (platform !== "linux" || !isAbsolute(environment.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS ?? ""))
+  ) {
+    throw new Error(
+      "The public-media selector requires Linux and an absolute OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS output directory."
+    );
   }
   if (
     testSelector === PYSPARK_PRERELEASE_DENIAL_SELECTOR &&
@@ -4098,6 +4110,7 @@ export async function runEditorAcceptancePhase(
     testSelector !== undefined &&
     testSelector !== DAILY_CORE_SELECTOR &&
     testSelector !== GRID_RANGE_COPY_SELECTOR &&
+    testSelector !== PUBLIC_MEDIA_SELECTOR &&
     testSelector !== PYSPARK_PRERELEASE_DENIAL_SELECTOR &&
     phase !== "jupyter-r"
   ) {

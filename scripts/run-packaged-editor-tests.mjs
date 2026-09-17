@@ -89,6 +89,7 @@ import {
   resolvePackagedPythonJupyterProfile
 } from "./packaged-python-jupyter.mjs";
 import {
+  PACKAGED_PUBLIC_MEDIA_SELECTOR,
   resolvePackagedPlatformSmokeSelector,
   runPackagedPlatformSmokePhase
 } from "./packaged-platform-smoke-selector.mjs";
@@ -216,6 +217,14 @@ try {
             acceptanceMode,
             selector: process.env.OPEN_WRANGLER_TEST_SELECTOR
           });
+          if (
+            platformSmokeSelector === PACKAGED_PUBLIC_MEDIA_SELECTOR &&
+            (process.platform !== "linux" || !isAbsolute(process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS ?? ""))
+          ) {
+            throw new Error(
+              "The public-media selector requires Linux and an absolute OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS output directory."
+            );
+          }
           const rJourneySelector = process.env.OPEN_WRANGLER_PACKAGED_R_JOURNEY;
           if (
             acceptanceMode !== "full" &&
@@ -2035,7 +2044,12 @@ try {
         ),
       finalizeSuccess: () =>
         privatePathSafetyPolicy.runRequired(() => removeEvidenceStagingRoot({ requireEmpty: true })),
-      reportSuccess: () => console.log(`${completedEditorNames.join(" and ")} packaged acceptance passed.`)
+      reportSuccess: () =>
+        console.log(
+          process.env.OPEN_WRANGLER_TEST_SELECTOR === PACKAGED_PUBLIC_MEDIA_SELECTOR
+            ? `${completedEditorNames.join(" and ")} public media capture completed.`
+            : `${completedEditorNames.join(" and ")} packaged acceptance passed.`
+        )
     }
   );
 } catch {
