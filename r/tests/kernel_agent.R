@@ -84,152 +84,6 @@ if (identical(selected_kernel_agent_case, "numeric-portability")) {
 if (identical(selected_kernel_agent_case, "csv-import")) {
 kernel_agent_case_run_count <- kernel_agent_case_run_count + 1L
 
-# The existing nested operations use native vectors and repeat ordinary siblings.
-local({
-  for (flavor in c("base", "tibble", "data.table")) {
-    sources <- new.env(parent = baseenv())
-    source <- data.frame(id = 1:4, sibling = c("a", "b", "c", "d"))
-    source$items <- list(c(1L, NA_integer_), integer(), NULL, 3L)
-    source$record <- list(list(code = "a", count = 1L), NULL,
-      list(code = "", count = NA_integer_), list(code = "d", count = 4L))
-    sources$frame <- switch(flavor, base = source, tibble = tibble::as_tibble(source),
-      data.table = data.table::as.data.table(source))
-    if (flavor == "data.table") data.table::setkeyv(sources$frame, "id")
-    before <- serialize(sources$frame, NULL, version = 3L)
-    nested_agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, sources)
-    session <- "01234567-0123-4123-8123-012345678901"
-    opened <- dispatch_with(nested_agent, "openSession", list(
-      sessionId = session, variableName = "frame", page = page_window()))
-    assert_identical(opened$kind, "page", paste(flavor, "flat container source did not open"))
-    steps <- list(
-      list(id = "native-extract", kind = "extractStructFields", params = list(
-        column = list(id = "r:c:3", name = "record"), fields = I(list(
-          list(field = "code", newColumn = "code"), list(field = "count", newColumn = "count"))))),
-      list(id = "native-explode", kind = "explodeList", params = list(column = list(id = "r:c:2", name = "items")))
-    )
-    revision <- 0L
-    for (step in steps) {
-      preview <- dispatch_with(nested_agent, "previewStep", list(
-        sessionId = session, revision = revision, step = step, page = page_window()))
-      assert_identical(preview$kind, "stepPreview", paste(flavor, step$kind, "did not preview"))
-      expected <- source
-      if (step$kind == "extractStructFields") {
-        expected$code <- c("a", NA_character_, "", "d")
-        expected$count <- c(1L, NA_integer_, NA_integer_, 4L)
-        assert_identical(vapply(preview$page$page$rows, `[[`, character(1L), "id"), paste0("r:r:", 0:3),
-          "Extract Struct Fields replaced source row identities")
-      } else {
-        expected <- source[c(1L, 1L, 2L, 3L, 4L), , drop = FALSE]
-        row.names(expected) <- NULL
-        expected$items <- c(1L, NA_integer_, NA_integer_, NA_integer_, 3L)
-        assert_identical(preview$diff$addedRows, 5L, "Explode List reported the wrong added rows")
-        assert_identical(preview$diff$removedRows, 4L, "Explode List reported the wrong removed rows")
-        assert_identical(any(vapply(preview$page$page$rows, `[[`, character(1L), "id") %in% paste0("r:r:", 0:3)),
-          FALSE, "Explode List reused source row identities")
-      }
-      generated <- new.env(parent = baseenv())
-      generated$frame <- unserialize(before)
-      eval(parse(text = preview$code), envir = generated)
-      assert_identical(as.data.frame(generated$open_wrangler_result), expected,
-        paste(flavor, step$kind, "generated native values differ"))
-      if (flavor == "data.table") assert_identical(data.table::key(generated$open_wrangler_result), "id",
-        paste(step$kind, "lost a valid sibling data.table key"))
-      assert_identical(serialize(generated$frame, NULL, version = 3L), before,
-        paste(step$kind, "generated execution mutated source"))
-      discarded <- dispatch_with(nested_agent, "discardDraft", list(
-        sessionId = session, revision = revision + 1L, page = page_window()))
-      assert_identical(discarded$page, opened$page, paste(step$kind, "discard did not restore source"))
-      revision <- revision + 2L
-      repeated <- dispatch_with(nested_agent, "previewStep", list(sessionId = session, revision = revision, step = step, page = page_window()))
-      applied <- dispatch_with(nested_agent, "applyDraft", list(sessionId = session, revision = repeated$revision, page = page_window()))
-      assert_identical(applied$page, preview$page, paste(step$kind, "Apply changed its preview"))
-      info <- dispatch_with(nested_agent, "inspectStepInfo", list(sessionId = session, revision = applied$revision, stepId = step$id))
-      inspected <- dispatch_with(nested_agent, "inspectStepPage", list(sessionId = session, revision = applied$revision, stepId = step$id, side = "output", page = page_window()))
-      assert_identical(info$kind, "stepInspectionInfo", paste(step$kind, "inspection metadata failed"))
-      expected_inspection <- preview$page; expected_inspection$schema <- NULL
-      assert_identical(info$code, preview$code, paste(step$kind, "inspection changed generated code"))
-      assert_identical(inspected$page, expected_inspection, paste(step$kind, "inspection changed output metadata or identities"))
-      undone <- dispatch_with(nested_agent, "undoStep", list(sessionId = session, revision = applied$revision, page = page_window()))
-      assert_identical(undone$page, opened$page, paste(step$kind, "Undo lost source prototypes"))
-      redone <- dispatch_with(nested_agent, "redoStep", list(sessionId = session, revision = undone$revision, expectedStepId = step$id, page = page_window()))
-      assert_identical(redone$page, applied$page, paste(step$kind, "Redo changed output"))
-      assert_identical(redone$code, applied$code, paste(step$kind, "Redo changed generated code"))
-      # Removing retained containers leaves ordinary scalar CSV output.
-      removed <- if (step$kind == "extractStructFields") list(list(id = "r:c:2", name = "items"), list(id = "r:c:3", name = "record")) else list(list(id = "r:c:3", name = "record"))
-      drop <- list(id = paste0(step$id, "-drop"), kind = "dropColumns", params = list(columns = I(removed)))
-      drop_preview <- dispatch_with(nested_agent, "previewStep", list(sessionId = session, revision = redone$revision, step = drop, page = page_window()))
-      drop_applied <- dispatch_with(nested_agent, "applyDraft", list(sessionId = session, revision = drop_preview$revision, page = page_window()))
-      exported <- dispatch_with(nested_agent, "exportData", list(sessionId = session, revision = drop_applied$revision, exportId = export_id, options = csv_export_options))
-      assert_identical(exported$kind, "dataExported", paste(step$kind, "scalar CSV export failed", exported$message))
-      chunk <- dispatch_with(nested_agent, "readDataExport", list(sessionId = session, revision = drop_applied$revision, exportId = export_id, offset = 0L, limit = exported$bytes))
-      dispatch_with(nested_agent, "closeDataExport", list(sessionId = session, revision = drop_applied$revision, exportId = export_id))
-      csv <- read.csv(text = rawToChar(jsonlite::base64_dec(chunk$data)), check.names = FALSE)
-      expected_csv <- expected[setdiff(names(expected), vapply(removed, `[[`, character(1L), "name"))]
-      # read.csv reads an unquoted missing character field as empty text. The
-      # native/generated assertions retain the distinction; check its CSV form.
-      expected_read <- expected_csv
-      if (step$kind == "extractStructFields") {
-        csv_text <- rawToChar(jsonlite::base64_dec(chunk$data))
-        assert_identical(grepl('2,"b",,', csv_text, fixed = TRUE), TRUE, "CSV did not encode the missing record field")
-        assert_identical(grepl('3,"c","",', csv_text, fixed = TRUE), TRUE, "CSV did not quote the present empty text")
-        expected_read$code[is.na(expected_read$code)] <- ""
-      }
-      assert_identical(csv, expected_read, paste(step$kind, "CSV export changed scalar values"))
-      exported_generated <- new.env(parent = baseenv()); exported_generated$frame <- unserialize(before)
-      eval(parse(text = drop_applied$code), exported_generated)
-      assert_identical(as.data.frame(exported_generated$open_wrangler_result), expected_csv, paste(step$kind, "generated Extract/Explode + Drop changed values"))
-      drop_undone <- dispatch_with(nested_agent, "undoStep", list(sessionId = session, revision = drop_applied$revision, page = page_window()))
-      source_undone <- dispatch_with(nested_agent, "undoStep", list(sessionId = session, revision = drop_undone$revision, page = page_window()))
-      assert_identical(source_undone$page, opened$page, paste(step$kind, "history did not restore nested source"))
-      revision <- source_undone$revision
-    }
-    assert_identical(serialize(sources$frame, NULL, version = 3L), before, "native nested operation mutated source")
-    nested_agent$dispose()
-  }
-})
-local({
-  leaves <- list(
-    wide = bit64::as.integer64(c("9223372036854775807", NA)),
-    category = ordered(c("a", NA), levels = c("b", "a")),
-    day = as.Date(c("2026-01-01", NA)),
-    at = as.POSIXct(c("2026-01-01 12:00:00", NA), tz = "America/New_York"),
-    elapsed = structure(c(90, NA_real_), class = "difftime", units = "mins"),
-    number = c(-0, NaN, Inf, -Inf),
-    text = c("__proto__", "", NA_character_),
-    flag = c(TRUE, FALSE, NA)
-  )
-  for (name in names(leaves)) {
-    leaf <- leaves[[name]]
-    names(leaf) <- c("__proto__", rep(NA_character_, length(leaf) - 1L))
-    source <- data.frame(id = 1:4)
-    empty <- leaf[integer()]
-    source$items <- list(leaf, empty, NULL, list())
-    sources <- new.env(parent = baseenv()); sources$frame <- source
-    latest <- NULL
-    contract <- openwrangler_r_frame_contract
-    capture_nested <- contract$capture_nested_result
-    contract$capture_nested_result <- function(...) { latest <<- capture_nested(...); latest }
-    leaf_agent <- openwrangler_r_kernel_agent$new_agent(contract, sources)
-    session <- "01234567-0123-4123-8123-012345678901"
-    opened <- dispatch_with(leaf_agent, "openSession", list(sessionId = session, variableName = "frame", page = page_window()))
-    assert_identical(opened$kind, "page", paste(name, "list did not open"))
-    step <- list(id = paste0("explode-", name), kind = "explodeList", params = list(column = list(id = "r:c:1", name = "items")))
-    preview <- dispatch_with(leaf_agent, "previewStep", list(sessionId = session, revision = 0L, step = step, page = page_window()))
-    assert_identical(preview$kind, "stepPreview", paste(name, "list did not explode", preview$message))
-    generated <- new.env(parent = baseenv()); generated$frame <- source
-    eval(parse(text = preview$code), generated)
-    assert_identical(generated$open_wrangler_result, latest$snapshot, paste(name, "live/generated exact leaf metadata differs"))
-    output <- generated$open_wrangler_result$items
-    expected <- leaf[c(seq_along(leaf), NA_integer_, NA_integer_, NA_integer_)]
-    names(expected) <- c(names(leaf), "", "", "")
-    assert_identical(output, expected, paste(name, "flattening lost names, type, or missingness"))
-    if (name == "number") assert_identical(1 / output[[1L]], -Inf, "Explode lost signed zero")
-    if (name == "wide") assert_identical(as.character(output[[1L]]), "9223372036854775807", "Explode rounded integer64")
-    assert_identical(sources$frame, source, "leaf expansion mutated the native source")
-    leaf_agent$dispose()
-  }
-})
-
 local({
   root <- tempfile("ow-csv-loader-")
   dir.create(root)
@@ -450,6 +304,166 @@ agent$dispose()
 
 if (identical(selected_kernel_agent_case, "lifecycle-and-structure")) {
 kernel_agent_case_run_count <- kernel_agent_case_run_count + 1L
+
+# The existing nested operations use native vectors and repeat ordinary siblings.
+local({
+  special <- paste0(intToUtf8(c(1L, 0x0378L, 0x1f600L)), "\"\\u0378")
+  record_name <- paste0("record-", special)
+  field_name <- paste0("field-", special)
+  for (flavor in c("base", "tibble", "data.table")) {
+    sources <- new.env(parent = baseenv())
+    source <- data.frame(id = 1:4, sibling = c("a", "b", "c", "d"))
+    source$items <- list(c(1L, NA_integer_), integer(), NULL, 3L)
+    source$record <- list(list(code = "a", count = 1L), NULL,
+      list(code = "", count = NA_integer_), list(code = "d", count = 4L))
+    for (index in c(1L, 3L, 4L)) names(source$record[[index]])[[1L]] <- field_name
+    names(source)[[4L]] <- record_name
+    sources$frame <- switch(flavor, base = source, tibble = tibble::as_tibble(source),
+      data.table = data.table::as.data.table(source))
+    if (flavor == "data.table") data.table::setkeyv(sources$frame, "id")
+    before <- serialize(sources$frame, NULL, version = 3L)
+    nested_agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, sources)
+    session <- "01234567-0123-4123-8123-012345678901"
+    opened <- dispatch_with(nested_agent, "openSession", list(
+      sessionId = session, variableName = "frame", page = page_window()))
+    assert_identical(opened$kind, "page", paste(flavor, "flat container source did not open"))
+    steps <- list(
+      list(id = "native-extract", kind = "extractStructFields", params = list(
+        column = list(id = "r:c:3", name = record_name), fields = I(list(
+          list(field = field_name, newColumn = "code"), list(field = "count", newColumn = "count"))))),
+      list(id = "native-explode", kind = "explodeList", params = list(column = list(id = "r:c:2", name = "items")))
+    )
+    revision <- 0L
+    for (step in steps) {
+      preview <- dispatch_with(nested_agent, "previewStep", list(
+        sessionId = session, revision = revision, step = step, page = page_window()))
+      assert_identical(preview$kind, "stepPreview", paste(flavor, step$kind, "did not preview"))
+      expected <- source
+      if (step$kind == "extractStructFields") {
+        expected$code <- c("a", NA_character_, "", "d")
+        expected$count <- c(1L, NA_integer_, NA_integer_, 4L)
+        assert_identical(vapply(preview$page$page$rows, `[[`, character(1L), "id"), paste0("r:r:", 0:3),
+          "Extract Struct Fields replaced source row identities")
+      } else {
+        expected <- source[c(1L, 1L, 2L, 3L, 4L), , drop = FALSE]
+        row.names(expected) <- NULL
+        expected$items <- c(1L, NA_integer_, NA_integer_, NA_integer_, 3L)
+        assert_identical(preview$diff$addedRows, 5L, "Explode List reported the wrong added rows")
+        assert_identical(preview$diff$removedRows, 4L, "Explode List reported the wrong removed rows")
+        assert_identical(any(vapply(preview$page$page$rows, `[[`, character(1L), "id") %in% paste0("r:r:", 0:3)),
+          FALSE, "Explode List reused source row identities")
+      }
+      generated <- new.env(parent = baseenv())
+      generated$frame <- unserialize(before)
+      eval(parse(text = preview$code), envir = generated)
+      assert_identical(as.data.frame(generated$open_wrangler_result), expected,
+        paste(flavor, step$kind, "generated native values differ"))
+      if (flavor == "data.table") assert_identical(data.table::key(generated$open_wrangler_result), "id",
+        paste(step$kind, "lost a valid sibling data.table key"))
+      assert_identical(serialize(generated$frame, NULL, version = 3L), before,
+        paste(step$kind, "generated execution mutated source"))
+      discarded <- dispatch_with(nested_agent, "discardDraft", list(
+        sessionId = session, revision = revision + 1L, page = page_window()))
+      assert_identical(discarded$page, opened$page, paste(step$kind, "discard did not restore source"))
+      revision <- revision + 2L
+      repeated <- dispatch_with(nested_agent, "previewStep", list(sessionId = session, revision = revision, step = step, page = page_window()))
+      applied <- dispatch_with(nested_agent, "applyDraft", list(sessionId = session, revision = repeated$revision, page = page_window()))
+      assert_identical(applied$page, preview$page, paste(step$kind, "Apply changed its preview"))
+      info <- dispatch_with(nested_agent, "inspectStepInfo", list(sessionId = session, revision = applied$revision, stepId = step$id))
+      inspected <- dispatch_with(nested_agent, "inspectStepPage", list(sessionId = session, revision = applied$revision, stepId = step$id, side = "output", page = page_window()))
+      assert_identical(info$kind, "stepInspectionInfo", paste(step$kind, "inspection metadata failed"))
+      expected_inspection <- preview$page; expected_inspection$schema <- NULL
+      assert_identical(info$code, preview$code, paste(step$kind, "inspection changed generated code"))
+      assert_identical(inspected$page, expected_inspection, paste(step$kind, "inspection changed output metadata or identities"))
+      undone <- dispatch_with(nested_agent, "undoStep", list(sessionId = session, revision = applied$revision, page = page_window()))
+      assert_identical(undone$page, opened$page, paste(step$kind, "Undo lost source prototypes"))
+      redone <- dispatch_with(nested_agent, "redoStep", list(sessionId = session, revision = undone$revision, expectedStepId = step$id, page = page_window()))
+      assert_identical(redone$page, applied$page, paste(step$kind, "Redo changed output"))
+      assert_identical(redone$code, applied$code, paste(step$kind, "Redo changed generated code"))
+      # Removing retained containers leaves ordinary scalar CSV output.
+      removed <- if (step$kind == "extractStructFields") list(list(id = "r:c:2", name = "items"), list(id = "r:c:3", name = record_name)) else list(list(id = "r:c:3", name = record_name))
+      drop <- list(id = paste0(step$id, "-drop"), kind = "dropColumns", params = list(columns = I(removed)))
+      drop_preview <- dispatch_with(nested_agent, "previewStep", list(sessionId = session, revision = redone$revision, step = drop, page = page_window()))
+      drop_applied <- dispatch_with(nested_agent, "applyDraft", list(sessionId = session, revision = drop_preview$revision, page = page_window()))
+      exported <- dispatch_with(nested_agent, "exportData", list(sessionId = session, revision = drop_applied$revision, exportId = export_id, options = csv_export_options))
+      assert_identical(exported$kind, "dataExported", paste(step$kind, "scalar CSV export failed", exported$message))
+      chunk <- dispatch_with(nested_agent, "readDataExport", list(sessionId = session, revision = drop_applied$revision, exportId = export_id, offset = 0L, limit = exported$bytes))
+      dispatch_with(nested_agent, "closeDataExport", list(sessionId = session, revision = drop_applied$revision, exportId = export_id))
+      csv <- read.csv(text = rawToChar(jsonlite::base64_dec(chunk$data)), check.names = FALSE)
+      expected_csv <- expected[setdiff(names(expected), vapply(removed, `[[`, character(1L), "name"))]
+      # read.csv reads an unquoted missing character field as empty text. The
+      # native/generated assertions retain the distinction; check its CSV form.
+      expected_read <- expected_csv
+      if (step$kind == "extractStructFields") {
+        csv_text <- rawToChar(jsonlite::base64_dec(chunk$data))
+        assert_identical(grepl('2,"b",,', csv_text, fixed = TRUE), TRUE, "CSV did not encode the missing record field")
+        assert_identical(grepl('3,"c","",', csv_text, fixed = TRUE), TRUE, "CSV did not quote the present empty text")
+        expected_read$code[is.na(expected_read$code)] <- ""
+      }
+      assert_identical(csv, expected_read, paste(step$kind, "CSV export changed scalar values"))
+      exported_generated <- new.env(parent = baseenv()); exported_generated$frame <- unserialize(before)
+      eval(parse(text = drop_applied$code), exported_generated)
+      assert_identical(as.data.frame(exported_generated$open_wrangler_result), expected_csv, paste(step$kind, "generated Extract/Explode + Drop changed values"))
+      drop_undone <- dispatch_with(nested_agent, "undoStep", list(sessionId = session, revision = drop_applied$revision, page = page_window()))
+      source_undone <- dispatch_with(nested_agent, "undoStep", list(sessionId = session, revision = drop_undone$revision, page = page_window()))
+      assert_identical(source_undone$page, opened$page, paste(step$kind, "history did not restore nested source"))
+      revision <- source_undone$revision
+    }
+    assert_identical(serialize(sources$frame, NULL, version = 3L), before, "native nested operation mutated source")
+    nested_agent$dispose()
+  }
+})
+local({
+  special <- paste0(intToUtf8(c(1L, 0x0378L, 0x1f600L)), "\"\\u0378")
+  leaves <- list(
+    wide = bit64::as.integer64(c("9223372036854775807", NA)),
+    category = ordered(c(special, NA), levels = c("b", special)),
+    empty_category = factor(NA_character_, levels = character()),
+    day = as.Date(c("2026-01-01", NA)),
+    at = as.POSIXct(c("2026-01-01 12:00:00", NA), tz = "America/New_York"),
+    at_no_timezone = structure(c(1767225600, NA_real_), class = c("POSIXct", "POSIXt")),
+    elapsed = structure(c(90, NA_real_), class = "difftime", units = "mins"),
+    number = c(-0, NaN, Inf, -Inf),
+    text = c("__proto__", "", NA_character_),
+    flag = c(TRUE, FALSE, NA)
+  )
+  for (name in names(leaves)) {
+    leaf <- leaves[[name]]
+    names(leaf) <- c("__proto__", rep(NA_character_, length(leaf) - 1L))
+    source <- data.frame(id = 1:4)
+    empty <- leaf[integer()]
+    source$items <- list(leaf, empty, NULL, list())
+    source$sibling <- I(list(list(), NULL, list(), NULL))
+    before <- serialize(source, NULL, version = 3L)
+    sources <- new.env(parent = baseenv()); sources$frame <- source
+    latest <- NULL
+    contract <- openwrangler_r_frame_contract
+    capture_nested <- contract$capture_nested_result
+    contract$capture_nested_result <- function(...) { latest <<- capture_nested(...); latest }
+    leaf_agent <- openwrangler_r_kernel_agent$new_agent(contract, sources)
+    session <- "01234567-0123-4123-8123-012345678901"
+    opened <- dispatch_with(leaf_agent, "openSession", list(sessionId = session, variableName = "frame", page = page_window()))
+    assert_identical(opened$kind, "page", paste(name, "list did not open"))
+    step <- list(id = paste0("explode-", name), kind = "explodeList", params = list(column = list(id = "r:c:1", name = "items")))
+    preview <- dispatch_with(leaf_agent, "previewStep", list(sessionId = session, revision = 0L, step = step, page = page_window()))
+    assert_identical(preview$kind, "stepPreview", paste(name, "list did not explode", preview$message))
+    generated <- new.env(parent = baseenv()); generated$frame <- unserialize(before)
+    eval(parse(text = preview$code), generated)
+    assert_identical(generated$open_wrangler_result, latest$snapshot, paste(name, "live/generated exact leaf metadata differs"))
+    output <- generated$open_wrangler_result$items
+    expected <- leaf[c(seq_along(leaf), NA_integer_, NA_integer_, NA_integer_)]
+    names(expected) <- c(names(leaf), "", "", "")
+    assert_identical(output, expected, paste(name, "flattening lost names, type, or missingness"))
+    assert_identical(generated$open_wrangler_result$sibling,
+      source$sibling[c(rep.int(1L, length(leaf)), 2L, 3L, 4L)],
+      paste(name, "flattening lost the untyped AsIs sibling"))
+    if (name == "number") assert_identical(1 / output[[1L]], -Inf, "Explode lost signed zero")
+    if (name == "wide") assert_identical(as.character(output[[1L]]), "9223372036854775807", "Explode rounded integer64")
+    assert_identical(serialize(sources$frame, NULL, version = 3L), before, "leaf expansion mutated the native source")
+    assert_identical(serialize(generated$frame, NULL, version = 3L), before, "generated leaf expansion mutated the source")
+    leaf_agent$dispose()
+  }
+})
 
 local({
   # Synthetic fixtures: pyarrow scalar Parquet and openpyxl homogeneous sheets, with explicit cached formula cells.

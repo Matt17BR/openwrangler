@@ -7539,14 +7539,15 @@ openwrangler_r_kernel_agent <- local({
     sprintf("list(%s)", paste(fields, collapse = ", "))
   }
 
-  r_by_example_value <- function(value) {
+  r_bound_value <- function(value) {
     if (is.null(value)) return("NULL")
-    if (is.character(value)) return(r_string(value))
+    if (inherits(value, "AsIs")) return(sprintf("base::I(%s)", r_bound_value(unclass(value))))
+    if (is.character(value)) return(if (length(value) == 1L) r_string(value) else r_character_vector(value))
     if (is.logical(value)) return(if (isTRUE(value)) "TRUE" else "FALSE")
     if (is.integer(value)) return(sprintf("%dL", value))
     if (is.double(value) && length(value) == 1L && is.finite(value)) return(r_number(value))
     if (is.list(value)) {
-      values <- vapply(value, r_by_example_value, character(1L), USE.NAMES = FALSE)
+      values <- vapply(value, r_bound_value, character(1L), USE.NAMES = FALSE)
       body <- paste(values, collapse = ", ")
       if (is.null(names(value))) return(sprintf("base::list(%s)", body))
       return(sprintf(
@@ -7555,7 +7556,7 @@ openwrangler_r_kernel_agent <- local({
         r_character_vector(names(value))
       ))
     }
-    abort("runtime_error", "The bound R by-example program cannot be serialized")
+    abort("runtime_error", "The bound R operation value cannot be serialized")
   }
 
   by_example_code_helper_lines <- function() {
@@ -8245,6 +8246,8 @@ openwrangler_r_kernel_agent <- local({
 
   compile_plan <- function(variable_name, bound_plan, frame_contract, file_source = NULL, source_schema = NULL) {
     if (length(bound_plan) == 0L) return("")
+    source_schema <- unclass(source_schema)
+    attributes(source_schema) <- NULL
     needs_nested_operations <- any(vapply(bound_plan, function(step) step$kind %in% c("extractStructFields", "explodeList"), logical(1L)))
     needs_nested_helpers <- needs_nested_operations || any(vapply(seq_along(source_schema), function(position) .subset2(source_schema, position)$semantics$kind %in% c("list", "struct"), logical(1L))) ||
       any(vapply(bound_plan, function(step) identical(step$kind, "customCode"), logical(1L)))
@@ -8820,9 +8823,11 @@ openwrangler_r_kernel_agent <- local({
           )
         )
       } else if (step$kind %in% c("extractStructFields", "explodeList")) {
+        # Retain sibling prototypes used by the nested validation and allocation guards.
+        nested_schema <- lapply(step$schema, function(column) list(name = column$name, semantics = column$semantics))
         lines <- c(lines,
           sprintf("  .ow_result <- .ow_nested_helpers$transform(.ow_result, %s, %dL, %s, %s, %s)",
-            paste(deparse(step$schema, width.cutoff = 500L), collapse = " "), step$position,
+            r_bound_value(nested_schema), step$position,
             if (is.null(step$fields)) "NULL" else r_character_vector(step$fields),
             if (is.null(step$newNames)) "NULL" else r_character_vector(step$newNames), as.character(step$identityDomain)),
           if (!is.null(step$outputIds)) sprintf("  .ow_result_ids <- c(.ow_result_ids, %s)", r_character_vector(step$outputIds))
@@ -8906,7 +8911,7 @@ openwrangler_r_kernel_agent <- local({
           ),
           sprintf(
             "  .ow_by_example_values <- .ow_by_example_evaluate(%s, base::lapply(.ow_by_example_positions, function(.ow_position) .ow_result[[.ow_position]]))",
-            r_by_example_value(step$program)
+            r_bound_value(step$program)
           ),
           sprintf(
             "  if (.ow_storage_length(.ow_by_example_values) != .ow_by_example_row_count || !(%s)) base::stop(\"Open Wrangler by-example returned an invalid result type or row count\", call. = FALSE)",

@@ -3249,7 +3249,7 @@ openwrangler_r_frame_contract <- local({
     }
     if (!is.null(nullability_source)) {
       mapping <- if (is.null(source_positions)) seq_len(storage_length(value)) else source_positions
-      source_schema <- nullability_source$descriptor$schema
+      source_schema <- plain_metadata_storage(nullability_source$descriptor$schema)
       if (length(mapping) == storage_length(value) && is.numeric(mapping) && !anyNA(mapping) &&
           all(mapping >= 1L & mapping <= length(source_schema) & mapping == floor(mapping))) {
         expected_schema <- lapply(mapping, function(position) .subset2(source_schema, position))

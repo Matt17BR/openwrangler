@@ -320,7 +320,8 @@ reordering, later projected pages, source mutation and rejection before copying.
 children and expanded siblings before allocation, while retaining metadata-only access to large nested sources.
 The existing lifecycle owner exercises Extract and Explode across base frames, tibbles and keyed data tables, including
 Preview/Discard/Apply, inspection, Undo/Redo, scalar CSV export and exact generated results. Native factor, temporal,
-integer64 and floating-edge leaves use the same owner. The catalog independently checks live/generated agreement.
+integer64 and floating-edge leaves use the same owner, including escaped Unicode in factor levels and Struct names.
+The catalog independently checks live/generated agreement.
 Custom Code checks generated helper dependencies and hostile off-page attributes before copying or publication.
 Host codec and mutation tests pass named nested cells through the public response validator and reject mismatched
 metadata or row domains. Installed rendering and entry-path checks remain separate from these native/source controls.

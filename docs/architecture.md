@@ -1718,6 +1718,8 @@ public admission rules and generated-code limits remain unchanged.
 
 Generated R preserves exact Unicode in paths, column names and text values. Strings that would require R Unicode
 escapes use integer codepoint expressions, avoiding Windows supplementary-character corruption and R's escaped-literal limits.
+Extract and Explode share this literal handling for column names and semantic metadata. Their generated schemas retain
+every sibling's name, type, factor levels and nested prototypes.
 
 Generated R follows the live operation's native column-metadata behavior at each step. It normalizes element names
 on its already-isolated `data.table` result without making another full data copy; Clone, Dense Rank, Mark Duplicates
