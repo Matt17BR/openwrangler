@@ -664,13 +664,31 @@ def test_live_and_generated_missing_predicates_distinguish_null_from_nan(backend
         ("float64", [0, np.nan, np.inf, -np.inf], "float", "gte", "0", [0, 2]),
         ("datetime64[us]", [0, None, 1], "datetime", "isNull", None, [1]),
         ("timedelta64[ns]", [0, None, 1], "duration", "isNull", None, [1]),
+        ("Int64", [0, None, 1], "integer", "isNull", None, [1]),
+        ("Int64", [0, None, 1], "integer", "gte", "0", [0, 2]),
+        ("UInt64", [0, None, 2], "integer", "gte", "1", [2]),
+        ("boolean", [False, None, True], "boolean", "equals", True, [2]),
+        ("boolean", [False, None, True], "boolean", "isNull", None, [1]),
+        *[
+            (
+                pd.StringDtype(storage=storage, na_value=missing),
+                ["a", None, ""],
+                "string",
+                operator,
+                "a" if operator == "equals" else None,
+                [0] if operator == "equals" else ([1] if missing is pd.NA else []),
+            )
+            for storage in ("python", "pyarrow")
+            for missing in (pd.NA, np.nan)
+            for operator in ("isNull", "equals")
+        ],
     ],
 )
 def test_pandas_native_masks_preserve_view_bound_and_generated_rows(
     dtype, values, semantic, operation, operand, positions
 ):
     engine = PandasEngine()
-    source = pd.DataFrame({"value": np.array(values, dtype=dtype)})
+    source = pd.DataFrame({"value": pd.Series(values, dtype=dtype)})
     source.index = pd.Index([4, 4, 2, 1][: len(source)], name="source")
     source.attrs["origin"] = "retained"
     index = source.index

@@ -24,6 +24,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Pandas filters and missing-value counts avoid per-value Python work for built-in nullable integer, Boolean and string columns while keeping null and NaN distinct.
 - R opens supported Parquet integer columns carrying legacy annotations, including DuckDB files. Refusals identify the field, its actual annotations and the representation that cannot be preserved.
 - Package setup keeps its status and install action readable beside long errors, without an overlapping loading badge.
 - R numeric profiles display bounded exact distinct counts and handle columns containing only infinities without a protocol error.
