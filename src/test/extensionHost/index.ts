@@ -16689,6 +16689,36 @@ interface VisiblePersistedPanelSnapshot {
   readonly viewport: { firstVisibleRow: number; scrollLeft: number };
 }
 
+async function persistedSelectedColumnExposure(header: Locator) {
+  return header.evaluate((element) => {
+    type GeometryElement = {
+      readonly clientLeft: number;
+      readonly clientWidth: number;
+      readonly scrollLeft: number;
+      closest(selector: string): GeometryElement | null;
+      querySelector(selector: string): GeometryElement | null;
+      getBoundingClientRect(): { left: number; right: number };
+    };
+    const selectedHeader = element as unknown as GeometryElement;
+    const scroller = selectedHeader.closest('[data-testid="data-grid-scroller"]');
+    const rowHeader = scroller?.querySelector("th.rowHeader");
+    if (!scroller || !rowHeader) throw new Error("The persisted grid exposure requires its scroller and row header.");
+    const headerBounds = selectedHeader.getBoundingClientRect();
+    const clientLeft = scroller.getBoundingClientRect().left + scroller.clientLeft;
+    const clientRight = clientLeft + scroller.clientWidth;
+    const dataLeft = Math.max(clientLeft, rowHeader.getBoundingClientRect().right);
+    return {
+      headerLeft: headerBounds.left,
+      headerRight: headerBounds.right,
+      clientLeft,
+      clientRight,
+      dataLeft,
+      scrollLeft: scroller.scrollLeft,
+      exposedWidth: Math.max(0, Math.min(headerBounds.right, clientRight) - Math.max(headerBounds.left, dataLeft))
+    };
+  });
+}
+
 async function assertPersistedSortPriorityInNativeView(workbench: Page): Promise<readonly string[]> {
   const sidebarWasVisible = await workbench
     .locator(".part.sidebar")
@@ -16771,6 +16801,11 @@ async function visiblePersistedPanelSnapshot(
   await selectedHeader.waitFor({ state: "visible", timeout: 10_000 });
   assert.equal(await selectedHeader.getAttribute("data-column"), PERSISTED_PANEL_SELECTED_COLUMN);
   assert.equal(await selectedHeader.getAttribute("aria-selected"), "true");
+  const exposure = await persistedSelectedColumnExposure(selectedHeader);
+  assert.ok(
+    exposure.exposedWidth > 0,
+    `The persisted selected column must intersect the visible data lane: ${JSON.stringify(exposure)}.`
+  );
   const selectedColumnWidth = Math.round((await selectedHeader.boundingBox())?.width ?? 0);
   assert.ok(
     Math.abs(selectedColumnWidth - PERSISTED_PANEL_COLUMN_WIDTH) <= 1,
@@ -16901,7 +16936,7 @@ async function verifyVisiblePersistedReplayAndRecovery(testing: TestApi, fixture
       SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
       "the fresh persisted panel renderer to acknowledge its replay"
     );
-    await synchronizedSessionApp(
+    const restoredApp = await synchronizedSessionApp(
       workbench,
       testing,
       sessionId,
@@ -16915,6 +16950,26 @@ async function verifyVisiblePersistedReplayAndRecovery(testing: TestApi, fixture
       .last();
     await persistedTab.waitFor({ state: "visible", timeout: 10_000 });
     await persistedTab.click();
+    const columnSearch = restoredApp.getByRole("combobox", { name: "Column", exact: true });
+    await columnSearch.fill(PERSISTED_PANEL_SELECTED_COLUMN);
+    await restoredApp
+      .getByRole("option", { name: `${PERSISTED_PANEL_SELECTED_COLUMN}, Number column`, exact: true })
+      .waitFor({ state: "visible", timeout: 10_000 });
+    await columnSearch.press("Enter");
+    const initialSelectedHeader = restoredApp.locator(`th[data-column="${PERSISTED_PANEL_SELECTED_COLUMN}"]`).first();
+    await initialSelectedHeader.waitFor({ state: "visible", timeout: 10_000 });
+    let initialExposure = await persistedSelectedColumnExposure(initialSelectedHeader);
+    assert.equal(
+      await pollAcceptanceCondition(
+        async () => {
+          initialExposure = await persistedSelectedColumnExposure(initialSelectedHeader);
+          return initialExposure.exposedWidth > 0;
+        },
+        { timeoutMs: 10_000, intervalMs: 50 }
+      ),
+      true,
+      `Public column navigation must expose the selected column before the recovery baseline: ${JSON.stringify(initialExposure)}.`
+    );
     recordAcceptanceProgress("verify:visible-replay-recovery:initial-visible-state");
     const initial = await visiblePersistedPanelSnapshot(testing, workbench, sessionId);
     const initialTarget = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
@@ -16975,6 +17030,11 @@ async function verifyVisiblePersistedReplayAndRecovery(testing: TestApi, fixture
       .locator(`th[data-column="${PERSISTED_PANEL_SELECTED_COLUMN}"]`)
       .first();
     await recoveredSelectedHeader.waitFor({ state: "visible", timeout: 10_000 });
+    const recoveredExposure = await persistedSelectedColumnExposure(recoveredSelectedHeader);
+    assert.ok(
+      recoveredExposure.exposedWidth > 0,
+      `Header profiling requires the recovered selected column in the visible data lane: ${JSON.stringify(recoveredExposure)}.`
+    );
     const recoveredSessionId = sessionId;
     await waitForLocatorText(
       recoveredSelectedHeader,
