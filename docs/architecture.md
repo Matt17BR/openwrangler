@@ -1517,11 +1517,17 @@ Source and destination identity checks still protect the input from exports.
 #### Parquet, JSONL and Excel files
 
 Parquet input uses `nanoparquet` 0.5.1 or newer. It admits flat Boolean, text, floating-point, signed integer and Date
-columns, with reader-preserved factor metadata. Integer64 input also requires `bit64`. Unannotated INT64 values must
-have magnitude below 2^53 because the reader otherwise converts them through a lossy double. Native integer/date
-missing sentinels require null-count evidence; absent statistics do not establish that a missing value was a source null.
-Unsigned integers must fit the corresponding native signed integer or integer64 range; wrapped or missing-sentinel
-results are refused. Decimal, binary, nested, local-time and INT96 fields are refused before conversion.
+columns, with reader-preserved factor metadata. Integer64 input also requires `bit64`. Modern `INT` and
+[legacy integer annotations](https://github.com/apache/parquet-format/blob/master/LogicalTypes.md#deprecated-integer-convertedtype)
+accept 8, 16 and 32 bits only on physical INT32, and 64 bits only on physical INT64. Legacy annotations apply only when
+the logical annotation is absent; a local TIMESTAMP never falls back to its legacy timestamp annotation.
+Signed annotated INT64 retains exact `integer64` values beyond 2^53. When the reader returns INT64 as double, including
+unannotated and some unsigned input, its values must have magnitude below 2^53 before conversion to `integer64`.
+Native integer/date missing sentinels require null-count evidence; absent statistics do not establish that a missing
+value was a source null. Unsigned limits follow the reader's actual storage: negative wraparound and missing-sentinel
+results are refused. Field refusals identify the column index, bounded escaped name, physical/logical/converted
+annotations and the unsupported representation, with guidance to select a compatible engine or explicitly convert the field.
+Decimal, binary, nested, local-time and INT96 fields remain unsupported.
 UTC-adjusted millisecond and microsecond timestamps require magnitude below 2^51 ticks and a tick round trip.
 They load in UTC; named timezone metadata is not restored. Reader-preserved durations require the same tick bound and
 a consistent seconds/milliseconds/microseconds/nanoseconds scale. Duration-containing files need a second full native

@@ -466,7 +466,7 @@ local({
 })
 
 local({
-  # Synthetic fixtures: pyarrow scalar Parquet and openpyxl homogeneous sheets, with explicit cached formula cells.
+  # Synthetic cross-writer Parquet and openpyxl homogeneous sheets, with explicit cached formula cells.
   root <- tempfile("ow-file-loaders-")
   dir.create(root)
   on.exit(unlink(root, recursive = TRUE), add = TRUE)
@@ -518,6 +518,7 @@ local({
     file_agent$dispose()
     on.exit(NULL)
     assert_identical(getAllConnections(), connections, "Native file workflow retained a connection")
+    invisible(applied$code)
   }
   csv_path <- file.path(root, "options.csv")
   writeBin(iconv("1;'  é  '\r2;'two\r\nlines'\r", from = "UTF-8", to = "UTF-16BE", toRaw = TRUE)[[1L]], csv_path)
@@ -535,6 +536,90 @@ local({
     at = structure(c(1789569600.123456, (2^51 - 1) / 1e6, NA), class = c("POSIXct", "POSIXt"), tzone = "UTC"), date = as.Date(c("2026-09-16", NA, "2000-01-01")),
     unsigned32 = c(0L, .Machine$integer.max, NA_integer_), unsigned64 = bit64::as.integer64(c("0", "9223372036854775807", NA))
   ))
+  # DuckDB 1.5.5 fixtures use COPY (<query>) TO '<fixture>' (FORMAT PARQUET).
+  # r-file-legacy-integers.parquet:
+  # SELECT signed8::TINYINT AS signed8,signed16::SMALLINT AS signed16,
+  #   signed32::INTEGER AS signed32,signed64::BIGINT AS signed64,
+  #   unsigned8::UTINYINT AS unsigned8,unsigned16::USMALLINT AS unsigned16,
+  #   unsigned32::UINTEGER AS unsigned32,unsigned64::UBIGINT AS unsigned64 FROM (VALUES
+  #   (-128,-32768,-2147483647,9007199254740993,0,0,0,0),
+  #   (127,32767,2147483647,9223372036854775807,255,65535,2147483647,9007199254740991),
+  #   (NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL))
+  #   t(signed8,signed16,signed32,signed64,unsigned8,unsigned16,unsigned32,unsigned64)
+  legacy_path <- file.path(root, "legacy.parquet")
+  file.copy("fixtures/r-file-legacy-integers.parquet", legacy_path)
+  legacy_metadata <- nanoparquet::read_parquet_metadata(legacy_path)
+  stopifnot(all(vapply(legacy_metadata$schema$logical_type[-1L], is.null, logical(1L))))
+  assert_identical(legacy_metadata$schema$converted_type[-1L],
+    c("INT_8", "INT_16", "INT_32", "INT_64", "UINT_8", "UINT_16", "UINT_32", "UINT_64"),
+    "External writer fixture no longer exercises legacy integer annotations")
+  legacy_code <- check_file(list(path = legacy_path, format = "parquet"), data.frame(
+    signed8 = c(-128L, 127L, NA_integer_), signed16 = c(-32768L, 32767L, NA_integer_),
+    signed32 = c(-2147483647L, 2147483647L, NA_integer_),
+    signed64 = bit64::as.integer64(c("9007199254740993", "9223372036854775807", NA)),
+    unsigned8 = c(0L, 255L, NA_integer_), unsigned16 = c(0L, 65535L, NA_integer_),
+    unsigned32 = c(0L, 2147483647L, NA_integer_),
+    unsigned64 = bit64::as.integer64(c("0", "9007199254740991", NA))
+  ))
+  check_parquet_refusal <- function(expected) {
+    bytes <- readBin(legacy_path, "raw", file.size(legacy_path))
+    connections <- getAllConnections()
+    error <- tryCatch(load_file(list(path = legacy_path, format = "parquet"), maximum_columns = maximum_columns), error = identity)
+    stopifnot(inherits(error, "error"))
+    for (text in c(expected, "Select a compatible Python engine, or explicitly convert this field before opening it in R.")) {
+      if (!grepl(text, conditionMessage(error), fixed = TRUE)) stop("Missing refusal detail: ", text, "; actual: ", conditionMessage(error))
+    }
+    stopifnot(nchar(conditionMessage(error), type = "bytes") < 2048L,
+      !grepl("\n", conditionMessage(error), fixed = TRUE),
+      !grepl(strrep("x", 130L), conditionMessage(error), fixed = TRUE))
+    generated <- new.env(parent = baseenv())
+    generated_error <- tryCatch(eval(parse(text = legacy_code), envir = generated), error = identity)
+    stopifnot(inherits(generated_error, "error"), !exists("open_wrangler_result", envir = generated, inherits = FALSE))
+    assert_identical(conditionMessage(generated_error), conditionMessage(error), "Generated Parquet refusal differs from live loading")
+    assert_identical(readBin(legacy_path, "raw", length(bytes) + 1L), bytes, "Refused Parquet modified source bytes")
+    assert_identical(getAllConnections(), connections, "Refused Parquet retained a connection")
+  }
+  # Refusal queries, with first_column as the selected field:
+  # local-timestamp: SELECT value::TIMESTAMP AS first_column FROM (VALUES ('2026-09-17 12:00:00'), (NULL)) t(value)
+  # uint32-overflow: SELECT value::UINTEGER AS first_column FROM (VALUES (4294967295), (NULL)) t(value)
+  # uint64-inexact: SELECT value::UBIGINT AS first_column FROM (VALUES (9007199254740993), (NULL)) t(value)
+  # int64-sentinel: SELECT value::BIGINT AS first_column FROM (VALUES (-9223372036854775808), (NULL)) t(value)
+  for (fixture in list(
+    list(name = "local-timestamp", physical = "INT64", converted = "TIMESTAMP_MICROS", reason = "timestamps must be adjusted to UTC"),
+    list(name = "uint32-overflow", physical = "INT32", converted = "UINT_32", reason = "unsigned values exceed the native signed integer range"),
+    list(name = "uint64-inexact", physical = "INT64", converted = "UINT_64", reason = "INT64 values exceed the reader's exact integer range"),
+    list(name = "int64-sentinel", physical = "INT64", converted = "INT_64", reason = "cannot distinguish native integer/date missing sentinels")
+  )) {
+    file.copy(file.path("fixtures", paste0("r-file-legacy-", fixture$name, ".parquet")), legacy_path, overwrite = TRUE)
+    check_parquet_refusal(c('column 1 "first_column"', paste0("physical=", fixture$physical),
+      paste0("converted=", fixture$converted), fixture$reason,
+      if (fixture$name == "local-timestamp") "logical=TIMESTAMP(isAdjustedToUTC=FALSE, unit=MICROS)" else "logical=none"))
+  }
+  # Metadata admission must reject mismatched carriers and invalid widths before native reading.
+  file.copy("fixtures/r-file-legacy-integers.parquet", legacy_path, overwrite = TRUE)
+  local({
+    namespace <- asNamespace("nanoparquet")
+    original <- get("read_parquet_metadata", envir = namespace)
+    on.exit({
+      unlockBinding("read_parquet_metadata", namespace)
+      assign("read_parquet_metadata", original, envir = namespace)
+      lockBinding("read_parquet_metadata", namespace)
+    }, add = TRUE)
+    for (case in list(
+      list(physical = "INT64", logical = NULL, reason = "integer bit width 8 requires physical INT32"),
+      list(physical = "INT32", logical = list(type = "INT", bit_width = 64L, is_signed = TRUE), reason = "integer bit width 64 requires physical INT64"),
+      list(physical = "INT32", logical = list(type = "INT", bit_width = 7L, is_signed = TRUE), reason = "integer annotation requires bit width")
+    )) {
+      changed <- legacy_metadata
+      changed$schema$type[[2L]] <- case$physical
+      changed$schema$logical_type[2L] <- list(case$logical)
+      changed$schema$name[[2L]] <- paste0("quoted\"\n", strrep("x", 200L))
+      unlockBinding("read_parquet_metadata", namespace)
+      assign("read_parquet_metadata", function(...) changed, envir = namespace)
+      lockBinding("read_parquet_metadata", namespace)
+      check_parquet_refusal(c('column 1 "quoted\\\"\\n', paste0("physical=", case$physical), "converted=INT_8", case$reason))
+    }
+  })
   excel_path <- normalizePath("fixtures/r-file-input.xlsx")
   excel <- structure(list(c(1, 2, 3), c("  é  ", "NA", NA), c(TRUE, FALSE, NA), c(2.5, NA, -0.5),
     structure(c(1789561800.123, NA, 946684800), class = c("POSIXct", "POSIXt"), tzone = "UTC"),

@@ -7958,23 +7958,53 @@ openwrangler_r_kernel_agent <- local({
       base::stop("R Parquet input requires flat scalar columns; nested and repeated fields are unsupported", call. = FALSE)
     }
     fields <- schema[-1L, , drop = FALSE]
+    refuse_field <- function(index, reason) {
+      logical <- fields$logical_type[[index]]
+      annotation <- if (base::is.null(logical)) "none" else logical$type
+      if (base::identical(annotation, "INT")) {
+        annotation <- base::sprintf("INT(bitWidth=%s, isSigned=%s)", logical$bit_width, logical$is_signed)
+      } else if (annotation %in% c("TIMESTAMP", "TIME")) {
+        annotation <- base::sprintf("%s(isAdjustedToUTC=%s, unit=%s)", annotation, logical$is_adjusted_to_utc, logical$unit)
+      }
+      converted <- fields$converted_type[[index]]
+      name <- base::encodeString(base::substr(fields$name[[index]], 1L, 128L), quote = "\"")
+      base::stop(base::sprintf("R Parquet column %d %s (physical=%s, logical=%s, converted=%s): %s. Select a compatible Python engine, or explicitly convert this field before opening it in R.",
+        index, name, fields$type[[index]], annotation, if (base::is.na(converted)) "none" else converted, reason), call. = FALSE)
+    }
     kinds <- base::vapply(base::seq_len(base::nrow(fields)), function(index) {
       physical <- fields$type[[index]]
       logical <- fields$logical_type[[index]]
       annotation <- if (base::is.null(logical)) "" else logical$type
       converted <- fields$converted_type[[index]]
-      if (base::identical(annotation, "STRING") || (annotation == "" && base::identical(converted, "UTF8"))) {
+      # ConvertedType is a compatibility annotation only when LogicalType is absent.
+      legacy_integer <- base::is.null(logical) && !base::is.na(converted) &&
+        base::grepl("^(U?INT)_(8|16|32|64)$", converted)
+      if (base::identical(annotation, "STRING") || (base::is.null(logical) && base::identical(converted, "UTF8"))) {
         if (physical == "BYTE_ARRAY") return("text")
-      } else if (base::identical(annotation, "DATE") || (annotation == "" && base::identical(converted, "DATE"))) {
+        refuse_field(index, "STRING requires physical BYTE_ARRAY")
+      } else if (base::identical(annotation, "DATE") || (base::is.null(logical) && base::identical(converted, "DATE"))) {
         if (physical == "INT32") return("date")
+        refuse_field(index, "DATE requires physical INT32")
       } else if (base::identical(annotation, "TIMESTAMP")) {
-        if (physical == "INT64" && base::isTRUE(logical$is_adjusted_to_utc) && logical$unit %in% c("MILLIS", "MICROS")) return(base::paste0("timestamp-", logical$unit))
-      } else if (base::identical(annotation, "INT")) {
-        if (physical %in% c("INT32", "INT64")) return(base::paste0(if (base::isTRUE(logical$is_signed)) "" else "u", base::tolower(physical)))
-      } else if (annotation == "" && base::is.na(converted)) {
+        if (physical != "INT64") refuse_field(index, "TIMESTAMP requires physical INT64")
+        if (!base::isTRUE(logical$is_adjusted_to_utc)) refuse_field(index, "timestamps must be adjusted to UTC")
+        if (!logical$unit %in% c("MILLIS", "MICROS")) refuse_field(index, "timestamp unit must be MILLIS or MICROS")
+        return(base::paste0("timestamp-", logical$unit))
+      } else if (base::identical(annotation, "INT") || legacy_integer) {
+        width <- if (legacy_integer) base::as.integer(base::sub("^U?INT_", "", converted)) else logical$bit_width
+        signed <- if (legacy_integer) !base::startsWith(converted, "U") else logical$is_signed
+        if (base::length(width) != 1L || !width %in% c(8L, 16L, 32L, 64L) ||
+            !(base::identical(signed, TRUE) || base::identical(signed, FALSE))) {
+          refuse_field(index, "integer annotation requires bit width 8, 16, 32 or 64 and a Boolean sign")
+        }
+        expected <- if (width == 64L) "INT64" else "INT32"
+        if (physical != expected) refuse_field(index, base::paste0("integer bit width ", width, " requires physical ", expected))
+        return(base::paste0(if (signed) "" else "u", base::tolower(physical)))
+      } else if (base::is.null(logical) && base::is.na(converted)) {
         if (physical %in% c("BOOLEAN", "INT32", "INT64", "FLOAT", "DOUBLE")) return(base::tolower(physical))
+        refuse_field(index, "unannotated physical type is not supported by the native reader")
       }
-      base::stop(base::sprintf("R Parquet column %d has an unsupported or lossy type (%s); decimal, binary, local/nanosecond timestamps and INT96 are not admitted", index, physical), call. = FALSE)
+      refuse_field(index, "annotation is not supported by the native reader")
     }, character(1L), USE.NAMES = FALSE)
     needs_integer64 <- base::any(kinds %in% c("int64", "uint64"))
     if (needs_integer64 && !base::requireNamespace("bit64", quietly = TRUE)) base::stop("R Parquet integer64 input requires bit64. Run install.packages('bit64') in the selected R runtime, then reopen the file.", call. = FALSE)
@@ -7997,10 +8027,10 @@ openwrangler_r_kernel_agent <- local({
         if (missing > 0) {
           counts <- metadata$column_chunks$null_count[metadata$column_chunks$column == index - 1L]
           expected <- if (fields$repetition_type[[index]] == "REQUIRED") 0 else if (base::length(counts) && !base::anyNA(counts)) base::sum(counts) else NA_real_
-          if (base::is.na(expected) || missing != expected) base::stop(base::sprintf("R Parquet column %d cannot distinguish native integer/date missing sentinels from source values", index), call. = FALSE)
+          if (base::is.na(expected) || missing != expected) refuse_field(index, "cannot distinguish native integer/date missing sentinels from source values")
         }
       }
-      if (kind %in% c("uint32", "uint64") && base::any(value < 0, na.rm = TRUE)) base::stop(base::sprintf("R Parquet column %d contains unsigned values outside the native signed integer range", index), call. = FALSE)
+      if (kind %in% c("uint32", "uint64") && base::any(value < 0, na.rm = TRUE)) refuse_field(index, "unsigned values exceed the native signed integer range")
       if (kind %in% c("int64", "uint64")) {
         if (base::inherits(value, "difftime")) {
           # Check the raw duration ticks without decoding Arrow metadata ourselves.
@@ -8010,10 +8040,10 @@ openwrangler_r_kernel_agent <- local({
           matches <- base::vapply(scales, function(scale) base::all(base::round(seconds * scale) == ticks & ticks / scale == seconds, na.rm = TRUE), logical(1L))
           if (!base::identical(base::is.na(ticks), base::is.na(seconds)) ||
               base::any(!base::is.na(ticks) & (!base::is.finite(ticks) | base::abs(ticks) >= 2251799813685248 | ticks != base::trunc(ticks))) ||
-              !base::any(matches) || (base::any(ticks != 0, na.rm = TRUE) && base::sum(matches) != 1L)) base::stop(base::sprintf("R Parquet column %d contains duration ticks outside the exact native reader range", index), call. = FALSE)
+              !base::any(matches) || (base::any(ticks != 0, na.rm = TRUE) && base::sum(matches) != 1L)) refuse_field(index, "duration ticks exceed the exact native reader range")
         } else if (!base::inherits(value, "integer64")) {
-          # nanoparquet 0.5.1 reads unannotated INT64 as double even with its integer64 option.
-          if (base::any(!base::is.na(value) & (!base::is.finite(value) | base::abs(value) >= 9007199254740992 | value != base::trunc(value)))) base::stop(base::sprintf("R Parquet column %d contains INT64 values outside the reader's exact integer range", index), call. = FALSE)
+          # nanoparquet can return unannotated or unsigned INT64 as double even with its integer64 option.
+          if (base::any(!base::is.na(value) & (!base::is.finite(value) | base::abs(value) >= 9007199254740992 | value != base::trunc(value)))) refuse_field(index, "INT64 values exceed the reader's exact integer range")
           result[[index]] <- bit64::as.integer64(value)
         }
       } else if (kind == "date") {
@@ -8023,7 +8053,7 @@ openwrangler_r_kernel_agent <- local({
         seconds <- base::as.double(value)
         ticks <- seconds * scale
         # The strict tick bound leaves enough double precision to recover the original integer ticks.
-        if (base::any(!base::is.na(seconds) & (!base::is.finite(seconds) | base::abs(ticks) >= 2251799813685248 | base::round(ticks) / scale != seconds))) base::stop(base::sprintf("R Parquet column %d contains timestamps outside the exact millisecond/microsecond reader range", index), call. = FALSE)
+        if (base::any(!base::is.na(seconds) & (!base::is.finite(seconds) | base::abs(ticks) >= 2251799813685248 | base::round(ticks) / scale != seconds))) refuse_field(index, "timestamps exceed the exact millisecond/microsecond reader range")
         result[[index]] <- base::structure(seconds, class = c("POSIXct", "POSIXt"), tzone = "UTC")
       }
     }

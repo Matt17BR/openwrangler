@@ -186,8 +186,11 @@ Use the existing owners to choose a focused source check:
   encoding and parser block boundaries, strict/lossy decoding, configured quoting, exact embedded CR/LF/CRLF,
   blank and quoted-empty records, headerless first-record retention, source preservation and temporary-file cleanup.
   Parquet, JSONL and Excel remain in `lifecycle-and-structure`.
-  Small synthetic cross-writer fixtures cover reader precision and sheet identity;
-  the native dependency locks include readxl for this owner.
+  Small synthetic cross-writer fixtures cover reader precision and sheet identity. Tiny DuckDB Parquet fixtures
+  exercise legacy signed/unsigned annotations, exact large integers and nulls through live loading, generated code
+  and export/reopen. Refusals retain logical timestamp precedence, physical/bit-width compatibility, unsigned range
+  and missing-sentinel checks, field diagnostics and unchanged source bytes. Their SQL is recorded in the existing
+  kernel owner; tests do not require DuckDB. The native dependency locks include readxl for this owner.
   The [managed process owner](../src/test/rProcessTransport.cross.test.ts) checks actual file loading, editing,
   cloning, export, close and fresh reopen, including native temporary-file containment and removal on forced disposal.
   Existing R-document/factory tests check the shared process boundary and
