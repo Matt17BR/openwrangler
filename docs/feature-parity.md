@@ -646,10 +646,12 @@ bounded pages, and editing can require additional copies. It needs Rscript, not 
 also admit flat scalar data; Excel opens the selected worksheet. Parquet requires `nanoparquet`, Excel requires
 `readxl`, and large integer input requires `bit64`. The [reader contract](architecture.md#parquet-jsonl-and-excel-files)
 describes type and precision limits, spreadsheet missing-value rules and eager loading.
-Installed CSV workflows have been verified in desktop VS Code on Linux and macOS. The
+Installed CSV workflows have been verified in desktop VS Code on Linux, macOS and Windows. The
 [macOS check](https://github.com/Matt17BR/openwrangler/actions/runs/35094083555/job/104787104263) covers native cells,
 Rename Preview/Apply, generated R, protected all-row CSV export and session/process cleanup. Local R file support is
-Preview. Windows uses the same CSV journey and native Job Object controls; its hosted verification must pass before release.
+Preview. The [Windows check](https://github.com/Matt17BR/openwrangler/actions/runs/35216479111/job/105186103569)
+also covers configured CSV, the other supported file formats, process recovery and owned cleanup. Native Job Object
+controls verify Windows process containment separately.
 Parser options beyond this reader contract remain unsupported.
 
 ### First stable R notebook scope
