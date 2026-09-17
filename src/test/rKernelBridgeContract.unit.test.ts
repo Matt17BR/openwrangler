@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import * as vscode from "vscode";
 import type { OpenSessionRequest } from "../shared/protocol";
 import type { RFramePageContract } from "../extension/r/rFrameContract";
 import {
@@ -22,12 +23,21 @@ import {
 const sessionId = "11111111-1111-4111-8111-111111111111";
 
 describe("R kernel bridge contract", () => {
-  it("admits only the exact file/options bound to a managed R owner and protects that source on export", () => {
+  it.each([
+    { path: "/workspace/orders.csv" },
+    { path: "/workspace/orders café #100%.csv" },
+    { path: String.raw`D:\workspace\orders café #100%.csv` },
+    { path: String.raw`\\server\share\orders café #100%.csv` },
+    {
+      path: String.raw`D:\workspace\orders café #100%.csv`,
+      uri: "file:///D%3A/workspace/orders%20caf%C3%A9%20%23100%25.csv"
+    }
+  ])("admits the exact managed R file/options and protects its export source: $path", (fixture) => {
     const source = {
       kind: "file" as const,
       label: "orders.csv",
-      path: "/workspace/orders.csv",
-      uri: "file:///workspace/orders.csv",
+      path: fixture.path,
+      uri: fixture.uri ?? vscode.Uri.file(fixture.path).toString(),
       importOptions: { hasHeader: true }
     };
     const request = { ...openRequest(), source };
@@ -39,8 +49,9 @@ describe("R kernel bridge contract", () => {
     expect(validateOpenRequest(openRequest(), source)).toMatchObject({ code: "r_file_source_changed" });
     expect(isExportableRSource(source)).toBe(true);
     expect(rExportProtectedSourceUris(source).map((uri) => uri.toString())).toEqual([source.uri]);
+    expect(rExportProtectedSourceUris(source).map((uri) => uri.fsPath)).toEqual([fixture.path]);
     const session = sessionFromContract(sessionId, source, "editing", frameContract(), ["csv"]);
-    expect(metadataFor(session).capabilities).toMatchObject({ notebookInsert: false });
+    expect(metadataFor(session).capabilities).toMatchObject({ exportCsv: true, notebookInsert: false });
     expect(metadataFor(session).capabilities.documentInsert).toBeUndefined();
   });
 
