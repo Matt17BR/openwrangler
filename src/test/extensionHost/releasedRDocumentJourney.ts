@@ -175,8 +175,15 @@ export function createReleasedRDocumentJourney({
     await picker.dialog.getByRole("button", { name: "Cancel", exact: true }).click();
     await picker.dialog.waitFor({ state: "hidden", timeout: 10_000 });
     recordAcceptanceProgress("jupyter-r:file:recovery:reopen");
+    // Recovery can replace the renderer before the failed preview returns.
+    const recoveredApp = await releasedRSessionApp(
+      workbench,
+      testing,
+      confirmed.sessionId,
+      "the R file renderer after the failed preview"
+    );
     // Public navigation requests an idempotent page; it must not repeat the failed Custom preview.
-    const cell = picker.app.locator("td[data-grid-row][data-grid-column]").first();
+    const cell = recoveredApp.locator("td[data-grid-row][data-grid-column]").first();
     await cell.focus();
     await workbench.keyboard.press("Control+End");
     await waitFor(
@@ -199,12 +206,14 @@ export function createReleasedRDocumentJourney({
     assert.deepEqual(recovered.metadata.source, confirmed.metadata.source);
     assert.deepEqual(recovered.metadata.schema, confirmed.metadata.schema);
     assert.equal(recovered.code, confirmed.code);
+    recordAcceptanceProgress("jupyter-r:file:recovery:page");
     const app = await releasedRSessionApp(workbench, testing, confirmed.sessionId, "the recovered file renderer");
     await app.locator('td[data-grid-row="239"][data-grid-column="3"]').waitFor({ state: "visible", timeout: 10_000 });
     assert.equal(
       await app.locator('td[data-grid-row="239"][data-grid-column="3"] .gridCellText').textContent(),
       "order-240"
     );
+    recordAcceptanceProgress("jupyter-r:file:recovery:retired-root");
     await waitFor(
       () => oldRoots.every((root) => !existsSync(root)),
       10_000,
