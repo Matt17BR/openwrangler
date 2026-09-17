@@ -245,12 +245,6 @@ export function createReleasedRDocumentJourney({
       return vscode.Uri.file(input.path);
     };
     const ownedSessions = new Set<string>();
-    const ownedTabs = new Set<vscode.Tab>();
-    const retainTab = (): void => {
-      const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
-      assert.ok(tab);
-      ownedTabs.add(tab);
-    };
     const preserve = (): void => assertReleasedRDocumentFixtureUnchanged({ immutableFiles: inputs });
     async function closeSessions(): Promise<void> {
       for (const id of [...ownedSessions]) {
@@ -275,7 +269,6 @@ export function createReleasedRDocumentJourney({
           ? "restoring the exact R input through its custom editor"
           : "opening the exact R input through its public command"
       );
-      retainTab();
       await waitFor(
         () => testing.activeSession()?.metadata.source.uri === uri.toString(),
         30_000,
@@ -350,7 +343,6 @@ export function createReleasedRDocumentJourney({
         30_000,
         "the publicly selected native R CSV options"
       );
-      retainTab();
       const configured = testing.activeSession();
       assert.ok(configured);
       ownedSessions.add(configured.sessionId);
@@ -506,7 +498,6 @@ export function createReleasedRDocumentJourney({
         30_000,
         "the selected nonfirst worksheet to own a separate native R session"
       );
-      retainTab();
       const selected = testing.activeSession();
       assert.ok(selected);
       ownedSessions.add(selected.sessionId);
@@ -533,15 +524,14 @@ export function createReleasedRDocumentJourney({
         await cell.waitFor({ state: "visible", timeout: 10_000 });
         assert.equal(await cell.getAttribute("aria-label"), "Null value");
       }
+      recordAcceptanceProgress("jupyter-r:file:inputs:cleanup");
       await closeSessions();
     } finally {
       await closeSessions();
-      const remainingTabs = vscode.window.tabGroups.all
-        .flatMap((group) => group.tabs)
-        .filter((tab) => ownedTabs.has(tab));
-      if (remainingTabs.length) assert.equal(await vscode.window.tabGroups.close(remainingTabs, true), true);
       preserve();
     }
+    assert.equal(notebook.isClosed, false, "File cleanup must preserve its originating R notebook.");
+    recordAcceptanceProgress("jupyter-r:file:inputs:complete");
   }
 
   return async function exerciseReleasedRDocumentJourney(
