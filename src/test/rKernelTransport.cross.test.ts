@@ -539,7 +539,7 @@ ${closeSession.code}
       kind: "openSession",
       payload: { sessionId: typedSessionId, variableName: "typed", page: pageWindow() }
     });
-    const names = ["amount", "flag", "text", "category", "date", "when", "elapsed", "wide"];
+    const names = ["amount", "flag", "text", "category", "date", "when", "elapsed", "wide", "nonfinite"];
     const summary = requestCode({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: typedSummaryId,
@@ -556,6 +556,27 @@ ${closeSession.code}
       kind: "getDatasetStats",
       payload: { sessionId: typedSessionId, view: emptyView() }
     });
+    const largeSessionId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    const largeOpen = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      kind: "openSession",
+      payload: { sessionId: largeSessionId, variableName: "large_typed", page: pageWindow() }
+    });
+    const largeSummaryId = "abcdefab-cdef-4abc-8def-abcdefabcdef";
+    const largeSummary = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: largeSummaryId,
+      kind: "getSummary",
+      payload: {
+        sessionId: largeSessionId,
+        columns: ["integer", "amount", "wide", "elapsed", "nonfinite"].map((name, index) => ({
+          id: `r:c:${index}`,
+          name
+        })),
+        view: emptyView()
+      }
+    });
     const result = runR(`
 typed <- data.frame(
   amount = c(1, NA_real_, NaN, Inf),
@@ -566,19 +587,32 @@ typed <- data.frame(
   when = as.POSIXct(c("2026-01-01 00:00:00", "2026-01-02 00:00:00", NA, "2026-01-04 00:00:00"), tz = "UTC"),
   elapsed = as.difftime(c(1, 2, NA, 4), units = "hours"),
   wide = bit64::as.integer64(c("9223372036854775806", "0", NA, "-9223372036854775807")),
+  nonfinite = c(-Inf, NA_real_, NaN, Inf),
   check.names = FALSE
 )
 ${bootstrap}
 ${open.code}
 ${summary.code}
 ${stats.code}
+large_typed <- data.frame(
+  integer = c(rep(0:899, length.out = 120000L), NA_integer_, NA_integer_),
+  amount = c(rep((0:899) / 10, length.out = 120000L), NA_real_, NaN),
+  wide = c(rep(bit64::as.integer64(c("9007199254740992", "9007199254740993", "9007199254740994")), length.out = 120000L), bit64::as.integer64(c(NA, NA))),
+  elapsed = rep(as.difftime(c(-0, 0, 1), units = "hours"), length.out = 120002L),
+  nonfinite = c(rep(c(-Inf, Inf), length.out = 120000L), NA_real_, NaN)
+)
+large_typed$elapsed[120001:120002] <- as.difftime(c(NA_real_, NA_real_), units = "hours")
+large_before <- serialize(large_typed, NULL, version = 3L)
+${largeOpen.code}
+${largeSummary.code}
+stopifnot(identical(serialize(large_typed, NULL, version = 3L), large_before))
 `);
 
     const profiled = decodeRKernelResponseJson(marked(result.stdout, summary.marker), typedSummaryId);
     const datasetStats = decodeRKernelResponseJson(marked(result.stdout, stats.marker), typedStatsId);
     expect(profiled).toMatchObject({ kind: "summary", sessionId: typedSessionId });
     if (profiled.kind !== "summary") throw new Error("Expected typed R summaries.");
-    expect(profiled.summaries).toHaveLength(8);
+    expect(profiled.summaries).toHaveLength(9);
     expect(profiled.summaries[0]).toMatchObject({ nullCount: 1, nanCount: 1, numeric: { min: 1 } });
     expect(profiled.summaries[1]).toMatchObject({
       visualization: { kind: "boolean", trueCount: 1, falseCount: 2 }
@@ -602,10 +636,45 @@ ${stats.code}
         exactMax: { raw: "9223372036854775806" }
       }
     });
+    expect(profiled.summaries[8]).toMatchObject({ distinctCount: 2, nullCount: 1, nanCount: 1 });
+    expect(profiled.summaries[8]?.numeric).toEqual({});
+    expect(profiled.summaries[8]?.visualization).toBeUndefined();
     expect(datasetStats).toMatchObject({
       kind: "datasetStats",
-      stats: { missingCells: 9, missingRows: 2, duplicateRows: 0 }
+      stats: { missingCells: 11, missingRows: 2, duplicateRows: 0 }
     });
+    const largeOpened = decodeRKernelResponseJson(
+      marked(result.stdout, largeOpen.marker),
+      "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      { expectExportFormats: true }
+    );
+    if (largeOpened.kind === "error") throw new Error(largeOpened.message);
+    expect(largeOpened.kind).toBe("page");
+    const largeProfiled = decodeRKernelResponseJson(marked(result.stdout, largeSummary.marker), largeSummaryId);
+    if (largeProfiled.kind === "error") throw new Error(largeProfiled.message);
+    expect(largeProfiled).toMatchObject({ kind: "summary", sessionId: largeSessionId });
+    if (largeProfiled.kind !== "summary") throw new Error("Expected large typed R summaries.");
+    expect(largeProfiled.summaries.map((entry) => entry.distinctCount)).toEqual([900, 900, 3, 3, 2]);
+    for (const [index, entry] of largeProfiled.summaries.slice(0, 4).entries()) {
+      expect(entry).toMatchObject({
+        totalCount: 120_002,
+        nullCount: index === 1 ? 1 : 2,
+        nanCount: index === 1 ? 1 : 0
+      });
+      expect(entry.topValues).toEqual([]);
+      expect(entry.numeric?.median).toBeUndefined();
+      expect(entry.visualization?.kind).toBe("numeric");
+      if (entry.visualization?.kind !== "numeric") throw new Error("Expected complete numeric histogram.");
+      expect(entry.visualization.sampled).toBeUndefined();
+      expect(entry.visualization.bins.reduce((count, bin) => count + bin.count, 0)).toBe(120_000);
+    }
+    expect(largeProfiled.summaries[2]?.numeric).toMatchObject({
+      exactMin: { raw: "9007199254740992" },
+      exactMax: { raw: "9007199254740994" }
+    });
+    expect(largeProfiled.summaries[4]).toMatchObject({ totalCount: 120_002, nullCount: 1, nanCount: 1, topValues: [] });
+    expect(largeProfiled.summaries[4]?.numeric).toEqual({});
+    expect(largeProfiled.summaries[4]?.visualization).toBeUndefined();
   });
 
   it("runs the native R rename draft, apply, edit, undo, and generated code lifecycle", () => {

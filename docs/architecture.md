@@ -1635,8 +1635,12 @@ factor distributions retain exact counts and distinct values within 10,000 keys 
 Above either bound, distributions sample at most 100,000 non-missing values. Large frames with at most 100,000
 non-missing values keep their exact distribution regardless of those aggregation bounds. Above that population limit,
 numeric profiles retain exact distinct counts while at most 10,000 native identities are observed. Tracking stops when
-that bound is exceeded; integer64 keys retain their exact decimal identity. Numeric medians remain omitted above
-100,000 non-missing values. Omitted statistics show `n/a`. Sampled charts
+that bound is exceeded; integer64 keys retain their exact decimal identity. These large numeric summaries omit top
+values even when the distinct count is exact. The host accepts an exact distinct count with no top values only for
+integer, float and duration columns above the non-missing population limit, without a sampled distribution and with a
+distinct count within the bound. Numeric medians remain omitted above 100,000 non-missing values. Omitted statistics
+show `n/a`. Numeric summaries with no finite statistics retain an empty numeric object; unavailable values and the
+histogram remain omitted. Sampled charts
 label the distribution approximate and show the sample count used alongside the full non-missing population.
 Dataset missing counts remain exact; bounded duplicate-row estimates name the sampled population. Sampling uses a
 private fixed seed and restores the user's random state. Unsearched value discovery samples at most 100,000 rows;

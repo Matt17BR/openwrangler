@@ -2371,7 +2371,7 @@ openwrangler_r_frame_contract <- local({
     finite_keys <- value_keys[is.finite(values)]
     visualization <- numeric_histogram(values, length(unique(finite_keys)))
     list(
-      numeric = if (length(numeric) == 0L) NULL else numeric,
+      numeric = if (length(numeric) == 0L) structure(list(), names = character()) else numeric,
       visualization = visualization
     )
   }
@@ -2887,7 +2887,7 @@ openwrangler_r_frame_contract <- local({
         numeric$exactMin <- exact_profile_integer_text_cell(exact_minimum, budget, paste0(label, " minimum"))
         numeric$exactMax <- exact_profile_integer_text_cell(exact_maximum, budget, paste0(label, " maximum"))
       }
-      if (length(numeric) != 0L) summary$numeric <- numeric
+      summary$numeric <- if (length(numeric) == 0L) structure(list(), names = character()) else numeric
       finite_keys <- counts$keys[is.finite(sample_values)]
       visualization <- if (!is.null(histogram_edges)) numeric_histogram_from_counts(histogram_edges, histogram_counts) else
         numeric_histogram(sample_values, length(unique(finite_keys)))

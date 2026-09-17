@@ -318,7 +318,10 @@ kernel mutation checks use fewer, longer levels to exercise the full response by
 The existing frame profiling owner checks complete numeric bin membership and bounded categorical counts, including
 filtered populations, both sampled fallback limits and sparse columns that remain exact. It also checks bounded exact
 numeric distinct counts, integer64 identity, duration signed zero and abandonment at the cardinality limit. The R
-decoder owner verifies exact large histograms while allowing omitted statistics above their bounds.
+decoder owner verifies exact large histograms and bounded distinct counts with omitted top values, retaining the
+population, type, sampling and count limits. The existing kernel transport profile case decodes actual large R
+integer, double, integer64 and duration summaries, including missing values and signed zero, through TypeScript.
+The same owner checks empty numeric objects for small and large columns whose present values are all infinite.
 The existing native Custom Code owners execute real dplyr, data.table and collapse calls from file and package-backed
 frames, including admitted class changes, retained metadata, history, failure recovery and executable generated code.
 The bridge owner checks output-flavor publication and inspection; the existing process Custom Code lifecycle changes
