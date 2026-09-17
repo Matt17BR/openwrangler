@@ -124,6 +124,8 @@ local({
   }
   cases <- c(cases, list(
     list(text = "id,label\n1,€\n", encoding = "windows-1252", expected = data.frame(id = 1L, label = "€")),
+    list(bytes = c(charToRaw("id,label\n1,"), as.raw(129L), charToRaw("\n")), encoding = "iso-8859-1", expected = data.frame(id = 1L, label = intToUtf8(129L))),
+    list(bytes = c(charToRaw("id,label\n1,"), as.raw(c(194L, 129L)), charToRaw("\n")), expected = data.frame(id = 1L, label = intToUtf8(129L))),
     list(bytes = c(charToRaw("id,label\n1,"), as.raw(c(255L, 195L, 40L)), charToRaw("\n")), encoding = "utf8-lossy", expected = data.frame(id = 1L, label = "\ufffd\ufffd(")),
     list(text = "id;label\r1;'two\r\nlines'\r", delimiter = ";", quote = "'", expected = data.frame(id = 1L, label = "two\r\nlines"))
   ))
@@ -160,7 +162,7 @@ local({
     expected = structure(rep(list(logical()), maximum_columns), names = wide_names, row.names = integer(), class = "data.frame"))))
   generated_case_index <- length(cases) + 1L
   cases <- c(cases, list(
-    list(text = "  id  ,\"  quoted  \",label\r\n1,x,\"one\rtwo\r\nthree\nfour\"\r\n",
+    list(text = "  id  ,\"  quoted  \",label\r\n1,x,\"one\rtwo\r\nthree\nfour\"\r\n", encoding = "windows-1252",
       expected = structure(list(1L, "x", "one\rtwo\r\nthree\nfour"), names = c("  id  ", "  quoted  ", "label"), row.names = 1L, class = "data.frame")),
     list(text = "\"first\rname\",\"second\r\nname\"\n1,2", expected = structure(list(1L, 2L), names = c("first\rname", "second\r\nname"), row.names = 1L, class = "data.frame")),
     list(text = "\"one\rtwo\",\"three\r\nfour\"\r", header = FALSE, expected = data.frame(V1 = "one\rtwo", V2 = "three\r\nfour")),
@@ -225,12 +227,17 @@ local({
     writeBin(c(bom, valid), path)
     assert_identical(load_csv(path, encoding = encoding, maximum_columns = maximum_columns), data.frame(id = 1L, label = "ok"), "UTF16 BOM changed decoded values")
   }
-  for (case in list(
+  conversion_refusals <- c(list(
     list(encoding = "windows-1252", bytes = as.raw(c(194L, 129L))),
     list(encoding = "utf8-lossy", bytes = as.raw(0L))
-  )) {
-    writeBin(c(charToRaw("id,label\n1,"), case$bytes, charToRaw("\n")), path)
-    stopifnot(inherits(tryCatch(load_csv(path, encoding = case$encoding, maximum_columns = maximum_columns), error = identity), "error"))
+  ), lapply(c(129L, 141L, 143L, 144L, 157L), function(byte) list(encoding = "windows-1252", bytes = as.raw(byte))))
+  for (case in conversion_refusals) {
+    bytes <- c(charToRaw("id,label\n1,"), case$bytes, charToRaw("\n"))
+    writeBin(bytes, path)
+    error <- tryCatch(load_csv(path, encoding = case$encoding, maximum_columns = maximum_columns), error = identity)
+    if (!inherits(error, "error")) stop(sprintf("CSV %s unexpectedly accepted bytes %s", case$encoding, paste(format(case$bytes), collapse = " ")), call. = FALSE)
+    assert_identical(conditionMessage(error), "CSV input has invalid or incomplete text in the selected encoding", "CSV conversion refusal exposed source text")
+    assert_identical(readBin(path, "raw", length(bytes) + 1L), bytes, "Refused conversion changed source bytes")
   }
   for (encoding in c("utf8-lossy", "windows-1252", "utf-16le", "utf-16be")) for (after_boundary in 0:1) {
     width <- if (startsWith(encoding, "utf-16")) 2L else 1L
@@ -249,10 +256,10 @@ local({
   case <- cases[[generated_case_index]]
   path <- file.path(root, sprintf("accepted-%d.csv", generated_case_index))
   environment <- new.env(parent = baseenv())
-  environment$.ow_csv_source <- load_csv(path, maximum_columns = maximum_columns)
+  environment$.ow_csv_source <- load_csv(path, encoding = case$encoding, maximum_columns = maximum_columns)
   file_agent <- openwrangler_r_kernel_agent$new_agent(
     openwrangler_r_frame_contract, environment,
-    file_source = list(path = path, format = "csv", header = TRUE, delimiter = ",", encoding = "utf-8", quoteChar = "\"")
+    file_source = list(path = path, format = "csv", header = TRUE, delimiter = ",", encoding = case$encoding, quoteChar = "\"")
   )
   on.exit(file_agent$dispose(), add = TRUE)
   opened <- dispatch_with(file_agent, "openSession", list(sessionId = session_id, variableName = ".ow_csv_source", page = page_window()))
@@ -275,14 +282,21 @@ local({
   assert_identical(ls(generated, all.names = TRUE), "open_wrangler_result", "Generated CSV leaked loader bindings")
   assert_identical(environment$.ow_csv_source, case$expected, "CSV cleaning mutated loaded source")
   assert_identical(readBin(path, "raw", 1024L), charToRaw(case$text), "Generated CSV changed source bytes")
-  bytes <- charToRaw('a,b\n1,"unfinished')
-  writeBin(bytes, path)
-  failed <- new.env(parent = baseenv())
-  error <- tryCatch(eval(parse(text = preview$code), envir = failed), error = identity)
-  stopifnot(inherits(error, "error"))
-  assert_identical(ls(failed, all.names = TRUE), character(), "Failed generated CSV load published bindings")
-  assert_identical(readBin(path, "raw", length(bytes) + 1L), bytes, "Failed generated CSV changed source bytes")
-  assert_identical(getAllConnections(), connections, "Failed generated CSV retained a connection")
+  for (refusal in list(
+    list(bytes = charToRaw('a,b\n1,"unfinished'), message = "CSV input has invalid text, quoting or field counts, or exceeds native R limits. Check the selected encoding, delimiter and quote character."),
+    list(bytes = c(charToRaw('  id  ,"  quoted  ",label\r\n1,x,"'), as.raw(129L), charToRaw('"\r\n')), message = "CSV input has invalid or incomplete text in the selected encoding")
+  )) {
+    bytes <- refusal$bytes
+    writeBin(bytes, path)
+    failed <- new.env(parent = baseenv())
+    error <- tryCatch(eval(parse(text = preview$code), envir = failed), error = identity)
+    stopifnot(inherits(error, "error"))
+    assert_identical(conditionMessage(error), refusal$message, "Generated CSV did not reject at its reader boundary")
+    assert_identical(ls(failed, all.names = TRUE), character(), "Failed generated CSV load published bindings")
+    assert_identical(readBin(path, "raw", length(bytes) + 1L), bytes, "Failed generated CSV changed source bytes")
+    assert_identical(getAllConnections(), connections, "Failed generated CSV retained a connection")
+    assert_identical(list.files(tempdir(), pattern = "^openwrangler-csv-", full.names = TRUE), normalized_before, "Failed generated CSV retained a private temporary file")
+  }
 })
 agent$dispose()
 }

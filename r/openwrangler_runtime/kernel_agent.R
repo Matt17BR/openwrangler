@@ -7772,6 +7772,10 @@ openwrangler_r_kernel_agent <- local({
             }
           }
           if (end > 0L) {
+            # Windows iconv maps undefined CP1252 bytes to controls instead of refusing them.
+            if (encoding == "windows-1252" && base::any(base::as.integer(bytes) %in% base::c(129L, 141L, 143L, 144L, 157L))) {
+              base::stop("CSV input has invalid or incomplete text in the selected encoding", call. = FALSE)
+            }
             # Character output reports failed conversion as NA; raw output can retain the original bytes instead.
             text <- base::tryCatch(base::iconv(list(bytes[base::seq_len(end)]), from = if (encoding == "utf8-lossy") "UTF-8" else encoding,
               to = "UTF-8", sub = if (encoding == "utf8-lossy") "\ufffd" else NA_character_)[[1L]], error = function(error) NA_character_)

@@ -1496,6 +1496,8 @@ duplicate and empty names remain intact. Header-only inputs produce zero-row log
 files, malformed row widths, unclosed quotes and NUL are refused. Invalid or incomplete selected-encoding text is
 refused unless UTF-8-lossy replacement is explicitly selected. Parser warnings are errors; invalid-input diagnostics
 exclude source text.
+Windows-1252 decoding refuses its five undefined bytes consistently across platforms; ISO-8859-1 retains the
+corresponding control characters.
 
 Default strict UTF-8 reads the source directly without an extra conversion pass. Other encodings and explicit lossy
 mode decode in 64 KiB chunks, retaining only an incomplete encoding suffix, into an owned temporary UTF-8 file.
