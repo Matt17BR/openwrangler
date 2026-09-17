@@ -275,17 +275,28 @@ describe.skipIf(!enabled)("plain R process transport", () => {
           options: rCsvExportOptions
         })
       ).rejects.toThrow("never overwrites");
-      const chunks: Uint8Array[] = [];
-      await transport.exportData(sessionId, applied.metadata.revision, rCsvExportOptions, async (chunk) => {
-        chunks.push(Uint8Array.from(chunk));
+      const expectedCsv =
+        '"id","label","copied"\n"9007199254740992","one","one"\n"9007199254740993","two\nlines","two\nlines"\n"3",,\n';
+      const destinationPath = resolve(temporaryParent, "orders cleaned.csv");
+      const exported = await bridge.request({
+        kind: "exportData",
+        sessionId,
+        revision: applied.metadata.revision,
+        path: destinationPath,
+        options: rCsvExportOptions
       });
-      expect(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8")).toBe(
-        '"id","label","copied"\n"9007199254740992","one","one"\n"9007199254740993","two\nlines","two\nlines"\n"3",,\n'
-      );
+      expect(exported).toEqual({
+        kind: "dataExported",
+        revision: applied.metadata.revision,
+        path: destinationPath,
+        format: "csv",
+        shape: { rows: 3, columns: 3 }
+      });
+      expect(await readFile(destinationPath, "utf8")).toBe(expectedCsv);
       expect(await readFile(filePath, "utf8")).toBe(bytes);
       await bridge.request({ kind: "closeSession", sessionId, revision: applied.metadata.revision });
       await bridge.dispose();
-      expect(await readdir(temporaryParent)).toEqual(["orders café.tsv"]);
+      expect((await readdir(temporaryParent)).sort()).toEqual(["orders café.tsv", "orders cleaned.csv"]);
       const reopened = new RProcessSessionTransport(options);
       try {
         const result = await reopened.open(".ow_csv_source", pageWindow());
@@ -299,7 +310,7 @@ describe.skipIf(!enabled)("plain R process transport", () => {
       } finally {
         await reopened.dispose();
       }
-      expect(await readdir(temporaryParent)).toEqual(["orders café.tsv"]);
+      expect((await readdir(temporaryParent)).sort()).toEqual(["orders café.tsv", "orders cleaned.csv"]);
       expect(await readFile(filePath, "utf8")).toBe(bytes);
     } finally {
       await bridge.dispose();
