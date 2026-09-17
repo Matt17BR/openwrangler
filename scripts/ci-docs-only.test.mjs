@@ -22,6 +22,7 @@ const arrowFormulaHelper = "python/openwrangler_runtime/engines/_pandas_arrow_fo
 const arrowFormulaTests = ["python/tests/test_operation_edges.py", "python/tests/test_session_transactions.py"];
 const pandasFilterTests = ["python/tests/test_pandas_engine.py", "python/tests/test_filter_logic.py"];
 const screenshot = "docs/images/acceptance/operation-dialog-dark-1280.png";
+const mediaCompositor = "scripts/compose-readme-media.mjs";
 const importPromptFile = "src/extension/files/importOptions.ts";
 const hostSourceFiles = [
   "src/extension/nativeViews.ts",
@@ -283,7 +284,7 @@ test("mixed R test edits keep editor execution when another input changes", asyn
   }
 });
 
-test("proves existing script edits while retaining Source and package execution", async (context) => {
+test("proves existing script and media edits while retaining Source and package execution", async (context) => {
   for (const files of [
     ["scripts/ci-docs-only.test.mjs"],
     ["scripts/ci-docs-only.test.mjs", "README.md", "docs/ci.md"],
@@ -320,6 +321,16 @@ test("proves existing script edits while retaining Source and package execution"
     ],
     ["scripts/capture-screenshots.mjs"],
     ["scripts/capture-screenshots-readiness.mjs"],
+    [mediaCompositor],
+    [screenshot],
+    [
+      mediaCompositor,
+      screenshot,
+      "docs/images/editor-acceptance/vscode-explore-dark.png",
+      "docs/images/readme/gallery/by-example-setup.png",
+      "README.md",
+      "docs/media-gallery.md"
+    ],
     [
       "scripts/capture-screenshots.mjs",
       "scripts/capture-screenshots-readiness.mjs",
@@ -350,6 +361,8 @@ test("proves existing Python source and Markdown edits only for native R", async
     ["python/openwrangler_runtime/session.py"],
     ["python/tests/conftest.py"],
     ["python/tests/test_runtime.py", "scripts/ci-docs-only.test.mjs"],
+    [screenshot, "python/openwrangler_runtime/engines/duckdb_engine.py"],
+    [mediaCompositor, screenshot, "python/openwrangler_runtime/session.py"],
     [
       "python/openwrangler_runtime/engines/duckdb_engine.py",
       "python/tests/test_duckdb_engine.py",
@@ -502,7 +515,9 @@ test("proves added regular Python source only for native R", async (context) => 
 
 test("proves Python omissions with selective native R source checks", async (context) => {
   const cases = [
-    { added: [], modified: [screenshot], checkCli: true },
+    { added: [], modified: [screenshot, "r/openwrangler_runtime/frame_contract.R"], checkCli: true },
+    { added: [], modified: [mediaCompositor, screenshot, "r/tests/kernel_agent.R"] },
+    { added: [], modified: [mediaCompositor, screenshot, "src/test/extensionHost/index.ts"] },
     {
       added: [],
       modified: [
@@ -528,11 +543,6 @@ test("proves Python omissions with selective native R source checks", async (con
         "docs/testing.md",
         "CHANGELOG.md"
       ]
-    },
-    {
-      added: [],
-      modified: [screenshot, "python/openwrangler_runtime/engines/duckdb_engine.py"],
-      pythonOmittable: false
     },
     { added: [], modified: ["r/openwrangler_runtime/frame_contract.R"] },
     { added: ["r/openwrangler_runtime/helper.R"], modified: [] },
@@ -675,6 +685,7 @@ test("keeps both runtimes required for R and CHANGELOG changes with Python sourc
 test("requires full owners for deleted or renamed source, including alongside additions", async (context) => {
   for (const file of [
     screenshot,
+    mediaCompositor,
     hostSourceFiles[0],
     importPromptFile,
     "src/webviews/progressiveProfilingLifecycle.ts",
@@ -709,6 +720,7 @@ test("requires full owners for deleted or renamed source, including alongside ad
 test("requires full owners for source mode changes and existing executable or symlink entries", async (context) => {
   for (const file of [
     screenshot,
+    mediaCompositor,
     hostSourceFiles[0],
     importPromptFile,
     "src/webviews/styles/grid.css",
@@ -765,6 +777,7 @@ test("requires full owners for added executable or symlink runtime source", asyn
 test("requires full owners for additions outside the documentary and runtime source scopes", async (context) => {
   for (const file of [
     screenshot,
+    mediaCompositor,
     ...hostSourceFiles,
     "src/webviews/progressiveProfilingLifecycle.ts",
     "src/test/progressiveProfilingLifecycle.unit.test.tsx",
@@ -910,6 +923,8 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
     "scripts/release-metadata-extra.mjs",
     "scripts/capture-screenshots-extra.mjs",
     "scripts/capture-screenshots-readiness.mjs.bak",
+    "scripts/compose-readme-media.mjs.bak",
+    "scripts/public-media-contract.mjs",
     "scripts/webview-browser.mjs",
     "package-lock.json",
     "python/pyproject.toml",
