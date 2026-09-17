@@ -169,9 +169,9 @@ R notebook support is stable since 2.5.0 for ordinary base `data.frame`, tibble 
 notebooks in desktop VS Code on Linux, macOS and Windows. Terminal and managed-document support remain Preview;
 Cursor remains experimental. [Support by entry path](feature-parity.md#native-r-support) defines the qualified scope.
 
-<a href="images/editor-acceptance/vscode-notebook-r-operations-dark.png"><img alt="Open Wrangler Operations listing base data.frame, tibble, data.table, and collapse dataframes from IRkernel" src="images/editor-acceptance/vscode-notebook-r-operations-detail-dark.png" width="960"></a>
+<a href="images/editor-acceptance/vscode-notebook-r-operations-dark.png"><img alt="Open Wrangler Data sources listing base data.frame, tibble, data.table, and collapse dataframes from IRkernel" src="images/editor-acceptance/vscode-notebook-r-operations-detail-dark.png" width="960"></a>
 
-Operations lists base `data.frame`, tibble, and `data.table` objects from the active IRkernel, including supported
+Data sources lists base `data.frame`, tibble, and `data.table` objects from the active IRkernel, including supported
 collapse frames. Open Wrangler opens them without converting them to Python.
 
 <a href="images/readme/gallery/r-quarto-variable-picker.png"><img alt="A rendered Quarto table beside the source document and Open Wrangler dataframe picker" src="images/readme/gallery/r-quarto-variable-picker-detail.png" width="960"></a>
