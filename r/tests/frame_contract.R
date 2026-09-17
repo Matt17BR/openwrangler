@@ -6389,6 +6389,35 @@ local({
   assert_identical(serialize(frame, NULL, version = 3L), before, "text profiling changed source encodings or factor levels")
   assert_identical(.Random.seed, rng, "text validation changed caller RNG")
 
+  for (size in c(24L, 100000L)) {
+    values <- rep(c("ASCII", utf8, latin1, unknown, "", NA_character_), length.out = size)
+    frame <- data.frame(text = values, factor = factor(values))
+    before <- serialize(frame, NULL, version = 3L)
+    capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
+    maximum_conversion_width <- 0L
+    summaries <- openwrangler_r_frame_contract$materialize_summaries(capture, lapply(1:2, function(i) profile_reference(capture, i)))
+    assert_true(maximum_conversion_width > 1L, "small text profiles still convert every present value scalarly")
+    assert_true(maximum_conversion_width <= 65536L, "small text profile converted beyond the existing chunk bound")
+    position <- (seq_len(size) - 1L) %% 6L + 1L
+    counts <- as.integer(c(sum(position %in% 2:4), sum(position == 1L), sum(position == 5L)))
+    expected_lengths <- c(5L, 4L, 4L, 4L, 0L, NA_integer_)[position]
+    for (summary in summaries) {
+      assert_identical(summary$totalCount, size, "small text profile changed its population")
+      assert_identical(summary$nullCount, as.integer(sum(position == 6L)), "small text profile changed missing count")
+      assert_identical(summary$distinctCount, 3L, "small text profile split equivalent encodings")
+      assert_identical(vapply(summary$topValues, `[[`, integer(1L), "count"), counts,
+        "small text profile changed category counts")
+      assert_identical(vapply(summary$topValues, `[[`, character(1L), "value"), c(utf8, "ASCII", ""),
+        "small text profile changed normalized category values")
+      assert_identical(summary$text, list(emptyCount = counts[[3L]], minLength = 0L, maxLength = 5L,
+        meanLength = base::mean.default(expected_lengths, na.rm = TRUE)), "small text profile changed text statistics")
+      assert_identical(summary$visualization, list(kind = "categorical", categories = summary$topValues, otherCount = 0L),
+        "small text profile changed its complete distribution")
+    }
+    assert_identical(serialize(frame, NULL, version = 3L), before, "small text profiling changed source encodings or factor levels")
+    assert_identical(.Random.seed, rng, "small text profiling changed caller RNG")
+  }
+
   malformed <- encode(255, "UTF-8")
   bytes <- encode(255, "bytes")
   oversized <- strrep("x", 8193L)
@@ -6400,8 +6429,8 @@ local({
     list(values = c(paste0(utf8_limit, "x"), bytes), code = "text-too-large", message = "exceeds 8192 UTF-8 bytes"),
     list(values = c(encode(rep(233, 4097L), "latin1"), malformed), code = "text-too-large", message = "exceeds 8192 UTF-8 bytes")
   )
-  for (case in invalid_cases) {
-    frame <- data.frame(text = c(NA_character_, case$values, rep("ok", 100000L)))
+  for (tail_rows in c(0L, 99997L, 100000L)) for (case in invalid_cases) {
+    frame <- data.frame(text = c(NA_character_, case$values, rep("ok", tail_rows)))
     before <- serialize(frame, NULL, version = 3L)
     capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
     maximum_conversion_width <- 0L
@@ -6412,14 +6441,16 @@ local({
     assert_true(maximum_conversion_width <= 1L, "exceptional text chunk converted later values before scalar refusal")
     assert_identical(serialize(frame, NULL, version = 3L), before, "failed text profile mutated its source")
   }
-  frame <- data.frame(text = rep("ok", 100005L), keep = c(FALSE, rep(TRUE, 100004L)))
-  frame$text[[65538L]] <- NA_character_
-  frame$text[[65539L]] <- malformed
-  capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
-  query <- list(filters = list(list(column = profile_reference(capture, 2L), type = "boolean",
-    predicates = list(list(kind = "predicate", operator = "equals", value = TRUE)))), sorts = list())
-  assert_error(openwrangler_r_frame_contract$materialize_summaries(capture, list(profile_reference(capture, 1L)), query),
-    "profile value 65538 is not valid UTF-8")
+  for (kept_rows in c(100004L, 99999L)) {
+    frame <- data.frame(text = rep("ok", 100005L), keep = c(FALSE, rep(TRUE, kept_rows), rep(FALSE, 100004L - kept_rows)))
+    frame$text[[65538L]] <- NA_character_
+    frame$text[[65539L]] <- malformed
+    capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
+    query <- list(filters = list(list(column = profile_reference(capture, 2L), type = "boolean",
+      predicates = list(list(kind = "predicate", operator = "equals", value = TRUE)))), sorts = list())
+    assert_error(openwrangler_r_frame_contract$materialize_summaries(capture, list(profile_reference(capture, 1L)), query),
+      "profile value 65538 is not valid UTF-8")
+  }
 })
 
 # Profile reductions bypass registered caller mean methods.

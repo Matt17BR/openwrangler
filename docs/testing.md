@@ -319,8 +319,10 @@ primitive values, public mutations and correlated transport. Frame capture check
 kernel mutation checks use fewer, longer levels to exercise the full response byte limit.
 The existing frame profiling owner checks complete numeric bin membership and bounded categorical counts, including
 filtered populations, both sampled fallback limits and sparse columns that remain exact. It also checks bounded exact
-numeric distinct counts, integer64 identity, duration signed zero and abandonment at the cardinality limit. The R
-decoder owner verifies exact large histograms and bounded distinct counts with omitted top values, retaining the
+numeric distinct counts, integer64 identity, duration signed zero and abandonment at the cardinality limit. Text
+checks cover small and threshold-sized profiles as well as large chunks, including equivalent encodings, exact
+statistics, first-error order, source/RNG preservation and bounded conversion width. The R decoder owner verifies
+exact large histograms and bounded distinct counts with omitted top values, retaining the
 population, type, sampling and count limits. The existing kernel transport profile case decodes actual large R
 integer, double and duration summaries, including missing values and signed zero, through TypeScript. Its small
 integer64 fixture checks exact typed bounds; large integer64 arithmetic and distinct counts stay with frame profiling.

@@ -1930,6 +1930,49 @@ openwrangler_r_frame_contract <- local({
     list(null = is.na(column), nan = rep(FALSE, storage_length(column)))
   }
 
+  profile_text_values <- function(values, indices, label = "profile value") {
+    single_chunk <- length(values) <= maximum_profile_chunk_rows
+    normalized <- if (single_chunk) character() else character(length(values))
+    start <- 1
+    while (start <= length(values)) {
+      count <- min(maximum_profile_chunk_rows, length(values) - start + 1L)
+      if (single_chunk) {
+        text_values <- values
+        positions <- indices
+      } else {
+        selected <- seq.int(start, length.out = count)
+        text_values <- values[selected]
+        positions <- indices[selected]
+      }
+      encodings <- Encoding(text_values)
+      latin1 <- encodings == "latin1"
+      raw_bytes <- nchar(text_values, type = "bytes")
+      # Latin-1 may double in UTF-8; refuse scalarly before converting later potentially oversized values.
+      if (any(encodings == "bytes" | raw_bytes > maximum_text_bytes |
+              (latin1 & raw_bytes > maximum_text_bytes / 2L))) {
+        converted <- vapply(
+          seq_along(text_values),
+          function(index) bounded_utf8(text_values[[index]], sprintf("%s %d", label, positions[[index]])),
+          character(1L),
+          USE.NAMES = FALSE
+        )
+      } else {
+        converted <- character(length(text_values))
+        converted[latin1] <- iconv(text_values[latin1], from = "latin1", to = "UTF-8", sub = NA_character_)
+        converted[!latin1] <- iconv(text_values[!latin1], from = "UTF-8", to = "UTF-8", sub = NA_character_)
+        invalid <- which(is.na(converted) | nchar(converted, type = "bytes") > maximum_text_bytes)
+        if (length(invalid) != 0L) {
+          index <- invalid[[1L]]
+          bounded_utf8(text_values[[index]], sprintf("%s %d", label, positions[[index]]))
+        }
+      }
+      if (single_chunk) return(converted)
+      normalized[selected] <- converted
+      start <- start + count
+    }
+    normalized
+  }
+
   profile_value_keys <- function(column, semantics, indices) {
     if (length(indices) == 0L) return(character())
     kind <- semantics$kind
@@ -1943,14 +1986,7 @@ openwrangler_r_frame_contract <- local({
     if (kind == "double") {
       return(vapply(values, canonical_double_key, character(1L)))
     }
-    if (kind == "character") {
-      return(vapply(
-        seq_along(values),
-        function(index) bounded_utf8(values[[index]], sprintf("profile value %d", indices[[index]])),
-        character(1L),
-        USE.NAMES = FALSE
-      ))
-    }
+    if (kind == "character") return(profile_text_values(values, indices))
     if (kind == "factor") return(as.character(values))
     numeric_values <- if (kind == "difftime") {
       as.double(values, units = semantics$units)
@@ -2376,15 +2412,8 @@ openwrangler_r_frame_contract <- local({
     )
   }
 
-  text_profile <- function(column, semantics, present_indices) {
-    if (length(present_indices) == 0L) return(list(emptyCount = 0L))
-    values <- if (semantics$kind == "factor") as.character(column[present_indices]) else column[present_indices]
-    values <- vapply(
-      seq_along(values),
-      function(index) bounded_utf8(values[[index]], sprintf("profile text %d", present_indices[[index]])),
-      character(1L),
-      USE.NAMES = FALSE
-    )
+  text_profile <- function(values) {
+    if (length(values) == 0L) return(list(emptyCount = 0L))
     lengths <- nchar(values, type = "chars", allowNA = FALSE, keepNA = FALSE)
     list(
       emptyCount = as.integer(sum(lengths == 0L)),
@@ -2447,7 +2476,8 @@ openwrangler_r_frame_contract <- local({
     } else if (semantics$kind %in% c("date", "datetime")) {
       summary$visualization <- datetime_profile(column, semantics, present_indices, budget, label)
     } else if (semantics$kind %in% c("character", "factor")) {
-      summary$text <- text_profile(column, semantics, present_indices)
+      text_values <- if (semantics$kind == "factor") profile_text_values(counts$keys, present_indices, "profile text") else counts$keys
+      summary$text <- text_profile(text_values)
       summary$visualization <- list(
         kind = "categorical",
         categories = counts$topValues,
@@ -2611,30 +2641,7 @@ openwrangler_r_frame_contract <- local({
           true_count <- true_count + chunk_true
           false_count <- false_count + chunk_false
         } else if (kind %in% c("character", "factor")) {
-          text_values <- if (kind == "factor") as.character(present) else present
-          encodings <- Encoding(text_values)
-          latin1 <- encodings == "latin1"
-          raw_bytes <- nchar(text_values, type = "bytes")
-          # Latin-1 may double in UTF-8; refuse scalarly before converting later potentially oversized values.
-          if (any(encodings == "bytes" | raw_bytes > maximum_text_bytes |
-                  (latin1 & raw_bytes > maximum_text_bytes / 2L))) {
-            text_values <- vapply(
-              seq_along(text_values),
-              function(index) bounded_utf8(text_values[[index]], sprintf("profile value %d", visible_positions[[index]])),
-              character(1L),
-              USE.NAMES = FALSE
-            )
-          } else {
-            converted <- character(length(text_values))
-            converted[latin1] <- iconv(text_values[latin1], from = "latin1", to = "UTF-8", sub = NA_character_)
-            converted[!latin1] <- iconv(text_values[!latin1], from = "UTF-8", to = "UTF-8", sub = NA_character_)
-            invalid <- which(is.na(converted) | nchar(converted, type = "bytes") > maximum_text_bytes)
-            if (length(invalid) != 0L) {
-              index <- invalid[[1L]]
-              bounded_utf8(text_values[[index]], sprintf("profile value %d", visible_positions[[index]]))
-            }
-            text_values <- converted
-          }
+          text_values <- profile_text_values(if (kind == "factor") as.character(present) else present, visible_positions)
           lengths <- nchar(text_values, type = "chars", allowNA = FALSE, keepNA = FALSE)
           text_empty_count <- text_empty_count + sum(lengths == 0L)
           text_min_length <- min(text_min_length, min(lengths))
