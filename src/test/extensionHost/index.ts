@@ -10868,6 +10868,7 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
           };
           type ScreenshotElement = {
             readonly className: string;
+            readonly clientLeft: number;
             readonly clientWidth: number;
             readonly dataset: Readonly<Record<string, string | undefined>>;
             readonly innerText: string;
@@ -10882,6 +10883,8 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
           const scroller = appRoot.querySelector('[data-testid="data-grid-scroller"]');
           if (!workspace || !scroller) throw new Error("The packaged screenshot layout is incomplete.");
           const scrollerBounds = scroller.getBoundingClientRect();
+          const clientLeft = scrollerBounds.left + scroller.clientLeft;
+          const clientRight = clientLeft + scroller.clientWidth;
           const headers = Array.from(appRoot.querySelectorAll("th[data-column]"));
           const renderedColumns = headers.map((header) => header.dataset.column ?? "");
           const featuredHeaders = expected.featured.map((name) =>
@@ -10891,14 +10894,14 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
           const partialColumns = headers
             .filter((header) => {
               const bounds = header.getBoundingClientRect();
-              const intersects = bounds.right > scrollerBounds.left + 1 && bounds.left < scrollerBounds.right - 1;
-              const contained = bounds.left >= scrollerBounds.left - 1 && bounds.right <= scrollerBounds.right + 1;
+              const intersects = bounds.right > clientLeft + 1 && bounds.left < clientRight - 1;
+              const contained = bounds.left >= clientLeft - 1 && bounds.right <= clientRight + 1;
               return intersects && !contained;
             })
             .map((header) => header.dataset.column ?? "");
           if (nextHeader) {
             const bounds = nextHeader.getBoundingClientRect();
-            if (bounds.left < scrollerBounds.right - 1 && bounds.right > scrollerBounds.left + 1) {
+            if (bounds.left < clientRight - 1 && bounds.right > clientLeft + 1) {
               partialColumns.push(expected.nextColumn);
             }
           }
@@ -10931,7 +10934,7 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
           });
           const visibleCells = Array.from(appRoot.querySelectorAll("td[data-grid-column]")).filter((cell) => {
             const bounds = cell.getBoundingClientRect();
-            return bounds.right > scrollerBounds.left && bounds.left < scrollerBounds.right;
+            return bounds.right > clientLeft && bounds.left < clientRight;
           });
           const controls = Array.from(appRoot.querySelectorAll(".toolbar, .toolbarPlan, .gridStatusBar, .draftReview"));
           const clippedControls = controls
