@@ -1634,6 +1634,9 @@ These outer counts do not re-infer leaf prototypes; page and editing boundaries 
 Cheap column/missing statistics scan in bounded chunks. Numeric histograms count every finite value into at most
 20 bins; integer64 chart positions retain their double projection while typed extrema remain exact. Character and
 factor distributions retain exact counts and distinct values within 10,000 keys and 16 MiB of UTF-8 key text.
+Text profiles and character comparison keys share UTF-8 normalization in batches of at most 65,536 present values.
+Small character profiles reuse their validated category keys for text statistics. Exceptional encodings or potentially
+oversized values retain ordered scalar refusal and the original row labels; this does not change sampling policy.
 Above either bound, distributions sample at most 100,000 non-missing values. Large frames with at most 100,000
 non-missing values keep their exact distribution regardless of those aggregation bounds. Above that population limit,
 numeric profiles retain exact distinct counts while at most 10,000 native identities are observed. Tracking stops when
