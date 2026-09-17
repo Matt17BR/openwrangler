@@ -23,7 +23,7 @@ if (unexpectedArguments.length > 0) {
 
 const assets = [
   nativeAsset("explore.png", "vscode-explore-dark.png", 1_440, 870),
-  nativeAsset("filter-result.png", "vscode-filter-result-dark.png", 1_440, 857),
+  nativeAsset("filter-result.png", "vscode-filter-result-dark.png", 1_440, 870),
   nativeAsset("workflow.png", "vscode-workflow-dark.png", 1_440, 870),
   nativeCrop("notebook-pandas.png", "vscode-notebook-pandas-dark.png", 1_280, 600, {
     x: 45,
@@ -33,7 +33,7 @@ const assets = [
   }),
   nativeAsset("gallery/column-search-wide.png", "vscode-column-search-wide-dark.png", 1_440, 865),
   nativeAsset("gallery/file-explorer-action.png", "vscode-file-explorer-action-dark.png", 1_440, 870),
-  nativeAsset("gallery/high-contrast-explore.png", "vscode-high-contrast-explore-high-contrast.png", 1_440, 848),
+  nativeAsset("gallery/high-contrast-explore.png", "vscode-high-contrast-explore-high-contrast.png", 1_440, 844),
   nativeAsset("gallery/import-options.png", "vscode-import-options-dark.png", 1_440, 870),
   nativeAsset("gallery/export-script.png", "vscode-export-code-dark.png", 1_440, 870),
   nativeAsset("gallery/export-data.png", "vscode-export-data-dark.png", 1_440, 870),
@@ -45,22 +45,27 @@ const assets = [
     height: 590
   }),
   nativeCrop("gallery/notebook-code-insertion.png", "vscode-notebook-code-insertion-dark.png", 1_440, 900, {
-    x: 45,
-    y: 29,
-    width: 1_000,
-    height: 288
+    x: 155,
+    y: 754,
+    width: 1_220,
+    height: 100
   }),
   nativeAsset("gallery/notebook-polars.png", "vscode-notebook-polars-dark.png", 1_440, 900),
   nativeAsset("gallery/notebook-duckdb.png", "vscode-notebook-duckdb-dark.png", 1_440, 900),
   nativeAsset("gallery/notebook-pyspark.png", "vscode-notebook-pyspark-dark.png", 1_440, 900),
   nativeAsset("gallery/notebook-r-editing.png", "vscode-notebook-r-editing-dark.png", 1_440, 900),
-  nativeAsset("gallery/r-quarto-variable-picker.png", "vscode-r-quarto-variable-picker-dark.png", 1_440, 900),
+  nativeCrop("gallery/r-quarto-variable-picker.png", "vscode-r-quarto-variable-picker-dark.png", 1_440, 900, {
+    x: 0,
+    y: 0,
+    width: 1_440,
+    height: 720
+  }),
   nativeAsset("gallery/sidebar-overview.png", "vscode-sidebar-overview-dark.png", 1_440, 874),
   nativeAsset("gallery/operation-catalog.png", "vscode-operation-catalog-dark.png", 1_280, 874),
   nativeAsset("gallery/operation-configuration.png", "vscode-operation-configuration-dark.png", 1_280, 874),
   nativeAsset("gallery/applied-step-inspection.png", "vscode-applied-step-inspection-dark.png", 1_440, 870),
-  nativeAsset("gallery/latest-step-edited.png", "vscode-latest-step-edited-dark.png", 1_440, 844),
-  nativeAsset("gallery/latest-step-undone.png", "vscode-latest-step-undone-dark.png", 1_440, 844),
+  nativeAsset("gallery/latest-step-edited.png", "vscode-latest-step-edited-dark.png", 1_440, 869),
+  nativeAsset("gallery/latest-step-undone.png", "vscode-latest-step-undone-dark.png", 1_440, 869),
   nativeCrop("gallery/file-explorer-action-detail.png", "vscode-file-explorer-action-dark.png", 1_440, 870, {
     x: 48,
     y: 0,
@@ -73,13 +78,13 @@ const assets = [
     width: 540,
     height: 420
   }),
-  nativeCrop("gallery/latest-step-edited-detail.png", "vscode-latest-step-edited-dark.png", 1_440, 844, {
+  nativeCrop("gallery/latest-step-edited-detail.png", "vscode-latest-step-edited-dark.png", 1_440, 869, {
     x: 0,
     y: 0,
     width: 448,
     height: 440
   }),
-  nativeCrop("gallery/latest-step-undone-detail.png", "vscode-latest-step-undone-dark.png", 1_440, 844, {
+  nativeCrop("gallery/latest-step-undone-detail.png", "vscode-latest-step-undone-dark.png", 1_440, 869, {
     x: 0,
     y: 0,
     width: 448,
@@ -95,7 +100,7 @@ const assets = [
     x: 0,
     y: 20,
     width: 1_440,
-    height: 760
+    height: 700
   }),
   nativeCrop("gallery/applied-step-inspection-detail.png", "vscode-applied-step-inspection-dark.png", 1_440, 870, {
     x: 445,
@@ -128,10 +133,10 @@ const assets = [
     height: 535
   }),
   nativeCrop("gallery/notebook-polars-detail.png", "vscode-notebook-polars-dark.png", 1_440, 900, {
-    x: 48,
-    y: 115,
-    width: 884,
-    height: 675
+    x: 52,
+    y: 68,
+    width: 1_380,
+    height: 802
   }),
   nativeCrop("gallery/notebook-duckdb-detail.png", "vscode-notebook-duckdb-dark.png", 1_440, 900, {
     x: 548,
@@ -149,7 +154,7 @@ const assets = [
     x: 992,
     y: 160,
     width: 448,
-    height: 480
+    height: 510
   }),
   nativeCrop("gallery/sort-priority.png", "vscode-sort-priority-dark.png", 1_440, 870, {
     x: 0,
@@ -215,10 +220,10 @@ const editorDetailCrops = [
     1_440,
     900,
     {
-      x: 0,
-      y: 0,
-      width: 1_440,
-      height: 430
+      x: 140,
+      y: 532,
+      width: 1_210,
+      height: 82
     }
   )
 ];
