@@ -534,6 +534,7 @@ The operation catalog search exposes its accessible name before and after enteri
 Moving or removing a focused form row, or clearing unavailable selections, keeps keyboard focus inside the operation dialog.
 Column search keeps arrow and page-key navigation aligned with the displayed results when cleaning changes the schema.
 Small editor panes preserve room for the grid header and a row while the workbench scrolls around wrapped controls.
+Frozen row labels remain readable on hover after horizontal scrolling, including themes with translucent hover colors.
 In narrow panes, the source name and actions share toolbar rows when space allows.
 Column profiles and filters stay beside the grid, or below it in narrow panes, without covering the selected cell.
 Selecting an uncalculated statistic in native Summary opens the Dataset view and requests its counts. Failed requests

@@ -35,6 +35,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 - R terminal commands honor bracketed paste, preventing radian from interpreting private command fragments as global assignments.
 - An open notebook no longer hides the action to discover dataframes in an existing R terminal.
 - R row sorting and reduction accept native row-name changes, including ordinary CSV-derived frames; zero-column generated reductions match live execution.
+- Hovered row labels no longer show scrolled-under cell text or filter controls through the frozen gutter.
 - Ordinary sidebar icons use the theme's neutral icon color; warning and error icons retain their status colors.
 - Generated DuckDB text-cleaning steps preserve their built-in behavior when caller-defined functions use the same names.
 - Pandas profiles avoid per-value Python loops for bounded integer sums and native string missing counts.

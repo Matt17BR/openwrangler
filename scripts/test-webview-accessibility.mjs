@@ -3,6 +3,7 @@ import { readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { chromium } from "playwright-core";
+import { PNG } from "pngjs";
 import { createAxeResultPublication, formatAxeFailureDetail } from "./accessibility-result-classification.mjs";
 import { verifyGridClipboardBrowserAcceptance } from "./grid-clipboard-browser-acceptance.mjs";
 import { verifyGridColumnHeaderBrowserAcceptance } from "./grid-column-header-browser-acceptance.mjs";
@@ -83,6 +84,7 @@ try {
   await verifySessionModeDisclosure(browser);
   await verifyShortGridProfileResponsiveness(browser);
   await verifyGridClipboardBrowserAcceptance(browser, harnessDir);
+  await verifyHoveredRowGutter(browser);
   await verifyGridKeyboardWorkflow(browser);
   await verifyWideGridPerformance(browser);
 } finally {
@@ -2780,6 +2782,117 @@ async function verifyFilterKeyboardWorkflow(browser) {
   await page.close();
   console.log(
     "Filter, sort, drawer scrolling, selected column/header exposure, compact actions, and drawer-focus keyboard workflow verified."
+  );
+}
+
+async function verifyHoveredRowGutter(browser) {
+  for (const theme of ["dark", "light", "forced colors"]) {
+    const page = await browser.newPage();
+    page.setDefaultTimeout(15_000);
+    await page.setViewportSize({ width: 1280, height: 760 });
+    if (theme === "forced colors") await page.emulateMedia({ forcedColors: "active" });
+    try {
+      await page.goto(pathToFileURL(resolve(harnessDir, "wide-view.html")).href, { waitUntil: "load" });
+      const cell = page.locator('td[data-grid-row="3"][data-grid-column="0"]');
+      await cell.waitFor();
+      await page.evaluate((light) => {
+        const root = document.documentElement;
+        root.style.setProperty("--vscode-list-hoverBackground", "rgba(128, 128, 128, 0.2)");
+        if (light) {
+          root.style.setProperty("--vscode-editor-background", "#ffffff");
+          root.style.setProperty("--vscode-foreground", "#000000");
+          root.style.setProperty("--vscode-descriptionForeground", "#333333");
+        }
+        const payload = structuredClone(globalThis.openWranglerSessionPayload);
+        for (const row of payload.page.rows) {
+          row.values[0] = {
+            kind: "integer",
+            raw: "888888888888888888",
+            display: "888888888888888888",
+            isNull: false,
+            isNaN: false
+          };
+        }
+        globalThis.openWranglerSessionPayload = payload;
+        window.dispatchEvent(new MessageEvent("message", { data: payload, origin: window.location.origin }));
+      }, theme === "light");
+      await page.waitForFunction(
+        () =>
+          document.querySelector('td[data-grid-row="3"][data-grid-column="0"] .gridCellText')?.textContent ===
+          "888888888888888888"
+      );
+      await page.locator('th[data-grid-column="0"] .exactSummaryStats').waitFor();
+      await cell.evaluate((element) => {
+        const gutter = element.parentElement.querySelector(".rowHeader");
+        const scroller = element.closest(".tableScroller");
+        scroller.scrollLeft += element.getBoundingClientRect().right - gutter.getBoundingClientRect().right + 2;
+        scroller.dispatchEvent(new Event("scroll"));
+      });
+      const gutter = page.getByRole("rowheader", { name: "Row 4", exact: true });
+      const bounds = await gutter.boundingBox();
+      if (!bounds) throw new Error("The scrolled row gutter is not visible.");
+      await page.mouse.move(bounds.x + bounds.width - 15, bounds.y + bounds.height / 2);
+      const hit = await cell.evaluate((element) => {
+        const gutter = element.parentElement.querySelector(".rowHeader");
+        const button = element.querySelector(".cellFilterButton").getBoundingClientRect();
+        const edge = gutter.getBoundingClientRect();
+        const x = button.left + button.width / 2;
+        const target = document.elementFromPoint(x, button.top + button.height / 2);
+        return {
+          hovered: element.parentElement.matches(":hover"),
+          scrolledUnderGutter: x > edge.left && x < edge.right,
+          gutterOwnsHit: target === gutter || gutter.contains(target)
+        };
+      });
+      if (!hit.hovered || !hit.scrolledUnderGutter || !hit.gutterOwnsHit) {
+        throw new Error(`${theme} row gutter exposed a scrolled-under filter target: ${JSON.stringify(hit)}.`);
+      }
+      const visible = PNG.sync.read(await page.screenshot({ clip: bounds, animations: "disabled" }));
+      await page
+        .locator('td[data-grid-row="3"] .gridCellText, td[data-grid-row="3"] .cellFilterButton')
+        .evaluateAll((elements) =>
+          elements.forEach((element) => {
+            element.style.visibility = "hidden";
+          })
+        );
+      const hidden = PNG.sync.read(await page.screenshot({ clip: bounds, animations: "disabled" }));
+      if (!visible.data.equals(hidden.data)) {
+        throw new Error(`${theme} hovered row gutter showed content from scrolled-under cells.`);
+      }
+      await page
+        .locator('td[data-grid-row="3"] .gridCellText, td[data-grid-row="3"] .cellFilterButton')
+        .evaluateAll((elements) =>
+          elements.forEach((element) => {
+            element.style.removeProperty("visibility");
+          })
+        );
+      await page.locator(".tableScroller").evaluate((element) => {
+        element.scrollLeft = 0;
+      });
+      await cell.click();
+      await cell.locator(".cellFilterButton").click();
+      const action = page.getByRole("menu").getByRole("menuitem").first();
+      await action.waitFor();
+      const actionExposed = await action.evaluate((element) => {
+        const bounds = element.getBoundingClientRect();
+        const hit = document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
+        return hit === element || element.contains(hit);
+      });
+      if (!actionExposed) throw new Error(`${theme} cell action menu was covered by the grid.`);
+      await page.keyboard.press("Escape");
+      if (
+        !(await cell.evaluate(
+          (element) => document.activeElement === element && getComputedStyle(element).outlineStyle === "solid"
+        ))
+      ) {
+        throw new Error(`${theme} cell action menu did not restore visible cell focus.`);
+      }
+    } finally {
+      await page.close();
+    }
+  }
+  console.log(
+    "Hovered row gutters hide horizontally scrolled text and filter controls in dark, light and forced colors."
   );
 }
 
