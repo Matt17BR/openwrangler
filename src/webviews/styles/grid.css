@@ -158,10 +158,21 @@
   border: 1px solid var(--vscode-notifications-border);
   padding: 6px 10px;
   border-radius: 4px;
+  box-sizing: border-box;
+  max-width: calc(100% - 32px);
+  overflow-wrap: anywhere;
+}
+
+.errorBanner ~ .loading {
+  position: static;
+  align-self: flex-end;
+  flex: 0 0 auto;
+  margin: 8px 16px;
 }
 
 .errorBanner {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
@@ -169,6 +180,17 @@
   border: 1px solid var(--vscode-inputValidation-warningBorder);
   color: var(--vscode-inputValidation-warningForeground);
   padding: 8px 12px;
+  overflow-wrap: anywhere;
+}
+
+.errorBanner > span:first-child {
+  flex: 1 1 32rem;
+  min-width: 0;
+}
+
+.errorBanner > button {
+  flex: 0 0 auto;
+  max-width: 100%;
 }
 
 .dataGrid {
@@ -342,6 +364,11 @@ tbody tr:hover td {
   background: var(--vscode-list-hoverBackground);
 }
 
+tbody tr:hover td.rowHeader {
+  background-color: var(--vscode-editor-background);
+  background-image: linear-gradient(var(--vscode-list-hoverBackground), var(--vscode-list-hoverBackground));
+}
+
 th.selectedColumn {
   --grid-header-surface: var(--vscode-list-inactiveSelectionBackground);
   color: var(--vscode-list-inactiveSelectionForeground);
@@ -404,7 +431,6 @@ tbody tr:hover td.gridClipboardSelected {
     opacity 80ms ease,
     background-color 80ms ease;
   width: 20px;
-  z-index: 2;
 }
 
 .gridCell:hover .cellFilterButton,

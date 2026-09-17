@@ -25,6 +25,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 ### Fixed
 
 - R opens supported Parquet integer columns carrying legacy annotations, including DuckDB files. Refusals identify the field, its actual annotations and the representation that cannot be preserved.
+- Package setup keeps its status and install action readable beside long errors, without an overlapping loading badge.
 - R startup preserves Unicode runtime paths, and reticulate chunks preserve Unicode text without expanding ordinary strings.
 - Generated R preserves supplementary Unicode characters alongside escaped control characters in paths, column names and values.
 - R header profiles honor the opening preference. Sampled charts identify the sample count used and full non-missing population.
@@ -35,6 +36,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 - R terminal commands honor bracketed paste, preventing radian from interpreting private command fragments as global assignments.
 - An open notebook no longer hides the action to discover dataframes in an existing R terminal.
 - R row sorting and reduction accept native row-name changes, including ordinary CSV-derived frames; zero-column generated reductions match live execution.
+- Hovered row labels no longer show scrolled-under cell text or filter controls through the frozen gutter.
 - Ordinary sidebar icons use the theme's neutral icon color; warning and error icons retain their status colors.
 - Generated DuckDB text-cleaning steps preserve their built-in behavior when caller-defined functions use the same names.
 - Pandas profiles avoid per-value Python loops for bounded integer sums and native string missing counts.

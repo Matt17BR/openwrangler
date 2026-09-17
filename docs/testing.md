@@ -112,6 +112,8 @@ viewports and actual keyboard, pointer and focus behavior; Code Preview readines
 visible code, because virtualized offscreen text need not exist in the DOM.
 Its existing interaction owner checks inspection scope above the editor at wide, narrow and short sizes, with scope
 excluded from the code document and the editor still reachable by keyboard.
+The grid owner checks that hovered row labels hide horizontally scrolled cell text and filter controls with translucent
+theme colors, while exposed cell menus and keyboard focus remain usable in dark, light and forced colors.
 The drawer workflow also checks that closing the panel profiles newly exposed partial columns without another
 window resize or grid scroll.
 Draft-preview, summary-family and by-example screenshots check the exact rendered column count and wait for completed
@@ -130,6 +132,9 @@ The inspection workflow checks Enter on the paused-filter disclosure, retained d
 return. Focus moves from a filter control being hidden to the disclosure and leaves unrelated controls alone.
 The mode-help owner checks compact toolbar containment with a long source label, keyboard disclosure and Spark's
 viewing-only ordering help, while retaining its blocked mode transition and projection-gated Undo checks.
+Dependency recovery checks long error text, readable actions and separate loading status at narrow widths and 200% zoom;
+ordinary refresh keeps the grid viewport and selection in place. The existing App component owner covers initial and
+retained-grid confirmation, cancellation, installation failure and successful reopen.
 
 Use the existing owners to choose a focused source check:
 

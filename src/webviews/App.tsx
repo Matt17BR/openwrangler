@@ -2162,7 +2162,7 @@ export function App() {
         )}
         {runtimeDependencyInstallPending && (
           <span className="importOptionsStatus" role="status" aria-live="polite">
-            Waiting for dependency confirmation…
+            Package setup in progress. Confirm installation in the editor if prompted.
           </span>
         )}
       </main>
@@ -2492,7 +2492,7 @@ export function App() {
                 {installDependencyAction}
                 {runtimeDependencyInstallPending && (
                   <span role="status" aria-live="polite">
-                    Waiting for dependency confirmation…
+                    Package setup in progress. Confirm installation in the editor if prompted.
                   </span>
                 )}
                 {foregroundError.code === "pyspark_connect_state_lost" &&
@@ -2533,7 +2533,7 @@ export function App() {
                 onUndo={undoLatestFilter}
               />
             )}
-            {loading && displayMetadata && displayPage && (
+            {loading && !runtimeDependencyInstallPending && displayMetadata && displayPage && (
               <div className="loading" role="status" aria-live="polite">
                 Loading...
               </div>
