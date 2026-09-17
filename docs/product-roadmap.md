@@ -22,15 +22,15 @@ The [native R support guide](feature-parity.md#native-r-support) records remaini
 The [Jupyter Variables failure](https://github.com/Matt17BR/openwrangler/issues/1498) remains open under the
 [documented support limitation](feature-parity.md#sessions-and-generated-code).
 
-Before release, merge and verify [native R file options, plan reuse and Windows execution](https://github.com/Matt17BR/openwrangler/pull/1571),
-the [bounded R List and Struct workflow](https://github.com/Matt17BR/openwrangler/issues/1565), and
-[refreshed public media and performance results](https://github.com/Matt17BR/openwrangler/issues/1554).
+The [native R file options, plan reuse and Windows execution](https://github.com/Matt17BR/openwrangler/pull/1571)
+and [bounded R List and Struct workflow](https://github.com/Matt17BR/openwrangler/pull/1572) are merged on main.
 Local R file support remains Preview. The milestone links the required outcomes and records the release decision.
 
-After these outcomes, freeze scope and qualify one immutable 2.6.0 candidate under [Releasing](releasing.md#release-candidate).
+Before candidate freeze, complete the [public media and performance refresh](https://github.com/Matt17BR/openwrangler/issues/1554).
+Then qualify one immutable 2.6.0 candidate under [Releasing](releasing.md#release-candidate).
 Qualification and publication remain separate; no release date or automatic publication is promised.
-Polars Explode List and Polars/DuckDB Extract Struct Fields are implemented on main within their
-[supported scope](feature-parity.md#cleaning-operations); the R expansion is tracked above.
+The [operation support guide](feature-parity.md#cleaning-operations) records the engine-specific scope of
+Explode List and Extract Struct Fields.
 
 ## Released-product comparison
 
