@@ -739,8 +739,10 @@ It preserves the selected index, empty fields and null results, discarding one p
 The remainder can still contain a large tail; input conversion, copied source columns and outputs retain their existing costs.
 
 Native NumPy int64 profile sums reuse the existing conservative overflow bound before summing without Python-value
-boxing; unproven integer cases retain exact widening. Native StringDtype missing counts use its declared null or NaN
-sentinel and native missing mask. Ordinary object Series use exhaustive native inference to recognize strings with
+boxing; unproven integer cases retain exact widening. Built-in nullable integer, Boolean and string arrays use native
+missing masks in live and generated operations. StringDtype uses its declared null or NaN sentinel. Custom Series
+and extension arrays retain scalar classification; nullable and Arrow floats retain separate valid NaN and null values.
+Ordinary object Series use exhaustive native inference to recognize strings with
 no missing values, skipping scalar missing counts and numeric-key normalization. Mixed or missing object values and
 Series subclasses retain their existing classification. Generated comparison keys use the same string admission.
 

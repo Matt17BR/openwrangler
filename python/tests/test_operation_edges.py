@@ -1288,7 +1288,7 @@ def test_pandas_group_fill_plan_preserves_native_keys_and_shared_helper_scope() 
         lineage = derive_lineage(lineage, runtime.schema(live), operation)
         plan.append(operation)
     code = runtime.compile_plan(plan)
-    assert code.count("def _pandas_numpy_missing_mask(") == 1
+    assert code.count("def _pandas_native_missing_mask(") == 1
     assert code.count("def _pandas_float_nan_mask(") == 1
     namespace: dict[str, Any] = {"Any": source, "_pandas_float_nan_mask": source}
     exec(code, namespace)

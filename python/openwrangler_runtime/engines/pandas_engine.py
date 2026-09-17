@@ -1321,7 +1321,11 @@ class PandasEngine(DataFrameEngine):
             if missing_row_mask is None:
                 count = int(series.isna().sum())
             else:
-                missing = _pandas_numpy_missing_mask(series, nan=series.dtype.kind == "f")
+                missing = (
+                    _pandas_native_missing_mask(series, nan=series.dtype.kind == "f")
+                    if isinstance(series.dtype, np.dtype)
+                    else None
+                )
                 if missing is None:
                     missing = series.isna().to_numpy(dtype=bool)
                 count = int(np.count_nonzero(missing))
@@ -2323,7 +2327,7 @@ class PandasEngine(DataFrameEngine):
         if needs_pivot_wider_helpers:
             lines.extend(_generated_pandas_pivot_wider_helpers())
         if needs_missing_helpers or needs_nullable_result_helpers:
-            lines.extend(["from typing import Any", "", getsource(_pandas_numpy_missing_mask), ""])
+            lines.extend(["from typing import Any", "", getsource(_pandas_native_missing_mask), ""])
         if needs_missing_helpers:
             if needs_view_value_helpers:
                 lines.extend(generated_view_value_helper_lines())
@@ -2357,7 +2361,7 @@ class PandasEngine(DataFrameEngine):
                     "",
                     "def _open_wrangler_mask(series, predicate):",
                     "    if predicate is _open_wrangler_is_null or predicate is _open_wrangler_is_nan:",
-                    "        missing = _pandas_numpy_missing_mask(series, nan=predicate is _open_wrangler_is_nan)",
+                    "        missing = _pandas_native_missing_mask(series, nan=predicate is _open_wrangler_is_nan)",
                     "        if missing is not None:",
                     "            return pd.Series(missing, index=series.index, dtype=bool)",
                     "        if (isinstance(series.dtype, pd.CategoricalDtype)",
@@ -5472,7 +5476,7 @@ def _pandas_float_nan_mask(series: Any) -> Any:
     import numpy as np
     import pandas as pd
 
-    missing = _pandas_numpy_missing_mask(series, nan=True)
+    missing = _pandas_native_missing_mask(series, nan=True)
     if missing is not None:
         return pd.Series(missing, index=series.index, dtype=bool)
     return pd.Series(
@@ -6885,7 +6889,7 @@ def _missing_value_counts(series: Any) -> tuple[int, int]:
         if dtype.kind in {"i", "u", "b"}:
             return 0, 0
         if dtype.kind in {"f", "M", "m"}:
-            missing = _pandas_numpy_missing_mask(series, nan=dtype.kind == "f")
+            missing = _pandas_native_missing_mask(series, nan=dtype.kind == "f")
             if missing is not None:
                 count = int(np.count_nonzero(missing))
                 return (0, count) if dtype.kind == "f" else (count, 0)
@@ -8351,29 +8355,37 @@ def _pandas_temporal_text(value: Any, scalar: Any) -> str:
     return str(value)
 
 
-def _pandas_numpy_missing_mask(series: Any, *, nan: bool) -> Any:
+def _pandas_native_missing_mask(series: Any, *, nan: bool) -> Any:
     from builtins import len, type
 
     import numpy as np
     import pandas as pd
 
-    if type(series) is not pd.Series or not isinstance(series.dtype, np.dtype):
+    if type(series) is not pd.Series:
         return None
-    kind = series.dtype.kind
-    if kind not in {"i", "u", "b", "f", "M", "m"}:
-        return None
-    if nan and kind == "f":
-        return np.isnan(series.to_numpy(copy=False))
-    if not nan and kind in {"M", "m"}:
-        return np.isnat(series.to_numpy(copy=False))
-    return np.zeros(len(series), dtype=bool)
+    dtype = series.dtype
+    if isinstance(dtype, np.dtype):
+        kind = dtype.kind
+        if kind not in {"i", "u", "b", "f", "M", "m"}:
+            return None
+        if nan and kind == "f":
+            return np.isnan(series.to_numpy(copy=False))
+        if not nan and kind in {"M", "m"}:
+            return np.isnat(series.to_numpy(copy=False))
+        return np.zeros(len(series), dtype=bool)
+    array = series.array
+    if type(array) in (pd.arrays.IntegerArray, pd.arrays.BooleanArray):
+        return np.zeros(len(series), dtype=bool) if nan else array.isna()
+    if type(dtype) is pd.StringDtype and type(array) is pd.StringDtype.construct_array_type(dtype):
+        return array.isna() if nan == (dtype.na_value is np.nan) else np.zeros(len(series), dtype=bool)
+    return None
 
 
 def _scalar_mask(series: Any, predicate: Any) -> Any:
     if predicate is _is_null_value or predicate is _is_nan_value:
         import pandas as pd
 
-        missing = _pandas_numpy_missing_mask(series, nan=predicate is _is_nan_value)
+        missing = _pandas_native_missing_mask(series, nan=predicate is _is_nan_value)
         if missing is not None:
             return pd.Series(missing, index=series.index, dtype=bool)
         if isinstance(series.dtype, pd.CategoricalDtype) and series.cat.categories.dtype.kind in {"M", "m"}:

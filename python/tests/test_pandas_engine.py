@@ -1432,6 +1432,92 @@ def test_pandas_primitive_missing_counts_do_not_box_values(monkeypatch: pytest.M
         pd.testing.assert_series_equal(series, before)
 
 
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        "Int8",
+        "Int16",
+        "Int32",
+        "Int64",
+        "UInt8",
+        "UInt16",
+        "UInt32",
+        "UInt64",
+        "boolean",
+        *[
+            pd.StringDtype(storage=storage, na_value=missing)
+            for storage in ("python", "pyarrow")
+            for missing in (pd.NA, np.nan)
+        ],
+    ],
+)
+def test_pandas_nullable_missing_masks_do_not_box_values(monkeypatch: pytest.MonkeyPatch, dtype: Any) -> None:
+    strings = isinstance(dtype, pd.StringDtype)
+    values = ["alpha", None, "", None] if strings else [0, None, 1, None]
+    source = pd.Series(values, dtype=dtype, name="value")
+    source.index = pd.MultiIndex.from_tuples(
+        [("same", 1), ("same", 1), ("other", 2), ("other", 2)], names=["group", "row"]
+    )
+    before = source.copy(deep=True)
+    missing_is_nan = strings and dtype.na_value is np.nan
+
+    def reject_boxing(_array: Any) -> Any:
+        raise AssertionError("Nullable missing masks must not iterate over Python values")
+
+    for candidate, missing in [
+        (source, [False, True, False, True]),
+        (source.iloc[:0], []),
+        (source.iloc[[1, 3]], [True, True]),
+    ]:
+        expected_null = pd.Series(
+            [present and not missing_is_nan for present in missing], index=candidate.index, dtype=bool
+        )
+        expected_nan = pd.Series([present and missing_is_nan for present in missing], index=candidate.index, dtype=bool)
+        with monkeypatch.context() as context:
+            context.setattr(type(candidate.array), "__iter__", reject_boxing)
+            nulls = pandas_engine_module._null_mask(candidate)
+            nans = pandas_engine_module._nan_mask(candidate)
+            float_nans = pandas_engine_module._pandas_float_nan_mask(candidate)
+            counts = pandas_engine_module._missing_value_counts(candidate)
+        pd.testing.assert_series_equal(nulls, expected_null)
+        pd.testing.assert_series_equal(nans, expected_nan)
+        pd.testing.assert_series_equal(float_nans, expected_nan)
+        assert nulls.index is nans.index is candidate.index
+        assert counts == (int(expected_null.sum()), int(expected_nan.sum()))
+    stats = PandasEngine().header_stats(source.to_frame())
+    assert (stats["missingCells"], stats["missingRows"]) == (2, 2)
+    assert stats["missingValuesByColumn"] == [{"column": "value", "count": 2}]
+    pd.testing.assert_series_equal(source, before)
+
+
+def test_pandas_nullable_missing_masks_preserve_custom_arrays_and_present_nan() -> None:
+    pa = pytest.importorskip("pyarrow")
+
+    class CustomIntegerArray(pd.arrays.IntegerArray):
+        def isna(self) -> Any:
+            raise AssertionError("Custom extension missing semantics must retain scalar classification")
+
+    class CustomStringArray(pd.arrays.StringArray):
+        def isna(self) -> Any:
+            raise AssertionError("Custom extension missing semantics must retain scalar classification")
+
+    cases = [
+        (CustomIntegerArray(np.array([1, 2]), np.array([False, True])), [False, False]),
+        (CustomStringArray(np.array(["present", pd.NA], dtype=object)), [False, False]),
+        (pd.arrays.FloatingArray(np.array([np.nan, 1.0]), np.array([False, True])), [True, False]),
+        (pd.arrays.ArrowExtensionArray(pa.array([float("nan"), None])), [True, False]),
+    ]
+    for array, expected_nan in cases:
+        source = pd.Series(array, index=pd.Index(["same", "same"], name="source"), name="value")
+        assert type(source.array) is type(array)
+        pd.testing.assert_series_equal(
+            pandas_engine_module._null_mask(source), pd.Series([False, True], index=source.index)
+        )
+        pd.testing.assert_series_equal(
+            pandas_engine_module._nan_mask(source), pd.Series(expected_nan, index=source.index)
+        )
+
+
 def test_pandas_missing_classification_preserves_subclass_overrides() -> None:
     class CustomSeries(pd.Series):
         @property
@@ -1445,6 +1531,16 @@ def test_pandas_missing_classification_preserves_subclass_overrides() -> None:
     assert pandas_engine_module._missing_value_counts(series) == (0, 3)
     assert pandas_engine_module._null_mask(series).tolist() == [False, False, False]
     assert pandas_engine_module._nan_mask(series).tolist() == [False, True, False]
+    for dtype in [
+        "Int64",
+        "boolean",
+        pd.StringDtype(storage="python"),
+        pd.StringDtype(storage="pyarrow", na_value=np.nan),
+    ]:
+        nullable = CustomSeries(pd.Series([1, None, 0], dtype=dtype))
+        missing_is_nan = isinstance(dtype, pd.StringDtype) and dtype.na_value is np.nan
+        assert pandas_engine_module._null_mask(nullable).tolist() == [False, not missing_is_nan, False]
+        assert pandas_engine_module._nan_mask(nullable).tolist() == [False, missing_is_nan, False]
 
     class CustomObjectSeries(pd.Series):
         @property
