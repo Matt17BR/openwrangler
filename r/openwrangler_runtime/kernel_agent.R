@@ -7786,7 +7786,7 @@ openwrangler_r_kernel_agent <- local({
     }
     fail <- function() base::stop("CSV input has invalid text, quoting or field counts, or exceeds native R limits. Check the selected encoding, delimiter and quote character.", call. = FALSE)
     input <- base::file(path, "rb")
-    base::on.exit(base::close(input), add = TRUE)
+    base::on.exit(base::close(input), add = TRUE, after = FALSE)
     hex <- function(value) base::sprintf("\\x%02x", base::as.integer(base::charToRaw(value)))
     d <- hex(delimiter)
     q <- hex(quote_char)
