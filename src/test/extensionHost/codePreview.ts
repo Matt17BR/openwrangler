@@ -949,51 +949,90 @@ export async function ensureCodePreviewHeight(
     "The generated-code preview must retain one exact supported language label before sizing."
   );
   const language = label === "Editable generated R code preview" ? "R" : "Python";
-  let lastIdentity: ExactCodePreviewIdentity | undefined;
   const commands = new Set(await vscode.commands.getCommands(true));
   assert.ok(
-    commands.has("openWrangler.codePreview.focus") &&
-      commands.has("workbench.action.focusPanel") &&
-      commands.has("workbench.action.increaseViewSize"),
-    "The workbench must expose its exact Code Preview focus and resize commands."
+    commands.has("openWrangler.codePreview.focus") && commands.has("workbench.action.focusPanel"),
+    "The workbench must expose its exact Code Preview focus commands."
   );
-  const maximumResizeAttempts = 24;
   const deadline = Date.now() + WORKBENCH_PLAYWRIGHT_TIMEOUT_MS;
-  for (let attempt = 0; attempt <= maximumResizeAttempts; attempt += 1) {
-    // Workbench focus/resize commands may replace the iframe generation. No
-    // exact DOM handle survives either boundary: focus the panel first, focus
-    // Code Preview last, then acquire the current generation from live frames.
-    await vscode.commands.executeCommand("workbench.action.focusPanel");
-    await vscode.commands.executeCommand("openWrangler.codePreview.focus");
-    const target = await acquireCurrentExactCodePreviewGeneration(workbench, language, expectedCodeReceipt, deadline);
-    let transferred = false;
-    let failure: Readonly<{ error: unknown }> | undefined;
-    try {
-      await waitForExactCodePreviewAnimationFrames(target.scroller);
-      lastIdentity = await readExactCodePreviewIdentity(target.preview, target.scroller);
-      assertExactCodePreviewIdentity(lastIdentity, target.codeReceipt);
-      const usableHeight = exactCodePreviewUsableScrollerHeight(lastIdentity, 1);
-      if (usableHeight >= minimumHeight) {
-        transferred = true;
-        return target;
-      }
-    } catch (error) {
-      failure = { error };
-      throw error;
-    } finally {
-      if (!transferred) {
-        await releaseExactCodePreviewHandlesAfterFailure(
-          [target.preview, target.scroller],
-          failure,
-          "Sizing the exact Code Preview and releasing its current generation both failed."
-        );
-      }
-    }
-    if (attempt === maximumResizeAttempts || Date.now() >= deadline) break;
-    await vscode.commands.executeCommand("workbench.action.increaseViewSize");
-    await workbench.waitForTimeout(100);
-  }
-  throw new Error(
-    `The exact Code Preview scroller must be at least ${minimumHeight} CSS pixels high within its renderer viewport: ${JSON.stringify(lastIdentity)}.`
+  await vscode.commands.executeCommand("workbench.action.focusPanel");
+  await vscode.commands.executeCommand("openWrangler.codePreview.focus");
+  let target: ExactCodePreviewTarget | undefined = await acquireCurrentExactCodePreviewGeneration(
+    workbench,
+    language,
+    expectedCodeReceipt,
+    deadline
   );
+  let transferred = false;
+  let failure: Readonly<{ error: unknown }> | undefined;
+  try {
+    await waitForExactCodePreviewAnimationFrames(target.scroller);
+    const before = await readExactCodePreviewIdentity(target.preview, target.scroller);
+    assertExactCodePreviewIdentity(before, target.codeReceipt);
+    const usableHeight = exactCodePreviewUsableScrollerHeight(before, 1);
+    if (usableHeight < minimumHeight) {
+      const panel = workbench.locator(".monaco-workbench.panel-position-bottom .part.panel:visible");
+      assert.equal(await panel.count(), 1, "Sizing Code Preview requires one visible native bottom panel.");
+      const bounds = await panel.boundingBox();
+      assert.ok(bounds, "Sizing Code Preview requires measurable native panel bounds.");
+      const x = bounds.x + bounds.width / 2;
+      const y = bounds.y;
+      const sashes = await workbench.locator(".monaco-sash.horizontal:not(.disabled):visible").evaluateAll(
+        (elements, point) => {
+          type SashElement = {
+            getBoundingClientRect(): { left: number; right: number; top: number; bottom: number };
+            contains(element: unknown): boolean;
+            ownerDocument: { elementFromPoint(x: number, y: number): unknown };
+          };
+          return elements.flatMap((element) => {
+            const sash = element as unknown as SashElement;
+            const rect = sash.getBoundingClientRect();
+            if (point.x < rect.left || point.x > rect.right || point.y < rect.top || point.y > rect.bottom) {
+              return [];
+            }
+            return [{ hit: sash.contains(sash.ownerDocument.elementFromPoint(point.x, point.y)) }];
+          });
+        },
+        { x, y }
+      );
+      assert.equal(sashes.length, 1, "The native Code Preview panel must have one enabled top resize handle.");
+      assert.equal(sashes[0]?.hit, true, "The native Code Preview resize handle must receive the pointer.");
+      const targetY = y - Math.ceil(minimumHeight - usableHeight) - 1;
+      assert.ok(targetY > 0, "The native Code Preview resize must stay within the workbench viewport.");
+
+      // Resize the measured panel directly; a webview's focus is not evidence
+      // that a focus-dependent workbench resize command targets its container.
+      const previousTarget = target;
+      target = undefined;
+      await releaseExactCodePreview(previousTarget);
+      await workbench.mouse.move(x, y);
+      try {
+        await workbench.mouse.down();
+        await workbench.mouse.move(x, targetY, { steps: 8 });
+      } finally {
+        await workbench.mouse.up();
+      }
+      target = await acquireCurrentExactCodePreviewGeneration(workbench, language, expectedCodeReceipt, deadline);
+      await waitForExactCodePreviewAnimationFrames(target.scroller);
+      const after = await readExactCodePreviewIdentity(target.preview, target.scroller);
+      assertExactCodePreviewIdentity(after, target.codeReceipt);
+      assert.ok(
+        exactCodePreviewUsableScrollerHeight(after, 1) >= minimumHeight,
+        `The exact Code Preview scroller must be at least ${minimumHeight} CSS pixels high after resizing its native panel: ${JSON.stringify({ before, after, panelBounds: bounds, drag: { x, fromY: y, toY: targetY } })}.`
+      );
+    }
+    transferred = true;
+    return target;
+  } catch (error) {
+    failure = { error };
+    throw error;
+  } finally {
+    if (!transferred && target) {
+      await releaseExactCodePreviewHandlesAfterFailure(
+        [target.preview, target.scroller],
+        failure,
+        "Sizing the exact Code Preview and releasing its current generation both failed."
+      );
+    }
+  }
 }
