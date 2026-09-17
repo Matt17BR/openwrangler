@@ -740,7 +740,9 @@ The remainder can still contain a large tail; input conversion, copied source co
 
 Native NumPy int64 profile sums reuse the existing conservative overflow bound before summing without Python-value
 boxing; unproven integer cases retain exact widening. Native StringDtype missing counts use its declared null or NaN
-sentinel and native missing mask. Object columns and Series subclasses retain their existing classification.
+sentinel and native missing mask. Ordinary object Series use exhaustive native inference to recognize strings with
+no missing values, skipping scalar missing counts and numeric-key normalization. Mixed or missing object values and
+Series subclasses retain their existing classification. Generated comparison keys use the same string admission.
 
 Integer profiles retain exact extrema and sums when floating-point approximations overflow. Each approximate statistic
 is attempted independently; unavailable statistics and histograms are omitted. Native value counting remains first.

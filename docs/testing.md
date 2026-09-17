@@ -209,6 +209,8 @@ Use the existing owners to choose a focused source check:
   [Polars](../python/tests/test_polars_engine.py) and [DuckDB](../python/tests/test_duckdb_engine.py) own native profiles,
   queries, captures, exact types, source preservation and evaluation bounds. Keep capture, clone and checkpoint
   lifetime checks here; ordinary file scans and saved MIME captures retain their separate lazy/bounded contracts.
+  Pandas profile checks keep nonmissing object strings out of scalar missing/count-key loops while testing late
+  mixed-value outliers, custom Series behavior and executable generated comparison keys.
   Notebook command and KernelBridge tests own connection selection; executed-result tests own bounded inline MIME
   capture without opening a Session.
   [Session binding](../python/tests/test_session_column_binding.py) owns column and row identities through history,

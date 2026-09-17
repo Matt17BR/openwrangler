@@ -37,7 +37,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 - R row sorting and reduction accept native row-name changes, including ordinary CSV-derived frames; zero-column generated reductions match live execution.
 - Ordinary sidebar icons use the theme's neutral icon color; warning and error icons retain their status colors.
 - Generated DuckDB text-cleaning steps preserve their built-in behavior when caller-defined functions use the same names.
-- Pandas profiles avoid per-value Python loops for bounded integer sums and native string missing counts.
+- Pandas profiles avoid per-value Python loops for bounded integer sums, native string missing counts and nonmissing object-string columns.
 - Integer histogram bins create valid whole-number filters; rounded large-integer bins explain why filtering is unavailable.
 - Header profiles align statistics and chart groups across mixed column types; Add step keeps its icon beside its label.
 - Large Boolean profile counts wrap inside narrow columns.
