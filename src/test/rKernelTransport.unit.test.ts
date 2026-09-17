@@ -319,6 +319,86 @@ describe("native R kernel runtime bundle", () => {
 });
 
 describe("native R kernel protocol", () => {
+  it("admits bounded distinct counts with omitted large numeric top values only", () => {
+    const summary = {
+      ...minimalSummary(),
+      type: "float",
+      rawType: "double",
+      totalCount: 120_002,
+      nullCount: 1,
+      nanCount: 1,
+      distinctCount: 900,
+      numeric: { min: 0, max: 899, mean: 449.5 },
+      topValues: [],
+      visualization: { kind: "numeric", bins: [{ min: 0, max: 899, count: 120_000 }] }
+    };
+    const decode = (value: unknown) =>
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
+          requestId: summaryRequestId,
+          kind: "summary",
+          sessionId,
+          summaries: [value]
+        }),
+        summaryRequestId
+      );
+    for (const type of ["integer", "float", "duration"]) {
+      expect(
+        decode({ ...summary, type, nullCount: type === "float" ? 1 : 2, nanCount: type === "float" ? 1 : 0 })
+      ).toMatchObject({ summaries: [{ distinctCount: 900, topValues: [] }] });
+    }
+    expect(decode({ ...summary, distinctCount: R_FRAME_CONTRACT_LIMITS.columnValueDistinctMatches })).toMatchObject({
+      summaries: [{ distinctCount: 10_000, topValues: [] }]
+    });
+    // A numeric population can have no finite values to put in a histogram.
+    expect(decode({ ...summary, distinctCount: 2, numeric: {}, visualization: undefined })).toMatchObject({
+      summaries: [{ distinctCount: 2, topValues: [] }]
+    });
+    for (const numeric of [undefined, null, []]) {
+      expect(() => decode({ ...summary, numeric })).toThrow("summary response is invalid");
+    }
+    for (const [label, value] of [
+      ["small population", { ...summary, totalCount: 100_002 }],
+      ["sparse population", { ...summary, nullCount: 20_001 }],
+      [
+        "wrong type",
+        {
+          ...summary,
+          type: "date",
+          rawType: "Date",
+          numeric: undefined,
+          visualization: { kind: "datetime", min: "2026-01-01", max: "2026-01-02" }
+        }
+      ],
+      ["sampled", { ...summary, visualization: { ...summary.visualization, sampled: true } }],
+      ["partial top values", { ...summary, topValues: [{ value: "0", count: 100 }] }],
+      ["distinct bound", { ...summary, distinctCount: R_FRAME_CONTRACT_LIMITS.columnValueDistinctMatches + 1 }],
+      [
+        "distinct population",
+        {
+          ...minimalSummary(),
+          distinctCount: 2,
+          topValues: [
+            { value: "1", count: 1 },
+            { value: "2", count: 1 }
+          ]
+        }
+      ]
+    ] as const) {
+      expect(() => decode(value), label).toThrow("inconsistent value counts");
+    }
+    expect(() =>
+      decode({
+        ...summary,
+        visualization: {
+          ...summary.visualization,
+          bins: [{ min: 0, max: 899, count: 120_001 }]
+        }
+      })
+    ).toThrow("histogram counts outside the column");
+  });
+
   it("decodes a correlated typed page and rejects a stale request ID", () => {
     const encoded = JSON.stringify({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,

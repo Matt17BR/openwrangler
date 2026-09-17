@@ -214,6 +214,8 @@ Use the existing owners to choose a focused source check:
   [Polars](../python/tests/test_polars_engine.py) and [DuckDB](../python/tests/test_duckdb_engine.py) own native profiles,
   queries, captures, exact types, source preservation and evaluation bounds. Keep capture, clone and checkpoint
   lifetime checks here; ordinary file scans and saved MIME captures retain their separate lazy/bounded contracts.
+  Pandas profile checks keep nonmissing object strings out of scalar missing/count-key loops while testing late
+  mixed-value outliers, custom Series behavior and executable generated comparison keys.
   Notebook command and KernelBridge tests own connection selection; executed-result tests own bounded inline MIME
   capture without opening a Session.
   [Session binding](../python/tests/test_session_column_binding.py) owns column and row identities through history,
@@ -318,7 +320,11 @@ kernel mutation checks use fewer, longer levels to exercise the full response by
 The existing frame profiling owner checks complete numeric bin membership and bounded categorical counts, including
 filtered populations, both sampled fallback limits and sparse columns that remain exact. It also checks bounded exact
 numeric distinct counts, integer64 identity, duration signed zero and abandonment at the cardinality limit. The R
-decoder owner verifies exact large histograms while allowing omitted statistics above their bounds.
+decoder owner verifies exact large histograms and bounded distinct counts with omitted top values, retaining the
+population, type, sampling and count limits. The existing kernel transport profile case decodes actual large R
+integer, double and duration summaries, including missing values and signed zero, through TypeScript. Its small
+integer64 fixture checks exact typed bounds; large integer64 arithmetic and distinct counts stay with frame profiling.
+The transport owner also checks empty numeric objects for small and large columns whose present values are all infinite.
 The existing native Custom Code owners execute real dplyr, data.table and collapse calls from file and package-backed
 frames, including admitted class changes, retained metadata, history, failure recovery and executable generated code.
 The bridge owner checks output-flavor publication and inspection; the existing process Custom Code lifecycle changes

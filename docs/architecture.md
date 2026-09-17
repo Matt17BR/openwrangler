@@ -740,7 +740,9 @@ The remainder can still contain a large tail; input conversion, copied source co
 
 Native NumPy int64 profile sums reuse the existing conservative overflow bound before summing without Python-value
 boxing; unproven integer cases retain exact widening. Native StringDtype missing counts use its declared null or NaN
-sentinel and native missing mask. Object columns and Series subclasses retain their existing classification.
+sentinel and native missing mask. Ordinary object Series use exhaustive native inference to recognize strings with
+no missing values, skipping scalar missing counts and numeric-key normalization. Mixed or missing object values and
+Series subclasses retain their existing classification. Generated comparison keys use the same string admission.
 
 Integer profiles retain exact extrema and sums when floating-point approximations overflow. Each approximate statistic
 is attempted independently; unavailable statistics and histograms are omitted. Native value counting remains first.
@@ -1635,8 +1637,12 @@ factor distributions retain exact counts and distinct values within 10,000 keys 
 Above either bound, distributions sample at most 100,000 non-missing values. Large frames with at most 100,000
 non-missing values keep their exact distribution regardless of those aggregation bounds. Above that population limit,
 numeric profiles retain exact distinct counts while at most 10,000 native identities are observed. Tracking stops when
-that bound is exceeded; integer64 keys retain their exact decimal identity. Numeric medians remain omitted above
-100,000 non-missing values. Omitted statistics show `n/a`. Sampled charts
+that bound is exceeded; integer64 keys retain their exact decimal identity. These large numeric summaries omit top
+values even when the distinct count is exact. The host accepts an exact distinct count with no top values only for
+integer, float and duration columns above the non-missing population limit, without a sampled distribution and with a
+distinct count within the bound. Numeric medians remain omitted above 100,000 non-missing values. Omitted statistics
+show `n/a`. Numeric summaries with no finite statistics retain an empty numeric object; unavailable values and the
+histogram remain omitted. Sampled charts
 label the distribution approximate and show the sample count used alongside the full non-missing population.
 Dataset missing counts remain exact; bounded duplicate-row estimates name the sampled population. Sampling uses a
 private fixed seed and restores the user's random state. Unsearched value discovery samples at most 100,000 rows;

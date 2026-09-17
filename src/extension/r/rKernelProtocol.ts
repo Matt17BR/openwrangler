@@ -2605,11 +2605,19 @@ function validateRColumnSummaries(summaries: readonly ColumnSummary[]): void {
     const present = summary.totalCount - summary.nullCount - summary.nanCount;
     const visualization = summary.visualization;
     const sampledDistribution = visualization?.sampled === true;
+    const omittedNumericTopValues =
+      (summary.type === "integer" || summary.type === "float" || summary.type === "duration") &&
+      present > R_FRAME_CONTRACT_LIMITS.profileSampleRows &&
+      !sampledDistribution &&
+      summary.topValues.length === 0 &&
+      summary.distinctCount !== undefined &&
+      summary.distinctCount <= R_FRAME_CONTRACT_LIMITS.columnValueDistinctMatches;
     if (
       present < 0 ||
       (sampledDistribution && present <= R_FRAME_CONTRACT_LIMITS.profileSampleRows) ||
       (summary.distinctCount !== undefined && summary.distinctCount > present) ||
       (summary.distinctCount !== undefined &&
+        !omittedNumericTopValues &&
         summary.topValues.length !== Math.min(R_FRAME_CONTRACT_LIMITS.topValues, summary.distinctCount)) ||
       (summary.distinctCount === undefined &&
         ((!nested && present <= R_FRAME_CONTRACT_LIMITS.profileSampleRows) ||

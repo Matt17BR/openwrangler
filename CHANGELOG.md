@@ -26,6 +26,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 - R opens supported Parquet integer columns carrying legacy annotations, including DuckDB files. Refusals identify the field, its actual annotations and the representation that cannot be preserved.
 - Package setup keeps its status and install action readable beside long errors, without an overlapping loading badge.
+- R numeric profiles display bounded exact distinct counts and handle columns containing only infinities without a protocol error.
 - R startup preserves Unicode runtime paths, and reticulate chunks preserve Unicode text without expanding ordinary strings.
 - Generated R preserves supplementary Unicode characters alongside escaped control characters in paths, column names and values.
 - R header profiles honor the opening preference. Sampled charts identify the sample count used and full non-missing population.
@@ -39,7 +40,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 - Hovered row labels no longer show scrolled-under cell text or filter controls through the frozen gutter.
 - Ordinary sidebar icons use the theme's neutral icon color; warning and error icons retain their status colors.
 - Generated DuckDB text-cleaning steps preserve their built-in behavior when caller-defined functions use the same names.
-- Pandas profiles avoid per-value Python loops for bounded integer sums and native string missing counts.
+- Pandas profiles avoid per-value Python loops for bounded integer sums, native string missing counts and nonmissing object-string columns.
 - Integer histogram bins create valid whole-number filters; rounded large-integer bins explain why filtering is unavailable.
 - Header profiles align statistics and chart groups across mixed column types; Add step keeps its icon beside its label.
 - Large Boolean profile counts wrap inside narrow columns.
