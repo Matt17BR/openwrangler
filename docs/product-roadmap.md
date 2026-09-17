@@ -10,23 +10,27 @@ records delivered changes. This page records release priorities and proposals th
 [defined ordinary-frame scope](feature-parity.md#first-stable-r-notebook-scope) in IRkernel notebooks
 in desktop VS Code on Linux, macOS and Windows.
 
-[Open Wrangler 2.6](https://github.com/Matt17BR/openwrangler/milestone/16) is the next selected release. It requires
+[Open Wrangler 2.6](https://github.com/Matt17BR/openwrangler/milestone/16) is the next selected release. Main includes
 the native capture correction for [DuckDB row consistency](https://github.com/Matt17BR/openwrangler/issues/1487),
 including explicit notebook connection selection and its [capture costs](feature-parity.md#sessions-and-generated-code).
 The [macOS import-options focus](https://github.com/Matt17BR/openwrangler/issues/1482) issue is fixed on main.
 Custom-backed [step inspection](https://github.com/Matt17BR/openwrangler/issues/1526) now reuses its input/output pair
 in Pandas, Polars, DuckDB and native R.
+R profiles now provide [exact numeric histograms and low-cardinality categorical counts](https://github.com/Matt17BR/openwrangler/issues/1553)
+beyond 100,000 rows, plus [exact numeric distinct counts through 10,000 distinct values](https://github.com/Matt17BR/openwrangler/issues/1558).
+The [native R support guide](feature-parity.md#native-r-support) records remaining sampling and cardinality limits.
 The [Jupyter Variables failure](https://github.com/Matt17BR/openwrangler/issues/1498) remains open under the
 [documented support limitation](feature-parity.md#sessions-and-generated-code).
-The remaining requirements include [exact ordinary R distributions beyond 100,000 values](https://github.com/Matt17BR/openwrangler/issues/1553)
-with bounded memory and measured cost, and [refreshed public media and performance results](https://github.com/Matt17BR/openwrangler/issues/1554).
-Sampling-label improvements alone do not complete the R distribution requirement. The milestone links all required
-outcomes and records the release decision.
+
+Before release, merge and verify [native R file options, plan reuse and Windows execution](https://github.com/Matt17BR/openwrangler/pull/1571),
+the [bounded R List and Struct workflow](https://github.com/Matt17BR/openwrangler/issues/1565), and
+[refreshed public media and performance results](https://github.com/Matt17BR/openwrangler/issues/1554).
+Local R file support remains Preview. The milestone links the required outcomes and records the release decision.
 
 After these outcomes, freeze scope and qualify one immutable 2.6.0 candidate under [Releasing](releasing.md#release-candidate).
 Qualification and publication remain separate; no release date or automatic publication is promised.
-Explode List and Extract Struct Fields are implemented on main within their
-[supported scope](feature-parity.md#cleaning-operations).
+Polars Explode List and Polars/DuckDB Extract Struct Fields are implemented on main within their
+[supported scope](feature-parity.md#cleaning-operations); the R expansion is tracked above.
 
 ## Released-product comparison
 
