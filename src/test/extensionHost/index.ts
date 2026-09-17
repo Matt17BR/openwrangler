@@ -19668,7 +19668,14 @@ async function exercisePackagedComposedPlan(testing: TestApi, sourceFixture: vsc
         assert.equal(preview.kind, "stepPreview", `${backend} ${step.kind} must preview.`);
         if (preview.kind !== "stepPreview") break;
         assert.equal(preview.metadata.draftStep?.kind, step.kind);
-        assert.match(preview.code, /def clean_data\(df\):/);
+        const requiresConnection =
+          backend === "duckdb" && steps.slice(0, stepCount + 1).some((operation) => operation.kind === "customCode");
+        const expectedDeclaration = requiresConnection ? "def clean_data(df, *, connection):" : "def clean_data(df):";
+        assert.equal(
+          preview.code.startsWith(`${expectedDeclaration}\n`),
+          true,
+          `${backend} ${step.kind} preview must declare ${expectedDeclaration}`
+        );
         assert.equal(preview.diff.truncated, false);
         if (backend === "polars") assert.doesNotMatch(preview.code, /to_pandas|import pandas/);
         if (backend === "duckdb") {
