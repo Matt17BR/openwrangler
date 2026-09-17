@@ -976,7 +976,6 @@ export async function ensureCodePreviewHeight(
       const bounds = await panel.boundingBox();
       assert.ok(bounds, "Sizing Code Preview requires measurable native panel bounds.");
       const x = bounds.x + bounds.width / 2;
-      const y = bounds.y;
       const sashes = await workbench.locator(".monaco-sash.horizontal:not(.disabled):visible").evaluateAll(
         (elements, point) => {
           type SashElement = {
@@ -990,13 +989,27 @@ export async function ensureCodePreviewHeight(
             if (point.x < rect.left || point.x > rect.right || point.y < rect.top || point.y > rect.bottom) {
               return [];
             }
-            return [{ hit: sash.contains(sash.ownerDocument.elementFromPoint(point.x, point.y)) }];
+            const centerY = (rect.top + rect.bottom) / 2;
+            const centerHit = sash.ownerDocument.elementFromPoint(point.x, centerY);
+            return [
+              {
+                hit: sash.contains(centerHit),
+                centerY,
+                bounds: { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom }
+              }
+            ];
           });
         },
-        { x, y }
+        { x, y: bounds.y }
       );
       assert.equal(sashes.length, 1, "The native Code Preview panel must have one enabled top resize handle.");
-      assert.equal(sashes[0]?.hit, true, "The native Code Preview resize handle must receive the pointer.");
+      const sash = sashes[0]!;
+      const y = sash.centerY;
+      assert.equal(
+        sash.hit,
+        true,
+        `The native Code Preview resize handle must receive the pointer: ${JSON.stringify({ panelBounds: bounds, point: { x, y }, sashBounds: sash.bounds })}.`
+      );
       const targetY = y - Math.ceil(minimumHeight - usableHeight) - 1;
       assert.ok(targetY > 0, "The native Code Preview resize must stay within the workbench viewport.");
 
