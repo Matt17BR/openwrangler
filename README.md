@@ -125,7 +125,7 @@ In **2.6**, DuckDB plans containing Custom Code require the input's exact connec
 connection. Regenerate exported scripts to receive the new capture behavior. See the
 [capture requirements](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#sessions-and-generated-code).
 
-<a href="https://github.com/Matt17BR/openwrangler/blob/main/docs/images/readme/gallery/notebook-code-insertion.png"><img alt="Generated Pandas cleaning code inserted into an orders-analysis notebook" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/gallery/notebook-code-insertion.png" width="960"></a>
+<a href="https://github.com/Matt17BR/openwrangler/blob/main/docs/images/editor-acceptance/vscode-notebook-code-insertion-dark.png"><img alt="Generated Pandas cleaning code inserted into an orders-analysis notebook" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/gallery/notebook-code-insertion.png" width="960"></a>
 
 _Bring the cleaning function back into the notebook that opened the dataframe._
 

@@ -52,7 +52,7 @@ latest filter can be undone, or all filters can be cleared without changing the 
 
 <table>
   <tr>
-    <td width="50%"><a href="images/readme/gallery/histogram-hover.png"><img alt="Revenue column profile with Counts and % controls and a focused 20,174 to 21,357 bin tooltip showing 398 rows (0.4%)" src="images/readme/gallery/histogram-hover.png" width="448"></a></td>
+    <td width="50%"><a href="images/readme/gallery/histogram-hover.png"><img alt="Revenue column profile with Counts and % controls and a focused bin showing 20,174 to 21,357: 398 rows" src="images/readme/gallery/histogram-hover.png" width="448"></a></td>
     <td width="50%"><a href="images/readme/gallery/sort-priority.png"><img alt="Two ordered sorts with priority, reorder, edit, and remove controls" src="images/readme/gallery/sort-priority.png" width="448"></a></td>
   </tr>
   <tr>
@@ -131,7 +131,7 @@ Copy or save the displayed code; cleaned-data export uses all applied steps and 
 <table>
   <tr>
     <td width="51%"><a href="images/readme/gallery/notebook-variable-picker.png"><img alt="Notebook variable picker labeling DuckDB, Pandas, and Polars variables by engine and dataframe type" src="images/readme/gallery/notebook-variable-picker-detail.png" width="602"></a></td>
-    <td width="49%"><a href="images/readme/gallery/notebook-code-insertion.png"><img alt="Generated Pandas cleaning code inserted into the originating notebook" src="images/readme/gallery/notebook-code-insertion.png" width="960"></a></td>
+    <td width="49%"><a href="images/editor-acceptance/vscode-notebook-code-insertion-dark.png"><img alt="Generated Pandas cleaning code inserted into the originating notebook" src="images/readme/gallery/notebook-code-insertion.png" width="960"></a></td>
   </tr>
   <tr>
     <td>The notebook picker labels each live variable by engine and dataframe type.</td>
