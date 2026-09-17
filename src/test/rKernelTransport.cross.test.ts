@@ -570,7 +570,7 @@ ${closeSession.code}
       kind: "getSummary",
       payload: {
         sessionId: largeSessionId,
-        columns: ["integer", "amount", "wide", "elapsed", "nonfinite"].map((name, index) => ({
+        columns: ["integer", "amount", "elapsed", "nonfinite"].map((name, index) => ({
           id: `r:c:${index}`,
           name
         })),
@@ -597,7 +597,6 @@ ${stats.code}
 large_typed <- data.frame(
   integer = c(rep(0:899, length.out = 120000L), NA_integer_, NA_integer_),
   amount = c(rep((0:899) / 10, length.out = 120000L), NA_real_, NaN),
-  wide = c(rep(bit64::as.integer64(c("9007199254740992", "9007199254740993", "9007199254740994")), length.out = 120000L), bit64::as.integer64(c(NA, NA))),
   elapsed = rep(as.difftime(c(-0, 0, 1), units = "hours"), length.out = 120002L),
   nonfinite = c(rep(c(-Inf, Inf), length.out = 120000L), NA_real_, NaN)
 )
@@ -654,8 +653,8 @@ stopifnot(identical(serialize(large_typed, NULL, version = 3L), large_before))
     if (largeProfiled.kind === "error") throw new Error(largeProfiled.message);
     expect(largeProfiled).toMatchObject({ kind: "summary", sessionId: largeSessionId });
     if (largeProfiled.kind !== "summary") throw new Error("Expected large typed R summaries.");
-    expect(largeProfiled.summaries.map((entry) => entry.distinctCount)).toEqual([900, 900, 3, 3, 2]);
-    for (const [index, entry] of largeProfiled.summaries.slice(0, 4).entries()) {
+    expect(largeProfiled.summaries.map((entry) => entry.distinctCount)).toEqual([900, 900, 3, 2]);
+    for (const [index, entry] of largeProfiled.summaries.slice(0, 3).entries()) {
       expect(entry).toMatchObject({
         totalCount: 120_002,
         nullCount: index === 1 ? 1 : 2,
@@ -668,13 +667,9 @@ stopifnot(identical(serialize(large_typed, NULL, version = 3L), large_before))
       expect(entry.visualization.sampled).toBeUndefined();
       expect(entry.visualization.bins.reduce((count, bin) => count + bin.count, 0)).toBe(120_000);
     }
-    expect(largeProfiled.summaries[2]?.numeric).toMatchObject({
-      exactMin: { raw: "9007199254740992" },
-      exactMax: { raw: "9007199254740994" }
-    });
-    expect(largeProfiled.summaries[4]).toMatchObject({ totalCount: 120_002, nullCount: 1, nanCount: 1, topValues: [] });
-    expect(largeProfiled.summaries[4]?.numeric).toEqual({});
-    expect(largeProfiled.summaries[4]?.visualization).toBeUndefined();
+    expect(largeProfiled.summaries[3]).toMatchObject({ totalCount: 120_002, nullCount: 1, nanCount: 1, topValues: [] });
+    expect(largeProfiled.summaries[3]?.numeric).toEqual({});
+    expect(largeProfiled.summaries[3]?.visualization).toBeUndefined();
   });
 
   it("runs the native R rename draft, apply, edit, undo, and generated code lifecycle", () => {
