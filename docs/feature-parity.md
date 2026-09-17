@@ -185,19 +185,21 @@ during loading or file preflight.
 ## Cleaning operations
 
 The complete operation list and parameters are in the [generated catalog](reference.md#transformation-operations).
-Extract Struct Fields copies known scalar fields from a Struct column into new columns in Polars editing sessions
-and DuckDB file sessions. Enter each exact field name and its output name; the parent column and rows stay intact.
+Extract Struct Fields copies known scalar fields from a Struct column into new columns in Polars editing sessions,
+DuckDB file sessions and native R. Enter each exact field name and its output name; the parent column and rows stay intact.
 For example, extract `city` from an `address` Struct as `customer_city`. Missing parents produce missing outputs.
 Choose up to 64 fields, with the [native type and naming limits](architecture.md#engine-boundaries-and-capabilities).
-Pandas and R do not support this operation.
+Pandas does not support this operation. R accepts the flat records described in the [native R scope](#native-r-support).
 
 Explode List turns one native Polars List column into rows and repeats the other columns. Empty or missing lists keep
 one row with a missing value. The operation expands one level: List and Struct children keep their types. For example,
 explode a list of addresses, then use Extract Struct Fields to copy each address's city. Fixed-size Array columns and
-Object-containing lists are unsupported. Pandas, DuckDB and R do not support Explode List.
-Lazy input is read into memory before preview so the growth check and expansion use the same values. The result stays
+Object-containing lists are unsupported. Native R also supports Explode List for homogeneous atomic list columns;
+empty and missing cells keep one typed missing value. Pandas and DuckDB do not support Explode List.
+For Polars, lazy input is read into memory before preview so the growth check and expansion use the same values. The result stays
 lazy, but later steps cannot reduce that initial read. The [capacity limit](architecture.md#engine-boundaries-and-capabilities)
-does not guarantee that an input or its expanded output will fit in memory.
+does not guarantee that an input or its expanded output will fit in memory. R uses its existing native operation
+byte limit before allocating expanded output.
 
 Automatic field discovery, recursive flattening and transpose remain unavailable.
 
@@ -623,13 +625,13 @@ limits below. Support labels describe the qualification commitment for each entr
 | IRkernel notebook in desktop VS Code                | Stable since 2.5.0 on Linux, macOS and Windows; exact notebook, kernel and variable ownership | Copy, save, notebook insertion, CSV and Parquet        |
 | Active terminal managed by the official R extension | Preview on Linux; exact terminal and process ownership                                        | Copy, save, CSV and Parquet; no document for insertion |
 | Managed `.R`, `.Rmd` or `.qmd` document             | Preview on Linux and macOS; exact document/version and owned R process                        | Copy, save, source-document insertion, CSV and Parquet |
-| Local CSV, TSV, Parquet, JSONL or Excel file        | Preview on Linux, macOS and Windows; exact file/options and owned R process                   | Copy, save, CSV and Parquet; no document insertion     |
+| Local CSV, TSV, Parquet, JSONL or Excel file        | Preview in 2.6 on Linux, macOS and Windows; exact file/options and owned R process            | Copy, save, CSV and Parquet; no document insertion     |
 | IRkernel notebook in Cursor on Linux                | Experimental editor compatibility with narrower coverage                                      | Only the capabilities of its documented execution path |
 
 The [architecture](architecture.md#native-r) defines frame, precision, source and transport guarantees.
 [Testing](testing.md#native-r-editor-dependencies) identifies the native and installed checks for each path.
 
-Local R files use a base `data.frame` with the existing R cleaning operations. File sessions can restore saved plans;
+In **2.6**, local R files use a base `data.frame` with the existing R cleaning operations. File sessions can restore saved plans;
 live R notebook, document and terminal sessions do not use workspace persistence.
 Select R explicitly in the engine picker or `openWrangler.defaultBackend`, or let Auto select R when no compatible
 Python interpreter or file engine is available. Switching between R and Python opens a separate session and retains the original plan.
@@ -644,10 +646,12 @@ bounded pages, and editing can require additional copies. It needs Rscript, not 
 also admit flat scalar data; Excel opens the selected worksheet. Parquet requires `nanoparquet`, Excel requires
 `readxl`, and large integer input requires `bit64`. The [reader contract](architecture.md#parquet-jsonl-and-excel-files)
 describes type and precision limits, spreadsheet missing-value rules and eager loading.
-Installed CSV workflows have been verified in desktop VS Code on Linux and macOS. The
+Installed CSV workflows have been verified in desktop VS Code on Linux, macOS and Windows. The
 [macOS check](https://github.com/Matt17BR/openwrangler/actions/runs/35094083555/job/104787104263) covers native cells,
 Rename Preview/Apply, generated R, protected all-row CSV export and session/process cleanup. Local R file support is
-Preview. Windows uses the same CSV journey and native Job Object controls; its hosted verification must pass before release.
+Preview. The [Windows check](https://github.com/Matt17BR/openwrangler/actions/runs/35216479111/job/105186103569)
+also covers configured CSV, the other supported file formats, process recovery and owned cleanup. Native Job Object
+controls verify Windows process containment separately.
 Parser options beyond this reader contract remain unsupported.
 
 ### First stable R notebook scope
@@ -674,6 +678,22 @@ are refused. IRkernel works across the supported desktop platforms; direct `.R`,
 limited to macOS and Linux. Literate support runs selected lexical R cells, without promising document-render
 semantics. An active R terminal has no source document for generated-code insertion.
 
+In **2.6**, ordinary list columns can contain atomic vectors of one native type, including factors, temporal values and integer64.
+Typed empty vectors retain their type; `list()` is an untyped empty value and outer `NULL` is missing. Flat named records
+with the same scalar fields appear as Struct columns, even when field order differs. Missing fields, `NULL` field
+values, mixed element types and recursive containers are refused. Atomic element names remain intact.
+Extract Struct Fields appends selected fields; Explode List repeats sibling values and gives empty or missing cells
+one typed missing output. A wholly untyped list column cannot be exploded. Preview, Apply, Discard, Undo/Redo,
+inspection and generated R preserve the admitted native metadata and source.
+
+List and Struct profiles show outer missing counts. Missing-value filters are available; nested sorting, value pickers,
+distributions and dataset duplicate counts are unavailable. Scalar siblings keep their ordinary viewing and cleaning
+operations. CSV and Parquet export require a scalar result: extract then drop record columns, or explode typed lists.
+Pages and copying have separate [native bounds](architecture.md#frame-and-source-ownership), so a large list column
+may be viewable but too large to isolate or expand. The existing native frame, lifecycle and Custom Code owners cover
+this finite scope on current and minimum R; the catalog also checks live/generated agreement. Installed entry-path
+qualification remains separate.
+
 Sessions honor the opening and ordinary request timeout settings; invalid values use defaults and fractions round
 upward to whole milliseconds. Exports retain their separate 30-minute default. Large R profiles count every finite
 value in numeric histograms and retain exact categorical counts within the [documented memory bounds](architecture.md#viewing-and-profiling).
@@ -683,7 +703,7 @@ available without restarting the standalone runtime.
 
 The [generated reference](reference.md#transformation-operations) lists the complete operation set and parameters.
 Custom Code can call installed packages such as `dplyr`, `data.table` and `collapse`, and return a supported base
-`data.frame`, tibble or `data.table` even when the input uses another admitted class. Preview, history, profiling,
+`data.frame`, tibble or `data.table`. In **2.6**, the result can change between these frame classes. Preview, history, profiling,
 export and generated code retain that result's class. Grouped objects, unsupported attributes and cell classes still
 require an explicit conversion. Missing packages and failed code leave the confirmed result available.
 Custom Code can create the first column of a supported zero-column source, with inspection, Undo and Redo. Drop

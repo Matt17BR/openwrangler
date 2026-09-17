@@ -60,6 +60,8 @@ recording_contract <- openwrangler_r_frame_contract
 real_capture_frame <- recording_contract$capture_frame
 real_capture_categorical_result <- recording_contract$capture_categorical_result
 real_capture_group_result <- recording_contract$capture_group_result
+real_capture_nested_result <- recording_contract$capture_nested_result
+recording_contract$capture_nested_result <- function(...) record_capture(real_capture_nested_result(...))
 real_capture_custom_code_result <- recording_contract$capture_custom_code_result
 recording_contract$capture_frame <- function(...) record_capture(real_capture_frame(...))
 recording_contract$capture_categorical_result <- function(...) {
@@ -82,7 +84,7 @@ agent <- openwrangler_r_kernel_agent$new_agent(recording_contract, source_enviro
 
 dispatch <- function(kind, payload) {
   encoded <- jsonlite::toJSON(
-    list(transportVersion = 15L, requestId = request_id, kind = kind, payload = payload),
+    list(transportVersion = 16L, requestId = request_id, kind = kind, payload = payload),
     auto_unbox = TRUE,
     digits = 17L,
     null = "null",
@@ -181,7 +183,7 @@ text_step <- function(frame, id, kind, new_column = NULL, ...) {
 
 catalog_kinds <- c(
   "sortRows", "filterRows", "dropMissingRows", "fillMissingValues", "dropDuplicates", "markDuplicates",
-  "selectColumns", "dropColumns", "renameColumn", "cloneColumn", "castColumn", "formula", "conditionalColumn",
+  "selectColumns", "dropColumns", "renameColumn", "cloneColumn", "extractStructFields", "explodeList", "castColumn", "formula", "conditionalColumn",
   "textLength", "oneHotEncode", "multiLabelBinarize", "findReplace", "stripText", "splitText", "splitTextColumns",
   "extractRegexGroup", "capitalizeText", "lowerText", "upperText", "denseRank", "minMaxScale", "roundNumber", "floorNumber",
   "ceilNumber", "formatDatetime", "pivotLonger", "pivotWider", "groupBy", "byExample", "customCode"
@@ -272,6 +274,27 @@ catalog_cases <- list(
     verify = function(output, input) assert_identical(
       output[["category copy"]], input$category, "Clone Column lost factor values or attributes"
     )
+  ),
+  extractStructFields = list(
+    source = function() {
+      frame <- data.frame(id = 1:3)
+      frame$record <- list(list(value = 1L, label = "a"), NULL, list(label = "b", value = NA_integer_))
+      frame
+    },
+    step = function(frame, id) step_with(id, "extractStructFields", list(column = column_reference(frame, "record"), fields = I(list(list(field = "value", newColumn = "extracted"))))),
+    verify = function(output, input) assert_identical(output$extracted, c(1L, NA_integer_, NA_integer_), "Extract Struct Fields lost typed missing values")
+  ),
+  explodeList = list(
+    source = function() {
+      frame <- data.frame(id = 1:3)
+      frame$items <- list(c(1L, NA_integer_), integer(), NULL)
+      frame
+    },
+    step = function(frame, id) step_with(id, "explodeList", list(column = column_reference(frame, "items"))),
+    verify = function(output, input) {
+      assert_identical(output$items, c(1L, NA_integer_, NA_integer_, NA_integer_), "Explode List lost typed empty or NULL placeholders")
+      assert_identical(output$id, c(1L, 1L, 2L, 3L), "Explode List did not repeat scalar siblings in source order")
+    }
   ),
   castColumn = list(
     step = function(frame, id) step_with(id, "castColumn", list(
@@ -517,7 +540,7 @@ catalog_generated_code <- setNames(vector("list", length(catalog_cases)), names(
 
 run_catalog_case <- function(case, kind, index) {
   variable_name <- "catalog_frame"
-  input <- catalog_source()
+  input <- if (is.null(case$source)) catalog_source() else case$source()
   assign(variable_name, input, envir = source_environment)
   source_before <- serialize(get(variable_name, envir = source_environment), NULL, version = 3L)
   step <- case$step(input, paste0("complete-catalog-", kind))
@@ -1061,8 +1084,18 @@ metadata_catalog_input <- set_column_element_names(
 )
 for (kind in names(catalog_cases)) {
   metadata_index <- metadata_index + 1L
-  step <- catalog_cases[[kind]]$step(metadata_catalog_input, paste0("metadata-", kind))
-  invisible(run_metadata_plan(metadata_catalog_input, list(step), paste("data.table", kind), metadata_index))
+  case <- catalog_cases[[kind]]
+  input <- metadata_catalog_input
+  if (!is.null(case$source)) {
+    input <- data.table::as.data.table(case$source())
+    for (position in seq_len(ncol(input))) {
+      input <- set_column_element_names(
+        input, position, paste0("element-", seq_len(nrow(input))), "nested catalog metadata"
+      )
+    }
+  }
+  step <- case$step(input, paste0("metadata-", kind))
+  invisible(run_metadata_plan(input, list(step), paste("data.table", kind), metadata_index))
 }
 
 numeric_metadata_kinds <- c("roundNumber", "floorNumber", "ceilNumber", "minMaxScale")

@@ -59,6 +59,7 @@ import {
   rowIdentityDomainAfterRStep,
   rowNamesAfterRStep,
   schemaAfterRStep,
+  schemaAfterNestedStep,
   type RCustomRowIdentityConstraint
 } from "./rKernelMutationSchema";
 import { copyRTransformStep } from "./rKernelTransformState";
@@ -131,7 +132,7 @@ export class RKernelMutationLifecycle {
     if (!isSupportedRStep(step)) {
       return errorResponse(
         "unsupported_operation",
-        `The native R runtime does not support ${step.kind}.`,
+        "The native R runtime does not support this operation.",
         true,
         request.sessionId
       );
@@ -194,7 +195,7 @@ export class RKernelMutationLifecycle {
           ? Object.freeze(inputSchema.map((column) => Object.freeze({ ...column })))
           : isRCategoricalTransformStep(step)
             ? categoricalRetainedSchema(inputSchema, step)
-            : schemaAfterRStep(inputSchema, step, inputKeyColumnIds);
+            : schemaAfterRStep(inputSchema, step, inputKeyColumnIds, inputRSchema);
       if (step.kind === "pivotLonger") {
         assertRPivotLongerPreflight(step, inputSchema, inputRSchema, inputRows);
       }
@@ -254,6 +255,10 @@ export class RKernelMutationLifecycle {
       }
       if ((step.kind === "customCode") !== (result.effectiveView !== undefined)) {
         throw new Error("The R kernel returned an effective view for the wrong draft operation.");
+      }
+      if (step.kind === "extractStructFields" || step.kind === "explodeList") {
+        if (!isDeepStrictEqual(result.page.schema, schemaAfterNestedStep(inputRSchema, step)))
+          throw new Error("The R kernel changed exact nested output or sibling metadata.");
       }
       if (isRCategoricalTransformStep(step)) {
         targetSchema = dynamicCategoricalSchema(inputSchema, inputRSchema, step, result.page);

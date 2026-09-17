@@ -315,6 +315,16 @@ The existing native Custom Code owners execute real dplyr, data.table and collap
 frames, including admitted class changes, retained metadata, history, failure recovery and executable generated code.
 The bridge owner checks output-flavor publication and inspection; the existing process Custom Code lifecycle changes
 a base frame to a tibble. Generated append coverage includes a later Formula after conversion to data.table.
+The frame capture owner checks flat native Lists and Structs, typed and untyped empties, named children, field
+reordering, later projected pages, source mutation and rejection before copying. Its budget controls charge repeated
+children and expanded siblings before allocation, while retaining metadata-only access to large nested sources.
+The existing lifecycle owner exercises Extract and Explode across base frames, tibbles and keyed data tables, including
+Preview/Discard/Apply, inspection, Undo/Redo, scalar CSV export and exact generated results. Native factor, temporal,
+integer64 and floating-edge leaves use the same owner, including escaped Unicode in factor levels and Struct names.
+The catalog independently checks live/generated agreement.
+Custom Code checks generated helper dependencies and hostile off-page attributes before copying or publication.
+Host codec and mutation tests pass named nested cells through the public response validator and reject mismatched
+metadata or row domains. Installed rendering and entry-path checks remain separate from these native/source controls.
 Formula transport keeps integer and maximum finite double samples; intermediate exact powers and their neighboring
 values belong to the encoder and native numeric-portability owners.
 Min-max scale's adjacent integer64 and missing-value results belong to the native kernel's live and generated-code

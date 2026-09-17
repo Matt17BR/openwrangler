@@ -4,6 +4,7 @@ import type {
   ConditionalColumnTransformStep,
   MarkDuplicatesTransformStep,
   DataDiff,
+  ExtractStructFieldsTransformStep,
   GroupByTransformStep,
   OneHotEncodeTransformStep,
   SortRowsTransformStep
@@ -22,10 +23,139 @@ import {
   rowNamesAfterRStep,
   schemaAfterFormula,
   schemaAfterGroupBy,
-  schemaAfterRStep
+  schemaAfterRStep,
+  schemaAfterNestedStep
 } from "../extension/r/rKernelMutationSchema";
 
 describe("R kernel mutation schema", () => {
+  it("derives exact nested scalar metadata and fresh Explode identities without changing siblings", () => {
+    const integer64 = { kind: "integer64", storageMode: "double", classes: ["integer64"] } as const;
+    const factor = {
+      kind: "factor",
+      storageMode: "integer",
+      classes: ["ordered", "factor"],
+      ordered: true,
+      levels: ["b", "a"]
+    } as const;
+    const nested: readonly RColumnSchema[] = [
+      {
+        id: "r:c:0",
+        name: "id",
+        position: 0,
+        rawType: "integer",
+        type: "integer",
+        nullable: false,
+        semantics: { kind: "integer", storageMode: "integer", classes: ["integer"] }
+      },
+      {
+        id: "r:c:1",
+        name: "items",
+        position: 1,
+        rawType: "list",
+        type: "list",
+        nullable: true,
+        semantics: { kind: "list", storageMode: "list", classes: ["list"], element: integer64 }
+      },
+      {
+        id: "r:c:2",
+        name: "record",
+        position: 2,
+        rawType: "list",
+        type: "struct",
+        nullable: true,
+        semantics: {
+          kind: "struct",
+          storageMode: "list",
+          classes: ["list"],
+          fields: [{ name: "__proto__", semantics: factor }]
+        }
+      }
+    ];
+    const explode = { id: "explode", kind: "explodeList", params: { column: { id: "r:c:1", name: "items" } } } as const;
+    const output = schemaAfterNestedStep(nested, explode);
+    expect(output[0]).toEqual(nested[0]);
+    expect(output[1]).toMatchObject({
+      id: "r:c:1",
+      rawType: "integer64",
+      type: "integer",
+      nullable: true,
+      semantics: integer64
+    });
+    expect(output[2]).toEqual(nested[2]);
+    expect(keyColumnsAfterRStep(["r:c:0"], output, explode)).toEqual(["r:c:0"]);
+    expect(
+      rowCountAfterRStep(explode, 3, {
+        ...{
+          addedRows: 0,
+          removedRows: 0,
+          addedColumns: [],
+          removedColumns: [],
+          changedCells: 0,
+          cells: [],
+          truncated: false
+        },
+        addedRows: 5,
+        removedRows: 3
+      })
+    ).toBe(5);
+    expect(rowIdentityDomainAfterRStep(explode, 8, 5)).toBe(13);
+    expect(customRowIdentityConstraintAfterRStep(explode, undefined, 8, 5)).toEqual({
+      first: 8,
+      endExclusive: 13,
+      order: "exact"
+    });
+    expect(() =>
+      rowCountAfterRStep(explode, 3, {
+        ...{
+          addedRows: 0,
+          removedRows: 0,
+          addedColumns: [],
+          removedColumns: [],
+          changedCells: 0,
+          cells: [],
+          truncated: false
+        },
+        addedRows: 2,
+        removedRows: 3
+      })
+    ).toThrow("row counts");
+    const extract: ExtractStructFieldsTransformStep = {
+      id: "extract",
+      kind: "extractStructFields",
+      params: { column: { id: "r:c:2", name: "record" }, fields: [{ field: "__proto__", newColumn: "category" }] }
+    };
+    expect(schemaAfterNestedStep(nested, extract)[3]).toEqual({
+      id: "c:step:extract:0",
+      name: "category",
+      position: 3,
+      rawType: "ordered factor",
+      type: "string",
+      nullable: true,
+      semantics: factor
+    });
+    expect(() =>
+      schemaAfterNestedStep(nested, {
+        ...extract,
+        params: { ...extract.params, fields: [{ field: "missing", newColumn: "x" }] }
+      })
+    ).toThrow("captured fields");
+    expect(() =>
+      schemaAfterNestedStep(nested, {
+        ...extract,
+        params: { ...extract.params, fields: [{ field: "__proto__", newColumn: "id" }] }
+      })
+    ).toThrow("output names");
+    expect(() =>
+      schemaAfterNestedStep(
+        nested.map((column) =>
+          column.id === "r:c:1"
+            ? { ...column, semantics: { kind: "list", storageMode: "list", classes: ["list"], element: null } }
+            : column
+        ),
+        explode
+      )
+    ).toThrow("element type");
+  });
   it("declares conditional storage and relevant-arm nullability while retaining keys and rows", () => {
     const step: ConditionalColumnTransformStep = {
       id: "condition",
@@ -388,7 +518,7 @@ function frameContract(columns: readonly ColumnSchema[], rowIds: readonly string
     throw new Error(`Unsupported R test column type: ${column.type}`);
   });
   return {
-    contractVersion: 5,
+    contractVersion: 6,
     dataframeFlavor: "r.data.frame",
     shape: { rows: rowIds.length, columns: columns.length },
     frameSemantics: { classes: ["data.frame"], rowNames: "positional", keyColumnIds: [] },

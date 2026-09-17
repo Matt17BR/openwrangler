@@ -197,6 +197,16 @@ describe("R kernel view contract", () => {
     expect(() =>
       assertRDatasetStatsContract(session, { ...stats, stats: { ...stats.stats, duplicateRows: null } }, view)
     ).toThrow("outside the active dataframe shape");
+    const nestedSession = {
+      ...session,
+      schema: schema.map((column, index) =>
+        index === 1 ? { ...column, type: "list" as const, rawType: "list" } : column
+      )
+    };
+    expect(() =>
+      assertRDatasetStatsContract(nestedSession, { ...stats, stats: { ...stats.stats, duplicateRows: null } }, view)
+    ).not.toThrow();
+    expect(() => assertRDatasetStatsContract(nestedSession, stats, view)).toThrow("outside the active dataframe shape");
     expect(() =>
       assertRSummaryContract(session, [{ id: "r:c:0", name: "value" }], [{ ...summary, totalCount: 2 }], view)
     ).toThrow("inconsistent filtered views");

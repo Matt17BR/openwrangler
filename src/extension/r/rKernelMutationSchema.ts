@@ -23,7 +23,12 @@ import {
   portablePivotWiderNameKey,
   validatePivotWiderOutputName
 } from "../../shared/pivotWider";
-import { R_FRAME_CONTRACT_LIMITS, type RColumnSchema, type RFramePageContract } from "./rFrameContract";
+import {
+  R_FRAME_CONTRACT_LIMITS,
+  expectedColumnIdentity,
+  type RColumnSchema,
+  type RFramePageContract
+} from "./rFrameContract";
 import {
   schemaAfterCast,
   schemaAfterClone,
@@ -280,7 +285,13 @@ export function rowNamesAfterRStep(
   flavor: RFramePageContract["dataframeFlavor"],
   outputRows: number
 ): RFramePageContract["frameSemantics"]["rowNames"] {
-  if (step.kind === "groupBy" || step.kind === "pivotLonger" || step.kind === "pivotWider") return "positional";
+  if (
+    step.kind === "groupBy" ||
+    step.kind === "pivotLonger" ||
+    step.kind === "pivotWider" ||
+    step.kind === "explodeList"
+  )
+    return "positional";
   if (outputRows > 0 && (step.kind === "sortRows" || isRRowReductionStep(step))) {
     return flavor === "r.data.frame" ? "explicit" : "positional";
   }
@@ -288,11 +299,73 @@ export function rowNamesAfterRStep(
   return input;
 }
 
+export function schemaAfterNestedStep(
+  inputRSchema: readonly RColumnSchema[],
+  step: Extract<RPreviewTransformStep, { kind: "extractStructFields" | "explodeList" }>
+): readonly RColumnSchema[] {
+  const source = inputRSchema.find(
+    (column) => column.id === step.params.column.id && column.name === step.params.column.name
+  );
+  if (!source) throw new TypeError("The nested column reference no longer matches the active R dataframe.");
+  if (step.kind === "explodeList") {
+    if (source.semantics.kind !== "list" || source.semantics.element === null)
+      throw new TypeError("Explode List requires a captured atomic element type.");
+    const semantics = source.semantics.element;
+    return Object.freeze(
+      inputRSchema.map((column) =>
+        Object.freeze(
+          column.id === source.id
+            ? { ...column, ...expectedColumnIdentity(semantics), semantics, nullable: true }
+            : { ...column }
+        )
+      )
+    );
+  }
+  if (source.semantics.kind !== "struct") throw new TypeError("Extract Struct Fields requires a flat record column.");
+  if (inputRSchema.length + step.params.fields.length > R_FRAME_CONTRACT_LIMITS.columns)
+    throw new TypeError("Extract Struct Fields exceeds the column limit.");
+  const fields = new Map(source.semantics.fields.map((field) => [field.name, field.semantics]));
+  const selected = new Set<string>();
+  const occupied = new Set(inputRSchema.map((column) => column.name));
+  const ids = new Set(inputRSchema.map((column) => column.id));
+  const appended = step.params.fields.map((field, ordinal) => {
+    const semantics = fields.get(field.field);
+    if (!semantics || selected.has(field.field))
+      throw new TypeError("Extract Struct Fields requires unique captured fields.");
+    selected.add(field.field);
+    if (
+      field.newColumn.length === 0 ||
+      occupied.has(field.newColumn) ||
+      Buffer.byteLength(field.newColumn, "utf8") > R_FRAME_CONTRACT_LIMITS.nameBytes ||
+      field.newColumn.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)
+    )
+      throw new TypeError("Extract Struct Fields requires unique bounded output names.");
+    occupied.add(field.newColumn);
+    const id = `c:step:${step.id}:${ordinal}`;
+    if (ids.has(id) || Buffer.byteLength(id, "utf8") > R_FRAME_CONTRACT_LIMITS.columnIdBytes)
+      throw new TypeError("Extract Struct Fields has an invalid output identity.");
+    return Object.freeze({
+      id,
+      name: field.newColumn,
+      position: inputRSchema.length + ordinal,
+      ...expectedColumnIdentity(semantics),
+      nullable: true,
+      semantics
+    });
+  });
+  return Object.freeze([...inputRSchema.map((column) => Object.freeze({ ...column })), ...appended]);
+}
+
 export function schemaAfterRStep(
   inputSchema: readonly ColumnSchema[],
   step: RPreviewTransformStep,
-  activeKeyColumnIds: readonly string[]
+  activeKeyColumnIds: readonly string[],
+  inputRSchema: readonly RColumnSchema[] = []
 ): readonly ColumnSchema[] {
+  if (step.kind === "extractStructFields" || step.kind === "explodeList")
+    return Object.freeze(
+      schemaAfterNestedStep(inputRSchema, step).map(({ semantics: _semantics, ...column }) => Object.freeze(column))
+    );
   if (
     step.kind === "sortRows" ||
     step.kind === "filterRows" ||
@@ -1056,6 +1129,16 @@ export function keyColumnsAfterRStep(
 }
 
 export function rowCountAfterRStep(step: RPreviewTransformStep, inputRows: number, diff: DataDiff): number {
+  if (step.kind === "explodeList") {
+    if (
+      diff.removedRows !== inputRows ||
+      diff.addedRows < inputRows ||
+      diff.addedRows > R_FRAME_CONTRACT_LIMITS.rows ||
+      (inputRows === 0 && diff.addedRows !== 0)
+    )
+      throw new Error("The R kernel returned invalid Explode List row counts.");
+    return diff.addedRows;
+  }
   if (step.kind === "pivotLonger") {
     const outputRows = checkedRPivotLongerRows(inputRows, step.params.columns.length);
     if (diff.removedRows !== inputRows || diff.addedRows !== outputRows) {
@@ -1100,7 +1183,7 @@ export function rowIdentityDomainAfterRStep(
   outputRows: number
 ): number {
   if (step.kind === "pivotLonger" || step.kind === "pivotWider") return outputRows;
-  if (step.kind !== "groupBy" && step.kind !== "customCode") return inputIdentityRows;
+  if (step.kind !== "groupBy" && step.kind !== "customCode" && step.kind !== "explodeList") return inputIdentityRows;
   const outputIdentityRows = inputIdentityRows + outputRows;
   if (!Number.isSafeInteger(outputIdentityRows) || outputIdentityRows > R_FRAME_CONTRACT_LIMITS.rows) {
     throw new Error(
@@ -1118,7 +1201,7 @@ export function customRowIdentityConstraintAfterRStep(
   inputIdentityRows: number,
   outputRows: number
 ): RCustomRowIdentityConstraint | undefined {
-  if (step.kind === "customCode") {
+  if (step.kind === "customCode" || step.kind === "explodeList") {
     return Object.freeze({
       first: inputIdentityRows,
       endExclusive: inputIdentityRows + outputRows,

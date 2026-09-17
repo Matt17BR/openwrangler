@@ -152,7 +152,7 @@ CSV export is available; Parquet export requires `nanoparquet` and has type and 
 
 _Preview grouped R results alongside the cleaning history and generated R code._
 
-Local R file support is **Preview**. On Linux, macOS and Windows, choose R from the dataframe engine picker to open CSV, TSV,
+In **2.6**, local R file support is **Preview**. On Linux, macOS and Windows, choose R from the dataframe engine picker to open CSV, TSV,
 Parquet, JSONL/NDJSON or an Excel worksheet, or set `openWrangler.defaultBackend` to `r` before opening a file.
 Auto also tries R when no compatible Python interpreter or file engine is available. An explicit Python engine choice
 or a file-read error does not switch to R. CSV/TSV import options include UTF-16 and single-byte encodings,
@@ -163,7 +163,11 @@ Rscript path. Choosing R from a Python session opens a separate tab and
 preserves the existing steps. Changing an R file's import options also opens a separate session.
 
 Custom Code can call installed R packages such as `dplyr`, `data.table` and `collapse`, and return a supported
-base `data.frame`, tibble or `data.table`, including a change of frame class.
+base `data.frame`, tibble or `data.table`. In **2.6**, the result can change between these frame classes.
+
+In **2.6**, R also displays homogeneous atomic list columns and flat scalar records. Use Explode List, or Extract Struct Fields
+followed by dropping the parent column, to produce scalar columns for CSV or Parquet export. Recursive containers
+remain unsupported.
 
 R terminal sessions on Linux and managed `.R`, `.Rmd` and `.qmd` documents on Linux/macOS are **Preview**.
 Cursor support is **experimental**. The [native R support guide](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#native-r-support)

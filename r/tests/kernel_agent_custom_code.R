@@ -49,6 +49,67 @@ custom_assert_true <- function(value, message) {
   if (!isTRUE(value)) stop(message, call. = FALSE)
 }
 
+# Generated nested guards reuse native validators in a private base environment.
+local({
+  original <- data.frame(id = 1:3)
+  original$items <- list(c(left = 1L, right = NA_integer_), NULL, integer())
+  original$record <- list(list(code = "a", count = 1L), NULL, list(count = NA_integer_, code = "c"))
+  original$wide <- list(bit64::as.integer64(c("9223372036854775807", NA)), NULL, bit64::as.integer64(character()))
+  original$logical <- list(c(TRUE, NA), NULL, logical())
+  original$number <- list(c(-0, NaN, Inf, -Inf), NULL, numeric())
+  original$date <- list(as.Date(c("2026-01-01", NA)), NULL, as.Date(character()))
+  original$datetime <- list(as.POSIXct(c("2026-01-01", NA), tz = "UTC"), NULL, as.POSIXct(character(), tz = "UTC"))
+  original$duration <- list(as.difftime(c(1, NA), units = "hours"), NULL, as.difftime(numeric(), units = "hours"))
+  original$factor <- list(factor(c("a", NA), levels = c("b", "a")), NULL, factor(character(), levels = c("b", "a")))
+  for (flavor in c("base", "tibble", "data.table")) {
+    source <- switch(flavor, base = original, tibble = tibble::as_tibble(original), data.table = data.table::as.data.table(original))
+    if (flavor == "data.table") data.table::setkey(source, id)
+    before <- serialize(source, NULL, version = 3L)
+    source_env <- new.env(parent = baseenv())
+    source_env$frame <- source
+    local_agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, source_env)
+    session <- "abcdabcd-abcd-4bcd-8bcd-abcdabcdabcd"
+    opened <- dispatch_with(local_agent, "openSession", list(sessionId = session, variableName = "frame", page = page_window(row_limit = 1L)))
+    assert_identical(opened$kind, "page", paste(flavor, "nested generated source did not open"))
+    preview <- dispatch_with(local_agent, "previewStep", list(sessionId = session, revision = 0L,
+      step = custom_step("nested-native", "result <- df"), page = page_window()))
+    assert_identical(preview$kind, "stepPreview", paste(flavor, "nested Custom Code did not preview"))
+    generated <- new.env(parent = baseenv())
+    generated$frame <- source
+    eval(parse(text = preview$code), generated)
+    assert_identical(as.data.frame(generated$open_wrangler_result), as.data.frame(source), "generated nested leaves changed native values or metadata")
+    assert_identical(serialize(source, NULL, version = 3L), before, "generated nested Custom Code mutated source")
+    if (flavor == "data.table") assert_identical(data.table::key(generated$open_wrangler_result), "id", "generated nested Custom Code lost scalar key")
+    generated$frame <- as.data.frame(source)
+    generated$frame$items[[3L]] <- structure(1L, hidden = new.env())
+    generated$open_wrangler_result <- "retained publication"
+    assign(".ow_nested_generated_copy_calls", 0L, .GlobalEnv)
+    trace("serialize", where = baseenv(), print = FALSE,
+      tracer = quote(assign(".ow_nested_generated_copy_calls", get(".ow_nested_generated_copy_calls", .GlobalEnv) + 1L, .GlobalEnv)))
+    failed <- tryCatch(eval(parse(text = preview$code), generated), error = identity)
+    untrace("serialize", where = baseenv())
+    calls <- get(".ow_nested_generated_copy_calls", .GlobalEnv)
+    rm(list = ".ow_nested_generated_copy_calls", envir = .GlobalEnv)
+    custom_assert_true(inherits(failed, "error") && grepl("unsupported nested attribute", conditionMessage(failed), fixed = TRUE),
+      "generated source guard accepted a hidden reference in an off-page leaf")
+    assert_identical(calls, 0L, "generated source guard copied before validating an off-page nested cell")
+    assert_identical(generated$open_wrangler_result, "retained publication", "failed generated guard overwrote prior result")
+    invisible(dispatch_with(local_agent, "closeSession", list(sessionId = session)))
+  }
+  # A scalar source may gain an admitted native list through ordinary Custom Code.
+  source_env <- new.env(parent = baseenv()); source_env$frame <- data.frame(id = 1:3)
+  local_agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, source_env)
+  session <- "abcdabcd-abcd-4bcd-8bcd-abcdabcdabcd"
+  invisible(dispatch_with(local_agent, "openSession", list(sessionId = session, variableName = "frame", page = page_window())))
+  preview <- dispatch_with(local_agent, "previewStep", list(sessionId = session, revision = 0L,
+    step = custom_step("create-native-list", "result <- df; result$items <- list(1L, NULL, integer())"), page = page_window()))
+  assert_identical(preview$kind, "stepPreview", "scalar-source Custom Code did not admit an ordinary list")
+  generated <- new.env(parent = baseenv()); generated$frame <- source_env$frame
+  eval(parse(text = preview$code), generated)
+  assert_identical(generated$open_wrangler_result$items, list(1L, NULL, integer()), "generated Custom Code flattened list output")
+  invisible(dispatch_with(local_agent, "closeSession", list(sessionId = session)))
+})
+
 # Deliberate Custom Code calls keep caller S3 dispatch; built-in isolation is not a global override.
 local({
   methods <- get(".__S3MethodsTable__.", asNamespace("base"), inherits = FALSE)
@@ -291,7 +352,7 @@ for (case in custom_decoder_cases) {
 
 nul_request <- jsonlite::toJSON(
   list(
-    transportVersion = 15L,
+    transportVersion = 16L,
     requestId = request_id,
     kind = "previewStep",
     payload = list(
@@ -1320,7 +1381,7 @@ writeLines(c(
   "source_environment$source_frame <- source_frame",
   "agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, source_environment)",
   "page <- list(rowOffset = 0L, rowLimit = 100L, columnOffset = 0L, columnLimit = 100L, view = list(filters = I(list()), sorts = I(list())))",
-  "dispatch <- function(kind, payload) { request <- jsonlite::toJSON(list(transportVersion = 15L, requestId = '11111111-1111-4111-8111-111111111111', kind = kind, payload = payload), auto_unbox = TRUE, null = 'null'); jsonlite::fromJSON(agent$dispatch_json(as.character(request)), simplifyVector = FALSE) }",
+  "dispatch <- function(kind, payload) { request <- jsonlite::toJSON(list(transportVersion = 16L, requestId = '11111111-1111-4111-8111-111111111111', kind = kind, payload = payload), auto_unbox = TRUE, null = 'null'); jsonlite::fromJSON(agent$dispatch_json(as.character(request)), simplifyVector = FALSE) }",
   "session_id <- '22222222-2222-4222-8222-222222222222'",
   "opened <- dispatch('openSession', list(sessionId = session_id, variableName = 'source_frame', page = page))",
   "if (!identical(opened$kind, 'page')) stop('S3-poison source did not open', call. = FALSE)",

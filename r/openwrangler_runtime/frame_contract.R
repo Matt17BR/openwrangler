@@ -1,5 +1,5 @@
 openwrangler_r_frame_contract <- local({
-  contract_version <- 5L
+  contract_version <- 6L
   maximum_rows <- .Machine$integer.max
   maximum_columns <- 2048L
   maximum_page_rows <- 1000L
@@ -27,6 +27,7 @@ openwrangler_r_frame_contract <- local({
   maximum_operation_output_bytes <- 64L * 1024L * 1024L
   maximum_operation_output_chunk_rows <- 1024L
   character_vector_slot_bytes <- 8L
+  native_vector_header_bytes <- 48L
   default_strip_characters <- paste0(
     " \t\n\r\v\f",
     "\u001c\u001d\u001e\u001f",
@@ -623,12 +624,203 @@ openwrangler_r_frame_contract <- local({
     list(kind = kind, raw = raw, display = display, isNull = FALSE, isNaN = FALSE)
   }
 
-  column_semantics <- function(column, label, budget, validate_values = TRUE) {
+  nested_kind <- function(semantics) semantics$kind %in% c("list", "struct")
+
+  nested_leaf_semantics <- function(value, label, validate_values = FALSE, budget = new_payload_budget()) {
+    if (is.null(value) || is.list(value)) {
+      abort("unsupported-column", sprintf("%s must be an atomic vector; nested lists and NULL record fields are unsupported", label))
+    }
+    # A scalar attribute may not conceal a reference object or another container.
+    for (name in names(attributes(value))) {
+      attribute <- attr(value, name, exact = TRUE)
+      if (!is.character(attribute) || !is.null(attributes(attribute))) {
+        abort("unsupported-column-attributes", sprintf("%s has unsupported nested attribute metadata", label))
+      }
+    }
+    column_semantics(value, label, budget, validate_values)
+  }
+
+  nested_cell_prototype <- function(value, label, validate_values = FALSE, budget = new_payload_budget()) {
+    if (is.null(value) || (is.list(value) && storage_length(value) == 0L && (is.null(attributes(value)) || identical(attributes(value), list(names = character()))))) return(NULL)
+    if (!is.list(value)) return(list(kind = "list", element = nested_leaf_semantics(value, label, validate_values, budget)))
+    if (!identical(class(value), "list") || !identical(names(attributes(value)), "names")) {
+      abort("unsupported-column", sprintf("%s must be a flat named record or an atomic vector", label))
+    }
+    spend_payload_budget(budget, as.double(storage_length(value)) * column_fixed_bytes, paste0(label, " record metadata"))
+    field_names <- attr(value, "names", exact = TRUE)
+    if (!is.character(field_names) || !is.null(attributes(field_names)) || length(field_names) != storage_length(value) ||
+        anyNA(field_names) || any(field_names == "") || anyDuplicated(field_names)) {
+      abort("unsupported-column", sprintf("%s must have unique nonempty record field names", label))
+    }
+    fields <- lapply(seq_along(field_names), function(index) {
+      field <- bounded_utf8(field_names[[index]], paste0(label, " field name"), maximum_name_bytes)
+      if (grepl("[\r\n]", field)) abort("unsupported-column", sprintf("%s has a multiline record field name", label))
+      spend_json_string(budget, field, label)
+      child <- .subset2(value, index)
+      semantics <- nested_leaf_semantics(child, paste0(label, "$", field), validate_values, budget)
+      if (storage_length(child) != 1L) abort("unsupported-column", sprintf("%s$%s must be a scalar", label, field))
+      list(name = field, semantics = semantics)
+    })
+    list(kind = "struct", fields = json_array(fields))
+  }
+
+  match_nested_prototype <- function(actual, expected, label) {
+    if (is.null(actual)) {
+      if (identical(expected$kind, "struct")) abort("unsupported-column", sprintf("%s is an empty list, not a record with the captured fields", label))
+      return(invisible(NULL))
+    }
+    if (!identical(actual$kind, expected$kind)) abort("unsupported-column", sprintf("%s mixes sequences and records", label))
+    if (identical(actual$kind, "list")) {
+      if (!identical(actual$element, expected$element)) abort("unsupported-column", sprintf("%s mixes atomic list element types or metadata", label))
+    } else {
+      actual_names <- vapply(plain_metadata_storage(actual$fields), `[[`, character(1L), "name")
+      expected_names <- vapply(plain_metadata_storage(expected$fields), `[[`, character(1L), "name")
+      positions <- match(expected_names, actual_names)
+      if (length(actual_names) != length(expected_names) || anyNA(positions)) {
+        abort("unsupported-column", sprintf("%s has missing or extra record fields", label))
+      }
+      for (index in seq_along(positions)) {
+        if (!identical(.subset2(actual$fields, positions[[index]])$semantics, .subset2(expected$fields, index)$semantics)) {
+          abort("unsupported-column", sprintf("%s$%s changes the captured field type or metadata", label, expected_names[[index]]))
+        }
+      }
+    }
+    invisible(NULL)
+  }
+
+  charge_nested_metadata <- function(semantics, budget, label) {
+    charge_leaf <- function(leaf) {
+      for (field in c("classes", "levels")) for (text in leaf[[field]]) {
+        spend_json_string(budget, text, label)
+        spend_payload_budget(budget, 1L, label)
+      }
+      for (field in c("timezone", "units")) if (!is.null(leaf[[field]])) spend_json_string(budget, leaf[[field]], label)
+    }
+    for (text in semantics$classes) {
+      spend_json_string(budget, text, label)
+      spend_payload_budget(budget, 1L, label)
+    }
+    if (identical(semantics$kind, "list")) {
+      if (!is.null(semantics$element)) charge_leaf(semantics$element)
+    } else {
+      spend_payload_budget(budget, as.double(length(semantics$fields)) * column_fixed_bytes, label)
+      for (field in semantics$fields) {
+        spend_json_string(budget, field$name, label)
+        charge_leaf(field$semantics)
+      }
+    }
+    invisible(NULL)
+  }
+
+  same_native_atomic_metadata <- function(value, representative) {
+    identical(typeof(value), typeof(representative)) &&
+      identical(attributes(value), attributes(representative)) &&
+      (is.null(attr(value, "names", exact = TRUE)) ||
+        storage_length(attr(value, "names", exact = TRUE)) == storage_length(value))
+  }
+
+  nested_column_semantics <- function(column, label, budget, validate_values = FALSE, expected = NULL) {
+    classes <- class(column)
+    if (!(identical(classes, "list") || identical(classes, "AsIs"))) {
+      abort("unsupported-column-class", sprintf("%s has unsupported list column classes", label))
+    }
+    assert_attributes(column, if (identical(classes, "AsIs")) "class" else character(), label)
+    if (!is.null(expected)) {
+      if (!nested_kind(expected) || !identical(classes, plain_metadata_storage(expected$classes))) source_changed()
+      # Live pages validate projected cells against this captured prototype.
+      charge_nested_metadata(expected, budget, label)
+      return(expected)
+    }
+    prototype <- NULL
+    prototype_bytes <- 0
+    representative <- NULL
+    for (index in seq_len(storage_length(column))) {
+      value <- .subset2(column, index)
+      if (is.null(value)) next
+      # Repeated native atomic metadata needs no repeated JSON conversion. The
+      # first representative has already passed the scalar attribute validator;
+      # exact attributes include names and their own attributes. Full captures
+      # still validate each cell's factor codes and temporal values.
+      if (!is.null(representative) && !is.list(value) &&
+          same_native_atomic_metadata(value, representative)) {
+        if (validate_values) validate_native_atomic_values(value, prototype$element)
+        next
+      }
+      cell_budget <- new_payload_budget()
+      actual <- nested_cell_prototype(value, sprintf("%s row %d", label, index), validate_values, cell_budget)
+      if (is.null(actual)) next
+      if (is.null(prototype)) {
+        prototype <- actual
+        prototype_bytes <- cell_budget$used
+        if (!is.list(value)) representative <- value
+      } else match_nested_prototype(actual, prototype, label)
+    }
+    if (is.null(prototype)) prototype <- list(kind = "list", element = NULL)
+    if (identical(prototype$kind, "struct")) {
+      # An empty list is present, but cannot stand in for a record's required fields.
+      for (index in seq_len(storage_length(column))) {
+        value <- .subset2(column, index)
+        if (!is.null(value) && storage_length(value) == 0L) match_nested_prototype(NULL, prototype, label)
+      }
+    }
+    semantics <- c(list(kind = prototype$kind, storageMode = "list",
+      classes = bounded_text_array(classes, paste0(label, ".classes"), budget = budget)), prototype[-1L])
+    spend_payload_budget(budget, prototype_bytes, paste0(label, " nested metadata"))
+    semantics
+  }
+
+  encode_nested_value <- function(column, semantics, index, label, budget) {
+    value <- .subset2(column, index)
+    if (is.null(value)) return(cell_missing())
+    count <- storage_length(value)
+    if (as.double(count) * 3 > maximum_text_bytes + 1) abort("text-too-large", sprintf("%s exceeds the bounded nested display size; select other columns or reduce the native cell", label))
+    prototype <- nested_cell_prototype(value, label, FALSE)
+    match_nested_prototype(prototype, semantics, label)
+    is_record <- identical(semantics$kind, "struct")
+    # Charge child envelopes before constructing any child array.
+    spend_payload_budget(budget, as.double(count) * cell_fixed_bytes, paste0(label, " nested children"))
+    children <- vector("list", count)
+    displays <- character(count)
+    display_bytes <- 2
+    value_names <- if (is_record) vapply(plain_metadata_storage(semantics$fields), `[[`, character(1L), "name") else attr(value, "names", exact = TRUE)
+    if (!is.null(value_names)) {
+      for (name in value_names) if (!is.na(name)) {
+        bounded_utf8(name, paste0(label, " element name"), maximum_name_bytes)
+        spend_json_string(budget, name, label)
+      }
+    }
+    for (child_index in seq_len(count)) {
+      if (is_record) {
+        field <- .subset2(semantics$fields, child_index)
+        child <- .subset2(value, match(field$name, names(value)))
+        child_semantics <- field$semantics
+        child_position <- 1L
+      } else {
+        child <- value
+        child_semantics <- semantics$element
+        child_position <- child_index
+      }
+      children[[child_index]] <- encode_value(child, child_semantics, child_position, label, budget)
+      display <- children[[child_index]]$display
+      if (identical(children[[child_index]]$kind, "string")) display <- encodeString(display, quote = '"')
+      if (!is.null(value_names)) display <- paste0(if (is.na(value_names[[child_index]])) "NA" else encodeString(value_names[[child_index]], quote = '"'), " = ", display)
+      display_bytes <- display_bytes + nchar(display, type = "bytes") + if (child_index > 1L) 2 else 0
+      if (display_bytes > maximum_text_bytes) abort("text-too-large", sprintf("%s exceeds the bounded nested display size; select other columns or reduce the native cell", label))
+      displays[[child_index]] <- display
+    }
+    display <- paste0(if (is_record) "{" else "[", paste(displays, collapse = ", "), if (is_record) "}" else "]")
+    spend_json_string(budget, display, label)
+    result <- ordinary_cell(semantics$kind, json_array(children), display)
+    if (!is_record && !is.null(value_names)) result$names <- json_array(value_names)
+    result
+  }
+
+  column_semantics <- function(column, label, budget, validate_values = TRUE, expected = NULL) {
     if (is.matrix(column) || is.array(column)) {
       abort("unsupported-column", sprintf("%s is a matrix or array column", label))
     }
     if (is.list(column)) {
-      abort("unsupported-column", sprintf("%s is a list column", label))
+      return(nested_column_semantics(column, label, budget, validate_values, expected))
     }
     if (is.raw(column) || is.complex(column)) {
       abort("unsupported-column", sprintf("%s uses an unsupported atomic type", label))
@@ -748,6 +940,8 @@ openwrangler_r_frame_contract <- local({
       datetime = "datetime",
       difftime = "duration",
       integer64 = "integer",
+      list = "list",
+      struct = "struct",
       abort("internal-error", "unknown R column kind")
     )
   }
@@ -764,11 +958,14 @@ openwrangler_r_frame_contract <- local({
       datetime = "POSIXct",
       difftime = "difftime",
       integer64 = "integer64",
+      list = "list",
+      struct = "list",
       abort("internal-error", "unknown R column kind")
     )
   }
 
   column_has_missing <- function(column, semantics) {
+    if (nested_kind(semantics)) return(any(vapply(plain_metadata_storage(column), is.null, logical(1L))))
     kind <- semantics$kind
     if (kind == "integer64") {
       return(any(integer64_missing_mask(column, ensure_integer64_bindings())))
@@ -782,6 +979,7 @@ openwrangler_r_frame_contract <- local({
   encode_value <- function(column, semantics, index, label, budget, integer64_bindings = NULL) {
     spend_payload_budget(budget, cell_fixed_bytes, label)
     kind <- semantics$kind
+    if (nested_kind(semantics)) return(encode_nested_value(column, semantics, index, label, budget))
 
     if (kind == "integer64") {
       if (is.null(integer64_bindings)) integer64_bindings <- ensure_integer64_bindings()
@@ -1039,6 +1237,7 @@ openwrangler_r_frame_contract <- local({
       if (is.na(position) || !identical(descriptor$schema[[position]]$name, column_name)) {
         abort("stale-column", sprintf("%s does not match the captured schema", paste0(label, "$column")))
       }
+      if (nested_kind(descriptor$schema[[position]]$semantics)) abort("invalid-view-query", "Extract or explode nested columns before sorting them")
       list(
         position = position,
         columnId = column_id,
@@ -1104,7 +1303,9 @@ openwrangler_r_frame_contract <- local({
     boolean = c("equals", "notEquals", "isNull", "isNotNull"),
     datetime = c("equals", "notEquals", "gt", "gte", "lt", "lte", "between", "isNull", "isNotNull"),
     date = c("equals", "notEquals", "gt", "gte", "lt", "lte", "between", "isNull", "isNotNull"),
-    duration = c("equals", "notEquals", "gt", "gte", "lt", "lte", "between", "isNull", "isNotNull")
+    duration = c("equals", "notEquals", "gt", "gte", "lt", "lte", "between", "isNull", "isNotNull"),
+    list = c("isNull", "isNotNull"),
+    struct = c("isNull", "isNotNull")
   )
 
   normalize_integer_text <- function(value, label) {
@@ -1477,6 +1678,7 @@ openwrangler_r_frame_contract <- local({
       })
       value_filter <- NULL
       if ("valueFilter" %in% names(filter)) {
+        if (nested_kind(column_descriptor$semantics)) abort("invalid-view-query", "Nested columns support missing-value predicates only")
         value_filter <- exact_named_list_optional(
           filter$valueFilter,
           c("kind", "selectedValues", "includeNulls", "includeNaN"),
@@ -1685,6 +1887,12 @@ openwrangler_r_frame_contract <- local({
   }
 
   validate_profile_column <- function(column, semantics, label) {
+    if (nested_kind(semantics)) {
+      column_semantics(column, label, new_payload_budget(), expected = semantics)
+      # Nested profiles report only outer NULLs. Page encoding validates each
+      # projected leaf, and isolation validates every leaf before copying.
+      return(invisible(NULL))
+    }
     validated <- column_semantics(column, label, new_payload_budget(), validate_values = TRUE)
     if (!identical(validated, semantics)) source_changed()
     kind <- semantics$kind
@@ -1704,6 +1912,7 @@ openwrangler_r_frame_contract <- local({
   }
 
   profile_missing_masks <- function(column, semantics) {
+    if (nested_kind(semantics)) return(list(null = vapply(plain_metadata_storage(column), is.null, logical(1L)), nan = rep(FALSE, storage_length(column))))
     if (identical(semantics$kind, "double")) {
       nan <- is.nan(column)
       return(list(null = is.na(column) & !nan, nan = nan))
@@ -2210,7 +2419,7 @@ openwrangler_r_frame_contract <- local({
 
     missing <- profile_missing_masks(column, semantics)
     present_indices <- which(!missing$null & !missing$nan)
-    counts <- profile_value_counts(column, semantics, present_indices, budget, label)
+    counts <- if (nested_kind(semantics)) list(topValues = json_array(list())) else profile_value_counts(column, semantics, present_indices, budget, label)
     summary <- list(
       columnId = descriptor$id,
       column = descriptor$name,
@@ -2223,6 +2432,7 @@ openwrangler_r_frame_contract <- local({
       topValues = counts$topValues
     )
 
+    if (nested_kind(semantics)) summary$distinctCount <- NULL
     if (semantics$kind %in% c("integer", "integer64", "double", "difftime")) {
       profile <- numeric_profile(column, semantics, present_indices, counts$keys, budget, label)
       if (!is.null(profile$numeric)) summary$numeric <- profile$numeric
@@ -2741,7 +2951,7 @@ openwrangler_r_frame_contract <- local({
     metrics[[name]] <- metrics[[name]] + as.double(amount)
   }
 
-  inspect_frame <- function(value, conservative_nullable, validate_values, metrics) {
+  inspect_frame <- function(value, conservative_nullable, validate_values, metrics, expected_schema = NULL) {
     if (!is.data.frame(value)) {
       abort("unsupported-frame", "the value is not an R dataframe")
     }
@@ -2783,7 +2993,8 @@ openwrangler_r_frame_contract <- local({
         .subset2(value, index),
         sprintf("column %d", index),
         metadata_budget,
-        validate_values = validate_values
+        validate_values = validate_values,
+        expected = if (!is.null(expected_schema) && index <= length(expected_schema) && !is.null(.subset2(expected_schema, index)) && nested_kind(.subset2(expected_schema, index)$semantics)) .subset2(expected_schema, index)$semantics else NULL
       )
       nullable <- if (isTRUE(conservative_nullable)) {
         TRUE
@@ -2940,7 +3151,8 @@ openwrangler_r_frame_contract <- local({
     fallback_fill_positions = NULL,
     cast_positions = NULL,
     cast_dtypes = NULL,
-    preserve_data_table_element_names = FALSE
+    preserve_data_table_element_names = FALSE,
+    expected_schema = NULL
   ) {
     if (!is.data.frame(value)) {
       abort("unsupported-frame", "the value is not an R dataframe")
@@ -3035,6 +3247,14 @@ openwrangler_r_frame_contract <- local({
     if (!is.null(cast_positions) && is.null(source_positions)) {
       abort("internal-error", "R cast outputs require explicit source mappings")
     }
+    if (!is.null(nullability_source)) {
+      mapping <- if (is.null(source_positions)) seq_len(storage_length(value)) else source_positions
+      source_schema <- plain_metadata_storage(nullability_source$descriptor$schema)
+      if (length(mapping) == storage_length(value) && is.numeric(mapping) && !anyNA(mapping) &&
+          all(mapping >= 1L & mapping <= length(source_schema) & mapping == floor(mapping))) {
+        expected_schema <- lapply(mapping, function(position) .subset2(source_schema, position))
+      }
+    }
     value <- normalize_supported_frame(value)
     flavor <- frame_flavor(value)
     source_element_names <- if (
@@ -3046,6 +3266,9 @@ openwrangler_r_frame_contract <- local({
       })
     } else {
       NULL
+    }
+    if (any(vapply(unclass(value), is.list, logical(1L)))) {
+      expected_schema <- preflight_nested_source_columns(value, expected_schema)
     }
     snapshot <- isolated_snapshot(value, flavor)
     if (!is.null(source_element_names)) {
@@ -3061,7 +3284,8 @@ openwrangler_r_frame_contract <- local({
       snapshot,
       conservative_nullable = !is.null(nullability_source),
       validate_values = TRUE,
-      metrics = metrics
+      metrics = metrics,
+      expected_schema = expected_schema
     )
     row_count <- inspected$descriptor$shape$rows
     if (!is.null(nullability_source) && row_count == 0L) {
@@ -3912,6 +4136,9 @@ openwrangler_r_frame_contract <- local({
     validate_capture(capture)
     source <- read_capture_frame(capture, validated = TRUE)
     flavor <- capture$descriptor$dataframeFlavor
+    if (any(vapply(plain_metadata_storage(capture$descriptor$schema), function(column) nested_kind(column$semantics), logical(1L)))) {
+      preflight_nested_source_columns(source, capture$descriptor$schema)
+    }
     element_names <- if (identical(flavor, "r.data.table")) {
       lapply(seq_len(storage_length(source)), function(position) {
         attr(.subset2(source, position), "names", exact = TRUE)
@@ -8584,55 +8811,211 @@ openwrangler_r_frame_contract <- local({
     finish_capture(result)
   }
 
+  validate_native_text_attributes <- function(value, label, allow_asis = FALSE, budget) {
+    nested <- attributes(value)
+    if (is.null(nested)) return(invisible(NULL))
+    if (
+      !isTRUE(allow_asis) ||
+        !identical(names(nested), "class") ||
+        !identical(plain_metadata_storage(nested$class), "AsIs") ||
+        !is.null(attributes(nested$class))
+    ) {
+      abort("invalid-view-query", sprintf("%s has unsupported nested attributes", label))
+    }
+    spend_operation_output_budget(
+      budget,
+      character_vector_slot_bytes + nchar("AsIs", type = "bytes"),
+      label
+    )
+    invisible(NULL)
+  }
+
+
+  charge_native_text <- function(
+    values,
+    label,
+    maximum_bytes = maximum_text_bytes,
+    charge_slots = TRUE,
+    budget,
+    native_values = FALSE
+  ) {
+    if (!is.character(values)) {
+      abort("invalid-view-query", sprintf("%s must be text", label))
+    }
+    plain <- plain_metadata_storage(values)
+    if (isTRUE(charge_slots)) {
+      spend_operation_output_budget(
+        budget,
+        as.double(storage_length(plain)) * character_vector_slot_bytes,
+        label
+      )
+    }
+    for (index in seq_along(plain)) {
+      item <- .subset2(plain, index)
+      if (is.na(item)) next
+      item <- bounded_utf8(item, sprintf("%s %d", label, index), maximum_bytes)
+      bytes <- nchar(item, type = "bytes")
+      if (isTRUE(native_values)) bytes <- native_vector_header_bytes + 8 * ceiling((bytes + 1) / 8)
+      spend_operation_output_budget(budget, bytes, label)
+    }
+    invisible(NULL)
+  }
+
+
+  validate_native_atomic_values <- function(column, semantics) {
+    kind <- semantics$kind
+    if (identical(kind, "factor")) {
+      codes <- unclass(column)
+      if (any(!is.na(codes) & (codes < 1L | codes > length(semantics$levels)))) abort("invalid-factor", "a native factor contains an invalid code")
+    } else if (kind %in% c("date", "datetime", "difftime")) {
+      storage <- unclass(column)
+      if (any(is.nan(storage)) || any(!is.na(storage) & !is.finite(storage))) abort("invalid-view-query", "a native column contains non-finite classed values")
+      if (identical(kind, "date") && any(!is.na(storage) & storage != floor(storage))) abort("invalid-view-query", "a native column contains a fractional Date")
+    }
+    invisible(NULL)
+  }
+
+  charge_native_column <- function(column, semantics, position, budget, nested_value = FALSE) {
+    charge_text <- function(...) charge_native_text(..., budget = budget, native_values = nested_value)
+    validate_nested_metadata <- function(...) validate_native_text_attributes(..., budget = budget)
+    # Native vector headers are distinct from encoded cell envelopes. NULL is
+    # the shared singleton and is charged only by its containing pointer slot.
+    if (isTRUE(nested_value)) spend_operation_output_budget(budget, native_vector_header_bytes, "native nested vector header")
+    kind <- semantics$kind
+    if (!nested_kind(semantics)) validate_native_atomic_values(column, semantics)
+    if (isTRUE(nested_value)) {
+      for (attribute in attributes(column)) {
+        spend_operation_output_budget(budget, native_vector_header_bytes + as.double(storage_length(attribute)) * character_vector_slot_bytes, "native nested attributes")
+      }
+    }
+    raw_classes <- attr(column, "class", exact = TRUE)
+    if (!is.null(raw_classes)) {
+      validate_nested_metadata(raw_classes, sprintf("custom-code column %d classes", position), TRUE)
+      charge_text(
+        raw_classes,
+        sprintf("custom-code column %d classes", position),
+        maximum_name_bytes
+      )
+    }
+    element_bytes <- if (kind %in% c("logical", "integer", "factor")) 4 else 8
+    vector_bytes <- as.double(storage_length(column)) * element_bytes
+    if (isTRUE(nested_value)) vector_bytes <- 8 * ceiling(vector_bytes / 8)
+    spend_operation_output_budget(
+      budget,
+      vector_bytes,
+      sprintf("custom-code column %d", position)
+    )
+
+    element_names <- attr(column, "names", exact = TRUE)
+    if (!is.null(element_names)) {
+      charge_text(element_names, sprintf("custom-code column %d names", position), if (nested_value) maximum_name_bytes else maximum_text_bytes)
+    }
+    if (nested_kind(semantics)) {
+      representative <- NULL
+      representative_bytes <- 0
+      for (index in seq_len(storage_length(column))) {
+        value <- .subset2(column, index)
+        if (is.null(value)) next
+        if (!is.null(representative) && !is.list(value) &&
+            same_native_atomic_metadata(value, representative)) {
+          validate_native_atomic_values(value, semantics$element)
+          width <- if (typeof(value) %in% c("integer", "logical")) 4 else 8
+          payload_delta <- 8 * (ceiling(as.double(storage_length(value)) * width / 8) - ceiling(as.double(storage_length(representative)) * width / 8))
+          spend_operation_output_budget(budget, representative_bytes + payload_delta, "native repeated atomic cell")
+          next
+        }
+        prototype <- nested_cell_prototype(value, "nested source cell", FALSE)
+        match_nested_prototype(prototype, semantics, "nested source cell")
+        if (identical(kind, "struct")) {
+          spend_operation_output_budget(budget, 2 * native_vector_header_bytes + as.double(storage_length(value)) * character_vector_slot_bytes, "record and names headers and pointers")
+          charge_text(names(value), "record field names", maximum_name_bytes)
+          for (field in semantics$fields) charge_native_column(.subset2(value, field$name), field$semantics, position, budget, TRUE)
+        } else if (is.list(value)) {
+          # The prototype validator admitted only an untyped empty list here.
+          # It has no scalar attributes or values, even in a typed column.
+          spend_operation_output_budget(budget, native_vector_header_bytes * if (is.null(names(value))) 1L else 2L, "untyped empty vector and names headers")
+        } else if (!is.null(semantics$element)) {
+          if (!is.character(value)) {
+            cell_budget <- new_payload_budget()
+            charge_native_column(value, semantics$element, position, cell_budget, TRUE)
+            spend_operation_output_budget(budget, cell_budget$used, "native atomic cell")
+            # Cache only metadata and fixed-width payload accounting. Every
+            # occurrence is charged, including aliased native child vectors.
+            representative <- value
+            representative_bytes <- cell_budget$used
+          } else charge_native_column(value, semantics$element, position, budget, TRUE)
+        } else {
+          spend_operation_output_budget(budget, native_vector_header_bytes, "untyped empty vector header")
+        }
+      }
+    } else if (identical(kind, "character")) {
+      charge_text(
+        column,
+        sprintf("custom-code column %d values", position),
+        charge_slots = FALSE
+      )
+    } else if (identical(kind, "factor")) {
+      validate_nested_metadata(
+        attr(column, "levels", exact = TRUE),
+        sprintf("custom-code column %d factor levels", position),
+        TRUE
+      )
+      charge_text(
+        attr(column, "levels", exact = TRUE),
+        sprintf("custom-code column %d factor levels", position)
+      )
+    } else if (kind %in% c("date", "datetime", "difftime")) {
+      if (identical(kind, "datetime") && !is.null(attr(column, "tzone", exact = TRUE))) {
+        validate_nested_metadata(
+          attr(column, "tzone", exact = TRUE),
+          sprintf("custom-code column %d timezone", position),
+          TRUE
+        )
+        charge_text(
+          attr(column, "tzone", exact = TRUE),
+          sprintf("custom-code column %d timezone", position),
+          maximum_name_bytes
+        )
+      }
+      if (identical(kind, "difftime")) {
+        validate_nested_metadata(
+          attr(column, "units", exact = TRUE),
+          sprintf("custom-code column %d duration units", position),
+          TRUE
+        )
+        charge_text(
+          attr(column, "units", exact = TRUE),
+          sprintf("custom-code column %d duration units", position),
+          maximum_name_bytes
+        )
+      }
+    }
+  }
+
+  preflight_nested_source_columns <- function(value, expected_schema = NULL) {
+    column_count <- storage_length(value)
+    whole_number(column_count, "column count", maximum_columns)
+    schema <- vector("list", column_count)
+    metadata_budget <- new_payload_budget()
+    copy_budget <- new_payload_budget()
+    for (position in seq_len(column_count)) {
+      column <- .subset2(value, position)
+      if (!is.list(column)) next
+      expected <- if (!is.null(expected_schema) && position <= length(expected_schema)) .subset2(expected_schema, position)$semantics else NULL
+      semantics <- column_semantics(column, sprintf("column %d", position), metadata_budget, FALSE, expected)
+      charge_native_column(column, semantics, position, copy_budget, TRUE)
+      schema[[position]] <- list(semantics = semantics)
+    }
+    schema
+  }
+
   validate_custom_code_output_budget <- function(frame, descriptor) {
     schema <- plain_metadata_storage(descriptor$schema)
     row_count <- as.double(descriptor$shape$rows)
     budget <- new_payload_budget()
 
-    validate_nested_metadata <- function(value, label, allow_asis = FALSE) {
-      nested <- attributes(value)
-      if (is.null(nested)) return(invisible(NULL))
-      if (
-        !isTRUE(allow_asis) ||
-          !identical(names(nested), "class") ||
-          !identical(plain_metadata_storage(nested$class), "AsIs") ||
-          !is.null(attributes(nested$class))
-      ) {
-        abort("invalid-view-query", sprintf("%s has unsupported nested attributes", label))
-      }
-      spend_operation_output_budget(
-        budget,
-        character_vector_slot_bytes + nchar("AsIs", type = "bytes"),
-        label
-      )
-      invisible(NULL)
-    }
-
-    charge_text <- function(
-      values,
-      label,
-      maximum_bytes = maximum_text_bytes,
-      charge_slots = TRUE
-    ) {
-      if (!is.character(values)) {
-        abort("invalid-view-query", sprintf("%s must be text", label))
-      }
-      plain <- plain_metadata_storage(values)
-      if (isTRUE(charge_slots)) {
-        spend_operation_output_budget(
-          budget,
-          as.double(storage_length(plain)) * character_vector_slot_bytes,
-          label
-        )
-      }
-      for (index in seq_along(plain)) {
-        item <- .subset2(plain, index)
-        if (is.na(item)) next
-        item <- bounded_utf8(item, sprintf("%s %d", label, index), maximum_bytes)
-        spend_operation_output_budget(budget, nchar(item, type = "bytes"), label)
-      }
-      invisible(NULL)
-    }
+    validate_nested_metadata <- function(...) validate_native_text_attributes(..., budget = budget)
+    charge_text <- function(...) charge_native_text(..., budget = budget)
 
     spend_operation_output_budget(
       budget,
@@ -8682,80 +9065,8 @@ openwrangler_r_frame_contract <- local({
       )
     }
 
-    for (position in seq_along(schema)) {
-      column <- .subset2(frame, position)
-      semantics <- schema[[position]]$semantics
-      kind <- semantics$kind
-      raw_classes <- attr(column, "class", exact = TRUE)
-      if (!is.null(raw_classes)) {
-        validate_nested_metadata(raw_classes, sprintf("custom-code column %d classes", position), TRUE)
-        charge_text(
-          raw_classes,
-          sprintf("custom-code column %d classes", position),
-          maximum_name_bytes
-        )
-      }
-      element_bytes <- if (kind %in% c("logical", "integer", "factor")) 4 else 8
-      spend_operation_output_budget(
-        budget,
-        row_count * element_bytes,
-        sprintf("custom-code column %d", position)
-      )
 
-      element_names <- attr(column, "names", exact = TRUE)
-      if (!is.null(element_names)) {
-        charge_text(element_names, sprintf("custom-code column %d names", position))
-      }
-      if (identical(kind, "character")) {
-        charge_text(
-          column,
-          sprintf("custom-code column %d values", position),
-          charge_slots = FALSE
-        )
-      } else if (identical(kind, "factor")) {
-        validate_nested_metadata(
-          attr(column, "levels", exact = TRUE),
-          sprintf("custom-code column %d factor levels", position),
-          TRUE
-        )
-        charge_text(
-          attr(column, "levels", exact = TRUE),
-          sprintf("custom-code column %d factor levels", position)
-        )
-      } else if (kind %in% c("date", "datetime", "difftime")) {
-        storage <- unclass(column)
-        if (any(is.nan(storage)) || any(!is.na(storage) & !is.finite(storage))) {
-          abort("invalid-view-query", sprintf("custom-code column %d contains non-finite classed values", position))
-        }
-        if (identical(kind, "date") && any(!is.na(storage) & storage != floor(storage))) {
-          abort("invalid-view-query", sprintf("custom-code column %d contains a fractional Date", position))
-        }
-        if (identical(kind, "datetime") && !is.null(attr(column, "tzone", exact = TRUE))) {
-          validate_nested_metadata(
-            attr(column, "tzone", exact = TRUE),
-            sprintf("custom-code column %d timezone", position),
-            TRUE
-          )
-          charge_text(
-            attr(column, "tzone", exact = TRUE),
-            sprintf("custom-code column %d timezone", position),
-            maximum_name_bytes
-          )
-        }
-        if (identical(kind, "difftime")) {
-          validate_nested_metadata(
-            attr(column, "units", exact = TRUE),
-            sprintf("custom-code column %d duration units", position),
-            TRUE
-          )
-          charge_text(
-            attr(column, "units", exact = TRUE),
-            sprintf("custom-code column %d duration units", position),
-            maximum_name_bytes
-          )
-        }
-      }
-    }
+    for (position in seq_along(schema)) charge_native_column(.subset2(frame, position), schema[[position]]$semantics, position, budget, nested_kind(schema[[position]]$semantics))
     invisible(NULL)
   }
 
@@ -8857,7 +9168,7 @@ openwrangler_r_frame_contract <- local({
     preflight <- inspect_frame(
       normalized,
       conservative_nullable = FALSE,
-      validate_values = TRUE,
+      validate_values = FALSE,
       metrics = preflight_metrics
     )
     if (preflight$descriptor$shape$columns < 1L) {
@@ -8956,6 +9267,231 @@ openwrangler_r_frame_contract <- local({
     finish_capture(result)
   }
 
+  nested_scalar_vector <- function(semantics, count) {
+    result <- switch(semantics$storageMode,
+      logical = rep.int(NA, count), integer = rep.int(NA_integer_, count),
+      double = rep.int(NA_real_, count), character = rep.int(NA_character_, count))
+    if (identical(semantics$kind, "integer64")) {
+      result[] <- unclass(integer64_missing(ensure_integer64_bindings()))[[1L]]
+    }
+    if (semantics$kind %in% c("factor", "date", "datetime", "difftime", "integer64")) {
+      attr(result, "class") <- plain_metadata_storage(semantics$classes)
+    }
+    if (identical(semantics$kind, "factor")) attr(result, "levels") <- plain_metadata_storage(semantics$levels)
+    if (identical(semantics$kind, "datetime") && !is.null(semantics$timezone)) attr(result, "tzone") <- semantics$timezone
+    if (identical(semantics$kind, "difftime")) attr(result, "units") <- semantics$units
+    result
+  }
+
+  charge_repeated_native_column <- function(column, semantics, counts, budget) {
+    total <- sum(as.double(counts))
+    if (nested_kind(semantics)) {
+      spend_operation_output_budget(budget, native_vector_header_bytes + 8 * total, "repeated nested pointer slots")
+      for (index in seq_along(counts)) {
+        value <- .subset2(column, index)
+        if (is.null(value)) next
+        cell <- list(value)
+        if (identical(plain_metadata_storage(semantics$classes), "AsIs")) class(cell) <- "AsIs"
+        cell_budget <- new_payload_budget()
+        charge_native_column(cell, semantics, 1L, cell_budget, TRUE)
+        spend_operation_output_budget(budget, cell_budget$used * counts[[index]], "repeated nested sibling values")
+      }
+      return(invisible(NULL))
+    }
+    empty <- nested_scalar_vector(semantics, 0L)
+    charge_native_column(empty, semantics, 1L, budget, TRUE)
+    width <- if (semantics$storageMode %in% c("integer", "logical")) 4 else 8
+    spend_operation_output_budget(budget, 8 * ceiling(total * width / 8), "repeated scalar slots")
+    names <- attr(column, "names", exact = TRUE)
+    if (!is.null(names)) spend_operation_output_budget(budget, native_vector_header_bytes + total * 8, "repeated scalar names")
+    if (identical(semantics$kind, "character") || !is.null(names)) {
+      for (index in seq_along(counts)) {
+        cell_budget <- new_payload_budget()
+        if (identical(semantics$kind, "character")) charge_native_text(.subset2(column, index), "repeated text", charge_slots = FALSE, budget = cell_budget, native_values = TRUE)
+        if (!is.null(names)) charge_native_text(.subset2(names, index), "repeated name", maximum_name_bytes, FALSE, cell_budget, TRUE)
+        spend_operation_output_budget(budget, cell_budget$used * counts[[index]], "repeated scalar text")
+      }
+    }
+    invisible(NULL)
+  }
+
+  charge_flat_nested_output <- function(column, semantics, field, output_rows, budget) {
+    charge_native_column(nested_scalar_vector(semantics, 0L), semantics, 1L, budget, TRUE)
+    width <- if (semantics$storageMode %in% c("integer", "logical")) 4 else 8
+    spend_operation_output_budget(budget, 8 * ceiling(as.double(output_rows) * width / 8), "flattened scalar slots")
+    has_names <- FALSE
+    for (index in seq_len(storage_length(column))) {
+      value <- .subset2(column, index)
+      if (is.null(value)) next
+      if (!is.null(field)) value <- .subset2(value, field)
+      if (identical(semantics$kind, "character") && storage_length(value) > 0L) {
+        charge_native_text(value, "flattened text", charge_slots = FALSE, budget = budget, native_values = TRUE)
+      }
+      names <- attr(value, "names", exact = TRUE)
+      if (!is.null(names)) {
+        has_names <- TRUE
+        charge_native_text(names, "flattened names", maximum_name_bytes, FALSE, budget, TRUE)
+      }
+    }
+    if (has_names) spend_operation_output_budget(budget, native_vector_header_bytes + as.double(output_rows) * 8, "flattened name slots")
+    has_names
+  }
+
+  flatten_native_cells <- function(column, semantics, field, count, has_names) {
+    result <- nested_scalar_vector(semantics, count)
+    result_attributes <- attributes(result)
+    attributes(result) <- NULL
+    result_names <- if (has_names) rep.int("", count) else NULL
+    offset <- 0L
+    for (index in seq_len(storage_length(column))) {
+      value <- .subset2(column, index)
+      if (!is.null(value) && !is.null(field)) value <- .subset2(value, field)
+      size <- storage_length(value)
+      if (size == 0L) { offset <- offset + 1L; next }
+      positions <- seq.int(offset + 1L, offset + size)
+      result[positions] <- plain_metadata_storage(value)
+      if (has_names && !is.null(attr(value, "names", exact = TRUE))) result_names[positions] <- attr(value, "names", exact = TRUE)
+      offset <- offset + size
+    }
+    if (has_names) result_attributes$names <- result_names
+    attributes(result) <- result_attributes
+    result
+  }
+
+  nested_operation_frame <- function(value, schema, position, fields = NULL, new_names = NULL, identity_domain = 0) {
+    # This shared live/generated owner receives an already checked frame. It
+    # checks captured nested prototypes and materialization budgets before any
+    # expanded column or row-index allocation.
+    column_count <- storage_length(value)
+    frame_names <- attr(value, "names", exact = TRUE)
+    if (length(schema) != column_count || position < 1L || position > column_count ||
+        !identical(frame_names, vapply(plain_metadata_storage(schema), `[[`, character(1L), "name"))) {
+      abort("stale-column", "nested operation source columns changed")
+    }
+    row_count <- .row_names_info(value, 2L)
+    source <- .subset2(value, position)
+    semantics <- .subset2(schema, position)$semantics
+    explode <- is.null(fields)
+    if (explode && (!identical(semantics$kind, "list") || is.null(semantics$element))) {
+      abort("invalid-view-query", "Explode List requires a captured atomic element type; all-NULL or untyped-empty columns have none")
+    }
+    if (!explode && (!identical(semantics$kind, "struct") || length(fields) < 1L || length(fields) > 64L)) {
+      abort("invalid-view-query", "Extract Struct Fields requires a flat record column and 1 through 64 fields")
+    }
+    if (!explode) {
+      if (length(new_names) != length(fields) || anyNA(new_names) || any(new_names == "") ||
+          anyDuplicated(new_names) || any(new_names %in% frame_names) || column_count + length(fields) > maximum_columns) {
+        abort("invalid-column-name", "Extract Struct Fields requires unique new names within the column limit")
+      }
+      for (name in new_names) {
+        bounded_utf8(name, "extracted column name", maximum_name_bytes)
+        if (grepl("[\r\n]", name)) abort("invalid-column-name", "an extracted column name may not contain a record ending")
+        if (startsWith(tolower(name), "__open_wrangler_internal_row_id_")) abort("reserved-column-name", "an extracted column name is reserved")
+      }
+      field_names <- vapply(plain_metadata_storage(semantics$fields), `[[`, character(1L), "name")
+      if (anyNA(match(fields, field_names)) || anyDuplicated(fields)) abort("invalid-view-query", "Extract Struct Fields requires unique captured fields")
+    }
+    source_budget <- new_payload_budget()
+    for (index in seq_along(schema)) if (nested_kind(.subset2(schema, index)$semantics)) {
+      column <- .subset2(value, index)
+      column_semantics(column, "nested operation source", new_payload_budget(), FALSE, .subset2(schema, index)$semantics)
+      charge_native_column(column, .subset2(schema, index)$semantics, index, source_budget, TRUE)
+    }
+    budget <- new_payload_budget()
+    output_rows <- as.double(row_count)
+    counts <- NULL
+    if (explode) {
+      spend_operation_output_budget(budget, as.double(row_count) * 4, "Explode List row counts")
+      counts <- vapply(seq_len(row_count), function(index) max(1L, storage_length(.subset2(source, index))), integer(1L))
+      output_rows <- sum(as.double(counts))
+      if (!is.finite(output_rows) || output_rows + identity_domain > maximum_rows) abort("operation-output-too-large", "Explode List exceeds the supported row-identity range")
+      spend_operation_output_budget(budget, output_rows * 4, "Explode List row indices")
+      for (index in seq_along(schema)) if (index != position) charge_repeated_native_column(.subset2(value, index), .subset2(schema, index)$semantics, counts, budget)
+      output_semantics <- list(semantics$element)
+      output_fields <- list(NULL)
+    } else {
+      output_semantics <- lapply(fields, function(field) .subset2(semantics$fields, match(field, field_names))$semantics)
+      output_fields <- as.list(fields)
+    }
+    has_names <- vapply(seq_along(output_semantics), function(index) charge_flat_nested_output(source, output_semantics[[index]], output_fields[[index]], output_rows, budget), logical(1L))
+    # Pointer arrays and frame/name metadata belong to the same output budget.
+    spend_operation_output_budget(budget, column_fixed_bytes * (column_count + if (explode) 0L else length(fields)), "nested operation frame metadata")
+    columns <- plain_metadata_storage(value)
+    if (explode) {
+      indices <- rep.int(seq_len(row_count), counts)
+      columns <- lapply(seq_len(column_count), function(index) {
+        if (index == position) return(NULL)
+        column <- .subset2(value, index)
+        attributes <- attributes(column)
+        selected <- .subset(column, indices)
+        if (!is.null(attributes$names)) attributes$names <- .subset(attributes$names, indices)
+        attributes(selected) <- attributes
+        selected
+      })
+    }
+    for (index in seq_along(output_semantics)) {
+      target <- if (explode) position else column_count + index
+      columns[[target]] <- flatten_native_cells(source, output_semantics[[index]], output_fields[[index]], as.integer(output_rows), has_names[[index]])
+    }
+    names(columns) <- if (explode) frame_names else c(frame_names, new_names)
+    if (inherits(value, "data.table")) {
+      element_names <- lapply(columns, function(column) attr(column, "names", exact = TRUE))
+      result <- data.table::as.data.table(columns)
+      for (index in seq_along(element_names)) if (!is.null(element_names[[index]])) data.table::setattr(.subset2(result, index), "names", element_names[[index]])
+      key <- attr(value, "sorted", exact = TRUE)
+      if (!is.null(key)) data.table::setattr(result, "sorted", key)
+      return(result)
+    }
+    attributes(columns) <- list(names = names(columns), class = class(value), row.names = if (explode) .set_row_names(output_rows) else .row_names_info(value, 0L))
+    columns
+  }
+
+  capture_nested_result <- function(value, source_capture, position, fields, output_ids) {
+    validate_capture(source_capture)
+    source_schema <- plain_metadata_storage(source_capture$descriptor$schema)
+    source_semantics <- source_schema[[position]]$semantics
+    explode <- is.null(fields)
+    expected <- source_schema
+    if (explode) {
+      expected[[position]]$semantics <- source_semantics$element
+      expected[[position]]$nullable <- TRUE
+    } else {
+      field_names <- vapply(plain_metadata_storage(source_semantics$fields), `[[`, character(1L), "name")
+      for (index in seq_along(fields)) expected[[length(source_schema) + index]] <- list(
+        id = output_ids[[index]], name = names(value)[[length(source_schema) + index]], nullable = TRUE,
+        semantics = .subset2(source_semantics$fields, match(fields[[index]], field_names))$semantics)
+    }
+    # Expected prototypes keep all-NULL retained siblings typed after expansion.
+    captured <- capture_frame(value, expected_schema = expected, preserve_data_table_element_names = TRUE)
+    descriptor <- captured$descriptor
+    schema <- plain_metadata_storage(descriptor$schema)
+    for (index in seq_along(schema)) {
+      if (!identical(schema[[index]]$semantics, expected[[index]]$semantics) || !identical(schema[[index]]$name, expected[[index]]$name)) abort("internal-error", "nested output changed exact type metadata")
+      schema[[index]]$id <- expected[[index]]$id
+      schema[[index]]$nullable <- expected[[index]]$nullable
+    }
+    descriptor$schema <- json_array(schema)
+    descriptor$frameSemantics$keyColumnIds <- source_capture$descriptor$frameSemantics$keyColumnIds
+    if (!explode) descriptor$frameSemantics$rowNames <- source_capture$descriptor$frameSemantics$rowNames
+    budget <- new_payload_budget(captured$metadataBytes)
+    # IDs are longer than initial positional IDs; charge the complete retained
+    # identities conservatively rather than subtracting a guessed replacement.
+    for (column in schema) spend_json_string(budget, column$id, "nested output identities")
+    for (id in descriptor$frameSemantics$keyColumnIds) spend_json_string(budget, id, "nested output keys")
+    result <- new.env(parent = emptyenv())
+    result$mode <- "isolated"
+    result$snapshot <- captured$snapshot
+    result$sourceReader <- NULL
+    result$descriptor <- descriptor
+    rows <- descriptor$shape$rows
+    if (explode) set_sequential_row_origins(result, rows, source_capture$rowIdentityDomain + rows, source_capture$rowIdentityDomain)
+    else set_row_origins(result, capture_row_origins_at(source_capture, seq_len(rows)), source_capture$rowIdentityDomain, rows)
+    result$metadataBytes <- budget$used
+    result$metrics <- captured$metrics
+    result$sortCache <- new_sort_cache()
+    finish_capture(result)
+  }
+
   resolve_row_operation_columns <- function(value, positions, expected_names, operation) {
     inspected <- inspect_frame(
       value,
@@ -9022,12 +9558,16 @@ openwrangler_r_frame_contract <- local({
     if (length(resolved$positions) == 0L) {
       return(subset_rows_at(value, resolved$inspected, seq_len(resolved$inspected$descriptor$shape$rows)))
     }
-    present <- lapply(resolved$positions, function(position) !is.na(value[[position]]))
+    present <- lapply(resolved$positions, function(position) {
+      column <- .subset2(value, position)
+      if (is.list(column)) !vapply(plain_metadata_storage(column), is.null, logical(1L)) else !is.na(column)
+    })
     keep <- if (identical(how, "all")) Reduce(`|`, present) else Reduce(`&`, present)
     subset_rows_at(value, resolved$inspected, which(keep))
   }
 
   duplicate_row_mask <- function(value, keep, integer64_text) {
+    if (base::any(base::vapply(base::seq_along(value), function(position) base::is.list(base::.subset2(value, position)), base::logical(1L)))) base::stop("Duplicate comparison requires scalar columns; extract or explode the selected nested columns first", call. = FALSE)
     # Compare exact decimal keys without changing the retained native columns.
     wide <- base::vapply(base::seq_along(value), function(position) {
       base::identical(base::class(base::.subset2(value, position)), "integer64")
@@ -9294,7 +9834,8 @@ openwrangler_r_frame_contract <- local({
         value,
         conservative_nullable = TRUE,
         validate_values = FALSE,
-        metrics = capture$metrics
+        metrics = capture$metrics,
+        expected_schema = capture$descriptor$schema
       ),
       openwrangler_r_frame_error = function(error) {
         if (identical(error$code, "source-changed")) stop(error)
@@ -9428,6 +9969,9 @@ openwrangler_r_frame_contract <- local({
 
   write_csv <- function(capture, target_path, options = NULL) {
     validate_capture(capture)
+    if (any(vapply(plain_metadata_storage(capture$descriptor$schema), function(column) nested_kind(column$semantics), logical(1L)))) {
+      abort("export-write-failed", "Extract or explode nested columns, then drop any remaining nested columns before exporting")
+    }
     options <- normalize_export_options(options, "csv")
     if (capture$descriptor$shape$columns == 0L) {
       abort(
@@ -9581,6 +10125,9 @@ openwrangler_r_frame_contract <- local({
 
   write_parquet <- function(capture, target_path, options = NULL) {
     validate_capture(capture)
+    if (any(vapply(plain_metadata_storage(capture$descriptor$schema), function(column) nested_kind(column$semantics), logical(1L)))) {
+      abort("export-write-failed", "Extract or explode nested columns, then drop any remaining nested columns before exporting")
+    }
     options <- normalize_export_options(options, "parquet")
     target_path <- validate_export_target(target_path)
     if (!parquet_export_available()) {
@@ -9939,7 +10486,8 @@ openwrangler_r_frame_contract <- local({
       abort("stale-column", "the missing-count column name no longer matches the R dataframe")
     }
     frame <- read_capture_frame(capture, validated = TRUE)
-    as.integer(sum(is.na(frame[[position]])))
+    masks <- profile_missing_masks(frame[[position]], capture$descriptor$schema[[position]]$semantics)
+    as.integer(sum(masks$null | masks$nan))
   }
 
   materialize_summaries <- function(
@@ -9954,7 +10502,21 @@ openwrangler_r_frame_contract <- local({
     add_metric(capture$metrics, "profileColumns", length(resolved))
     budget <- new_payload_budget(capture$metadataBytes)
     summaries <- lapply(resolved, function(column) {
-      if (view$totalRows <= maximum_profile_sample_rows) {
+      if (nested_kind(capture$descriptor$schema[[column$position]]$semantics)) {
+        values <- frame[[column$position]]
+        summary <- column_summary(capture, values[integer()], column, budget)
+        start <- 1
+        while (start <= view$totalRows) {
+          count <- min(maximum_profile_chunk_rows, view$totalRows - start + 1)
+          positions <- profile_chunk_source_positions(view$rows, start, count)
+          chunk <- values[positions]
+          validate_profile_column(chunk, capture$descriptor$schema[[column$position]]$semantics, "nested profile")
+          summary$nullCount <- summary$nullCount + as.integer(sum(vapply(plain_metadata_storage(chunk), is.null, logical(1L))))
+          start <- start + count
+        }
+        summary$totalCount <- view$totalRows
+        summary
+      } else if (view$totalRows <= maximum_profile_sample_rows) {
         values <- frame[[column$position]]
         if (!is.null(view$rows)) values <- values[view$rows]
         column_summary(capture, values, column, budget)
@@ -9989,7 +10551,8 @@ openwrangler_r_frame_contract <- local({
         column <- frame[[position]][source_positions]
         schema <- descriptor$schema[[position]]
         validate_profile_column(column, schema$semantics, sprintf("column %d dataset profile", position))
-        missing <- is.na(column)
+        masks <- profile_missing_masks(column, schema$semantics)
+        missing <- masks$null | masks$nan
         missing_counts[[position]] <- missing_counts[[position]] + sum(missing)
         row_missing <- row_missing | missing
       }
@@ -10003,7 +10566,9 @@ openwrangler_r_frame_contract <- local({
       list(column = schema$name, count = missing_counts[[position]])
     })
     duplicate_sample_size <- row_count
-    duplicate_rows <- if (row_count <= 1L) {
+    duplicate_rows <- if (any(vapply(plain_metadata_storage(descriptor$schema), function(column) nested_kind(column$semantics), logical(1L)))) {
+      NULL
+    } else if (row_count <= 1L) {
       0L
     } else if (column_count == 0L) {
       as.integer(row_count - 1L)
@@ -10055,6 +10620,7 @@ openwrangler_r_frame_contract <- local({
     source_column <- frame[[resolved_column$position]]
     column_descriptor <- descriptor$schema[[resolved_column$position]]
     semantics <- column_descriptor$semantics
+    if (nested_kind(semantics)) abort("invalid-view-query", "Extract or explode nested columns before requesting distinct values")
     initial_discovery <- is.null(search) || identical(search, "")
     sampled <- initial_discovery && view$totalRows > maximum_profile_sample_rows
     budget <- new_payload_budget(capture$metadataBytes)
@@ -10235,9 +10801,61 @@ openwrangler_r_frame_contract <- local({
   }
 
   list(
+    nested_operation_helpers = list(
+      nested_scalar_vector = nested_scalar_vector,
+      charge_repeated_native_column = charge_repeated_native_column,
+      charge_flat_nested_output = charge_flat_nested_output,
+      flatten_native_cells = flatten_native_cells,
+      nested_operation_frame = nested_operation_frame,
+      maximum_columns = maximum_columns, maximum_rows = maximum_rows
+    ),
+    nested_column_helpers = list(
+      `%||%` = `%||%`,
+      `abort` = `abort`,
+      `anyDuplicated` = `anyDuplicated`,
+      `assert_attributes` = `assert_attributes`,
+      `bounded_text_array` = `bounded_text_array`,
+      `bounded_utf8` = `bounded_utf8`,
+      `character_vector_slot_bytes` = `character_vector_slot_bytes`,
+      `charge_native_column` = `charge_native_column`,
+      `charge_native_text` = `charge_native_text`,
+      `charge_nested_metadata` = `charge_nested_metadata`,
+      `column_fixed_bytes` = `column_fixed_bytes`,
+      `column_semantics` = `column_semantics`,
+      `ensure_integer64_bindings` = `ensure_integer64_bindings`,
+      `integer64_formula_bindings` = `integer64_formula_bindings`,
+      `integer64_from_integer` = `integer64_from_integer`,
+      `integer64_missing` = `integer64_missing`,
+      `json_array` = `json_array`,
+      `json_string_bytes` = `json_string_bytes`,
+      `match_nested_prototype` = `match_nested_prototype`,
+      `maximum_factor_levels` = `maximum_factor_levels`,
+      `maximum_name_bytes` = `maximum_name_bytes`,
+      `maximum_operation_output_bytes` = `maximum_operation_output_bytes`,
+      `maximum_payload_bytes` = `maximum_payload_bytes`,
+      `maximum_text_bytes` = `maximum_text_bytes`,
+      `native_vector_header_bytes` = `native_vector_header_bytes`,
+      `nested_cell_prototype` = `nested_cell_prototype`,
+      `nested_column_semantics` = `nested_column_semantics`,
+      `nested_kind` = `nested_kind`,
+      `nested_leaf_semantics` = `nested_leaf_semantics`,
+      `new_payload_budget` = `new_payload_budget`,
+      `plain_metadata_storage` = `plain_metadata_storage`,
+      `source_changed` = `source_changed`,
+      `same_native_atomic_metadata` = `same_native_atomic_metadata`,
+      `spend_json_string` = `spend_json_string`,
+      `spend_operation_output_budget` = `spend_operation_output_budget`,
+      `spend_payload_budget` = `spend_payload_budget`,
+      `storage_length` = `storage_length`,
+      `validate_native_text_attributes` = `validate_native_text_attributes`,
+      `validate_native_atomic_values` = `validate_native_atomic_values`,
+      `without_values` = `without_values`
+    ),
     capture_frame = capture_frame,
     capture_categorical_result = capture_categorical_result,
     capture_custom_code_result = capture_custom_code_result,
+    nested_operation_frame = nested_operation_frame,
+    capture_nested_result = capture_nested_result,
     capture_live_frame = capture_live_frame,
     isolate_capture = isolate_capture,
     isolate_custom_code_input = isolate_custom_code_input,

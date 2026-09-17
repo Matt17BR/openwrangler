@@ -30,6 +30,12 @@ export function resolveRViewQuery(filterModel: FilterModel, schema: readonly Col
       const column = resolveNamedRColumn(filter.column, schema, "filter");
       const schemaColumn = schema.find((candidate) => candidate.id === column.id) as ColumnSchema;
       const columnType = requireRColumnType(schemaColumn.type);
+      if (
+        (columnType === "list" || columnType === "struct") &&
+        (filter.valueFilter ||
+          filter.predicates.some((predicate) => predicate.operator !== "isNull" && predicate.operator !== "isNotNull"))
+      )
+        throw new TypeError("Nested columns support missing-value predicates only.");
       if (filter.type !== columnType) {
         throw new TypeError(
           `The filter for ${JSON.stringify(filter.column)} declares ${filter.type}, but the R column is ${schemaColumn.type}.`
@@ -126,6 +132,8 @@ export function resolveRTransformSortRules(
   return Object.freeze(
     rules.map((rule) => {
       const column = requireRTransformColumn(rule.column, schema, purpose);
+      if (column.type === "list" || column.type === "struct")
+        throw new TypeError("Extract or explode nested columns before sorting them.");
       if (seen.has(column.id)) throw new TypeError(`${purpose} repeats the same R column identity.`);
       seen.add(column.id);
       return Object.freeze({
@@ -286,12 +294,13 @@ export function assertRDatasetStatsContract(
   const columns = session.schema.length;
   const duplicateRowsDomain = result.stats.duplicateRowsSampleSize ?? rows;
   if (
-    result.stats.duplicateRows === null ||
+    (result.stats.duplicateRows === null) !==
+      session.schema.some((column) => column.type === "list" || column.type === "struct") ||
     rows > session.rows ||
     (view.filters.length === 0 && rows !== session.rows) ||
     result.stats.missingRows > rows ||
     duplicateRowsDomain > rows ||
-    result.stats.duplicateRows > Math.max(0, duplicateRowsDomain - 1) ||
+    (result.stats.duplicateRows !== null && result.stats.duplicateRows > Math.max(0, duplicateRowsDomain - 1)) ||
     result.stats.missingCells > rows * columns ||
     result.stats.missingValuesByColumn.length !== columns
   ) {
@@ -317,7 +326,9 @@ function requireRColumnType(type: ColumnSchema["type"]): RColumnType {
     type === "boolean" ||
     type === "datetime" ||
     type === "date" ||
-    type === "duration"
+    type === "duration" ||
+    type === "list" ||
+    type === "struct"
   ) {
     return type;
   }

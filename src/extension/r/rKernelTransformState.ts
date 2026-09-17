@@ -197,6 +197,17 @@ export function copyRTransformStep(step: RTransformStep): RTransformStep {
       params: { columns: columns as [RKernelColumnReference, ...RKernelColumnReference[]] }
     };
   }
+  if (step.kind === "explodeList")
+    return { id: step.id, kind: step.kind, params: { column: { ...step.params.column } } };
+  if (step.kind === "extractStructFields")
+    return {
+      id: step.id,
+      kind: step.kind,
+      params: {
+        column: { ...step.params.column },
+        fields: step.params.fields.map((field) => ({ ...field })) as typeof step.params.fields
+      }
+    };
   if (step.kind === "cloneColumn") {
     return {
       id: step.id,
@@ -472,6 +483,8 @@ export function copyRetainedStep(step: RetainedTransformStep): RetainedTransform
     step.kind !== "dropDuplicates" &&
     step.kind !== "renameColumn" &&
     step.kind !== "cloneColumn" &&
+    step.kind !== "extractStructFields" &&
+    step.kind !== "explodeList" &&
     step.kind !== "castColumn" &&
     step.kind !== "formula" &&
     step.kind !== "textLength" &&

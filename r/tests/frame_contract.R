@@ -230,6 +230,218 @@ for (index in seq_along(property_values)) {
 }))
 run_frame_contract_case("capture-and-export", local({
 
+# Ordinary flat containers stay native while scalar siblings remain pageable.
+local({
+  source <- data.frame(id = 1:4)
+  source$items <- list(c(1L, NA_integer_), integer(), NULL, 3L)
+  source$record <- list(list(code = "a", count = 1L), NULL,
+    list(code = "", count = NA_integer_), list(code = "d", count = 4L))
+  for (flavor in c("base", "tibble", "data.table")) {
+    frame <- switch(flavor, base = source, tibble = tibble::as_tibble(source),
+      data.table = data.table::as.data.table(source))
+    before <- serialize(frame, NULL, version = 3L)
+    capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
+    page <- openwrangler_r_frame_contract$materialize_page(capture,
+      row_offset = 1L, row_limit = 2L, column_offset = 0L, column_limit = 3L)
+    assert_identical(vapply(page$schema, `[[`, character(1L), "type"), c("integer", "list", "struct"),
+      paste(flavor, "did not expose the flat container types"))
+    assert_identical(vapply(page$page$rows, `[[`, character(1L), "id"), c("r:r:1", "r:r:2"),
+      paste(flavor, "changed paged source identities"))
+    assert_identical(page$page$rows[[1L]]$values[[2L]]$kind, "list", "an empty sequence became a missing cell")
+    assert_identical(page$page$rows[[1L]]$values[[2L]]$isNull, FALSE, "an empty sequence became null")
+    assert_identical(page$page$rows[[2L]]$values[[2L]]$isNull, TRUE, "a NULL sequence was not missing")
+    assert_identical(page$page$rows[[1L]]$values[[3L]]$isNull, TRUE, "a NULL record was not missing")
+    profiles <- openwrangler_r_frame_contract$materialize_summaries(capture,
+      list(list(id = "r:c:1", name = "items"), list(id = "r:c:2", name = "record")))
+    assert_identical(vapply(profiles, `[[`, integer(1L), "nullCount"), c(1L, 1L),
+      "flat-container profiles confused outer NULL and inner NA")
+    scalar_view <- openwrangler_r_frame_contract$materialize_view_page(capture, list(
+      filters = list(list(column = list(id = "r:c:0", name = "id"), type = "integer",
+        predicates = list(list(kind = "predicate", operator = "gt", value = 1L)))),
+      sorts = list(list(column = list(id = "r:c:0", name = "id"), direction = "desc", nulls = "last"))))
+    assert_identical(vapply(scalar_view$page$rows, `[[`, character(1L), "id"),
+      c("r:r:3", "r:r:2", "r:r:1"), paste(flavor, "nested siblings changed scalar filtering or sorting"))
+    missing_view <- openwrangler_r_frame_contract$materialize_view_page(capture, list(
+      filters = list(list(column = list(id = "r:c:1", name = "items"), type = "list",
+        predicates = list(list(kind = "predicate", operator = "isNull")))), sorts = list()))
+    assert_identical(vapply(missing_view$page$rows, `[[`, character(1L), "id"),
+      "r:r:2", paste(flavor, "nested null filtering confused empty and missing cells"))
+    assert_identical(serialize(frame, NULL, version = 3L), before, paste(flavor, "container viewing mutated source"))
+  }
+})
+
+local({
+  nested_frame <- function(values) {
+    frame <- data.frame(id = seq_along(values))
+    frame$value <- values
+    frame
+  }
+  view <- function(values) {
+    capture <- openwrangler_r_frame_contract$capture_live_frame(function() nested_frame(values))
+    openwrangler_r_frame_contract$materialize_page(capture, row_limit = 10L, column_limit = 2L)
+  }
+  assert_error(view(list(integer(), character())), "mixes atomic list element types")
+  assert_error(view(list(1L, 1)), "mixes atomic list element types")
+  untyped <- view(list(NULL, list(), structure(list(), names = character())))
+  assert_identical(untyped$schema[[2L]]$semantics$element, NULL, "untyped empty cells invented a prototype")
+  assert_identical(untyped$page$rows[[2L]]$values[[2L]]$raw, I(list()), "an untyped empty cell was not present")
+  named <- view(list(c(left = 1L, right = NA_integer_), integer()))
+  assert_identical(named$page$rows[[1L]]$values[[2L]]$names, I(c("left", "right")), "atomic element names were lost")
+  reordered <- view(list(list(first = 1L, second = "x"), list(second = "y", first = NA_integer_)))
+  assert_identical(reordered$page$rows[[2L]]$values[[2L]]$raw[[1L]]$isNull, TRUE, "record fields followed incidental order")
+  assert_identical(reordered$page$rows[[2L]]$values[[2L]]$raw[[2L]]$raw, "y", "record fields were not aligned by captured names")
+  for (bad in list(list(first = 1L), list(first = 1L, second = "x", extra = FALSE), list(first = NULL, second = "x"))) {
+    assert_error(view(list(list(first = 1L, second = "x"), bad)), "unsupported-column")
+  }
+  for (bad in list(list(list(deeper = 1L)), new.env())) {
+    assert_error(view(list(bad)), "unsupported-column")
+  }
+  for (bad in list(structure(1L, hidden = new.env()), structure(1L, names = structure("hidden", reference = new.env())))) {
+    assert_error(view(list(bad)), "unsupported-column-attributes")
+  }
+  exact_cases <- list(
+    list(values = list(c(-0, NaN, Inf, -Inf), numeric()), kind = "double"),
+    list(values = list(bit64::as.integer64(c("9223372036854775807", NA)), bit64::as.integer64(character())), kind = "integer64"),
+    list(values = list(as.Date(c("2026-01-01", NA)), as.Date(character())), kind = "date"),
+    list(values = list(factor(c("a", NA), levels = c("b", "a")), factor(character(), levels = c("b", "a"))), kind = "factor")
+  )
+  for (case in exact_cases) {
+    page <- view(case$values)
+    assert_identical(page$schema[[2L]]$semantics$element$kind, case$kind, "a typed empty leaf lost native semantics")
+    assert_identical(page$page$rows[[2L]]$values[[2L]]$raw, I(list()), "typed empty became missing")
+  }
+  special <- view(exact_cases[[1L]]$values)$page$rows[[1L]]$values[[2L]]$raw
+  assert_identical(vapply(special, `[[`, character(1L), "kind"), c("number", "nan", "infinity", "infinity"), "nested special numeric identities were flattened")
+  assert_identical(special[[1L]]$raw, "-0", "nested negative zero lost its sign")
+  wide <- view(exact_cases[[2L]]$values)$page$rows[[1L]]$values[[2L]]$raw
+  assert_identical(wide[[1L]]$raw, "9223372036854775807", "nested integer64 rounded through double")
+  assert_identical(wide[[2L]]$isNull, TRUE, "nested integer64 sentinel became a value")
+
+  frame <- nested_frame(list(1L, 2L, 3L))
+  capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
+  openwrangler_r_frame_contract$materialize_page(capture, row_limit = 1L, column_limit = 1L)
+  # Reading only a scalar sibling must not revisit any nested source cell.
+  original_prototype <- get("nested_cell_prototype", contract_environment)
+  assign("nested_cell_prototype", function(...) stop("unprojected nested cell was inspected"), contract_environment)
+  on.exit(assign("nested_cell_prototype", original_prototype, contract_environment), add = TRUE)
+  scalar_page <- openwrangler_r_frame_contract$materialize_page(capture, row_offset = 1L, row_limit = 1L, column_limit = 1L)
+  assert_identical(scalar_page$page$rows[[1L]]$values[[1L]]$raw, "2", "later projected page lost the scalar sibling")
+  summaries <- openwrangler_r_frame_contract$materialize_summaries(capture, list(list(id = "r:c:1", name = "value")))
+  assert_identical(summaries[[1L]]$nullCount, 0L, "outer-only profiling inspected native leaf prototypes")
+  assign("nested_cell_prototype", original_prototype, contract_environment)
+  frame$value[[3L]] <- new.env()
+  assert_error(openwrangler_r_frame_contract$materialize_page(capture, row_offset = 2L, row_limit = 1L, column_offset = 1L, column_limit = 1L), "unsupported-column")
+  typed_source <- nested_frame(list(1L, 2L))
+  typed_capture <- openwrangler_r_frame_contract$capture_live_frame(function() typed_source)
+  openwrangler_r_frame_contract$materialize_page(typed_capture, row_limit = 1L, column_limit = 1L)
+  typed_source$value <- list("a", "b")
+  assert_identical(openwrangler_r_frame_contract$materialize_summaries(typed_capture,
+    list(list(id = "r:c:1", name = "value")))[[1L]]$nullCount, 0L, "outer-only profile depended on changed leaf values")
+  assert_error(openwrangler_r_frame_contract$materialize_page(typed_capture, row_offset = 1L, row_limit = 1L, column_offset = 1L, column_limit = 1L), "mixes atomic list element types")
+  original_snapshot <- get("isolated_snapshot", contract_environment)
+  assign("isolated_snapshot", function(...) stop("copy ran before nested validation"), contract_environment)
+  on.exit(assign("isolated_snapshot", original_snapshot, contract_environment), add = TRUE)
+  assert_error(openwrangler_r_frame_contract$isolate_capture(capture), "unsupported-column")
+  assert_error(openwrangler_r_frame_contract$isolate_custom_code_input(capture), "unsupported-column")
+  assert_error(openwrangler_r_frame_contract$isolate_capture(typed_capture), "mixes atomic list element types")
+  assert_error(openwrangler_r_frame_contract$isolate_custom_code_input(typed_capture), "mixes atomic list element types")
+
+  # Reused native metadata must still validate each cell's values and reject
+  # different attributes before an isolation copy can run.
+  guarded_cells <- list(
+    list(first = factor("a", levels = c("a", "b")), bad = structure(3L, levels = c("a", "b"), class = "factor"), error = "invalid-factor"),
+    list(first = as.Date("2026-01-01"), bad = structure(Inf, class = "Date"), error = "non-finite classed"),
+    list(first = as.Date("2026-01-01"), bad = structure(1.5, class = "Date"), error = "fractional Date"),
+    list(first = factor("a", levels = c("a", "b")), bad = factor("a", levels = c("b", "a")), error = "mixes atomic list element types"),
+    list(first = 1L, bad = structure(2L, names = structure("x", hidden = new.env())), error = "unsupported-column-attributes"),
+    list(first = 1L, bad = matrix(2L, 1L, 1L), error = "unsupported-column-attributes")
+  )
+  for (guard in guarded_cells) {
+    guarded <- nested_frame(list(guard$first, guard$first))
+    guarded_capture <- openwrangler_r_frame_contract$capture_live_frame(function() guarded)
+    openwrangler_r_frame_contract$materialize_page(guarded_capture, row_limit = 1L, column_limit = 1L)
+    guarded$value[[2L]] <- guard$bad
+    assert_error(openwrangler_r_frame_contract$isolate_capture(guarded_capture), guard$error)
+    assert_error(openwrangler_r_frame_contract$isolate_custom_code_input(guarded_capture), guard$error)
+  }
+  # Shared children count once per occurrence when a copy would serialize them.
+  shared <- rep(1, 1000000L)
+  large <- nested_frame(rep(list(shared), 9L))
+  large_capture <- openwrangler_r_frame_contract$capture_live_frame(function() large)
+  scalar <- openwrangler_r_frame_contract$materialize_page(large_capture, row_limit = 1L, column_limit = 1L)
+  assert_identical(scalar$page$rows[[1L]]$values[[1L]]$raw, "1", "large child prevented scalar-only viewing")
+  assert_error(openwrangler_r_frame_contract$materialize_page(large_capture, row_limit = 1L, column_offset = 1L, column_limit = 1L), "text-too-large")
+  assert_error(openwrangler_r_frame_contract$isolate_capture(large_capture), "operation-output-too-large")
+  assert_error(openwrangler_r_frame_contract$isolate_custom_code_input(large_capture), "operation-output-too-large")
+  assign("isolated_snapshot", original_snapshot, contract_environment)
+
+  null_source <- nested_frame(rep(list(NULL), 1000000L))
+  null_capture <- openwrangler_r_frame_contract$capture_live_frame(function() null_source)
+  null_isolated <- openwrangler_r_frame_contract$isolate_capture(null_capture)
+  assert_identical(null_isolated$snapshot, null_source, "NULL-list pointers were charged as encoded cell envelopes")
+  rm(null_isolated, null_capture, null_source)
+  typed_source <- nested_frame(list(1L, NULL, integer()))
+  typed_capture <- openwrangler_r_frame_contract$capture_frame(typed_source)
+  for (positions in list(2L, 3L, integer())) {
+    result <- openwrangler_r_frame_contract$capture_frame(typed_source[positions, , drop = FALSE],
+      nullability_source = typed_capture, source_row_positions = positions)
+    assert_identical(result$descriptor$schema[[2L]]$semantics, typed_capture$descriptor$schema[[2L]]$semantics,
+      "a derived all-NULL or empty list column lost its captured prototype")
+  }
+  for (flavor in c("base", "tibble", "data.table")) {
+    source <- nested_frame(list(c(left = 1L), NULL, integer()))
+    source <- switch(flavor, base = source, tibble = tibble::as_tibble(source), data.table = data.table::as.data.table(source))
+    if (flavor == "data.table") data.table::setkey(source, id)
+    before <- serialize(source, NULL, version = 3L)
+    capture <- openwrangler_r_frame_contract$capture_live_frame(function() source)
+    isolated <- openwrangler_r_frame_contract$isolate_custom_code_input(capture)
+    assert_identical(names(isolated$value[[1L]]), "left", "native copy stripped atomic child names")
+    isolated$value[[1L]][[1L]] <- 99L
+    assert_identical(serialize(source, NULL, version = 3L), before, "native child edit mutated source")
+    stats <- openwrangler_r_frame_contract$materialize_dataset_stats(capture)
+    assert_identical(stats$stats$missingCells, 1, "dataset profile counted empty or inner missing as outer NULL")
+    assert_identical(stats$stats$duplicateRows, NULL, "nested dataset profile invented duplicate counts")
+    target <- tempfile(fileext = ".csv")
+    assert_error(openwrangler_r_frame_contract$write_csv(capture, target), "Extract or explode")
+    assert_identical(file.exists(target), FALSE, "nested CSV refusal left an artifact")
+  }
+})
+
+local({
+  transform <- openwrangler_r_frame_contract$nested_operation_frame
+  owner <- environment(transform)
+  flatten <- get("flatten_native_cells", owner)
+  assign("flatten_native_cells", function(...) stop("expanded output allocated before preflight"), owner)
+  on.exit(assign("flatten_native_cells", flatten, owner), add = TRUE)
+  text <- data.frame(id = 1:2, text = rep(strrep("x", 8192L), 2L))
+  text$items <- list(seq_len(10000L), integer())
+  capture <- openwrangler_r_frame_contract$capture_frame(text)
+  assert_error(transform(text, capture$descriptor$schema, 3L), "operation-output-too-large")
+  nested <- data.frame(id = 1:2)
+  nested$items <- list(seq_len(128L), integer())
+  nested$sibling <- list(rep(1, 65536L), numeric())
+  capture <- openwrangler_r_frame_contract$capture_frame(nested)
+  assert_error(transform(nested, capture$descriptor$schema, 2L), "operation-output-too-large")
+  small <- data.frame(id = 1L); small$items <- list(1:2)
+  capture <- openwrangler_r_frame_contract$capture_frame(small)
+  assert_error(transform(small, capture$descriptor$schema, 2L, identity_domain = 2147483646), "row-identity range")
+  untyped <- data.frame(id = 1:2); untyped$items <- list(NULL, list())
+  capture <- openwrangler_r_frame_contract$capture_frame(untyped)
+  assert_error(transform(untyped, capture$descriptor$schema, 2L), "captured atomic element type")
+  assign("flatten_native_cells", flatten, owner)
+  # Named scalar leaves preserve names; reordered record keys still align.
+  records <- data.frame(id = 1:3)
+  records$record <- list(list(at = structure(1, class = "Date", names = "first"), flag = TRUE), NULL,
+    list(flag = NA, at = structure(NA_real_, class = "Date", names = NA_character_)))
+  capture <- openwrangler_r_frame_contract$capture_frame(records)
+  extracted <- transform(records, capture$descriptor$schema, 2L, "at", "day")
+  assert_identical(extracted$day, structure(c(1, NA_real_, NA_real_), class = "Date", names = c("first", "", NA_character_)), "record extraction lost exact named scalar attributes")
+  assert_identical(extracted$record, records$record, "record extraction changed the parent")
+  assert_error(transform(records, capture$descriptor$schema, 2L, "missing", "day"), "captured fields")
+  assert_error(transform(records, capture$descriptor$schema, 2L, "at", "id"), "unique new names")
+})
+
+
 base_frame <- data.frame(
   duplicate = c(TRUE, NA, FALSE),
   duplicate = c(1L, NA_integer_, -2L),
@@ -310,7 +522,7 @@ base_page <- openwrangler_r_frame_contract$materialize_page(
   column_limit = 20L
 )
 assert_identical(base_page$dataframeFlavor, "r.data.frame", "base data.frame flavor changed")
-assert_identical(base_page$contractVersion, 5L, "R frame contract version changed")
+assert_identical(base_page$contractVersion, 6L, "R frame contract version changed")
 assert_identical(base_page$shape, list(rows = 3L, columns = 10L), "base frame shape changed")
 assert_identical(base_page$frameSemantics$rowNames, "positional", "automatic row names were not positional")
 assert_true(is.null(base_page$page$rows[[1L]]$rowLabel), "automatic row names leaked into the page")
@@ -8734,7 +8946,7 @@ collapse_indexed_frame <- collapse::findex_by(collapse_source, group, row_id)
 assert_true(inherits(collapse_indexed_frame, "indexed_frame"), "collapse did not create an indexed_frame")
 assert_error(openwrangler_r_frame_contract$capture_frame(collapse_indexed_frame), "unsupported-frame-class")
 
-list_frame <- data.frame(value = I(list(1L, 2L)))
+list_frame <- data.frame(value = I(list(list(1L), list(2L))))
 assert_error(openwrangler_r_frame_contract$capture_frame(list_frame), "unsupported-column")
 matrix_frame <- data.frame(value = I(matrix(1:4, nrow = 2L)))
 assert_error(openwrangler_r_frame_contract$capture_frame(matrix_frame), "unsupported-column")

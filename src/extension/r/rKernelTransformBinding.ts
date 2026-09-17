@@ -6,6 +6,8 @@ import type {
   CastColumnTransformStep,
   CeilNumberTransformStep,
   CloneColumnTransformStep,
+  ExtractStructFieldsTransformStep,
+  ExplodeListTransformStep,
   ConditionalColumnTransformStep,
   ColumnSchema,
   CustomCodeTransformStep,
@@ -67,6 +69,8 @@ export type RTransformStepWithoutByExample =
   | DropDuplicatesTransformStep
   | RenameColumnTransformStep
   | CloneColumnTransformStep
+  | ExtractStructFieldsTransformStep
+  | ExplodeListTransformStep
   | ConditionalColumnTransformStep
   | CastColumnTransformStep
   | FormulaTransformStep
@@ -606,6 +610,27 @@ export function rTransformStep(
       })
     });
   }
+  if (step.kind === "explodeList") {
+    return Object.freeze({
+      id: step.id,
+      kind: step.kind,
+      params: Object.freeze({ column: Object.freeze({ ...step.params.column }) })
+    });
+  }
+  if (step.kind === "extractStructFields") {
+    const fields = step.params.fields.map((field) => Object.freeze({ ...field }));
+    return Object.freeze({
+      id: step.id,
+      kind: step.kind,
+      params: Object.freeze({
+        column: Object.freeze({ ...step.params.column }),
+        fields: Object.freeze(fields) as Extract<
+          RKernelTransformStep,
+          { kind: "extractStructFields" }
+        >["params"]["fields"]
+      })
+    });
+  }
   if (step.kind === "cloneColumn") {
     return Object.freeze({
       id: step.id,
@@ -895,6 +920,19 @@ function resolveRowReductionColumns(
   operation: "Drop missing rows" | "Drop duplicates" | "Mark duplicates",
   allowEmpty: boolean
 ): readonly RKernelColumnReference[] | undefined {
+  if (operation !== "Drop missing rows") {
+    const selectedIds = columns === undefined ? undefined : new Set(columns.map((column) => column.id));
+    if (
+      inputSchema.some(
+        (column) =>
+          (selectedIds === undefined || selectedIds.has(column.id)) &&
+          (column.type === "list" || column.type === "struct")
+      )
+    )
+      throw new TypeError(
+        `${operation} requires scalar comparison columns; extract or explode selected nested columns first.`
+      );
+  }
   if (columns === undefined) return undefined;
   if (allowEmpty && columns.length === 0) return undefined;
   if ((!allowEmpty && columns.length === 0) || columns.length > inputSchema.length) {

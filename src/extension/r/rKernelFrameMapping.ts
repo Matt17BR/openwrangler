@@ -92,6 +92,10 @@ export function copyRSchema(schema: readonly ColumnSchema[]): ColumnSchema[] {
 }
 
 export function cellValueFromR(cell: RFrameCell): CellValue {
+  if (cell.kind === "list" || cell.kind === "struct") {
+    const { names, ...value } = cell;
+    return { ...value, raw: names === undefined ? cell.raw : { names, values: cell.raw } };
+  }
   if (cell.kind === "number") {
     const raw = Number(cell.raw);
     if (!Number.isFinite(raw)) throw new TypeError("The R frame returned a non-finite value as a finite double.");

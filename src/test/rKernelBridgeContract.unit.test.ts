@@ -267,7 +267,7 @@ function openRequest(): OpenSessionRequest {
 
 function frameContract(): RFramePageContract {
   return {
-    contractVersion: 5,
+    contractVersion: 6,
     dataframeFlavor: "r.data.frame",
     shape: { rows: 1, columns: 1 },
     frameSemantics: { classes: ["data.frame"], rowNames: "positional", keyColumnIds: [] },

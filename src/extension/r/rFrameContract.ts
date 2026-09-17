@@ -1,4 +1,4 @@
-export const R_FRAME_CONTRACT_VERSION = 5 as const;
+export const R_FRAME_CONTRACT_VERSION = 6 as const;
 
 export const R_FRAME_CONTRACT_LIMITS = Object.freeze({
   rows: 2_147_483_647,
@@ -28,9 +28,20 @@ export const R_FRAME_CONTRACT_LIMITS = Object.freeze({
 });
 
 export type RDataframeFlavor = "r.data.frame" | "r.tibble" | "r.data.table";
-export type RColumnType = "string" | "integer" | "float" | "boolean" | "datetime" | "date" | "duration";
+export type RColumnType =
+  "string" | "integer" | "float" | "boolean" | "datetime" | "date" | "duration" | "list" | "struct";
 export type RColumnKind =
-  "logical" | "integer" | "double" | "character" | "factor" | "date" | "datetime" | "difftime" | "integer64";
+  | "logical"
+  | "integer"
+  | "double"
+  | "character"
+  | "factor"
+  | "date"
+  | "datetime"
+  | "difftime"
+  | "integer64"
+  | "list"
+  | "struct";
 
 interface RSimpleColumnSemantics {
   readonly kind: "logical" | "integer" | "double" | "character" | "date" | "integer64";
@@ -60,8 +71,24 @@ export interface RDurationColumnSemantics {
   readonly units: "secs" | "mins" | "hours" | "days" | "weeks";
 }
 
-export type RColumnSemantics =
+export type RScalarColumnSemantics =
   RSimpleColumnSemantics | RFactorColumnSemantics | RDatetimeColumnSemantics | RDurationColumnSemantics;
+
+export interface RListColumnSemantics {
+  readonly kind: "list";
+  readonly storageMode: "list";
+  readonly classes: readonly string[];
+  readonly element: RScalarColumnSemantics | null;
+}
+
+export interface RStructColumnSemantics {
+  readonly kind: "struct";
+  readonly storageMode: "list";
+  readonly classes: readonly string[];
+  readonly fields: readonly Readonly<{ name: string; semantics: RScalarColumnSemantics }>[];
+}
+
+export type RColumnSemantics = RScalarColumnSemantics | RListColumnSemantics | RStructColumnSemantics;
 
 export interface RColumnSchema {
   readonly id: string;
@@ -73,7 +100,7 @@ export interface RColumnSchema {
   readonly semantics: RColumnSemantics;
 }
 
-export type RFrameCell =
+export type RScalarFrameCell =
   | {
       readonly kind: "null";
       readonly raw: null;
@@ -106,6 +133,17 @@ export type RFrameCell =
   | {
       readonly kind: "integer" | "number" | "string" | "datetime" | "date" | "duration";
       readonly raw: string;
+      readonly display: string;
+      readonly isNull: false;
+      readonly isNaN: false;
+    };
+
+export type RFrameCell =
+  | RScalarFrameCell
+  | {
+      readonly kind: "list" | "struct";
+      readonly raw: readonly RScalarFrameCell[];
+      readonly names?: readonly (string | null)[];
       readonly display: string;
       readonly isNull: false;
       readonly isNaN: false;
@@ -302,9 +340,48 @@ function decodeColumn(value: unknown, position: number): RColumnSchema {
   });
 }
 
-function decodeColumnSemantics(value: unknown, label: string): RColumnSemantics {
+function decodeColumnSemantics(value: unknown, label: string, allowNested = true): RColumnSemantics {
   if (!isRecord(value) || typeof value.kind !== "string") fail(`${label} must identify an R column kind.`);
   const kind = value.kind;
+  if (kind === "list" || kind === "struct") {
+    if (!allowNested) fail(`${label} must be an atomic leaf.`);
+    const record = exactRecord(value, ["kind", "storageMode", "classes", kind === "list" ? "element" : "fields"]);
+    const classes = decodeStringArray(record.classes, `${label}.classes`, R_FRAME_CONTRACT_LIMITS.nameBytes);
+    if (record.storageMode !== "list" || !(arraysEqual(classes, ["list"]) || arraysEqual(classes, ["AsIs"]))) {
+      fail(`${label} has invalid native list metadata.`);
+    }
+    if (kind === "list") {
+      const element =
+        record.element === null
+          ? null
+          : (decodeColumnSemantics(record.element, `${label}.element`, false) as RScalarColumnSemantics);
+      return Object.freeze({ kind, storageMode: "list", classes, element });
+    }
+    if (
+      !Array.isArray(record.fields) ||
+      record.fields.length === 0 ||
+      record.fields.length * 512 > R_FRAME_CONTRACT_LIMITS.payloadBytes
+    ) {
+      fail(`${label}.fields must be a bounded nonempty array.`);
+    }
+    const names = new Set<string>();
+    const fields = Object.freeze(
+      record.fields.map((value: unknown, index: number) => {
+        const field = exactRecord(value, ["name", "semantics"]);
+        const name = boundedString(field.name, `${label}.fields[${index}].name`, R_FRAME_CONTRACT_LIMITS.nameBytes);
+        if (!name || /[\r\n]/u.test(name) || names.has(name))
+          fail(`${label}.fields must have unique nonempty single-line names.`);
+        names.add(name);
+        const semantics = decodeColumnSemantics(
+          field.semantics,
+          `${label}.fields[${index}].semantics`,
+          false
+        ) as RScalarColumnSemantics;
+        return Object.freeze({ name, semantics });
+      })
+    );
+    return Object.freeze({ kind, storageMode: "list", classes, fields });
+  }
   if (isSimpleKind(kind)) {
     const record = exactRecord(value, ["kind", "storageMode", "classes"]);
     const expected = simpleSemantics[kind];
@@ -352,8 +429,12 @@ function decodeColumnSemantics(value: unknown, label: string): RColumnSemantics 
   fail(`${label}.kind is unsupported.`);
 }
 
-function expectedColumnIdentity(semantics: RColumnSemantics): { rawType: string; type: RColumnType } {
-  if (isSimpleKind(semantics.kind)) return simpleSemantics[semantics.kind];
+export function expectedColumnIdentity(semantics: RColumnSemantics): { rawType: string; type: RColumnType } {
+  if (semantics.kind === "list" || semantics.kind === "struct") return { rawType: "list", type: semantics.kind };
+  if (isSimpleKind(semantics.kind)) {
+    const { rawType, type } = simpleSemantics[semantics.kind];
+    return { rawType, type };
+  }
   if (semantics.kind === "factor") {
     return { rawType: semantics.ordered ? "ordered factor" : "factor", type: "string" };
   }
@@ -447,6 +528,58 @@ function decodeRow(
 
 function decodeCell(value: unknown, column: RColumnSchema, label: string): RFrameCell {
   if (!isRecord(value) || typeof value.kind !== "string") fail(`${label} must identify a cell kind.`);
+  if (value.kind === "list" || value.kind === "struct") {
+    const record = exactRecord(
+      value,
+      ["kind", "raw", "display", "isNull", "isNaN"],
+      value.kind === "list" ? ["names"] : []
+    );
+    const semantics = column.semantics;
+    if (
+      (semantics.kind !== "list" && semantics.kind !== "struct") ||
+      semantics.kind !== value.kind ||
+      record.isNull !== false ||
+      record.isNaN !== false ||
+      !Array.isArray(record.raw) ||
+      record.raw.length * 3 > R_FRAME_CONTRACT_LIMITS.textBytes + 1
+    )
+      fail(`${label} has invalid nested cell metadata.`);
+    const display = boundedString(record.display, `${label}.display`, R_FRAME_CONTRACT_LIMITS.textBytes);
+    if (
+      (semantics.kind === "list" && semantics.element === null && record.raw.length !== 0) ||
+      (semantics.kind === "struct" && semantics.fields.length !== record.raw.length)
+    )
+      fail(`${label} does not match its captured prototype.`);
+    const raw = Object.freeze(
+      record.raw.map((child: unknown, index: number) => {
+        const childSemantics = semantics.kind === "list" ? semantics.element! : semantics.fields[index]!.semantics;
+        const identity = expectedColumnIdentity(childSemantics);
+        return decodeCell(
+          child,
+          { ...column, ...identity, nullable: true, semantics: childSemantics },
+          `${label}.raw[${index}]`
+        ) as RScalarFrameCell;
+      })
+    );
+    let names: readonly (string | null)[] | undefined;
+    if (record.names !== undefined) {
+      if (!Array.isArray(record.names) || record.names.length !== raw.length)
+        fail(`${label}.names must match its children.`);
+      names = Object.freeze(
+        record.names.map((name: unknown, index: number) =>
+          name === null ? null : boundedString(name, `${label}.names[${index}]`, R_FRAME_CONTRACT_LIMITS.nameBytes)
+        )
+      );
+    }
+    return Object.freeze({
+      kind: semantics.kind,
+      raw,
+      display,
+      isNull: false,
+      isNaN: false,
+      ...(names === undefined ? {} : { names })
+    });
+  }
   if (value.kind === "infinity") {
     const record = exactRecord(value, ["kind", "raw", "display", "isNull", "isNaN", "sign"]);
     const sign = record.sign;
@@ -497,6 +630,8 @@ function decodeCell(value: unknown, column: RColumnSchema, label: string): RFram
   }
   if (record.isNull !== false || record.isNaN !== false) fail(`${label} has inconsistent missing-value flags.`);
   const display = boundedString(record.display, `${label}.display`, R_FRAME_CONTRACT_LIMITS.textBytes);
+  if (column.semantics.kind === "list" || column.semantics.kind === "struct")
+    fail(`${label} must contain a nested cell or NULL.`);
   const expectedKind = expectedCellKind(column.semantics.kind);
   if (record.kind !== expectedKind) fail(`${label}.kind does not match its R column.`);
 
@@ -512,7 +647,9 @@ function decodeCell(value: unknown, column: RColumnSchema, label: string): RFram
   return Object.freeze({ kind: expectedKind, raw, display, isNull: false, isNaN: false });
 }
 
-function expectedCellKind(kind: RColumnKind): Exclude<RFrameCell["kind"], "null" | "nan" | "infinity"> {
+function expectedCellKind(
+  kind: RScalarColumnSemantics["kind"]
+): Exclude<RScalarFrameCell["kind"], "null" | "nan" | "infinity"> {
   switch (kind) {
     case "logical":
       return "boolean";
