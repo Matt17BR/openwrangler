@@ -643,8 +643,9 @@ enclose a whole field, with embedded quotes doubled. Headerless input and duplic
 malformed records and strict decoding failures are refused. Empty and `NA` fields are
 missing; dates and integers that would lose precision stay text. R loads the full file into memory before returning
 bounded pages, and editing can require additional copies. It needs Rscript, not Python. Parquet and JSONL/NDJSON
-also admit flat scalar data; Excel opens the selected worksheet. Parquet requires `nanoparquet`, Excel requires
-`readxl`, and large integer input requires `bit64`. The [reader contract](architecture.md#parquet-jsonl-and-excel-files)
+also admit flat scalar data; Excel opens the selected worksheet. Parquet accepts modern and legacy integer annotations,
+including those written by DuckDB, within the native precision and range limits. Parquet requires `nanoparquet`, Excel
+requires `readxl`, and large integer input requires `bit64`. The [reader contract](architecture.md#parquet-jsonl-and-excel-files)
 describes type and precision limits, spreadsheet missing-value rules and eager loading.
 Installed CSV workflows have been verified in desktop VS Code on Linux, macOS and Windows. The
 [macOS check](https://github.com/Matt17BR/openwrangler/actions/runs/35094083555/job/104787104263) covers native cells,
