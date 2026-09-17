@@ -11,6 +11,7 @@ import {
 import { ImportCancelledError, promptImportOptions } from "../extension/files/importOptions";
 import { DependencyGuardCommandError } from "../extension/dependencyGuardProtocol";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
+import * as rscriptPath from "../extension/r/rscriptPath";
 import { persistenceKey, SESSION_STORAGE_KEY } from "../extension/sessionPersistence";
 import { OpenWranglerPanel, restoreEditorGroupAfterQuickPick } from "../extension/webviewPanel";
 import type {
@@ -2029,14 +2030,19 @@ describe("OpenWranglerPanel retained view state", () => {
   });
 
   it.each([
-    ["polars", "r", "csv"],
-    ["r", "pandas", "csv"],
-    ["polars", "r", "parquet"],
-    ["polars", "r", "jsonl"],
-    ["pandas", "r", "xlsx"]
+    ["polars", "r", "csv", "linux"],
+    ["r", "pandas", "csv", "win32"],
+    ["polars", "r", "parquet", "darwin"],
+    ["polars", "r", "jsonl", "linux"],
+    ["pandas", "r", "xlsx", "win32"],
+    ["polars", "r", "csv", "win32"]
   ] as const)(
-    "opens %s files in a separate %s session (%s) without replaying the original plan",
-    async (backend, target, extension) => {
+    "opens %s files in a separate %s session (%s, %s) without replaying the original plan",
+    async (backend, target, extension, platform) => {
+      const supportsDocument = rscriptPath.supportsRscriptExecution(platform);
+      const supportsFile = rscriptPath.supportsRFileExecution(platform);
+      vi.spyOn(rscriptPath, "supportsRscriptExecution").mockReturnValue(supportsDocument);
+      vi.spyOn(rscriptPath, "supportsRFileExecution").mockReturnValue(supportsFile);
       const source: SessionSource = {
         kind: "file",
         label: `records.${extension}`,

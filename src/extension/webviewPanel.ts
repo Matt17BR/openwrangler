@@ -30,7 +30,7 @@ import { rememberConfirmedFileConfiguration } from "./files/confirmedFileConfigu
 import { ImportCancelledError, promptImportOptions } from "./files/importOptions";
 import { dependencyGuardRecoveryGuidance } from "./pythonDependencyState";
 import { automaticBackends, type FileDataBackend } from "./pythonEnvironmentModel";
-import { supportsRscriptExecution } from "./r/rscriptPath";
+import { supportsRFileExecution } from "./r/rscriptPath";
 import {
   RendererSynchronizationCoordinator,
   type RendererImportPreparation,
@@ -1305,7 +1305,7 @@ export class OpenWranglerPanel {
         /\.(csv|tsv|parquet|jsonl|ndjson|xlsx|xls)$/iu.test(source.path ?? "")
       ) {
         if (!current()) return;
-        if (supportsRscriptExecution()) compatibleBackends.push("r");
+        if (supportsRFileExecution()) compatibleBackends.push("r");
       }
       const currentBackend = this.snapshot.metadata.backend;
       const backend =

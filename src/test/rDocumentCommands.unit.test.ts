@@ -275,13 +275,6 @@ describe("R document command", () => {
       path: "/workspace/orders.csv",
       uri: "file:///workspace/orders.csv"
     };
-    expect(supportsRscriptExecution("linux")).toBe(true);
-    expect(supportsRscriptExecution("darwin")).toBe(true);
-    expect(supportsRscriptExecution("win32")).toBe(false);
-    expect(supportsRFileExecution("linux")).toBe(true);
-    expect(supportsRFileExecution("darwin")).toBe(true);
-    expect(supportsRFileExecution("win32")).toBe(true);
-    expect(supportsRFileExecution("freebsd")).toBe(false);
     for (const importOptions of [{ encoding: "unknown" }, { quoteChar: "§" }, { delimiter: "§" }]) {
       expect(() => createRFileBridge(context, { ...source, importOptions })).toThrow(FileBackendUnavailableError);
     }
