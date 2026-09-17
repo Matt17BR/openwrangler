@@ -425,8 +425,11 @@ existing twenty-second discovery deadline. Duplicate menus and cleanup failures 
 dispatch the Open Wrangler action, which still requires exact notebook identity and one activation after acquisition.
 The released-Jupyter Variables action shows its exact notebook and opens Jupyter's Variables view once before each
 bounded action acquisition, including after session disposal changes focus. The shared dispatcher
-owns this preparation for Pandas, DuckDB and PySpark; it still requires one trusted keyboard activation and the exact
-session receipt. Preparation does not retry a failed activation or extend acquisition deadlines.
+owns this preparation for Pandas, DuckDB and PySpark. If the target row is not rendered, acquisition reveals the
+virtualized Variables rows with one public scroll pass from the top, using overlapping pages and waiting for their
+names to load. It stops scrolling at the bottom and reacquires a replaced frame within the original deadline.
+The action still requires one trusted keyboard activation and the exact session receipt. Preparation does not retry a
+failed activation or extend acquisition deadlines.
 The local journey checks both DuckDB and Pandas Variables actions before testing code insertion with another notebook
 active. It does not qualify Jupyter Variables reuse after insertion. The
 [Variables React update-limit failure](https://github.com/Matt17BR/openwrangler/issues/1498) remains open.

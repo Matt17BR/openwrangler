@@ -4812,6 +4812,10 @@ async function waitForReleasedJupyterVariableAction(
   checkpoint: string
 ): Promise<ReleasedJupyterVariableAction> {
   recordAcceptanceProgress(`${checkpoint}:wait`);
+  let scrollFrame: Frame | undefined;
+  let scrollStarted = false;
+  let pendingScroll: { readonly from: number; readonly direction: -1 | 1 } | undefined;
+  let scrollComplete = false;
   const viewerAction = await acquirePreparedAcceptanceAction({
     timeoutMs: RELEASED_JUPYTER_VARIABLE_DISCOVERY_TIMEOUT_MS,
     intervalMs: 100,
@@ -4821,7 +4825,61 @@ async function waitForReleasedJupyterVariableAction(
           const table = frame.getByRole("table", { name: "Variables", exact: true }).first();
           if ((await table.count()) === 0 || !(await table.isVisible())) continue;
           const cell = table.locator(`[role="cell"][title=${JSON.stringify(variableName)}]`).first();
-          if ((await cell.count()) === 0 || !(await cell.isVisible())) continue;
+          if ((await cell.count()) === 0 || !(await cell.isVisible())) {
+            const canvas = table.locator(".react-grid-Canvas");
+            if ((await canvas.count()) !== 1 || !(await canvas.isVisible())) continue;
+            if (scrollFrame !== frame) {
+              scrollFrame = frame;
+              scrollStarted = false;
+              pendingScroll = undefined;
+              scrollComplete = false;
+            }
+            if (scrollComplete) continue;
+            const geometry = await withReleasedJupyterVariableActionPrepareDeadline(
+              canvas.evaluate((element) => {
+                const scroller = element as {
+                  readonly clientHeight: number;
+                  readonly scrollHeight: number;
+                  readonly scrollTop: number;
+                  querySelectorAll(selector: string): ArrayLike<{ getAttribute(name: string): string | null }>;
+                };
+                const names = Array.from(scroller.querySelectorAll('.react-grid-Cell:nth-child(2) [role="cell"]'));
+                return {
+                  height: scroller.clientHeight,
+                  extent: scroller.scrollHeight,
+                  top: scroller.scrollTop,
+                  pendingNames: names.length === 0 || names.some((name) => !name.getAttribute("title")?.trim())
+                };
+              }),
+              "Variables scroll geometry"
+            );
+            if (geometry.height <= 0) continue;
+            const bottom = Math.max(0, geometry.extent - geometry.height);
+            if (pendingScroll) {
+              const moved =
+                pendingScroll.direction === 1
+                  ? geometry.top > pendingScroll.from || geometry.top >= bottom - 1
+                  : geometry.top <= 1;
+              if (!moved) continue;
+              pendingScroll = undefined;
+            }
+            // Reveal virtual rows once from the top, letting each rendered page load before advancing.
+            let delta = 0;
+            if (!scrollStarted && geometry.top > 1) delta = -geometry.top;
+            if (delta === 0) {
+              if (geometry.pendingNames) continue;
+              if (geometry.top >= bottom - 1) {
+                scrollComplete = true;
+                continue;
+              }
+              delta = Math.min(bottom - geometry.top, Math.max(1, Math.floor(geometry.height * 0.8)));
+            }
+            await canvas.hover({ timeout: RELEASED_JUPYTER_VARIABLE_ACTION_PREPARE_TIMEOUT_MS });
+            scrollStarted = true;
+            pendingScroll = { from: geometry.top, direction: delta < 0 ? -1 : 1 };
+            await frame.page().mouse.wheel(0, delta);
+            continue;
+          }
           const row = cell.locator("xpath=ancestor::*[@role='row'][1]");
           const actions = row.getByRole("button", {
             name: RELEASED_JUPYTER_VARIABLE_VIEWER_ACTION,
