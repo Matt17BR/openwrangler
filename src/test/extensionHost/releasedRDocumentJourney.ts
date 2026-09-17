@@ -154,6 +154,7 @@ export function createReleasedRDocumentJourney({
     fixture: ReleasedRDocumentFixture,
     initialRoots: readonly string[]
   ): Promise<void> {
+    recordAcceptanceProgress("jupyter-r:file:recovery:stop");
     const runtimeId = testing
       .diagnostics()
       .sessions.find((session) => session.publicId === confirmed.sessionId)?.runtimeId;
@@ -173,9 +174,10 @@ export function createReleasedRDocumentJourney({
     await waitFor(() => !acceptanceProcessIsAlive(processId), 10_000, "the deliberately exited private file R process");
     await picker.dialog.getByRole("button", { name: "Cancel", exact: true }).click();
     await picker.dialog.waitFor({ state: "hidden", timeout: 10_000 });
+    recordAcceptanceProgress("jupyter-r:file:recovery:reopen");
     // Public navigation requests an idempotent page; it must not repeat the failed Custom preview.
-    const grid = picker.app.locator('[data-testid="data-grid-scroller"]');
-    await grid.focus();
+    const cell = picker.app.locator("td[data-grid-row][data-grid-column]").first();
+    await cell.focus();
     await workbench.keyboard.press("Control+End");
     await waitFor(
       () => {
@@ -210,6 +212,7 @@ export function createReleasedRDocumentJourney({
     );
     assert.equal(releasedRProcessRoots().filter((root) => !initialRoots.includes(root)).length, 1);
     assertReleasedRDocumentFixtureUnchanged(fixture);
+    recordAcceptanceProgress("jupyter-r:file:recovery:complete");
   }
 
   async function exerciseWindowsFileInputs(
@@ -306,6 +309,7 @@ export function createReleasedRDocumentJourney({
       return app;
     }
     try {
+      recordAcceptanceProgress("jupyter-r:file:options:open");
       const csvUri = source("options.csv");
       const detected = await open(csvUri);
       assert.equal(detected.metadata.source.importOptions?.encoding, "windows-1252");
@@ -316,6 +320,7 @@ export function createReleasedRDocumentJourney({
         "the detected CP1252 source"
       );
       await detectedApp.getByRole("button", { name: "Import options", exact: true }).click();
+      recordAcceptanceProgress("jupyter-r:file:options:configure");
       for (const [title, choice] of [
         ["Delimiter", "Semicolon"],
         ["Text encoding", "windows-1252"],
@@ -353,7 +358,9 @@ export function createReleasedRDocumentJourney({
         ["2", "two;parts"],
         ["3", "two\r\nlines"]
       ];
+      recordAcceptanceProgress("jupyter-r:file:options:verify");
       let app = await checkCells(configured, ["V1", "V2"], csvRows);
+      recordAcceptanceProgress("jupyter-r:file:options:rename");
       const preview = await previewReleasedRRename(testing, workbench, app, configured.sessionId, "V1", "record_id");
       await preview.app
         .getByRole("region", { name: "Draft review" })
@@ -371,7 +378,9 @@ export function createReleasedRDocumentJourney({
       assert.ok(applied);
       const generatedCode = applied.code;
       assert.ok(generatedCode);
+      recordAcceptanceProgress("jupyter-r:file:options:close");
       await closeSessions();
+      recordAcceptanceProgress("jupyter-r:file:options:restore");
       const reopened = await open(csvUri, true);
       assert.notEqual(reopened.sessionId, applied.sessionId);
       assert.deepEqual(reopened.metadata.source, applied.metadata.source);
@@ -1022,6 +1031,7 @@ export function createReleasedRDocumentJourney({
           csvApp = await releasedRSessionApp(workbench, testing, csvSessionId, "the applied native R CSV session");
           const csvExportPath = path.join(csvExportDirectory, "orders-cleaned.csv");
           await exportCleanedDataThroughWorkbench(csvApp, workbench, csvExportPath);
+          recordAcceptanceProgress("jupyter-r:file:export:verify");
           await waitFor(() => existsSync(csvExportPath), 30_000, "the cleaned R file CSV export");
           assertExactBytes(
             readFileSync(csvExportPath),
@@ -1034,6 +1044,7 @@ export function createReleasedRDocumentJourney({
             const confirmed = testing.activeSession();
             assert.ok(confirmed);
             await exerciseFileRecovery(testing, workbench, confirmed, fixture, initialProcessRoots);
+            recordAcceptanceProgress("jupyter-r:file:recovery:close");
             await disposePackagedSessionPanel(testing, csvSessionId, "the recovered native R CSV");
             csvSessionId = undefined;
             await waitFor(
