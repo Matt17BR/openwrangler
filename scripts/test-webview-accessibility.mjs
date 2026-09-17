@@ -2773,9 +2773,15 @@ async function verifyFilterKeyboardWorkflow(browser) {
   const profilesToggle = page.getByRole("button", { name: "Column profiles and filters" });
   await profilesToggle.focus();
   await page.keyboard.press("Enter");
+  await page.waitForFunction(
+    () => document.activeElement?.matches('#openwrangler-insights-panel button[aria-label="Close panel"]'),
+    undefined,
+    { timeout: 2_000 }
+  );
   const columnTab = page.getByRole("tab", { name: "Column", exact: true });
-  await columnTab.focus();
-  await page.keyboard.press("Enter");
+  if ((await columnTab.getAttribute("aria-selected")) !== "true") {
+    throw new Error("Opening column profiles did not select the Column tab.");
+  }
   const salesResize = page.getByRole("button", { name: "Resize sales column", exact: true });
   await salesResize.focus();
   await page.keyboard.press("End");
