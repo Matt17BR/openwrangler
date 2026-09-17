@@ -29,7 +29,8 @@ local({
   on.exit(unlink(root, recursive = TRUE), add = TRUE)
   suffix <- intToUtf8(c(0x0378L, 0x1f600L))
   column_name <- paste0("value_", suffix)
-  path <- file.path(root, paste0("source_", suffix, ".csv"))
+  # The macOS R qualification rejects U+0378 in paths; U+0085 still exercises escaped path text.
+  path <- file.path(root, paste0("source_", intToUtf8(c(0x0085L, 0x1f600L)), ".csv"))
   bytes <- charToRaw(paste0(column_name, "\nkeep\nNA\n"))
   writeBin(bytes, path)
   source <- openwrangler_r_kernel_agent$load_csv_source(path, maximum_columns = openwrangler_r_frame_contract$limits$columns)
