@@ -456,75 +456,122 @@ describe("App column projection", () => {
     expect(within(dialog).getByLabelText("Output column (blank replaces in place)")).toHaveValue("normalized");
   });
 
-  it("reissues an added-column reveal after host view restoration wins the first render", async () => {
-    const addedColumn = {
-      id: "c:40",
-      name: "column-40",
-      position: 40,
-      rawType: "String",
-      type: "string" as const,
-      nullable: false
-    };
-    const draft: TransformStep = {
-      id: "upper-column",
-      kind: "upperText",
-      params: { column: { id: "c:0", name: "column-0" }, newColumn: addedColumn.name }
-    };
-    const previewMetadata: SessionMetadata = {
-      ...metadata,
-      revision: 1,
-      shape: { rows: 400, columns: 41 },
-      filteredShape: { rows: 400, columns: 41 },
-      schema: [...schema, addedColumn],
-      draftStep: draft
-    };
+  it.each([
+    { input: "none", restoreHostView: true },
+    { input: "programmatic-focus", restoreHostView: true },
+    { input: "pointer", restoreHostView: true },
+    { input: "pointer", restoreHostView: false },
+    { input: "keyboard", restoreHostView: true },
+    { input: "wheel", restoreHostView: true },
+    { input: "click", restoreHostView: true }
+  ])(
+    "retains generated-column reveal ownership after $input and synchronization (host restoration: $restoreHostView)",
+    async ({ input, restoreHostView }) => {
+      const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+      try {
+        const addedColumn = {
+          id: "c:40",
+          name: "column-40",
+          position: 40,
+          rawType: "String",
+          type: "string" as const,
+          nullable: false
+        };
+        const draft: TransformStep = {
+          id: "upper-column",
+          kind: "upperText",
+          params: { column: { id: "c:0", name: "column-0" }, newColumn: addedColumn.name }
+        };
+        const previewMetadata: SessionMetadata = {
+          ...metadata,
+          revision: 1,
+          shape: { rows: 400, columns: 41 },
+          filteredShape: { rows: 400, columns: 41 },
+          schema: [...schema, addedColumn],
+          draftStep: draft
+        };
 
-    render(<App />);
-    dispatch({ kind: "sessionOpened", metadata, page: projectedPage(0, 0), summaries: [] });
-    const scroller = screen.getByTestId("data-grid-scroller");
-    Object.defineProperties(scroller, {
-      clientWidth: { configurable: true, value: 760 },
-      clientHeight: { configurable: true, value: 400 }
-    });
-    postMessage.mockClear();
+        render(<App />);
+        dispatch({ kind: "sessionOpened", metadata, page: projectedPage(0, 0), summaries: [] });
+        const scroller = screen.getByTestId("data-grid-scroller");
+        Object.defineProperties(scroller, {
+          clientWidth: { configurable: true, value: 760 },
+          clientHeight: { configurable: true, value: 400 }
+        });
+        postMessage.mockClear();
 
-    dispatch({
-      kind: "stepPreview",
-      revision: 1,
-      metadata: previewMetadata,
-      page: completePreviewPage(0, addedColumn),
-      diff: {
-        addedRows: 0,
-        removedRows: 0,
-        addedColumns: [addedColumn.name],
-        removedColumns: [],
-        changedCells: 0,
-        cells: [],
-        truncated: false
-      },
-      code: "def clean_data(df):\n    return df"
-    });
-    await waitFor(() => expect(scroller.scrollLeft).toBeGreaterThan(0));
-    expect(await screen.findByRole("columnheader", { name: /column-40/u })).toBeVisible();
+        dispatch({
+          kind: "stepPreview",
+          revision: 1,
+          metadata: previewMetadata,
+          page: completePreviewPage(0, addedColumn),
+          diff: {
+            addedRows: 0,
+            removedRows: 0,
+            addedColumns: [addedColumn.name],
+            removedColumns: [],
+            changedCells: 0,
+            cells: [],
+            truncated: false
+          },
+          code: "def clean_data(df):\n    return df"
+        });
+        await waitFor(() => expect(scroller.scrollLeft).toBeGreaterThan(0));
+        expect(await screen.findByRole("columnheader", { name: /column-40/u })).toBeVisible();
 
-    dispatchMany([
-      {
-        kind: "viewState",
-        state: { columnWidths: [], viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
-      },
-      {
-        kind: "rendererSynchronization",
-        syncId: "S".repeat(32),
-        sessionId: previewMetadata.sessionId,
-        revision: previewMetadata.revision,
-        layoutTransitionPending: false
+        const newerControl =
+          input === "click"
+            ? screen.getByRole("combobox", { name: "Column" })
+            : screen.getByRole("button", { name: "Apply step" });
+        const newerInput = input !== "none" && input !== "programmatic-focus";
+        if (input !== "none") {
+          expect(newerControl).toBeEnabled();
+          if (input === "pointer") fireEvent.pointerDown(newerControl);
+          act(() => newerControl.focus());
+          if (input === "keyboard") fireEvent.keyDown(newerControl, { key: "Tab" });
+          if (input === "wheel") fireEvent.wheel(newerControl, { deltaY: 20 });
+          if (input === "click") fireEvent.click(newerControl);
+          expect(newerControl).toHaveFocus();
+        }
+
+        dispatchMany([
+          ...(restoreHostView
+            ? [
+                {
+                  kind: "viewState" as const,
+                  state: { columnWidths: [], viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
+                }
+              ]
+            : []),
+          {
+            kind: "rendererSynchronization",
+            syncId: "S".repeat(32),
+            sessionId: previewMetadata.sessionId,
+            revision: previewMetadata.revision,
+            layoutTransitionPending: false
+          }
+        ]);
+
+        await new Promise((resolve) => window.setTimeout(resolve, 20));
+        if (newerInput) {
+          expect(newerControl).toHaveFocus();
+          if (restoreHostView) expect(scroller.scrollLeft).toBe(0);
+
+          const search = screen.getByRole("combobox", { name: "Column" });
+          act(() => search.focus());
+          fireEvent.change(search, { target: { value: addedColumn.name } });
+          if (input === "click") fireEvent.click(screen.getByRole("option", { name: "column-40, Text column" }));
+          else fireEvent.keyDown(search, { key: "Enter" });
+          await waitFor(() => expect(document.activeElement).toHaveAttribute("data-grid-column", "40"));
+        }
+        expect(scroller.scrollLeft).toBeGreaterThan(0);
+        expect(screen.getByRole("columnheader", { name: /column-40/u })).toBeVisible();
+        expect(document.activeElement).toHaveAttribute("data-grid-column", "40");
+      } finally {
+        hasFocus.mockRestore();
       }
-    ]);
-
-    await new Promise((resolve) => window.setTimeout(resolve, 20));
-    expect(scroller.scrollLeft).toBeGreaterThan(0);
-    expect(screen.getByRole("columnheader", { name: /column-40/u })).toBeVisible();
-  });
+    }
+  );
 
   it("offers Reconnect instead of retrying a lost Spark Connect dataframe", async () => {
     const pysparkMetadata: SessionMetadata = {

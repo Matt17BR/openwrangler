@@ -314,6 +314,10 @@ export function App() {
     setGoToColumnRequest(next);
   }, []);
 
+  const retireColumnReveal = useCallback(() => {
+    if (goToColumnRequestRef.current) storeGoToColumnRequest(undefined);
+  }, [storeGoToColumnRequest]);
+
   const requestColumnReveal = useCallback(
     (columnId: string, retainUntilSynchronization?: ColumnRevealSynchronization) => {
       goToColumnRequestSequence.current += 1;
@@ -2187,6 +2191,10 @@ export function App() {
           : undefined
       }
       tabIndex={-1}
+      onPointerDownCapture={retireColumnReveal}
+      onKeyDownCapture={retireColumnReveal}
+      onWheelCapture={retireColumnReveal}
+      onClickCapture={retireColumnReveal}
       onKeyDown={handleKeyboardShortcut}
     >
       <div
