@@ -16,6 +16,7 @@ const operationCatalog = canonicalOperationCatalog(schema);
 const protocolLimits = canonicalProtocolLimits(schema);
 const columnTypes = canonicalStringEnum(schema, "ColumnType");
 const typedCellKinds = canonicalStringEnum(schema, "TypedCellKind");
+const rLibraries = canonicalStringEnum(schema, "RLibrary");
 const requestShapes = canonicalTaggedUnionShapes(schema, {
   unionName: "OpenWranglerRequest",
   variantLabel: "Request",
@@ -42,6 +43,7 @@ const protocolTypesOutput = await compileFromFile(schemaPath, {
 const primitiveValueDomainsOutput = await prettier.format(
   `export const columnTypes = Object.freeze(${JSON.stringify(columnTypes)}) satisfies readonly ColumnType[];
 export const typedCellKinds = Object.freeze(${JSON.stringify(typedCellKinds)}) satisfies readonly TypedCellKind[];
+export const rLibraries = Object.freeze(${JSON.stringify(rLibraries)}) satisfies readonly RLibrary[];
 `,
   {
     ...prettierConfig,

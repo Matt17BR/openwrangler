@@ -148,6 +148,13 @@ Open Wrangler works directly in R, with no conversion through Python.
 Preview cleaning steps, inspect history, copy or save generated R, and insert it back into the originating notebook.
 CSV export is available; Parquet export requires `nanoparquet` and has type and precision limits.
 
+In **2.6**, choose base R, dplyr, data.table or collapse for built-in cleaning and generated R. Set
+`openWrangler.defaultRLibrary` before opening a new dataframe, or use the engine picker for a file. The toolbar
+and editor title show the confirmed library. Choosing another library from an open R editor creates an editing
+copy with its applied steps; the original keeps its draft and redo history. Applied Custom Code runs again after confirmation.
+The selected package must be installed in the R environment that owns the dataframe. Imports, profiles and exports
+use the shared native R implementations. See the [library requirements](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#r-cleaning-libraries).
+
 <a href="https://github.com/Matt17BR/openwrangler/blob/main/docs/images/readme/gallery/notebook-r-editing.png"><img alt="An R Group and aggregate draft with regional totals, cleaning history and generated R" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/gallery/notebook-r-editing.png" width="960"></a>
 
 _Preview grouped R results alongside the cleaning history and generated R code._

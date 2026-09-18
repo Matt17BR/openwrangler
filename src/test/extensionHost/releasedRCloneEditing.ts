@@ -8,6 +8,7 @@ type ReleasedRCloneState = ReturnType<typeof createReleasedRCloneState>;
 
 interface ReleasedRCloneEditingDependencies {
   readonly arrangePackagedProductSidebar: (workbench: Page, scene: "inspection") => Promise<Locator>;
+  readonly disposePackagedSessionPanel: (testing: TestApi, sessionId: string, description: string) => Promise<void>;
   readonly previewReleasedRClone: (
     testing: TestApi,
     workbench: Page,
@@ -34,17 +35,20 @@ interface ReleasedRCloneEditingDependencies {
     diagnostics?: () => string
   ) => Promise<void>;
   readonly waitForReleasedRCloneState: ReleasedRCloneState["waitForReleasedRCloneState"];
+  readonly waitForVisibleEditorDialog: (workbench: Page, text: string) => Promise<{ page: Page; dialog: Locator }>;
 }
 
 export function createReleasedRCloneEditingJourney({
   arrangePackagedProductSidebar,
+  disposePackagedSessionPanel,
   previewReleasedRClone,
   recordAcceptanceProgress,
   releasedRCloneFailureSnapshot,
   releasedRCloneMutationRevisionAdvanced,
   releasedRSessionApp,
   waitFor,
-  waitForReleasedRCloneState
+  waitForReleasedRCloneState,
+  waitForVisibleEditorDialog
 }: ReleasedRCloneEditingDependencies) {
   return async function exerciseReleasedRCloneEditingLifecycle(
     testing: TestApi,
@@ -206,6 +210,71 @@ export function createReleasedRCloneEditingJourney({
     const reappliedClone = testing.activeSession();
     assert.ok(reappliedClone, "The edited native R clone must retain its session.");
     assertReleasedRCloneGeneratedCode(reappliedClone.code ?? "", "score", "score_duplicate");
+    if (phase === "jupyter-r" && process.platform === "linux" && process.env.OPEN_WRANGLER_TEST_EDITOR !== "cursor") {
+      recordAcceptanceProgress(`${phase}:editing:library-copy:start`);
+      const originalMetadata = structuredClone(reappliedClone.metadata);
+      const originalView = structuredClone(reappliedClone.viewState);
+      const libraryCopyBefore = releasedRCloneFailureSnapshot(testing, sessionId);
+      app = await releasedRSessionApp(workbench, testing, sessionId, "the R source before choosing a cleaning library");
+      await app
+        .getByRole("button", {
+          name: "Open an editing copy with another R library. Current library: Base R",
+          exact: true
+        })
+        .click();
+      const picker = workbench
+        .locator(".quick-input-widget:visible")
+        .filter({ hasText: "Open an editing copy with another R library" })
+        .last();
+      await picker.waitFor({ state: "visible", timeout: 10_000 });
+      const choices = picker.getByRole("option");
+      await choices.nth(3).waitFor({ state: "visible", timeout: 10_000 });
+      assert.equal(await choices.count(), 4);
+      const labels = await Promise.all(
+        [0, 1, 2, 3].map((index) => choices.nth(index).locator(".label-name:visible").first().innerText())
+      );
+      assert.deepEqual(labels, ["Base R", "R · dplyr", "R · data.table", "R · collapse"]);
+      await choices.nth(1).click();
+      const confirmation = await waitForVisibleEditorDialog(workbench, "Open an editing copy with dplyr?");
+      await confirmation.page.bringToFront();
+      await confirmation.dialog.getByRole("button", { name: "Open editing copy", exact: true }).click();
+      await waitForReleasedRCloneState(
+        testing,
+        workbench,
+        sessionId,
+        libraryCopyBefore,
+        (last) => last.active !== null && last.active.sessionId !== sessionId && last.active.rLibrary === "dplyr",
+        "opening the confirmed dplyr editing copy",
+        10_000
+      );
+      const copied = testing.activeSession();
+      assert.ok(copied);
+      assert.equal(copied.metadata.backend, "r");
+      assert.equal(copied.metadata.mode, "editing");
+      assert.deepEqual(copied.metadata.source, originalMetadata.source);
+      assert.deepEqual(copied.metadata.schema, originalMetadata.schema);
+      assert.deepEqual(copied.metadata.steps, originalMetadata.steps);
+      assert.equal(copied.metadata.draftStep, undefined);
+      assert.equal(copied.metadata.canRedo, false);
+      assert.ok(copied.code?.includes("dplyr::"), "The copied plan must provide generated package code.");
+      assert.ok(copied.code?.includes('.ow_library <- "dplyr"'), "The generated plan must select dplyr.");
+      const copyApp = await releasedRSessionApp(workbench, testing, copied.sessionId, "the confirmed dplyr editor");
+      await copyApp
+        .getByRole("button", {
+          name: "Open an editing copy with another R library. Current library: dplyr",
+          exact: true
+        })
+        .waitFor({ state: "visible", timeout: 10_000 });
+      assert.deepEqual(testing.sessionSnapshot(sessionId)?.metadata, originalMetadata);
+      assert.deepEqual(testing.sessionSnapshot(sessionId)?.viewState, originalView);
+      await disposePackagedSessionPanel(testing, copied.sessionId, "the dplyr editing copy");
+      await waitFor(
+        () => testing.activeSession()?.sessionId === sessionId,
+        10_000,
+        "the original R editor after its copy closes"
+      );
+      recordAcceptanceProgress(`${phase}:editing:library-copy:complete`);
+    }
     app = await releasedRSessionApp(workbench, testing, sessionId, "the edited R Clone Column session before undo");
     const undoBefore = releasedRCloneFailureSnapshot(testing, sessionId);
     await app.getByRole("button", { name: "Undo", exact: true }).click();

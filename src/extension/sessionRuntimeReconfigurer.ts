@@ -330,6 +330,7 @@ export class SessionRuntimeReconfigurer {
     }
     const openedIdentity = {
       backend: candidate.metadata.backend,
+      rLibrary: candidate.metadata.rLibrary,
       mode: candidate.metadata.mode,
       source: candidate.metadata.source
     };
@@ -343,6 +344,7 @@ export class SessionRuntimeReconfigurer {
       if (
         !currentCandidate ||
         currentCandidate.metadata.backend !== openedIdentity.backend ||
+        currentCandidate.metadata.rLibrary !== openedIdentity.rLibrary ||
         currentCandidate.metadata.mode !== openedIdentity.mode ||
         !isDeepStrictEqual(currentCandidate.metadata.source, openedIdentity.source) ||
         currentCandidate.metadata.draftStep !== undefined ||
@@ -915,12 +917,18 @@ function replacementOpenRequest(
 
 export function confirmedReplayOpenRequest(
   request: OpenSessionRequest,
-  metadata: Pick<SessionMetadata, "backend" | "mode">
+  metadata: Pick<SessionMetadata, "backend" | "mode" | "rLibrary">
 ): OpenSessionRequest {
-  const { requestedSessionId: _requestedSessionId, cloneFrom: _cloneFrom, ...stableRequest } = request;
+  const {
+    requestedSessionId: _requestedSessionId,
+    cloneFrom: _cloneFrom,
+    rLibrary: _rLibrary,
+    ...stableRequest
+  } = request;
   return {
     ...stableRequest,
     backend: metadata.backend,
+    ...(metadata.backend === "r" ? { rLibrary: metadata.rLibrary } : {}),
     mode: metadata.mode
   };
 }

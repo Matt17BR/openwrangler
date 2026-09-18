@@ -485,6 +485,7 @@ function rNotebookSnapshot(): ActiveSessionSnapshot {
     ...nonPandasMetadata,
     backend: "r",
     rDataframeFlavor: "r.data.frame",
+    rLibrary: "base",
     mode: "editing",
     source: {
       kind: "notebookVariable",
@@ -514,6 +515,7 @@ function rDocumentSnapshot(): ActiveSessionSnapshot {
     ...nonPandasMetadata,
     backend: "r",
     rDataframeFlavor: "r.data.frame",
+    rLibrary: "base",
     mode: "editing",
     source: {
       kind: "documentVariable",

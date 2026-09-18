@@ -7,6 +7,7 @@ import type {
   OpenSessionRequest,
   OpenWranglerResponse,
   PageResponse,
+  RLibrary,
   SessionBoundRequest,
   SessionOpenedResponse,
   SessionSource,
@@ -57,6 +58,7 @@ export type RuntimeEstablishmentResult =
 
 export interface RuntimeEstablishmentHooks {
   isCoordinatorAvailable(): boolean;
+  copyTargetFailure?(metadata?: SessionOpenedResponse["metadata"]): OpenWranglerResponse | undefined;
   executeSessionRequest(
     session: RuntimeEstablishedSession,
     request: SessionBoundRequest,
@@ -67,11 +69,29 @@ export interface RuntimeEstablishmentHooks {
 /** A host-owned plan captured before the user chooses another file. */
 export interface InitialFilePlan {
   readonly backend: Extract<DataBackend, "pandas" | "polars" | "duckdb" | "r">;
+  readonly rLibrary?: RLibrary;
   readonly importOptions: SessionSource["importOptions"];
   readonly sourceSchema: readonly ColumnSchema[];
   readonly steps: readonly TransformStep[];
   isCurrent(): boolean;
   assertTargetAvailable(source: SessionSource, protection: SessionSourceProtection): Promise<void>;
+}
+
+export interface InitialRLibraryCopy {
+  readonly kind: "rLibraryCopy";
+  readonly backend: "r";
+  readonly rLibrary: RLibrary;
+  readonly source: SessionSource;
+  readonly cloneFrom: NonNullable<OpenSessionRequest["cloneFrom"]>;
+  readonly steps: readonly TransformStep[];
+  isCurrent(): boolean;
+  assertTargetAvailable(source: SessionSource, protection: SessionSourceProtection): Promise<void>;
+}
+
+export type InitialSessionPlan = InitialFilePlan | InitialRLibraryCopy;
+
+export function isRLibraryCopy(plan: InitialSessionPlan | undefined): plan is InitialRLibraryCopy {
+  return plan !== undefined && "kind" in plan && plan.kind === "rLibraryCopy";
 }
 
 function initialFilePlanSteps(plan: InitialFilePlan, schema: readonly ColumnSchema[]): TransformStep[] {
@@ -132,7 +152,7 @@ export class SessionRuntimeEstablisher {
     origin: CoordinatedSessionOrigin | undefined,
     hooks: RuntimeEstablishmentHooks,
     sourceProtection?: SessionSourceProtection,
-    initialFilePlan?: InitialFilePlan
+    initialPlan?: InitialSessionPlan
   ): Promise<RuntimeEstablishmentResult> {
     const invalidOrigin = sessionOriginMismatch(request, origin);
     if (invalidOrigin) {
@@ -140,7 +160,10 @@ export class SessionRuntimeEstablisher {
     }
     sourceProtection ??= await captureSessionSourceFiles(request.source);
     let targetRuntimeIsCurrent: (() => boolean) | undefined;
+    let openedMetadata: SessionOpenedResponse["metadata"] | undefined = undefined;
     const currentFailure = (): OpenWranglerResponse | undefined => {
+      const copyTargetFailure = hooks.copyTargetFailure?.(openedMetadata);
+      if (copyTargetFailure) return copyTargetFailure;
       if (!hooks.isCoordinatorAvailable())
         return protocolError(
           "coordinator_disposed",
@@ -148,10 +171,12 @@ export class SessionRuntimeEstablisher {
           false
         );
       if (options?.cancellation?.isCancellationRequested) return { kind: "cancelled", targetRequestId: "not-started" };
-      if (initialFilePlan && (!vscode.workspace.isTrusted || !initialFilePlan.isCurrent()))
+      if (initialPlan && (!vscode.workspace.isTrusted || !initialPlan.isCurrent()))
         return protocolError(
           "file_plan_changed",
-          "The session that supplied this plan changed or is no longer available. Run Open Another File with This Plan again.",
+          isRLibraryCopy(initialPlan)
+            ? "The original R session changed or is no longer available. Open the library picker again."
+            : "The session that supplied this plan changed or is no longer available. Run Open Another File with This Plan again.",
           true
         );
       const mismatch = sessionOriginMismatch(request, origin);
@@ -175,12 +200,16 @@ export class SessionRuntimeEstablisher {
           response: protocolError("source_changed", "The selected file changed. Choose the file again.", true)
         };
     }
-    if (initialFilePlan) {
+    if (initialPlan) {
       if (
-        request.source.kind !== "file" ||
-        request.backend !== initialFilePlan.backend ||
+        request.backend !== initialPlan.backend ||
         request.mode !== "editing" ||
-        !isDeepStrictEqual(request.source.importOptions, initialFilePlan.importOptions)
+        (request.backend === "r" && (request.rLibrary ?? "base") !== (initialPlan.rLibrary ?? "base")) ||
+        (isRLibraryCopy(initialPlan)
+          ? !isDeepStrictEqual(request.source, initialPlan.source) ||
+            !isDeepStrictEqual(request.cloneFrom, initialPlan.cloneFrom)
+          : request.source.kind !== "file" ||
+            !isDeepStrictEqual(request.source.importOptions, initialPlan.importOptions))
       )
         return {
           established: false,
@@ -190,26 +219,31 @@ export class SessionRuntimeEstablisher {
             true
           )
         };
-      const absent = this.persistence.checkAbsent(request.source, initialFilePlan.backend);
+      const absent =
+        request.source.kind === "file"
+          ? this.persistence.checkAbsent(request.source, initialPlan.backend, initialPlan.rLibrary)
+          : { kind: "absent" as const };
       if (absent.kind !== "absent")
         return {
           established: false,
           response: protocolError(
             absent.kind === "occupied" ? "file_plan_target_occupied" : "persistence_unavailable",
             absent.kind === "occupied"
-              ? "This file already has saved Open Wrangler work for these import options. Choose another file."
+              ? "This file already has saved Open Wrangler work for this engine, R library and import options. For an R library, choose Open file separately in the library picker."
               : "Open Wrangler could not read workspace storage. Retry after storage is available.",
             true
           )
         };
       try {
-        await initialFilePlan.assertTargetAvailable(request.source, sourceProtection);
+        await initialPlan.assertTargetAvailable(request.source, sourceProtection);
       } catch {
         return {
           established: false,
           response: protocolError(
             "file_plan_target_unavailable",
-            "Choose a different file from every open file session. Open Wrangler must be able to verify those file identities.",
+            isRLibraryCopy(initialPlan)
+              ? "An editor already owns this source with the selected R library. Use that editor instead."
+              : "Choose a different file from every open file session. Open Wrangler must be able to verify those file identities.",
             true
           )
         };
@@ -231,6 +265,7 @@ export class SessionRuntimeEstablisher {
         )
       };
     }
+    openedMetadata = response.metadata;
 
     const publicId = randomUUID();
     const backendPreference =
@@ -268,7 +303,7 @@ export class SessionRuntimeEstablisher {
       await this.runtimeCleanup.close(session, "invalid open runtime");
       return { established: false, response: afterOpen };
     }
-    const openedMismatch = sessionOpenedResponseMismatch(request, response, initialFilePlan !== undefined);
+    const openedMismatch = sessionOpenedResponseMismatch(request, response, initialPlan !== undefined);
     if (openedMismatch) {
       await this.runtimeCleanup.close(session, "invalid open runtime");
       return {
@@ -281,8 +316,11 @@ export class SessionRuntimeEstablisher {
       };
     }
 
-    if (initialFilePlan) {
-      targetRuntimeIsCurrent = delegate.captureFileSessionOwner?.(session.runtimeId) ?? (() => false);
+    if (initialPlan) {
+      targetRuntimeIsCurrent =
+        (isRLibraryCopy(initialPlan)
+          ? delegate.captureSessionOwner?.(session.runtimeId)
+          : delegate.captureFileSessionOwner?.(session.runtimeId)) ?? (() => false);
       const targetFailure = currentFailure();
       if (targetFailure) {
         await this.runtimeCleanup.close(session, "invalid open runtime");
@@ -295,8 +333,8 @@ export class SessionRuntimeEstablisher {
       (isFileDataBackend(response.metadata.backend) || response.metadata.backend === "r")
         ? structuredClone(response.metadata.schema)
         : undefined;
-    const restored = initialFilePlan
-      ? await this.restoreInitialFilePlan(session, request, initialFilePlan, currentFailure, options)
+    const restored = initialPlan
+      ? await this.restoreInitialPlan(session, request, initialPlan, currentFailure, options)
       : await this.restorePersistedSession(session, request, response, currentFailure, options);
     if (!restored.established) return restored;
     let established = false;
@@ -304,7 +342,7 @@ export class SessionRuntimeEstablisher {
       if (session.sourceProtection) {
         session.sourceProtection = await confirmSessionSourceProtection(session.sourceProtection);
       }
-      if (initialFilePlan && !session.sourceProtection?.available) {
+      if (initialPlan && !isRLibraryCopy(initialPlan) && !session.sourceProtection?.available) {
         await this.runtimeCleanup.close(session, "late-open runtime");
         return {
           established: false,
@@ -338,10 +376,10 @@ export class SessionRuntimeEstablisher {
     }
   }
 
-  private async restoreInitialFilePlan(
+  private async restoreInitialPlan(
     session: RuntimeEstablishedSession,
     request: OpenSessionRequest,
-    plan: InitialFilePlan,
+    plan: InitialSessionPlan,
     currentFailure: () => OpenWranglerResponse | undefined,
     options?: BridgeRequestOptions
   ): Promise<RuntimeEstablishmentResult> {
@@ -350,16 +388,20 @@ export class SessionRuntimeEstablisher {
     };
     const source = structuredClone(session.metadata.source);
     try {
-      const steps = initialFilePlanSteps(plan, session.sourceSchema!);
+      const steps = isRLibraryCopy(plan)
+        ? structuredClone([...plan.steps])
+        : initialFilePlanSteps(plan, session.sourceSchema!);
       const assertCompletePlan = (): void => {
         if (
           session.metadata.backend !== plan.backend ||
+          (plan.backend === "r" && session.metadata.rLibrary !== (plan.rLibrary ?? "base")) ||
           session.metadata.mode !== "editing" ||
           !session.metadata.capabilities.editable ||
           !isDeepStrictEqual(session.metadata.source, source) ||
           !isDeepStrictEqual(session.metadata.steps, steps) ||
           session.metadata.draftStep ||
-          !session.code.trim()
+          (steps.length > 0 && !session.code.trim()) ||
+          (isRLibraryCopy(plan) && session.metadata.canRedo === true)
         )
           throw new RuntimeStateRestoreError(
             "The runtime did not confirm the complete copied plan and generated code."
@@ -399,7 +441,7 @@ export class SessionRuntimeEstablisher {
         () => !currentFailure(),
         // This initial candidate stays private until the durable write succeeds.
         () => () => undefined,
-        { requireAbsent: true }
+        { requireAbsent: request.source.kind === "file" }
       );
       if (saved.kind !== "committed") {
         const response =
@@ -455,7 +497,7 @@ export class SessionRuntimeEstablisher {
     options?: BridgeRequestOptions
   ): Promise<RuntimeEstablishmentResult> {
     let opened: SessionOpenedResponse = { ...response, summaries: [] };
-    const persisted = this.persistence.load(request.source, response.metadata.backend);
+    const persisted = this.persistence.load(request.source, response.metadata.backend, response.metadata.rLibrary);
     if (!persisted) return { established: true, session, response: opened };
     if (response.metadata.mode === "viewing" && (persisted.cleaning.steps.length > 0 || persisted.cleaning.draftStep)) {
       await this.runtimeCleanup.close(session, "invalid open runtime");
@@ -515,7 +557,11 @@ export class SessionRuntimeEstablisher {
         !currentFailure() &&
         session.openRequest.source === request.source &&
         session.metadata.backend === response.metadata.backend &&
-        isDeepStrictEqual(this.persistence.load(request.source, response.metadata.backend)?.cleaning, savedCleaning);
+        session.metadata.rLibrary === response.metadata.rLibrary &&
+        isDeepStrictEqual(
+          this.persistence.load(request.source, response.metadata.backend, response.metadata.rLibrary)?.cleaning,
+          savedCleaning
+        );
       const resetAction = "Open Original and Reset Plan";
       const choice = await vscode.window.showWarningMessage(
         `Open Wrangler could not restore the saved cleaning plan for ${request.source.label}.${restoreContext} Opening original data will replace its saved cleaning plan and draft.`,

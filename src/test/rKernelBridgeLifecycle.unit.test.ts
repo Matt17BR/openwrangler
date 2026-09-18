@@ -16,6 +16,73 @@ import {
 } from "./rKernelBridgeTestFixtures";
 
 describe("R kernel bridge lifecycle", () => {
+  it.each([
+    ["viewing", "viewing", "base", true],
+    ["viewing", "viewing", "dplyr", false],
+    ["viewing", "editing", "base", true],
+    ["viewing", "editing", "dplyr", true],
+    ["editing", "editing", "base", true],
+    ["editing", "editing", "dplyr", true],
+    ["editing", "viewing", "base", false],
+    ["editing", "viewing", "dplyr", false]
+  ] as const)(
+    "binds a %s source to a %s %s copy without replacing the original",
+    async (sourceMode, copyMode, library, allowed) => {
+      const copyId = "22222222-2222-4222-8222-222222222222";
+      const contract = frameContract();
+      const transport = fakeTransport(contract);
+      const bridge = createBridge(transport);
+      try {
+        await bridge.request(openRequest(sourceMode));
+        const originalOwner = bridge.captureSessionOwner(sessionId);
+        expect(originalOwner?.()).toBe(true);
+        const request = {
+          ...openRequest(copyMode),
+          requestedSessionId: copyId,
+          rLibrary: library,
+          cloneFrom: { sessionId, revision: 0 }
+        };
+        transport.open.mockResolvedValueOnce({
+          sessionId: copyId,
+          library,
+          page: contract,
+          exportFormats: ["csv"]
+        });
+        const result = await bridge.request(request);
+        if (!allowed) {
+          expect(result).toMatchObject({ kind: "error", code: "stale_clone_source" });
+          expect(transport.open).toHaveBeenCalledTimes(1);
+        } else {
+          expect(result).toMatchObject({
+            kind: "sessionOpened",
+            metadata: { sessionId: copyId, rLibrary: library, mode: copyMode }
+          });
+          expect(transport.open.mock.calls[1]?.[2]).toMatchObject({
+            requestedSessionId: copyId,
+            library,
+            cloneFrom: { sessionId, revision: 0 }
+          });
+          const copyOwner = bridge.captureSessionOwner(copyId);
+          expect(copyOwner?.()).toBe(true);
+          await bridge.request({ kind: "closeSession", sessionId: copyId, revision: 0 });
+          expect(copyOwner?.()).toBe(false);
+          expect(transport.close).toHaveBeenCalledExactlyOnceWith(copyId, expect.any(Object));
+        }
+        expect(originalOwner?.()).toBe(true);
+        await expect(
+          bridge.request({
+            ...request,
+            requestedSessionId: "33333333-3333-4333-8333-333333333333",
+            cloneFrom: { sessionId, revision: 1 }
+          })
+        ).resolves.toMatchObject({ kind: "error", code: "stale_clone_source" });
+        expect(transport.open).toHaveBeenCalledTimes(allowed ? 2 : 1);
+      } finally {
+        await bridge.dispose();
+      }
+    }
+  );
+
   it.each(["close", "generation"] as const)(
     "retires an exact file-owner receipt after %s even if transport remaps its ID",
     async (retirement) => {

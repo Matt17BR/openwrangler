@@ -92,7 +92,8 @@ describe("native R frame contract decoder", () => {
         { kind: "file", label: "frame.csv", path: "/workspace/frame.csv", uri: "file:///workspace/frame.csv" },
         "viewing",
         contract,
-        ["csv"]
+        ["csv"],
+        "base"
       )
     );
     expect(

@@ -16,6 +16,7 @@ type Listener<T> = (value: T) => unknown;
 const mocks = vi.hoisted(() => ({
   commands: new Map<string, CommandHandler>(),
   openingTimeout: 45_000 as unknown,
+  rLibrary: "base" as string,
   configurationReads: [] as Array<readonly [string, unknown]>,
   registrationAttempt: 0,
   failRegistrationAttempt: undefined as number | undefined,
@@ -96,7 +97,12 @@ vi.mock("vscode", () => {
       getConfiguration: (section: string, resource?: unknown) => {
         mocks.configurationReads.push([section, resource]);
         return {
-          get: (key: string, fallback: unknown) => (key === "sessionOpenTimeoutMs" ? mocks.openingTimeout : fallback)
+          get: (key: string, fallback: unknown) =>
+            key === "defaultRLibrary"
+              ? mocks.rLibrary
+              : key === "sessionOpenTimeoutMs"
+                ? mocks.openingTimeout
+                : fallback
         };
       },
       get isTrusted() {
@@ -183,6 +189,7 @@ describe("active R session commands", () => {
   beforeEach(() => {
     mocks.commands.clear();
     mocks.openingTimeout = 45_000;
+    mocks.rLibrary = "base";
     mocks.configurationReads.length = 0;
     mocks.registrationAttempt = 0;
     mocks.failRegistrationAttempt = undefined;
@@ -257,9 +264,13 @@ describe("active R session commands", () => {
     [null, 60_000]
   ])("picks a live dataframe with global configured deadline %s", async (configured, expected) => {
     mocks.openingTimeout = configured;
+    mocks.rLibrary = "dplyr";
     const transport = transportMock();
     const variable = { ...tibble, name: "$(add)" };
-    transport.discoverVariables.mockResolvedValueOnce(discovery(variable));
+    transport.discoverVariables.mockImplementationOnce(async () => {
+      mocks.rLibrary = "collapse";
+      return discovery(variable);
+    });
     mocks.showQuickPick.mockImplementation(async (items) => items[0]);
     const { factory, coordinator } = registerWith([transport]);
 
@@ -270,7 +281,10 @@ describe("active R session commands", () => {
     ]);
 
     expect(transport.discoverVariables).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: expected }));
-    expect(mocks.configurationReads).toEqual([["openWrangler", undefined]]);
+    expect(mocks.configurationReads).toEqual([
+      ["openWrangler", undefined],
+      ["openWrangler", undefined]
+    ]);
     expect(factory.create).toHaveBeenCalledWith(expect.anything(), { terminalMode: "activeOrCreate" });
     expect(transport.discoverVariables).toHaveBeenCalledOnce();
     expect(coordinator.createBridge).toHaveBeenCalledWith(expect.anything());
@@ -279,7 +293,10 @@ describe("active R session commands", () => {
       expect.objectContaining({ extensionPath: "/extension" }),
       expect.anything(),
       { kind: "rInteractiveVariable", label: variable.name, variableName: variable.name },
-      "r"
+      "r",
+      "r",
+      undefined,
+      "dplyr"
     );
     expect(mocks.restoreEditorGroupAfterQuickPick).toHaveBeenCalledOnce();
     expect(mocks.restoreEditorGroupAfterQuickPick.mock.invocationCallOrder[0]).toBeLessThan(
@@ -308,7 +325,10 @@ describe("active R session commands", () => {
       literateRProvider(provider).runLiterateChunkAndOpen(origin, session, "orders <- data.frame(id = 1:3)\n")
     ).resolves.toBe(true);
 
-    expect(mocks.configurationReads).toEqual([["openWrangler", undefined]]);
+    expect(mocks.configurationReads).toEqual([
+      ["openWrangler", source.uri],
+      ["openWrangler", undefined]
+    ]);
     expect(transport.discoverVariables).not.toHaveBeenCalled();
     expect(transport.evaluateAndDiscoverVariables).toHaveBeenCalledWith(
       "orders <- data.frame(id = 1:3)\n",
@@ -332,7 +352,10 @@ describe("active R session commands", () => {
         variableName: "orders",
         uri: "file:///workspace/orders.qmd"
       },
-      "r"
+      "r",
+      "r",
+      undefined,
+      "base"
     );
   });
 
@@ -639,7 +662,10 @@ describe("active R session commands", () => {
       expect.anything(),
       expect.anything(),
       { kind: "rInteractiveVariable", label: "orders", variableName: "orders" },
-      "r"
+      "r",
+      "r",
+      undefined,
+      "base"
     );
   });
 

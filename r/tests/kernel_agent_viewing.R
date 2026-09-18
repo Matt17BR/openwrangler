@@ -1,10 +1,26 @@
 # Native-R viewing, profiling, and live-source session contract cases.
 
+for (invalid_library in list(NULL, "pandas", 1L, list(), "")) {
+  payload <- list(sessionId = session_id, variableName = "frame", page = page_window(), library = invalid_library)
+  request <- list(transportVersion = 17L, requestId = request_id, kind = "openSession", payload = payload)
+  invalid <- jsonlite::fromJSON(agent$dispatch_json(as.character(jsonlite::toJSON(
+    request, auto_unbox = TRUE, null = "null", na = "null"
+  ))), simplifyVector = FALSE)
+  assert_identical(invalid$code, "invalid_request", "an invalid native library choice was accepted")
+}
+missing_library_request <- list(transportVersion = 17L, requestId = request_id, kind = "openSession",
+  payload = list(sessionId = session_id, variableName = "frame", page = page_window()))
+missing_library <- jsonlite::fromJSON(agent$dispatch_json(as.character(jsonlite::toJSON(
+  missing_library_request, auto_unbox = TRUE, null = "null", na = "null"
+))), simplifyVector = FALSE)
+assert_identical(missing_library$code, "invalid_request", "the native boundary inferred a missing library")
+
 opened <- dispatch(
   "openSession",
   list(sessionId = session_id, variableName = "frame", page = page_window(row_limit = 2L))
 )
 assert_identical(opened$kind, "page", "the R agent did not open a page session")
+assert_identical(opened$library, "base", "the native open did not confirm its requested library")
 assert_identical(opened$sessionId, session_id, "the R agent changed the candidate session identity")
 assert_identical(opened$exportFormats, list("csv", "parquet"), "the R agent reported the wrong export formats")
 assert_identical(isolated_capture_count, 0L, "viewing open created an isolated full-frame snapshot")
@@ -345,7 +361,8 @@ local({
   on.exit(boundary_agent$dispose())
   id <- "92929292-9292-4292-8292-929292929292"
   send <- function(kind, payload) {
-    request <- list(transportVersion = 16L, requestId = request_id, kind = kind, payload = payload)
+    if (identical(kind, "openSession") && !"library" %in% names(payload)) payload$library <- "base"
+    request <- list(transportVersion = 17L, requestId = request_id, kind = kind, payload = payload)
     jsonlite::fromJSON(boundary_agent$dispatch_json(as.character(jsonlite::toJSON(
       request, auto_unbox = TRUE, digits = 17L, null = "null", na = "null"
     ))), simplifyVector = FALSE)

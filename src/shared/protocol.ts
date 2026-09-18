@@ -7,10 +7,12 @@ import type {
   GridPage,
   LiveGridPage,
   OpenWranglerRequest,
+  RLibrary,
   SessionSource,
   SourceCapabilities,
   TypedCellKind
 } from "./protocol.generated";
+import { rLibraries } from "./protocol.generated";
 
 export const PROTOCOL_VERSION = 4 as const;
 
@@ -56,6 +58,23 @@ export function dataBackendLabel(backend: DataBackend): string {
       return "PySpark";
     case "r":
       return "R";
+  }
+}
+
+export function isRLibrary(value: unknown): value is RLibrary {
+  return rLibraries.some((library) => library === value);
+}
+
+export function rLibraryLabel(library: RLibrary): string {
+  switch (library) {
+    case "base":
+      return "Base R";
+    case "dplyr":
+      return "dplyr";
+    case "data.table":
+      return "data.table";
+    case "collapse":
+      return "collapse";
   }
 }
 

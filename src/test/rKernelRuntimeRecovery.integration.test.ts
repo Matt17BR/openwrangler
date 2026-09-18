@@ -390,7 +390,9 @@ function response(request: RKernelRequest, body: Record<string, unknown>): Recor
   return {
     transportVersion: R_KERNEL_TRANSPORT_VERSION,
     requestId: request.requestId,
-    ...(request.kind === "openSession" && body.kind === "page" ? { exportFormats: ["csv"] } : {}),
+    ...(request.kind === "openSession" && body.kind === "page"
+      ? { library: "base" as const, exportFormats: ["csv"] }
+      : {}),
     ...body
   };
 }

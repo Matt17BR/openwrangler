@@ -26,6 +26,11 @@ The [native R file options, plan reuse and Windows execution](https://github.com
 and [bounded R List and Struct workflow](https://github.com/Matt17BR/openwrangler/pull/1572) are merged on main.
 Local R file support remains Preview. The milestone links the required outcomes and records the release decision.
 
+The selected scope also includes [R cleaning library selection](https://github.com/Matt17BR/openwrangler/issues/1583):
+base R, dplyr, data.table and collapse must drive built-in cleaning and matching generated code. Accepting their frame
+classes or calling them from Custom Code alone does not satisfy this scope. Candidate freeze depends on native
+current/minimum checks, source-preserving copy and recovery behavior, and the affected installed-editor evidence.
+
 Before candidate freeze, complete the [public media and performance refresh](https://github.com/Matt17BR/openwrangler/issues/1554).
 Then qualify one immutable 2.6.0 candidate under [Releasing](releasing.md#release-candidate).
 Qualification and publication remain separate; no release date or automatic publication is promised.

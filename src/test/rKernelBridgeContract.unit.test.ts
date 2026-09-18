@@ -50,7 +50,7 @@ describe("R kernel bridge contract", () => {
     expect(isExportableRSource(source)).toBe(true);
     expect(rExportProtectedSourceUris(source).map((uri) => uri.toString())).toEqual([source.uri]);
     expect(rExportProtectedSourceUris(source).map((uri) => uri.fsPath)).toEqual([fixture.path]);
-    const session = sessionFromContract(sessionId, source, "editing", frameContract(), ["csv"]);
+    const session = sessionFromContract(sessionId, source, "editing", frameContract(), ["csv"], "base");
     expect(metadataFor(session).capabilities).toMatchObject({ exportCsv: true, notebookInsert: false });
     expect(metadataFor(session).capabilities.documentInsert).toBeUndefined();
   });
@@ -62,6 +62,17 @@ describe("R kernel bridge contract", () => {
       withHostSessionIdentity({ ...request, requestedSessionId: undefined }, () => sessionId).requestedSessionId
     ).toBe(sessionId);
     expect(validateOpenRequest(request)).toBeUndefined();
+    for (const rLibrary of ["base", "dplyr", "data.table", "collapse"] as const) {
+      expect(validateOpenRequest({ ...request, rLibrary })).toBeUndefined();
+    }
+    for (const rLibrary of [null, "pandas", ""] as const) {
+      expect(validateOpenRequest({ ...request, rLibrary } as unknown as OpenSessionRequest)).toMatchObject({
+        code: "invalid_r_library"
+      });
+    }
+    expect(validateOpenRequest({ ...request, backend: undefined, rLibrary: "dplyr" })).toMatchObject({
+      code: "invalid_r_library"
+    });
     expect(validateOpenRequest({ ...request, backend: "pandas" })).toMatchObject({
       kind: "error",
       code: "unsupported_backend",
@@ -76,7 +87,7 @@ describe("R kernel bridge contract", () => {
 
   it("builds isolated session metadata and exact source capabilities", () => {
     const contract = frameContract();
-    const session = sessionFromContract(sessionId, openRequest().source, "editing", contract, ["csv"]);
+    const session = sessionFromContract(sessionId, openRequest().source, "editing", contract, ["csv"], "base");
     session.filterModel = {
       filters: [
         {
@@ -109,7 +120,7 @@ describe("R kernel bridge contract", () => {
 
   it("validates projected session contracts and bounded dynamic nullability", () => {
     const contract = frameContract();
-    const session = sessionFromContract(sessionId, openRequest().source, "editing", contract, []);
+    const session = sessionFromContract(sessionId, openRequest().source, "editing", contract, [], "base");
     const window = { offset: 0, limit: 1, columnOffset: 0, columnLimit: 1 };
     expect(() =>
       assertSessionContract(session, contract, window, session.schema, 1, 1, [], "positional", emptyView)
@@ -159,7 +170,7 @@ describe("R kernel bridge contract", () => {
   });
 
   it("owns edit preconditions, stale revisions, and complete draft cleanup", () => {
-    const session = sessionFromContract(sessionId, openRequest().source, "viewing", frameContract(), []);
+    const session = sessionFromContract(sessionId, openRequest().source, "viewing", frameContract(), [], "base");
     expect(
       validateMutationRequest(session, 0, {
         sessionId,

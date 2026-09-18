@@ -45,7 +45,12 @@ export class SessionResponseCommitter {
   constructor(private readonly persistence: SessionPersistenceStore) {}
 
   retainSession(session: SessionResponseState): void {
-    this.persistence.retainOwner(session.publicId, session.openRequest.source, session.metadata.backend);
+    this.persistence.retainOwner(
+      session.publicId,
+      session.openRequest.source,
+      session.metadata.backend,
+      session.metadata.rLibrary
+    );
   }
 
   releaseSession(sessionId: string): void {
@@ -60,18 +65,29 @@ export class SessionResponseCommitter {
     const { openRequest, runtimeId, delegate } = session;
     const source = openRequest.source;
     const backend = session.metadata.backend;
-    return this.persistence.save(source, backend, () => {
-      if (
-        !isCurrent() ||
-        session.openRequest !== openRequest ||
-        session.openRequest.source !== source ||
-        session.runtimeId !== runtimeId ||
-        session.delegate !== delegate ||
-        session.metadata.backend !== backend
-      )
-        return undefined;
-      return persistedSessionState(session.metadata, gridState(session.viewState), session.draftBaseView?.filterModel);
-    });
+    const rLibrary = session.metadata.rLibrary;
+    return this.persistence.save(
+      source,
+      backend,
+      () => {
+        if (
+          !isCurrent() ||
+          session.openRequest !== openRequest ||
+          session.openRequest.source !== source ||
+          session.runtimeId !== runtimeId ||
+          session.delegate !== delegate ||
+          session.metadata.backend !== backend ||
+          session.metadata.rLibrary !== rLibrary
+        )
+          return undefined;
+        return persistedSessionState(
+          session.metadata,
+          gridState(session.viewState),
+          session.draftBaseView?.filterModel
+        );
+      },
+      rLibrary
+    );
   }
 
   async stageMutation(session: SessionResponseState): Promise<SessionPersistenceStageResult> {
@@ -106,7 +122,8 @@ export class SessionResponseCommitter {
       session.draftBaseView?.filterModel
     );
     const result = await this.persistence.commitRuntimeReplacement(source, state, isCurrent, commit);
-    if (result.kind === "committed") this.persistence.retainOwner(session.publicId, source, state.backend);
+    if (result.kind === "committed")
+      this.persistence.retainOwner(session.publicId, source, state.backend, state.rLibrary);
     return result;
   }
 

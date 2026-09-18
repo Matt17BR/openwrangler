@@ -14,6 +14,7 @@ interface TestNotebookKernel {
 
 const notebookMocks = vi.hoisted(() => ({
   workspaceTrusted: true,
+  defaultRLibrary: "base",
   commands: new Map<string, CommandHandler>(),
   notebookDocuments: [] as NotebookDocument[],
   activeNotebookEditor: undefined as NotebookEditor | undefined,
@@ -208,6 +209,9 @@ vi.mock("vscode", () => {
       showQuickPick: notebookMocks.showQuickPick
     },
     workspace: {
+      getConfiguration: () => ({
+        get: (key: string, fallback: unknown) => (key === "defaultRLibrary" ? notebookMocks.defaultRLibrary : fallback)
+      }),
       get isTrusted() {
         return notebookMocks.workspaceTrusted;
       },
@@ -313,6 +317,7 @@ export function jupyterBridgeMocks(): typeof notebookMocks {
 }
 
 export function resetNotebookCommandTest(): void {
+  notebookMocks.defaultRLibrary = "base";
   notebookMocks.workspaceTrusted = true;
   notebookMocks.commands.clear();
   notebookMocks.notebookDocuments.length = 0;

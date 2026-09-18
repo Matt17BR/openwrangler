@@ -186,7 +186,12 @@ function activeExportTransport(contract: RFramePageContract): RKernelBridgeTrans
   );
   return {
     onDidInvalidateKernel: emitter.event,
-    open: vi.fn(async () => ({ sessionId, page: contract, exportFormats: ["csv", "parquet"] as const })),
+    open: vi.fn(async () => ({
+      sessionId,
+      page: contract,
+      library: "base" as const,
+      exportFormats: ["csv", "parquet"] as const
+    })),
     getPage: vi.fn(async () => contract),
     getSummary: vi.fn(async () => []),
     getDatasetStats: vi.fn(async () => ({

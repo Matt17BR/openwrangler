@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { performance } from "node:perf_hooks";
 import type { Jupyter, Kernel, KernelStatus } from "@vscode/jupyter-extension";
 import * as vscode from "vscode";
-import type { ColumnSummary, ExportOptions, ValueCount } from "../../shared/protocol";
+import type { ColumnSummary, ExportOptions, RLibrary, ValueCount } from "../../shared/protocol";
 import { DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS } from "../configuration";
 import { DetachedBridgeRequestError, type DetachedBridgeRequestReason } from "../dataBridge";
 import {
@@ -49,6 +49,7 @@ const MAX_RETIRED_SESSION_IDS = 1_024;
 const MAX_PENDING_CLEANUP_ATTEMPTS = 64;
 
 export interface RKernelRequestOptions {
+  readonly library?: RLibrary;
   readonly cancellation?: KernelCancellationLike;
   readonly timeoutMs?: number;
   /** Host-owned candidate identity used for exact cleanup after an ambiguous open. */
@@ -59,6 +60,7 @@ export interface RKernelRequestOptions {
 
 export interface RKernelOpenResult {
   readonly sessionId: string;
+  readonly library: RLibrary;
   readonly exportFormats: readonly RKernelExportFormat[];
   readonly page: RFramePageContract;
 }
@@ -125,10 +127,12 @@ export class RKernelSessionTransport {
       const started = performance.now();
       const timeoutMs = requestTimeout(options.timeoutMs);
       const sessionId = options.requestedSessionId ?? this.createId();
+      const library = options.library === undefined ? "base" : options.library;
       this.assertSessionIdentityAvailable(sessionId);
       const request = this.request("openSession", {
         sessionId,
         variableName,
+        library,
         page,
         ...(options.cloneFrom
           ? { cloneFromSessionId: options.cloneFrom.sessionId, cloneFromRevision: options.cloneFrom.revision }
@@ -231,13 +235,21 @@ export class RKernelSessionTransport {
         if (!response.exportFormats) {
           throw new Error("The R kernel did not report its data-export capabilities.");
         }
+        if (response.library !== library) {
+          throw new Error("The R kernel did not confirm the requested dataframe library.");
+        }
         if (
           this.verifiedSelection &&
           response.page.dataframeFlavor !== this.verifiedSelection.variable.dataframeFlavor
         ) {
           throw new Error("The selected R dataframe changed before Open Wrangler opened it.");
         }
-        return Object.freeze({ sessionId, exportFormats: response.exportFormats, page: response.page });
+        return Object.freeze({
+          sessionId,
+          library: response.library,
+          exportFormats: response.exportFormats,
+          page: response.page
+        });
       } catch (error) {
         await this.cleanupFailedOpen(sessionId, acquired.kernel);
         throw error;

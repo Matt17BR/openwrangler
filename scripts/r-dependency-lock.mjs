@@ -33,9 +33,10 @@ export const LOCK_ROOTS = Object.freeze({
     "bit64",
     "rlang",
     "nanoparquet",
-    "readxl"
+    "readxl",
+    "collapse"
   ]),
-  fixtures: Object.freeze(["collapse"])
+  fixtures: Object.freeze([])
 });
 export const NATIVE_R_CANDIDATE_PACKAGE_SPECS = Object.freeze(
   [...LOCK_ROOTS.runtime, ...LOCK_ROOTS.fixtures].map((name) => `any::${name}`)

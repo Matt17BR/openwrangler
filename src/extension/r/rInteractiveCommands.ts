@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import * as path from "node:path";
 import * as vscode from "vscode";
-import type { SessionSource } from "../../shared/protocol";
-import { runtimeRequestTimeoutMs } from "../configuration";
+import type { RLibrary, SessionSource } from "../../shared/protocol";
+import { configuredRLibrary, runtimeRequestTimeoutMs } from "../configuration";
 import { formatQuickPickName } from "../quickPickName";
 import { DetachedBridgeRequestError } from "../dataBridge";
 import { SessionCoordinator } from "../sessionCoordinator";
@@ -66,11 +66,16 @@ export interface RLiveVariableProvider extends vscode.Disposable {
 
 export interface LiterateRVariableProvider {
   captureActiveSession(): LiterateRSessionIdentity | undefined;
-  openLiterateSession(origin: LiterateDocumentOrigin, session: LiterateRSessionIdentity): Promise<boolean>;
+  openLiterateSession(
+    origin: LiterateDocumentOrigin,
+    session: LiterateRSessionIdentity,
+    rLibrary?: RLibrary
+  ): Promise<boolean>;
   runLiterateChunkAndOpen(
     origin: LiterateDocumentOrigin,
     session: LiterateRSessionIdentity | undefined,
-    code: string
+    code: string,
+    rLibrary?: RLibrary
   ): Promise<boolean>;
 }
 
@@ -301,33 +306,39 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
     return terminal ? Object.freeze({ terminal }) : undefined;
   }
 
-  openLiterateSession(origin: LiterateDocumentOrigin, session: LiterateRSessionIdentity): Promise<boolean> {
+  openLiterateSession(
+    origin: LiterateDocumentOrigin,
+    session: LiterateRSessionIdentity,
+    rLibrary?: RLibrary
+  ): Promise<boolean> {
     if (!isCurrentLiterateDocumentOrigin(origin) || !isCurrentLiterateRSession(session)) {
       return Promise.resolve(false);
     }
-    return this.chooseAndOpen(origin, session);
+    return this.chooseAndOpen(origin, session, undefined, rLibrary);
   }
 
   runLiterateChunkAndOpen(
     origin: LiterateDocumentOrigin,
     session: LiterateRSessionIdentity | undefined,
-    code: string
+    code: string,
+    rLibrary?: RLibrary
   ): Promise<boolean> {
     if (!isCurrentLiterateDocumentOrigin(origin) || (session && !isCurrentLiterateRSession(session))) {
       return Promise.resolve(false);
     }
-    return this.chooseAndOpen(origin, session, code);
+    return this.chooseAndOpen(origin, session, code, rLibrary);
   }
 
   async chooseAndOpen(
     origin?: LiterateDocumentOrigin,
     expectedSession?: LiterateRSessionIdentity,
-    evaluationCode?: string
+    evaluationCode?: string,
+    rLibrary: RLibrary = configuredRLibrary(origin?.document.uri)
   ): Promise<boolean> {
     this.activeCommandRequests += 1;
     this.cancelAutomaticAttachmentTimer();
     try {
-      return await this.chooseAndOpenRequest(origin, expectedSession, evaluationCode);
+      return await this.chooseAndOpenRequest(origin, expectedSession, evaluationCode, rLibrary);
     } finally {
       this.activeCommandRequests -= 1;
       if (this.activeCommandRequests === 0) {
@@ -353,9 +364,10 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
   }
 
   private async chooseAndOpenRequest(
-    origin?: LiterateDocumentOrigin,
-    expectedSession?: LiterateRSessionIdentity,
-    evaluationCode?: string
+    origin: LiterateDocumentOrigin | undefined,
+    expectedSession: LiterateRSessionIdentity | undefined,
+    evaluationCode: string | undefined,
+    rLibrary: RLibrary
   ): Promise<boolean> {
     if (!requireTrustedRSession()) return false;
     if (this.disposed) return false;
@@ -370,7 +382,7 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
     const documentOrigin = evaluationCode === undefined ? undefined : origin;
     const cached = evaluationCode === undefined ? this.cachedPickerState() : undefined;
     if (cached && (!expectedSession || cached.terminal === expectedSession.terminal)) {
-      return this.chooseCachedAndOpen(cached, origin, expectedSession);
+      return this.chooseCachedAndOpen(cached, rLibrary, origin, expectedSession);
     }
 
     this.releaseWorkspaceWatcher();
@@ -473,7 +485,7 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
       return false;
     }
     if (!this.managedTransports.delete(transport)) return false;
-    const opened = await this.openWithTransport(transport, picked.variable, documentOrigin);
+    const opened = await this.openWithTransport(transport, picked.variable, rLibrary, documentOrigin);
     if (opened) this.scheduleAutomaticAttachment(vscode.window.activeTerminal);
     return opened;
   }
@@ -514,6 +526,7 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
 
   private async chooseCachedAndOpen(
     state: CachedRInteractivePickerState,
+    rLibrary: RLibrary,
     origin?: LiterateDocumentOrigin,
     expectedSession?: LiterateRSessionIdentity
   ): Promise<boolean> {
@@ -554,7 +567,7 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
       return false;
     }
     if (state.watcher) {
-      return this.openWatcherVariable(state, cached.variable);
+      return this.openWatcherVariable(state, cached.variable, rLibrary);
     }
     const transferred = this.releaseOwnedTransport();
     if (transferred !== state.transport || !this.managedTransports.delete(state.transport)) {
@@ -563,7 +576,7 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
     }
     this.generation += 1;
     this.replaceSnapshot(idleSnapshot(state.terminal));
-    const opened = await this.openWithTransport(state.transport, cached.variable);
+    const opened = await this.openWithTransport(state.transport, cached.variable, rLibrary);
     if (opened) this.scheduleAutomaticAttachment(vscode.window.activeTerminal);
     return opened;
   }
@@ -581,7 +594,8 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
 
   private async openWatcherVariable(
     state: CachedRInteractivePickerState & { readonly watcher: RVscodeWorkspaceWatcher },
-    selected: RProcessVariableDescriptor
+    selected: RProcessVariableDescriptor,
+    rLibrary: RLibrary
   ): Promise<boolean> {
     try {
       await state.watcher.verifyCurrent();
@@ -609,10 +623,11 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
       return false;
     }
     if (!this.managedTransports.delete(transport)) return false;
-    return this.openWithTransport(transport, selected);
+    return this.openWithTransport(transport, selected, rLibrary);
   }
 
   async openCachedVariable(handle: unknown): Promise<boolean> {
+    const rLibrary = configuredRLibrary();
     if (typeof handle !== "string") return false;
     if (!requireTrustedRSession()) return false;
     const cached = this.variablesByHandle.get(handle);
@@ -638,7 +653,8 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
       }
       return this.openWatcherVariable(
         state as CachedRInteractivePickerState & { watcher: RVscodeWorkspaceWatcher },
-        cached.variable
+        cached.variable,
+        rLibrary
       );
     }
     if (!transport) return false;
@@ -654,7 +670,7 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
     }
     this.generation += 1;
     this.replaceSnapshot(idleSnapshot(terminal));
-    const opened = await this.openWithTransport(transport, cached.variable);
+    const opened = await this.openWithTransport(transport, cached.variable, rLibrary);
     if (opened) this.scheduleAutomaticAttachment(vscode.window.activeTerminal);
     return opened;
   }
@@ -779,6 +795,7 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
   private async openWithTransport(
     transport: RInteractiveCommandTransport,
     selected: RProcessVariableDescriptor,
+    rLibrary: RLibrary,
     origin?: LiterateDocumentOrigin
   ): Promise<boolean> {
     const source: SessionSource = origin
@@ -803,7 +820,7 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
             sourceProtection: origin.sourceProtection
           })
         : this.coordinator.createBridge(delegate);
-      OpenWranglerPanel.create(this.context, bridge, source, "r");
+      OpenWranglerPanel.create(this.context, bridge, source, "r", "r", undefined, rLibrary);
       return true;
     } catch (error) {
       let cleanupError: unknown;

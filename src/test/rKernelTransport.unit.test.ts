@@ -319,6 +319,37 @@ describe("native R kernel runtime bundle", () => {
 });
 
 describe("native R kernel protocol", () => {
+  it("requires a known library on open and refuses library changes on ordinary pages", () => {
+    const request = openRequest();
+    const opened = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: openRequestId,
+      kind: "page",
+      sessionId,
+      exportFormats: ["csv"],
+      page: minimalFramePage()
+    };
+    for (const library of ["base", "dplyr", "data.table", "collapse"] as const) {
+      expect(JSON.parse(encodeRKernelRequest({ ...request, payload: { ...request.payload, library } }))).toMatchObject({
+        payload: { library }
+      });
+      expect(
+        decodeRKernelResponseJson(JSON.stringify({ ...opened, library }), openRequestId, { expectExportFormats: true })
+      ).toMatchObject({ library });
+      expect(() =>
+        decodeRKernelResponseJson(JSON.stringify({ ...opened, exportFormats: undefined, library }), openRequestId)
+      ).toThrow("invalid fields");
+    }
+    for (const library of [undefined, null, "pandas", "", {}]) {
+      expect(() =>
+        encodeRKernelRequest({ ...request, payload: { ...request.payload, library } } as RKernelRequest)
+      ).toThrow();
+      expect(() =>
+        decodeRKernelResponseJson(JSON.stringify({ ...opened, library }), openRequestId, { expectExportFormats: true })
+      ).toThrow();
+    }
+  });
+
   it("admits bounded distinct counts with omitted large numeric top values only", () => {
     const summary = {
       ...minimalSummary(),
@@ -401,6 +432,7 @@ describe("native R kernel protocol", () => {
 
   it("decodes a correlated typed page and rejects a stale request ID", () => {
     const encoded = JSON.stringify({
+      library: "base" as const,
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: openRequestId,
       kind: "page",
@@ -410,6 +442,7 @@ describe("native R kernel protocol", () => {
     });
 
     expect(decodeRKernelResponseJson(encoded, openRequestId, { expectExportFormats: true })).toMatchObject({
+      library: "base" as const,
       kind: "page",
       sessionId,
       exportFormats: ["csv", "parquet"],
@@ -421,6 +454,7 @@ describe("native R kernel protocol", () => {
     expect(() =>
       decodeRKernelResponseJson(
         JSON.stringify({
+          library: "base" as const,
           transportVersion: R_KERNEL_TRANSPORT_VERSION,
           requestId: openRequestId,
           kind: "page",
@@ -3341,6 +3375,10 @@ describe("exact IRkernel session transport", () => {
     const requests: RKernelRequest[] = [];
     const controller = controlledRKernel(async (request) => {
       requests.push(request);
+      if (request.kind === "openSession") {
+        expect(request.payload.library).toBe("collapse");
+        return response(request, { kind: "page", sessionId, library: "collapse", page: minimalFramePage() });
+      }
       if (request.kind === "closeSession") {
         return response(request, { kind: "closed", sessionId: request.payload.sessionId });
       }
@@ -3387,7 +3425,8 @@ describe("exact IRkernel session transport", () => {
       closeRequestId
     ]);
 
-    await expect(transport.open("frame", pageWindow())).resolves.toMatchObject({
+    await expect(transport.open("frame", pageWindow(), { library: "collapse" })).resolves.toMatchObject({
+      library: "collapse",
       sessionId,
       exportFormats: ["csv"],
       page: { dataframeFlavor: "r.data.frame" }
@@ -3466,6 +3505,7 @@ describe("exact IRkernel session transport", () => {
           return response(request, { kind: "closed", sessionId: request.payload.sessionId });
         }
         return response(request, {
+          library: "base" as const,
           kind: "page",
           sessionId: request.payload.sessionId,
           exportFormats: ["csv", "parquet"],
@@ -3911,34 +3951,44 @@ describe("exact IRkernel session transport", () => {
     expect(controller.teardownExecutions()).toBe(0);
   });
 
-  it("closes only the host-created candidate when an open response names another session", async () => {
-    const wrongSessionId = "55555555-5555-4555-8555-555555555555";
-    const requests: RKernelRequest[] = [];
-    const controller = controlledRKernel(async (request) => {
-      requests.push(request);
-      if (request.kind === "openSession") {
-        return response(request, { kind: "page", sessionId: wrongSessionId, page: minimalFramePage() });
-      }
-      return response(request, { kind: "closed", sessionId: request.payload.sessionId });
-    });
-    mockKernel(controller.kernel);
-    const document = notebookDocument();
-    setOpenNotebookDocuments(document);
-    const transport = createTransport(document, [sessionId, openRequestId, closeRequestId]);
+  it.each(["session", "library"] as const)(
+    "closes only the host-created candidate when an open response has the wrong %s",
+    async (mismatch) => {
+      const wrongSessionId = "55555555-5555-4555-8555-555555555555";
+      const requests: RKernelRequest[] = [];
+      const controller = controlledRKernel(async (request) => {
+        requests.push(request);
+        if (request.kind === "openSession") {
+          return response(request, {
+            kind: "page",
+            sessionId: mismatch === "session" ? wrongSessionId : sessionId,
+            library: mismatch === "library" ? "dplyr" : "base",
+            page: minimalFramePage()
+          });
+        }
+        return response(request, { kind: "closed", sessionId: request.payload.sessionId });
+      });
+      mockKernel(controller.kernel);
+      const document = notebookDocument();
+      setOpenNotebookDocuments(document);
+      const transport = createTransport(document, [sessionId, openRequestId, closeRequestId]);
 
-    await expect(transport.open("frame", pageWindow())).rejects.toThrow("mismatched session identity");
-    expect(
-      requests.map((request) =>
-        request.kind === "openSession" ? `open:${request.payload.sessionId}` : `close:${request.payload.sessionId}`
-      )
-    ).toEqual([`open:${sessionId}`, `close:${sessionId}`]);
-    const attempts = (
-      transport as unknown as {
-        cleanupAttempts: WeakMap<Kernel, ReadonlyMap<string, Promise<boolean>>>;
-      }
-    ).cleanupAttempts.get(controller.kernel);
-    expect(attempts?.size ?? 0).toBe(0);
-  });
+      await expect(transport.open("frame", pageWindow())).rejects.toThrow(
+        mismatch === "session" ? "mismatched session identity" : "did not confirm"
+      );
+      expect(
+        requests.map((request) =>
+          request.kind === "openSession" ? `open:${request.payload.sessionId}` : `close:${request.payload.sessionId}`
+        )
+      ).toEqual([`open:${sessionId}`, `close:${sessionId}`]);
+      const attempts = (
+        transport as unknown as {
+          cleanupAttempts: WeakMap<Kernel, ReadonlyMap<string, Promise<boolean>>>;
+        }
+      ).cleanupAttempts.get(controller.kernel);
+      expect(attempts?.size ?? 0).toBe(0);
+    }
+  );
 
   it("retires a normal close that succeeds after the host deadline", async () => {
     vi.useFakeTimers();
@@ -4535,7 +4585,7 @@ function openRequest(): Extract<RKernelRequest, { kind: "openSession" }> {
     transportVersion: R_KERNEL_TRANSPORT_VERSION,
     requestId: openRequestId,
     kind: "openSession",
-    payload: { sessionId, variableName: "frame", page: pageWindow() }
+    payload: { library: "base", sessionId, variableName: "frame", page: pageWindow() }
   };
 }
 
@@ -4817,7 +4867,8 @@ function minimalColumnValue() {
 }
 
 function response(request: RKernelRequest, body: Record<string, unknown>) {
-  const exportFormats = request.kind === "openSession" && body.kind === "page" ? { exportFormats: ["csv"] } : {};
+  const exportFormats =
+    request.kind === "openSession" && body.kind === "page" ? { library: "base" as const, exportFormats: ["csv"] } : {};
   return { transportVersion: R_KERNEL_TRANSPORT_VERSION, requestId: request.requestId, ...exportFormats, ...body };
 }
 

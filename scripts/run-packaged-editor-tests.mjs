@@ -95,6 +95,7 @@ import {
 } from "./packaged-platform-smoke-selector.mjs";
 import {
   CATEGORICAL_R_JUPYTER_SELECTOR,
+  CORE_R_JUPYTER_SELECTOR,
   VALUE_R_JUPYTER_SELECTOR,
   PIVOT_WIDER_R_JUPYTER_SELECTOR,
   resolvePackagedRJourneySelection
@@ -457,13 +458,17 @@ try {
             rAcceptanceEnvironment = await prepareJupyterAcceptanceREnvironment(resolve(temporaryRoot, "rv"), rscript, {
               containedBy: temporaryRoot,
               purpose:
-                rJourneySelector === "interactive-terminal" ||
-                rJourneySelector === "literate-documents" ||
-                rJourneySelector === CATEGORICAL_R_JUPYTER_SELECTOR ||
-                rJourneySelector === VALUE_R_JUPYTER_SELECTOR ||
-                rJourneySelector === PIVOT_WIDER_R_JUPYTER_SELECTOR
-                  ? rJourneySelector
-                  : "notebook"
+                process.platform === "linux" &&
+                requested.includes("vscode") &&
+                (rJourneySelector === undefined || rJourneySelector === CORE_R_JUPYTER_SELECTOR)
+                  ? CORE_R_JUPYTER_SELECTOR
+                  : rJourneySelector === "interactive-terminal" ||
+                      rJourneySelector === "literate-documents" ||
+                      rJourneySelector === CATEGORICAL_R_JUPYTER_SELECTOR ||
+                      rJourneySelector === VALUE_R_JUPYTER_SELECTOR ||
+                      rJourneySelector === PIVOT_WIDER_R_JUPYTER_SELECTOR
+                    ? rJourneySelector
+                    : "notebook"
             });
             if (acceptanceMode === "r-jupyter") {
               console.log(

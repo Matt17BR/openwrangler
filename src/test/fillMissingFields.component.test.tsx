@@ -885,6 +885,7 @@ describe("Fill Missing operation fields", () => {
           ...metadata,
           backend: "r",
           rDataframeFlavor: "r.data.frame",
+          rLibrary: "base",
           latestStepInputSchema: metadata.schema,
           steps: [initialStep]
         }}

@@ -352,7 +352,7 @@ for (case in custom_decoder_cases) {
 
 nul_request <- jsonlite::toJSON(
   list(
-    transportVersion = 16L,
+    transportVersion = 17L,
     requestId = request_id,
     kind = "previewStep",
     payload = list(
@@ -1381,9 +1381,9 @@ writeLines(c(
   "source_environment$source_frame <- source_frame",
   "agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, source_environment)",
   "page <- list(rowOffset = 0L, rowLimit = 100L, columnOffset = 0L, columnLimit = 100L, view = list(filters = I(list()), sorts = I(list())))",
-  "dispatch <- function(kind, payload) { request <- jsonlite::toJSON(list(transportVersion = 16L, requestId = '11111111-1111-4111-8111-111111111111', kind = kind, payload = payload), auto_unbox = TRUE, null = 'null'); jsonlite::fromJSON(agent$dispatch_json(as.character(request)), simplifyVector = FALSE) }",
+  "dispatch <- function(kind, payload) { request <- jsonlite::toJSON(list(transportVersion = 17L, requestId = '11111111-1111-4111-8111-111111111111', kind = kind, payload = payload), auto_unbox = TRUE, null = 'null'); jsonlite::fromJSON(agent$dispatch_json(as.character(request)), simplifyVector = FALSE) }",
   "session_id <- '22222222-2222-4222-8222-222222222222'",
-  "opened <- dispatch('openSession', list(sessionId = session_id, variableName = 'source_frame', page = page))",
+  "opened <- dispatch('openSession', list(sessionId = session_id, variableName = 'source_frame', page = page, library = 'base'))",
   "if (!identical(opened$kind, 'page')) stop('S3-poison source did not open', call. = FALSE)",
   "preview <- dispatch('previewStep', list(sessionId = session_id, revision = 0L, step = list(id = 's3-custom', kind = 'customCode', params = list(code = 'result <- df')), page = page))",
   "if (!identical(preview$kind, 'stepPreview')) stop('S3-poison Custom Code preview failed', call. = FALSE)",

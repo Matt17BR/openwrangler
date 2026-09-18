@@ -21,6 +21,22 @@ class MemoryMemento {
 }
 
 describe("confirmed file configurations", () => {
+  it("restores the confirmed R library and treats only old R records as Base R", async () => {
+    const state = new MemoryMemento();
+    const uri = vscode.Uri.file("/workspace/library.parquet");
+    await rememberConfirmedFileConfiguration(state, uri, undefined, "r", "r", "collapse");
+    expect(confirmedFileConfiguration(state, uri)).toMatchObject({ backend: "r", rLibrary: "collapse" });
+    await state.update(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY, {
+      version: 2,
+      entries: [{ uri: uri.toString(), backend: "r", backendPreference: "r" }]
+    });
+    expect(confirmedFileConfiguration(state, uri)).toMatchObject({ backend: "r", rLibrary: "base" });
+    await state.update(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY, {
+      version: 2,
+      entries: [{ uri: uri.toString(), backend: "polars", backendPreference: "polars", rLibrary: "base" }]
+    });
+    expect(confirmedFileConfiguration(state, uri)).toBeUndefined();
+  });
   it("preserves automatic selection while restoring the exact resolved-backend persistence key", async () => {
     const workspaceState = new MemoryMemento();
     const uri = vscode.Uri.file("/workspace/sales.csv");
@@ -75,7 +91,7 @@ describe("confirmed file configurations", () => {
       };
       await rememberConfirmedFileConfiguration(workspaceState, uri, importOptions, "r", preference);
       const restored = confirmedFileConfiguration(workspaceState, uri);
-      expect(restored).toEqual({ backend: "r", backendPreference: preference, importOptions });
+      expect(restored).toEqual({ backend: "r", backendPreference: preference, rLibrary: "base", importOptions });
       const source = {
         kind: "file" as const,
         label: `orders.${extension}`,
@@ -89,7 +105,7 @@ describe("confirmed file configurations", () => {
       expect(persistenceKey(source, "r")).not.toBe(persistenceKey(source, "polars"));
       expect(workspaceState.get(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY)).toEqual({
         version: 2,
-        entries: [{ uri: uri.toString(), backend: "r", backendPreference: preference, importOptions }]
+        entries: [{ uri: uri.toString(), backend: "r", backendPreference: preference, rLibrary: "base", importOptions }]
       });
     }
   );
@@ -162,6 +178,7 @@ describe("confirmed file configurations", () => {
       const restored = confirmedFileConfiguration(workspaceState, uri);
       expect(restored).toEqual({
         backend: "r",
+        rLibrary: "base",
         backendPreference: preference,
         ...(importOptions ? { importOptions } : {})
       });

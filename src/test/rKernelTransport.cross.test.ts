@@ -92,7 +92,7 @@ describe.skipIf(!enabled)("R kernel bootstrap to TypeScript transport", () => {
         transportVersion: R_KERNEL_TRANSPORT_VERSION,
         requestId: ids.open,
         kind: "openSession",
-        payload: { sessionId: fixtureSessionId, variableName: sourceName, page: pageWindow() }
+        payload: { library: "base", sessionId: fixtureSessionId, variableName: sourceName, page: pageWindow() }
       });
       const preview = requestCode({
         transportVersion: R_KERNEL_TRANSPORT_VERSION,
@@ -194,7 +194,8 @@ ${fixture.positions.length > 0 ? `stopifnot(identical(base::.row_names_info(open
         { kind: "rInteractiveVariable", label: fixture.sourceName, variableName: fixture.sourceName },
         "editing",
         opened.page,
-        []
+        [],
+        "base"
       );
       const expectedMode = rowNamesAfterRStep(
         opened.page.frameSemantics.rowNames,
@@ -250,7 +251,7 @@ ${fixture.positions.length > 0 ? `stopifnot(identical(base::.row_names_info(open
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: openRequestId,
       kind: "openSession",
-      payload: { sessionId, variableName: "frame", page: pageWindow() }
+      payload: { library: "base", sessionId, variableName: "frame", page: pageWindow() }
     });
     const page = requestCode({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
@@ -334,7 +335,7 @@ ${fixture.positions.length > 0 ? `stopifnot(identical(base::.row_names_info(open
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: namedRowsRequestId,
       kind: "openSession",
-      payload: { sessionId: namedRowsSessionId, variableName: "named_rows", page: pageWindow() }
+      payload: { library: "base", sessionId: namedRowsSessionId, variableName: "named_rows", page: pageWindow() }
     });
     const code = `
 frame <- data.frame(value = c(1, 3, 2), label = c("a", "c", "b"), stringsAsFactors = FALSE)
@@ -373,7 +374,7 @@ ${namedRows.code}
       expectExportFormats: true
     });
     expect(opened).toMatchObject({ kind: "page", sessionId, page: { shape: { rows: 3, columns: 2 } } });
-    expect(opened).toMatchObject({ exportFormats: ["csv", "parquet"] });
+    expect(opened).toMatchObject({ library: "base" as const, exportFormats: ["csv", "parquet"] });
     expect(paged).toMatchObject({ kind: "page", sessionId, page: { shape: { rows: 3, columns: 2 } } });
     if (paged.kind !== "page") throw new Error("Expected a page response.");
     expect(paged.page.page.rows.map((row) => row.rowNumber)).toEqual([0, 1, 2]);
@@ -462,7 +463,7 @@ ${namedRows.code}
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: parquetOpenId,
       kind: "openSession",
-      payload: { sessionId: parquetSessionId, variableName: "parquet_frame", page: pageWindow() }
+      payload: { library: "base", sessionId: parquetSessionId, variableName: "parquet_frame", page: pageWindow() }
     });
     const exportRequest = requestCode({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
@@ -516,7 +517,7 @@ ${closeSession.code}
     const exportClosed = decodeRKernelResponseJson(marked(result.stdout, closeExport.marker), parquetCloseExportId);
     const sessionClosed = decodeRKernelResponseJson(marked(result.stdout, closeSession.marker), parquetCloseSessionId);
 
-    expect(opened).toMatchObject({ kind: "page", exportFormats: ["csv", "parquet"] });
+    expect(opened).toMatchObject({ library: "base" as const, kind: "page", exportFormats: ["csv", "parquet"] });
     expect(exported).toMatchObject({ kind: "dataExported", format: "parquet", rows: 2, columns: 2 });
     expect(chunk).toMatchObject({ kind: "dataExportChunk", offset: 0 });
     if (chunk.kind !== "dataExportChunk") throw new Error("Expected an R Parquet export chunk.");
@@ -537,7 +538,7 @@ ${closeSession.code}
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: typedOpenId,
       kind: "openSession",
-      payload: { sessionId: typedSessionId, variableName: "typed", page: pageWindow() }
+      payload: { library: "base", sessionId: typedSessionId, variableName: "typed", page: pageWindow() }
     });
     const names = ["amount", "flag", "text", "category", "date", "when", "elapsed", "wide", "nonfinite"];
     const summary = requestCode({
@@ -561,7 +562,7 @@ ${closeSession.code}
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
       kind: "openSession",
-      payload: { sessionId: largeSessionId, variableName: "large_typed", page: pageWindow() }
+      payload: { library: "base", sessionId: largeSessionId, variableName: "large_typed", page: pageWindow() }
     });
     const largeSummaryId = "abcdefab-cdef-4abc-8def-abcdefabcdef";
     const largeSummary = requestCode({
@@ -719,7 +720,7 @@ stopifnot(identical(serialize(large_typed, NULL, version = 3L), large_before))
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: ids.open,
       kind: "openSession",
-      payload: { sessionId: editingSessionId, variableName: "frame", page: projectedPage }
+      payload: { library: "base", sessionId: editingSessionId, variableName: "frame", page: projectedPage }
     });
     const preview = requestCode(step(ids.preview, 0, "duplicate", "second duplicate"));
     const stale = requestCode({
@@ -921,7 +922,7 @@ cat("generated-ok\\n")
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: ids.open,
       kind: "openSession",
-      payload: { sessionId: customSessionId, variableName: "frame", page: pageWindow() }
+      payload: { library: "base", sessionId: customSessionId, variableName: "frame", page: pageWindow() }
     });
     const previewRequest: Extract<RKernelRequest, { kind: "previewStep" }> = {
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
@@ -1059,7 +1060,7 @@ cat("generated-ok\n")
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: ids.open,
       kind: "openSession",
-      payload: { sessionId, variableName: "frame", page: pageWindow() }
+      payload: { library: "base", sessionId, variableName: "frame", page: pageWindow() }
     });
     const ordinaryStep = { ...fillStep, id: "ordinary-fill" };
     const ordinaryPreview = requestCode({
@@ -1336,7 +1337,7 @@ ${afterClose.code}
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: ids.open,
       kind: "openSession",
-      payload: { sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
+      payload: { library: "base", sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
     });
     const previewRequest: Extract<RKernelRequest, { kind: "previewStep" }> = {
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
@@ -1606,7 +1607,7 @@ cat("generated-ok\\n")
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: ids.open,
       kind: "openSession",
-      payload: { sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
+      payload: { library: "base", sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
     });
     const scalarPreview = requestCode({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
@@ -1811,7 +1812,7 @@ cat("generated-ok\\n")
         transportVersion: R_KERNEL_TRANSPORT_VERSION,
         requestId: openRequestId,
         kind: "openSession",
-        payload: { sessionId, variableName: "frame", page: pageWindow() }
+        payload: { library: "base", sessionId, variableName: "frame", page: pageWindow() }
       });
       const preview = requestCode({
         transportVersion: R_KERNEL_TRANSPORT_VERSION,
@@ -1877,7 +1878,7 @@ cat("literal-ok\\n")
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: ids.open,
       kind: "openSession",
-      payload: { sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
+      payload: { library: "base", sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
     });
     const datePreview = requestCode({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
@@ -2101,7 +2102,7 @@ cat("generated-utc-ok\\n")
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: ids.open,
       kind: "openSession",
-      payload: { sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
+      payload: { library: "base", sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
     });
     const dropPreview = requestCode({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
@@ -2270,7 +2271,7 @@ cat("generated-ok\n")
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: ids.open,
       kind: "openSession",
-      payload: { sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
+      payload: { library: "base", sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
     });
     const selectPreview = requestCode({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
@@ -2480,7 +2481,7 @@ cat("generated-ok\n")
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: ids.open,
       kind: "openSession",
-      payload: { sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
+      payload: { library: "base", sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
     });
     const clonePreview = requestCode({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
@@ -2688,7 +2689,7 @@ cat("generated-ok\n")
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: ids.open,
       kind: "openSession",
-      payload: { sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
+      payload: { library: "base", sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
     });
     const preview = requestCode({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
@@ -2875,7 +2876,7 @@ cat("generated-ok\\n")
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: ids.open,
       kind: "openSession",
-      payload: { sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
+      payload: { library: "base", sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
     });
     const upperPreview = requestCode({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
@@ -3184,7 +3185,7 @@ cat("generated-ok\\n")
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: ids.open,
       kind: "openSession",
-      payload: { sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
+      payload: { library: "base", sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
     });
     const oneHotPreview = requestCode({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
@@ -3422,7 +3423,7 @@ cat("generated-ok\\n")
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: ids.open,
       kind: "openSession",
-      payload: { sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
+      payload: { library: "base", sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
     });
     const preview = requestCode({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
@@ -3574,7 +3575,7 @@ cat("generated-ok\\n")
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: openRequestId,
       kind: "openSession",
-      payload: { sessionId, variableName: "frame", page: pageWindow() }
+      payload: { library: "base", sessionId, variableName: "frame", page: pageWindow() }
     });
     const page = requestCode({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,

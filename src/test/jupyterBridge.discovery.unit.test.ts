@@ -263,7 +263,10 @@ describe("notebook variable discovery", () => {
         variableName: "spark_connect",
         uri: original.uri.toString()
       },
-      "pyspark"
+      "pyspark",
+      "pyspark",
+      undefined,
+      undefined
     );
     expect(notebookMocks.restoreEditorGroupAfterQuickPick).toHaveBeenCalledOnce();
     expect(notebookMocks.restoreEditorGroupAfterQuickPick.mock.invocationCallOrder[0]).toBeLessThan(
@@ -296,7 +299,10 @@ describe("notebook variable discovery", () => {
         variableName: "duck_relation",
         uri: original.uri.toString()
       },
-      "duckdb"
+      "duckdb",
+      "duckdb",
+      undefined,
+      undefined
     );
     expect(notebookMocks.showWarningMessage).not.toHaveBeenCalled();
   });
@@ -345,7 +351,10 @@ describe("notebook variable discovery", () => {
         variableName: name,
         uri: original.uri.toString()
       },
-      "r"
+      "r",
+      "r",
+      undefined,
+      "base"
     );
     expect(notebookMocks.restoreEditorGroupAfterQuickPick).toHaveBeenCalledOnce();
     expect(notebookMocks.restoreEditorGroupAfterQuickPick.mock.invocationCallOrder[0]).toBeLessThan(
@@ -370,6 +379,12 @@ describe("notebook variable discovery", () => {
     const discovery = await discoverVariablesForSelectedKernel(original);
     expect(isRNotebookVariableDiscovery(discovery)).toBe(true);
     if (!isRNotebookVariableDiscovery(discovery)) throw new Error("Expected an R notebook discovery.");
+    notebookMocks.defaultRLibrary = "collapse";
+    const execute = notebookMocks.executeCode.getMockImplementation()!;
+    notebookMocks.executeCode.mockImplementation((...args) => {
+      notebookMocks.defaultRLibrary = "dplyr";
+      return execute(...args);
+    });
     await openDiscoveredRNotebookVariable(
       context,
       coordinator as unknown as SessionCoordinator,
@@ -390,7 +405,10 @@ describe("notebook variable discovery", () => {
         variableName: "sales_tbl",
         uri: original.uri.toString()
       },
-      "r"
+      "r",
+      "r",
+      undefined,
+      "collapse"
     );
     expect(notebookMocks.showWarningMessage).not.toHaveBeenCalled();
   });

@@ -46,6 +46,8 @@ The native R cache stores lock-verified package archives. With the same platform
 builds and R patch changes within the locked minor reuse the same key. Preparation records the actual image and R
 version, and every run installs and verifies a fresh private library. GitHub scopes pull-request caches to that PR,
 so reuse is limited to its later jobs, updates and reruns; the weekly R 4.4 job uses a separate lock.
+The locks classify dplyr, data.table and collapse as runtime dependencies for selectable R cleaning libraries.
+Selecting base R in the product does not require those optional libraries; qualification prepares the supported choices.
 
 Source contracts, package validation, and the separate required CodeQL gate run for every change. Source and the
 package job run the same scope proof against their own checkouts. Only `docs_only=true` omits ESLint, Node 24 type

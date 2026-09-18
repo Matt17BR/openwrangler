@@ -128,7 +128,7 @@ export function createReleasedRInteractiveTerminalSupport({
     directory: string
   ): Promise<void> {
     let app = await releasedRSessionApp(workbench, testing, sessionId, "the active R terminal session");
-    assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "R");
+    assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "BASE R");
     assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "VIEWING");
     const columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
     await columnSearch.fill("revenue");
@@ -164,7 +164,7 @@ export function createReleasedRInteractiveTerminalSupport({
       "the active R terminal dataframe to switch to Editing mode"
     );
     app = await releasedRSessionApp(workbench, testing, sessionId, "the editable active R terminal session");
-    assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "R");
+    assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "BASE R");
     assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "EDITING");
     const active = testing.activeSession();
     assert.ok(active, "The Editing-mode active R terminal session must remain confirmed.");

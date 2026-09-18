@@ -45,6 +45,7 @@ const fileMocks = vi.hoisted(() => ({
   activeTextUri: undefined as unknown,
   enabledFileTypes: ["csv", "tsv", "parquet", "jsonl", "xlsx", "xls"] as unknown,
   defaultBackend: "auto",
+  defaultRLibrary: "base",
   workspaceValues: new Map<string, unknown>()
 }));
 
@@ -199,6 +200,7 @@ vi.mock("../extension/files/safeFileExport", () => ({
 }));
 
 vi.mock("../extension/configuration", () => ({
+  configuredRLibrary: vi.fn((_resource: unknown) => fileMocks.defaultRLibrary),
   getSetting: <T>(key: string, fallback: T): T =>
     (key === "enabledFileTypes"
       ? fileMocks.enabledFileTypes
@@ -233,6 +235,7 @@ describe("file launch command", () => {
     fileMocks.activeTextUri = undefined;
     fileMocks.enabledFileTypes = ["csv", "tsv", "parquet", "jsonl", "xlsx", "xls"];
     fileMocks.defaultBackend = "auto";
+    fileMocks.defaultRLibrary = "base";
     fileMocks.workspaceValues.clear();
     fileMocks.trusted = true;
     fileMocks.discoverTables.mockReset();
@@ -418,7 +421,8 @@ describe("file launch command", () => {
       },
       "pandas",
       "pandas",
-      "editing"
+      "editing",
+      undefined
     );
     expect(fileMocks.bridgeRequest).not.toHaveBeenCalled();
   });
@@ -449,6 +453,7 @@ describe("file launch command", () => {
     const { context, bridge } = register(factory);
     bridge.captureActiveFilePlan = () => ({
       backend: "r",
+      rLibrary: "collapse",
       importOptions: { delimiter: ";" },
       isCurrent: () => current,
       createBridge: bind
@@ -491,7 +496,8 @@ describe("file launch command", () => {
         expect.objectContaining({ path: uri.fsPath }),
         "r",
         "r",
-        "editing"
+        "editing",
+        "collapse"
       );
       expect(native.onIdle).not.toHaveBeenCalled();
     } else if (outcome === "stale after" || outcome === "disposed" || outcome === "panel failure") {
@@ -575,7 +581,9 @@ describe("file launch command", () => {
         importOptions: undefined
       },
       undefined,
-      "auto"
+      "auto",
+      undefined,
+      undefined
     );
   });
 
@@ -591,7 +599,9 @@ describe("file launch command", () => {
       bridge,
       expect.objectContaining({ uri: menuUri.toString() }),
       "duckdb",
-      "duckdb"
+      "duckdb",
+      undefined,
+      undefined
     );
   });
 
@@ -618,7 +628,9 @@ describe("file launch command", () => {
       nativeBridge,
       expect.objectContaining({ uri: menuUri.toString() }),
       "r",
-      "r"
+      "r",
+      undefined,
+      "base"
     );
     expect(fileMocks.bridgeRequest).not.toHaveBeenCalled();
   });
@@ -648,7 +660,9 @@ describe("file launch command", () => {
           uri: uri.toString()
         },
         "r",
-        "r"
+        "r",
+        undefined,
+        "base"
       );
       expect(fileMocks.bridgeRequest).not.toHaveBeenCalled();
     }
@@ -696,7 +710,15 @@ describe("file launch command", () => {
         expect(fileMocks.bridgeRequest).not.toHaveBeenCalled();
         expect(nativeBridge.request).not.toHaveBeenCalled();
         if (remainsCurrent) {
-          expect(fileMocks.createPanel).toHaveBeenCalledExactlyOnceWith(context, nativeBridge, expected, "r", "r");
+          expect(fileMocks.createPanel).toHaveBeenCalledExactlyOnceWith(
+            context,
+            nativeBridge,
+            expected,
+            "r",
+            "r",
+            undefined,
+            "base"
+          );
           expect(nativeBridge.onIdle).not.toHaveBeenCalled();
         } else {
           expect(fileMocks.createPanel).not.toHaveBeenCalled();
@@ -982,7 +1004,9 @@ describe("file launch command", () => {
       bridge,
       expect.objectContaining({ path: "/workspace/data.csv" }),
       undefined,
-      "auto"
+      "auto",
+      undefined,
+      undefined
     );
   });
 
@@ -990,9 +1014,11 @@ describe("file launch command", () => {
     const native = { request: vi.fn(), onIdle: vi.fn() };
     const createR = vi.fn(async () => native);
     const { context, bridge } = register(createR);
-    bridge.prepareFileAutoFallback = vi.fn(async () => ({
-      isCurrent: () => true
-    }));
+    fileMocks.defaultRLibrary = "collapse";
+    bridge.prepareFileAutoFallback = vi.fn(async () => {
+      fileMocks.defaultRLibrary = "dplyr";
+      return { isCurrent: () => true };
+    });
 
     await command("openWrangler.openFile")(vscode.Uri.file("/workspace/data.csv"));
 
@@ -1003,7 +1029,9 @@ describe("file launch command", () => {
       native,
       expect.objectContaining({ path: "/workspace/data.csv" }),
       "r",
-      "auto"
+      "auto",
+      undefined,
+      "collapse"
     );
     expect(fileMocks.bridgeRequest).not.toHaveBeenCalled();
     expect(native.onIdle).not.toHaveBeenCalled();
@@ -1122,7 +1150,9 @@ describe("file launch command", () => {
           bridge,
           expect.objectContaining({ path: "/workspace/data.csv" }),
           undefined,
-          "auto"
+          "auto",
+          undefined,
+          undefined
         );
       } else {
         expect(fileMocks.showErrorMessage).toHaveBeenCalledWith(failure.message);
@@ -1183,7 +1213,9 @@ describe("file launch command", () => {
       expect.objectContaining({ path: "/workspace/data.csv" }),
       undefined,
       true,
-      "auto"
+      "auto",
+      undefined,
+      undefined
     );
   });
 
@@ -1217,7 +1249,9 @@ describe("file launch command", () => {
       }),
       "pandas",
       true,
-      "auto"
+      "auto",
+      undefined,
+      undefined
     );
     expect(fileMocks.detectImportOptions).not.toHaveBeenCalled();
   });
@@ -1229,7 +1263,7 @@ describe("file launch command", () => {
       const importOptions = { delimiter: "\t", encoding: "utf-8", quoteChar: '"', hasHeader: true };
       fileMocks.workspaceValues.set(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY, {
         version: 2,
-        entries: [{ uri: uri.toString(), backend: "r", backendPreference: "r", importOptions }]
+        entries: [{ uri: uri.toString(), backend: "r", backendPreference: "r", rLibrary: "collapse", importOptions }]
       });
       fileMocks.defaultBackend = "polars";
       const nativeBridge = { request: vi.fn(), onIdle: vi.fn() };
@@ -1253,6 +1287,7 @@ describe("file launch command", () => {
         await started;
         token.isCancellationRequested = cancelled;
         fileMocks.defaultBackend = "pandas";
+        fileMocks.defaultRLibrary = "dplyr";
         fileMocks.activeTextUri = vscode.Uri.file("/workspace/unrelated.csv");
         release(nativeBridge);
         await opening;
@@ -1269,7 +1304,9 @@ describe("file launch command", () => {
             source,
             "r",
             true,
-            "r"
+            "r",
+            undefined,
+            "collapse"
           );
           expect(nativeBridge.onIdle).not.toHaveBeenCalled();
         }
@@ -1307,7 +1344,9 @@ describe("file launch command", () => {
       }),
       "duckdb",
       true,
-      "duckdb"
+      "duckdb",
+      undefined,
+      undefined
     );
     expect(fileMocks.panelConstructor.mock.calls[0]?.[3]).not.toHaveProperty("importOptions");
   });

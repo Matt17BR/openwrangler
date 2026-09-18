@@ -275,6 +275,11 @@
   "definitions": {
     "ProtocolVersion": { "type": "integer", "enum": [4] },
     "DataBackend": { "type": "string", "enum": ["polars", "duckdb", "pandas", "pyspark", "r"] },
+    "RLibrary": {
+      "description": "Native R cleaning library, independent of frame class. R open requests may omit it to select base; confirmed R metadata must include it. Other backends forbid it.",
+      "type": "string",
+      "enum": ["base", "dplyr", "data.table", "collapse"]
+    },
     "RDataframeFlavor": { "type": "string", "enum": ["r.data.frame", "r.tibble", "r.data.table"] },
     "SessionMode": { "type": "string", "enum": ["viewing", "editing"] },
     "RequestPriority": { "type": "string", "enum": ["interactive", "background"] },
@@ -2369,10 +2374,14 @@
           {
             "required": ["backend"],
             "properties": { "backend": { "const": "r" } },
-            "not": { "required": ["rDataframeFlavor"] }
+            "not": { "required": ["rDataframeFlavor", "rLibrary"] }
           },
           {
             "required": ["backend", "rDataframeFlavor"],
+            "properties": { "backend": { "not": { "const": "r" } } }
+          },
+          {
+            "required": ["backend", "rLibrary"],
             "properties": { "backend": { "not": { "const": "r" } } }
           },
           {
@@ -2462,6 +2471,7 @@
           "description": "Required only for a confirmed live R session; forbidden for every other backend.",
           "$ref": "#/definitions/RDataframeFlavor"
         },
+        "rLibrary": { "$ref": "#/definitions/RLibrary" },
         "mode": { "$ref": "#/definitions/SessionMode" },
         "source": { "$ref": "#/definitions/SessionSource" },
         "capabilities": { "$ref": "#/definitions/SourceCapabilities" },
@@ -2548,6 +2558,10 @@
       },
       "dependencies": {
         "cloneFrom": ["requestedSessionId"],
+        "rLibrary": {
+          "required": ["backend"],
+          "properties": { "backend": { "const": "r" } }
+        },
         "source": {
           "if": {
             "properties": {
@@ -2571,6 +2585,7 @@
         "requestedSessionId": { "type": "string", "minLength": 1 },
         "cloneFrom": { "$ref": "#/definitions/SessionCloneSource" },
         "backend": { "$ref": "#/definitions/DataBackend" },
+        "rLibrary": { "$ref": "#/definitions/RLibrary" },
         "mode": { "$ref": "#/definitions/SessionMode" },
         "pageSize": { "type": "integer", "minimum": 1, "maximum": 10000 },
         "columnOffset": { "type": "integer", "minimum": 0 },

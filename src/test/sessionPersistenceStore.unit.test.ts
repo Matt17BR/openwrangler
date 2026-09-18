@@ -12,6 +12,36 @@ import { type SessionPersistenceFailure, SessionPersistenceStore } from "../exte
 const source: SessionSource = { kind: "file", label: "sample.csv", path: "/workspace/sample.csv" };
 
 describe("SessionPersistenceStore", () => {
+  it("commits one R library's current state without changing another library's saved work", async () => {
+    let stored: Record<string, unknown> = {};
+    const memory = memento(
+      () => stored,
+      (value) => {
+        stored = value;
+      }
+    );
+    const persistence = new SessionPersistenceStore(memory.value);
+    const base = state("r", 2);
+    const collapse = { ...state("r", 8), rLibrary: "collapse" as const };
+    await persistence.save(source, "r", () => base, "base");
+    await persistence.save(source, "r", () => collapse, "collapse");
+    const original = structuredClone(stored[persistenceKey(source, "r")]);
+    await expect(
+      persistence.commitCurrent(
+        source,
+        () => ({ ...collapse, view: { ...collapse.view, viewport: { firstVisibleRow: 12, scrollLeft: 40 } } }),
+        () => true,
+        () => undefined
+      )
+    ).resolves.toEqual({ kind: "committed" });
+    expect(stored[persistenceKey(source, "r")]).toEqual(original);
+    expect(persistence.load(source, "r", "collapse")).toMatchObject({
+      rLibrary: "collapse",
+      view: { viewport: { firstVisibleRow: 12, scrollLeft: 40 } }
+    });
+    expect(persistence.checkAbsent(source, "r", "dplyr")).toEqual({ kind: "absent" });
+    expect(persistence.load(source, "r", "dplyr")).toBeUndefined();
+  });
   it.each([
     ["undefined", undefined],
     ["null", null],
@@ -1329,6 +1359,7 @@ describe("SessionPersistenceStore", () => {
 function state(backend: DataBackend, firstVisibleRow: number): PersistedSessionState {
   return {
     backend,
+    ...(backend === "r" ? { rLibrary: "base" as const } : {}),
     cleaning: { steps: [] },
     view: {
       filterModel: { filters: [], sort: [] },

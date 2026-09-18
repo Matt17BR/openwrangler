@@ -26,11 +26,10 @@
       "bit64",
       "rlang",
       "nanoparquet",
-      "readxl"
-    ],
-    "fixtures": [
+      "readxl",
       "collapse"
-    ]
+    ],
+    "fixtures": []
   },
   "packages": [
     {
@@ -174,7 +173,7 @@
     {
       "name": "collapse",
       "version": "2.1.7",
-      "direct": false,
+      "direct": true,
       "needsCompilation": true,
       "license": "GPL (>= 2) | file LICENSE",
       "dependencies": {

@@ -24,6 +24,13 @@ export function createReleasedRCloneState({ visibleOpenWranglerPanelAlert, waitF
       requestedSessionId: sessionId,
       activeSessionId: diagnostics.activeSessionId ?? null,
       sessionCount: diagnostics.sessionCount,
+      sessions: diagnostics.sessions.map(({ publicId, runtimeId, publicRevision, runtimeRevision }) => ({
+        publicId,
+        runtimeId,
+        publicRevision,
+        runtimeRevision,
+        rLibrary: testing.sessionSnapshot(publicId)?.metadata.rLibrary ?? null
+      })),
       coordinator: coordinator ?? null,
       active:
         active === undefined
@@ -31,6 +38,7 @@ export function createReleasedRCloneState({ visibleOpenWranglerPanelAlert, waitF
           : {
               sessionId: active.sessionId,
               revision: active.metadata.revision,
+              rLibrary: active.metadata.rLibrary,
               draft: operation(active.metadata.draftStep),
               steps: active.metadata.steps.map((step) => operation(step)),
               schema: active.metadata.schema.map((column) => ({
@@ -60,7 +68,8 @@ export function createReleasedRCloneState({ visibleOpenWranglerPanelAlert, waitF
     sessionId: string,
     before: ReturnType<typeof releasedRCloneFailureSnapshot>,
     predicate: (last: ReturnType<typeof releasedRCloneFailureSnapshot>) => boolean,
-    expectation: string
+    expectation: string,
+    timeoutMs = 30_000
   ): Promise<void> {
     let last = releasedRCloneFailureSnapshot(testing, sessionId);
     try {
@@ -69,7 +78,7 @@ export function createReleasedRCloneState({ visibleOpenWranglerPanelAlert, waitF
           last = releasedRCloneFailureSnapshot(testing, sessionId);
           return predicate(last);
         },
-        30_000,
+        timeoutMs,
         expectation,
         () => JSON.stringify({ before, last })
       );

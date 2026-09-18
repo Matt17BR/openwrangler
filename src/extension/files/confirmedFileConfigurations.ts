@@ -1,6 +1,6 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
-import type { DataBackend, SessionSource } from "../../shared/protocol";
+import { isRLibrary, type DataBackend, type RLibrary, type SessionSource } from "../../shared/protocol";
 
 type ImportOptions = NonNullable<SessionSource["importOptions"]>;
 
@@ -8,6 +8,7 @@ interface ConfirmedFileConfigurationEntry {
   readonly uri: string;
   readonly backend: DataBackend;
   readonly backendPreference: DataBackend | "auto";
+  readonly rLibrary?: RLibrary;
   readonly importOptions?: ImportOptions;
 }
 
@@ -19,6 +20,7 @@ interface ConfirmedFileConfigurationsRegistry {
 export interface ConfirmedFileConfiguration {
   readonly backend: DataBackend;
   readonly backendPreference: DataBackend | "auto";
+  readonly rLibrary?: RLibrary;
   readonly importOptions?: ImportOptions;
 }
 
@@ -45,6 +47,7 @@ export function confirmedFileConfiguration(
       return {
         backend: entry.backend,
         backendPreference: entry.backendPreference,
+        ...(entry.backend === "r" ? { rLibrary: entry.rLibrary ?? "base" } : {}),
         ...(entry.importOptions ? { importOptions: cloneImportOptions(entry.importOptions) } : {})
       };
     }
@@ -63,7 +66,8 @@ export function rememberConfirmedFileConfiguration(
   uri: vscode.Uri,
   importOptions: SessionSource["importOptions"],
   backend: DataBackend,
-  backendPreference: DataBackend | "auto"
+  backendPreference: DataBackend | "auto",
+  rLibrary?: RLibrary
 ): Promise<void> {
   if (!workspaceState) return Promise.resolve();
   const owner = workspaceState as object;
@@ -73,7 +77,7 @@ export function rememberConfirmedFileConfiguration(
     .then(async () => {
       const canonicalUri = uri.toString();
       const entries = decodeRegistry(workspaceState.get<unknown>(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY));
-      const confirmed = decodeFileConfiguration(uri, backend, backendPreference, importOptions);
+      const confirmed = decodeFileConfiguration(uri, backend, backendPreference, importOptions, rLibrary);
       if (!confirmed) return;
       const retained = entries.filter((entry) => entry.uri !== canonicalUri);
       retained.push({ uri: canonicalUri, ...confirmed });
@@ -108,11 +112,12 @@ function decodeRegistry(value: unknown): ConfirmedFileConfigurationEntry[] {
   for (const candidate of candidates) {
     if (
       !isRecord(candidate) ||
-      !hasExactKeys(candidate, ["uri", "backend", "backendPreference"], ["importOptions"]) ||
+      !hasExactKeys(candidate, ["uri", "backend", "backendPreference"], ["importOptions", "rLibrary"]) ||
       typeof candidate.uri !== "string" ||
       candidate.uri.length === 0 ||
       !isDataBackend(candidate.backend) ||
-      !isBackendPreference(candidate.backendPreference)
+      !isBackendPreference(candidate.backendPreference) ||
+      (Object.hasOwn(candidate, "rLibrary") && (candidate.backend !== "r" || !isRLibrary(candidate.rLibrary)))
     ) {
       continue;
     }
@@ -122,7 +127,8 @@ function decodeRegistry(value: unknown): ConfirmedFileConfigurationEntry[] {
       uri,
       candidate.backend,
       candidate.backendPreference,
-      candidate.importOptions
+      candidate.importOptions,
+      candidate.rLibrary
     );
     if (
       !configuration ||
@@ -189,25 +195,28 @@ function decodeFileConfiguration(
   uri: vscode.Uri,
   backend: unknown,
   backendPreference: unknown,
-  importOptions: unknown
+  importOptions: unknown,
+  rLibrary?: unknown
 ): Omit<ConfirmedFileConfigurationEntry, "uri"> | undefined {
   if (
     !isDataBackend(backend) ||
     !isBackendPreference(backendPreference) ||
-    (backendPreference !== "auto" && backendPreference !== backend)
+    (backendPreference !== "auto" && backendPreference !== backend) ||
+    (rLibrary !== undefined && (backend !== "r" || !isRLibrary(rLibrary)))
   ) {
     return undefined;
   }
   const extension = fileExtension(uri);
+  const library = backend === "r" ? { rLibrary: (rLibrary ?? "base") as RLibrary } : {};
   if (backend === "r" && uri.scheme !== "file") {
     return undefined;
   }
   if (extension === ".csv" || extension === ".tsv" || extension === ".xlsx" || extension === ".xls") {
     const decoded = decodeFormatImportOptions(uri, importOptions);
-    return decoded ? { backend, backendPreference, importOptions: decoded } : undefined;
+    return decoded ? { backend, backendPreference, ...library, importOptions: decoded } : undefined;
   }
   if ((extension === ".parquet" || extension === ".jsonl" || extension === ".ndjson") && importOptions === undefined) {
-    return { backend, backendPreference };
+    return { backend, backendPreference, ...library };
   }
   return undefined;
 }

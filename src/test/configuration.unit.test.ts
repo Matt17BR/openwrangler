@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  configuredRLibrary,
   decodeWebviewBootstrapSettings,
   DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS,
   DEFAULT_SESSION_OPEN_TIMEOUT_MS,
@@ -10,6 +11,17 @@ import {
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+it("reads an R library from the source resource and rejects unknown configuration values", () => {
+  const resource = vscode.Uri.file("/workspace/orders.R");
+  let value: unknown = "collapse";
+  const configuration = vi.spyOn(vscode.workspace, "getConfiguration").mockReturnValue({
+    get: <T>(key: string, fallback: T): T => (key === "defaultRLibrary" ? (value as T) : fallback)
+  } as vscode.WorkspaceConfiguration);
+  expect(configuredRLibrary(resource)).toBe("collapse");
+  expect(configuration).toHaveBeenCalledWith("openWrangler", resource);
+  for (value of ["r.collapse", null, {}, "", 1]) expect(configuredRLibrary(resource)).toBe("base");
 });
 
 describe("runtime request deadlines", () => {

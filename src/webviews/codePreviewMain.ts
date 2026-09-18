@@ -350,6 +350,9 @@ function codePreviewLanguage(codeDialect: CodeDialect | null): Extension {
     case "python.duckdb":
       return python();
     case "r.base":
+    case "r.dplyr":
+    case "r.data.table":
+    case "r.collapse":
     case null:
       return [];
   }

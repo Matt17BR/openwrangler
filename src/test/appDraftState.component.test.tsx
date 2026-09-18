@@ -1388,7 +1388,7 @@ function formulaPreviewFixture(
       sessionId: "preview-owner",
       revision: editing ? 1 : 0,
       backend,
-      ...(backend === "r" ? { rDataframeFlavor: "r.data.frame" as const } : {}),
+      ...(backend === "r" ? { rDataframeFlavor: "r.data.frame" as const, rLibrary: "base" as const } : {}),
       source: { kind: "notebookVariable", label: "synthetic", variableName: "synthetic" },
       schema,
       shape: { rows: 1, columns: schema.length },

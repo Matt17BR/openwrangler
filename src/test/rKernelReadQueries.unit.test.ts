@@ -261,7 +261,8 @@ function createSession(contract: RFramePageContract): RBridgeSession {
     },
     "viewing",
     contract,
-    []
+    [],
+    "base"
   );
 }
 

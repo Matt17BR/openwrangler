@@ -315,7 +315,13 @@ export class SessionRuntimeRequestExecutor {
     }
 
     const validationRequest = runtimeValidationRequest(publicRequest, requestRuntimeId, requestRuntimeRevision);
-    const mismatch = responseMismatch(validationRequest, response, requestRuntimeId, session.metadata.schema);
+    const mismatch = responseMismatch(
+      validationRequest,
+      response,
+      requestRuntimeId,
+      session.metadata.schema,
+      session.metadata
+    );
     if (mismatch) {
       if (isRuntimeStateMutation(publicRequest)) session.recoveryRequired = true;
       return invalidRuntimeResponse(publicRequest, session.publicId, mismatch);

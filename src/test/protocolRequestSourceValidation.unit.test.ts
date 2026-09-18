@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PROTOCOL_VERSION, openWranglerRequestShapes } from "../shared/protocol";
+import { PROTOCOL_VERSION, openWranglerRequestShapes, rLibraries } from "../shared/protocol";
 import { isOpenWranglerRequest, isOpenWranglerResponse, isRuntimeRequestEnvelope } from "../shared/protocolValidation";
 import { runtimeIdentityForDataBackend } from "../shared/runtimeIdentity";
 import { metadata, requests, responses, validateTransportSchema } from "./protocolValidation.fixtures";
@@ -392,6 +392,7 @@ describe("protocol-v4 request validation", () => {
       ...viewingMetadata,
       backend: "r" as const,
       rDataframeFlavor: "r.tibble" as const,
+      rLibrary: "base" as const,
       mode: "viewing" as const,
       source,
       capabilities: {
@@ -444,6 +445,80 @@ describe("protocol-v4 request validation", () => {
     ).toBe(true);
     expect(isOpenWranglerResponse(opened)).toBe(true);
     expect(validateTransportSchema({ protocolVersion: 4, requestId: "r-open", response: opened })).toBe(true);
+    for (const rLibrary of rLibraries) {
+      const selectedRequest = { ...request, rLibrary };
+      const selectedResponse = { ...opened, metadata: { ...rMetadata, rLibrary } };
+      expect(isOpenWranglerRequest(selectedRequest)).toBe(true);
+      expect(
+        validateTransportSchema({
+          protocolVersion: 4,
+          requestId: "r-selected-library",
+          priority: "interactive",
+          request: selectedRequest
+        })
+      ).toBe(true);
+      expect(isOpenWranglerResponse(selectedResponse)).toBe(true);
+      expect(
+        validateTransportSchema({
+          protocolVersion: 4,
+          requestId: "r-confirmed-library",
+          response: selectedResponse
+        })
+      ).toBe(true);
+    }
+    for (const rLibrary of [null, "", "R", "r.base", "data.frame", "tidyverse", {}, 0]) {
+      const invalidRequest = { ...request, rLibrary };
+      const invalidResponse = { ...opened, metadata: { ...rMetadata, rLibrary } };
+      expect(isOpenWranglerRequest(invalidRequest)).toBe(false);
+      expect(
+        validateTransportSchema({
+          protocolVersion: 4,
+          requestId: "r-invalid-library",
+          priority: "interactive",
+          request: invalidRequest
+        })
+      ).toBe(false);
+      expect(isOpenWranglerResponse(invalidResponse)).toBe(false);
+      expect(
+        validateTransportSchema({
+          protocolVersion: 4,
+          requestId: "r-invalid-confirmation",
+          response: invalidResponse
+        })
+      ).toBe(false);
+    }
+    const { rLibrary: _rLibrary, ...unconfirmedLibrary } = rMetadata;
+    const missingLibraryResponse = { ...opened, metadata: unconfirmedLibrary };
+    expect(isOpenWranglerResponse(missingLibraryResponse)).toBe(false);
+    expect(
+      validateTransportSchema({
+        protocolVersion: 4,
+        requestId: "r-missing-library",
+        response: missingLibraryResponse
+      })
+    ).toBe(false);
+    const { backend: _backend, ...withoutBackend } = request;
+    for (const backend of [undefined, "pandas", "polars", "duckdb", "pyspark"]) {
+      const nonRRequest = { ...withoutBackend, ...(backend === undefined ? {} : { backend }), rLibrary: "base" };
+      expect(isOpenWranglerRequest(nonRRequest)).toBe(false);
+      expect(
+        validateTransportSchema({
+          protocolVersion: 4,
+          requestId: "non-r-library",
+          priority: "interactive",
+          request: nonRRequest
+        })
+      ).toBe(false);
+    }
+    const nonRLibrary = { ...responses[1], metadata: { ...metadata, rLibrary: "base" } };
+    expect(isOpenWranglerResponse(nonRLibrary)).toBe(false);
+    expect(
+      validateTransportSchema({
+        protocolVersion: 4,
+        requestId: "non-r-library-confirmation",
+        response: nonRLibrary
+      })
+    ).toBe(false);
     for (const invalidSource of [{ kind: "notebookOutput" as const, label: "saved R output" }]) {
       const invalidOpened = { ...opened, metadata: { ...rMetadata, source: invalidSource } };
       expect(isOpenWranglerResponse(invalidOpened)).toBe(false);
@@ -516,6 +591,7 @@ describe("protocol-v4 request validation", () => {
       ...metadata,
       backend: "r" as const,
       rDataframeFlavor: "r.data.table" as const,
+      rLibrary: "base" as const,
       source,
       capabilities: { ...metadata.capabilities, documentInsert: true }
     };
@@ -607,10 +683,10 @@ describe("protocol-v4 request validation", () => {
     const sparkRequest = { ...request, backend: "pyspark" as const, mode: "viewing" as const };
     expect(isOpenWranglerRequest(sparkRequest)).toBe(false);
     expect(validateTransportSchema(requestEnvelope(sparkRequest))).toBe(false);
-    const { rDataframeFlavor: _rDataframeFlavor, ...metadataWithoutRFlavor } = rMetadata;
+    const { rDataframeFlavor: _rDataframeFlavor, rLibrary: _rLibrary, ...metadataWithoutRIdentity } = rMetadata;
     const sparkOpened = {
       ...opened,
-      metadata: { ...metadataWithoutRFlavor, backend: "pyspark" as const, mode: "viewing" as const }
+      metadata: { ...metadataWithoutRIdentity, backend: "pyspark" as const, mode: "viewing" as const }
     };
     expect(isOpenWranglerResponse(sparkOpened)).toBe(false);
     expect(
@@ -639,6 +715,7 @@ describe("protocol-v4 request validation", () => {
         ...metadata,
         backend: "r" as const,
         rDataframeFlavor: "r.tibble" as const,
+        rLibrary: "base" as const,
         source,
         capabilities: { ...metadata.capabilities, notebookInsert: false, documentInsert: false }
       }
