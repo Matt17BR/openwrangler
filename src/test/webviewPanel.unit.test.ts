@@ -192,6 +192,12 @@ describe("OpenWranglerPanel retained view state", () => {
       const create = vi.spyOn(OpenWranglerPanel, "create").mockReturnValue({} as OpenWranglerPanel);
       panelPromptMocks.showQuickPick.mockImplementation(async (items) => {
         expect(capture).toHaveBeenCalledWith("session", 0);
+        expect(items).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ label: "Base R", description: "Current" }),
+            expect.objectContaining({ label: "R · dplyr", description: "Open editing copy" })
+          ])
+        );
         return (items as Array<{ rLibrary: RLibrary }>).find((item) => item.rLibrary === "dplyr");
       });
       panelPromptMocks.showWarningMessage.mockImplementation(async (_message, options) => {
@@ -2291,11 +2297,11 @@ describe("OpenWranglerPanel retained view state", () => {
 
     expect(panelPromptMocks.showQuickPick).toHaveBeenCalledWith(
       expect.arrayContaining([
-        expect.objectContaining({ label: "Polars", description: "Current", backend: "polars" }),
-        expect.objectContaining({ label: "DuckDB", backend: "duckdb" }),
-        expect.objectContaining({ label: "Pandas", backend: "pandas" })
+        expect.objectContaining({ label: "Python · Polars", description: "Current", backend: "polars" }),
+        expect.objectContaining({ label: "Python · DuckDB", description: "Switch in this tab", backend: "duckdb" }),
+        expect.objectContaining({ label: "Python · Pandas", description: "Switch in this tab", backend: "pandas" })
       ]),
-      expect.objectContaining({ title: "Dataframe engine", placeHolder: "Current engine: Polars" }),
+      expect.objectContaining({ title: "Dataframe engine", placeHolder: "Current: Python · Polars" }),
       expect.anything()
     );
     expect(reconfigureFileSession).toHaveBeenCalledWith("session", 0, source, {
@@ -2355,17 +2361,19 @@ describe("OpenWranglerPanel retained view state", () => {
           (item) => item.backend === target
         );
         expect(choice).toMatchObject({
-          description: "Open in a separate session",
-          detail:
-            target === "r"
-              ? "Opens the source with this library's saved plan, if any."
-              : "Keeps this session and its steps. Opens the source with its own saved plan, if any."
+          label: target === "r" ? "Base R" : "Python · Pandas",
+          description: "Reopen file in new tab"
         });
         return choice;
       });
 
       await harness.receive({ kind: "changeBackend" });
 
+      expect(panelPromptMocks.showQuickPick).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ title: "Dataframe engine" }),
+        expect.anything()
+      );
       const handoff = executeCommand.mock.calls.find(
         ([command]) => command === "openWrangler.internal.openFileWithEngine"
       );
@@ -2686,8 +2694,8 @@ describe("OpenWranglerPanel retained view state", () => {
     }>;
     expect(choices.map(({ backend }) => backend)).toEqual(["polars", "pandas", "r", "r", "r", "r"]);
     expect(choices.map(({ label }) => label)).toEqual([
-      "Polars",
-      "Pandas",
+      "Python · Polars",
+      "Python · Pandas",
       "Base R",
       "R · dplyr",
       "R · data.table",

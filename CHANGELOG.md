@@ -4,6 +4,10 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ## [Unreleased]
 
+### Changed
+
+- The engine picker identifies Python and R choices consistently and shows whether a choice switches the current tab, opens a new tab or creates an editing copy.
+
 ## [2.6.0] - 2026-09-18
 
 ### Added

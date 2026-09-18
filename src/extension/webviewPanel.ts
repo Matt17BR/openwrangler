@@ -1353,38 +1353,30 @@ export class OpenWranglerPanel {
                         currentBackend === "r" && currentLibrary === library
                           ? "Current"
                           : currentBackend === "r"
-                            ? "Open an editing copy"
-                            : "Open in a separate session",
-                      detail:
-                        currentBackend === "r"
-                          ? "Replays applied steps from this session's captured source. Original draft, redo and view stay in this editor."
-                          : "Opens the source with this library's saved plan, if any.",
+                            ? "Open editing copy"
+                            : "Reopen file in new tab",
                       backend: candidate,
                       rLibrary: library
                     }))
                   : [
                       {
-                        label: backendDisplayName(candidate),
+                        label: `Python · ${backendDisplayName(candidate)}`,
                         description:
                           candidate === currentBackend
                             ? "Current"
                             : currentBackend === "r"
-                              ? "Open in a separate session"
-                              : undefined,
-                        detail:
-                          candidate !== currentBackend && currentBackend === "r"
-                            ? "Keeps this session and its steps. Opens the source with its own saved plan, if any."
-                            : undefined,
+                              ? "Reopen file in new tab"
+                              : "Switch in this tab",
                         backend: candidate,
                         rLibrary: undefined
                       }
                     ]
             ),
             {
-              title: currentBackend === "r" ? "Open an editing copy with another R library" : "Dataframe engine",
+              title: "Dataframe engine",
               placeHolder: currentLibrary
-                ? `Current R library: ${rLibraryLabel(currentLibrary)}`
-                : `Current engine: ${backendDisplayName(currentBackend)}`,
+                ? `Current: ${currentLibrary === "base" ? "Base R" : `R · ${rLibraryLabel(currentLibrary)}`}`
+                : `Current: Python · ${backendDisplayName(currentBackend)}`,
               matchOnDescription: true
             },
             cancellation.token
@@ -1424,7 +1416,7 @@ export class OpenWranglerPanel {
           `Open an editing copy with ${rLibraryLabel(targetLibrary)}?`,
           {
             modal: true,
-            detail: `The copy starts from this session's captured source and replays ${copy.appliedStepCount} applied ${copy.appliedStepCount === 1 ? "step" : "steps"}. Your original draft, redo history and view stay here. The copy starts without a draft or redo history.${copy.rerunsCustomCode ? " Applied Custom Code runs again in the original R environment and may have side effects." : ""}${source.kind === "file" ? " Open file separately opens the file from disk with this library's saved work, if any." : ""}`
+            detail: `The new tab replays ${copy.appliedStepCount} applied ${copy.appliedStepCount === 1 ? "step" : "steps"} from this session's captured source. This tab keeps its draft, redo history and view. The copy has no draft or redo history.${copy.rerunsCustomCode ? " Applied Custom Code runs again in the original R environment and may have side effects." : ""}${source.kind === "file" ? ` Open file separately reloads the file and restores steps saved for ${rLibraryLabel(targetLibrary)}.` : ""}`
           },
           "Open editing copy",
           ...(source.kind === "file" ? ["Open file separately"] : [])
