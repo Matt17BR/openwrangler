@@ -6,6 +6,7 @@ import {
   chmod,
   mkdir,
   mkdtemp,
+  open,
   readFile,
   readdir,
   rename,
@@ -439,12 +440,17 @@ describe("R private artifact boundary", () => {
           [artifactPath, original, "owned"],
           [nextPath, candidate, "newer"]
         ] as const) {
-          expect(await lstat(filePath, { bigint: true })).toMatchObject({
-            dev: identity.dev,
-            ino: identity.ino,
-            nlink: identity.nlink
-          });
-          expect(await readFile(filePath, "utf8")).toBe(contents);
+          const retained = await open(filePath, "r");
+          try {
+            expect(await retained.stat({ bigint: true })).toMatchObject({
+              dev: identity.dev,
+              ino: identity.ino,
+              nlink: identity.nlink
+            });
+            expect(await retained.readFile("utf8")).toBe(contents);
+          } finally {
+            await retained.close();
+          }
         }
         await rename(nextPath, artifactPath);
       } else {
