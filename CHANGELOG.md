@@ -4,70 +4,29 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-09-18
+
 ### Added
 
-- Choose base R, dplyr, data.table or collapse for native R cleaning and generated code. A library change opens an editing copy of applied steps while preserving the original draft and redo history.
-- R CSV/TSV imports honor encoding, ASCII delimiter and quote, headerless and CR record options, with matching generated code.
-- Native R file sessions can reuse confirmed built-in cleaning plans on another file with compatible columns.
-- Native R displays homogeneous atomic list columns and flat records. Extract Struct Fields and Explode List preserve native types, source isolation, history and generated code; exports require scalar output columns.
-- R Custom Code accepts results that change between supported base data.frame, tibble and data.table classes, with matching Preview, history and generated code.
+- Select base R, dplyr, data.table or collapse for built-in cleaning and generated R. Changing the library opens an editing copy with applied steps, preserving the original draft and redo history.
 - Local R file support is Preview on Linux, macOS and Windows: CSV, TSV, flat Parquet and JSONL/NDJSON, and selected Excel worksheets, with native cleaning, generated R and saved plans. Choosing R from a Python file session preserves the original in a separate tab.
+- R CSV/TSV imports honor UTF-8, explicitly lossy UTF-8, UTF-16LE/BE, ISO-8859-1 and Windows-1252, distinct ASCII delimiter and quote choices, headerless input and CR records, with matching generated code. Quoted text retains its embedded line endings.
+- Native R displays homogeneous atomic List columns and flat scalar records. Recursive containers and mixed element types remain unsupported; CSV and Parquet exports require scalar output columns.
+- R Custom Code accepts results that change between supported base data.frame, tibble and data.table classes, including transformations with installed dplyr, data.table and collapse packages. Preview, history and generated code retain the result class.
+- Open DuckDB Table opens local database tables for read-only browsing, filters and profiles. Multiple tables can stay open; close their viewers before writing to the database. Views, cleaning and exports remain unavailable.
+- Explode List expands one Polars List column or native R homogeneous atomic List column into rows, preserving child types and repeating the other columns. Empty or missing lists retain one row.
+- Open Another File with This Plan reuses confirmed built-in steps on a compatible Pandas, Polars, DuckDB or native R file, keeping a separate editable session and preserving both sources.
+- Extract Struct Fields copies selected scalar fields into new columns in Polars editing sessions, DuckDB file sessions and native R, preserving the parent column and rows. Native R admits flat records with matching scalar fields.
+- Convert Type to Datetime accepts day-first, month-first and ISO text dates through an optional input layout.
 
 ### Changed
 
 - Auto can open supported local files in R when no compatible Python interpreter or file engine is available.
-
 - Data sources groups file opening and discovered Python/R dataframes; Operations contains the cleaning catalog.
 - Formula steps show their saved output names in Cleaning Steps tooltips and accessible names.
 - Applied-step inspection collapses paused viewing filters into a disclosure, with full rules available on demand.
 - Narrow editors let the source name share a toolbar row with actions, leaving more room for data.
 - Data export clarifies that it includes all applied steps and excludes viewing filters and sorts.
-
-### Fixed
-
-- Pandas filters and missing-value counts avoid per-value Python work for built-in nullable integer, Boolean and string columns while keeping null and NaN distinct.
-- R opens supported Parquet integer columns carrying legacy annotations, including DuckDB files. Refusals identify the field, its actual annotations and the representation that cannot be preserved.
-- Package setup keeps its status and install action readable beside long errors, without an overlapping loading badge.
-- R numeric profiles display bounded exact distinct counts and handle columns containing only infinities without a protocol error.
-- R startup preserves Unicode runtime paths, and reticulate chunks preserve Unicode text without expanding ordinary strings.
-- Generated R preserves supplementary Unicode characters alongside escaped control characters in paths, column names and values.
-- R header profiles honor the opening preference. Sampled charts identify the sample count used and full non-missing population.
-- Large R numeric histograms count every finite value, and numeric distinct counts stay exact through 10,000 values. Categorical profiles use exact counts within bounded memory; larger sets retain labeled sampling.
-- R text profiles avoid repeated conversion work for small, large and filtered columns.
-- R Lowercase and Uppercase convert text in bounded batches, with matching generated code and ordered error reporting.
-- Offscreen columns no longer trigger header profiling.
-- Compact categorical headers include all omitted categories in Other.
-- R terminal commands honor bracketed paste, preventing radian from interpreting private command fragments as global assignments.
-- An open notebook no longer hides the action to discover dataframes in an existing R terminal.
-- R row sorting and reduction accept native row-name changes, including ordinary CSV-derived frames; zero-column generated reductions match live execution.
-- Hovered row labels no longer show scrolled-under cell text or filter controls through the frozen gutter.
-- Ordinary sidebar icons use the theme's neutral icon color; warning and error icons retain their status colors.
-- Generated DuckDB text-cleaning steps preserve their built-in behavior when caller-defined functions use the same names.
-- Pandas profiles avoid per-value Python loops for bounded integer sums, native string missing counts and nonmissing object-string columns.
-- Integer histogram bins create valid whole-number filters; rounded large-integer bins explain why filtering is unavailable.
-- Header profiles align statistics and chart groups across mixed column types; Add step keeps its icon beside its label.
-- Large Boolean profile counts wrap inside narrow columns.
-- Dependency errors identify the selected Python environment, explain unmet DuckDB supporting-package requirements, and offer installation followed by retry of a failed engine change.
-- Open Source File reports immediately when no dataframe is active, avoiding unexpected navigation when another dataframe opens.
-- Cleaning plan actions wrap in very narrow editor panes so Redo remains fully visible.
-- Cleaning Steps avoids unrelated refreshes when viewing filters, column selection or profiles change.
-- Native Summary opens uncalculated dataset statistics directly; failed requests stop the profiling indicator and offer a retry.
-- History inspection controls ignore stale clicks after switching dataframes or changing the plan.
-- Python runtime commands and troubleshooting guidance clarify that clearing the workspace override leaves User and Remote settings unchanged.
-- Edit Latest Step explains whether a dataframe in Viewing mode supports cleaning.
-
-## [2.6.0] - 2026-09-16
-
-### Added
-
-- Open DuckDB Table opens local database tables for read-only browsing, filters and profiles. Multiple tables can stay open; close their viewers before writing to the database. Views, cleaning and exports remain unavailable.
-- Explode List expands one Polars List column into rows, preserving child types and repeating the other columns. Empty or missing lists retain one row.
-- Open Another File with This Plan reuses confirmed built-in steps on a compatible file in Pandas, Polars, or DuckDB, keeping a separate editable session and preserving both sources.
-- Extract Struct Fields copies selected scalar fields into new columns in Polars editing sessions and DuckDB file sessions, preserving the parent column and rows.
-- Convert Type to Datetime accepts day-first, month-first and ISO text dates through an optional input layout.
-
-### Changed
-
 - DuckDB notebook opening asks for the relation's originating connection. Generated DuckDB plans with Custom Code require that connection and refuse Custom results from another connection.
 - Code Preview labels the inspected step above the code.
 - Operation dialogs can hide the catalog to give settings more space, preserving unfinished fields. Specific operations start collapsed; Add step keeps the catalog open.
@@ -80,6 +39,34 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Applying a cleaning step preserves new grid selections and keyboard focus instead of clearing them with a delayed view restoration. Opening Code Preview also keeps the current selection.
+- Normal dataframe-discovery updates no longer cause an R terminal session cleanup error.
+- R text profiles and Lowercase/Uppercase avoid repeated scalar conversion, preserving error handling and generated-code behavior.
+- Pandas filters and missing-value counts avoid boxing every value for built-in nullable integer, Boolean and string columns while preserving null and NaN distinctions.
+- R opens supported Parquet integer columns carrying legacy annotations, including DuckDB files. Refusals identify the field and incompatible representation and suggest a compatible engine or explicit conversion.
+- R startup preserves Unicode runtime paths, and reticulate chunks preserve Unicode text without expanding ordinary strings.
+- Generated R preserves supplementary Unicode characters alongside escaped control characters in paths, column names and values.
+- R header profiles honor the opening preference. Sampled charts identify the sample count used and full non-missing population.
+- Large R numeric histograms count every finite value, and numeric profiles display exact distinct counts through 10,000 distinct values. Profiles also handle columns containing only infinities without a protocol error. Categorical profiles use exact counts within bounded memory; larger sets retain labeled sampling.
+- Offscreen columns no longer trigger header profiling.
+- Compact categorical headers include all omitted categories in Other.
+- R terminal commands honor bracketed paste, preventing radian from interpreting private command fragments as global assignments.
+- An open notebook no longer hides the action to discover dataframes in an existing R terminal.
+- R row sorting and reduction accept native row-name changes, including ordinary CSV-derived frames; zero-column generated reductions match live execution.
+- Ordinary sidebar icons use the theme's neutral icon color; warning and error icons retain their status colors.
+- Generated DuckDB text-cleaning steps preserve their built-in behavior when caller-defined functions use the same names.
+- Pandas profiles avoid per-value Python loops for bounded integer sums, native string missing counts and nonmissing object-string columns.
+- Integer histogram bins create valid whole-number filters; rounded large-integer bins explain why filtering is unavailable.
+- Header profiles align statistics and chart groups across mixed column types; Add step keeps its icon beside its label.
+- Large Boolean profile counts wrap inside narrow columns.
+- Dependency errors identify the selected Python environment, explain unmet DuckDB supporting-package requirements, and offer installation followed by retry of a failed engine change. Package setup keeps its status and install action readable beside long errors, without an overlapping loading badge.
+- Open Source File reports immediately when no dataframe is active, avoiding unexpected navigation when another dataframe opens.
+- Cleaning plan actions wrap in very narrow editor panes so Redo remains fully visible.
+- Cleaning Steps avoids unrelated refreshes when viewing filters, column selection or profiles change.
+- Native Summary opens uncalculated dataset statistics directly; failed requests stop the profiling indicator and offer a retry.
+- History inspection controls ignore stale clicks after switching dataframes or changing the plan.
+- Python runtime commands and troubleshooting guidance clarify that clearing the workspace override leaves User and Remote settings unchanged.
+- Edit Latest Step explains whether a dataframe in Viewing mode supports cleaning.
 - Numeric column profiles keep histogram padding and borders inside the panel.
 - DuckDB notebook and file Custom results retain their rows and identities across pages, column windows and later cleaning steps. This captures complete native results, with additional memory, execution and storage costs.
 - Valid integer operands in Polars Enum filters and their generated code no longer emit numeric-cast deprecation warnings.
@@ -91,7 +78,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 - Value Search is unavailable while a new view is loading, so enabled clicks are no longer silently ignored.
 - Adding a filter while filter Undo is pending applies the new query instead of discarding the entered predicate.
 - A failed viewing query preserves newer unsubmitted sort rules, sort direction and null placement.
-- Column profiles and filters no longer cover keyboard-selected grid cells in narrow editor panes.
+- Column profiles and filters no longer cover keyboard-selected grid cells in narrow editor panes. Hovered row labels hide cells and filter controls that scroll underneath them.
 - Polars refuses missing Excel files instead of opening similarly named workbooks.
 - Excel imports preserve whitespace-only worksheet names in pickers, native reads and remembered file settings.
 - File reconfiguration, cleaning-plan rewrites and live mode changes respect host cancellation during pending persistence writes, before publishing a replacement.
