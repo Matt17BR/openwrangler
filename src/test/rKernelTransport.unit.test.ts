@@ -3445,6 +3445,31 @@ describe("native R kernel protocol", () => {
     expect(() => encodeRKernelRequest(null as unknown as RKernelRequest)).toThrow("must be an object");
   });
 
+  it.each([
+    ["invalid_source", "Excel sheet discovery requires the retained Excel file source", false],
+    ["operation-output-too-large", "Pivot wider would exceed the portable 2,048-column limit", true],
+    ["read_in_progress", "This R session already has two pending profiles", true],
+    ["unknown_profile", "The requested R profile is no longer available", true],
+    [
+      "unsupported_library",
+      "Precise native R timestamps require base or dplyr cleaning. Reopen this dataframe with base or dplyr.",
+      true
+    ]
+  ])("preserves the native %s diagnostic", (code, message, recoverable) => {
+    const response = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: summaryRequestId,
+      kind: "error",
+      code,
+      message,
+      recoverable
+    };
+    const decoded = decodeRKernelResponseJson(JSON.stringify(response), summaryRequestId);
+    expect(decoded).toEqual(response);
+    if (decoded.kind !== "error") throw new Error("Expected a native R diagnostic.");
+    expect(new RKernelDiagnosticError(decoded).diagnostic).toEqual(response);
+  });
+
   it("rejects malformed response fields and oversized diagnostics", () => {
     expect(() =>
       decodeRKernelResponseJson(
