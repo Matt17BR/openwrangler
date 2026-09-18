@@ -1,12 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SessionPresentation } from "../extension/dataBridge";
 import {
   RendererSynchronizationCoordinator,
   type RendererSynchronizationCallbacks,
   type RendererSynchronizationIdentity
 } from "../extension/rendererSynchronizationCoordinator";
 import type { OpenWranglerResponse, SessionOpenedResponse } from "../shared/protocol";
-import type { GridViewState } from "../shared/viewState";
 
 const snapshot: SessionOpenedResponse = {
   kind: "sessionOpened",
@@ -47,18 +45,6 @@ const snapshot: SessionOpenedResponse = {
   summaries: []
 };
 
-const presentation: SessionPresentation = {
-  sessionId: "session",
-  revision: 3,
-  code: "clean_df = df.clone()"
-};
-
-const viewState: GridViewState = {
-  columnWidths: new Map([["c:0", 240]]),
-  selectedColumnId: "c:0",
-  viewport: { firstVisibleRow: 0, scrollLeft: 12 }
-};
-
 describe("RendererSynchronizationCoordinator", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -87,6 +73,7 @@ describe("RendererSynchronizationCoordinator", () => {
       if (phase === "open") harness.ensureSessionOpen.mockImplementation(() => blocked);
       harness.coordinator.rendererStarted();
       const synchronization = harness.coordinator.enqueueSynchronization(phase === "inspection");
+      const generation = harness.coordinator.rendererGeneration;
       harness.state.snapshotPending = true;
       release();
       await synchronization;
@@ -101,33 +88,49 @@ describe("RendererSynchronizationCoordinator", () => {
       await vi.advanceTimersByTimeAsync(20_000);
       expect(harness.replaceRenderer).not.toHaveBeenCalled();
       expect(harness.ensureSessionOpen).toHaveBeenCalledTimes(phase === "open" ? 1 : 0);
+      expect(harness.coordinator.rendererGeneration).toBe(generation + (phase === "snapshot" ? 1 : 0));
+      expect(harness.didPublishAuthoritativeSnapshot).toHaveBeenCalledTimes(phase === "snapshot" ? 1 : 0);
     }
   );
 
-  it("finishes an installed recovery with only a marker and coalesces a newer full synchronization", async () => {
-    const harness = createHarness({ presentation, viewState });
+  it("marks a published view without retiring an in-flight response and coalesces a newer full synchronization", async () => {
+    const delivery = deferred<boolean>();
+    const response: OpenWranglerResponse = {
+      kind: "error",
+      code: "invalid_request",
+      message: "The selected operation is unavailable.",
+      recoverable: true
+    };
+    const harness = createHarness({
+      postMessage: (message) => {
+        harness.posted.push(message);
+        return message === response ? delivery.promise : Promise.resolve(true);
+      }
+    });
     harness.coordinator.rendererStarted();
-    await harness.coordinator.enqueueSynchronization(false, true);
+    const generation = harness.coordinator.rendererGeneration;
+    const publication = harness.coordinator.postMessage(response);
+    harness.coordinator.schedulePublishedViewSynchronization();
+    await vi.waitFor(() => expect(harness.posted.some(isSynchronization)).toBe(true));
+    expect(harness.coordinator.rendererGeneration).toBe(generation);
+    delivery.resolve(true);
+    await expect(publication).resolves.toBe(true);
     expect(harness.posted).not.toContainEqual(snapshot);
-    expect(harness.posted).not.toContainEqual({ kind: "sessionPresentation", presentation });
-    expect(harness.coordinator.rendererViewStateLocked).toBe(false);
+    expect(harness.coordinator.rendererViewStateLocked).toBe(true);
     expect(harness.coordinator.acknowledge(latestSynchronization(harness.posted))).toBeDefined();
     expect(harness.coordinator.hasHydratedRenderer()).toBe(true);
-    const markerOnly = harness.coordinator.enqueueSynchronization(false, true);
+    harness.coordinator.schedulePublishedViewSynchronization();
     const full = harness.coordinator.enqueueSynchronization(false);
     expect(harness.coordinator.rendererViewStateLocked).toBe(true);
-    await Promise.all([markerOnly, full]);
+    await full;
     expect(harness.coordinator.rendererViewStateLocked).toBe(true);
     expect(harness.posted.filter((message) => message === snapshot)).toHaveLength(1);
-    expect(harness.posted).toContainEqual({ kind: "sessionPresentation", presentation });
     harness.coordinator.dispose();
   });
 
   it("completes hydration when same-view profiling replaces the retained snapshot during publication", async () => {
     const postedSnapshot = deferred<boolean>();
     const harness = createHarness({
-      presentation,
-      viewState,
       postMessage: (message) => {
         harness.posted.push(message);
         return message === snapshot ? postedSnapshot.promise : Promise.resolve(true);
@@ -144,15 +147,92 @@ describe("RendererSynchronizationCoordinator", () => {
     };
     postedSnapshot.resolve(true);
     await synchronization;
-    expect(harness.posted).toContainEqual({ kind: "sessionPresentation", presentation });
+    expect(harness.posted[0]).toBe(snapshot);
     expect(harness.coordinator.acknowledge(latestSynchronization(harness.posted))).toBeDefined();
     expect(harness.coordinator.hasHydratedRenderer()).toBe(true);
     expect(harness.didPublishAuthoritativeSnapshot).toHaveBeenCalledOnce();
     harness.coordinator.dispose();
   });
 
+  it("keeps a full snapshot locked when a layout marker is requested during delivery", async () => {
+    const delivery = deferred<boolean>();
+    const harness = createHarness({
+      postMessage: (message) => {
+        harness.posted.push(message);
+        return message === snapshot ? delivery.promise : Promise.resolve(true);
+      }
+    });
+    harness.coordinator.rendererStarted();
+    const full = harness.coordinator.enqueueSynchronization(false);
+    try {
+      expect(harness.coordinator.rendererViewStateLocked).toBe(true);
+      harness.coordinator.schedulePublishedViewSynchronization();
+      expect(harness.coordinator.rendererViewStateLocked).toBe(true);
+      delivery.resolve(true);
+      await full;
+      expect(harness.coordinator.rendererViewStateLocked).toBe(true);
+      expect(harness.coordinator.acknowledge(latestSynchronization(harness.posted))).toBeDefined();
+      expect(harness.coordinator.rendererViewStateLocked).toBe(false);
+    } finally {
+      delivery.resolve(true);
+      await full;
+      harness.coordinator.dispose();
+    }
+  });
+
+  it.each(["before", "after"] as const)(
+    "retains only full restoration requested %s the atomic recovery receipt",
+    async (requested) => {
+      const delivery = deferred<boolean>();
+      const recovered: SessionOpenedResponse = {
+        ...snapshot,
+        metadata: { ...snapshot.metadata, revision: snapshot.metadata.revision + 1 }
+      };
+      const harness = createHarness({
+        postMessage: (message) => {
+          harness.posted.push(message);
+          return message === snapshot ? delivery.promise : Promise.resolve(true);
+        }
+      });
+      harness.coordinator.rendererStarted();
+      const oldPublication = harness.coordinator.enqueueSynchronization(false);
+      try {
+        expect(harness.posted).toEqual([snapshot]);
+        harness.state.snapshotPending = true;
+        harness.coordinator.invalidate();
+        if (requested === "before") void harness.coordinator.enqueueSynchronization(true);
+        harness.state.snapshot = recovered;
+        harness.state.snapshotPending = false;
+        const accepted = harness.coordinator.synchronizeAcceptedSnapshot();
+        if (requested === "after") void harness.coordinator.enqueueSynchronization(true);
+        const lockedAfterReceipt = harness.coordinator.rendererViewStateLocked;
+        delivery.resolve(true);
+        await accepted;
+        const synchronization = latestSynchronization(harness.posted);
+        expect(harness.posted).toEqual([
+          snapshot,
+          ...(requested === "after" ? [{ kind: "stepInspectionCleared", resumeProfiling: false }, recovered] : []),
+          { kind: "importOptionsState", busy: false },
+          synchronization
+        ]);
+        expect(lockedAfterReceipt).toBe(requested === "after");
+        expect(harness.clearStepInspection).toHaveBeenCalledTimes(requested === "after" ? 1 : 0);
+        expect(synchronization).toMatchObject({
+          sessionId: recovered.metadata.sessionId,
+          revision: recovered.metadata.revision
+        });
+        expect(harness.coordinator.acknowledge(synchronization)).toBeDefined();
+        expect(harness.coordinator.hasHydratedRenderer()).toBe(true);
+      } finally {
+        delivery.resolve(true);
+        await oldPublication;
+        harness.coordinator.dispose();
+      }
+    }
+  );
+
   it("publishes one complete retained snapshot before accepting its exact post-commit acknowledgement", async () => {
-    const harness = createHarness({ presentation, viewState, importBusy: true });
+    const harness = createHarness({ importBusy: true });
     harness.coordinator.replaceRenderer();
     harness.coordinator.rendererStarted();
 
@@ -164,15 +244,6 @@ describe("RendererSynchronizationCoordinator", () => {
     expect(harness.posted).toEqual([
       { kind: "stepInspectionCleared", resumeProfiling: false },
       snapshot,
-      { kind: "sessionPresentation", presentation },
-      {
-        kind: "viewState",
-        state: {
-          columnWidths: [["c:0", 240]],
-          selectedColumnId: "c:0",
-          viewport: { firstVisibleRow: 0, scrollLeft: 12 }
-        }
-      },
       { kind: "importOptionsState", busy: true },
       synchronization
     ]);
@@ -193,6 +264,32 @@ describe("RendererSynchronizationCoordinator", () => {
     expect(harness.coordinator.hasHydratedRenderer()).toBe(true);
     expect(harness.coordinator.rendererViewStateLocked).toBe(false);
     expect(harness.didSynchronize).toHaveBeenCalledWith(harness.coordinator.currentSynchronization);
+  });
+
+  it("recovers a failed snapshot publication before accepting hydration", async () => {
+    let deliver = false;
+    const harness = createHarness({
+      postMessage: async (message) => {
+        harness.posted.push(message);
+        return deliver;
+      }
+    });
+    harness.coordinator.rendererStarted();
+    await harness.coordinator.enqueueSynchronization(false);
+    expect(harness.posted).toEqual([snapshot]);
+    expect(harness.coordinator.hasHydratedRenderer()).toBe(false);
+    expect(harness.coordinator.rendererViewStateLocked).toBe(true);
+    expect(harness.didPublishAuthoritativeSnapshot).not.toHaveBeenCalled();
+    expect(harness.replaceRenderer).toHaveBeenCalledOnce();
+
+    deliver = true;
+    harness.coordinator.rendererStarted();
+    await harness.coordinator.enqueueSynchronization(false);
+    expect(harness.posted.filter((message) => message === snapshot)).toHaveLength(2);
+    expect(harness.didPublishAuthoritativeSnapshot).toHaveBeenCalledOnce();
+    expect(harness.coordinator.acknowledge(latestSynchronization(harness.posted))).toBeDefined();
+    expect(harness.coordinator.hasHydratedRenderer()).toBe(true);
+    harness.coordinator.dispose();
   });
 
   it("invalidates an acknowledged renderer on a fresh pull and rejects the stale acknowledgement", async () => {
@@ -371,8 +468,6 @@ describe("RendererSynchronizationCoordinator", () => {
 interface HarnessState {
   snapshot: SessionOpenedResponse | undefined;
   openResponse: OpenWranglerResponse | undefined;
-  presentation: SessionPresentation | undefined;
-  viewState: GridViewState | undefined;
   importBusy: boolean;
   visible: boolean;
   snapshotPending: boolean;
@@ -398,8 +493,6 @@ function createHarness(
   const state: HarnessState = {
     snapshot,
     openResponse: snapshot,
-    presentation: undefined,
-    viewState: undefined,
     importBusy: false,
     visible: true,
     snapshotPending: false,
@@ -426,8 +519,6 @@ function createHarness(
       getSnapshot: () => state.snapshot,
       getOpenResponse: () => state.openResponse,
       isSnapshotPending: () => state.snapshotPending,
-      getSessionPresentation: () => state.presentation,
-      getViewState: () => state.viewState,
       isImportBusy: () => state.importBusy,
       ensureSessionOpen,
       clearStepInspection,

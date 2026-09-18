@@ -46,12 +46,12 @@ export function useRendererPresentationLifecycle(committedSession: CommittedRend
     pendingGridViewState.current = undefined;
   }, []);
 
-  const flushGridViewState = useCallback(() => {
+  const flushGridViewState = useCallback((includeCurrent = false) => {
     if (gridViewStateTimer.current !== undefined) {
       window.clearTimeout(gridViewStateTimer.current);
       gridViewStateTimer.current = undefined;
     }
-    const pending = pendingGridViewState.current;
+    const pending = includeCurrent ? gridViewStateRef.current : pendingGridViewState.current;
     pendingGridViewState.current = undefined;
     const state = pending ? encodeGridViewState(pending) : undefined;
     if (state) vscode.postMessage({ kind: "updateViewState", state });
@@ -121,7 +121,8 @@ export function useRendererPresentationLifecycle(committedSession: CommittedRend
       revision: synchronization.revision
     });
     acknowledgedSynchronizationId.current = synchronization.syncId;
-    flushGridViewState();
+    // An earlier debounce may have reached the host while publication was locked.
+    flushGridViewState(true);
   }, [acceptedSynchronization, committedSession, flushGridViewState]);
 
   useEffect(() => {

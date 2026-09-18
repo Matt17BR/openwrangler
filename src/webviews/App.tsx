@@ -1356,6 +1356,8 @@ export function App() {
         setForegroundError(undefined);
         storeFailedPageRequest(undefined);
         installSessionSnapshot(response, response.offeredViewContextId, true);
+        if (response.presentation) installPresentation(response.presentation);
+        if (response.viewState) restoreHostGridViewState(response.viewState);
         return;
       }
 
@@ -1518,6 +1520,8 @@ export function App() {
         if (recovery) {
           installPresentation(recovery.presentation);
           restoreHostGridViewState(recovery.viewState);
+        } else if ((decoded.kind === "stepPreview" || decoded.kind === "planUpdated") && decoded.viewState) {
+          restoreHostGridViewState(decoded.viewState);
         }
         if (response.kind === "stepPreview") closeOperationDialog();
         else {

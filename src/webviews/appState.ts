@@ -125,19 +125,50 @@ function isSessionPresentation(value: unknown): value is SessionPresentationMess
 
 export function decodeAppHostMessage(value: unknown) {
   if (isRecord(value) && value.kind === "sessionOpened") {
-    const { offeredViewContextId, ...snapshot } = value;
+    const { offeredViewContextId, viewState, presentation, ...snapshot } = value;
+    const state = decodeGridViewState(viewState);
+    const decodedPresentation = isSessionPresentation(presentation) ? presentation : undefined;
     if (
       !isBoundedViewId(offeredViewContextId) ||
       !offeredViewContextId.startsWith(SNAPSHOT_VIEW_CONTEXT_PREFIX) ||
       offeredViewContextId.length === SNAPSHOT_VIEW_CONTEXT_PREFIX.length ||
       /\s/u.test(offeredViewContextId) ||
       !isOpenWranglerResponse(snapshot) ||
-      snapshot.kind !== "sessionOpened"
+      snapshot.kind !== "sessionOpened" ||
+      ("viewState" in value && !state) ||
+      ("presentation" in value &&
+        (!decodedPresentation ||
+          "code" in decodedPresentation ||
+          decodedPresentation.sessionId !== snapshot.metadata.sessionId ||
+          decodedPresentation.revision !== snapshot.metadata.revision ||
+          (decodedPresentation.draft !== undefined) !== (snapshot.metadata.draftStep !== undefined)))
     )
       return undefined;
-    return { ...snapshot, offeredViewContextId };
+    return {
+      ...snapshot,
+      offeredViewContextId,
+      ...(state ? { viewState: state } : {}),
+      ...(decodedPresentation ? { presentation: decodedPresentation } : {})
+    };
   }
-  if (isOpenWranglerResponse(value) && value.kind !== "sessionOpened") return value;
+  if (isRecord(value) && (value.kind === "stepPreview" || value.kind === "planUpdated")) {
+    const { viewState, ...response } = value;
+    const state = decodeGridViewState(viewState);
+    if (
+      !isOpenWranglerResponse(response) ||
+      (response.kind !== "stepPreview" && response.kind !== "planUpdated") ||
+      ("viewState" in value && !state)
+    )
+      return undefined;
+    return { ...response, ...(state ? { viewState: state } : {}) };
+  }
+  if (
+    isOpenWranglerResponse(value) &&
+    value.kind !== "sessionOpened" &&
+    value.kind !== "stepPreview" &&
+    value.kind !== "planUpdated"
+  )
+    return value;
   if (!isRecord(value)) return undefined;
 
   switch (value.kind) {
