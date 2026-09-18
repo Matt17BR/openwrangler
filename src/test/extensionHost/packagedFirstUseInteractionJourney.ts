@@ -187,12 +187,12 @@ export function createPackagedFirstUseInteractionJourney(
     const openSidePanel = async (
       view?: "Column" | "Filters / Sorts"
     ): Promise<{ readonly drawer: Locator; readonly toggle: Locator }> => {
-      let toggle = app.getByRole("button", { name: "Column profiles and filters" });
+      let toggle = app.getByRole("button", { name: "Column profiles and filters", exact: true });
       if ((await toggle.getAttribute("aria-expanded")) !== "true") {
         await toggle.click();
         app = await reacquireApp(`${view ?? "Insights"} panel opening`);
-        toggle = app.locator('button[aria-controls="openwrangler-insights-panel"][aria-expanded="true"]');
-        await toggle.waitFor({ state: "visible", timeout: 10_000 });
+        toggle = app.getByRole("button", { name: "Column profiles and filters", exact: true });
+        await toggle.and(app.locator('[aria-expanded="true"]')).waitFor({ state: "visible", timeout: 10_000 });
       }
       const drawer = app.getByRole("complementary", { name: "Column profiles and filters" });
       await drawer.waitFor({ state: "visible", timeout: 10_000 });
@@ -459,11 +459,7 @@ export function createPackagedFirstUseInteractionJourney(
     ({ drawer, toggle: insightsToggle } = await openSidePanel("Filters / Sorts"));
     await drawer.getByRole("button", { name: "Close panel" }).click();
     await drawer.waitFor({ state: "hidden", timeout: 10_000 });
-    assert.equal(
-      await insightsToggle.evaluate((element) => element.ownerDocument.activeElement === element),
-      true,
-      "Closing Insights must restore focus to its toolbar toggle."
-    );
+    await insightsToggle.and(app.locator(":focus")).waitFor({ state: "visible", timeout: 10_000 });
 
     recordAcceptanceProgress("platform-smoke:fill-grouped-median");
     app = await previewApplyAndUndoGroupedRevenue(app, workbench, testing, sessionId, revenue);

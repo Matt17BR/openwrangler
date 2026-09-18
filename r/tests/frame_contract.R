@@ -1816,29 +1816,24 @@ assert_identical(
 )
 
 group_integer64_sum_source <- data.frame(
-  group = c("cancel", "cancel"),
-  value = bit64::as.integer64(c("9223372036854775807", "-9223372036854775807")),
+  group = c("cancel", "cancel", "cancel", "limb", "limb", "wide", "wide", "missing", "negative", "negative", "negative"),
+  value = bit64::as.integer64(c("9223372036854775807", "1", "-9223372036854775807",
+    "-4294967297", "4294967296", "9007199254740993", "2", NA,
+    "-9223372036854775807", "-1", "9223372036854775807")),
   stringsAsFactors = FALSE
 )
-group_integer64_sum_result <- openwrangler_r_frame_contract$group_by_at(
-  group_integer64_sum_source,
-  1L,
-  "group",
-  2L,
-  "value",
-  "sum",
-  "value_sum"
-)
-assert_identical(
-  class(group_integer64_sum_result$value_sum),
-  "integer64",
-  "an exact R integer64 Group By sum changed output type"
-)
-assert_identical(
-  as.character(group_integer64_sum_result$value_sum),
-  "0",
-  "an exact R integer64 Group By sum lost cancellation"
-)
+group_integer64_sum_before <- serialize(group_integer64_sum_source, NULL, version = 3L)
+for (library in c("base", "dplyr", "data.table", "collapse")) {
+  group_integer64_sum_result <- openwrangler_r_frame_contract$group_by_at(
+    group_integer64_sum_source, 1L, "group", 2L, "value", "sum", "value_sum", library = library
+  )
+  assert_identical(class(group_integer64_sum_result$value_sum), "integer64",
+    "an exact R integer64 Group By sum changed output type")
+  assert_identical(as.character(group_integer64_sum_result$value_sum), c("1", "-1", "9007199254740995", "0", "-1"),
+    "an exact R integer64 Group By sum lost cancellation, low bits or all-missing zero")
+  assert_identical(serialize(group_integer64_sum_source, NULL, version = 3L), group_integer64_sum_before,
+    "an exact R integer64 Group By sum mutated its source")
+}
 assert_error(
   openwrangler_r_frame_contract$group_by_at(
     data.frame(
@@ -7285,8 +7280,10 @@ local({
     list(values = c(-Inf, Inf, -Inf, Inf, NA_real_, NaN), distinct = 2L),
     list(values = c(1, 1 + .Machine$double.eps, 1 + 2 * .Machine$double.eps), distinct = 3L),
     list(values = as.difftime(c(-0, 0, 1, 2), units = "hours"), distinct = 4L),
-    list(values = bit64::as.integer64(c("9007199254740992", "9007199254740993", "9007199254740994")), distinct = 3L),
-    list(values = bit64::as.integer64(c("-9223372036854775807", "-9223372036854775806", "9223372036854775807", NA_character_)), distinct = 3L)
+    list(values = bit64::as.integer64(c("9007199254740992", "9007199254740993", "9007199254740994")), distinct = 3L,
+      exactSum = "1080890932166683382979"),
+    list(values = bit64::as.integer64(c("-9223372036854775807", "-9223372036854775806", "9223372036854775807", NA_character_)), distinct = 3L,
+      exactSum = "-368944104846227887015806")
   )
   for (case in cases) {
     values <- case$values
@@ -7315,6 +7312,7 @@ local({
       assert_identical(sum(vapply(bins, `[[`, integer(1L), "count")), as.integer(length(finite) * repeats), "histogram omitted finite rows")
     }
     if (inherits(values, "integer64")) {
+      assert_identical(summary$numeric$exactSum$display, case$exactSum, "large integer64 sum lost low bits or overflowed")
       assert_identical(summary$numeric$exactMin$display, as.character(values[1L]), "chart projection changed exact integer64 minimum")
       assert_identical(summary$numeric$exactMax$display, as.character(values[3L]), "chart projection changed exact integer64 maximum")
     }
