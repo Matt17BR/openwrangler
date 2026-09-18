@@ -1723,7 +1723,10 @@ Their filters support `isNull` and `isNotNull`; value selection and nested sorti
 retain ordinary filters, sorts and profiles. Dataset duplicate counts are unavailable while any nested column remains.
 These outer counts do not re-infer leaf prototypes; page and editing boundaries retain their own validation.
 
-Cheap column/missing statistics scan in bounded chunks. Numeric histograms count every finite value into at most
+Column and missing-value statistics scan in bounded chunks. Large column summaries and dataset missing-value scans
+verify bit64 registrations once per uninterrupted calculation and retain those native handles across chunks. Each
+chunk still undergoes type, attribute and value checks; a later calculation verifies the registrations again.
+Numeric histograms count every finite value into at most
 20 bins; integer64 chart positions retain their double projection while typed extrema remain exact.
 Integer64 extrema use the package's native range reduction without sorting every value. Exact integer64 sums reduce
 bounded native quotient/remainder batches, combining only their totals in decimal text. This preserves cancellation

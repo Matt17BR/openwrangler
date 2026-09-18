@@ -984,7 +984,7 @@ openwrangler_r_frame_contract <- local({
     result
   }
 
-  column_semantics <- function(column, label, budget, validate_values = TRUE, expected = NULL) {
+  column_semantics <- function(column, label, budget, validate_values = TRUE, expected = NULL, integer64_bindings = NULL) {
     if (is.matrix(column) || is.array(column)) {
       abort("unsupported-column", sprintf("%s is a matrix or array column", label))
     }
@@ -1018,7 +1018,7 @@ openwrangler_r_frame_contract <- local({
     }
 
     if (inherits(column, "integer64")) {
-      ensure_integer64_bindings()
+      if (is.null(integer64_bindings)) ensure_integer64_bindings()
       assert_attributes(column, "class", label)
       return(common("integer64", "double", "integer64"))
     }
@@ -2553,14 +2553,14 @@ openwrangler_r_frame_contract <- local({
     resolved
   }
 
-  validate_profile_column <- function(column, semantics, label) {
+  validate_profile_column <- function(column, semantics, label, integer64_bindings = NULL) {
     if (nested_kind(semantics)) {
       column_semantics(column, label, new_payload_budget(), expected = semantics)
       # Nested profiles report only outer NULLs. Page encoding validates each
       # projected leaf, and isolation validates every leaf before copying.
       return(invisible(NULL))
     }
-    validated <- column_semantics(column, label, new_payload_budget(), validate_values = TRUE)
+    validated <- column_semantics(column, label, new_payload_budget(), validate_values = TRUE, integer64_bindings = integer64_bindings)
     if (!identical(validated, semantics)) source_changed()
     kind <- semantics$kind
     if (kind %in% c("date", "datetime", "difftime")) {
@@ -2578,7 +2578,7 @@ openwrangler_r_frame_contract <- local({
     invisible(NULL)
   }
 
-  profile_missing_masks <- function(column, semantics) {
+  profile_missing_masks <- function(column, semantics, integer64_bindings = NULL) {
     if (nested_kind(semantics)) return(list(null = vapply(plain_metadata_storage(column), is.null, logical(1L)), nan = rep(FALSE, storage_length(column))))
     if (identical(semantics$kind, "double")) {
       nan <- is.nan(column)
@@ -2586,7 +2586,7 @@ openwrangler_r_frame_contract <- local({
     }
     if (identical(semantics$kind, "integer64")) {
       return(list(
-        null = integer64_missing_mask(column, ensure_integer64_bindings()),
+        null = integer64_missing_mask(column, integer64_bindings %||% ensure_integer64_bindings()),
         nan = rep(FALSE, storage_length(column))
       ))
     }
@@ -2640,11 +2640,11 @@ openwrangler_r_frame_contract <- local({
     normalized
   }
 
-  profile_value_keys <- function(column, semantics, indices) {
+  profile_value_keys <- function(column, semantics, indices, integer64_bindings = NULL) {
     if (length(indices) == 0L) return(character())
     kind <- semantics$kind
     if (kind == "integer64") {
-      bindings <- ensure_integer64_bindings()
+      bindings <- integer64_bindings %||% ensure_integer64_bindings()
       return(integer64_as_character(integer64_subset(column, indices), bindings))
     }
     values <- column[indices]
@@ -2962,9 +2962,9 @@ openwrangler_r_frame_contract <- local({
     if (length(value) != 1L || is.na(value) || !is.finite(value)) NULL else as.double(value)
   }
 
-  numeric_profile_values <- function(column, semantics, present_indices) {
+  numeric_profile_values <- function(column, semantics, present_indices, integer64_bindings = NULL) {
     if (semantics$kind == "integer64") {
-      bindings <- ensure_integer64_bindings()
+      bindings <- integer64_bindings %||% ensure_integer64_bindings()
       return(suppressWarnings(integer64_as_double(integer64_subset(column, present_indices), bindings)))
     }
     values <- column[present_indices]
@@ -2990,9 +2990,9 @@ openwrangler_r_frame_contract <- local({
     exact_profile_integer_text_cell(exact, budget, label)
   }
 
-  integer64_profile_range <- function(values) {
+  integer64_profile_range <- function(values, integer64_bindings = NULL) {
     native_range <- get("range.integer64", envir = asNamespace("bit64"), inherits = FALSE)
-    integer64_as_character(native_range(values), ensure_integer64_bindings())
+    integer64_as_character(native_range(values), integer64_bindings %||% ensure_integer64_bindings())
   }
 
   exact_integer_extrema <- function(column, semantics, present_indices, budget, label) {
@@ -3253,9 +3253,11 @@ openwrangler_r_frame_contract <- local({
   chunked_column_summary <- function(capture, frame, resolved, row_positions, row_count, budget) {
     position <- resolved$position
     descriptor <- capture$descriptor$schema[[position]]
-    column <- frame[[position]]
+    column <- .subset2(frame, position)
     semantics <- descriptor$semantics
     kind <- semantics$kind
+    # This uninterrupted scan retains verified native handles across its chunks.
+    integer64_bindings <- if (kind == "integer64") ensure_integer64_bindings() else NULL
     label <- sprintf("column %d profile", position)
     spend_payload_budget(budget, summary_fixed_bytes, label)
     spend_json_string(budget, descriptor$id, paste0(label, " ID"))
@@ -3302,9 +3304,9 @@ openwrangler_r_frame_contract <- local({
     while (start <= row_count) {
       count <- min(maximum_profile_chunk_rows, row_count - start + 1)
       source_positions <- profile_chunk_source_positions(row_positions, start, count)
-      chunk <- column[source_positions]
-      validate_profile_column(chunk, semantics, label)
-      missing <- profile_missing_masks(chunk, semantics)
+      chunk <- if (kind == "integer64") integer64_subset(column, source_positions) else column[source_positions]
+      validate_profile_column(chunk, semantics, label, integer64_bindings)
+      missing <- profile_missing_masks(chunk, semantics, integer64_bindings)
       null_count <- null_count + sum(missing$null)
       nan_count <- nan_count + sum(missing$nan)
       present_indices <- which(!missing$null & !missing$nan)
@@ -3312,7 +3314,7 @@ openwrangler_r_frame_contract <- local({
       present_count <- present_count + chunk_present_count
 
       if (chunk_present_count != 0L) {
-        present <- chunk[present_indices]
+        present <- if (kind == "integer64") integer64_subset(chunk, present_indices) else chunk[present_indices]
         visible_positions <- seq.int(as.integer(start), length.out = as.integer(count))[present_indices]
         present_sources <- source_positions[present_indices]
 
@@ -3390,10 +3392,10 @@ openwrangler_r_frame_contract <- local({
             datetime_maximum_source <- present_sources[[chunk_maximum]]
           }
         } else if (kind %in% c("integer", "integer64", "double", "difftime")) {
-          values <- numeric_profile_values(chunk, semantics, present_indices)
+          values <- numeric_profile_values(chunk, semantics, present_indices, integer64_bindings)
           identity_values <- if (kind == "integer64" &&
               (!is.null(numeric_distinct_values) || length(numeric_bin_values) < maximum_histogram_bins)) {
-            profile_value_keys(present, semantics, seq_along(present))
+            profile_value_keys(present, semantics, seq_along(present), integer64_bindings)
           } else values
           if (!is.null(numeric_distinct_values)) {
             # The temporary union adds only this scan chunk to the retained bound.
@@ -3437,7 +3439,7 @@ openwrangler_r_frame_contract <- local({
           if (kind %in% c("integer", "integer64")) {
             exact_sum <- add_signed_decimal(exact_sum, exact_integer_sum_text(present, kind))
             if (kind == "integer64") {
-              extrema <- integer64_profile_range(present)
+              extrema <- integer64_profile_range(present, integer64_bindings)
               candidate_minimum <- extrema[[1L]]
               candidate_maximum <- extrema[[2L]]
             } else {
@@ -3477,11 +3479,11 @@ openwrangler_r_frame_contract <- local({
       while (start <= row_count && (!is.null(histogram_edges) || sampled < sample_size)) {
         count <- min(maximum_profile_chunk_rows, row_count - start + 1)
         source_positions <- profile_chunk_source_positions(row_positions, start, count)
-        chunk <- column[source_positions]
-        missing <- profile_missing_masks(chunk, semantics)
+        chunk <- if (kind == "integer64") integer64_subset(column, source_positions) else column[source_positions]
+        missing <- profile_missing_masks(chunk, semantics, integer64_bindings)
         present_indices <- which(!missing$null & !missing$nan)
         if (!is.null(histogram_edges)) {
-          values <- numeric_profile_values(chunk, semantics, present_indices)
+          values <- numeric_profile_values(chunk, semantics, present_indices, integer64_bindings)
           bin_indices <- findInterval(values[is.finite(values)], histogram_edges, rightmost.closed = TRUE, all.inside = TRUE)
           histogram_counts <- histogram_counts + tabulate(bin_indices, nbins = length(histogram_counts))
           start <- start + count
@@ -3504,7 +3506,7 @@ openwrangler_r_frame_contract <- local({
       if (sampled != sample_size) abort("internal-error", "the R profile sample is incomplete")
     }
 
-    sample_column <- column[sample_sources]
+    sample_column <- if (kind == "integer64") integer64_subset(column, sample_sources) else column[sample_sources]
     sample_indices <- seq_len(sample_size)
     if (kind == "logical") {
       entries <- list()
@@ -3581,7 +3583,7 @@ openwrangler_r_frame_contract <- local({
           if (!is.null(standard_deviation)) numeric$std <- standard_deviation
         }
       }
-      sample_values <- numeric_profile_values(sample_column, semantics, sample_indices)
+      sample_values <- numeric_profile_values(sample_column, semantics, sample_indices, integer64_bindings)
       if (!large_population && length(sample_values) != 0L) {
         median_value <- finite_statistic(suppressWarnings(numeric_profile_median(sample_values)))
         if (!is.null(median_value)) numeric$median <- median_value
@@ -11449,6 +11451,10 @@ openwrangler_r_frame_contract <- local({
     add_metric(capture$metrics, "datasetProfiles")
     budget <- new_payload_budget(capture$metadataBytes)
     spend_payload_budget(budget, summary_fixed_bytes, "R dataset profile")
+    # Revalidate for every request, then reuse the exact native handles within
+    # this uninterrupted calculation rather than auditing every scan chunk.
+    integer64_bindings <- if (any(vapply(descriptor$schema, function(column)
+      identical(column$semantics$kind, "integer64"), logical(1L)))) ensure_integer64_bindings() else NULL
     missing_counts <- integer(column_count)
     missing_rows <- 0L
     start <- 1
@@ -11457,10 +11463,13 @@ openwrangler_r_frame_contract <- local({
       source_positions <- profile_chunk_source_positions(view$rows, start, count)
       row_missing <- rep(FALSE, count)
       for (position in seq_len(column_count)) {
-        column <- frame[[position]][source_positions]
         schema <- descriptor$schema[[position]]
-        validate_profile_column(column, schema$semantics, sprintf("column %d dataset profile", position))
-        masks <- profile_missing_masks(column, schema$semantics)
+        values <- .subset2(frame, position)
+        column <- if (identical(schema$semantics$kind, "integer64")) {
+          integer64_subset(values, source_positions)
+        } else values[source_positions]
+        validate_profile_column(column, schema$semantics, sprintf("column %d dataset profile", position), integer64_bindings)
+        masks <- profile_missing_masks(column, schema$semantics, integer64_bindings)
         missing <- masks$null | masks$nan
         missing_counts[[position]] <- missing_counts[[position]] + sum(missing)
         row_missing <- row_missing | missing
