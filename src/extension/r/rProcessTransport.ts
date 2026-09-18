@@ -857,10 +857,12 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
       }
       await mkdir(responseRoot, { mode: 0o700 });
       await mkdir(exportRoot, { mode: 0o700 });
-      this.assertActive();
-      this.assertWorkspaceTrusted();
-
-      const processBootstrap = buildRProcessBootstrapCode(processAgent, path.join(responseRoot, "ready.json"));
+      const bootstrapPath = path.join(root, "bootstrap.R");
+      await writeFile(bootstrapPath, buildRProcessBootstrapCode(processAgent, path.join(responseRoot, "ready.json")), {
+        encoding: "utf8",
+        flag: "wx",
+        mode: 0o400
+      });
       const environment = {
         ...(this.options.environment ?? process.env),
         TMPDIR: root,
@@ -871,7 +873,7 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
         OPEN_WRANGLER_R_RESPONSE_ROOT: responseRoot,
         OPEN_WRANGLER_R_EXPORT_ROOT: exportRoot
       };
-      const arguments_ = ["--vanilla", "-e", processBootstrap];
+      const arguments_ = ["--vanilla", bootstrapPath];
       const windowsJob = process.platform === "win32" ? { token: randomUUID(), attested: false } : undefined;
       const launchFrame = windowsJob
         ? Buffer.from(
@@ -890,6 +892,8 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
         : undefined;
       if (launchFrame && launchFrame.byteLength > 256 * 1024)
         throw new Error("The native R process launch configuration exceeds the Windows supervisor limit.");
+      this.assertActive();
+      this.assertWorkspaceTrusted();
       const child = spawn(
         windowsJob ? windowsPowerShellPath() : this.options.rscriptPath,
         windowsJob

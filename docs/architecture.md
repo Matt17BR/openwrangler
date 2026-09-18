@@ -1463,6 +1463,11 @@ R-terminal, and owned `Rscript` transports share the same native frame contract 
 including generated R. The runtime never routes an R frame through Python.
 [Feature parity](feature-parity.md#native-r-support) defines support and limitations for each entry path.
 
+Owned R processes read their bootstrap from an exclusive, read-only file in the process's private directory.
+Passing the file to `Rscript --vanilla` preserves source escapes across Unix launchers and leaves stdin available
+for binary requests. The bootstrap stays outside the document directory and shares the process's cleanup owner.
+The host rechecks cancellation and Workspace Trust after writing it, immediately before launch.
+
 #### Cleaning library selection
 
 An R session confirms one cleaning library: `base`, `dplyr`, `data.table` or `collapse`. The backend stays `r`;

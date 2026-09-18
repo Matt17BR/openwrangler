@@ -809,6 +809,7 @@ describe.skipIf(!enabled)("plain R process transport", () => {
       rscriptPath,
       temporaryParent,
       workingDirectory: temporaryParent,
+      environment: { ...process.env, BASHOPTS: "xpg_echo" },
       documentText: `cat("ran", file = ${rString(documentMarker)}); frame <- data.frame(value = 1L)`
     });
     try {
@@ -1890,7 +1891,7 @@ not_a_frame <- matrix(1:4, nrow = 2L)
     { locale: "C", runtimeDirectory: "runtime" },
     { locale: process.platform === "linux" ? "C.UTF-8" : undefined, runtimeDirectory: "runtime-\u2028😀" }
   ])(
-    "parses Unicode source and request text with $runtimeDirectory ($locale)",
+    "preserves bootstrap literals and Unicode source with $runtimeDirectory ($locale)",
     async ({ locale, runtimeDirectory }) => {
       const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-process-unicode-test-"));
       const controlledRuntime = resolve(temporaryParent, runtimeDirectory);
@@ -1904,6 +1905,8 @@ not_a_frame <- matrix(1:4, nrow = 2L)
         rscriptPath,
         temporaryParent: processParent,
         workingDirectory: temporaryParent,
+        // R's Unix launcher may use echo with backslash expansion enabled.
+        environment: { ...process.env, BASHOPTS: "xpg_echo" },
         documentText: 'cafe_frame <- data.frame(label = c("München", "Zürich"), stringsAsFactors = FALSE)\n'
       });
       try {
