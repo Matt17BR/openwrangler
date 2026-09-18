@@ -131,7 +131,48 @@ describe("SessionRuntimeRequestExecutor", () => {
       revision: 0
     });
     expect(recoveredSession.recoveryRequired).toBe(false);
-    expect(recoveredHooks.replay).toHaveBeenCalledWith({ priority: "interactive" });
+    expect(recoveredHooks.replay).toHaveBeenCalledWith({ priority: "interactive" }, undefined);
+  });
+
+  it("stops initial mutation recovery for an interactive profile when a newer page is admitted", async () => {
+    const delegate = bridge(vi.fn());
+    const session = runtimeSession(delegate, {
+      recoveryRequired: true,
+      activeViewContextId: "view",
+      latestRequestedViewContextId: "view"
+    });
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release!: () => void;
+    const heldReplay = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let canPublish: (() => boolean) | undefined;
+    const replay: RuntimeRequestHooks["replay"] = vi.fn(async (_options, isStillCurrent) => {
+      canPublish = isStillCurrent;
+      entered();
+      await heldReplay;
+      return isStillCurrent?.() ?? true;
+    });
+    const work = runtimeExecutor().execute(
+      session,
+      statsRequest(0),
+      { priority: "interactive", viewContextId: "view" },
+      hooks({ replay })
+    );
+    await started;
+    expect(canPublish?.()).toBe(true);
+    // Coordinator admission updates these before the newer page can await its own recovery.
+    session.latestRequestedPageRequestId = "new-page";
+    session.latestRequestedViewContextId = "new-view";
+    expect(canPublish?.()).toBe(false);
+    release();
+    await expect(work).resolves.toMatchObject({ kind: "error", code: "stale_response", sessionId: "public-session" });
+    expect(delegate.request).not.toHaveBeenCalled();
+    expect(session.recoveryRequired).toBe(true);
+    expect(session.runtimeId).toBe("runtime-session");
   });
 
   it.each(
@@ -334,10 +375,12 @@ describe("SessionRuntimeRequestExecutor", () => {
       "runtime-session",
       "runtime-2"
     ]);
-    expect(replay).toHaveBeenCalledWith("runtime-session", {
-      priority: "interactive",
-      viewContextId: "view"
-    });
+    expect(replay).toHaveBeenCalledWith(
+      "runtime-session",
+      { priority: "interactive", viewContextId: "view" },
+      undefined,
+      expect.any(Function)
+    );
   });
 
   it("replays an exact current unknown-session response and rejects a miscorrelated one", async () => {
@@ -882,20 +925,104 @@ describe("SessionRuntimeRequestExecutor", () => {
     expect(session.runtimeId).toBe("runtime-session");
   });
 
-  it.each([
-    { label: "cancelled", cancel: true, supersede: false, expectedCode: "unknown_session" },
-    { label: "superseded", cancel: false, supersede: true, expectedCode: "stale_response" }
-  ])(
-    "does not reissue a background read $label during unknown-session replay",
-    async ({ cancel, supersede, expectedCode }) => {
+  it.each(
+    (["getSummary", "getDatasetStats"] as const).flatMap((kind) =>
+      (["transport-error", "unknown-session"] as const).flatMap((failure) =>
+        (["superseded", "cancelled"] as const).map((state) => ({ kind, failure, state }))
+      )
+    )
+  )("does not recover a held interactive $kind after $state ($failure)", async ({ kind, failure, state }) => {
+    let release!: (response: OpenWranglerResponse) => void;
+    let reject!: (error: Error) => void;
+    const pending = new Promise<OpenWranglerResponse>((resolve, fail) => {
+      release = resolve;
+      reject = fail;
+    });
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let cancelled = false;
+    const delegate = bridge(
+      requestMock(async (request) => {
+        if (request.kind === "getPage") return pageResponse(request, session.metadata);
+        entered();
+        return pending;
+      })
+    );
+    const session = runtimeSession(delegate, {
+      scheduler: schedulerStub(() => cancelled),
+      activeViewContextId: "view",
+      latestRequestedViewContextId: "view"
+    });
+    const request: SessionBoundRequest =
+      kind === "getSummary" ? { ...statsRequest(0), kind, columnIds: ["c:value"] } : statsRequest(0);
+    const requestHooks = hooks({
+      replayAfterRuntimeLoss: vi.fn(async () => {
+        replaceRuntime(session);
+        return true;
+      })
+    });
+    const executor = runtimeExecutor();
+    const work = executor.execute(session, request, { priority: "interactive", viewContextId: "view" }, requestHooks);
+    await started;
+    if (state === "cancelled") cancelled = true;
+    else {
+      session.activeViewContextId = "new-view";
+      session.latestRequestedViewContextId = "new-view";
+      session.latestRequestedPageRequestId = "new-page";
+      const page = pageRequest("new-page", 0);
+      page.filterModel = { filters: [], sort: [{ column: "value", direction: "desc", nulls: "last" }] };
+      await expect(executor.execute(session, page, { viewContextId: "new-view" }, requestHooks)).resolves.toMatchObject(
+        { kind: "page" }
+      );
+      expect(session.metadata.filterModel).toEqual(page.filterModel);
+    }
+    const confirmedView = session.metadata.filterModel;
+    const failureError = new Error("Original profile transport failed.");
+    if (failure === "transport-error") reject(failureError);
+    else
+      release({
+        kind: "error",
+        code: "unknown_session",
+        message: "Unknown session",
+        recoverable: true,
+        sessionId: "runtime-session",
+        viewRequestId: request.viewRequestId
+      });
+    if (state === "cancelled" && failure === "transport-error") await expect(work).rejects.toBe(failureError);
+    else
+      await expect(work).resolves.toMatchObject({
+        kind: "error",
+        code: state === "superseded" ? "stale_response" : "unknown_session",
+        sessionId: "public-session"
+      });
+    expect(requestHooks.replayAfterRuntimeLoss).not.toHaveBeenCalled();
+    expect(delegate.request).toHaveBeenCalledTimes(state === "superseded" ? 2 : 1);
+    expect(session.runtimeId).toBe("runtime-session");
+    expect(session.metadata.filterModel).toBe(confirmedView);
+  });
+
+  it.each(
+    (["background", "interactive"] as const).flatMap((priority) =>
+      (["unknown-session", "transport-error"] as const).flatMap((failure) => [
+        { priority, failure, label: "cancelled", cancel: true, expectedCode: "unknown_session" },
+        { priority, failure, label: "superseded", cancel: false, expectedCode: "stale_response" }
+      ])
+    )
+  )(
+    "guards $priority replay publication and reissue after $label ($failure)",
+    async ({ priority, failure, cancel, expectedCode }) => {
       const request = statsRequest(0);
       let runtimeCalls = 0;
       let cancelled = false;
-      const scheduler = schedulerStub(() => cancelled);
+      const failureError = new Error("Original profile transport failed.");
       const session = runtimeSession(
         bridge(
           requestMock(async (runtimeRequest) => {
+            if (runtimeRequest.kind === "getPage") return pageResponse(runtimeRequest, session.metadata);
             runtimeCalls += 1;
+            if (failure === "transport-error") throw failureError;
             return {
               kind: "error",
               code: "unknown_session",
@@ -906,31 +1033,48 @@ describe("SessionRuntimeRequestExecutor", () => {
             };
           })
         ),
-        {
-          scheduler,
-          activeViewContextId: "view",
-          latestRequestedViewContextId: "view"
+        { scheduler: schedulerStub(() => cancelled), activeViewContextId: "view", latestRequestedViewContextId: "view" }
+      );
+      let entered!: () => void;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      let release!: () => void;
+      const heldReplay = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let canPublish: (() => boolean) | undefined;
+      const replay: RuntimeRequestHooks["replayAfterRuntimeLoss"] = vi.fn(
+        async (_failed, _options, _schema, isStillCurrent) => {
+          canPublish = isStillCurrent;
+          entered();
+          await heldReplay;
+          // Even a replay owner reporting success cannot authorize a stale reissue.
+          return true;
         }
       );
-      const replay = vi.fn(async () => {
-        replaceRuntime(session);
-        cancelled = cancel;
-        if (supersede) {
-          session.activeViewContextId = "new-view";
-          session.latestRequestedViewContextId = "new-view";
-        }
-        return true;
-      });
-
-      await expect(
-        runtimeExecutor().execute(
-          session,
-          request,
-          { priority: "background", viewContextId: "view" },
-          hooks({ replayAfterRuntimeLoss: replay })
-        )
-      ).resolves.toMatchObject({ kind: "error", code: expectedCode, sessionId: "public-session" });
+      const executor = runtimeExecutor();
+      const requestHooks = hooks({ replayAfterRuntimeLoss: replay });
+      const work = executor.execute(session, request, { priority, viewContextId: "view" }, requestHooks);
+      await started;
+      expect(canPublish).toBeTypeOf("function");
+      expect(canPublish?.()).toBe(true);
+      if (cancel) cancelled = true;
+      else {
+        session.activeViewContextId = "new-view";
+        session.latestRequestedViewContextId = "new-view";
+        session.latestRequestedPageRequestId = "new-page";
+        await expect(
+          executor.execute(session, pageRequest("new-page", 0), { viewContextId: "new-view" }, requestHooks)
+        ).resolves.toMatchObject({ kind: "page" });
+      }
+      expect(canPublish?.()).toBe(false);
+      release();
+      if (cancel && failure === "transport-error") await expect(work).rejects.toBe(failureError);
+      else
+        await expect(work).resolves.toMatchObject({ kind: "error", code: expectedCode, sessionId: "public-session" });
       expect(runtimeCalls).toBe(1);
+      expect(session.runtimeId).toBe("runtime-session");
     }
   );
 

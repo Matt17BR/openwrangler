@@ -236,8 +236,13 @@ available; explicit column filters and exact value selections keep their existin
 Runtime work has three relevant classes:
 
 - mutations and exports are exclusive;
-- a foreground read may overtake an immutable background profiling lease; and
+- page and column-value reads may proceed alongside background or selected-column profiling; and
 - background profiles use bounded capacity and are cancelled or drained during close.
+
+The host admits at most one background profile, one interactive profile and one ordinary foreground request per
+session. Interactive requests retain FIFO order, so reads cannot skip a queued mutation. Mutations, exports and close
+wait for every active owner to settle, including cancelled profiles. This admission does not make a synchronous
+native R request yield; its transport still serializes execution.
 
 Each logical view has an opaque context, and each request within it has a `viewRequestId`. Session revision or filter
 equality is not enough to establish freshness. Pages, summaries, statistics, values, errors, and profiles update the
@@ -283,7 +288,8 @@ open uses the existing saved-filter restoration rules in a fresh epoch namespace
 
 Python and R kernel execution is not treated as safely interruptible. Timeout or cancellation stops publication and
 triggers bounded cleanup; it does not claim that user-owned kernel work was interrupted. Idempotent summary and
-dataset-statistics reads may recover once after a lost runtime when the view is still current. Mutation retry rules do
+dataset-statistics reads may recover once after a lost runtime when the view is still current, regardless of their
+scheduling priority. Recovery rechecks that view before publishing or reissuing the read. Mutation retry rules do
 not change, and concurrent recovery shares one replacement per runtime owner.
 Recovery checks the originating session and source after opening its candidate and around each replayed request.
 Close, cancellation or supersession stops subsequent replay, including fallback viewing requests. Already-started
