@@ -94,12 +94,21 @@ export function createNodeRPrivateArtifactOperations(openFile: typeof open = ope
 
 const nodeOperations = createNodeRPrivateArtifactOperations();
 
-export async function readRPrivateArtifact(options: RPrivateArtifactOptions): Promise<Buffer | undefined> {
-  return withRPrivateArtifact(options, async (handle, receipt) => {
-    const bytes = Buffer.alloc(Number(receipt.snapshot.size));
-    await readExact(handle, bytes, options.label);
-    return bytes;
-  });
+export async function readRPrivateArtifact(
+  options: RPrivateArtifactOptions & { readonly allowAtomicReplacement?: boolean }
+): Promise<Buffer | undefined> {
+  if (options.allowAtomicReplacement && options.removeAfterRead && options.removeAfterRead !== "never") {
+    throw new TypeError("Atomically replaceable R artifacts can only be read without removal.");
+  }
+  return withRPrivateArtifact(
+    options,
+    async (handle, receipt) => {
+      const bytes = Buffer.alloc(Number(receipt.snapshot.size));
+      await readExact(handle, bytes, options.label);
+      return bytes;
+    },
+    options.allowAtomicReplacement
+  );
 }
 
 export async function captureRPrivateArtifactReceipt(
@@ -198,7 +207,8 @@ export function rPrivateCleanupDirectoryModeIsPrivate(
 
 async function withRPrivateArtifact<T>(
   options: RPrivateArtifactOptions,
-  consume: (handle: RPrivateArtifactHandle, receipt: RPrivateArtifactReceipt) => Promise<T>
+  consume: (handle: RPrivateArtifactHandle, receipt: RPrivateArtifactReceipt) => Promise<T>,
+  allowAtomicReplacement = false
 ): Promise<T | undefined> {
   const normalized = normalizeOptions(options);
   let handle: RPrivateArtifactHandle;
@@ -206,6 +216,11 @@ async function withRPrivateArtifact<T>(
     handle = await normalized.operations.open(normalized.filePath, PRIVATE_READ_FLAGS);
   } catch (error) {
     if (normalized.missing === "returnUndefined" && isMissingFile(error)) return undefined;
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "ELOOP") {
+      throw new RPrivateArtifactOwnershipError(`Open Wrangler rejected an invalid ${normalized.label} artifact.`, {
+        cause: error
+      });
+    }
     throw error;
   }
 
@@ -218,16 +233,12 @@ async function withRPrivateArtifact<T>(
       await handle.stat({ bigint: true }),
       normalized.maximumBytes,
       normalized.label,
-      normalized.expectedBytes
+      normalized.expectedBytes,
+      allowAtomicReplacement
     );
-    const namedBefore = artifactSnapshot(
-      await normalized.operations.lstat(normalized.filePath),
-      normalized.maximumBytes,
-      normalized.label,
-      normalized.expectedBytes
-    );
+    const namedBefore = await namedReadSnapshot(normalized, opened);
     if (!sameArtifactSnapshot(opened, namedBefore)) {
-      throw changingArtifactError(normalized.label, opened, namedBefore);
+      throw await changingReadArtifactError(normalized, handle, allowAtomicReplacement, opened, namedBefore);
     }
     receipt = Object.freeze({
       path: normalized.filePath,
@@ -239,16 +250,12 @@ async function withRPrivateArtifact<T>(
       await handle.stat({ bigint: true }),
       normalized.maximumBytes,
       normalized.label,
-      normalized.expectedBytes
+      normalized.expectedBytes,
+      allowAtomicReplacement
     );
-    const namedAfter = artifactSnapshot(
-      await normalized.operations.lstat(normalized.filePath),
-      normalized.maximumBytes,
-      normalized.label,
-      normalized.expectedBytes
-    );
+    const namedAfter = await namedReadSnapshot(normalized, completed);
     if (!sameArtifactSnapshot(opened, completed) || !sameArtifactSnapshot(opened, namedAfter)) {
-      throw changingArtifactError(normalized.label, opened, completed, namedAfter);
+      throw await changingReadArtifactError(normalized, handle, allowAtomicReplacement, opened, namedAfter, completed);
     }
   } catch (error) {
     primaryError = error;
@@ -513,9 +520,14 @@ function artifactSnapshot(
   metadata: BigIntStats,
   maximumBytes: bigint,
   label: string,
-  expectedBytes?: bigint
+  expectedBytes?: bigint,
+  allowUnlinkedDescriptor = false
 ): RPrivateArtifactSnapshot {
-  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1n) {
+  if (
+    !metadata.isFile() ||
+    metadata.isSymbolicLink() ||
+    (metadata.nlink !== 1n && !(allowUnlinkedDescriptor && metadata.nlink === 0n))
+  ) {
     throw new RPrivateArtifactOwnershipError(`Open Wrangler rejected an invalid ${label} artifact.`);
   }
   if (
@@ -573,6 +585,68 @@ function sameArtifactSnapshot(left: RPrivateArtifactSnapshot, right: RPrivateArt
     left.ctimeNs === right.ctimeNs &&
     left.birthtimeNs === right.birthtimeNs
   );
+}
+
+async function namedReadSnapshot(
+  options: ReturnType<typeof normalizeOptions>,
+  descriptor: RPrivateArtifactSnapshot
+): Promise<RPrivateArtifactSnapshot> {
+  let metadata: BigIntStats;
+  try {
+    metadata = await options.operations.lstat(options.filePath);
+  } catch (error) {
+    if (descriptor.nlink === 0n) {
+      throw new RPrivateArtifactOwnershipError(`Open Wrangler could not verify a replaced ${options.label} artifact.`, {
+        cause: error
+      });
+    }
+    throw error;
+  }
+  return artifactSnapshot(metadata, options.maximumBytes, options.label, options.expectedBytes);
+}
+
+async function changingReadArtifactError(
+  options: ReturnType<typeof normalizeOptions>,
+  handle: RPrivateArtifactHandle,
+  allowAtomicReplacement: boolean,
+  opened: RPrivateArtifactSnapshot,
+  named: RPrivateArtifactSnapshot,
+  completed?: RPrivateArtifactSnapshot
+): Promise<Error> {
+  const observed = completed ? [named, completed] : [named];
+  if (
+    allowAtomicReplacement &&
+    named.ino !== opened.ino &&
+    observed.every(
+      (snapshot) =>
+        snapshot.dev === opened.dev &&
+        snapshot.uid === opened.uid &&
+        snapshot.gid === opened.gid &&
+        (snapshot.ino !== opened.ino || snapshot.mode === opened.mode)
+    )
+  ) {
+    // Only a retired descriptor and a validated replacement pathname establish
+    // the notification producer's atomic-rename shape. Its old bytes are refused.
+    let retired: RPrivateArtifactSnapshot;
+    try {
+      retired = artifactSnapshot(
+        await handle.stat({ bigint: true }),
+        options.maximumBytes,
+        options.label,
+        options.expectedBytes,
+        true
+      );
+    } catch (error) {
+      if (rPrivateArtifactFailureRequiresContainerPreservation(error)) throw error;
+      throw new RPrivateArtifactOwnershipError(`Open Wrangler could not verify a replaced ${options.label} artifact.`, {
+        cause: error
+      });
+    }
+    if (retired.nlink === 0n && sameArtifactObject(opened, retired) && retired.mode === opened.mode) {
+      return new Error(`Open Wrangler rejected a changing ${options.label} artifact.`);
+    }
+  }
+  return changingArtifactError(options.label, opened, ...observed);
 }
 
 function changingArtifactError(

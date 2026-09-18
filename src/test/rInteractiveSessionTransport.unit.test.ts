@@ -598,6 +598,101 @@ describe("interactive R session transport", () => {
     }
   });
 
+  it.for([false, true])(
+    "retains notification cleanup ownership after replacement (unsafe earlier path: %s)",
+    async (unsafeEarlierPath, context) => {
+      const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-notification-read-unit-"));
+      const unsafeLink = resolve(temporaryParent, "unsafe-link");
+      if (unsafeEarlierPath) {
+        const other = resolve(temporaryParent, "unowned.json");
+        try {
+          await writeFile(other, "unowned", { mode: 0o600 });
+          await symlink(other, unsafeLink);
+        } catch (error) {
+          await rm(temporaryParent, { recursive: true, force: true });
+          if (process.platform === "win32" && (error as NodeJS.ErrnoException).code === "EPERM")
+            context.skip("Windows refused file-symlink creation on this host");
+          throw error;
+        }
+      }
+      let notificationPath: string | undefined;
+      let notificationRequestId: string | undefined;
+      let firstIdentity: { dev: bigint; ino: bigint } | undefined;
+      let replaced = false;
+      let unsafeObserved = false;
+      const base = createNodeRPrivateArtifactOperations();
+      const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
+        temporaryParent,
+        artifactOperations: {
+          ...base,
+          async lstat(filePath) {
+            const metadata = await base.lstat(filePath);
+            if (
+              !replaced &&
+              filePath === notificationPath &&
+              firstIdentity?.dev === metadata.dev &&
+              firstIdentity.ino === metadata.ino
+            ) {
+              const next = `${filePath}.next`;
+              if (unsafeEarlierPath) await rename(unsafeLink, filePath);
+              else {
+                await writeFile(next, discoveryNotification(notificationRequestId!, "latest"), { mode: 0o600 });
+                await rename(next, filePath);
+              }
+              replaced = true;
+            } else if (filePath === notificationPath && metadata.isSymbolicLink()) {
+              unsafeObserved = true;
+              const next = `${filePath}.next`;
+              await writeFile(next, discoveryNotification(notificationRequestId!, "latest"), { mode: 0o600 });
+              await rename(next, filePath);
+            }
+            return metadata;
+          }
+        },
+        runSelection: async (code) => {
+          notificationPath ??= mailboxNotificationPath(code);
+          notificationRequestId ??= mailboxNotificationRequestId(code);
+          const { requestPath, responsePath } = mailboxPaths(code);
+          const request = JSON.parse(await readFile(requestPath, "utf8")) as { requestId: string; kind: string };
+          await writeFile(responsePath, interactiveResponse(request), { flag: "wx", mode: 0o600 });
+        }
+      });
+      const changed = vi.fn();
+      const subscription = transport.onDidChangeVariables(changed);
+      try {
+        await transport.discoverVariables();
+        const first = `${notificationPath!}.first`;
+        await writeFile(first, discoveryNotification(notificationRequestId!, "first"), { mode: 0o600 });
+        firstIdentity = await base.lstat(first);
+        await rename(first, notificationPath!);
+        await vi.waitFor(() =>
+          expect(changed).toHaveBeenCalledWith(
+            expect.objectContaining({
+              variables: [{ name: "latest", backend: "r", dataframeFlavor: "r.data.frame" }]
+            })
+          )
+        );
+        expect(replaced).toBe(true);
+        expect(unsafeObserved).toBe(unsafeEarlierPath);
+        expect(changed.mock.calls.every(([value]) => value.variables[0]?.name === "latest")).toBe(true);
+      } finally {
+        subscription.dispose();
+        try {
+          if (unsafeEarlierPath) {
+            await expect(transport.dispose()).rejects.toThrow("unowned artifact path");
+            expect(await readFile(resolve(temporaryParent, "unowned.json"), "utf8")).toBe("unowned");
+            expect((await readdir(temporaryParent)).length).toBeGreaterThan(1);
+          } else {
+            await transport.dispose();
+            expect(await readdir(temporaryParent)).toEqual([]);
+          }
+        } finally {
+          await rm(temporaryParent, { recursive: true, force: true });
+        }
+      }
+    }
+  );
+
   it("does not tear down an R terminal when the first public dispatch fails", async () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-failed-dispatch-unit-"));
     const runSelection = vi.fn(async () => {
