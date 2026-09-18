@@ -23,6 +23,7 @@ const arrowFormulaTests = ["python/tests/test_operation_edges.py", "python/tests
 const pandasFilterTests = ["python/tests/test_pandas_engine.py", "python/tests/test_filter_logic.py"];
 const screenshot = "docs/images/acceptance/operation-dialog-dark-1280.png";
 const mediaCompositor = "scripts/compose-readme-media.mjs";
+const browserInteractions = "scripts/test-webview-accessibility.mjs";
 const importPromptFile = "src/extension/files/importOptions.ts";
 const hostSourceFiles = [
   "src/extension/nativeViews.ts",
@@ -181,6 +182,8 @@ test("keeps all owners for documentary additions, removals or report data mixed 
     { file: "r/tests/added.R", added: true },
     { file: "src/test/webview.component.test.tsx" },
     { file: screenshot },
+    { file: browserInteractions },
+    { file: browserInteractions, document: "docs/new.md", status: "A" },
     { file: importPromptFile },
     { file: importPromptFile, document: "docs/new.md", status: "A" },
     { file: importPromptFile, document: "docs/performance/result.json", status: "M" },
@@ -320,6 +323,8 @@ test("proves existing script and media edits while retaining Source and package 
       "docs/releasing.md"
     ],
     ["scripts/capture-screenshots.mjs"],
+    [browserInteractions],
+    [browserInteractions, "README.md", "docs/testing.md"],
     ["scripts/capture-screenshots-readiness.mjs"],
     [mediaCompositor],
     [screenshot],
@@ -361,6 +366,7 @@ test("proves existing Python source and Markdown edits only for native R", async
     ["python/openwrangler_runtime/session.py"],
     ["python/tests/conftest.py"],
     ["python/tests/test_runtime.py", "scripts/ci-docs-only.test.mjs"],
+    [browserInteractions, "python/openwrangler_runtime/session.py"],
     [screenshot, "python/openwrangler_runtime/engines/duckdb_engine.py"],
     [mediaCompositor, screenshot, "python/openwrangler_runtime/session.py"],
     [
@@ -545,6 +551,8 @@ test("proves Python omissions with selective native R source checks", async (con
       ]
     },
     { added: [], modified: ["r/openwrangler_runtime/frame_contract.R"] },
+    { added: [], modified: [browserInteractions, "r/openwrangler_runtime/frame_contract.R"] },
+    { added: [], modified: [browserInteractions, "src/webviews/grid/DataGrid.tsx"] },
     { added: ["r/openwrangler_runtime/helper.R"], modified: [] },
     { added: ["r/tests/new_contract.R"], modified: [] },
     { added: ["r/tests/kernel_agent.R"], modified: [] },
@@ -686,6 +694,7 @@ test("requires full owners for deleted or renamed source, including alongside ad
   for (const file of [
     screenshot,
     mediaCompositor,
+    browserInteractions,
     hostSourceFiles[0],
     importPromptFile,
     "src/webviews/progressiveProfilingLifecycle.ts",
@@ -721,6 +730,7 @@ test("requires full owners for source mode changes and existing executable or sy
   for (const file of [
     screenshot,
     mediaCompositor,
+    browserInteractions,
     hostSourceFiles[0],
     importPromptFile,
     "src/webviews/styles/grid.css",
@@ -778,6 +788,7 @@ test("requires full owners for additions outside the documentary and runtime sou
   for (const file of [
     screenshot,
     mediaCompositor,
+    browserInteractions,
     ...hostSourceFiles,
     "src/webviews/progressiveProfilingLifecycle.ts",
     "src/test/progressiveProfilingLifecycle.unit.test.tsx",
@@ -926,6 +937,8 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
     "scripts/compose-readme-media.mjs.bak",
     "scripts/public-media-contract.mjs",
     "scripts/webview-browser.mjs",
+    "scripts/test-webview-accessibility.mjs.bak",
+    "scripts/nested/test-webview-accessibility.mjs",
     "package-lock.json",
     "python/pyproject.toml",
     "python/README.md",
@@ -954,6 +967,7 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
         component,
         releasePolicy,
         proofTest,
+        browserInteractions,
         webview,
         screenshot,
         ...hostSourceFiles
@@ -962,6 +976,7 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
       write(cwd, component);
       write(cwd, releasePolicy);
       write(cwd, proofTest);
+      write(cwd, browserInteractions);
       write(cwd, webview);
       write(cwd, screenshot);
       write(cwd, "README.md");

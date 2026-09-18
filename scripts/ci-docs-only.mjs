@@ -8,6 +8,7 @@ const runtimeOmissionScriptFiles = new Set([
   "scripts/capture-screenshots.mjs",
   "scripts/capture-screenshots-readiness.mjs",
   "scripts/compose-readme-media.mjs",
+  "scripts/test-webview-accessibility.mjs",
   "scripts/release-metadata.mjs",
   "scripts/release-documents.mjs",
   "scripts/release-readiness.mjs",
