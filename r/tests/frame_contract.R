@@ -7818,6 +7818,39 @@ assert_identical(
   "filtered pages did not use logical row numbers"
 )
 
+local({
+  latin1 <- rawToChar(as.raw(c(67, 65, 70, 201)))
+  Encoding(latin1) <- "latin1"
+  values <- c(NA_character_, latin1, "CAF\u00c9", "xCAF\u00c9", "CAF\u00c9x", "", "drop")
+  frame <- data.frame(text = values, category = factor(values))
+  before <- serialize(frame, NULL, version = 3L)
+  capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
+  cases <- list(
+    list(column = 1L, operator = "contains", value = "af\u00c9", rows = 2:5),
+    list(column = 2L, operator = "startsWith", value = "CAF\u00c9", rows = c(2L, 3L, 5L)),
+    list(column = 2L, operator = "endsWith", value = "CAF\u00c9", rows = 2:4)
+  )
+  for (case in cases) {
+    schema <- capture$descriptor$schema[[case$column]]
+    query <- view_query(filters = list(column_filter(schema$id, schema$name, "string",
+      list(predicate(case$operator, case$value)))))
+    page <- openwrangler_r_frame_contract$materialize_view_page(capture, query)
+    assert_identical(vapply(page$page$rows, `[[`, character(1L), "id"), paste0("r:r:", case$rows - 1L),
+      "text filtering changed normalized character or factor matches")
+  }
+  assert_identical(serialize(frame, NULL, version = 3L), before, "text filtering changed source encodings or levels")
+
+  malformed <- rawToChar(as.raw(255)); Encoding(malformed) <- "UTF-8"
+  bytes <- rawToChar(as.raw(255)); Encoding(bytes) <- "bytes"
+  for (case in list(list(value = malformed, code = "invalid-text"), list(value = bytes, code = "invalid-text"),
+      list(value = strrep("x", 8193L), code = "text-too-large"))) {
+    frame <- data.frame(text = c("keep", NA_character_, case$value))
+    capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
+    query <- view_query(filters = list(column_filter("r:c:0", "text", "string", list(predicate("contains", "keep")))))
+    assert_error(openwrangler_r_frame_contract$materialize_view_page(capture, query, row_limit = 1L), case$code)
+  }
+})
+
 null_page <- openwrangler_r_frame_contract$materialize_view_page(
   filter_capture,
   view_query(filters = list(column_filter("r:c:1", "amount", "float", list(predicate("isNull"))))),

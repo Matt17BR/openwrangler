@@ -78,6 +78,19 @@ conditional_roundtrip(character(), "string", list(kind = "predicate", operator =
   "boolean", list(trueValue = TRUE, falseValue = FALSE, missingValue = NULL), logical())
 conditional_roundtrip(c(NA_character_, NA_character_), "string", list(kind = "predicate", operator = "contains", value = "NaN"),
   "string", list(trueValue = "present", falseValue = "", missingValue = NULL), rep(NA_character_, 2L))
+local({
+  latin1 <- rawToChar(as.raw(c(67, 65, 70, 201)))
+  Encoding(latin1) <- "latin1"
+  utf8 <- "CAF\u00c9"
+  unmarked <- utf8
+  Encoding(unmarked) <- "unknown"
+  previous_locale <- Sys.getlocale("LC_CTYPE")
+  on.exit(Sys.setlocale("LC_CTYPE", previous_locale), add = TRUE)
+  Sys.setlocale("LC_CTYPE", "C")
+  conditional_roundtrip(c(NA_character_, latin1, utf8, unmarked, "drop"), "string",
+    list(kind = "predicate", operator = "contains", value = "af\u00c9"),
+    "boolean", list(trueValue = TRUE, falseValue = FALSE, missingValue = NULL), c(NA, TRUE, TRUE, TRUE, FALSE))
+})
 conditional_budget <- conditional_roundtrip(c(1, 2), "float", list(kind = "predicate", operator = "gte", value = 1),
   "string", list(trueValue = strrep("x", 8192L), falseValue = "", missingValue = NULL), rep(strrep("x", 8192L), 2L))
 conditional_generated <- new.env(parent = baseenv())

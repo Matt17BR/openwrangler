@@ -6127,6 +6127,20 @@ openwrangler_r_kernel_agent <- local({
     )
   }
 
+  row_uses_character_keys <- function(filter) {
+    identical(filter$semanticsKind, "character") && any(vapply(filter$predicates, function(predicate) {
+      !predicate$operator %in% c("isNull", "isNotNull", "isNaN", "isNotNaN")
+    }, logical(1L)))
+  }
+
+  row_character_key_lines <- function(filter, variable, null_mask) {
+    if (!row_uses_character_keys(filter)) return(character())
+    c(
+      sprintf("  .ow_text_present <- which(!%s)", null_mask),
+      sprintf("  %s[.ow_text_present] <- .ow_text_helpers$profile(%s[.ow_text_present], .ow_text_present)", variable, variable)
+    )
+  }
+
   row_filter_code_lines <- function(model) {
     lines <- "  # Filter rows"
     filter_masks <- character()
@@ -6149,6 +6163,7 @@ openwrangler_r_kernel_agent <- local({
           sprintf("  %s <- rep(FALSE, length(%s))", nan_mask, variable)
         )
       }
+      lines <- c(lines, row_character_key_lines(filter, variable, null_mask))
       conditions <- character()
       value_filter <- filter$valueFilter
       if (!is.null(value_filter) && (
@@ -6179,7 +6194,8 @@ openwrangler_r_kernel_agent <- local({
       if (length(conditions) > 0L) {
         mask <- sprintf(".ow_filter_mask_%d", filter_index)
         join <- if (identical(filter$logic, "or")) " | " else " & "
-        lines <- c(lines, sprintf("  %s <- (%s)", mask, paste(conditions, collapse = join)))
+        lines <- c(lines, sprintf("  %s <- (%s)", mask, paste(conditions, collapse = join)),
+          if (row_uses_character_keys(filter)) sprintf("  rm(.ow_text_present, %s)", variable))
         filter_masks <- c(filter_masks, mask)
       }
     }
@@ -6247,6 +6263,7 @@ openwrangler_r_kernel_agent <- local({
         "  .ow_condition_null <- is.na(.ow_condition_column) & !.ow_condition_nan"
       ) else c("  .ow_condition_nan <- rep.int(FALSE, length(.ow_condition_column))",
         "  .ow_condition_null <- is.na(.ow_condition_column)"),
+      row_character_key_lines(filter, ".ow_condition_column", ".ow_condition_null"),
       sprintf("  .ow_condition_match <- %s", row_predicate_expression(predicate, filter,
         ".ow_condition_column", ".ow_condition_null", ".ow_condition_nan")),
       sprintf("  .ow_condition_missing <- %s", if (nullary) "rep.int(FALSE, length(.ow_condition_column))" else ".ow_condition_null | .ow_condition_nan"),
@@ -6263,7 +6280,8 @@ openwrangler_r_kernel_agent <- local({
       sprintf("  .ow_clone_values <- rep.int(%s, length(.ow_condition_column))", missing_scalar),
       sprintf("  .ow_clone_values[.ow_condition_match & !.ow_condition_missing] <- %s", arm_text[[1L]]),
       sprintf("  .ow_clone_values[!.ow_condition_match & !.ow_condition_missing] <- %s", arm_text[[2L]]),
-      sprintf("  .ow_clone_values[.ow_condition_missing] <- %s", arm_text[[3L]])
+      sprintf("  .ow_clone_values[.ow_condition_missing] <- %s", arm_text[[3L]]),
+      if (row_uses_character_keys(filter)) "  rm(.ow_text_present, .ow_condition_column)"
     )
   }
 
@@ -8756,16 +8774,26 @@ openwrangler_r_kernel_agent <- local({
         "  .ow_data_table_alloccol <- if (base::identical(.ow_source_flavor, \"r.data.table\")) .ow_prepare_data_table_alloccol() else NULL"
       )
     }
-    if (any(vapply(bound_plan, function(step) step$kind %in% c("lowerText", "upperText"), logical(1L)))) {
-      lines <- c(lines, "  .ow_text_case <- base::evalq({")
-      for (name in names(frame_contract$text_case_helpers)) {
+    needs_text_case <- any(vapply(bound_plan, function(step) step$kind %in% c("lowerText", "upperText"), logical(1L)))
+    needs_text_keys <- any(vapply(bound_plan, function(step) {
+      if (identical(step$kind, "filterRows")) return(any(vapply(step$filterModel$filters, row_uses_character_keys, logical(1L))))
+      identical(step$kind, "conditionalColumn") && row_uses_character_keys(step$condition)
+    }, logical(1L)))
+    if (needs_text_case || needs_text_keys) {
+      helpers <- frame_contract$text_case_helpers
+      if (!needs_text_case) helpers <- helpers[c("profile_text_values", "bounded_utf8", "abort", "storage_length",
+        "maximum_text_bytes", "maximum_profile_chunk_rows")]
+      lines <- c(lines, "  .ow_text_helpers <- base::evalq({")
+      for (name in names(helpers)) {
         lines <- c(
           lines,
           sprintf("    %s <-", name),
-          paste0("    ", deparse(frame_contract$text_case_helpers[[name]], width.cutoff = 500L))
+          paste0("    ", deparse(helpers[[name]], width.cutoff = 500L))
         )
       }
-      lines <- c(lines, "    case_text_values", "  }, base::new.env(parent = base::baseenv()))")
+      returned <- c(if (needs_text_case) "case = case_text_values", if (needs_text_keys) "profile = profile_text_values")
+      lines <- c(lines, sprintf("    base::list(%s)", paste(returned, collapse = ", ")),
+        "  }, base::new.env(parent = base::baseenv()))")
     }
     if (any(vapply(bound_plan, function(step) {
       identical(step$kind, "findReplace") && isTRUE(step$regex)
@@ -9741,7 +9769,7 @@ openwrangler_r_kernel_agent <- local({
           )
         }
         if (step$kind %in% c("lowerText", "upperText")) {
-          lines <- c(lines, sprintf("  .ow_text_values <- .ow_text_case(.ow_text_source, %s)", r_string(step$kind)))
+          lines <- c(lines, sprintf("  .ow_text_values <- .ow_text_helpers$case(.ow_text_source, %s)", r_string(step$kind)))
         } else {
           lines <- c(
             lines,

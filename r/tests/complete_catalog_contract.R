@@ -223,17 +223,33 @@ catalog_cases <- list(
     )
   ),
   filterRows = list(
+    source = function() {
+      latin1 <- rawToChar(as.raw(c(99, 97, 102, 233)))
+      Encoding(latin1) <- "latin1"
+      data.frame(
+        group = c(rep("a", 6L), "b"),
+        text = c(latin1, "caf\u00e9", "drop", "caf\u00e9", "caf\u00e9", NA_character_, "caf\u00e9"),
+        category = factor(c("keep-end", "keep-end", "keep-end", "other-end", "keep-other", NA_character_, "keep-end")),
+        ordinal = 1:7
+      )
+    },
     step = function(frame, id) step_with(id, "filterRows", list(filterModel = list(
       logic = "and",
-      filters = I(list(list(
-        column = column_reference(frame, "group"), type = "string",
-        predicates = I(list(list(kind = "predicate", operator = "equals", value = "a")))
-      ))),
+      filters = I(list(
+        list(column = column_reference(frame, "group"), type = "string",
+          predicates = I(list(list(kind = "predicate", operator = "equals", value = "a")))),
+        list(column = column_reference(frame, "text"), type = "string",
+          predicates = I(list(list(kind = "predicate", operator = "contains", value = "AF\u00e9")))),
+        list(column = column_reference(frame, "category"), type = "string",
+          predicates = I(list(list(kind = "predicate", operator = "startsWith", value = "keep"),
+            list(kind = "predicate", operator = "endsWith", value = "end"))))
+      )),
       sort = I(list())
     ))),
-    verify = function(output, input) assert_identical(
-      output$group, c("a", "a"), "Filter Rows returned the wrong rows"
-    )
+    verify = function(output, input) {
+      assert_identical(output$group, c("a", "a"), "Filter Rows returned the wrong groups")
+      assert_identical(output$ordinal, 1:2, "Filter Rows changed normalized text or factor matches")
+    }
   ),
   dropMissingRows = list(
     step = function(frame, id) step_with(id, "dropMissingRows", list(
