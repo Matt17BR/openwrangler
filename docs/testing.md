@@ -413,6 +413,8 @@ and process identity. Native controls exercise SIGINT, SIGTERM, deadlines, outpu
 and detached descendants. An unverifiable live target leaves settlement unverified.
 Linux background discovery runs every 100 ms to avoid continuous scanning of unrelated host processes. Launch,
 signaling and settlement still observe immediately, including detached children created since the last background scan.
+Background discovery leaves its configured gap after each completed observation. Settlement takes over fresh polling
+and stops the background timer, while retaining observed identities until final cleanup.
 
 On macOS, the runner compiles one private native helper per invocation using `/usr/bin/xcrun clang`, so the Xcode
 Command Line Tools must be installed. Preparation, native capability checks and stale-token refusal precede R launch.
