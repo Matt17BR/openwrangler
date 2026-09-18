@@ -173,7 +173,7 @@ export function createReleasedRDocumentJourney({
     source: vscode.Uri,
     rscript: string
   ): Promise<void> {
-    const library = mkdtempSync(path.join(tmpdir(), "openwrangler-r-dependency-"));
+    const library = mkdtempSync(path.join(tmpdir(), "openwrangler-dependency-library-"));
     const unavailablePackage = path.join(library, "jsonlite");
     mkdirSync(unavailablePackage);
     const descriptor = Buffer.from(
