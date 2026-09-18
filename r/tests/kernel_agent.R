@@ -1083,6 +1083,7 @@ categorical_generated_helper <- get(
 )
 categorical_generated_helper_environment <- new.env(parent = environment(categorical_generated_helper))
 categorical_generated_helper_environment$.ow_storage_length <- base::length
+categorical_generated_helper_environment$.ow_library <- "base"
 environment(categorical_generated_helper) <- categorical_generated_helper_environment
 categorical_helper_oversized_error <- tryCatch(
   {
@@ -13908,15 +13909,13 @@ assert_identical(oversized$kind, "error", "an oversized page was accepted")
 assert_identical(oversized$code, "page_too_large", "the oversized-page diagnostic was not normalized")
 assert_identical(oversized$recoverable, TRUE, "an oversized page was not marked recoverable")
 
-missing_package_contract <- list(
-  capture_live_frame = function(source_reader) {
-    stop(structure(
-      list(message = "example package is required", call = NULL, code = "missing-package"),
-      class = c("openwrangler_r_frame_error", "error", "condition")
-    ))
-  },
-  limits = openwrangler_r_frame_contract$limits
-)
+missing_package_contract <- openwrangler_r_frame_contract
+missing_package_contract$capture_live_frame <- function(source_reader) {
+  stop(structure(
+    list(message = "example package is required", call = NULL, code = "missing-package"),
+    class = c("openwrangler_r_frame_error", "error", "condition")
+  ))
+}
 
 missing_package_agent <- openwrangler_r_kernel_agent$new_agent(missing_package_contract, source_environment)
 missing_package <- dispatch_with(

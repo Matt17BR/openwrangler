@@ -318,7 +318,8 @@ The [complete R catalog](../r/tests/complete_catalog_contract.R) compares native
 including source and metadata preservation. Numeric portability uses independent binary64 references and raw-bit
 comparisons through interpreted and compiled programs. Frame, kernel, decoder and process owners separately check
 primitive values, public mutations and correlated transport. Frame capture checks the factor-level count limit;
-kernel mutation checks use fewer, longer levels to exercise the full response byte limit.
+kernel mutation checks use fewer, longer levels to exercise the full response byte limit. Their direct categorical-helper
+budget probes supply the base R context; complete generated programs separately prove that the compiler emits that context.
 The frame text owner checks bounded Lowercase/Uppercase conversion, mixed encodings, byte limits, locale behavior
 and ordered input/output refusals. The existing kernel text owner executes the emitted case kernel on multiple batches and failed
 results, checking exact live agreement, source preservation and no publication on failure.
