@@ -76,6 +76,12 @@ including dependency declarations. `npm run check` runs the static checks sequen
 source suites sequentially. `npm run check:pr` runs both. The release-candidate workflow starts from protected main
 after these checks pass and does not repeat the source suites.
 
+Remote Jupyter fixture dependencies are pinned in `scripts/remote-jupyter/requirements*.in`. Use the exact uv version
+declared in `scripts/remote-jupyter-lock.mjs` and run `npm run lock:remote-jupyter` to regenerate both hashed locks.
+Keep the shared resolution cutoff fixed when applying a targeted security update; the existing per-package cutoffs
+admit only the required newer releases. Verify clean regeneration with `npm run lock:remote-jupyter:check` and audit
+both environments with `npm run audit:remote-jupyter`. These fixtures are not bundled with the extension.
+
 `test:scripts` runs the explicit Node test selection in [`package.json`](../package.json). The
 [packaging owner](../scripts/package-current-channel.test.mjs) and
 [archive owner](../scripts/vsix-archive.test.mjs) check source bindings, corruption refusal and owned cleanup.
