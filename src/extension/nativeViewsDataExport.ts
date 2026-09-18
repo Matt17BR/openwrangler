@@ -41,7 +41,8 @@ async function exportSessionData(
     initial.metadata.capabilities.exportCsv
       ? {
           label: "CSV",
-          description: backend === "r" ? "Rounds timestamps to microseconds; no time-zone offset" : "Delimited text",
+          description:
+            backend === "r" ? "POSIXct timestamps can lose precision and time-zone information" : "Delimited text",
           format: "csv" as const
         }
       : undefined,
