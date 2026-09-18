@@ -1,6 +1,6 @@
 # Native R runtime for Open Wrangler 2
 
-- Status: Accepted; amended for owned document/file processes and active R terminals
+- Status: Accepted; amended for owned document/file processes, active R terminals and file dependency repair
 - Date: 2026-08-03
 
 ## Context
@@ -30,6 +30,11 @@ Support four execution paths with distinct owners:
   It shares the managed process transport with documents but has no source-code document or live variable to execute.
   Windows file sessions use an owned Job Object to contain R and descendants; document execution remains Linux/macOS.
   The bundled supervisor also owns the existing Windows acceptance processes, so containment has one implementation.
+
+Failed local file opens may repair packages through separate owned VS Code terminals after explicit confirmation.
+They retain the captured Rscript environment, wait for the failed runtime's cleanup and reopen the file in a fresh
+process after validation. This does not install into live notebook or R-terminal owners. The
+[local-file contract](../architecture.md#local-files) defines cancellation and package-write settlement.
 
 Do not retarget asynchronous work to whichever editor, kernel or terminal becomes active later. Recovery must verify
 its replacement and retain the original operation's outcome; abandoning an await does not establish that native work

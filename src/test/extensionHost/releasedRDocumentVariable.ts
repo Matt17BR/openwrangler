@@ -33,6 +33,16 @@ export function createReleasedRDocumentVariableInvoker({
       picker.waitFor({ state: "visible", timeout: 30_000 }).then(() => ({ kind: "picker" as const })),
       Promise.resolve(outcome).then((value) => ({ kind: "outcome" as const, value }))
     ]);
+    if (first.kind !== "picker") {
+      await workbench
+        .locator(
+          ".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible"
+        )
+        .filter({ hasText: `Running ${path.basename(source.fsPath)} and finding dataframes` })
+        .first()
+        .waitFor({ state: "hidden", timeout: 5_000 })
+        .catch(() => undefined);
+    }
     const notifications =
       first.kind === "picker"
         ? []

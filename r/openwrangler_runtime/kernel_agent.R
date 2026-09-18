@@ -356,11 +356,15 @@ openwrangler_r_kernel_agent <- local({
       recoverable <- FALSE
     }
 
-    list(
+    diagnostic <- list(
       code = code,
       message = diagnostic_message(error, "The R dataframe could not be read"),
       recoverable = recoverable
     )
+    if (identical(code, "missing_package") && inherits(error, "openwrangler_native_r_dependency_error")) {
+      diagnostic$requirements <- error$requirements
+    }
+    diagnostic
   }
 
   exact_record <- function(value, fields, label, optional_fields = character()) {
@@ -8041,7 +8045,8 @@ openwrangler_r_kernel_agent <- local({
 
   load_parquet_source <- function(path, require_arrow = openwrangler_r_frame_contract$require_arrow,
       require_clock = openwrangler_r_frame_contract$clock_helpers$clock_require,
-      require_nanoparquet = openwrangler_r_frame_contract$require_nanoparquet) {
+      require_nanoparquet = openwrangler_r_frame_contract$require_nanoparquet,
+      require_package = openwrangler_r_frame_contract$require_package) {
     require_arrow()
     require_nanoparquet()
     metadata <- nanoparquet::read_parquet_metadata(path)
@@ -8157,6 +8162,7 @@ openwrangler_r_kernel_agent <- local({
         }
         base::structure(seconds, class = "difftime", units = "secs")
       } else if (kind %in% c("int64", "uint64")) {
+        require_package("bit64", message = "R Parquet integer64 input requires bit64. Run install.packages('bit64') in the selected R runtime, then reopen the file.")
         native <- base::tryCatch(column$cast(arrow::int64())$as_vector(),
           error = function(error) refuse("unsigned values exceed the native signed integer range"))
         if (!base::inherits(native, "integer64")) native <- bit64::as.integer64(native)
@@ -8185,7 +8191,7 @@ openwrangler_r_kernel_agent <- local({
     base::structure(result, class = "data.frame", row.names = base::.set_row_names(table$num_rows))
   }
 
-  load_jsonl_source <- function(path) {
+  load_jsonl_source <- function(path, require_package = openwrangler_r_frame_contract$require_package) {
     if (!base::requireNamespace("jsonlite", quietly = TRUE)) {
       base::stop("R JSONL input requires jsonlite. Run install.packages('jsonlite') in the selected R runtime, then reopen the file.", call. = FALSE)
     }
@@ -8277,7 +8283,7 @@ openwrangler_r_kernel_agent <- local({
       integer_text <- base::is.na(text) | base::grepl("^-?[0-9]+$", text)
       if (base::any(integer_text & base::abs(numbers) > 9007199254740991, na.rm = TRUE)) {
         if (!base::all(integer_text) || base::any(text == "-0", na.rm = TRUE)) base::stop("JSONL cannot mix large exact integers with floating-point values or negative zero in one native R column", call. = FALSE)
-        if (!base::requireNamespace("bit64", quietly = TRUE)) base::stop("R JSONL integer64 input requires bit64. Run install.packages('bit64') in the selected R runtime, then reopen the file.", call. = FALSE)
+        require_package("bit64", message = "R JSONL integer64 input requires bit64. Run install.packages('bit64') in the selected R runtime, then reopen the file.")
         integers <- base::suppressWarnings(bit64::as.integer64(text))
         canonical <- base::sub("^-0$", "0", text)
         if (base::any((base::is.na(integers) | base::as.character(integers) != canonical) & !base::is.na(text))) base::stop("JSONL integer cannot be represented exactly as native integer64", call. = FALSE)
@@ -8290,10 +8296,8 @@ openwrangler_r_kernel_agent <- local({
     base::structure(columns, names = if (base::is.null(names)) character() else names, class = "data.frame", row.names = base::.set_row_names(row_count))
   }
 
-  excel_sheet_names <- function(path) {
-    if (!base::requireNamespace("readxl", quietly = TRUE) || utils::packageVersion("readxl") < "1.4.5") {
-      base::stop("R Excel input requires readxl 1.4.5 or newer. Run install.packages('readxl') in the selected R runtime, then reopen the file.", call. = FALSE)
-    }
+  excel_sheet_names <- function(path, require_readxl = openwrangler_r_frame_contract$require_readxl) {
+    require_readxl()
     sheets <- readxl::excel_sheets(path)
     if (!base::is.character(sheets) || !base::length(sheets) || base::length(sheets) > 4096L ||
         base::anyNA(sheets) || base::any(!base::validUTF8(sheets)) || base::any(!base::nzchar(sheets)) ||
@@ -8304,8 +8308,8 @@ openwrangler_r_kernel_agent <- local({
     sheets
   }
 
-  load_excel_source <- function(path, sheet = 1) {
-    sheets <- excel_sheet_names(path)
+  load_excel_source <- function(path, sheet = 1, require_readxl = openwrangler_r_frame_contract$require_readxl) {
+    sheets <- excel_sheet_names(path, require_readxl)
     if (base::is.character(sheet)) {
       if (base::length(sheet) != 1L || base::is.na(sheet) || !sheet %in% sheets) base::stop("The selected Excel sheet is unavailable", call. = FALSE)
     } else if (!base::is.numeric(sheet) || base::length(sheet) != 1L || base::is.na(sheet) || sheet < 1 || sheet > base::length(sheets) || sheet != base::floor(sheet)) {
@@ -8469,11 +8473,15 @@ openwrangler_r_kernel_agent <- local({
         arguments <- sprintf("%s, header = %s, delimiter = %s, encoding = %s, quote_char = %s, maximum_columns = %dL", arguments, if (file_source$header) "TRUE" else "FALSE", r_string(file_source$delimiter), r_string(file_source$encoding), r_string(file_source$quoteChar), maximum_columns)
       } else if (identical(file_source$format, "excel")) {
         sheet <- if ("sheetName" %in% names(file_source)) r_string(file_source$sheetName) else sprintf("%.0f", file_source$sheetIndex + 1)
-        arguments <- sprintf("%s, sheet = %s", arguments, sheet)
+        arguments <- sprintf("%s, sheet = %s, require_readxl = .ow_require_readxl", arguments, sheet)
+      } else if (identical(file_source$format, "jsonl")) {
+        arguments <- paste0(arguments, ", require_package = require_package")
       } else if (identical(file_source$format, "parquet")) {
-        arguments <- paste0(arguments, ", require_arrow = .ow_require_arrow, require_clock = .ow_clock_helpers$clock_require, require_nanoparquet = .ow_require_nanoparquet")
+        arguments <- paste0(arguments, ", require_arrow = .ow_require_arrow, require_clock = .ow_clock_helpers$clock_require, require_nanoparquet = .ow_require_nanoparquet, require_package = require_package")
       }
       c(
+        if (!identical(file_source$format, "csv")) paste0("  require_package <- ", paste(deparse(frame_contract$require_package, width.cutoff = 100L), collapse = "\n")),
+        if (identical(file_source$format, "excel")) paste0("  .ow_require_readxl <- ", paste(deparse(frame_contract$require_readxl, width.cutoff = 100L), collapse = "\n")),
         if (identical(file_source$format, "excel")) paste0("  excel_sheet_names <- ", paste(deparse(excel_sheet_names, width.cutoff = 100L), collapse = "\n")),
         if (identical(file_source$format, "parquet")) paste0("  .ow_require_arrow <- ", paste(deparse(frame_contract$require_arrow, width.cutoff = 100L), collapse = "\n")),
         if (identical(file_source$format, "parquet")) paste0("  .ow_require_nanoparquet <- ", paste(deparse(frame_contract$require_nanoparquet, width.cutoff = 100L), collapse = "\n")),
@@ -11526,14 +11534,11 @@ openwrangler_r_kernel_agent <- local({
         },
         openwrangler_r_frame_error = function(error) {
           diagnostic <- frame_diagnostic(error)
-          encode_response(list(
+          encode_response(c(list(
             transportVersion = transport_version,
             requestId = request_id,
-            kind = "error",
-            code = diagnostic$code,
-            message = diagnostic$message,
-            recoverable = diagnostic$recoverable
-          ))
+            kind = "error"
+          ), diagnostic))
         },
         error = function(error) {
           message <- diagnostic_message(error, "The R runtime request failed")

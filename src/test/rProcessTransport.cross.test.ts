@@ -1,4 +1,4 @@
-import { ChildProcess } from "node:child_process";
+import { ChildProcess, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   cp,
@@ -9,6 +9,7 @@ import {
   readdir,
   realpath,
   rm,
+  symlink,
   unlink,
   utimes,
   writeFile
@@ -22,6 +23,8 @@ import { SessionCoordinator } from "../extension/sessionCoordinator";
 import { DetachedBridgeRequestError } from "../extension/dataBridge";
 import { prepareRDocumentSource } from "../extension/r/rDocumentSource";
 import { RKernelBridge } from "../extension/r/rKernelBridge";
+import { RDependencyError } from "../extension/r/rDependencyRequirements";
+import { buildRFileDependencyInstallCode, buildRFileDependencyProbeCode } from "../extension/r/rFileDependencies";
 import type { SessionSource, TransformStep } from "../shared/protocol";
 import { isOpenWranglerResponse } from "../shared/protocolValidation";
 import { RProcessSessionTransport, type RProcessFileSource } from "../extension/r/rProcessTransport";
@@ -806,10 +809,16 @@ describe.skipIf(!enabled)("plain R process transport", () => {
       rscriptPath,
       temporaryParent,
       workingDirectory: temporaryParent,
+      environment: { ...process.env, BASHOPTS: "xpg_echo" },
       documentText: `cat("ran", file = ${rString(documentMarker)}); frame <- data.frame(value = 1L)`
     });
     try {
-      await expect(transport.discoverVariables({ timeoutMs: 10_000 })).rejects.toThrow(
+      const discovery = transport.discoverVariables({ timeoutMs: 10_000 });
+      await expect(discovery).rejects.toBeInstanceOf(RDependencyError);
+      await expect(discovery).rejects.toMatchObject({
+        requirements: [{ packageName: "jsonlite", minimumVersion: "1.0", namespaceAvailable: false }]
+      });
+      await expect(discovery).rejects.toThrow(
         /Native R dependency check: jsonlite is not installed.*selected Rscript environment.*jsonlite >= 1\.0.*Install it with install\.packages\('jsonlite'\)/u
       );
       await expect(readFile(documentMarker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
@@ -822,6 +831,166 @@ describe.skipIf(!enabled)("plain R process transport", () => {
       else process.env.R_LIBS_USER = previousUserLibrary;
       await transport.dispose();
       expect(await readdir(temporaryParent)).toEqual(["empty-library"]);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  });
+
+  it("retains an optional reader dependency failure through managed file readiness", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-file-dependency-test-"));
+    const controlledRuntime = resolve(temporaryParent, "runtime");
+    const processParent = resolve(temporaryParent, "processes");
+    await cp(runtimeRoot, controlledRuntime, { recursive: true });
+    await mkdir(processParent);
+    const agentPath = resolve(controlledRuntime, "process_agent.R");
+    // The real bootstrap has loaded its core namespaces; hide optional readers without changing installed packages.
+    await writeFile(
+      agentPath,
+      `base::.libPaths(base::.Library, include.site = FALSE)\n${await readFile(agentPath, "utf8")}`
+    );
+    const filePath = resolve(root, "fixtures/r-file-input.parquet");
+    const original = await readFile(filePath);
+    const transport = new RProcessSessionTransport({
+      runtimeRoot: controlledRuntime,
+      rscriptPath,
+      temporaryParent: processParent,
+      workingDirectory: temporaryParent,
+      fileSource: { path: filePath, format: "parquet" }
+    });
+    try {
+      const discovery = transport.discoverVariables({ timeoutMs: 10_000 });
+      await expect(discovery).rejects.toBeInstanceOf(RDependencyError);
+      await expect(discovery).rejects.toMatchObject({
+        requirements: [{ packageName: "arrow", minimumVersion: "23.0.1.1", namespaceAvailable: false }]
+      });
+      await expect(discovery).rejects.toThrow(/arrow.*23\.0\.1\.1/u);
+      expect(await readFile(filePath)).toEqual(original);
+    } finally {
+      await transport.dispose();
+      expect(await readdir(processParent)).toEqual([]);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  });
+
+  it("collects file repair requirements without core packages or reading file data", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-file-repair-probe-"));
+    const emptyLibrary = resolve(temporaryParent, "empty-library");
+    const marker = resolve(temporaryParent, "private-data.parquet");
+    await mkdir(emptyLibrary);
+    await writeFile(marker, "This file must not be opened by dependency probing.");
+    const before = await readFile(marker);
+    const environment = { ...process.env, R_LIBS: emptyLibrary, R_LIBS_USER: emptyLibrary, R_LIBS_SITE: emptyLibrary };
+    try {
+      for (const dynamic of [false, true]) {
+        const output = resolve(temporaryParent, dynamic ? "conditional.json" : "known.json");
+        const code = buildRFileDependencyProbeCode(
+          { runtimeRoot, format: "parquet" },
+          [
+            { packageName: "jsonlite", minimumVersion: "1.0", namespaceAvailable: false },
+            ...(dynamic
+              ? [
+                  { packageName: "clock" as const, minimumVersion: "0.7.4", namespaceAvailable: false },
+                  { packageName: "bit64" as const, namespaceAvailable: false }
+                ]
+              : [])
+          ],
+          "dplyr",
+          output
+        );
+        const result = spawnSync(rscriptPath, ["--vanilla", "-"], {
+          cwd: temporaryParent,
+          env: environment,
+          input: code,
+          encoding: "utf8",
+          timeout: 10_000,
+          maxBuffer: 128 * 1024
+        });
+        expect(result.error).toBeUndefined();
+        expect(result.status, result.stderr).toBe(0);
+        const probe = JSON.parse(await readFile(output, "utf8"));
+        expect(probe.requirements).toEqual([
+          { packageName: "jsonlite", minimumVersion: "1.0", namespaceAvailable: false },
+          { packageName: "rlang", minimumVersion: "0.4.5", namespaceAvailable: false },
+          { packageName: "arrow", minimumVersion: "23.0.1.1", namespaceAvailable: false },
+          { packageName: "nanoparquet", minimumVersion: "0.5.1", namespaceAvailable: false },
+          { packageName: "dplyr", minimumVersion: "1.2.1", namespaceAvailable: false },
+          ...(dynamic
+            ? [
+                { packageName: "clock", minimumVersion: "0.7.4", namespaceAvailable: false },
+                { packageName: "bit64", namespaceAvailable: false }
+              ]
+            : [])
+        ]);
+        expect(probe.libraryPaths).toContain(emptyLibrary.replaceAll("\\", "/"));
+        expect(await readdir(emptyLibrary)).toEqual([]);
+        expect(await readFile(marker)).toEqual(before);
+      }
+    } finally {
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  });
+
+  it("checks the captured R environment and library before package writes", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-file-repair-identity-"));
+    const output = resolve(temporaryParent, "healthy.json");
+    try {
+      const probeCode = buildRFileDependencyProbeCode({ runtimeRoot, format: "csv" }, [], "base", output);
+      const observed = spawnSync(rscriptPath, ["--vanilla", "-"], {
+        cwd: temporaryParent,
+        env: process.env,
+        input: `${probeCode}\nstopifnot(!isNamespaceLoaded("arrow"), !isNamespaceLoaded("clock"))`,
+        encoding: "utf8",
+        timeout: 10_000,
+        maxBuffer: 128 * 1024
+      });
+      expect(observed.error).toBeUndefined();
+      expect(observed.status, observed.stderr).toBe(0);
+      const probe = JSON.parse(await readFile(output, "utf8"));
+      expect(probe.requirements).toEqual([]);
+      for (const changed of [
+        { rHome: resolve(temporaryParent, "other-R").replaceAll("\\", "/") },
+        { rVersion: "0.0.0" },
+        { libraryPaths: [] }
+      ]) {
+        const target = resolve(temporaryParent, "never-created").replaceAll("\\", "/");
+        const report = resolve(temporaryParent, "refused.json");
+        const code = buildRFileDependencyInstallCode({ ...probe, ...changed }, target, report);
+        const result = spawnSync(rscriptPath, ["--vanilla", "-"], {
+          cwd: temporaryParent,
+          env: process.env,
+          input: code,
+          encoding: "utf8",
+          timeout: 10_000,
+          maxBuffer: 128 * 1024
+        });
+        expect(result.error).toBeUndefined();
+        expect(result.status, result.stderr).toBe(1);
+        expect(JSON.parse(await readFile(report, "utf8"))).toEqual([
+          "The selected R environment changed. Reopen the file before installing packages."
+        ]);
+        await expect(lstat(target)).rejects.toMatchObject({ code: "ENOENT" });
+      }
+      if (process.platform !== "win32") {
+        const confirmed = resolve(temporaryParent, "confirmed");
+        const redirected = resolve(temporaryParent, "redirected");
+        await mkdir(confirmed);
+        await mkdir(redirected);
+        await symlink(redirected, resolve(confirmed, "later"), "dir");
+        const report = resolve(temporaryParent, "redirected.json");
+        const code = buildRFileDependencyInstallCode(probe, resolve(confirmed, "later", "library"), report);
+        const result = spawnSync(rscriptPath, ["--vanilla", "-"], {
+          cwd: temporaryParent,
+          env: process.env,
+          input: code,
+          encoding: "utf8",
+          timeout: 10_000,
+          maxBuffer: 128 * 1024
+        });
+        expect(result.error).toBeUndefined();
+        expect(result.status, result.stderr).toBe(1);
+        expect(await readdir(redirected)).toEqual([]);
+        expect(JSON.parse(await readFile(report, "utf8"))).toEqual(["The confirmed R package library parent changed."]);
+      }
+    } finally {
       await rm(temporaryParent, { recursive: true, force: true });
     }
   });
@@ -1722,7 +1891,7 @@ not_a_frame <- matrix(1:4, nrow = 2L)
     { locale: "C", runtimeDirectory: "runtime" },
     { locale: process.platform === "linux" ? "C.UTF-8" : undefined, runtimeDirectory: "runtime-\u2028😀" }
   ])(
-    "parses Unicode source and request text with $runtimeDirectory ($locale)",
+    "preserves bootstrap literals and Unicode source with $runtimeDirectory ($locale)",
     async ({ locale, runtimeDirectory }) => {
       const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-process-unicode-test-"));
       const controlledRuntime = resolve(temporaryParent, runtimeDirectory);
@@ -1736,6 +1905,8 @@ not_a_frame <- matrix(1:4, nrow = 2L)
         rscriptPath,
         temporaryParent: processParent,
         workingDirectory: temporaryParent,
+        // R's Unix launcher may use echo with backslash expansion enabled.
+        environment: { ...process.env, BASHOPTS: "xpg_echo" },
         documentText: 'cafe_frame <- data.frame(label = c("München", "Zürich"), stringsAsFactors = FALSE)\n'
       });
       try {

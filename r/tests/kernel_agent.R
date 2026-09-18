@@ -305,6 +305,46 @@ agent$dispose()
 if (identical(selected_kernel_agent_case, "lifecycle-and-structure")) {
 kernel_agent_case_run_count <- kernel_agent_case_run_count + 1L
 
+# Dependency facts come from the same native checks used by live and generated readers.
+local({
+  contract <- openwrangler_r_frame_contract
+  stopifnot(!isNamespaceLoaded("arrow"), !isNamespaceLoaded("clock"))
+  contract$require_arrow(load_namespace = FALSE)
+  assert_identical(isNamespaceLoaded("arrow"), FALSE, "Parquet availability eagerly loaded Arrow")
+  original_paths <- .libPaths()
+  on.exit(.libPaths(original_paths), add = TRUE)
+  .libPaths(.Library, include.site = FALSE)
+  error_for <- function(check, package, minimum = NULL) {
+    error <- tryCatch({ check(); NULL }, error = identity)
+    stopifnot(inherits(error, "openwrangler_native_r_dependency_error"),
+      inherits(error, "openwrangler_r_frame_error"))
+    wanted <- list(packageName = package)
+    if (!is.null(minimum)) wanted$minimumVersion <- minimum
+    wanted$namespaceAvailable <- FALSE
+    assert_identical(error$requirements, list(wanted), paste(package, "missing requirement facts changed"))
+    assert_identical(error$code, "missing-package", "a native dependency lost its recoverable frame code")
+    error
+  }
+  arrow_error <- error_for(contract$require_arrow, "arrow", "23.0.1.1")
+  error_for(contract$require_nanoparquet, "nanoparquet", "0.5.1")
+  error_for(contract$clock_helpers$clock_require, "clock", "0.7.4")
+  for (library in c("dplyr", "data.table", "collapse")) {
+    minimum <- switch(library, dplyr = "1.2.1", data.table = "1.18.2.1", collapse = "2.1.7")
+    error_for(function() contract$require_r_library(library), library, minimum)
+  }
+  reader_error <- error_for(function() openwrangler_r_kernel_agent$load_file_source(
+    list(path = tempfile("unread-parquet-input-"), format = "parquet"), contract$limits$columns), "arrow", "23.0.1.1")
+  assert_identical(conditionMessage(reader_error), conditionMessage(arrow_error), "the reader replaced dependency guidance")
+  error_for(function() openwrangler_r_kernel_agent$load_file_source(
+    list(path = tempfile("unread-excel-input-"), format = "excel", sheetIndex = 0L), contract$limits$columns), "readxl", "1.4.5")
+  .libPaths(original_paths)
+  outdated <- tryCatch(contract$require_package("arrow", "999.0", "Arrow is incompatible"), error = identity)
+  assert_identical(outdated$requirements, list(list(packageName = "arrow", minimumVersion = "999.0",
+    observedVersion = as.character(getNamespaceVersion("arrow")), namespaceAvailable = TRUE)),
+    "an incompatible installed package lost its loaded version")
+  assert_identical(isNamespaceLoaded("clock"), FALSE, "ordinary Parquet requirements loaded clock")
+})
+
 # The existing nested operations use native vectors and repeat ordinary siblings.
 local({
   special <- paste0(intToUtf8(c(1L, 0x0378L, 0x1f600L)), "\"\\u0378")
@@ -14104,8 +14144,10 @@ assert_identical(oversized$recoverable, TRUE, "an oversized page was not marked 
 missing_package_contract <- openwrangler_r_frame_contract
 missing_package_contract$capture_live_frame <- function(source_reader) {
   stop(structure(
-    list(message = "example package is required", call = NULL, code = "missing-package"),
-    class = c("openwrangler_r_frame_error", "error", "condition")
+    list(message = "example package is required", call = NULL, code = "missing-package",
+      requirements = list(list(packageName = "arrow", minimumVersion = "23.0.1.1",
+        observedVersion = "22.0.0", namespaceAvailable = TRUE))),
+    class = c("openwrangler_native_r_dependency_error", "openwrangler_r_frame_error", "error", "condition")
   ))
 }
 
@@ -14118,6 +14160,8 @@ missing_package <- dispatch_with(
 assert_identical(missing_package$kind, "error", "a missing package was flattened")
 assert_identical(missing_package$code, "missing_package", "the missing-package diagnostic was not normalized")
 assert_identical(missing_package$recoverable, TRUE, "a missing package was not marked recoverable")
+assert_identical(missing_package$requirements, list(list(packageName = "arrow", minimumVersion = "23.0.1.1",
+  observedVersion = "22.0.0", namespaceAvailable = TRUE)), "the missing-package requirements were lost")
 missing_package_agent$dispose()
 agent$dispose()
 }

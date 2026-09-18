@@ -200,7 +200,9 @@ describe("R document command", () => {
       uri: "file:///workspace/orders.tsv",
       importOptions: { hasHeader: false, encoding: "utf-16be", quoteChar: "'", lineEnding: "cr" as const }
     };
+    vi.stubEnv("OPEN_WRANGLER_R_CAPTURE_TEST", "captured");
     createRFileBridge(context, source);
+    vi.stubEnv("OPEN_WRANGLER_R_CAPTURE_TEST", "later");
     expect(mocks.bridgeDiagnostic.mock.calls).toEqual([['R file runtime selected: "/usr/bin/Rscript".']]);
     expect(mocks.discovery).not.toHaveBeenCalled();
     expect(mocks.transportOptions[0]).toMatchObject({
@@ -226,6 +228,8 @@ describe("R document command", () => {
       importOptions: { hasHeader: false, encoding: "utf-16be", quoteChar: "'", lineEnding: "cr" }
     });
     expect(mocks.resolveExecutable).toHaveBeenCalledTimes(1);
+    expect(mocks.transportOptions[1]).toMatchObject({ environment: { OPEN_WRANGLER_R_CAPTURE_TEST: "captured" } });
+    vi.unstubAllEnvs();
     expect(mocks.bridgeDiagnostic.mock.calls).toEqual([
       ['R file runtime selected: "/usr/bin/Rscript".'],
       ['R file runtime selected: "/usr/bin/Rscript".']

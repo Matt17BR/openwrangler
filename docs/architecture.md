@@ -1463,6 +1463,11 @@ R-terminal, and owned `Rscript` transports share the same native frame contract 
 including generated R. The runtime never routes an R frame through Python.
 [Feature parity](feature-parity.md#native-r-support) defines support and limitations for each entry path.
 
+Owned R processes read their bootstrap from an exclusive, read-only file in the process's private directory.
+Passing the file to `Rscript --vanilla` preserves source escapes across Unix launchers and leaves stdin available
+for binary requests. The bootstrap stays outside the document directory and shares the process's cleanup owner.
+The host rechecks cancellation and Workspace Trust after writing it, immediately before launch.
+
 #### Cleaning library selection
 
 An R session confirms one cleaning library: `base`, `dplyr`, `data.table` or `collapse`. The backend stays `r`;
@@ -1496,8 +1501,8 @@ replacement. Live copies check editors and pending copies within their captured 
 sessions remain independent, even when they read the same variable. Failure closes only the candidate; closing either published editor preserves the other's runtime ownership.
 For files, **Open file separately** uses the existing file-opening path and that library's saved plan, if any.
 As with file-plan copying, a completed durable save survives later cancellation even if the candidate is not published.
-Native R reports missing or incompatible selected packages with installation guidance for the exact environment;
-it does not invoke the Python installer or silently change libraries.
+Native R reports missing or incompatible selected packages for the exact environment without silently changing
+libraries. Failed local file opens offer the repair flow below; live notebooks and terminals retain manual guidance.
 
 #### Local files
 
@@ -1507,6 +1512,25 @@ the loaded base `data.frame`; no notebook, document or terminal binding is fabri
 descriptor and executable in a fresh process and rechecks trust. File sessions offer copy/save of generated R and
 native exports, with no document insertion target. The private descriptor identifies the format and its exact options;
 Excel retains either a sheet name or a zero-based sheet index. Live and generated loading use the same native helper.
+
+A missing-package failure retains structured package requirements and the failed file's captured Rscript environment.
+The error view offers **Install required packages**. That action confirms cleanup of the failed runtime, then probes
+packages without reading the data file. Healthy opens do not run this extra probe. Core requirements use their shared
+host/native owner; readers and cleaning libraries use the existing native helpers, including conditional clock admission.
+The modal shows required packages, the captured Rscript path and R version, the target package library and CRAN
+repository. Only **Install** authorizes package writes. Notification progress and a success message follow the same
+panel flow as Python; successful validation retries the exact file in a fresh R process with its retained initial plan.
+It does not migrate a live session or install into a notebook or existing R terminal.
+
+Read-only probes and package installation use owned VS Code terminals with the captured environment. Only one R
+repair can run per extension instance, including its probes, to prevent competing repairs from reading a library
+while another repair writes it. Installation targets only the approved library. Closing or cancelling the panel, or
+shutting down the coordinator, prevents new writes and reopening. Once installation has launched, panel cancellation
+detaches its waiter without terminating package writes; its terminal and settlement remain owned until exit. Closing
+that terminal or VS Code can still interrupt the process. This flow has no package journal or automatic resume guarantee.
+Failure leaves the error view available for retry, with bounded diagnostics rather than uploaded terminal output.
+Probe results and installer diagnostics use the existing private-artifact reader: the byte limit and single-link
+file identity are checked on the opened descriptor and pathname before and after reading.
 
 On Windows, the bundled PowerShell supervisor creates `Rscript` suspended, assigns it to a private Job Object with
 kill-on-close, then resumes it. Only the selected stdin/stdout/stderr handles cross into the child. The host relays
@@ -2228,13 +2252,15 @@ Automatic snapshot pulls do not repeat that read; a new user outcome can make an
 
 Python and R execution, dependency installation, custom code, generated-code insertion, and data or script export
 require a trusted workspace. Restricted Mode does not expose a hidden affirmative installation or execution path.
-Dependency prompts identify the exact interpreter and requirements; only the literal modal confirmation may run pip.
+Dependency prompts identify the exact interpreter and requirements; only the literal modal confirmation may authorize
+package writes. Python uses pip; [local R file repair](#local-files) uses the captured native R environment.
 The failed-file panel action rechecks its retained source and backend, then binds the existing install lifecycle to
 that exact missing target. Another file cannot redirect the action or make its install count as this file's success.
 If dependencies are already available, the panel retries its normal open without installing. Closing the panel or
 changing its open attempt invalidates pre-write authorization and reopening; an already authorized install retains
-its existing process settlement and environment-validation ownership. The global install command still uses the most
-recent missing target.
+its process settlement ownership. Python also retains post-install environment validation after the panel closes;
+R validates before reopening only while the original panel still owns the repair. The global install command still
+uses the most recent missing Python target.
 Missing-dependency errors identify the captured Python executable, version, selection source and requested engine.
 The unmet requirements can be absent or incompatible packages. DuckDB file admission retains its full dependency set,
 including fsspec for the reserved export writer and pytz for timezone-aware values. Although fsspec is not needed to

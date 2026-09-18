@@ -145,6 +145,10 @@ export class SessionRuntimeCleanup {
     }
   }
 
+  isSettling(delegate: OpenWranglerBridge): boolean {
+    return this.detachedCounts.has(delegate);
+  }
+
   releaseIfIdle(delegate: OpenWranglerBridge): void {
     if (!this.detachedCounts.has(delegate) && !this.delegateIsActive(delegate)) delegate.onIdle?.();
   }

@@ -233,15 +233,13 @@ initialize <- function() {
 initialized <- tryCatch(
   initialize(),
   error = function(error) {
-    atomic_write_json(
-      ready_path,
-      list(
-        protocolVersion = protocol_version,
-        status = "error",
-        message = bounded_message(error, "Open Wrangler could not execute the R document.")
-      ),
-      maximum_ready_bytes
+    response <- list(
+      protocolVersion = protocol_version,
+      status = "error",
+      message = bounded_message(error, "Open Wrangler could not execute the R document.")
     )
+    if (inherits(error, "openwrangler_native_r_dependency_error")) response$requirements <- error$requirements
+    atomic_write_json(ready_path, response, maximum_ready_bytes)
     NULL
   }
 )

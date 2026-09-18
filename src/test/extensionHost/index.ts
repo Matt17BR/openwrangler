@@ -1676,6 +1676,7 @@ const exerciseReleasedRDocumentJourney = createReleasedRDocumentJourney({
   releasedNotebookJsonResult,
   RELEASED_R_SUPPORTED_OPERATIONS,
   WORKBENCH_OPERATION_TIMEOUT_MS,
+  WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
   acceptanceProcessIsAlive,
   assertParquetFile,
   assertReleasedRDocumentFixtureUnchanged,
@@ -1692,6 +1693,8 @@ const exerciseReleasedRDocumentJourney = createReleasedRDocumentJourney({
   textDocumentTab,
   waitFor,
   waitForReleasedRDocumentSession,
+  waitForOpenWranglerWebviewButton,
+  waitForVisibleEditorDialog,
   withBoundedAcceptancePromise: (promise, timeoutMs, description) =>
     withBoundedAcceptancePromise(promise, timeoutMs, description)
 });

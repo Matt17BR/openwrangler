@@ -9,6 +9,10 @@ import { RKernelDiagnosticError } from "../extension/r/rKernelTransport";
 import { R_KERNEL_TRANSPORT_VERSION } from "../extension/r/rKernelProtocol";
 import { SESSION_STORAGE_KEY } from "../extension/sessionPersistence";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
+import type { InitialFilePlan } from "../extension/sessionRuntimeEstablisher";
+import type { RuntimeRecoveryDelegateFactory } from "../extension/sessionRuntimeRecovery";
+import type { SessionRuntimeCleanup } from "../extension/sessionRuntimeCleanup";
+import { nativeRKernelChangedResponse } from "./nativeRRecoveryTestFixtures";
 import type { FilterModel } from "../shared/filterModel";
 import type {
   OpenWranglerRequest,
@@ -58,6 +62,314 @@ describe("SessionCoordinator", () => {
     } finally {
       cancellation.dispose();
       coordinator.dispose();
+    }
+  });
+
+  it("replaces a repaired R file owner before retrying its retained initial plan", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "ow-r-dependency-retry-"));
+    const file = path.join(directory, "source.csv");
+    await writeFile(file, "value\n1\n");
+    const source = { kind: "file" as const, label: "source.csv", path: file, uri: vscode.Uri.file(file).toString() };
+    const request = { ...openRequest, source, backend: "r" as const, rLibrary: "base" as const };
+    const opened = openedResponse("repaired-file", "r");
+    opened.metadata.source = source;
+    const stored = new Map<string, unknown>([[SESSION_STORAGE_KEY, {}]]);
+    const coordinator = new SessionCoordinator({
+      get: <T>(key: string, fallback?: T): T => (stored.get(key) as T | undefined) ?? (fallback as T),
+      keys: () => [...stored.keys()],
+      update: async (key, value) => {
+        stored.set(key, value);
+      }
+    });
+    let retired = false;
+    const replacement: OpenWranglerBridge = {
+      captureFileSessionOwner: () => () => true,
+      request: vi.fn(async (next): Promise<OpenWranglerResponse> => {
+        if (next.kind === "openSession") return opened;
+        if (next.kind === "getPage") return pageResponseForMetadata(next, opened.metadata);
+        if (next.kind === "closeSession") return { kind: "sessionClosed", sessionId: next.sessionId };
+        throw new Error(`Unexpected replacement request ${next.kind}`);
+      })
+    };
+    const discardReplacement = vi.fn(async () => undefined);
+    const original: OpenWranglerBridge & RuntimeRecoveryDelegateFactory = {
+      supportsVerifiedRuntimeRecoveryDelegate: true,
+      request: vi.fn(async (): Promise<OpenWranglerResponse> => {
+        if (retired) throw new Error("The failed R file owner is disposed.");
+        return { kind: "error", code: "missing_dependencies", message: "Missing arrow.", recoverable: true };
+      }),
+      installFileDependencies: vi.fn(async () => {
+        retired = true;
+        return true;
+      }),
+      createRuntimeRecoveryDelegate: vi.fn(async () => ({ delegate: replacement, dispose: discardReplacement }))
+    };
+    const plan: InitialFilePlan = {
+      backend: "r",
+      rLibrary: "base",
+      importOptions: undefined,
+      sourceSchema: [],
+      steps: [],
+      isCurrent: vi.fn(() => true),
+      assertTargetAvailable: vi.fn(async () => undefined)
+    };
+    const bridge = coordinator.createBridge(original, undefined, undefined, plan);
+    try {
+      await expect(bridge.request(request)).resolves.toMatchObject({ code: "missing_dependencies" });
+      await expect(bridge.installFileDependencies?.(source, "r")).resolves.toBe(true);
+      await expect(bridge.request(request)).resolves.toMatchObject({
+        kind: "sessionOpened",
+        metadata: { source, backend: "r", rLibrary: "base" }
+      });
+      expect(original.request).toHaveBeenCalledOnce();
+      expect(original.createRuntimeRecoveryDelegate).toHaveBeenCalledOnce();
+      expect(plan.assertTargetAvailable).toHaveBeenCalledTimes(3);
+      expect(discardReplacement).not.toHaveBeenCalled();
+      expect(coordinator.diagnostics().sessionCount).toBe(1);
+      expect(retired).toBe(true);
+    } finally {
+      await coordinator.shutdown();
+      await rm(directory, { recursive: true, force: true });
+    }
+    expect(replacement.request).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "closeSession", sessionId: "repaired-file" }),
+      expect.any(Object)
+    );
+  });
+
+  it.each(["runtime", "logical owner", "pending open"] as const)(
+    "does not repair an R file delegate still retained by a %s",
+    async (owner) => {
+      const coordinator = new SessionCoordinator();
+      const opening = deferred<void>();
+      const openStarted = deferred<void>();
+      const replacementOpened = openedResponse("other-runtime", "r");
+      const replacement: OpenWranglerBridge = {
+        request: vi.fn(async (request): Promise<OpenWranglerResponse> => {
+          if (request.kind === "openSession") return replacementOpened;
+          if (request.kind === "getPage") return pageResponseForMetadata(request, replacementOpened.metadata);
+          if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+          throw new Error(`Unexpected replacement request ${request.kind}`);
+        })
+      };
+      const delegate: OpenWranglerBridge & RuntimeRecoveryDelegateFactory = {
+        supportsVerifiedRuntimeRecoveryDelegate: true,
+        installFileDependencies: vi.fn(async () => true),
+        createRuntimeRecoveryDelegate: vi.fn(async () => ({
+          delegate: replacement,
+          dispose: vi.fn(async () => undefined)
+        })),
+        request: vi.fn(async (request): Promise<OpenWranglerResponse> => {
+          if (request.kind === "openSession") {
+            openStarted.resolve(undefined);
+            if (owner === "pending open") await opening.promise;
+            return openedResponse("original-runtime", "r");
+          }
+          if (request.kind === "getPage") return nativeRKernelChangedResponse(request);
+          if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+          throw new Error(`Unexpected original request ${request.kind}`);
+        })
+      };
+      const bridge = coordinator.createBridge(delegate);
+      const pending = bridge.request({ ...openRequest, backend: "r" });
+      try {
+        await openStarted.promise;
+        if (owner !== "pending open") {
+          const opened = await pending;
+          if (opened.kind !== "sessionOpened") throw new Error("Expected the existing R session.");
+          if (owner === "logical owner") {
+            await expect(
+              bridge.request({
+                kind: "getPage",
+                sessionId: opened.metadata.sessionId,
+                revision: opened.metadata.revision,
+                offset: 0,
+                limit: 100,
+                ...columnWindow,
+                viewRequestId: "replace-existing-runtime",
+                filterModel: opened.metadata.filterModel
+              })
+            ).resolves.toMatchObject({ kind: "error", code: "r_kernel_changed" });
+            expect(delegate.createRuntimeRecoveryDelegate).toHaveBeenCalledOnce();
+            expect(coordinator.diagnostics().sessions[0]?.runtimeId).toBe("other-runtime");
+          }
+        }
+        await expect(bridge.installFileDependencies?.(openRequest.source, "r")).resolves.toBe(false);
+        expect(delegate.installFileDependencies).not.toHaveBeenCalled();
+        expect(coordinator.diagnostics().sessionCount).toBe(owner === "pending open" ? 0 : 1);
+      } finally {
+        opening.resolve(undefined);
+        await pending;
+        await coordinator.shutdown();
+      }
+    }
+  );
+
+  it.each([
+    ["install", "cancel"],
+    ["install", "trust"],
+    ["factory", "cancel"],
+    ["factory", "trust"]
+  ] as const)("discards an R dependency repair invalidated during %s by %s", async (stage, invalidation) => {
+    const coordinator = new SessionCoordinator();
+    const cancellation = new vscode.CancellationTokenSource();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const discard = vi.fn(async () => undefined);
+    const replacement: OpenWranglerBridge = { request: vi.fn() };
+    let installCancellation: BridgeRequestOptions["cancellation"];
+    const delegate: OpenWranglerBridge & RuntimeRecoveryDelegateFactory = {
+      request: vi.fn(),
+      supportsVerifiedRuntimeRecoveryDelegate: true,
+      installFileDependencies: vi.fn(async (_source, _backend, options) => {
+        installCancellation = options?.cancellation;
+        if (stage === "install") {
+          entered.resolve(undefined);
+          await release.promise;
+        }
+        return true;
+      }),
+      createRuntimeRecoveryDelegate: vi.fn(async () => {
+        if (stage === "factory") {
+          entered.resolve(undefined);
+          await release.promise;
+        }
+        return { delegate: replacement, dispose: discard };
+      })
+    };
+    const bridge = coordinator.createBridge(delegate);
+    const trust = vscode.workspace.isTrusted;
+    const repair = bridge.installFileDependencies!(openRequest.source, "r", { cancellation: cancellation.token });
+    try {
+      await entered.promise;
+      if (invalidation === "cancel") cancellation.cancel();
+      else Object.defineProperty(vscode.workspace, "isTrusted", { value: false, configurable: true, writable: true });
+      release.resolve(undefined);
+      await expect(repair).resolves.toBe(false);
+      if (invalidation === "cancel") expect(installCancellation?.isCancellationRequested).toBe(true);
+      expect(delegate.createRuntimeRecoveryDelegate).toHaveBeenCalledTimes(stage === "factory" ? 1 : 0);
+      expect(discard).toHaveBeenCalledTimes(stage === "factory" ? 1 : 0);
+      expect(replacement.request).not.toHaveBeenCalled();
+      expect(coordinator.diagnostics().sessionCount).toBe(0);
+    } finally {
+      Object.defineProperty(vscode.workspace, "isTrusted", { value: trust, configurable: true, writable: true });
+      release.resolve(undefined);
+      await repair;
+      cancellation.dispose();
+      await coordinator.shutdown();
+    }
+  });
+
+  it("retains R repair and unpublished delegate cleanup through coordinator shutdown", async () => {
+    const coordinator = new SessionCoordinator();
+    const factoryStarted = deferred<void>();
+    const factoryRelease = deferred<void>();
+    const disposalRelease = deferred<void>();
+    const discard = vi.fn(async () => disposalRelease.promise);
+    const replacement: OpenWranglerBridge = { request: vi.fn() };
+    const delegate: OpenWranglerBridge & RuntimeRecoveryDelegateFactory = {
+      request: vi.fn(),
+      supportsVerifiedRuntimeRecoveryDelegate: true,
+      installFileDependencies: vi.fn(async () => true),
+      createRuntimeRecoveryDelegate: vi.fn(async () => {
+        factoryStarted.resolve(undefined);
+        await factoryRelease.promise;
+        return { delegate: replacement, dispose: discard };
+      })
+    };
+    const bridge = coordinator.createBridge(delegate);
+    const repair = bridge.installFileDependencies!(openRequest.source, "r");
+    await factoryStarted.promise;
+    let shutdownSettled = false;
+    const shutdown = coordinator.shutdown().then(() => {
+      shutdownSettled = true;
+    });
+    try {
+      factoryRelease.resolve(undefined);
+      await vi.waitFor(() => expect(discard).toHaveBeenCalledOnce());
+      expect(shutdownSettled).toBe(false);
+      disposalRelease.resolve(undefined);
+      await expect(repair).resolves.toBe(false);
+      await shutdown;
+      expect(replacement.request).not.toHaveBeenCalled();
+      await expect(bridge.installFileDependencies?.(openRequest.source, "r")).resolves.toBe(false);
+      expect(delegate.installFileDependencies).toHaveBeenCalledOnce();
+    } finally {
+      factoryRelease.resolve(undefined);
+      disposalRelease.resolve(undefined);
+      await repair;
+      await shutdown;
+    }
+  });
+
+  it("cancels R package-write authorization when shutdown overtakes its confirmation", async () => {
+    const coordinator = new SessionCoordinator();
+    const confirmationStarted = deferred<void>();
+    const confirm = deferred<void>();
+    let writes = 0;
+    let installCancellation: BridgeRequestOptions["cancellation"];
+    const delegate: OpenWranglerBridge & RuntimeRecoveryDelegateFactory = {
+      request: vi.fn(),
+      supportsVerifiedRuntimeRecoveryDelegate: true,
+      installFileDependencies: vi.fn(async (_source, _backend, options) => {
+        installCancellation = options?.cancellation;
+        confirmationStarted.resolve(undefined);
+        await confirm.promise;
+        if (installCancellation?.isCancellationRequested) return false;
+        writes += 1;
+        return true;
+      }),
+      createRuntimeRecoveryDelegate: vi.fn()
+    };
+    const bridge = coordinator.createBridge(delegate);
+    const repair = bridge.installFileDependencies!(openRequest.source, "r");
+    await confirmationStarted.promise;
+    const shutdown = coordinator.shutdown();
+    try {
+      confirm.resolve(undefined);
+      await expect(repair).resolves.toBe(false);
+      await shutdown;
+      expect(writes).toBe(0);
+      expect(installCancellation?.isCancellationRequested).toBe(true);
+      expect(delegate.createRuntimeRecoveryDelegate).not.toHaveBeenCalled();
+    } finally {
+      confirm.resolve(undefined);
+      await repair;
+      await shutdown;
+    }
+  });
+
+  it("refuses pre-existing R cleanup and duplicate repairs while preserving installer failures", async () => {
+    const coordinator = new SessionCoordinator();
+    const cleanup = (coordinator as unknown as { runtimeCleanup: SessionRuntimeCleanup }).runtimeCleanup;
+    const cleanupRelease = deferred<void>();
+    const installRelease = deferred<boolean>();
+    const delegate: OpenWranglerBridge & RuntimeRecoveryDelegateFactory = {
+      request: vi.fn(),
+      supportsVerifiedRuntimeRecoveryDelegate: true,
+      installFileDependencies: vi.fn(async () => installRelease.promise),
+      createRuntimeRecoveryDelegate: vi.fn()
+    };
+    const bridge = coordinator.createBridge(delegate);
+    const tracked = cleanup.trackDelegateSettlement(delegate, cleanupRelease.promise);
+    await expect(bridge.installFileDependencies?.(openRequest.source, "r")).resolves.toBe(false);
+    expect(delegate.installFileDependencies).not.toHaveBeenCalled();
+    cleanupRelease.resolve(undefined);
+    await tracked;
+    const repair = bridge.installFileDependencies!(openRequest.source, "r");
+    const observed = expect(repair).rejects.toThrow("synthetic installer failure");
+    try {
+      await vi.waitFor(() => expect(delegate.installFileDependencies).toHaveBeenCalledOnce());
+      await expect(bridge.installFileDependencies?.(openRequest.source, "r")).resolves.toBe(false);
+      installRelease.reject(new Error("synthetic installer failure"));
+      await observed;
+      expect(delegate.createRuntimeRecoveryDelegate).not.toHaveBeenCalled();
+      expect(coordinator.diagnostics().sessionCount).toBe(0);
+    } finally {
+      cleanupRelease.resolve(undefined);
+      installRelease.resolve(false);
+      await repair.catch(() => undefined);
+      await coordinator.shutdown();
     }
   });
   it.each(["runtime", "staged persistence"])(

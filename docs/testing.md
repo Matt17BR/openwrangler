@@ -174,6 +174,20 @@ Use the existing owners to choose a focused source check:
   [Guard checks](../python/tests/test_dependency_guard_exact_version.py) own availability and journal isolation;
   [process ownership](../src/test/dependencyInstaller.unit.test.ts) and
   [probe caching](../src/test/pythonDependencyState.unit.test.ts) own termination, settlement and stale results.
+- **R file dependency repair:** [kernel dependency checks](../src/test/rKernelTransport.unit.test.ts) own strict
+  structured requirements; the [managed process owner](../src/test/rProcessTransport.cross.test.ts) checks native
+  missing-package facts and a read-only repair probe without core packages or file-data access.
+  [Bridge controls](../src/test/rKernelBridge.unit.test.ts) and
+  [coordinator controls](../src/test/sessionCoordinator.unit.test.ts) own failed-runtime cleanup, fresh-owner retry,
+  retained initial plans, busy owners and cancellation before publication or package-write authorization.
+  [Dependency process controls](../src/test/rDependencyProcess.unit.test.ts) own captured terminal execution and
+  settlement, including the distinction between stopping a probe and detaching from an authorized installer.
+  The existing panel and App owners cover the shared Install intent, progress, failure and retry UI. The existing
+  macOS default VS Code and Windows R file journeys replace their healthy CSV open with a private missing-package
+  failure, real confirmation and decline, then same-panel recovery after fixture-only manual repair. This adds two
+  read-only terminal probes, with no network installation. Linux notebook and literate-document selectors exclude
+  that file leg. Verify actual installation separately in a disposable library, never a user's library; source checks
+  and manual-availability recovery alone do not establish successful installation.
 - **Import and export boundaries:** [import detection](../src/test/importDetection.unit.test.ts) and
   [import options](../src/test/importOptions.unit.test.ts) own bounded samples, dialects and native prompts.
   The installed file-reconfiguration journey supplies actual keyboard-focus evidence.
@@ -540,6 +554,9 @@ After editor and display ownership and private-root identity are verified, a fai
   output-channel logs.
 - A paths, types, and sizes-only profile manifest.
 - Structured failure metadata.
+
+R dependency repair may report bounded package-check and installation failures. Do not add complete installer or
+terminal output, private package-library contents or user data to failure uploads.
 
 Released-Jupyter Variables timeouts include the last 12 script-load or uncaught-error observations from the captured
 browser context: event order and relative time, `variableView.js` response status and completion/failure, or a standard

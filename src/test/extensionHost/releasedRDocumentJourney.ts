@@ -1,5 +1,15 @@
 import * as assert from "node:assert/strict";
-import { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -62,6 +72,7 @@ interface ReleasedRDocumentJourneyDependencies {
   ) => Record<string, unknown>;
   readonly RELEASED_R_SUPPORTED_OPERATIONS: readonly string[];
   readonly WORKBENCH_OPERATION_TIMEOUT_MS: number;
+  readonly WORKBENCH_PLAYWRIGHT_TIMEOUT_MS: number;
   readonly acceptanceProcessIsAlive: (processId: number) => boolean;
   readonly assertParquetFile: (filePath: string, label: string) => void;
   readonly assertReleasedRDocumentFixtureUnchanged: (fixture: Pick<ReleasedRDocumentFixture, "immutableFiles">) => void;
@@ -113,6 +124,12 @@ interface ReleasedRDocumentJourneyDependencies {
     variableName: string,
     description: string
   ) => Promise<ReleasedRDocumentActiveSession>;
+  readonly waitForOpenWranglerWebviewButton: (
+    workbench: Page,
+    name: string,
+    requireEnabled?: boolean
+  ) => Promise<Locator>;
+  readonly waitForVisibleEditorDialog: (workbench: Page, text: string) => Promise<{ page: Page; dialog: Locator }>;
   readonly withBoundedAcceptancePromise: <T>(
     promise: PromiseLike<T>,
     timeoutMs: number,
@@ -129,6 +146,7 @@ export function createReleasedRDocumentJourney({
   releasedNotebookJsonResult,
   RELEASED_R_SUPPORTED_OPERATIONS,
   WORKBENCH_OPERATION_TIMEOUT_MS,
+  WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
   acceptanceProcessIsAlive,
   assertParquetFile,
   assertReleasedRDocumentFixtureUnchanged,
@@ -145,8 +163,165 @@ export function createReleasedRDocumentJourney({
   textDocumentTab,
   waitFor,
   waitForReleasedRDocumentSession,
+  waitForOpenWranglerWebviewButton,
+  waitForVisibleEditorDialog,
   withBoundedAcceptancePromise
 }: ReleasedRDocumentJourneyDependencies) {
+  async function openFileAfterDependencyRecovery(
+    testing: TestApi,
+    workbench: Page,
+    source: vscode.Uri,
+    rscript: string
+  ): Promise<void> {
+    const library = mkdtempSync(path.join(tmpdir(), "openwrangler-dependency-library-"));
+    const unavailablePackage = path.join(library, "jsonlite");
+    mkdirSync(unavailablePackage);
+    const descriptor = Buffer.from(
+      "Package: jsonlite\nVersion: 0.0.0\nTitle: Owned unavailable dependency fixture\n" +
+        "Description: Deliberately not installed.\nLicense: MIT\n"
+    );
+    writeFileSync(path.join(unavailablePackage, "DESCRIPTION"), descriptor, { flag: "wx" });
+    const sourceBytes = readFileSync(source.fsPath);
+    const originalLibraries = process.env.R_LIBS;
+    let fileTab: vscode.Tab | undefined;
+    let recovered = false;
+    let operationError: unknown;
+    const cleanupErrors: unknown[] = [];
+    const opened: vscode.Terminal[] = [];
+    const closed = new Map<vscode.Terminal, vscode.TerminalExitStatus | undefined>();
+    const openSubscription = vscode.window.onDidOpenTerminal((terminal) => {
+      const name = terminal.creationOptions.name;
+      if (name === "Open Wrangler: check R packages" || name === "Open Wrangler: install R packages")
+        opened.push(terminal);
+    });
+    const closeSubscription = vscode.window.onDidCloseTerminal((terminal) => {
+      if (opened.includes(terminal)) closed.set(terminal, terminal.exitStatus);
+    });
+    try {
+      process.env.R_LIBS = [library, originalLibraries].filter(Boolean).join(path.delimiter);
+      recordAcceptanceProgress("jupyter-r:file:dependency:open");
+      await withBoundedAcceptancePromise(
+        vscode.commands.executeCommand("openWrangler.openFile", source),
+        WORKBENCH_OPERATION_TIMEOUT_MS,
+        "opening the existing CSV with its private unavailable R package"
+      );
+      recordAcceptanceProgress("jupyter-r:file:dependency:opened");
+      await waitFor(
+        () => {
+          const response = testing.panelOpenResponse();
+          return response?.kind === "error" && response.code === "missing_dependencies";
+        },
+        30_000,
+        "the R file panel to report its missing jsonlite dependency"
+      );
+      const openedTab = vscode.window.tabGroups.activeTabGroup.activeTab;
+      assert.ok(openedTab?.input instanceof vscode.TabInputWebview);
+      fileTab = openedTab;
+      recordAcceptanceProgress("jupyter-r:file:dependency:missing");
+      if (originalLibraries === undefined) delete process.env.R_LIBS;
+      else process.env.R_LIBS = originalLibraries;
+      assert.equal(testing.diagnostics().sessionCount, 0);
+      const install = await waitForOpenWranglerWebviewButton(workbench, "Install required packages", true);
+      recordAcceptanceProgress("jupyter-r:file:dependency:probe");
+      await install.click({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS, noWaitAfter: true });
+      const confirmation = await waitForVisibleEditorDialog(
+        workbench,
+        "Install or update the R packages needed to open this file?"
+      );
+      recordAcceptanceProgress("jupyter-r:file:dependency:confirmation");
+      const detail = await confirmation.dialog.locator(".dialog-message-detail").innerText();
+      const executableLine = detail.split("\n").find((line) => line.startsWith("Rscript: "));
+      assert.ok(executableLine);
+      assert.equal(
+        canonicalAcceptancePath(realpathSync(executableLine.slice("Rscript: ".length))),
+        canonicalAcceptancePath(realpathSync(rscript)),
+        "Consent must name the captured Rscript."
+      );
+      assert.match(detail, /Packages: jsonlite >= 1\.0\b/u);
+      const libraryLine = detail.split("\n").find((line) => line.startsWith("Package library: "));
+      assert.ok(libraryLine);
+      assert.equal(
+        canonicalAcceptancePath(realpathSync(libraryLine.slice("Package library: ".length))),
+        canonicalAcceptancePath(realpathSync(library)),
+        "Consent must name only the fixture-owned writable library."
+      );
+      assert.match(detail, /R \d+\.\d+[^\n]* at /u);
+      assert.equal(closed.size, 1, "The read-only package probe must exit before confirmation.");
+      recordAcceptanceProgress("jupyter-r:file:dependency:decline");
+      await confirmation.dialog
+        .getByRole("button", { name: "Cancel", exact: true })
+        .click({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+      await confirmation.dialog.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+      const retry = await waitForOpenWranglerWebviewButton(workbench, "Install required packages", true);
+      assert.equal(testing.diagnostics().sessionCount, 0);
+      assertExactBytes(
+        readFileSync(path.join(unavailablePackage, "DESCRIPTION")),
+        descriptor,
+        "Declining must not install R packages."
+      );
+      assert.deepEqual(readdirSync(library), ["jsonlite"]);
+      assert.deepEqual(readdirSync(unavailablePackage), ["DESCRIPTION"]);
+      // Simulate a manual repair by removing only the unavailable fixture. The prepared real package is unchanged.
+      rmSync(unavailablePackage, { recursive: true });
+      recordAcceptanceProgress("jupyter-r:file:dependency:manual-availability");
+      await retry.click({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS, noWaitAfter: true });
+      await waitFor(
+        () => testing.activeSession()?.metadata.source.uri === source.toString(),
+        30_000,
+        "the same native R CSV panel to reopen after the external fixture repair"
+      );
+      assert.equal(vscode.window.tabGroups.activeTabGroup.activeTab, fileTab);
+      assert.equal(opened.length, 2, "Only the before/after read-only probes may launch terminals.");
+      assert.equal(closed.size, 2, "Both captured read-only probes must have exited naturally.");
+      for (const terminal of opened) {
+        assert.equal(terminal.creationOptions.name, "Open Wrangler: check R packages");
+        assert.deepEqual(closed.get(terminal), { code: 0, reason: vscode.TerminalExitReason.Process });
+      }
+      assert.deepEqual(readdirSync(library), [], "No installation may occur after manual package availability.");
+      assertExactBytes(readFileSync(source.fsPath), sourceBytes, "Dependency recovery must preserve the CSV source.");
+      recordAcceptanceProgress("jupyter-r:file:dependency:recovered");
+      recovered = true;
+    } catch (error) {
+      operationError = error;
+    } finally {
+      if (originalLibraries === undefined) delete process.env.R_LIBS;
+      else process.env.R_LIBS = originalLibraries;
+      openSubscription.dispose();
+      closeSubscription.dispose();
+      try {
+        if (!recovered && fileTab) {
+          recordAcceptanceProgress("jupyter-r:file:dependency:failed-cleanup");
+          await withBoundedAcceptancePromise(
+            vscode.window.tabGroups.close(fileTab, true),
+            WORKBENCH_OPERATION_TIMEOUT_MS,
+            "closing the failed R dependency-recovery panel"
+          ).catch((error: unknown) => {
+            cleanupErrors.push(error);
+            recordAcceptanceProgress("jupyter-r:file:dependency:failed-cleanup:unsettled");
+          });
+        }
+      } finally {
+        try {
+          cleanupAcceptanceTemporaryDirectory(library);
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+    }
+    if (operationError !== undefined && cleanupErrors.length > 0) {
+      const detail = (operationError instanceof Error ? operationError.message : String(operationError))
+        .replace(/\s+/gu, " ")
+        .slice(0, 1_000);
+      throw new AggregateError(
+        [operationError, ...cleanupErrors],
+        `R dependency recovery failed: ${detail}. Cleanup also failed.`
+      );
+    }
+    if (operationError !== undefined) throw operationError;
+    if (cleanupErrors.length === 1) throw cleanupErrors[0];
+    if (cleanupErrors.length > 1) throw new AggregateError(cleanupErrors, "R dependency recovery cleanup failed.");
+  }
+
   async function exerciseFileRecovery(
     testing: TestApi,
     workbench: Page,
@@ -900,21 +1075,11 @@ export function createReleasedRDocumentJourney({
           "the managed process roots to settle before opening CSV"
         );
         const csvExportDirectory = mkdtempSync(path.join(tmpdir(), "openwrangler-file-export-"));
+        let csvOperationError: unknown;
+        const csvCleanupErrors: unknown[] = [];
         try {
           await csvConfiguration.update("defaultBackend", "r", vscode.ConfigurationTarget.Workspace);
-          await withBoundedAcceptancePromise(
-            vscode.commands.executeCommand("openWrangler.openFile", csvUri),
-            WORKBENCH_OPERATION_TIMEOUT_MS,
-            "opening the existing CSV fixture through the public native R file command"
-          );
-          await waitFor(
-            () => {
-              const active = testing.activeSession();
-              return active?.metadata.source.kind === "file" && active.metadata.source.uri === csvUri.toString();
-            },
-            30_000,
-            "the source-bound native R CSV session"
-          );
+          await openFileAfterDependencyRecovery(testing, workbench, csvUri, exactRscript);
           const csv = testing.activeSession();
           assert.ok(csv);
           csvSessionId = csv.sessionId;
@@ -1078,6 +1243,8 @@ export function createReleasedRDocumentJourney({
               initialProcessRoots
             );
           }
+        } catch (error) {
+          csvOperationError = error;
         } finally {
           try {
             if (csvSessionId) await disposePackagedSessionPanel(testing, csvSessionId, "the native R CSV session");
@@ -1087,13 +1254,35 @@ export function createReleasedRDocumentJourney({
               "the native R CSV private process root to be removed"
             );
             assert.equal(testing.diagnostics().sessionCount, 0);
+          } catch (error) {
+            csvCleanupErrors.push(error);
           } finally {
             try {
               await csvConfiguration.update("defaultBackend", originalBackend, vscode.ConfigurationTarget.Workspace);
+            } catch (error) {
+              csvCleanupErrors.push(error);
             } finally {
-              cleanupAcceptanceTemporaryDirectory(csvExportDirectory);
+              try {
+                cleanupAcceptanceTemporaryDirectory(csvExportDirectory);
+              } catch (error) {
+                csvCleanupErrors.push(error);
+              }
             }
           }
+        }
+        if (csvOperationError !== undefined && csvCleanupErrors.length > 0) {
+          const detail = (csvOperationError instanceof Error ? csvOperationError.message : String(csvOperationError))
+            .replace(/\s+/gu, " ")
+            .slice(0, 1_000);
+          throw new AggregateError(
+            [csvOperationError, ...csvCleanupErrors],
+            `The native R CSV journey failed: ${detail}. Cleanup also failed.`
+          );
+        }
+        if (csvOperationError !== undefined) throw csvOperationError;
+        if (csvCleanupErrors.length === 1) throw csvCleanupErrors[0];
+        if (csvCleanupErrors.length > 1) {
+          throw new AggregateError(csvCleanupErrors, "The native R CSV journey cleanup failed.");
         }
         recordAcceptanceProgress("jupyter-r:file:complete");
       }

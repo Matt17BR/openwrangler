@@ -14,8 +14,12 @@ import {
   type RKernelRequest
 } from "../extension/r/rKernelProtocol";
 import { R_FRAME_CONTRACT_LIMITS } from "../extension/r/rFrameContract";
-import { buildRDependencyCheckFunctionCode } from "../extension/r/rDependencyRequirements";
-import { RKernelSessionTransport } from "../extension/r/rKernelTransport";
+import {
+  buildRDependencyCheckFunctionCode,
+  buildRDependencySerializationCode,
+  R_DEPENDENCY_PACKAGE_NAMES
+} from "../extension/r/rDependencyRequirements";
+import { RKernelDiagnosticError, RKernelSessionTransport } from "../extension/r/rKernelTransport";
 import type { RNotebookKernelSelectionBinding } from "../extension/r/rNotebookVariableDiscovery";
 import { MAX_VIEW_VALUE_TEXT_CHARACTERS } from "../shared/viewValueLimits";
 import {
@@ -264,6 +268,9 @@ describe("native R kernel runtime bundle", () => {
     expect(result.stdout).toContain("jsonlite >= 1.0");
     expect(result.stdout).toContain("selected R kernel environment (R 4.5.0 at /selected/R)");
     expect(result.stdout).toContain("Install it with install.packages('jsonlite')");
+    expect(JSON.parse(result.stdout.split("\n").at(-1)!)).toEqual([
+      { packageName: "jsonlite", minimumVersion: "1.0", namespaceAvailable: false }
+    ]);
   });
 
   it.runIf(nativeRContracts)("rejects an old dependency with missing public capabilities", () => {
@@ -282,6 +289,37 @@ describe("native R kernel runtime bundle", () => {
     expect(result.stdout).toContain("jsonlite >= 1.0");
     expect(result.stdout).toContain("Missing exported: base64_enc, base64_dec");
     expect(result.stdout).toContain("Install it with install.packages('jsonlite')");
+    expect(JSON.parse(result.stdout.split("\n").at(-1)!)).toEqual([
+      {
+        packageName: "jsonlite",
+        minimumVersion: "1.0",
+        observedVersion: "0.9.22",
+        namespaceAvailable: true,
+        missingExports: ["base64_enc", "base64_dec"]
+      }
+    ]);
+  });
+
+  it.runIf(nativeRContracts)("serializes dependency probe strings as JSON without optional packages", () => {
+    const codePoints = [...Array.from({ length: 31 }, (_, index) => index + 1), 34, 92, 233, 0x2028, 0x1f600];
+    const result = spawnSync(rscript, ["--vanilla", "-"], {
+      encoding: "utf8",
+      input: `${buildRDependencySerializationCode()}
+base::cat(.__ow_dependency_json_string(base::intToUtf8(base::c(${codePoints.join(",")}))), "\\n", sep = "")
+base::cat(.__ow_dependency_json_string(""), "\\n", sep = "")
+base::cat(.__ow_dependency_requirements_json(base::list()), "\\n", sep = "")
+base::cat(.__ow_dependency_requirements_json(base::list(base::list(packageName = "clock", namespaceAvailable = FALSE))))
+`,
+      timeout: 30_000,
+      maxBuffer: 64 * 1_024
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.split("\n").map((line) => JSON.parse(line))).toEqual([
+      String.fromCodePoint(...codePoints),
+      "",
+      [],
+      [{ packageName: "clock", namespaceAvailable: false }]
+    ]);
   });
 
   it.runIf(nativeRContracts)("accepts each dependency at its exact version floor", () => {
@@ -319,6 +357,73 @@ describe("native R kernel runtime bundle", () => {
 });
 
 describe("native R kernel protocol", () => {
+  it("retains bounded native dependency facts and rejects untrusted requirement metadata", () => {
+    const requirement = {
+      packageName: "arrow",
+      minimumVersion: "23.0.1.1",
+      observedVersion: "22.0.0",
+      namespaceAvailable: true,
+      missingExports: ["read_parquet"]
+    };
+    const error = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: openRequestId,
+      kind: "error",
+      code: "missing_package",
+      message: "Install arrow in the selected R runtime.",
+      recoverable: true,
+      requirements: [requirement, { packageName: "clock", namespaceAvailable: false }]
+    };
+    const decoded = decodeRKernelResponseJson(JSON.stringify(error), openRequestId);
+    expect(decoded).toEqual(error);
+    if (decoded.kind !== "error") throw new Error("Expected a dependency diagnostic.");
+    expect(new RKernelDiagnosticError(decoded).diagnostic.requirements).toEqual(error.requirements);
+    expect(Object.isFrozen(decoded.requirements)).toBe(true);
+    expect(Object.isFrozen(decoded.requirements?.[0]?.missingExports)).toBe(true);
+    expect(() => decodeRKernelResponseJson(JSON.stringify({ ...error, code: "runtime_error" }), openRequestId)).toThrow(
+      "Only an R missing-package diagnostic"
+    );
+    const malformed = [
+      null,
+      [],
+      requirement,
+      Array.from({ length: R_DEPENDENCY_PACKAGE_NAMES.length + 1 }, () => requirement),
+      [requirement, requirement],
+      [{ ...requirement, packageName: "unreviewed" }],
+      [{ ...requirement, packageName: "tibble" }],
+      [{ ...requirement, namespaceAvailable: "true" }],
+      [{ ...requirement, minimumVersion: null }],
+      [{ ...requirement, observedVersion: "" }],
+      [{ ...requirement, observedVersion: "1".repeat(65) }],
+      [{ ...requirement, observedVersion: "1.0;system('command')" }],
+      [{ ...requirement, missingExports: [] }],
+      [{ ...requirement, missingExports: ["read_parquet", "read_parquet"] }],
+      [{ ...requirement, missingExports: Array.from({ length: 33 }, (_, index) => `export${index}`) }],
+      [{ ...requirement, missingExports: ["x".repeat(129)] }],
+      [{ ...requirement, missingExports: ["read_parquet\n"] }],
+      [{ ...requirement, path: "/untrusted/library" }]
+    ];
+    for (const requirements of malformed) {
+      expect(() => decodeRKernelResponseJson(JSON.stringify({ ...error, requirements }), openRequestId)).toThrow(
+        "malformed R dependency requirements"
+      );
+    }
+    expect(
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          ...error,
+          requirements: R_DEPENDENCY_PACKAGE_NAMES.map((packageName) => ({
+            packageName,
+            namespaceAvailable: true,
+            minimumVersion: "1".repeat(64),
+            missingExports: Array.from({ length: 32 }, (_, index) => `x${index}`.padEnd(128, "x"))
+          }))
+        }),
+        openRequestId
+      )
+    ).toMatchObject({ kind: "error" });
+  });
+
   it("requires a known library on open and refuses library changes on ordinary pages", () => {
     const request = openRequest();
     const opened = {
@@ -5067,6 +5172,7 @@ function runRDependencyCheck(input: RDependencyCheckInput) {
   const observedVersion = input.observedVersion ? JSON.stringify(input.observedVersion) : "NULL";
   const script = `
 ${buildRDependencyCheckFunctionCode()}
+${buildRDependencySerializationCode()}
 base::tryCatch({
   .__ow_validate_native_r_dependency(
     base::list(
@@ -5082,6 +5188,7 @@ base::tryCatch({
   base::cat("accepted", sep = "")
 }, error = function(.__ow_error) {
   base::cat(base::class(.__ow_error)[[1L]], "\\n", base::conditionMessage(.__ow_error), sep = "")
+  base::cat("\\n", .__ow_dependency_requirements_json(.__ow_error$requirements), sep = "")
   base::quit(status = 42L)
 })
 `;

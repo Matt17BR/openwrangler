@@ -7,6 +7,7 @@ import {
   type OpenSessionRequest,
   type OpenWranglerRequest,
   type OpenWranglerResponse,
+  type RLibrary,
   type SessionSource
 } from "../../shared/protocol";
 import { DetachedBridgeRequestError, type BridgeRequestOptions, type OpenWranglerBridge } from "../dataBridge";
@@ -39,6 +40,7 @@ import {
   rPageWindow as pageWindow
 } from "./rKernelFrameMapping";
 import { RKernelReadQueries } from "./rKernelReadQueries";
+import { RDependencyError, type RDependencyRequirement } from "./rDependencyRequirements";
 import {
   claimVerifiedRNotebookVariableSelection,
   reverifyRNotebookVariableSelection,
@@ -47,6 +49,15 @@ import {
 } from "./rNotebookVariableDiscovery";
 
 const CLOSED_SESSION_LIMIT = 1_024;
+
+export interface RFileDependencyRepair {
+  readonly rscriptPath: string;
+  repair(
+    requirements: readonly RDependencyRequirement[],
+    library: RLibrary,
+    options: BridgeRequestOptions
+  ): Promise<boolean>;
+}
 
 /**
  * Adapts the native-R kernel contract to the coordinator protocol without converting the
@@ -69,6 +80,9 @@ export class RKernelBridge implements OpenWranglerBridge {
   private idleRequested = false;
   private disposed = false;
   private disposal: Promise<void> | undefined;
+  private missingFileDependencies:
+    { readonly requirements: readonly RDependencyRequirement[]; readonly library: RLibrary } | undefined;
+  private fileDependenciesReady = false;
   readonly supportsVerifiedRuntimeRecoveryDelegate: boolean;
 
   static fromVerifiedSelection(
@@ -107,7 +121,8 @@ export class RKernelBridge implements OpenWranglerBridge {
     private readonly verifiedVariable?: RNotebookVariableDescriptor,
     fileOperations: RKernelBridgeFileOperations = {},
     private readonly createRecoveryDelegate?: () => Promise<RKernelBridge>,
-    private readonly fileSource?: SessionSource
+    private readonly fileSource?: SessionSource,
+    private readonly fileDependencyRepair?: RFileDependencyRepair
   ) {
     this.supportsVerifiedRuntimeRecoveryDelegate = createRecoveryDelegate !== undefined;
     this.transport = transport;
@@ -134,14 +149,44 @@ export class RKernelBridge implements OpenWranglerBridge {
     readonly delegate: OpenWranglerBridge;
     dispose(): Promise<void>;
   }> {
-    if (this.disposed || !this.createRecoveryDelegate) {
+    if (!this.createRecoveryDelegate || (this.disposed && !(this.fileSource && this.fileDependenciesReady))) {
       throw new Error("The R source cannot create a replacement runtime delegate.");
     }
+    if (this.disposed) await this.dispose();
     const delegate = await this.createRecoveryDelegate();
     return {
       delegate,
       dispose: () => delegate.dispose()
     };
+  }
+
+  async installFileDependencies(
+    source: SessionSource,
+    backend: DataBackend | undefined,
+    options: BridgeRequestOptions = {}
+  ): Promise<boolean> {
+    const missing = this.missingFileDependencies;
+    const repair = this.fileDependencyRepair;
+    const current = (): boolean =>
+      !!missing &&
+      !!repair &&
+      !!this.fileSource &&
+      backend === "r" &&
+      isDeepStrictEqual(source, this.fileSource) &&
+      this.missingFileDependencies === missing &&
+      this.sessions.size === 0 &&
+      this.openingSessionIds.size === 0 &&
+      this.closeOperations.size === 0 &&
+      vscode.workspace.isTrusted &&
+      !options.cancellation?.isCancellationRequested;
+    if (!current()) return false;
+    // Failed file opens retire their process on idle. Package writes must wait for its authoritative cleanup.
+    await this.dispose();
+    if (!current()) return false;
+    const ready = await repair!.repair(missing!.requirements, missing!.library, options);
+    if (!ready || !current()) return false;
+    this.fileDependenciesReady = true;
+    return true;
   }
 
   captureFileSessionOwner(sessionId: string): (() => boolean) | undefined {
@@ -280,6 +325,8 @@ export class RKernelBridge implements OpenWranglerBridge {
     if (invalid) return invalid;
     const sessionId = request.requestedSessionId as string;
     const library = request.rLibrary ?? "base";
+    this.missingFileDependencies = undefined;
+    this.fileDependenciesReady = false;
     const mode = request.mode ?? "viewing";
     const cloneSource = request.cloneFrom ? this.sessions.get(request.cloneFrom.sessionId) : undefined;
     if (
@@ -352,6 +399,27 @@ export class RKernelBridge implements OpenWranglerBridge {
       };
     } catch (error) {
       if (generation !== this.kernelGeneration) return kernelChangedError(sessionId);
+      const requirements =
+        error instanceof RDependencyError
+          ? error.requirements
+          : error instanceof RKernelDiagnosticError
+            ? error.diagnostic.requirements
+            : undefined;
+      if (this.fileSource && this.fileDependencyRepair && requirements?.length) {
+        this.missingFileDependencies = { requirements, library };
+        const packages = requirements
+          .map(
+            (requirement) =>
+              `${requirement.packageName}${requirement.minimumVersion ? ` >= ${requirement.minimumVersion}` : ""}`
+          )
+          .join(", ");
+        return errorResponse(
+          "missing_dependencies",
+          `Open Wrangler is using Rscript at "${this.fileDependencyRepair.rscriptPath}" with ${library}. Missing or incompatible packages: ${packages}. Choose Install required packages to review the R environment and install them.`,
+          true,
+          sessionId
+        );
+      }
       if (error instanceof RKernelDiagnosticError) return diagnosticResponse(error, sessionId);
       throw error;
     } finally {

@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { decodeRDependencyRequirements, type RDependencyRequirement } from "./rDependencyRequirements";
 import { validateExcelSheetNames } from "../files/excelSheetNames";
 import {
   decodeRFramePage,
@@ -937,6 +938,7 @@ export interface RKernelErrorResponse {
   readonly code: RKernelDiagnosticCode;
   readonly message: string;
   readonly recoverable: boolean;
+  readonly requirements?: readonly RDependencyRequirement[];
 }
 
 export interface RKernelResponseDecodeContext {
@@ -1333,19 +1335,29 @@ export function decodeRKernelResponseJson(
     });
   }
   if (kind === "error") {
-    const record = exactRecord(value, ["transportVersion", "requestId", "kind", "code", "message", "recoverable"]);
+    const record = exactRecord(
+      value,
+      ["transportVersion", "requestId", "kind", "code", "message", "recoverable"],
+      ["requirements"]
+    );
     validateEnvelope(record, expected);
     if (typeof record.code !== "string" || !rKernelDiagnosticCodes.has(record.code)) {
       fail("R kernel response has an invalid diagnostic code.");
     }
     if (typeof record.recoverable !== "boolean") fail("R kernel response has an invalid recovery flag.");
+    if (Object.hasOwn(record, "requirements") && record.code !== "missing_package") {
+      fail("Only an R missing-package diagnostic may carry dependency requirements.");
+    }
     return Object.freeze({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: expected,
       kind: "error" as const,
       code: record.code as RKernelDiagnosticCode,
       message: boundedText(record.message, "response.message", maximumDiagnosticBytes, false),
-      recoverable: record.recoverable
+      recoverable: record.recoverable,
+      ...(Object.hasOwn(record, "requirements")
+        ? { requirements: decodeRDependencyRequirements(record.requirements) }
+        : {})
     });
   }
   fail("R kernel response has an unsupported kind.");

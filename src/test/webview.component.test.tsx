@@ -4503,15 +4503,20 @@ describe("App file import options", () => {
         await screen.findByRole("cell", { name: "Milan" });
         dispatchAppMessage({ kind: "importOptionsState", busy: true });
       }
+      const dependencyMessage =
+        state === "initial"
+          ? 'Open Wrangler cannot open this Parquet file with Rscript at "C:\\Users\\ResearchAnalyst\\AppData\\Local\\Programs\\R\\R-4.5.2\\bin\\x64\\Rscript.exe". Missing or incompatible R packages: arrow >= 23.0.1.1, clock >= 0.7.4. Install into "C:\\Users\\ResearchAnalyst\\AppData\\Local\\R\\win-library\\4.5". Review and confirm installation to retry this file.'
+          : "Polars is missing fastexcel>=0.9.";
       dispatchAppMessage({
         kind: "error",
         code: "missing_dependencies",
-        message: "Polars is missing fastexcel>=0.9.",
+        message: dependencyMessage,
         recoverable: true
       });
 
       dispatchAppMessage({ kind: "importOptionsState", busy: false });
       const action = await screen.findByRole("button", { name: "Install required packages" });
+      expect(screen.getByRole("alert")).toHaveTextContent(dependencyMessage);
       expect(action).toBeEnabled();
       expect(action).not.toHaveAttribute("aria-busy");
       dispatchAppMessage({ kind: "importOptionsState", busy: true });

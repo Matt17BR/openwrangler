@@ -56,6 +56,10 @@ export class CancellationTokenSource {
 }
 
 export const window = {
+  createTerminal: (_options: unknown): unknown => {
+    throw new Error("This test has not supplied a terminal.");
+  },
+  onDidCloseTerminal: (_listener: Listener<unknown>): { dispose(): void } => ({ dispose: () => undefined }),
   createOutputChannel: () => ({
     append: () => undefined,
     appendLine: () => undefined,
@@ -69,6 +73,8 @@ export const window = {
     task: (progress: { report(): void }, token: { isCancellationRequested: boolean }) => Promise<T>
   ): Promise<T> => task({ report: () => undefined }, { isCancellationRequested: false })
 };
+
+export const TerminalExitReason = { Unknown: 0, Shutdown: 1, Process: 2, User: 3, Extension: 4 };
 
 export const ProgressLocation = {
   Notification: 15
