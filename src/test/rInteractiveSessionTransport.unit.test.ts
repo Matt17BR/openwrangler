@@ -21,10 +21,83 @@ import {
   type RPrivateArtifactOperations
 } from "../extension/r/rPrivateArtifactBoundary";
 import { rCsvExportOptions, rExportOptions } from "./rExportTestOptions";
+import type { RLibrary } from "../shared/protocol";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 describe("interactive R session transport", () => {
+  it.each(["confirmed", "mismatched"] as const)(
+    "preserves the terminal source through a %s library-copy confirmation",
+    async (confirmation) => {
+      const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-library-copy-unit-"));
+      const sourceId = testId(200);
+      const copyId = testId(201);
+      const requests: KernelRequestRecord[] = [];
+      const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
+        temporaryParent,
+        createId: sequenceIds(1, 2, 3, 4, 5, 6, 7, 8),
+        runSelection: async (code) => {
+          const { requestPath, responsePath } = mailboxPaths(code);
+          const request = JSON.parse(await readFile(requestPath, "utf8")) as KernelRequestRecord;
+          requests.push(request);
+          const response =
+            request.kind === "openSession"
+              ? openResponse(
+                  request.requestId,
+                  request.payload!.sessionId!,
+                  true,
+                  request.payload!.sessionId === copyId && confirmation === "mismatched"
+                    ? "base"
+                    : request.payload!.library!
+                )
+              : request.kind === "getPage"
+                ? openResponse(request.requestId, request.payload!.sessionId!, false)
+                : interactiveResponse(request);
+          await writeFile(responsePath, response, { flag: "wx", mode: 0o600 });
+        }
+      });
+      try {
+        const options = {
+          requestedSessionId: copyId,
+          library: "data.table" as const,
+          cloneFrom: { sessionId: sourceId, revision: 3 }
+        };
+        await expect(transport.open("orders", pageWindow(), options)).rejects.toThrow("no longer belongs");
+        expect(requests).toEqual([]);
+        await transport.open("orders", pageWindow(), { requestedSessionId: sourceId });
+        if (confirmation === "confirmed") {
+          await expect(transport.open("orders", pageWindow(), options)).resolves.toMatchObject({
+            sessionId: copyId,
+            library: "data.table"
+          });
+        } else {
+          await expect(transport.open("orders", pageWindow(), options)).rejects.toThrow("did not confirm");
+          expect(transport.isSessionMapped(copyId)).toBe(false);
+          expect(
+            requests.filter((request) => request.kind === "closeSession").map((request) => request.payload?.sessionId)
+          ).toEqual([copyId]);
+        }
+        expect(
+          requests.filter((request) => request.kind === "openSession").map((request) => request.payload)
+        ).toMatchObject([
+          { sessionId: sourceId, library: "base" },
+          { sessionId: copyId, library: "data.table", cloneFromSessionId: sourceId, cloneFromRevision: 3 }
+        ]);
+        expect(transport.isSessionMapped(sourceId)).toBe(true);
+        await transport.close(sourceId);
+        expect(transport.isSessionMapped(sourceId)).toBe(false);
+        if (confirmation === "confirmed") {
+          expect(transport.isSessionMapped(copyId)).toBe(true);
+          await expect(transport.getPage(copyId, pageWindow())).resolves.toMatchObject({ page: { totalRows: 1 } });
+          await transport.close(copyId);
+        }
+      } finally {
+        await transport.dispose();
+        await rm(temporaryParent, { recursive: true, force: true });
+      }
+    }
+  );
+
   it.each([
     "x".repeat(768),
     'é漢😀\\"\n\r\t\u2028\u2029'.repeat(100),
@@ -1707,6 +1780,9 @@ interface KernelRequestRecord {
   readonly kind: string;
   readonly payload?: Readonly<{
     sessionId?: string;
+    library?: RLibrary;
+    cloneFromSessionId?: string;
+    cloneFromRevision?: number;
     revision?: number;
     exportId?: string;
     format?: "csv" | "parquet";
@@ -1891,13 +1967,13 @@ function pageWindow() {
   return { rowOffset: 0, rowLimit: 20, columnOffset: 0, columnLimit: 20, view: { filters: [], sorts: [] } };
 }
 
-function openResponse(requestId: string, sessionId: string, includeFormats = true): string {
+function openResponse(requestId: string, sessionId: string, includeFormats = true, library: RLibrary = "base"): string {
   return JSON.stringify({
     transportVersion: R_KERNEL_TRANSPORT_VERSION,
     requestId,
     kind: "page",
     sessionId,
-    ...(includeFormats ? { exportFormats: ["csv"] } : {}),
+    ...(includeFormats ? { library, exportFormats: ["csv"] } : {}),
     page: {
       contractVersion: 6,
       dataframeFlavor: "r.data.frame",

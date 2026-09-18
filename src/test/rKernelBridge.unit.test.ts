@@ -427,61 +427,92 @@ describe("canonical R kernel bridge", () => {
     }
   });
 
-  it("hands the native R frame and extension version across the public bridge boundary", async () => {
-    const contract = frameContract();
-    const transport = fakeTransport(contract);
+  it.each(["base", "dplyr", "data.table", "collapse"] as const)(
+    "publishes the confirmed %s library independently of the native R frame class",
+    async (library) => {
+      const contract = frameContract();
+      const transport = fakeTransport(contract);
+      transport.open.mockResolvedValueOnce({ sessionId, library, page: contract, exportFormats: ["csv"] });
+      const bridge = createBridge(transport);
+
+      await expect(bridge.request({ kind: "initialize" })).resolves.toMatchObject({
+        kind: "initialized",
+        protocolVersion: 4,
+        runtimeVersion: "2.0.0-preview.1",
+        capabilities: {
+          editable: true,
+          notebookInsert: true,
+          documentInsert: true
+        }
+      });
+
+      const request = { ...openRequest(), ...(library === "base" ? {} : { rLibrary: library }) };
+      const response = await bridge.request(request);
+
+      expect(transport.open).toHaveBeenCalledWith(
+        "orders",
+        {
+          rowOffset: 0,
+          rowLimit: 20,
+          columnOffset: 0,
+          columnLimit: 8,
+          view: { filters: [], sorts: [] }
+        },
+        expect.objectContaining({ requestedSessionId: sessionId, library })
+      );
+      expect(response).toMatchObject({
+        kind: "sessionOpened",
+        metadata: {
+          sessionId,
+          revision: 0,
+          backend: "r",
+          rLibrary: library,
+          rDataframeFlavor: "r.data.frame",
+          mode: "viewing",
+          source: request.source,
+          shape: { rows: 1, columns: 8 },
+          filteredShape: { rows: 1, columns: 8 }
+        },
+        page: {
+          columnIds: contract.page.columnIds
+        },
+        summaries: []
+      });
+      if (response.kind !== "sessionOpened") throw new Error("Expected an R session.");
+      expect(isOpenWranglerResponse(response)).toBe(true);
+      expect(response.page.rows[0]).toMatchObject({ id: "r:r:0", rowNumber: 0 });
+      expect(response.page.rows[0]?.values.slice(0, 4)).toEqual([
+        expect.objectContaining({ kind: "number", raw: 12.5 }),
+        expect.objectContaining({ kind: "integer", raw: "9223372036854775807" }),
+        expect.objectContaining({ kind: "date", raw: "2026-08-05" }),
+        expect.objectContaining({ kind: "datetime", raw: "1785945600" })
+      ]);
+      await expect(
+        bridge.request({
+          kind: "getPage",
+          sessionId,
+          revision: 0,
+          viewRequestId: "library-stable",
+          offset: 0,
+          limit: 20,
+          columnOffset: 0,
+          columnLimit: 8,
+          filterModel: { filters: [], sort: [] }
+        })
+      ).resolves.toMatchObject({ kind: "page", metadata: { rLibrary: library, rDataframeFlavor: "r.data.frame" } });
+      await bridge.dispose();
+    }
+  );
+
+  it("does not publish a requested library without native confirmation", async () => {
+    const transport = fakeTransport(frameContract());
     const bridge = createBridge(transport);
-
-    await expect(bridge.request({ kind: "initialize" })).resolves.toMatchObject({
-      kind: "initialized",
-      protocolVersion: 4,
-      runtimeVersion: "2.0.0-preview.1",
-      capabilities: {
-        editable: true,
-        notebookInsert: true,
-        documentInsert: true
-      }
-    });
-
-    const request = openRequest();
-    const response = await bridge.request(request);
-
-    expect(transport.open).toHaveBeenCalledWith(
-      "orders",
-      {
-        rowOffset: 0,
-        rowLimit: 20,
-        columnOffset: 0,
-        columnLimit: 8,
-        view: { filters: [], sorts: [] }
-      },
-      expect.objectContaining({ requestedSessionId: sessionId })
-    );
-    expect(response).toMatchObject({
-      kind: "sessionOpened",
-      metadata: {
-        sessionId,
-        revision: 0,
-        backend: "r",
-        rDataframeFlavor: "r.data.frame",
-        mode: "viewing",
-        source: request.source,
-        shape: { rows: 1, columns: 8 },
-        filteredShape: { rows: 1, columns: 8 }
-      },
-      page: {
-        columnIds: contract.page.columnIds
-      },
-      summaries: []
-    });
-    if (response.kind !== "sessionOpened") throw new Error("Expected an R session.");
-    expect(response.page.rows[0]).toMatchObject({ id: "r:r:0", rowNumber: 0 });
-    expect(response.page.rows[0]?.values.slice(0, 4)).toEqual([
-      expect.objectContaining({ kind: "number", raw: 12.5 }),
-      expect.objectContaining({ kind: "integer", raw: "9223372036854775807" }),
-      expect.objectContaining({ kind: "date", raw: "2026-08-05" }),
-      expect.objectContaining({ kind: "datetime", raw: "1785945600" })
-    ]);
+    try {
+      await expect(bridge.request({ ...openRequest(), rLibrary: "dplyr" })).rejects.toThrow("did not confirm");
+      expect(bridge.captureSessionOwner(sessionId)).toBeUndefined();
+    } finally {
+      await bridge.dispose();
+    }
   });
 
   it("rejects Pivot longer overflow, class metadata drift, and portable collisions before R dispatch", async () => {

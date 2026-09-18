@@ -29,6 +29,7 @@ import {
 } from "./packaged-editor-orchestration.mjs";
 import {
   CATEGORICAL_R_JUPYTER_SELECTOR,
+  CORE_R_JUPYTER_SELECTOR,
   VALUE_R_JUPYTER_SELECTOR,
   PIVOT_WIDER_R_JUPYTER_SELECTOR
 } from "./packaged-r-journey.mjs";
@@ -454,7 +455,8 @@ export const R_ACCEPTANCE_PACKAGE_VERSIONS = Object.freeze({
   collapse: "2.1.7",
   nanoparquet: "0.5.1",
   readxl: "1.4.5",
-  bit64: "4.6.0.1" // packageVersion() renders the archive's 4.6.0-1 with dots.
+  bit64: "4.6.0.1", // packageVersion() renders the archive's 4.6.0-1 with dots.
+  dplyr: "1.2.1"
 });
 const R_ACCEPTANCE_MACOS_COLLAPSE_BINARY = Object.freeze({
   version: "2.1.8",
@@ -749,7 +751,9 @@ export function rAcceptanceRepositories(platform = process.platform, osReleaseTe
 }
 
 function rAcceptanceInstall({ repository, supplementalRepository }, platform, packages, collapseBinaryPath) {
-  const supplementalPackages = ["collapse", "nanoparquet"].filter((packageName) => packages.includes(packageName));
+  const supplementalPackages = ["collapse", "nanoparquet", "dplyr"].filter((packageName) =>
+    packages.includes(packageName)
+  );
   const binarySupplementalPackages = supplementalPackages.filter(
     (packageName) => platform !== "darwin" || packageName !== "collapse"
   );
@@ -2016,9 +2020,11 @@ export async function prepareJupyterAcceptanceREnvironment(
     purpose === CATEGORICAL_R_JUPYTER_SELECTOR ||
     purpose === VALUE_R_JUPYTER_SELECTOR ||
     purpose === PIVOT_WIDER_R_JUPYTER_SELECTOR;
+  const notebook = purpose === "notebook" || purpose === CORE_R_JUPYTER_SELECTOR;
   if (
     !focusedNotebook &&
-    !["notebook", "interactive-terminal", "literate-documents", "source-contracts"].includes(purpose)
+    !notebook &&
+    !["interactive-terminal", "literate-documents", "source-contracts"].includes(purpose)
   ) {
     throw new Error("R acceptance requires a known preparation purpose.");
   }
@@ -2046,17 +2052,16 @@ export async function prepareJupyterAcceptanceREnvironment(
   }
 
   const packageEntries = Object.entries(R_ACCEPTANCE_PACKAGE_VERSIONS).filter(([packageName]) => {
+    if (packageName === "dplyr") return purpose === CORE_R_JUPYTER_SELECTOR;
     if (purpose === "source-contracts") return ["jsonlite", "bit64"].includes(packageName);
-    if (["readxl", "bit64"].includes(packageName)) return purpose === "notebook";
+    if (["readxl", "bit64"].includes(packageName)) return notebook;
     if (focusedNotebook && ["Rcpp", "collapse"].includes(packageName)) return false;
     if (
       purpose === "interactive-terminal" &&
       ["IRkernel", "Rcpp", "collapse", "rmarkdown", "languageserver", "knitr"].includes(packageName)
     )
       return false;
-    return (
-      (purpose !== "notebook" && !focusedNotebook) || !["languageserver", "rmarkdown", "knitr"].includes(packageName)
-    );
+    return (!notebook && !focusedNotebook) || !["languageserver", "rmarkdown", "knitr"].includes(packageName);
   });
   const packages = Object.freeze(packageEntries.map(([packageName]) => packageName));
   const repositories = rAcceptanceRepositories(platform, osReleaseText);

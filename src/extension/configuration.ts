@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import type { OpenWranglerRequest } from "../shared/protocol";
+import { isRLibrary, type OpenWranglerRequest, type RLibrary } from "../shared/protocol";
 
 export const CONFIGURATION_SECTION = "openWrangler";
 export const DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS = 30_000;
@@ -21,6 +21,11 @@ export function getSetting<T>(key: string, fallback: T, resource?: vscode.Uri): 
 
 export function updateSetting(key: string, value: unknown, target: vscode.ConfigurationTarget): Thenable<void> {
   return vscode.workspace.getConfiguration(CONFIGURATION_SECTION).update(key, value, target);
+}
+
+export function configuredRLibrary(resource?: vscode.Uri): RLibrary {
+  const value = getSetting<unknown>("defaultRLibrary", "base", resource);
+  return isRLibrary(value) ? value : "base";
 }
 
 export function decodeWebviewBootstrapSettings(input: WebviewBootstrapInput): WebviewBootstrapSettings {

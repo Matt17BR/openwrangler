@@ -6,6 +6,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Added
 
+- Choose base R, dplyr, data.table or collapse for native R cleaning and generated code. A library change opens an editing copy of applied steps while preserving the original draft and redo history.
 - R CSV/TSV imports honor encoding, ASCII delimiter and quote, headerless and CR record options, with matching generated code.
 - Native R file sessions can reuse confirmed built-in cleaning plans on another file with compatible columns.
 - Native R displays homogeneous atomic list columns and flat records. Extract Struct Fields and Explode List preserve native types, source isolation, history and generated code; exports require scalar output columns.

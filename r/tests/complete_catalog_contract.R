@@ -2,7 +2,7 @@ source("r/openwrangler_runtime/frame_contract.R", local = FALSE)
 source("r/openwrangler_runtime/kernel_exports.R", local = FALSE)
 source("r/openwrangler_runtime/kernel_agent.R", local = FALSE)
 
-for (package in c("bit64", "collapse", "data.table", "jsonlite", "tibble")) {
+for (package in c("bit64", "collapse", "data.table", "dplyr", "jsonlite", "tibble")) {
   if (!requireNamespace(package, quietly = TRUE)) {
     stop(sprintf("The complete native-R catalog contract requires %s", package), call. = FALSE)
   }
@@ -83,8 +83,9 @@ recording_contract$capture_pivot_wider_at <- function(...) {
 agent <- openwrangler_r_kernel_agent$new_agent(recording_contract, source_environment)
 
 dispatch <- function(kind, payload) {
+  if (identical(kind, "openSession") && !"library" %in% names(payload)) payload$library <- "base"
   encoded <- jsonlite::toJSON(
-    list(transportVersion = 16L, requestId = request_id, kind = kind, payload = payload),
+    list(transportVersion = 17L, requestId = request_id, kind = kind, payload = payload),
     auto_unbox = TRUE,
     digits = 17L,
     null = "null",
@@ -109,16 +110,38 @@ snapshot_from_latest_capture <- function(label) {
   unserialize(serialize(snapshot, NULL, version = 3L))
 }
 
-frame_bytes <- function(frame) {
+canonical_frame <- function(frame) {
   canonical <- unserialize(serialize(frame, NULL, version = 3L))
   if (inherits(canonical, "data.table")) attr(canonical, ".internal.selfref") <- NULL
-  serialize(canonical, NULL, version = 3L)
+  canonical
+}
+
+frame_bytes <- function(frame) serialize(canonical_frame(frame), NULL, version = 3L)
+
+same_character_encodings <- function(actual, expected) {
+  if (is.character(actual) && !identical(Encoding(actual), Encoding(expected))) return(FALSE)
+  if (is.list(actual) && !all(vapply(seq_along(actual), function(index) {
+    same_character_encodings(actual[[index]], expected[[index]])
+  }, logical(1L)))) return(FALSE)
+  metadata <- attributes(actual)
+  if (is.null(metadata)) return(TRUE)
+  other_metadata <- attributes(expected)
+  identical(Encoding(names(metadata)), Encoding(names(other_metadata))) &&
+    all(vapply(seq_along(metadata), function(index) {
+      same_character_encodings(metadata[[index]], other_metadata[[index]])
+    }, logical(1L)))
 }
 
 assert_frame_identical <- function(actual, expected, message) {
-  if (!identical(frame_bytes(actual), frame_bytes(expected))) {
+  actual <- canonical_frame(actual)
+  expected <- canonical_frame(expected)
+  # Serialized vector growability records spare capacity, not dataframe data.
+  # Keep numeric bits, attribute order and text encodings exact independently.
+  if (!identical(actual, expected, num.eq = FALSE, single.NA = FALSE, attrib.as.set = FALSE) ||
+      !same_character_encodings(actual, expected)) {
     comparison <- all.equal(actual, expected, check.attributes = TRUE)
-    stop(sprintf("%s\n%s", message, paste(comparison, collapse = "\n")), call. = FALSE)
+    detail <- if (isTRUE(comparison)) "Exact numeric bits, attribute order or text encodings differ" else paste(comparison, collapse = "\n")
+    stop(sprintf("%s\n%s", message, detail), call. = FALSE)
   }
 }
 
@@ -230,11 +253,14 @@ catalog_cases <- list(
   ),
   dropDuplicates = list(
     step = function(frame, id) step_with(id, "dropDuplicates", list(
-      columns = I(list(column_reference(frame, "duplicate"))), keep = "first"
+      columns = I(list(column_reference(frame, "wide"))), keep = "first"
     )),
-    verify = function(output, input) assert_identical(
-      output$duplicate, c("u", "v", "w", "x"), "Drop Duplicates kept the wrong rows"
-    )
+    verify = function(output, input) {
+      assert_identical(unname(as.character(output$wide)), c("9007199254740993", "2", NA_character_, "4", "5"),
+        "Drop Duplicates lost exact integer64 keys")
+      assert_identical(row.names(output), row.names(input)[c(1L, 2L, 4L, 5L, 6L)],
+        "Drop Duplicates kept the wrong source rows")
+    }
   ),
   markDuplicates = list(
     step = function(frame, id) step_with(id, "markDuplicates", list(
@@ -286,14 +312,17 @@ catalog_cases <- list(
   ),
   explodeList = list(
     source = function() {
-      frame <- data.frame(id = 1:3)
+      frame <- data.table::data.table(id = 1:3)
       frame$items <- list(c(1L, NA_integer_), integer(), NULL)
+      data.table::setkey(frame, id)
       frame
     },
     step = function(frame, id) step_with(id, "explodeList", list(column = column_reference(frame, "items"))),
     verify = function(output, input) {
       assert_identical(output$items, c(1L, NA_integer_, NA_integer_, NA_integer_), "Explode List lost typed empty or NULL placeholders")
       assert_identical(output$id, c(1L, 1L, 2L, 3L), "Explode List did not repeat scalar siblings in source order")
+      assert_identical(names(output), c("id", "items"), "Explode List leaked private library aliases")
+      assert_identical(data.table::key(output), "id", "Explode List discarded its still-valid data.table key")
     }
   ),
   castColumn = list(
@@ -426,12 +455,14 @@ catalog_cases <- list(
     )
   ),
   roundNumber = list(
+    source = function() set_column_element_names(catalog_source(), 4L, paste0("number-", 1:6), "round"),
     step = function(frame, id) step_with(id, "roundNumber", list(
       column = column_reference(frame, "number"), decimals = 1L, newColumn = "rounded number"
     )),
-    verify = function(output, input) assert_identical(
-      unname(output[["rounded number"]]), round(unname(input$number), 1L), "Round changed values"
-    )
+    verify = function(output, input) {
+      assert_identical(output[["rounded number"]], round(unname(input$number), 1L),
+        "Round changed values or retained data.frame output element names")
+    }
   ),
   floorNumber = list(
     step = function(frame, id) step_with(id, "floorNumber", list(
@@ -490,6 +521,17 @@ catalog_cases <- list(
         c(setdiff(names(input), c("duplicate", "whole")), "value u", "value v", "value w", "value x"),
         "Pivot wider returned the wrong fixed schema"
       )
+      assert_identical(nrow(output), 6L, "Pivot wider changed the identifier groups")
+      expected_values <- list(
+        c(1L, NA_integer_, NA_integer_, NA_integer_, NA_integer_, NA_integer_),
+        c(NA_integer_, 2L, 2L, NA_integer_, NA_integer_, NA_integer_),
+        rep.int(NA_integer_, 6L),
+        c(NA_integer_, NA_integer_, NA_integer_, NA_integer_, 4L, 5L)
+      )
+      for (index in seq_along(expected_values)) {
+        assert_identical(unname(output[[paste0("value ", c("u", "v", "w", "x")[[index]])]]),
+          expected_values[[index]], "Pivot wider changed values or typed missing combinations")
+      }
       assert_identical(.row_names_info(output, type = 1L), -nrow(output), "Pivot wider did not publish positional row names")
     }
   ),
@@ -538,7 +580,7 @@ assert_identical(length(catalog_cases), length(catalog_kinds), "the complete R c
 
 catalog_generated_code <- setNames(vector("list", length(catalog_cases)), names(catalog_cases))
 
-run_catalog_case <- function(case, kind, index) {
+run_catalog_case <- function(case, kind, index, library = "base") {
   variable_name <- "catalog_frame"
   input <- if (is.null(case$source)) catalog_source() else case$source()
   assign(variable_name, input, envir = source_environment)
@@ -548,9 +590,10 @@ run_catalog_case <- function(case, kind, index) {
 
   original_session <- session_id(index)
   opened <- dispatch("openSession", list(
-    sessionId = original_session, variableName = variable_name, page = page_window()
+    sessionId = original_session, variableName = variable_name, page = page_window(), library = library
   ))
-  assert_identical(opened$kind, "page", sprintf("%s did not open", kind))
+  assert_identical(opened$kind, "page", sprintf("%s %s did not open: %s", library, kind, if (is.null(opened$message)) "no diagnostic" else opened$message))
+  assert_identical(opened$library, library, "open did not confirm the selected library")
   latest_capture <<- NULL
   preview <- dispatch("previewStep", list(
     sessionId = original_session, revision = 0L, step = step, page = page_window()
@@ -564,10 +607,10 @@ run_catalog_case <- function(case, kind, index) {
   assert_true(length(parse(text = preview$code, keep.source = FALSE)) > 0L, sprintf("%s emitted unparsable code", kind))
   live_output <- snapshot_from_latest_capture(paste(kind, "preview"))
   case$verify(live_output, input)
-  applied <- dispatch("applyDraft", list(
+  applied <- if (!identical(library, "base")) preview else dispatch("applyDraft", list(
     sessionId = original_session, revision = preview$revision, page = page_window()
   ))
-  assert_identical(applied$action, "apply", sprintf("%s did not apply", kind))
+  if (identical(library, "base")) assert_identical(applied$action, "apply", sprintf("%s did not apply", kind))
   assert_identical(applied$code, preview$code, sprintf("%s changed generated code at apply", kind))
   assert_identical(
     serialize(get(variable_name, envir = source_environment), NULL, version = 3L),
@@ -578,34 +621,37 @@ run_catalog_case <- function(case, kind, index) {
   assert_true(!is.null(saved_step), sprintf("%s did not retain a replayable step", kind))
   assert_identical(dispatch("closeSession", list(sessionId = original_session))$kind, "closed", sprintf("%s did not close", kind))
 
-  replay_session <- session_id(index, replay = TRUE)
-  replay_open <- dispatch("openSession", list(
-    sessionId = replay_session, variableName = variable_name, page = page_window()
-  ))
-  assert_identical(replay_open$kind, "page", sprintf("saved %s did not reopen", kind))
-  latest_capture <<- NULL
-  replay_preview <- dispatch("previewStep", list(
-    sessionId = replay_session, revision = 0L, step = saved_step, page = page_window()
-  ))
-  assert_identical(
-    replay_preview$kind,
-    "stepPreview",
-    sprintf("saved %s did not replay: %s", kind, if (is.null(replay_preview$message)) "no diagnostic" else replay_preview$message)
-  )
-  replay_output <- snapshot_from_latest_capture(paste("saved", kind, "replay"))
-  replay_applied <- dispatch("applyDraft", list(
-    sessionId = replay_session, revision = replay_preview$revision, page = page_window()
-  ))
-  assert_identical(replay_applied$action, "apply", sprintf("saved %s did not reapply", kind))
-  assert_frame_identical(replay_output, live_output, sprintf("saved %s replay changed the live frame", kind))
-  assert_identical(replay_applied$page, applied$page, sprintf("saved %s replay changed schema or row identities", kind))
-  assert_identical(replay_applied$code, applied$code, sprintf("saved %s replay changed generated code", kind))
-  assert_identical(
-    serialize(get(variable_name, envir = source_environment), NULL, version = 3L),
-    source_before,
-    sprintf("saved live %s replay mutated its source", kind)
-  )
-  assert_identical(dispatch("closeSession", list(sessionId = replay_session))$kind, "closed", sprintf("saved %s did not close", kind))
+  # The composed lifecycle below owns selected-library replay and history.
+  if (identical(library, "base")) {
+    replay_session <- session_id(index, replay = TRUE)
+    replay_open <- dispatch("openSession", list(
+      sessionId = replay_session, variableName = variable_name, page = page_window()
+    ))
+    assert_identical(replay_open$kind, "page", sprintf("saved %s did not reopen", kind))
+    latest_capture <<- NULL
+    replay_preview <- dispatch("previewStep", list(
+      sessionId = replay_session, revision = 0L, step = saved_step, page = page_window()
+    ))
+    assert_identical(
+      replay_preview$kind,
+      "stepPreview",
+      sprintf("saved %s did not replay: %s", kind, if (is.null(replay_preview$message)) "no diagnostic" else replay_preview$message)
+    )
+    replay_output <- snapshot_from_latest_capture(paste("saved", kind, "replay"))
+    replay_applied <- dispatch("applyDraft", list(
+      sessionId = replay_session, revision = replay_preview$revision, page = page_window()
+    ))
+    assert_identical(replay_applied$action, "apply", sprintf("saved %s did not reapply", kind))
+    assert_frame_identical(replay_output, live_output, sprintf("saved %s replay changed the live frame", kind))
+    assert_identical(replay_applied$page, applied$page, sprintf("saved %s replay changed schema or row identities", kind))
+    assert_identical(replay_applied$code, applied$code, sprintf("saved %s replay changed generated code", kind))
+    assert_identical(
+      serialize(get(variable_name, envir = source_environment), NULL, version = 3L),
+      source_before,
+      sprintf("saved live %s replay mutated its source", kind)
+    )
+    assert_identical(dispatch("closeSession", list(sessionId = replay_session))$kind, "closed", sprintf("saved %s did not close", kind))
+  }
 
   generated_environment <- new.env(parent = baseenv())
   assign(variable_name, unserialize(source_before), envir = generated_environment)
@@ -623,7 +669,7 @@ run_catalog_case <- function(case, kind, index) {
     generated_source_before,
     sprintf("generated %s mutated its immutable source", kind)
   )
-  catalog_generated_code[[kind]] <<- applied$code
+  if (identical(library, "base")) catalog_generated_code[[kind]] <<- applied$code
   remove(list = variable_name, envir = source_environment)
 }
 
@@ -635,6 +681,76 @@ for (index in seq_along(catalog_cases)) {
       stop(sprintf("the %s complete-catalog case failed: %s", kind, conditionMessage(error)), call. = FALSE)
     }
   )
+}
+
+# Reuse the small catalog fixtures and expected-value assertions across library
+# execution. Lifecycle, large frames and boundary matrices retain their owners.
+for (library in c("dplyr", "data.table", "collapse")) {
+  for (index in seq_along(catalog_cases)) {
+    kind <- names(catalog_cases)[[index]]
+    tryCatch(run_catalog_case(catalog_cases[[index]], kind, index, library),
+      error = function(error) stop(sprintf("the %s %s catalog case failed: %s", library, kind, conditionMessage(error)), call. = FALSE))
+  }
+}
+
+# Fill modes have distinct compiler branches. Their small selected-library cases
+# share the catalog live/generated owner; the kernel owner keeps full lifecycles.
+selected_fill_cases <- list(
+  fallback = list(
+    step = function(frame, id) step_with(id, "fillMissingValues", list(
+      column = column_reference(frame, "whole"), replacement = list(
+        kind = "fallbackColumns", columns = I(list(column_reference(frame, "fallback")))
+      )
+    )),
+    verify = function(output, input) assert_identical(output$whole,
+      c(1L, 2L, 2L, 6L, 4L, 5L), "selected fallback fill changed values or retained data.frame output element names")
+  ),
+  directional = list(
+    step = function(frame, id) step_with(id, "fillMissingValues", list(
+      column = column_reference(frame, "whole"), replacement = list(
+        kind = "directional", direction = "forward", orderBy = I(list(list(
+          column = column_reference(frame, "wide"), direction = "asc", nulls = "last"
+        )))
+      )
+    )),
+    verify = function(output, input) assert_identical(unname(output$whole),
+      c(1L, 2L, 2L, 1L, 4L, 5L), "selected directional fill lost integer64 ordering")
+  ),
+  grouped = list(
+    source = function() {
+      frame <- catalog_source()
+      frame$wide <- bit64::as.integer64(c("9007199254740993", "2", "2", "2", "4", "5"))
+      frame
+    },
+    step = function(frame, id) step_with(id, "fillMissingValues", list(
+      column = column_reference(frame, "number"), replacement = list(
+        kind = "groupedStatistic", statistic = "mean", keys = I(list(column_reference(frame, "wide")))
+      )
+    )),
+    verify = function(output, input) assert_identical(output$number,
+      c(1.25, 2.75, 2.75, 2.75, -1.2, 5.5), "selected grouped fill lost integer64 groups")
+  ),
+  interpolation = list(
+    source = function() {
+      frame <- catalog_source()
+      frame$number <- c(0, 2, NA_real_, 6, 8, 10)
+      frame
+    },
+    step = function(frame, id) step_with(id, "fillMissingValues", list(
+      column = column_reference(frame, "number"), replacement = list(
+        kind = "linearInterpolation", coordinate = column_reference(frame, "fallback")
+      )
+    )),
+    verify = function(output, input) assert_identical(output$number,
+      c(0, 2, 4, 6, 8, 10), "selected interpolation changed ordered coordinate values")
+  )
+)
+for (library in c("dplyr", "data.table", "collapse")) {
+  for (index in seq_along(selected_fill_cases)) {
+    tryCatch(run_catalog_case(selected_fill_cases[[index]], "fillMissingValues", index, library),
+      error = function(error) stop(sprintf("the %s %s fill case failed: %s", library,
+        names(selected_fill_cases)[[index]], conditionMessage(error)), call. = FALSE))
+  }
 }
 
 assert_true(
@@ -1371,213 +1487,225 @@ remove("complete_chunk", envir = source_environment)
 # A saved multi-step plan with two distinct cardinality changes proves dynamic
 # schema binding, prefix inspection, full-plan replay, generated composition,
 # and undo against the immutable original.
-composition_rows <- 12L
-source_environment$complete_composition <- data.frame(
-  group = rep(c("keep-a", "keep-b", "drop"), each = 4L),
-  value = seq_len(composition_rows),
-  label = ordered(
-    rep(c("low", "high"), length.out = composition_rows),
-    levels = c("low", "high")
-  ),
-  check.names = FALSE,
-  row.names = paste0("composition-row-", seq_len(composition_rows))
-)
-source_environment$complete_composition <- set_column_element_names(
-  source_environment$complete_composition,
-  3L,
-  paste0("composition-element-", seq_len(composition_rows)),
-  "composition label"
-)
-assert_identical(
-  attr(.subset2(source_environment$complete_composition, 3L), "names", exact = TRUE),
-  paste0("composition-element-", seq_len(composition_rows)),
-  "the composition fixture lost element names before dispatch"
-)
-composition_before <- serialize(source_environment$complete_composition, NULL, version = 3L)
-composition_session <- "00002003-2003-4203-8203-000000002003"
-invisible(dispatch("openSession", list(
-  sessionId = composition_session,
-  variableName = "complete_composition",
-  page = page_window()
-)))
-composition_steps <- list(
-  step_with("complete-compose-filter", "filterRows", list(filterModel = list(
-    logic = "and",
-    filters = I(list(list(
-      column = list(id = "r:c:0", name = "group"),
-      type = "string",
-      predicates = I(list(list(kind = "predicate", operator = "notEquals", value = "drop")))
+for (library in c("base", "dplyr", "data.table", "collapse")) {
+  composition_rows <- 12L
+  source_environment$complete_composition <- data.frame(
+    group = rep(c("keep-a", "keep-b", "drop"), each = 4L),
+    value = seq_len(composition_rows),
+    label = ordered(
+      rep(c("low", "high"), length.out = composition_rows),
+      levels = c("low", "high")
+    ),
+    check.names = FALSE,
+    row.names = paste0("composition-row-", seq_len(composition_rows))
+  )
+  source_environment$complete_composition <- set_column_element_names(
+    source_environment$complete_composition,
+    3L,
+    paste0("composition-element-", seq_len(composition_rows)),
+    "composition label"
+  )
+  assert_identical(
+    attr(.subset2(source_environment$complete_composition, 3L), "names", exact = TRUE),
+    paste0("composition-element-", seq_len(composition_rows)),
+    "the composition fixture lost element names before dispatch"
+  )
+  composition_before <- serialize(source_environment$complete_composition, NULL, version = 3L)
+  composition_session <- "00002003-2003-4203-8203-000000002003"
+  invisible(dispatch("openSession", list(
+    sessionId = composition_session,
+    variableName = "complete_composition",
+    library = library,
+    page = page_window()
+  )))
+  composition_steps <- list(
+    step_with("complete-compose-filter", "filterRows", list(filterModel = list(
+      logic = "and",
+      filters = I(list(list(
+        column = list(id = "r:c:0", name = "group"),
+        type = "string",
+        predicates = I(list(list(kind = "predicate", operator = "notEquals", value = "drop")))
+      ))),
+      sort = I(list())
     ))),
-    sort = I(list())
-  ))),
-  step_with("complete-compose-group", "groupBy", list(
-    keys = I(list(list(id = "r:c:0", name = "group"))),
-    aggregations = I(list(list(
-      column = list(id = "r:c:1", name = "value"),
-      operation = "sum",
-      alias = "total"
-    )))
-  )),
-  step_with("complete-compose-formula", "formula", list(
-    leftColumn = list(id = "c:step:complete-compose-group:0", name = "total"),
-    operator = "add",
-    newColumn = "total plus one",
-    value = 1L
-  ))
-)
+    step_with("complete-compose-group", "groupBy", list(
+      keys = I(list(list(id = "r:c:0", name = "group"))),
+      aggregations = I(list(list(
+        column = list(id = "r:c:1", name = "value"),
+        operation = "sum",
+        alias = "total"
+      )))
+    )),
+    step_with("complete-compose-formula", "formula", list(
+      leftColumn = list(id = "c:step:complete-compose-group:0", name = "total"),
+      operator = "add",
+      newColumn = "total plus one",
+      value = 1L
+    ))
+  )
 
-composition_revision <- 0L
-composition_responses <- vector("list", length(composition_steps))
-composition_outputs <- vector("list", length(composition_steps))
-for (index in seq_along(composition_steps)) {
-  latest_capture <- NULL
-  preview <- dispatch("previewStep", list(
+  composition_revision <- 0L
+  composition_responses <- vector("list", length(composition_steps))
+  composition_outputs <- vector("list", length(composition_steps))
+  for (index in seq_along(composition_steps)) {
+    latest_capture <- NULL
+    preview <- dispatch("previewStep", list(
+      sessionId = composition_session,
+      revision = composition_revision,
+      step = composition_steps[[index]],
+      page = page_window()
+    ))
+    assert_identical(preview$kind, "stepPreview", sprintf("composition step %d did not preview", index))
+    composition_outputs[[index]] <- snapshot_from_latest_capture(sprintf("composition step %d", index))
+    applied <- dispatch("applyDraft", list(
+      sessionId = composition_session,
+      revision = preview$revision,
+      page = page_window()
+    ))
+    assert_identical(applied$action, "apply", sprintf("composition step %d did not apply", index))
+    composition_revision <- applied$revision
+    composition_responses[[index]] <- applied
+  }
+  assert_identical(nrow(composition_outputs[[1L]]), 8L, "the composition filter changed cardinality incorrectly")
+  assert_identical(
+    attr(.subset2(composition_outputs[[1L]], 3L), "names", exact = TRUE),
+    paste0("composition-element-", 1:8),
+    "the composition filter lost surviving element names"
+  )
+  assert_identical(nrow(composition_outputs[[2L]]), 2L, "the composition group changed cardinality incorrectly")
+  assert_identical(
+    names(composition_outputs[[3L]]),
+    c("group", "total", "total plus one"),
+    "the composition lost dynamic schema"
+  )
+  assert_identical(
+    schema_ids(composition_responses[[3L]]),
+    c("r:c:0", "c:step:complete-compose-group:0", "c:step:complete-compose-formula:0"),
+    "the composition returned unstable derived identities"
+  )
+
+  inspection_info <- dispatch("inspectStepInfo", list(
     sessionId = composition_session,
     revision = composition_revision,
-    step = composition_steps[[index]],
-    page = page_window()
+    stepId = "complete-compose-group"
   ))
-  assert_identical(preview$kind, "stepPreview", sprintf("composition step %d did not preview", index))
-  composition_outputs[[index]] <- snapshot_from_latest_capture(sprintf("composition step %d", index))
-  applied <- dispatch("applyDraft", list(
+  inspection_input <- dispatch("inspectStepPage", list(
     sessionId = composition_session,
-    revision = preview$revision,
+    revision = composition_revision,
+    stepId = "complete-compose-group",
+    side = "input",
     page = page_window()
   ))
-  assert_identical(applied$action, "apply", sprintf("composition step %d did not apply", index))
-  composition_revision <- applied$revision
-  composition_responses[[index]] <- applied
-}
-assert_identical(nrow(composition_outputs[[1L]]), 8L, "the composition filter changed cardinality incorrectly")
-assert_identical(
-  attr(.subset2(composition_outputs[[1L]], 3L), "names", exact = TRUE),
-  paste0("composition-element-", 1:8),
-  "the composition filter lost surviving element names"
-)
-assert_identical(nrow(composition_outputs[[2L]]), 2L, "the composition group changed cardinality incorrectly")
-assert_identical(
-  names(composition_outputs[[3L]]),
-  c("group", "total", "total plus one"),
-  "the composition lost dynamic schema"
-)
-assert_identical(
-  schema_ids(composition_responses[[3L]]),
-  c("r:c:0", "c:step:complete-compose-group:0", "c:step:complete-compose-formula:0"),
-  "the composition returned unstable derived identities"
-)
+  inspection_output <- dispatch("inspectStepPage", list(
+    sessionId = composition_session,
+    revision = composition_revision,
+    stepId = "complete-compose-group",
+    side = "output",
+    page = page_window()
+  ))
+  assert_identical(inspection_info$kind, "stepInspectionInfo", "the composition step was not inspectable")
+  assert_identical(inspection_info$stepIndex, 1L, "inspection returned the wrong composition prefix")
+  assert_identical(inspection_input$page$page$totalRows, 8L, "inspection returned the wrong group input")
+  assert_identical(inspection_output$page$page$totalRows, 2L, "inspection returned the wrong group output")
+  assert_identical(inspection_input$page$schema, NULL, "inspection duplicated the input schema")
+  assert_identical(inspection_output$page$schema, NULL, "inspection duplicated the output schema")
+  assert_true(
+    grepl("complete-compose-group", inspection_info$code, fixed = TRUE),
+    "inspection code omitted the selected plan prefix"
+  )
 
-inspection_info <- dispatch("inspectStepInfo", list(
-  sessionId = composition_session,
-  revision = composition_revision,
-  stepId = "complete-compose-group"
-))
-inspection_input <- dispatch("inspectStepPage", list(
-  sessionId = composition_session,
-  revision = composition_revision,
-  stepId = "complete-compose-group",
-  side = "input",
-  page = page_window()
-))
-inspection_output <- dispatch("inspectStepPage", list(
-  sessionId = composition_session,
-  revision = composition_revision,
-  stepId = "complete-compose-group",
-  side = "output",
-  page = page_window()
-))
-assert_identical(inspection_info$kind, "stepInspectionInfo", "the composition step was not inspectable")
-assert_identical(inspection_info$stepIndex, 1L, "inspection returned the wrong composition prefix")
-assert_identical(inspection_input$page$page$totalRows, 8L, "inspection returned the wrong group input")
-assert_identical(inspection_output$page$page$totalRows, 2L, "inspection returned the wrong group output")
-assert_identical(inspection_input$page$schema, NULL, "inspection duplicated the input schema")
-assert_identical(inspection_output$page$schema, NULL, "inspection duplicated the output schema")
-assert_true(
-  grepl("complete-compose-group", inspection_info$code, fixed = TRUE),
-  "inspection code omitted the selected plan prefix"
-)
+  composition_generated_environment <- new.env(parent = baseenv())
+  composition_generated_environment$complete_composition <- unserialize(composition_before)
+  final_composition_code <- composition_responses[[3L]]$code
+  eval(parse(text = final_composition_code, keep.source = FALSE), envir = composition_generated_environment)
+  assert_frame_identical(
+    composition_generated_environment$open_wrangler_result,
+    composition_outputs[[3L]],
+    "generated cardinality-changing composition diverged from live"
+  )
+  assert_identical(
+    serialize(composition_generated_environment$complete_composition, NULL, version = 3L),
+    composition_before,
+    "generated cardinality-changing composition mutated source"
+  )
 
-composition_generated_environment <- new.env(parent = baseenv())
-composition_generated_environment$complete_composition <- unserialize(composition_before)
-final_composition_code <- composition_responses[[3L]]$code
-eval(parse(text = final_composition_code, keep.source = FALSE), envir = composition_generated_environment)
-assert_frame_identical(
-  composition_generated_environment$open_wrangler_result,
-  composition_outputs[[3L]],
-  "generated cardinality-changing composition diverged from live"
-)
-assert_identical(
-  serialize(composition_generated_environment$complete_composition, NULL, version = 3L),
-  composition_before,
-  "generated cardinality-changing composition mutated source"
-)
+  composition_replay_session <- "00002004-2004-4204-8204-000000002004"
+  invisible(dispatch("openSession", list(
+    sessionId = composition_replay_session,
+    variableName = "complete_composition",
+    library = library,
+    page = page_window()
+  )))
+  replay_revision <- 0L
+  replay_final <- NULL
+  replay_applied <- NULL
+  for (index in seq_along(composition_steps)) {
+    latest_capture <- NULL
+    replay_preview <- dispatch("previewStep", list(
+      sessionId = composition_replay_session,
+      revision = replay_revision,
+      step = composition_steps[[index]],
+      page = page_window()
+    ))
+    assert_identical(replay_preview$kind, "stepPreview", sprintf("saved composition step %d did not replay", index))
+    replay_final <- snapshot_from_latest_capture(sprintf("saved composition step %d", index))
+    replay_applied <- dispatch("applyDraft", list(
+      sessionId = composition_replay_session,
+      revision = replay_preview$revision,
+      page = page_window()
+    ))
+    replay_revision <- replay_applied$revision
+  }
+  assert_frame_identical(replay_final, composition_outputs[[3L]], "saved full-plan replay changed composition output")
+  assert_identical(replay_applied$page, composition_responses[[3L]]$page, "saved full-plan replay changed identities")
+  assert_identical(replay_applied$code, final_composition_code, "saved full-plan replay changed generated code")
+  assert_identical(
+    dispatch("closeSession", list(sessionId = composition_replay_session))$kind,
+    "closed",
+    "the composition replay session did not close"
+  )
 
-composition_replay_session <- "00002004-2004-4204-8204-000000002004"
-invisible(dispatch("openSession", list(
-  sessionId = composition_replay_session,
-  variableName = "complete_composition",
-  page = page_window()
-)))
-replay_revision <- 0L
-replay_final <- NULL
-replay_applied <- NULL
-for (index in seq_along(composition_steps)) {
   latest_capture <- NULL
-  replay_preview <- dispatch("previewStep", list(
-    sessionId = composition_replay_session,
-    revision = replay_revision,
-    step = composition_steps[[index]],
+  undo_formula <- dispatch("undoStep", list(
+    sessionId = composition_session,
+    revision = composition_revision,
     page = page_window()
   ))
-  assert_identical(replay_preview$kind, "stepPreview", sprintf("saved composition step %d did not replay", index))
-  replay_final <- snapshot_from_latest_capture(sprintf("saved composition step %d", index))
-  replay_applied <- dispatch("applyDraft", list(
-    sessionId = composition_replay_session,
-    revision = replay_preview$revision,
+  assert_identical(undo_formula$action, "undo", "the composition formula did not undo")
+  assert_identical(undo_formula$page$page$totalRows, 2L, "undoing formula changed grouped cardinality")
+  assert_identical(
+    schema_ids(undo_formula),
+    c("r:c:0", "c:step:complete-compose-group:0"),
+    "undoing formula changed grouped schema"
+  )
+  undo_group <- dispatch("undoStep", list(
+    sessionId = composition_session,
+    revision = undo_formula$revision,
     page = page_window()
   ))
-  replay_revision <- replay_applied$revision
+  assert_identical(undo_group$action, "undo", "the composition group did not undo")
+  assert_identical(undo_group$page$page$totalRows, 8L, "undoing group did not restore filtered rows")
+  assert_identical(schema_ids(undo_group), paste0("r:c:", 0:2), "undoing group did not restore source schema")
+  redo_group <- dispatch("redoStep", list(sessionId = composition_session,
+    revision = undo_group$revision, expectedStepId = "complete-compose-group", page = page_window()))
+  assert_identical(redo_group$action, "redo", "the composition group did not redo")
+  redo_formula <- dispatch("redoStep", list(sessionId = composition_session,
+    revision = redo_group$revision, expectedStepId = "complete-compose-formula", page = page_window()))
+  assert_identical(redo_formula$action, "redo", "the composition formula did not redo")
+  assert_identical(redo_formula$page, composition_responses[[3L]]$page, "redo changed the confirmed final page")
+  assert_identical(redo_formula$code, final_composition_code, "redo changed the selected generated library")
+  assert_identical(
+    serialize(source_environment$complete_composition, NULL, version = 3L),
+    composition_before,
+    "live replay, inspection, or undo mutated the composition source"
+  )
+  assert_identical(
+    dispatch("closeSession", list(sessionId = composition_session))$kind,
+    "closed",
+    "the composition session did not close"
+  )
+  remove("complete_composition", envir = source_environment)
 }
-assert_frame_identical(replay_final, composition_outputs[[3L]], "saved full-plan replay changed composition output")
-assert_identical(replay_applied$page, composition_responses[[3L]]$page, "saved full-plan replay changed identities")
-assert_identical(replay_applied$code, final_composition_code, "saved full-plan replay changed generated code")
-assert_identical(
-  dispatch("closeSession", list(sessionId = composition_replay_session))$kind,
-  "closed",
-  "the composition replay session did not close"
-)
-
-latest_capture <- NULL
-undo_formula <- dispatch("undoStep", list(
-  sessionId = composition_session,
-  revision = composition_revision,
-  page = page_window()
-))
-assert_identical(undo_formula$action, "undo", "the composition formula did not undo")
-assert_identical(undo_formula$page$page$totalRows, 2L, "undoing formula changed grouped cardinality")
-assert_identical(
-  schema_ids(undo_formula),
-  c("r:c:0", "c:step:complete-compose-group:0"),
-  "undoing formula changed grouped schema"
-)
-undo_group <- dispatch("undoStep", list(
-  sessionId = composition_session,
-  revision = undo_formula$revision,
-  page = page_window()
-))
-assert_identical(undo_group$action, "undo", "the composition group did not undo")
-assert_identical(undo_group$page$page$totalRows, 8L, "undoing group did not restore filtered rows")
-assert_identical(schema_ids(undo_group), paste0("r:c:", 0:2), "undoing group did not restore source schema")
-assert_identical(
-  serialize(source_environment$complete_composition, NULL, version = 3L),
-  composition_before,
-  "live replay, inspection, or undo mutated the composition source"
-)
-assert_identical(
-  dispatch("closeSession", list(sessionId = composition_session))$kind,
-  "closed",
-  "the composition session did not close"
-)
-remove("complete_composition", envir = source_environment)
 
 source_environment$legacy_infinity_frame <- data.frame(value = c(-Inf, 0, Inf, NA_real_, NaN))
 legacy_infinity_before <- serialize(source_environment$legacy_infinity_frame, NULL, version = 3L)
@@ -1767,6 +1895,6 @@ remove("precise_fill_frame", envir = source_environment)
 
 agent$dispose()
 cat(paste0(
-  "complete native-R catalog contract passed: ", length(catalog_cases), " live/generated/replayed operations; ",
+  "complete native-R catalog contract passed: ", length(catalog_cases), " operations across four libraries; ",
   "inspection, undo, flavors, attributes, zero-row, >1024 chunk, and cardinality composition\n"
 ))

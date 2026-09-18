@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { link, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
+import { rLibraries } from "../shared/protocol";
 import {
   appliedStep,
   command,
@@ -40,8 +41,10 @@ describe("native export commands", () => {
     expect(nativeMocks.showErrorMessage).not.toHaveBeenCalled();
   });
 
-  it("uses an R script name and filter when exporting generated R code", async () => {
-    register(rNotebookSnapshot());
+  it.each(rLibraries)("uses an R script name and filter when exporting %s generated code", async (rLibrary) => {
+    const selected = rNotebookSnapshot();
+    selected.metadata.rLibrary = rLibrary;
+    register(selected);
 
     await expect(command("openWrangler.exportCode")()).resolves.toBe(false);
 

@@ -67,7 +67,7 @@ export function createReleasedRGridJourney({
       sessionId,
       "the native R renderer's first complete host snapshot"
     );
-    assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "R");
+    assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "BASE R");
     assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "VIEWING");
     await app
       .getByRole("rowheader", { name: "Row 1, label case-0001", exact: true })

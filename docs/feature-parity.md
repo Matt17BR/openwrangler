@@ -672,7 +672,44 @@ package and runtime versions, reliability review and publication verification. L
 
 The historical [R acceptance timeout](https://github.com/Matt17BR/openwrangler/issues/1088) remains unexplained;
 later passes do not establish its cause or recurrence rate. Unsupported grouped/indexed objects, full Quarto rendering,
-Windows managed-document execution and alternate dplyr/collapse code dialects remain outside this notebook scope.
+Windows managed-document execution remains outside this notebook scope. The 2.5.0 qualification predates the
+[selectable cleaning libraries](#r-cleaning-libraries) added in 2.6.
+
+### R cleaning libraries
+
+In **2.6**, new R sessions can select base R, dplyr, data.table or collapse for built-in cleaning and generated R.
+`openWrangler.defaultRLibrary` defaults to `base`; file restoration preserves its confirmed selection. File engine
+choices and the R toolbar show the library independently of the input's base `data.frame`, tibble or `data.table` class.
+
+| Choice     | Required package in the owning R environment                       |
+| ---------- | ------------------------------------------------------------------ |
+| Base R     | Existing native R operations; Pivot Wider also requires data.table |
+| dplyr      | dplyr 1.2.1 or newer                                               |
+| data.table | data.table 1.18.2.1 or newer                                       |
+| collapse   | collapse 2.1.7 or newer                                            |
+
+All choices retain the existing type and reader requirements. Base R keeps the established native R operations,
+including the data.table helper for Pivot Wider. Non-base choices use the selected package for dataframe
+verbs, including selection, assignment, sorting, grouping and reshaping.
+Exact scalar calculations and operation admission rules remain shared. Generated R uses the same selected verbs
+and package checks. Imports, profiling and export writers keep their shared native R implementations. Choosing
+dplyr does not convert the source to a tibble; choosing data.table or collapse likewise preserves the admitted frame class.
+Grouped and indexed objects remain unsupported. For data.table duplicate operations, the owning R environment's
+numeric-rounding option controls equality; other operation-specific limits below continue to apply.
+
+Choosing another library from an open R editor opens an **editing copy**. It starts from the captured original source
+and replays applied steps. The original remains open with its draft, redo history and view; these are not transferred
+to the copy. Applied Custom Code executes again after an explicit confirmation and may have side effects. If this
+editor already has a copy using the target library, use that copy. Separately opened live editors remain independent.
+An existing file editor or saved file plan for the target library must be opened separately rather than overwritten. For files, choose
+**Open file separately** in the confirmation to use that library's saved plan, or the original file if none exists.
+If the retained source is still live, it is verified and captured when the runtime opens the copy.
+Copies made from an already isolated source retain that snapshot.
+Opening the picker does not freeze live values. Live sessions remain tied to the exact kernel, terminal or document process; copying does not move work to another R environment.
+Missing or incompatible packages produce installation guidance for that environment and leave the original available.
+Old saved R file plans keep their base behavior; non-base libraries have separate saved plans.
+
+### Frames, cleaning and export limits
 
 Supported frames are base `data.frame`, tibble and `data.table`, including ordinary default `collapse::qDF()`,
 `qTBL()` and `qDT()` outputs. Grouped `GRP_df`, `indexed_frame`, unsupported attributes and unsupported cell classes

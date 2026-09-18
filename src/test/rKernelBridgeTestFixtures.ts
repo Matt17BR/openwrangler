@@ -145,7 +145,7 @@ export function fakeRKernelTransport(
   const previewQueue: RKernelStepPreviewResult[] = [];
   return {
     onDidInvalidateKernel: emitter.event,
-    open: vi.fn(async () => ({ sessionId: openedSessionId, page: contract, exportFormats })),
+    open: vi.fn(async () => ({ library: "base" as const, sessionId: openedSessionId, page: contract, exportFormats })),
     getPage: vi.fn(async () => contract),
     getSummary: vi.fn(async (_sessionId, columns) => columns.map((column) => rKernelSummaryFor(contract, column))),
     getDatasetStats: vi.fn(async () => ({

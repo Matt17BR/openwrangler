@@ -1747,7 +1747,7 @@ export function defaultExportUri(snapshot: ActiveSessionSnapshot, suffix: string
 
 function generatedScriptSaveOptions(snapshot: ActiveSessionSnapshot): vscode.SaveDialogOptions {
   const runtimeIdentity = runtimeIdentityForSessionMetadata(snapshot.metadata);
-  if (runtimeIdentity.codeDialect === "r.base") {
+  if (runtimeIdentity.runtimeLanguage === "r") {
     return {
       title: "Export Open Wrangler R Code",
       defaultUri: defaultExportUri(snapshot, ".clean.R"),

@@ -600,6 +600,7 @@ for (const [scope, selection, packages] of [
   ["default", {}, editorPackages],
   ["literate", { purpose: "literate-documents" }, editorPackages],
   ["notebook", { purpose: "notebook" }, notebookPackages],
+  ["core-operations", { purpose: "core-operations" }, [...notebookPackages, "dplyr"]],
   ...["value-operations", "categorical-operations", "pivot-wider"].map((purpose) => [
     purpose,
     { purpose },
@@ -619,6 +620,13 @@ for (const [scope, selection, packages] of [
     assert.equal(commandCode(prepared.dependencyProbe).includes("collapse::qDF("), packages.includes("collapse"));
     assert.deepEqual(prepared.packageVersions, versions);
     assert.equal(prepared.packageRecord, packages.map((name) => `${name}=${versions[name]}`).join("\n"));
+    if (scope === "core-operations") {
+      const install = commandCode(prepared.dependencyInstall);
+      assert.equal(prepared.packageVersions.dplyr, "1.2.1");
+      assert.match(prepared.supplementalRepository, /\/2026-06-01$/u);
+      assert.match(install, /\.ow_supplemental_packages <- c\("collapse", "nanoparquet", "dplyr"\)/u);
+      assert.match(install, /\.ow_core_packages <- setdiff\(\.ow_packages, \.ow_supplemental_packages\)/u);
+    }
     for (const value of [prepared, prepared.packages, prepared.packageVersions]) assert.ok(Object.isFrozen(value));
     assert.equal(fixture.commands.length, 1);
     assert.equal(fixture.commands[0].executable, fixture.rscript);
@@ -648,8 +656,8 @@ for (const [scope, selection, packages] of [
     assert.equal(prepared.dependencyProbe.options.timeoutMs, 30_000);
     assert.equal(prepared.dependencyInstall.options.timeoutMs, 1_200_000);
     assert.ok(Object.isFrozen(R_ACCEPTANCE_PACKAGE_VERSIONS));
-    assert.equal(prepared.packages.includes("bit64"), scope === "notebook");
-    assert.equal(prepared.packages.includes("readxl"), scope === "notebook");
+    assert.equal(prepared.packages.includes("bit64"), scope === "notebook" || scope === "core-operations");
+    assert.equal(prepared.packages.includes("readxl"), scope === "notebook" || scope === "core-operations");
     await assert.rejects(
       prepareJupyterAcceptanceREnvironment(fixture.directory, fixture.rscript, fixture.options),
       /new contained private environment/u

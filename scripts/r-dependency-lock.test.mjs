@@ -371,9 +371,9 @@ test("lock validation rejects cycles, unreachable extras, and inconsistent direc
   ownership.packages.find((entry) => entry.name === "rlang").direct = false;
   assert.throws(() => validateLock(ownership), /runtime roots/u);
 
-  const fixtureOwnership = clone(validLock());
-  fixtureOwnership.packages.find((entry) => entry.name === "collapse").direct = true;
-  assert.throws(() => validateLock(fixtureOwnership), /runtime roots/u);
+  const libraryOwnership = clone(validLock());
+  libraryOwnership.packages.find((entry) => entry.name === "collapse").direct = false;
+  assert.throws(() => validateLock(libraryOwnership), /runtime roots/u);
 });
 
 test("lock validation binds categorized roots and version 2 generation semantics", () => {
@@ -387,12 +387,13 @@ test("lock validation binds categorized roots and version 2 generation semantics
     "bit64",
     "rlang",
     "nanoparquet",
-    "readxl"
+    "readxl",
+    "collapse"
   ]);
-  assert.deepEqual(LOCK_ROOTS.fixtures, ["collapse"]);
+  assert.deepEqual(LOCK_ROOTS.fixtures, []);
   assert.deepEqual(lock.roots, LOCK_ROOTS);
   assert.equal(lock.packages.find((entry) => entry.name === "rlang").direct, true);
-  assert.equal(lock.packages.find((entry) => entry.name === "collapse").direct, false);
+  assert.equal(lock.packages.find((entry) => entry.name === "collapse").direct, true);
 
   const transitiveRlang = clone(lock);
   transitiveRlang.roots.runtime = transitiveRlang.roots.runtime.filter((name) => name !== "rlang");
@@ -404,11 +405,11 @@ test("lock validation binds categorized roots and version 2 generation semantics
   assert.throws(() => validateLock(duplicate), /duplicate packages/u);
 
   const crossCategory = clone(lock);
-  crossCategory.roots.runtime.push("collapse");
+  crossCategory.roots.fixtures.push("collapse");
   assert.throws(() => validateLock(crossCategory), /must be disjoint/u);
 
   const missing = clone(lock);
-  missing.roots.fixtures = [];
+  missing.roots.runtime = missing.roots.runtime.filter((name) => name !== "collapse");
   assert.throws(() => validateLock(missing), /exact ordered runtime and fixture roots/u);
 
   const missingRootPackage = clone(lock);

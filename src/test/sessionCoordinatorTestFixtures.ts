@@ -38,6 +38,7 @@ export function openedResponse(
     sessionId,
     revision: 0,
     backend,
+    ...(backend === "r" ? { rLibrary: "base" as const } : {}),
     mode: "editing",
     source: openRequest.source,
     capabilities: {
@@ -259,6 +260,7 @@ export function rDocumentOpened(source: ReturnType<typeof rDocumentSource>): Ses
       ...opened.metadata,
       backend: "r",
       rDataframeFlavor: "r.data.frame",
+      rLibrary: "base",
       source,
       capabilities: {
         editable: true,

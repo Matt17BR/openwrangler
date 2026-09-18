@@ -399,6 +399,7 @@ assert_identical(
 
 pivot_wider_duplicate_session <- "f2f2f2f2-f2f2-42f2-82f2-f2f2f2f2f2f2"
 pivot_wider_duplicate <- data.frame(group = c(1L, 1L), key = c("a", "a"), reading = c(1L, 1L))
+pivot_wider_duplicate_before <- serialize(pivot_wider_duplicate, NULL, version = 3L)
 assign("pivot_wider_duplicate", pivot_wider_duplicate, envir = source_environment)
 assert_identical(dispatch("openSession", list(
   sessionId = pivot_wider_duplicate_session,
@@ -447,14 +448,33 @@ assert_identical(pivot_wider_over_limit_response$kind, "error", "Pivot wider acc
 if (!grepl("canonical present string selection token", pivot_wider_over_limit_response$message, fixed = TRUE)) {
   stop("Pivot wider rejected an oversized typed key at the wrong boundary", call. = FALSE)
 }
-pivot_wider_duplicate_response <- dispatch("previewStep", list(
-  sessionId = pivot_wider_duplicate_session,
-  revision = 0L,
-  step = pivot_wider_step(pivot_wider_duplicate, "pivot-wider-duplicate"),
-  page = page_window()
-))
-assert_identical(pivot_wider_duplicate_response$kind, "error", "Pivot wider accepted a duplicate identifier/key pair")
-assert_identical(pivot_wider_duplicate_response$recoverable, TRUE, "Pivot wider duplicate failure was not recoverable")
+for (library in c("base", "dplyr", "data.table", "collapse")) {
+  selected_session <- if (identical(library, "base")) pivot_wider_duplicate_session else "f5f5f5f5-f5f5-45f5-85f5-f5f5f5f5f5f5"
+  if (!identical(library, "base")) {
+    selected_open <- dispatch("openSession", list(sessionId = selected_session,
+      variableName = "pivot_wider_duplicate", page = page_window(), library = library))
+    assert_identical(selected_open$kind, "page", "selected Pivot wider duplicate fixture did not open")
+    assert_identical(selected_open$library, library, "Pivot wider failure fixture did not confirm its library")
+  }
+  confirmed <- dispatch("getPage", list(sessionId = selected_session, page = page_window()))
+  for (invalid_case in c("undeclared-key", "duplicate-pair")) {
+    invalid_step <- pivot_wider_step(pivot_wider_duplicate, paste0("pivot-wider-", invalid_case))
+    if (identical(invalid_case, "undeclared-key")) invalid_step$params$outputs[[1L]]$key <- pivot_wider_key("undeclared")
+    rejected <- dispatch("previewStep", list(sessionId = selected_session, revision = 0L,
+      step = invalid_step, page = page_window()))
+    label <- paste(library, "Pivot wider", invalid_case)
+    assert_identical(rejected$kind, "error", paste(label, "was accepted"))
+    assert_identical(rejected$code, "invalid_request", paste(label, "changed its diagnostic"))
+    assert_identical(rejected$recoverable, TRUE, paste(label, "was not recoverable"))
+    assert_identical(dispatch("getPage", list(sessionId = selected_session, page = page_window())), confirmed,
+      paste(label, "changed the confirmed revision or page"))
+    assert_identical(serialize(get("pivot_wider_duplicate", envir = source_environment), NULL, version = 3L),
+      pivot_wider_duplicate_before, paste(label, "mutated its source"))
+  }
+  if (!identical(library, "base")) {
+    assert_identical(dispatch("closeSession", list(sessionId = selected_session))$kind, "closed", "selected Pivot wider failure session did not close")
+  }
+}
 
 assert_identical(dispatch("closeSession", list(sessionId = pivot_wider_session))$kind, "closed", "Pivot wider did not close")
 assert_identical(dispatch("closeSession", list(sessionId = pivot_wider_duplicate_session))$kind, "closed", "Pivot wider duplicate session did not close")

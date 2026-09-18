@@ -129,6 +129,16 @@ export class SessionRequestScheduler {
     return Boolean(viewRequestId && this.cancelledActiveViewRequestIds.has(viewRequestId));
   }
 
+  hasPendingRequest(predicate: (request: SessionBoundRequest) => boolean): boolean {
+    return (
+      (this.activeForegroundRequest !== undefined && predicate(this.activeForegroundRequest)) ||
+      (this.activeBackgroundRequest !== undefined && predicate(this.activeBackgroundRequest)) ||
+      this.interactiveQueue.some(({ request }) => predicate(request)) ||
+      this.backgroundQueue.some(({ request }) => predicate(request)) ||
+      (this.terminalOperation !== undefined && predicate(this.terminalOperation.request))
+    );
+  }
+
   checkpoint(requestKind: SessionBoundRequest["kind"], viewRequestId: string): ScheduledRequestCheckpoint | undefined {
     if (viewRequestId.length === 0) return undefined;
     const checkpoints: ScheduledRequestCheckpoint[] = [];

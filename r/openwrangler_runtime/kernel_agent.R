@@ -1,5 +1,5 @@
 openwrangler_r_kernel_agent <- local({
-  transport_version <- 16L
+  transport_version <- 17L
   maximum_identifier_bytes <- 128L
   maximum_name_bytes <- 1024L
   maximum_variable_name_bytes <- 1024L
@@ -3932,6 +3932,7 @@ openwrangler_r_kernel_agent <- local({
       namesFrom = names_from,
       valuesFrom = values_from,
       retainedPositions = as.integer(retained_positions),
+      integer64Keys = any(vapply(schema[retained_positions], function(column) identical(column$semantics$kind, "integer64"), logical(1L))),
       removedNames = c(names_from$name, values_from$name),
       outputKeys = output_keys,
       outputNames = output_names,
@@ -5149,7 +5150,7 @@ openwrangler_r_kernel_agent <- local({
     )
   }
 
-  apply_step <- function(frame_contract, capture, step, source_environment, variable_name) {
+  apply_step <- function(frame_contract, capture, step, source_environment, variable_name, library) {
     source <- get("snapshot", envir = capture, inherits = FALSE)
     if (identical(step$kind, "customCode")) {
       return(evaluate_custom_code(
@@ -5167,7 +5168,7 @@ openwrangler_r_kernel_agent <- local({
         model <- step$params$filterModel
         list(logic = model$logic, filters = model$filters, sorts = model$sort)
       }
-      transformed <- frame_contract$transform_rows(capture, view)
+      transformed <- frame_contract$transform_rows(capture, view, library = library)
       bound <- bind_row_step(capture, step, transformed$resolved)
       return(list(
         capture = frame_contract$capture_frame(
@@ -5183,7 +5184,7 @@ openwrangler_r_kernel_agent <- local({
       arms <- step$params[c("trueValue", "falseValue", "missingValue")]
       transformed <- frame_contract$conditional_column(capture,
         list(column = step$params$column, type = step$params$columnType, predicates = list(step$params$predicate)),
-        step$params$newColumn, step$params$resultType, arms)
+        step$params$newColumn, step$params$resultType, arms, library = library)
       filter <- bind_row_filter(capture, transformed$filter)
       bound <- list(id = step$id, kind = step$kind, position = filter$position, oldName = filter$name,
         newName = step$params$newColumn, outputId = step$outputId, condition = filter,
@@ -5200,9 +5201,9 @@ openwrangler_r_kernel_agent <- local({
       positions <- vapply(bound$columns, `[[`, integer(1L), "position", USE.NAMES = FALSE)
       names <- vapply(bound$columns, `[[`, character(1L), "name", USE.NAMES = FALSE)
       transformed <- if (identical(step$kind, "dropMissingRows")) {
-        frame_contract$drop_missing_rows_at(source, positions, names, bound$mode)
+        frame_contract$drop_missing_rows_at(source, positions, names, bound$mode, library = library)
       } else {
-        frame_contract$drop_duplicate_rows_at(source, positions, names, bound$mode)
+        frame_contract$drop_duplicate_rows_at(source, positions, names, bound$mode, library = library)
       }
       return(list(
         capture = frame_contract$capture_frame(
@@ -5232,7 +5233,8 @@ openwrangler_r_kernel_agent <- local({
         aggregation_positions,
         vapply(bound$aggregations, `[[`, character(1L), "name", USE.NAMES = FALSE),
         operations,
-        vapply(bound$aggregations, `[[`, character(1L), "alias", USE.NAMES = FALSE)
+        vapply(bound$aggregations, `[[`, character(1L), "alias", USE.NAMES = FALSE),
+        library = library
       )
       output_ids <- c(
         vapply(bound$keys, `[[`, character(1L), "id", USE.NAMES = FALSE),
@@ -5252,7 +5254,7 @@ openwrangler_r_kernel_agent <- local({
     }
     if (identical(step$kind, "renameColumn")) {
       bound <- bind_rename_step(capture, step)
-      result <- frame_contract$rename_column_at(source, bound$position, bound$oldName, bound$newName)
+      result <- frame_contract$rename_column_at(source, bound$position, bound$oldName, bound$newName, library = library)
       return(list(
         capture = frame_contract$capture_frame(
           result,
@@ -5270,12 +5272,12 @@ openwrangler_r_kernel_agent <- local({
       new_names <- if (is.null(fields)) NULL else vapply(step$params$fields, `[[`, character(1L), "newColumn")
       bound <- list(id = step$id, kind = step$kind, position = as.integer(matches[[1L]]), schema = schema,
         fields = fields, newNames = new_names, outputIds = step$outputIds, identityDomain = capture$rowIdentityDomain)
-      result <- frame_contract$nested_operation_frame(source, schema, bound$position, fields, new_names, capture$rowIdentityDomain)
+      result <- frame_contract$nested_operation_frame(source, schema, bound$position, fields, new_names, capture$rowIdentityDomain, library = library)
       return(list(capture = frame_contract$capture_nested_result(result, capture, bound$position, fields, step$outputIds), bound = bound))
     }
     if (identical(step$kind, "cloneColumn")) {
       bound <- bind_clone_step(capture, step)
-      result <- frame_contract$clone_column_at(source, bound$position, bound$oldName, bound$newName)
+      result <- frame_contract$clone_column_at(source, bound$position, bound$oldName, bound$newName, library = library)
       capture_schema <- unclass(capture$descriptor$schema)
       attributes(capture_schema) <- NULL
       source_positions <- c(seq_along(capture_schema), bound$position)
@@ -5304,7 +5306,8 @@ openwrangler_r_kernel_agent <- local({
         expected_names,
         bound$newName,
         bound$resultKind,
-        function(columns) generated_by_example_evaluate(bound$program, columns)
+        function(columns) generated_by_example_evaluate(bound$program, columns),
+        library = library
       )
       source_positions <- c(seq_along(capture$descriptor$schema), positions[[1L]])
       output_ids <- c(
@@ -5334,7 +5337,8 @@ openwrangler_r_kernel_agent <- local({
         bound$newName,
         if (is.null(bound$right)) NULL else bound$right$position,
         if (is.null(bound$right)) NULL else bound$right$name,
-        bound$value
+        bound$value,
+        library = library
       )
       source_positions <- c(seq_along(capture$descriptor$schema), bound$left$position)
       output_ids <- c(
@@ -5355,7 +5359,7 @@ openwrangler_r_kernel_agent <- local({
     }
     if (identical(step$kind, "textLength")) {
       bound <- bind_text_length_step(capture, step)
-      result <- frame_contract$text_length_column_at(source, bound$position, bound$oldName, bound$newName)
+      result <- frame_contract$text_length_column_at(source, bound$position, bound$oldName, bound$newName, library = library)
       source_positions <- c(seq_along(capture$descriptor$schema), bound$position)
       output_ids <- c(
         vapply(capture$descriptor$schema, `[[`, character(1L), "id", USE.NAMES = FALSE),
@@ -5380,7 +5384,8 @@ openwrangler_r_kernel_agent <- local({
           vapply(bound$columns, `[[`, integer(1L), "position", USE.NAMES = FALSE),
           vapply(bound$columns, `[[`, character(1L), "name", USE.NAMES = FALSE),
           bound$prefixSeparator,
-          bound$dropOriginal
+          bound$dropOriginal,
+          library = library
         )
       } else {
         frame_contract$multi_label_binarize_column_at(
@@ -5389,7 +5394,8 @@ openwrangler_r_kernel_agent <- local({
           bound$columns[[1L]]$name,
           bound$delimiter,
           bound$prefix,
-          bound$dropOriginal
+          bound$dropOriginal,
+          library = library
         )
       }
       if (
@@ -5461,15 +5467,16 @@ openwrangler_r_kernel_agent <- local({
       new_name <- if (isTRUE(bound$inPlace)) NULL else bound$newName
       result <- switch(
         step$kind,
-        lowerText = frame_contract$lower_text_column_at(source, bound$position, bound$oldName, new_name),
-        upperText = frame_contract$upper_text_column_at(source, bound$position, bound$oldName, new_name),
-        capitalizeText = frame_contract$capitalize_text_column_at(source, bound$position, bound$oldName, new_name),
+        lowerText = frame_contract$lower_text_column_at(source, bound$position, bound$oldName, new_name, library = library),
+        upperText = frame_contract$upper_text_column_at(source, bound$position, bound$oldName, new_name, library = library),
+        capitalizeText = frame_contract$capitalize_text_column_at(source, bound$position, bound$oldName, new_name, library = library),
         stripText = frame_contract$strip_text_column_at(
           source,
           bound$position,
           bound$oldName,
           bound$characters,
-          new_name
+          new_name,
+          library = library
         ),
         splitText = frame_contract$split_text_column_at(
           source,
@@ -5477,7 +5484,8 @@ openwrangler_r_kernel_agent <- local({
           bound$oldName,
           bound$delimiter,
           bound$index,
-          new_name
+          new_name,
+          library = library
         ),
         findReplace = frame_contract$find_replace_column_at(
           source,
@@ -5486,7 +5494,8 @@ openwrangler_r_kernel_agent <- local({
           bound$find,
           bound$replacement,
           bound$regex,
-          new_name
+          new_name,
+          library = library
         )
       )
       if (isTRUE(bound$inPlace)) {
@@ -5519,7 +5528,8 @@ openwrangler_r_kernel_agent <- local({
         bound$position,
         bound$oldName,
         bound$delimiter,
-        bound$newNames
+        bound$newNames,
+        library = library
       )
       source_positions <- c(
         seq_along(capture$descriptor$schema),
@@ -5551,7 +5561,8 @@ openwrangler_r_kernel_agent <- local({
           bound$selectedNames,
           bound$labelName,
           bound$valueName,
-          bound$outputIds
+          bound$outputIds,
+          library = library
         ),
         bound = bound
       ))
@@ -5568,7 +5579,8 @@ openwrangler_r_kernel_agent <- local({
           bound$valuesFrom$name,
           bound$outputKeys,
           bound$outputNames,
-          bound$outputIds
+          bound$outputIds,
+          library = library
         ),
         bound = bound
       ))
@@ -5582,7 +5594,8 @@ openwrangler_r_kernel_agent <- local({
         bound$pattern,
         bound$group,
         bound$newName,
-        bound$participationPattern
+        bound$participationPattern,
+        library = library
       )
       return(list(
         capture = frame_contract$capture_frame(
@@ -5602,7 +5615,7 @@ openwrangler_r_kernel_agent <- local({
       bound <- bind_row_reduction_step(capture, step)
       result <- frame_contract$mark_duplicate_rows_at(source,
         vapply(bound$columns, `[[`, integer(1L), "position", USE.NAMES = FALSE),
-        vapply(bound$columns, `[[`, character(1L), "name", USE.NAMES = FALSE), bound$newName)
+        vapply(bound$columns, `[[`, character(1L), "name", USE.NAMES = FALSE), bound$newName, library = library)
       return(list(capture = frame_contract$capture_frame(
         result, nullability_source = capture,
         source_positions = c(seq_along(capture$descriptor$schema), bound$position),
@@ -5614,7 +5627,7 @@ openwrangler_r_kernel_agent <- local({
 
     if (identical(step$kind, "denseRank")) {
       bound <- bind_numeric_transform_step(capture, step)
-      result <- frame_contract$dense_rank_column_at(source, bound$position, bound$oldName, bound$newName, bound$direction)
+      result <- frame_contract$dense_rank_column_at(source, bound$position, bound$oldName, bound$newName, bound$direction, library = library)
       return(list(capture = frame_contract$capture_frame(
         result, nullability_source = capture,
         source_positions = c(seq_along(capture$descriptor$schema), bound$position),
@@ -5632,26 +5645,30 @@ openwrangler_r_kernel_agent <- local({
           source,
           bound$position,
           bound$oldName,
-          new_name
+          new_name,
+          library = library
         ),
         roundNumber = frame_contract$round_number_column_at(
           source,
           bound$position,
           bound$oldName,
           bound$decimals,
-          new_name
+          new_name,
+          library = library
         ),
         floorNumber = frame_contract$floor_number_column_at(
           source,
           bound$position,
           bound$oldName,
-          new_name
+          new_name,
+          library = library
         ),
         ceilNumber = frame_contract$ceil_number_column_at(
           source,
           bound$position,
           bound$oldName,
-          new_name
+          new_name,
+          library = library
         )
       )
       if (isTRUE(bound$inPlace)) {
@@ -5685,7 +5702,8 @@ openwrangler_r_kernel_agent <- local({
         bound$position,
         bound$oldName,
         bound$format,
-        if (isTRUE(bound$inPlace)) NULL else bound$newName
+        if (isTRUE(bound$inPlace)) NULL else bound$newName,
+        library = library
       )
       if (isTRUE(bound$inPlace)) {
         source_positions <- seq_along(capture$descriptor$schema)
@@ -5722,7 +5740,8 @@ openwrangler_r_kernel_agent <- local({
           bound$position,
           bound$oldName,
           vapply(bound$fallbackColumns, `[[`, integer(1L), "position", USE.NAMES = FALSE),
-          vapply(bound$fallbackColumns, `[[`, character(1L), "oldName", USE.NAMES = FALSE)
+          vapply(bound$fallbackColumns, `[[`, character(1L), "oldName", USE.NAMES = FALSE),
+          library = library
         )
       } else if (directional_fill) {
         frame_contract$fill_missing_directional_at(
@@ -5734,7 +5753,8 @@ openwrangler_r_kernel_agent <- local({
           vapply(bound$orderBy, `[[`, character(1L), "direction", USE.NAMES = FALSE),
           vapply(bound$orderBy, `[[`, character(1L), "nulls", USE.NAMES = FALSE),
           bound$replacement$direction,
-          bound$replacement$maxGap
+          bound$replacement$maxGap,
+          library = library
         )
       } else if (grouped_fill) {
         frame_contract$fill_missing_grouped_statistic_at(
@@ -5743,7 +5763,8 @@ openwrangler_r_kernel_agent <- local({
           bound$oldName,
           vapply(bound$groupKeys, `[[`, integer(1L), "position", USE.NAMES = FALSE),
           vapply(bound$groupKeys, `[[`, character(1L), "name", USE.NAMES = FALSE),
-          bound$replacement$statistic
+          bound$replacement$statistic,
+          library = library
         )
       } else if (interpolation_fill) {
         frame_contract$fill_missing_linear_interpolation_at(
@@ -5752,14 +5773,16 @@ openwrangler_r_kernel_agent <- local({
           bound$oldName,
           bound$interpolationCoordinate$position,
           bound$interpolationCoordinate$name,
-          bound$replacement$maxGap
+          bound$replacement$maxGap,
+          library = library
         )
       } else {
         frame_contract$fill_missing_column_at(
           source,
           bound$position,
           bound$oldName,
-          bound$replacement
+          bound$replacement,
+          library = library
         )
       }
       return(list(
@@ -5775,7 +5798,7 @@ openwrangler_r_kernel_agent <- local({
     }
     if (identical(step$kind, "castColumn")) {
       bound <- bind_cast_step(capture, step)
-      result <- frame_contract$cast_column_at(source, bound$position, bound$oldName, bound$dtype, bound$inputFormat)
+      result <- frame_contract$cast_column_at(source, bound$position, bound$oldName, bound$dtype, bound$inputFormat, library = library)
       return(list(
         capture = frame_contract$capture_frame(
           result,
@@ -5791,7 +5814,7 @@ openwrangler_r_kernel_agent <- local({
       bound <- bind_drop_step(capture, step)
       positions <- vapply(bound$columns, `[[`, integer(1L), "position", USE.NAMES = FALSE)
       names <- vapply(bound$columns, `[[`, character(1L), "name", USE.NAMES = FALSE)
-      result <- frame_contract$drop_columns_at(source, positions, names)
+      result <- frame_contract$drop_columns_at(source, positions, names, library = library)
       keep_positions <- setdiff(seq_along(capture$descriptor$schema), positions)
       return(list(
         capture = frame_contract$capture_frame(
@@ -5806,7 +5829,7 @@ openwrangler_r_kernel_agent <- local({
       bound <- bind_select_step(capture, step)
       positions <- vapply(bound$columns, `[[`, integer(1L), "position", USE.NAMES = FALSE)
       names <- vapply(bound$columns, `[[`, character(1L), "name", USE.NAMES = FALSE)
-      result <- frame_contract$select_columns_at(source, positions, names)
+      result <- frame_contract$select_columns_at(source, positions, names, library = library)
       return(list(
         capture = frame_contract$capture_frame(
           result,
@@ -5819,7 +5842,7 @@ openwrangler_r_kernel_agent <- local({
     abort("unsupported_operation", sprintf("The native R runtime does not support %s", step$kind))
   }
 
-  replay_plan <- function(frame_contract, original, plan, source_environment, variable_name) {
+  replay_plan <- function(frame_contract, original, plan, source_environment, variable_name, library) {
     capture <- original
     bound_plan <- vector("list", length(plan))
     if (length(plan) != 0L) {
@@ -5829,7 +5852,8 @@ openwrangler_r_kernel_agent <- local({
           capture,
           plan[[index]],
           source_environment,
-          variable_name
+          variable_name,
+          library
         )
         capture <- applied$capture
         bound_plan[[index]] <- applied$bound
@@ -6138,7 +6162,7 @@ openwrangler_r_kernel_agent <- local({
     )
   }
 
-  row_sort_code_lines <- function(rules, initialize = TRUE) {
+  row_sort_code_lines <- function(rules, initialize = TRUE, library = "base") {
     lines <- if (isTRUE(initialize)) c("  # Sort rows", "  .ow_rows <- seq_len(nrow(.ow_result))") else "  # Sort filtered rows"
     for (rule_index in rev(seq_along(rules))) {
       rule <- rules[[rule_index]]
@@ -6147,20 +6171,26 @@ openwrangler_r_kernel_agent <- local({
         row_column_lines(rule, ".ow_sort_column"),
         "  .ow_sort_values <- .ow_sort_column[.ow_rows]",
         "  .ow_sort_missing <- is.na(.ow_sort_values)",
-        "  .ow_sort_present <- which(!.ow_sort_missing)",
-        sprintf(
-          "  .ow_sort_levels <- sort(unique(.ow_sort_values[.ow_sort_present]), decreasing = %s, na.last = NA, method = \"radix\")",
-          if (identical(rule$direction, "desc")) "TRUE" else "FALSE"
-        ),
-        "  .ow_sort_order <- base::order(match(.ow_sort_values[.ow_sort_present], .ow_sort_levels), method = \"radix\")",
-        "  .ow_sorted_rows <- .ow_rows[.ow_sort_present[.ow_sort_order]]",
-        sprintf(
-          "  .ow_rows <- %s",
-          if (identical(rule$nulls, "first")) {
-            "c(.ow_rows[.ow_sort_missing], .ow_sorted_rows)"
-          } else {
-            "c(.ow_sorted_rows, .ow_rows[.ow_sort_missing])"
-          }
+        if (!identical(library, "base")) sprintf(
+          "  .ow_rows <- .ow_rows[.ow_library_helpers$library_order(list(%s, .ow_sort_values), c(1L, %dL), .ow_library, .ow_exact_integer64_text)]",
+          if (identical(rule$nulls, "first")) "!.ow_sort_missing" else ".ow_sort_missing",
+          if (identical(rule$direction, "desc")) -1L else 1L
+        ) else c(
+          "  .ow_sort_present <- which(!.ow_sort_missing)",
+          sprintf(
+            "  .ow_sort_levels <- sort(unique(.ow_sort_values[.ow_sort_present]), decreasing = %s, na.last = NA, method = \"radix\")",
+            if (identical(rule$direction, "desc")) "TRUE" else "FALSE"
+          ),
+          "  .ow_sort_order <- base::order(match(.ow_sort_values[.ow_sort_present], .ow_sort_levels), method = \"radix\")",
+          "  .ow_sorted_rows <- .ow_rows[.ow_sort_present[.ow_sort_order]]",
+          sprintf(
+            "  .ow_rows <- %s",
+            if (identical(rule$nulls, "first")) {
+              "c(.ow_rows[.ow_sort_missing], .ow_sorted_rows)"
+            } else {
+              "c(.ow_sorted_rows, .ow_rows[.ow_sort_missing])"
+            }
+          )
         )
       )
     }
@@ -6205,14 +6235,14 @@ openwrangler_r_kernel_agent <- local({
     )
   }
 
-  row_step_code_lines <- function(step) {
+  row_step_code_lines <- function(step, library = "base") {
     if (identical(step$kind, "sortRows")) {
-      lines <- row_sort_code_lines(step$rules)
+      lines <- row_sort_code_lines(step$rules, library = library)
       sorted <- TRUE
     } else {
       lines <- row_filter_code_lines(step$filterModel)
       sorted <- length(step$filterModel$sort) > 0L
-      if (sorted) lines <- c(lines, row_sort_code_lines(step$filterModel$sort, initialize = FALSE))
+      if (sorted) lines <- c(lines, row_sort_code_lines(step$filterModel$sort, initialize = FALSE, library = library))
     }
     specifications <- if (identical(step$kind, "sortRows")) {
       step$rules
@@ -6232,12 +6262,12 @@ openwrangler_r_kernel_agent <- local({
     }
     c(
       lines,
-      "  .ow_result <- if (inherits(.ow_result, \"data.table\")) .ow_result[.ow_rows] else .ow_result[.ow_rows, , drop = FALSE]",
+      if (!identical(library, "base")) "  .ow_result <- .ow_library_helpers$library_rows(.ow_result, .ow_rows, .ow_library)" else "  .ow_result <- if (inherits(.ow_result, \"data.table\")) .ow_result[.ow_rows] else .ow_result[.ow_rows, , drop = FALSE]",
       if (sorted) "  if (inherits(.ow_result, \"data.table\")) data.table::setkey(.ow_result, NULL)" else character()
     )
   }
 
-  row_reduction_code_lines <- function(step) {
+  row_reduction_code_lines <- function(step, library = "base") {
     positions <- vapply(step$columns, `[[`, integer(1L), "position", USE.NAMES = FALSE)
     names <- vapply(step$columns, `[[`, character(1L), "name", USE.NAMES = FALSE)
     position_code <- if (length(positions) == 0L) {
@@ -6266,11 +6296,11 @@ openwrangler_r_kernel_agent <- local({
       lines <- c(
         lines,
         "  .ow_compared <- if (inherits(.ow_result, \"data.table\")) .ow_result[, .ow_row_columns, with = FALSE] else .ow_result[.ow_row_columns]",
-        sprintf(
+        if (!identical(library, "base")) sprintf("  .ow_duplicate <- .ow_library_helpers$library_duplicates(.ow_compared, %s, .ow_library, .ow_exact_integer64_text)", r_string(step$mode)) else sprintf(
           "  .ow_duplicate <- .ow_duplicate_row_mask(.ow_compared, %s, %s)",
           r_string(step$mode),
           if (any(vapply(step$columns, function(column) identical(column$semanticsKind, "integer64"), logical(1L)))) {
-            ".ow_duplicate_integer64_text"
+            ".ow_exact_integer64_text"
           } else "NULL"
         ),
         "  .ow_rows <- which(!.ow_duplicate)"
@@ -6278,7 +6308,7 @@ openwrangler_r_kernel_agent <- local({
     }
     c(
       lines,
-      "  .ow_result <- if (inherits(.ow_result, \"data.table\")) .ow_result[.ow_rows] else .ow_result[.ow_rows, , drop = FALSE]"
+      if (!identical(library, "base")) "  .ow_result <- .ow_library_helpers$library_rows(.ow_result, .ow_rows, .ow_library)" else "  .ow_result <- if (inherits(.ow_result, \"data.table\")) .ow_result[.ow_rows] else .ow_result[.ow_rows, , drop = FALSE]"
     )
   }
 
@@ -6538,7 +6568,7 @@ openwrangler_r_kernel_agent <- local({
           "    .ow_coordinate_values <- as.double(.ow_coordinate)",
           "    if (anyNA(.ow_coordinate_values) || any(!is.finite(.ow_coordinate_values))) stop(\"Every interpolation coordinate must be present and finite\", call. = FALSE)",
           "    if (base::anyDuplicated.default(.ow_coordinate_values)) stop(\"Interpolation coordinates must be unique\", call. = FALSE)",
-          "    .ow_rows <- order(.ow_coordinate_values, method = \"radix\")",
+          "    .ow_rows <- if (identical(.ow_library, \"base\")) order(.ow_coordinate_values, method = \"radix\") else .ow_library_helpers$library_order(list(.ow_coordinate_values), 1L, .ow_library)",
           "    .ow_result_values <- .ow_values",
           "    .ow_ordered_values <- .ow_result_values[.ow_rows]",
           "    .ow_missing <- is.na(.ow_ordered_values)",
@@ -6580,28 +6610,15 @@ openwrangler_r_kernel_agent <- local({
         "    .ow_result_values <- .ow_values",
         "    .ow_count <- length(.ow_rows)",
         "    if (.ow_count == 0L || !anyNA(.ow_result_values)) return(.ow_result_values)",
-        "    .ow_same_group <- rep(TRUE, max(0L, .ow_count - 1L))",
-        "    if (.ow_count > 1L) {",
-        "      .ow_left_rows <- .ow_rows[-.ow_count]; .ow_right_rows <- .ow_rows[-1L]",
-        "      for (.ow_key in .ow_keys) {",
-        "        .ow_left <- .ow_key[.ow_left_rows]; .ow_right <- .ow_key[.ow_right_rows]",
-        "        .ow_left_missing <- is.na(.ow_left); .ow_right_missing <- is.na(.ow_right)",
-        "        .ow_equal <- (.ow_left_missing & .ow_right_missing) | (!.ow_left_missing & !.ow_right_missing & .ow_left == .ow_right)",
-        "        .ow_equal[is.na(.ow_equal)] <- FALSE",
-        "        .ow_same_group <- .ow_same_group & .ow_equal",
-        "      }",
-        "    }",
-        "    .ow_starts <- c(1L, which(!.ow_same_group) + 1L); .ow_ends <- c(.ow_starts[-1L] - 1L, .ow_count)",
-        "    for (.ow_group_index in seq_along(.ow_starts)) {",
-        "      .ow_group_rows <- .ow_rows[.ow_starts[[.ow_group_index]]:.ow_ends[[.ow_group_index]]]",
+        "    .ow_evaluate_group <- function(.ow_group_rows) {",
         "      .ow_missing_rows <- .ow_group_rows[is.na(.ow_result_values[.ow_group_rows])]",
-        "      if (length(.ow_missing_rows) == 0L) next",
+        "      if (length(.ow_missing_rows) == 0L) return(invisible(NULL))",
         "      .ow_present <- .ow_result_values[.ow_group_rows[!is.na(.ow_result_values[.ow_group_rows])]]",
-        "      if (length(.ow_present) == 0L) next",
+        "      if (length(.ow_present) == 0L) return(invisible(NULL))",
         "      .ow_fill <- NULL",
         "      if (.ow_statistic == \"mean\") {",
         "        .ow_positive_infinity <- any(is.infinite(.ow_present) & .ow_present > 0); .ow_negative_infinity <- any(is.infinite(.ow_present) & .ow_present < 0)",
-        "        if (.ow_positive_infinity && .ow_negative_infinity) next",
+        "        if (.ow_positive_infinity && .ow_negative_infinity) return(invisible(NULL))",
         "        if (.ow_positive_infinity) { .ow_fill <- Inf } else if (.ow_negative_infinity) { .ow_fill <- -Inf } else {",
         "          .ow_fill <- exact_binary64_mean(.ow_present)",
         "        }",
@@ -6631,7 +6648,7 @@ openwrangler_r_kernel_agent <- local({
         "          } else {",
         "            .ow_lower / 2 + .ow_upper / 2",
         "          }",
-        "          if (is.nan(.ow_fill)) next",
+        "          if (is.nan(.ow_fill)) return(invisible(NULL))",
         "          if (.ow_semantic_kind == \"integer\") {",
         "            if (!is.finite(.ow_fill) || .ow_fill != floor(.ow_fill)) stop(\"Open Wrangler grouped integer median is not an integer\", call. = FALSE)",
         "            .ow_fill <- as.integer(.ow_fill)",
@@ -6641,10 +6658,27 @@ openwrangler_r_kernel_agent <- local({
         "      } else {",
         "        .ow_candidates <- unique(.ow_present); .ow_counts <- tabulate(match(.ow_present, .ow_candidates), nbins = length(.ow_candidates))",
         "        .ow_winners <- which(.ow_counts == max(.ow_counts))",
-        "        if (length(.ow_winners) != 1L) next",
+        "        if (length(.ow_winners) != 1L) return(invisible(NULL))",
         "        .ow_fill <- .ow_candidates[[.ow_winners[[1L]]]]",
         "      }",
-        "      .ow_result_values[.ow_missing_rows] <- .ow_fill",
+        "      .ow_result_values[.ow_missing_rows] <<- .ow_fill",
+        "    }",
+        "    if (identical(.ow_library, \"base\")) {",
+        "      .ow_same_group <- rep(TRUE, max(0L, .ow_count - 1L))",
+        "      if (.ow_count > 1L) {",
+        "        .ow_left_rows <- .ow_rows[-.ow_count]; .ow_right_rows <- .ow_rows[-1L]",
+        "        for (.ow_key in .ow_keys) {",
+        "          .ow_left <- .ow_key[.ow_left_rows]; .ow_right <- .ow_key[.ow_right_rows]",
+        "          .ow_left_missing <- is.na(.ow_left); .ow_right_missing <- is.na(.ow_right)",
+        "          .ow_equal <- (.ow_left_missing & .ow_right_missing) | (!.ow_left_missing & !.ow_right_missing & .ow_left == .ow_right)",
+        "          .ow_equal[is.na(.ow_equal)] <- FALSE",
+        "          .ow_same_group <- .ow_same_group & .ow_equal",
+        "        }",
+        "      }",
+        "      .ow_starts <- c(1L, which(!.ow_same_group) + 1L); .ow_ends <- c(.ow_starts[-1L] - 1L, .ow_count)",
+        "      for (.ow_group_index in seq_along(.ow_starts)) .ow_evaluate_group(.ow_rows[.ow_starts[[.ow_group_index]]:.ow_ends[[.ow_group_index]]])",
+        "    } else {",
+        "      .ow_library_helpers$library_group_apply(.ow_keys, .ow_library, .ow_evaluate_group, .ow_exact_integer64_text)",
         "    }",
         "    .ow_result_values",
         "  }"
@@ -7272,6 +7306,14 @@ openwrangler_r_kernel_agent <- local({
         }, logical(1L), USE.NAMES = FALSE))
       }
     }
+    if (!identical(.ow_library, "base")) {
+      .ow_generated_positions <- length(.ow_names) + seq_along(.ow_generated)
+      .ow_result <- .ow_library_helpers$library_assign(.ow_frame, .ow_generated_positions,
+        lapply(.ow_generated, `[[`, "values"), c(.ow_names, .ow_generated_names), .ow_library)
+      .ow_result <- .ow_library_helpers$library_columns(.ow_result,
+        c(.ow_retained_positions, .ow_generated_positions), .ow_library)
+      return(list(value = .ow_result, outputIds = .ow_result_output_ids))
+    }
     .ow_result <- .ow_frame
     .ow_all_positions <- seq_along(.ow_names)
     .ow_dropped <- .ow_all_positions[is.na(match(.ow_all_positions, .ow_retained_positions))]
@@ -7443,34 +7485,48 @@ openwrangler_r_kernel_agent <- local({
     ) {
       stop("bit64 is required for integer64 Group By", call. = FALSE)
     }
-    .ow_rows <- seq_len(nrow(.ow_frame))
-    .ow_composite <- rep.int("", length(.ow_rows))
-    for (.ow_spec in .ow_key_specs) {
+    for (.ow_spec in c(.ow_key_specs, .ow_aggregation_specs)) {
       if (ncol(.ow_frame) < .ow_spec$position || !identical(names(.ow_frame)[[.ow_spec$position]], .ow_spec$name)) {
         stop("Open Wrangler column reference is stale", call. = FALSE)
       }
-      .ow_token <- .ow_key_token(.ow_frame[[.ow_spec$position]], .ow_spec$kind)
-      .ow_composite <- paste0(.ow_composite, nchar(.ow_token, type = "bytes"), ":", .ow_token, recycle0 = TRUE)
     }
-    .ow_distinct <- unique(.ow_composite)
-    .ow_group_ids <- match(.ow_composite, .ow_distinct)
-    .ow_groups <- split(.ow_rows, factor(.ow_group_ids, levels = seq_along(.ow_distinct)))
+    .ow_group_results <- NULL
+    if (identical(.ow_library, "base")) {
+      .ow_rows <- seq_len(nrow(.ow_frame))
+      .ow_composite <- rep.int("", length(.ow_rows))
+      for (.ow_spec in .ow_key_specs) {
+        .ow_token <- .ow_key_token(.ow_frame[[.ow_spec$position]], .ow_spec$kind)
+        .ow_composite <- paste0(.ow_composite, nchar(.ow_token, type = "bytes"), ":", .ow_token, recycle0 = TRUE)
+      }
+      .ow_distinct <- unique(.ow_composite)
+      .ow_group_ids <- match(.ow_composite, .ow_distinct)
+      .ow_groups <- split(.ow_rows, factor(.ow_group_ids, levels = seq_along(.ow_distinct)))
+    } else {
+      .ow_group_results <- .ow_library_helpers$library_group_apply(
+        lapply(.ow_key_specs, function(.ow_spec) .ow_frame[[.ow_spec$position]]),
+        .ow_library,
+        function(.ow_group_rows) list(rows = .ow_group_rows, values = lapply(.ow_aggregation_specs,
+          function(.ow_spec) .ow_reduce(.ow_frame[[.ow_spec$position]], .ow_group_rows, .ow_spec))),
+        .ow_exact_integer64_text
+      )
+      .ow_groups <- lapply(.ow_group_results, `[[`, "rows")
+    }
     .ow_representatives <- if (length(.ow_groups) == 0L) integer() else vapply(.ow_groups, `[[`, integer(1L), 1L)
     .ow_output <- lapply(.ow_key_specs, function(.ow_spec) {
       .ow_values <- .ow_frame[[.ow_spec$position]][.ow_representatives]
       if (identical(.ow_spec$kind, "double") && length(.ow_values) > 0L) .ow_values[is.nan(.ow_values)] <- NA_real_
       .ow_values
     })
-    for (.ow_spec in .ow_aggregation_specs) {
-      if (ncol(.ow_frame) < .ow_spec$position || !identical(names(.ow_frame)[[.ow_spec$position]], .ow_spec$name)) {
-        stop("Open Wrangler column reference is stale", call. = FALSE)
-      }
+    for (.ow_aggregation_index in seq_along(.ow_aggregation_specs)) {
+      .ow_spec <- .ow_aggregation_specs[[.ow_aggregation_index]]
       .ow_source <- .ow_frame[[.ow_spec$position]]
       .ow_values <- if (length(.ow_groups) == 0L) {
         if (.ow_spec$operation %in% c("count", "nUnique")) integer()
         else if (.ow_spec$operation %in% c("mean", "median")) numeric()
         else if (.ow_spec$operation %in% c("min", "max") && identical(.ow_spec$kind, "factor") && !isTRUE(.ow_spec$ordered)) character()
         else .ow_source[integer()]
+      } else if (!identical(.ow_library, "base")) {
+        do.call(c, lapply(.ow_group_results, function(.ow_group) .ow_group$values[[.ow_aggregation_index]]))
       } else {
         do.call(c, lapply(.ow_groups, function(.ow_group_rows) .ow_reduce(.ow_source, .ow_group_rows, .ow_spec)))
       }
@@ -8269,12 +8325,41 @@ openwrangler_r_kernel_agent <- local({
     }
     c(lines,
       if (operations) "    base::list(semantics = nested_column_semantics, charge = charge_native_column, budget = new_payload_budget, transform = nested_operation_frame)" else "    base::list(semantics = nested_column_semantics, charge = charge_native_column, budget = new_payload_budget)",
-      "  }, base::new.env(parent = base::baseenv()))",
+      "  }, base::list2env(.ow_library_helpers, parent = base::baseenv()))",
       "  .ow_nested_source_budget <- .ow_nested_helpers$budget()"
     )
   }
 
-  compile_plan <- function(variable_name, bound_plan, frame_contract, file_source = NULL, source_schema = NULL) {
+  library_code_helper_lines <- function(frame_contract, library, bound_plan) {
+    if (identical(library, "base")) {
+      return(c('  .ow_library <- "base"', "  .ow_library_helpers <- base::list()"))
+    }
+    needed <- "require_r_library"
+    kinds <- vapply(bound_plan, `[[`, character(1L), "kind")
+    if (any(kinds %in% c("sortRows", "filterRows", "dropMissingRows", "dropDuplicates", "extractStructFields", "explodeList"))) needed <- c(needed, "library_rows")
+    if (any(kinds %in% c("dropColumns", "selectColumns", "oneHotEncode", "multiLabelBinarize"))) needed <- c(needed, "library_columns")
+    if ("renameColumn" %in% kinds) needed <- c(needed, "library_rename")
+    if (any(vapply(bound_plan, function(step) identical(step$kind, "sortRows") ||
+      (identical(step$kind, "filterRows") && length(step$filterModel$sort) > 0L) ||
+      (identical(step$kind, "fillMissingValues") && step$replacement$kind %in% c("directional", "linearInterpolation")), logical(1L)))) needed <- c(needed, "library_order")
+    if (any(kinds %in% c("dropDuplicates", "markDuplicates"))) needed <- c(needed, "library_duplicates")
+    if ("groupBy" %in% kinds || any(vapply(bound_plan, function(step) identical(step$kind, "fillMissingValues") && identical(step$replacement$kind, "groupedStatistic"), logical(1L)))) needed <- c(needed, "library_group_apply")
+    if ("pivotLonger" %in% kinds) needed <- c(needed, "library_pivot_longer")
+    if ("pivotWider" %in% kinds) needed <- c(needed, "library_pivot_wider")
+    if (any(!kinds %in% c("sortRows", "filterRows", "dropMissingRows", "dropDuplicates", "dropColumns", "selectColumns", "renameColumn", "groupBy", "pivotLonger", "pivotWider", "customCode"))) needed <- c(needed, "library_assign")
+    helpers <- frame_contract$library_helpers_for(unique(needed))
+    lines <- c(sprintf("  .ow_library <- %s", r_string(library)), "  .ow_library_helpers <- base::evalq({")
+    for (name in names(helpers)) {
+      lines <- c(lines, sprintf("    `%s` <-", name), paste0("    ", deparse(helpers[[name]], width.cutoff = 500L)))
+    }
+    c(lines,
+      sprintf("    base::list(%s)", paste(sprintf("`%s` = `%s`", names(helpers), names(helpers)), collapse = ", ")),
+      "  }, base::new.env(parent = base::baseenv()))",
+      "  .ow_library_helpers$require_r_library(.ow_library)"
+    )
+  }
+
+  compile_plan <- function(variable_name, bound_plan, frame_contract, file_source = NULL, source_schema = NULL, library) {
     if (length(bound_plan) == 0L) return("")
     source_schema <- unclass(source_schema)
     attributes(source_schema) <- NULL
@@ -8315,6 +8400,7 @@ openwrangler_r_kernel_agent <- local({
       sprintf("  .ow_publication_name <- %s", r_string(result_name)),
       "  if (base::exists(.ow_publication_name, envir = .ow_caller_environment, inherits = FALSE) && base::bindingIsActive(.ow_publication_name, .ow_caller_environment)) base::stop(\"Open Wrangler generated R does not accept an active result binding\", call. = FALSE)",
       "  .ow_generated_result <- base::evalq({",
+      library_code_helper_lines(frame_contract, library, bound_plan),
       if (needs_nested_helpers) nested_column_code_helper_lines(frame_contract, needs_nested_operations),
       if (is.null(file_source)) c(
       sprintf(
@@ -8528,7 +8614,7 @@ openwrangler_r_kernel_agent <- local({
       "  }",
       "  .ow_result_ids <- base::sprintf(\"r:c:%d\", base::seq_len(.ow_source_column_count) - 1L)"
     )
-    needs_data_table_alloccol <- any(vapply(
+    needs_data_table_alloccol <- identical(library, "base") && any(vapply(
       bound_plan,
       function(step) {
         identical(step$kind, "formula") ||
@@ -8684,12 +8770,24 @@ openwrangler_r_kernel_agent <- local({
       },
       logical(1L)
     ))
-    needs_integer64_duplicates <- any(vapply(bound_plan, function(step) {
+    needs_integer64_comparison <- any(vapply(bound_plan, function(step) {
       step$kind %in% c("dropDuplicates", "markDuplicates") && any(vapply(
         step$columns, function(column) identical(column$semanticsKind, "integer64"), logical(1L)
       ))
     }, logical(1L)))
-    if (needs_integer64_bindings || needs_integer64_duplicates) {
+    if (!identical(library, "base")) {
+      needs_integer64_comparison <- needs_integer64_comparison || any(vapply(bound_plan, function(step) {
+        keys <- switch(step$kind,
+          sortRows = step$rules,
+          filterRows = step$filterModel$sort,
+          groupBy = step$keys,
+          fillMissingValues = c(step$orderBy, step$groupKeys),
+          list())
+        isTRUE(step$integer64Keys) || any(vapply(keys,
+          function(key) identical(key$semanticsKind, "integer64"), logical(1L)))
+      }, logical(1L)))
+    }
+    if (needs_integer64_bindings || needs_integer64_comparison) {
       integer64_registration_lines <- c(
         "  if (!base::requireNamespace(\"bit64\", quietly = TRUE)) base::stop(\"bit64 is required for integer64 Formula\", call. = FALSE)",
         "  .ow_integer64_namespace <- base::asNamespace(\"bit64\")",
@@ -8717,7 +8815,7 @@ openwrangler_r_kernel_agent <- local({
         "  }"
       )
       if (!needs_integer64_bindings) {
-        integer64_registration_lines <- sub("integer64 Formula", "integer64 Drop Duplicates", integer64_registration_lines, fixed = TRUE)
+        integer64_registration_lines <- sub("integer64 Formula", if (identical(library, "base")) "integer64 Drop Duplicates" else "integer64 comparison", integer64_registration_lines, fixed = TRUE)
       }
       lines <- c(lines, integer64_registration_lines)
       if (needs_integer64_bindings) {
@@ -8749,12 +8847,14 @@ openwrangler_r_kernel_agent <- local({
         )
       }
     }
-    if (needs_integer64_duplicates) {
+    if (needs_integer64_comparison) {
       lines <- c(lines,
-        "  .ow_duplicate_integer64_text <- function(values) base::.Call(.ow_integer64_as_character, values, base::rep.int(NA_character_, .ow_storage_length(values)))"
+        "  .ow_exact_integer64_text <- function(values) base::.Call(.ow_integer64_as_character, values, base::rep.int(NA_character_, .ow_storage_length(values)))"
       )
+    } else if (!identical(library, "base")) {
+      lines <- c(lines, "  .ow_exact_integer64_text <- NULL")
     }
-    if (any(vapply(bound_plan, function(step) step$kind %in% c("dropDuplicates", "markDuplicates"), logical(1L)))) {
+    if (identical(library, "base") && any(vapply(bound_plan, function(step) step$kind %in% c("dropDuplicates", "markDuplicates"), logical(1L)))) {
       duplicate_lines <- deparse(frame_contract$duplicate_row_mask, width.cutoff = 500L)
       duplicate_lines[[1L]] <- paste0(".ow_duplicate_row_mask <- ", duplicate_lines[[1L]])
       lines <- c(lines, paste0("  ", duplicate_lines))
@@ -8777,11 +8877,11 @@ openwrangler_r_kernel_agent <- local({
         lines <- c(lines, data_table_copy_metadata_lines)
       }
       if (identical(step$kind, "sortRows")) {
-        lines <- c(lines, row_step_code_lines(step))
+        lines <- c(lines, row_step_code_lines(step, library))
       } else if (identical(step$kind, "filterRows")) {
-        lines <- c(lines, row_step_code_lines(step))
+        lines <- c(lines, row_step_code_lines(step, library))
       } else if (step$kind %in% c("dropMissingRows", "dropDuplicates")) {
-        lines <- c(lines, row_reduction_code_lines(step))
+        lines <- c(lines, row_reduction_code_lines(step, library))
       } else if (identical(step$kind, "customCode")) {
         lines <- c(
           lines,
@@ -8855,7 +8955,7 @@ openwrangler_r_kernel_agent <- local({
             step$position,
             r_string(step$newName)
           ),
-          sprintf(
+          if (!identical(library, "base")) sprintf("  .ow_result <- .ow_library_helpers$library_rename(.ow_result, %dL, %s, .ow_library)", step$position, r_string(step$newName)) else sprintf(
             "  if (inherits(.ow_result, \"data.table\")) data.table::setnames(.ow_result, old = %dL, new = %s) else names(.ow_result)[[%dL]] <- %s",
             step$position,
             r_string(step$newName),
@@ -8867,7 +8967,7 @@ openwrangler_r_kernel_agent <- local({
         # Retain sibling prototypes used by the nested validation and allocation guards.
         nested_schema <- lapply(step$schema, function(column) list(name = column$name, semantics = column$semantics))
         lines <- c(lines,
-          sprintf("  .ow_result <- .ow_nested_helpers$transform(.ow_result, %s, %dL, %s, %s, %s)",
+          sprintf("  .ow_result <- .ow_nested_helpers$transform(.ow_result, %s, %dL, %s, %s, %s, .ow_library, owned = TRUE)",
             r_bound_value(nested_schema), step$position,
             if (is.null(step$fields)) "NULL" else r_character_vector(step$fields),
             if (is.null(step$newNames)) "NULL" else r_character_vector(step$newNames), as.character(step$identityDomain)),
@@ -8897,26 +8997,28 @@ openwrangler_r_kernel_agent <- local({
               sprintf("  .ow_mark_names <- %s", r_character_vector(compared_names)),
               "  if (base::any(.ow_mark_positions > ncol(.ow_result)) || !base::identical(.ow_clone_frame_names[.ow_mark_positions], .ow_mark_names)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
               "  .ow_compared <- if (inherits(.ow_result, \"data.table\")) .ow_result[, .ow_mark_positions, with = FALSE] else .ow_result[.ow_mark_positions]",
-              sprintf("  .ow_clone_values <- .ow_duplicate_row_mask(.ow_compared, \"none\", %s)",
-                if (any(vapply(step$columns, function(column) identical(column$semanticsKind, "integer64"), logical(1L)))) ".ow_duplicate_integer64_text" else "NULL")
+              if (!identical(library, "base")) "  .ow_clone_values <- .ow_library_helpers$library_duplicates(.ow_compared, \"none\", .ow_library, .ow_exact_integer64_text)" else sprintf("  .ow_clone_values <- .ow_duplicate_row_mask(.ow_compared, \"none\", %s)",
+                if (any(vapply(step$columns, function(column) identical(column$semanticsKind, "integer64"), logical(1L)))) ".ow_exact_integer64_text" else "NULL")
             )
           } else if (identical(step$kind, "conditionalColumn")) {
             conditional_column_code_lines(step)
           } else "  .ow_clone_values <- base::.subset2(.ow_result, .ow_clone_position)",
           "  .ow_clone_element_names <- base::attr(.ow_clone_values, \"names\", exact = TRUE)",
-          "  if (inherits(.ow_result, \"data.table\")) {",
-          "    data.table::setattr(.ow_result, \"names\", .ow_clone_frame_names)",
-          "    data.table::set(.ow_result, j = .ow_clone_name, value = .ow_clone_values)",
-          "    if (!base::is.null(.ow_clone_element_names)) data.table::setattr(base::.subset2(.ow_result, ncol(.ow_result)), \"names\", .ow_clone_element_names)",
-          "  } else {",
-          "    .ow_clone_frame_attributes <- base::attributes(.ow_result)",
-          "    .ow_clone_frame_attributes[['row.names']] <- base::.row_names_info(.ow_result, type = 0L)",
-          "    .ow_clone_columns <- base::unclass(.ow_result)",
-          "    .ow_clone_columns[[base::length(.ow_clone_columns) + 1L]] <- .ow_clone_values",
-          "    .ow_clone_frame_attributes[[\"names\"]] <- c(.ow_clone_frame_names, .ow_clone_name)",
-          "    base::attributes(.ow_clone_columns) <- .ow_clone_frame_attributes",
-          "    .ow_result <- .ow_clone_columns",
-          "  }",
+          if (!identical(library, "base")) "  .ow_result <- .ow_library_helpers$library_assign(.ow_result, .ow_storage_length(.ow_result) + 1L, list(.ow_clone_values), c(names(.ow_result), .ow_clone_name), .ow_library)" else c(
+            "  if (inherits(.ow_result, \"data.table\")) {",
+            "    data.table::setattr(.ow_result, \"names\", .ow_clone_frame_names)",
+            "    data.table::set(.ow_result, j = .ow_clone_name, value = .ow_clone_values)",
+            "    if (!base::is.null(.ow_clone_element_names)) data.table::setattr(base::.subset2(.ow_result, ncol(.ow_result)), \"names\", .ow_clone_element_names)",
+            "  } else {",
+            "    .ow_clone_frame_attributes <- base::attributes(.ow_result)",
+            "    .ow_clone_frame_attributes[['row.names']] <- base::.row_names_info(.ow_result, type = 0L)",
+            "    .ow_clone_columns <- base::unclass(.ow_result)",
+            "    .ow_clone_columns[[base::length(.ow_clone_columns) + 1L]] <- .ow_clone_values",
+            "    .ow_clone_frame_attributes[[\"names\"]] <- c(.ow_clone_frame_names, .ow_clone_name)",
+            "    base::attributes(.ow_clone_columns) <- .ow_clone_frame_attributes",
+            "    .ow_result <- .ow_clone_columns",
+            "  }"
+          ),
           sprintf("  .ow_result_ids <- c(.ow_result_ids, %s)", r_string(step$outputId))
         )
       } else if (identical(step$kind, "byExample")) {
@@ -9053,17 +9155,19 @@ openwrangler_r_kernel_agent <- local({
             "  if (!base::is.finite(.ow_by_example_output_bytes) || .ow_by_example_output_bytes > %dL) base::stop(\"Open Wrangler by-example exceeds its aggregate output budget\", call. = FALSE)",
             maximum_operation_output_bytes
           ),
-          "  if (base::inherits(.ow_result, \"data.table\")) {",
-          "    data.table::set(.ow_result, j = .ow_by_example_name, value = .ow_by_example_values)",
-          "    if (!base::is.null(.ow_by_example_value_names)) data.table::setattr(base::.subset2(.ow_result, .ow_storage_length(.ow_result)), \"names\", .ow_by_example_value_names)",
-          "  } else {",
-          "    .ow_by_example_frame_classes <- base::class(.ow_result)",
-          "    base::class(.ow_result) <- NULL",
-          "    .ow_result[[.ow_storage_length(.ow_result) + 1L]] <- .ow_by_example_values",
-          "    base::attr(.ow_result, \"names\") <- c(.ow_by_example_frame_names, .ow_by_example_name)",
-          "    if (!base::is.null(.ow_by_example_value_names)) base::attr(.ow_result[[.ow_storage_length(.ow_result)]], \"names\") <- .ow_by_example_value_names",
-          "    base::class(.ow_result) <- .ow_by_example_frame_classes",
-          "  }",
+          if (!identical(library, "base")) "  .ow_result <- .ow_library_helpers$library_assign(.ow_result, .ow_storage_length(.ow_result) + 1L, list(.ow_by_example_values), c(names(.ow_result), .ow_by_example_name), .ow_library)" else c(
+            "  if (base::inherits(.ow_result, \"data.table\")) {",
+            "    data.table::set(.ow_result, j = .ow_by_example_name, value = .ow_by_example_values)",
+            "    if (!base::is.null(.ow_by_example_value_names)) data.table::setattr(base::.subset2(.ow_result, .ow_storage_length(.ow_result)), \"names\", .ow_by_example_value_names)",
+            "  } else {",
+            "    .ow_by_example_frame_classes <- base::class(.ow_result)",
+            "    base::class(.ow_result) <- NULL",
+            "    .ow_result[[.ow_storage_length(.ow_result) + 1L]] <- .ow_by_example_values",
+            "    base::attr(.ow_result, \"names\") <- c(.ow_by_example_frame_names, .ow_by_example_name)",
+            "    if (!base::is.null(.ow_by_example_value_names)) base::attr(.ow_result[[.ow_storage_length(.ow_result)]], \"names\") <- .ow_by_example_value_names",
+            "    base::class(.ow_result) <- .ow_by_example_frame_classes",
+            "  }"
+          ),
           sprintf("  .ow_result_ids <- c(.ow_result_ids, %s)", r_string(step$outputId))
         )
       } else if (identical(step$kind, "formula")) {
@@ -9187,24 +9291,26 @@ openwrangler_r_kernel_agent <- local({
             maximum_columns
           ),
           "  .ow_formula_value_names <- attr(.ow_formula_values, \"names\", exact = TRUE)",
-          "  if (inherits(.ow_result, \"data.table\")) {",
-          "    .ow_formula_frame_classes <- class(.ow_result)",
-          "    class(.ow_result) <- NULL",
-          "    .ow_formula_existing_names <- attr(.ow_result, \"names\", exact = TRUE)",
-          "    .ow_result[[.ow_storage_length(.ow_result) + 1L]] <- .ow_formula_values",
-          "    attr(.ow_result, \"names\") <- c(.ow_formula_existing_names, .ow_formula_name)",
-          "    if (!is.null(.ow_formula_value_names)) attr(.ow_result[[.ow_storage_length(.ow_result)]], \"names\") <- .ow_formula_value_names",
-          "    class(.ow_result) <- .ow_formula_frame_classes",
-          "    .ow_result <- base::.Call(.ow_data_table_alloccol, .ow_result, 1024L, FALSE)",
-          "  } else {",
-          "    .ow_formula_frame_classes <- class(.ow_result)",
-          "    class(.ow_result) <- NULL",
-          "    .ow_formula_existing_names <- attr(.ow_result, \"names\", exact = TRUE)",
-          "    .ow_result[[.ow_storage_length(.ow_result) + 1L]] <- .ow_formula_values",
-          "    attr(.ow_result, \"names\") <- c(.ow_formula_existing_names, .ow_formula_name)",
-          "    if (!is.null(.ow_formula_value_names)) attr(.ow_result[[.ow_storage_length(.ow_result)]], \"names\") <- .ow_formula_value_names",
-          "    class(.ow_result) <- .ow_formula_frame_classes",
-          "  }",
+          if (!identical(library, "base")) "  .ow_result <- .ow_library_helpers$library_assign(.ow_result, .ow_storage_length(.ow_result) + 1L, list(.ow_formula_values), c(names(.ow_result), .ow_formula_name), .ow_library)" else c(
+            "  if (inherits(.ow_result, \"data.table\")) {",
+            "    .ow_formula_frame_classes <- class(.ow_result)",
+            "    class(.ow_result) <- NULL",
+            "    .ow_formula_existing_names <- attr(.ow_result, \"names\", exact = TRUE)",
+            "    .ow_result[[.ow_storage_length(.ow_result) + 1L]] <- .ow_formula_values",
+            "    attr(.ow_result, \"names\") <- c(.ow_formula_existing_names, .ow_formula_name)",
+            "    if (!is.null(.ow_formula_value_names)) attr(.ow_result[[.ow_storage_length(.ow_result)]], \"names\") <- .ow_formula_value_names",
+            "    class(.ow_result) <- .ow_formula_frame_classes",
+            "    .ow_result <- base::.Call(.ow_data_table_alloccol, .ow_result, 1024L, FALSE)",
+            "  } else {",
+            "    .ow_formula_frame_classes <- class(.ow_result)",
+            "    class(.ow_result) <- NULL",
+            "    .ow_formula_existing_names <- attr(.ow_result, \"names\", exact = TRUE)",
+            "    .ow_result[[.ow_storage_length(.ow_result) + 1L]] <- .ow_formula_values",
+            "    attr(.ow_result, \"names\") <- c(.ow_formula_existing_names, .ow_formula_name)",
+            "    if (!is.null(.ow_formula_value_names)) attr(.ow_result[[.ow_storage_length(.ow_result)]], \"names\") <- .ow_formula_value_names",
+            "    class(.ow_result) <- .ow_formula_frame_classes",
+            "  }"
+          ),
           sprintf("  .ow_result_ids <- c(.ow_result_ids, %s)", r_string(step$outputId))
         )
       } else if (identical(step$kind, "textLength")) {
@@ -9221,13 +9327,15 @@ openwrangler_r_kernel_agent <- local({
             maximum_columns
           ),
           "  .ow_text_lengths <- nchar(as.character(.ow_result[[.ow_text_length_position]]), type = \"chars\", allowNA = FALSE, keepNA = TRUE)",
-          "  if (inherits(.ow_result, \"data.table\")) {",
-          "    data.table::set(.ow_result, j = .ow_text_length_name, value = .ow_text_lengths)",
-          "  } else {",
-          "    .ow_text_length_existing_names <- names(.ow_result)",
-          "    .ow_result[[ncol(.ow_result) + 1L]] <- .ow_text_lengths",
-          "    names(.ow_result) <- c(.ow_text_length_existing_names, .ow_text_length_name)",
-          "  }",
+          if (!identical(library, "base")) "  .ow_result <- .ow_library_helpers$library_assign(.ow_result, .ow_storage_length(.ow_result) + 1L, list(.ow_text_lengths), c(names(.ow_result), .ow_text_length_name), .ow_library)" else c(
+            "  if (inherits(.ow_result, \"data.table\")) {",
+            "    data.table::set(.ow_result, j = .ow_text_length_name, value = .ow_text_lengths)",
+            "  } else {",
+            "    .ow_text_length_existing_names <- names(.ow_result)",
+            "    .ow_result[[ncol(.ow_result) + 1L]] <- .ow_text_lengths",
+            "    names(.ow_result) <- c(.ow_text_length_existing_names, .ow_text_length_name)",
+            "  }"
+          ),
           sprintf("  .ow_result_ids <- c(.ow_result_ids, %s)", r_string(step$outputId))
         )
       } else if (step$kind %in% c("oneHotEncode", "multiLabelBinarize")) {
@@ -9294,15 +9402,17 @@ openwrangler_r_kernel_agent <- local({
           "      .ow_output",
           "    }, character(1L), USE.NAMES = FALSE)",
           "  })",
-          "  for (.ow_part in seq_along(.ow_split_names)) {",
-          "    if (inherits(.ow_result, \"data.table\")) {",
-          "      data.table::set(.ow_result, j = .ow_split_names[[.ow_part]], value = .ow_split_values[[.ow_part]])",
-          "    } else {",
-          "      .ow_existing_names <- names(.ow_result)",
-          "      .ow_result[[ncol(.ow_result) + 1L]] <- .ow_split_values[[.ow_part]]",
-          "      names(.ow_result) <- c(.ow_existing_names, .ow_split_names[[.ow_part]])",
-          "    }",
-          "  }",
+          if (!identical(library, "base")) "  .ow_result <- .ow_library_helpers$library_assign(.ow_result, .ow_storage_length(.ow_result) + seq_along(.ow_split_names), .ow_split_values, c(names(.ow_result), .ow_split_names), .ow_library)" else c(
+            "  for (.ow_part in seq_along(.ow_split_names)) {",
+            "    if (inherits(.ow_result, \"data.table\")) {",
+            "      data.table::set(.ow_result, j = .ow_split_names[[.ow_part]], value = .ow_split_values[[.ow_part]])",
+            "    } else {",
+            "      .ow_existing_names <- names(.ow_result)",
+            "      .ow_result[[ncol(.ow_result) + 1L]] <- .ow_split_values[[.ow_part]]",
+            "      names(.ow_result) <- c(.ow_existing_names, .ow_split_names[[.ow_part]])",
+            "    }",
+            "  }"
+          ),
           sprintf("  .ow_result_ids <- c(.ow_result_ids, c(%s))", output_ids)
         )
       } else if (identical(step$kind, "pivotLonger")) {
@@ -9334,29 +9444,31 @@ openwrangler_r_kernel_agent <- local({
           "  .ow_pivot_rows <- nrow(.ow_result)",
           "  if (.ow_pivot_rows != 0L && .ow_pivot_rows > 2147483647 / length(.ow_pivot_positions)) stop(\"Pivot longer would exceed the portable 2,147,483,647-row limit\", call. = FALSE)",
           "  .ow_pivot_retained <- setdiff(seq_len(ncol(.ow_result)), .ow_pivot_positions)",
-          "  .ow_pivot_row_indices <- if (.ow_pivot_rows == 0L) integer() else rep.int(seq_len(.ow_pivot_rows), length(.ow_pivot_positions))",
-          "  .ow_pivot_storage <- lapply(.ow_pivot_selected, function(.ow_column) { attributes(.ow_column) <- NULL; .ow_column })",
-          "  .ow_pivot_storage_type <- typeof(.ow_pivot_storage[[1L]])",
-          "  if (any(!vapply(.ow_pivot_storage, function(.ow_column) identical(typeof(.ow_column), .ow_pivot_storage_type), logical(1L)))) stop(\"Open Wrangler Pivot longer selected columns have incompatible R storage\", call. = FALSE)",
-          "  .ow_pivot_values <- vector(.ow_pivot_storage_type, .ow_pivot_rows * length(.ow_pivot_positions))",
-          "  .ow_pivot_cursor <- 1L",
-          "  for (.ow_pivot_column in .ow_pivot_storage) { .ow_pivot_next <- .ow_pivot_cursor + length(.ow_pivot_column); if (length(.ow_pivot_column) != 0L) .ow_pivot_values[.ow_pivot_cursor:(.ow_pivot_next - 1L)] <- .ow_pivot_column; .ow_pivot_cursor <- .ow_pivot_next }",
-          "  .ow_pivot_first <- .ow_pivot_selected[[1L]]",
-          "  if (is.factor(.ow_pivot_first)) { attr(.ow_pivot_values, \"levels\") <- levels(.ow_pivot_first); attr(.ow_pivot_values, \"class\") <- class(.ow_pivot_first) } else if (inherits(.ow_pivot_first, \"POSIXct\")) { attr(.ow_pivot_values, \"class\") <- class(.ow_pivot_first); .ow_pivot_tzone <- attr(.ow_pivot_first, \"tzone\", exact = TRUE); if (!is.null(.ow_pivot_tzone)) attr(.ow_pivot_values, \"tzone\") <- .ow_pivot_tzone } else if (inherits(.ow_pivot_first, \"difftime\")) { attr(.ow_pivot_values, \"class\") <- class(.ow_pivot_first); attr(.ow_pivot_values, \"units\") <- attr(.ow_pivot_first, \"units\", exact = TRUE) } else if (inherits(.ow_pivot_first, \"Date\") || inherits(.ow_pivot_first, \"integer64\")) { attr(.ow_pivot_values, \"class\") <- class(.ow_pivot_first) }",
-          "  if (!identical(.ow_pivot_signature(.ow_pivot_values), .ow_pivot_signatures[[1L]])) stop(\"Open Wrangler Pivot longer changed R scalar metadata\", call. = FALSE)",
-          "  .ow_pivot_labels <- rep(.ow_pivot_selected_names, each = .ow_pivot_rows)",
-          "  if (inherits(.ow_result, \"data.table\")) {",
-          "    .ow_result <- .ow_result[.ow_pivot_row_indices, .ow_pivot_retained, with = FALSE]",
-          "    data.table::setkeyv(.ow_result, NULL)",
-          "    data.table::set(.ow_result, j = .ow_pivot_label_name, value = .ow_pivot_labels)",
-          "    data.table::set(.ow_result, j = .ow_pivot_value_name, value = .ow_pivot_values)",
-          "  } else {",
-          "    .ow_result <- .ow_result[.ow_pivot_row_indices, .ow_pivot_retained, drop = FALSE]",
-          "    .ow_pivot_names <- names(.ow_result)",
-          "    .ow_result[[length(.ow_result) + 1L]] <- .ow_pivot_labels",
-          "    .ow_result[[length(.ow_result) + 1L]] <- .ow_pivot_values",
-          "    names(.ow_result) <- c(.ow_pivot_names, .ow_pivot_label_name, .ow_pivot_value_name)",
-          "  }",
+          if (!identical(library, "base")) "  .ow_result <- .ow_library_helpers$library_pivot_longer(.ow_result, .ow_pivot_retained, .ow_pivot_positions, .ow_pivot_label_name, .ow_pivot_value_name, .ow_library)" else c(
+            "  .ow_pivot_row_indices <- if (.ow_pivot_rows == 0L) integer() else rep.int(seq_len(.ow_pivot_rows), length(.ow_pivot_positions))",
+            "  .ow_pivot_storage <- lapply(.ow_pivot_selected, function(.ow_column) { attributes(.ow_column) <- NULL; .ow_column })",
+            "  .ow_pivot_storage_type <- typeof(.ow_pivot_storage[[1L]])",
+            "  if (any(!vapply(.ow_pivot_storage, function(.ow_column) identical(typeof(.ow_column), .ow_pivot_storage_type), logical(1L)))) stop(\"Open Wrangler Pivot longer selected columns have incompatible R storage\", call. = FALSE)",
+            "  .ow_pivot_values <- vector(.ow_pivot_storage_type, .ow_pivot_rows * length(.ow_pivot_positions))",
+            "  .ow_pivot_cursor <- 1L",
+            "  for (.ow_pivot_column in .ow_pivot_storage) { .ow_pivot_next <- .ow_pivot_cursor + length(.ow_pivot_column); if (length(.ow_pivot_column) != 0L) .ow_pivot_values[.ow_pivot_cursor:(.ow_pivot_next - 1L)] <- .ow_pivot_column; .ow_pivot_cursor <- .ow_pivot_next }",
+            "  .ow_pivot_first <- .ow_pivot_selected[[1L]]",
+            "  if (is.factor(.ow_pivot_first)) { attr(.ow_pivot_values, \"levels\") <- levels(.ow_pivot_first); attr(.ow_pivot_values, \"class\") <- class(.ow_pivot_first) } else if (inherits(.ow_pivot_first, \"POSIXct\")) { attr(.ow_pivot_values, \"class\") <- class(.ow_pivot_first); .ow_pivot_tzone <- attr(.ow_pivot_first, \"tzone\", exact = TRUE); if (!is.null(.ow_pivot_tzone)) attr(.ow_pivot_values, \"tzone\") <- .ow_pivot_tzone } else if (inherits(.ow_pivot_first, \"difftime\")) { attr(.ow_pivot_values, \"class\") <- class(.ow_pivot_first); attr(.ow_pivot_values, \"units\") <- attr(.ow_pivot_first, \"units\", exact = TRUE) } else if (inherits(.ow_pivot_first, \"Date\") || inherits(.ow_pivot_first, \"integer64\")) { attr(.ow_pivot_values, \"class\") <- class(.ow_pivot_first) }",
+            "  if (!identical(.ow_pivot_signature(.ow_pivot_values), .ow_pivot_signatures[[1L]])) stop(\"Open Wrangler Pivot longer changed R scalar metadata\", call. = FALSE)",
+            "  .ow_pivot_labels <- rep(.ow_pivot_selected_names, each = .ow_pivot_rows)",
+            "  if (inherits(.ow_result, \"data.table\")) {",
+            "    .ow_result <- .ow_result[.ow_pivot_row_indices, .ow_pivot_retained, with = FALSE]",
+            "    data.table::setkeyv(.ow_result, NULL)",
+            "    data.table::set(.ow_result, j = .ow_pivot_label_name, value = .ow_pivot_labels)",
+            "    data.table::set(.ow_result, j = .ow_pivot_value_name, value = .ow_pivot_values)",
+            "  } else {",
+            "    .ow_result <- .ow_result[.ow_pivot_row_indices, .ow_pivot_retained, drop = FALSE]",
+            "    .ow_pivot_names <- names(.ow_result)",
+            "    .ow_result[[length(.ow_result) + 1L]] <- .ow_pivot_labels",
+            "    .ow_result[[length(.ow_result) + 1L]] <- .ow_pivot_values",
+            "    names(.ow_result) <- c(.ow_pivot_names, .ow_pivot_label_name, .ow_pivot_value_name)",
+            "  }"
+          ),
           "  attr(.ow_result, \"row.names\") <- if (nrow(.ow_result) == 0L) integer() else c(NA_integer_, -as.integer(nrow(.ow_result)))",
           sprintf("  .ow_result_ids <- c(.ow_result_ids[.ow_pivot_retained], c(%s))", output_ids)
         )
@@ -9383,24 +9495,26 @@ openwrangler_r_kernel_agent <- local({
           sprintf("  if (length(.ow_wider_retained) + length(.ow_wider_output_names) > %dL) stop(\"Pivot wider would exceed the portable 2,048-column limit\", call. = FALSE)", maximum_columns),
           "  .ow_wider_names <- as.character(.ow_result[[.ow_wider_names_position]])",
           "  if (anyNA(.ow_wider_names) || any(!.ow_wider_names %in% .ow_wider_keys)) stop(\"Every Pivot wider names-from value must match one declared output key\", call. = FALSE)",
-          "  if (!requireNamespace(\"data.table\", quietly = TRUE)) stop(\"Open Wrangler Pivot wider requires data.table\", call. = FALSE)",
-          "  .ow_wider_identifier_values <- lapply(.ow_wider_retained, function(.ow_position) { .ow_column <- .ow_result[[.ow_position]]; if (is.double(.ow_column) && !is.object(.ow_column)) .ow_column[is.nan(.ow_column)] <- NA_real_; .ow_column })",
-          "  if (length(.ow_wider_retained) == 0L) { .ow_wider_groups <- if (nrow(.ow_result) == 0L) integer() else rep.int(1L, nrow(.ow_result)) } else {",
-          "    .ow_wider_identifiers <- data.table::as.data.table(.ow_wider_identifier_values)",
-          "    .ow_wider_identifier_names <- paste0(\"ow_identifier_\", seq_along(.ow_wider_retained))",
-          "    data.table::setnames(.ow_wider_identifiers, .ow_wider_identifier_names)",
-          "    .ow_wider_identifiers[, (\"__open_wrangler_internal_row_id_pivot_wider_group\") := .GRP, by = .ow_wider_identifier_names]",
-          "    .ow_wider_groups <- .ow_wider_identifiers[[\"__open_wrangler_internal_row_id_pivot_wider_group\"]]",
-          "  }",
-          "  .ow_wider_group_rows <- which(!duplicated(.ow_wider_groups))",
-          "  .ow_wider_key_ordinals <- match(.ow_wider_names, .ow_wider_keys)",
-          "  if (anyDuplicated(paste0(.ow_wider_groups, \":\", .ow_wider_key_ordinals))) stop(\"Pivot wider found duplicate identifier-and-key rows\", call. = FALSE)",
-          "  .ow_wider_value_source <- .ow_result[[.ow_wider_values_position]]",
-          "  .ow_wider_value_storage <- .ow_wider_value_source; attributes(.ow_wider_value_storage) <- NULL",
-          "  .ow_wider_restore <- function(.ow_storage) { if (is.factor(.ow_wider_value_source)) { attr(.ow_storage, \"levels\") <- levels(.ow_wider_value_source); attr(.ow_storage, \"class\") <- class(.ow_wider_value_source) } else if (inherits(.ow_wider_value_source, \"POSIXct\")) { attr(.ow_storage, \"class\") <- class(.ow_wider_value_source); .ow_tzone <- attr(.ow_wider_value_source, \"tzone\", exact = TRUE); if (!is.null(.ow_tzone)) attr(.ow_storage, \"tzone\") <- .ow_tzone } else if (inherits(.ow_wider_value_source, \"difftime\")) { attr(.ow_storage, \"class\") <- class(.ow_wider_value_source); attr(.ow_storage, \"units\") <- attr(.ow_wider_value_source, \"units\", exact = TRUE) } else if (inherits(.ow_wider_value_source, \"Date\") || inherits(.ow_wider_value_source, \"integer64\")) attr(.ow_storage, \"class\") <- class(.ow_wider_value_source); .ow_storage }",
-          "  .ow_wider_missing <- function(.ow_size) { .ow_storage <- vector(typeof(.ow_wider_value_storage), .ow_size); if (.ow_size != 0L) { if (inherits(.ow_wider_value_source, \"integer64\")) .ow_storage[] <- unclass(bit64::as.integer64(NA_character_))[[1L]] else if (typeof(.ow_storage) == \"integer\") .ow_storage[] <- NA_integer_ else if (typeof(.ow_storage) == \"logical\") .ow_storage[] <- NA else if (typeof(.ow_storage) == \"character\") .ow_storage[] <- NA_character_ else .ow_storage[] <- NA_real_ }; .ow_storage }",
-          "  .ow_wider_values <- lapply(seq_along(.ow_wider_keys), function(.ow_output) { .ow_storage <- .ow_wider_missing(length(.ow_wider_group_rows)); .ow_rows <- which(.ow_wider_key_ordinals == .ow_output); if (length(.ow_rows) != 0L) .ow_storage[.ow_wider_groups[.ow_rows]] <- .ow_wider_value_storage[.ow_rows]; .ow_wider_restore(.ow_storage) })",
-          "  if (inherits(.ow_result, \"data.table\")) { .ow_result <- .ow_result[.ow_wider_group_rows, .ow_wider_retained, with = FALSE]; data.table::setkeyv(.ow_result, NULL); for (.ow_identifier in seq_along(.ow_wider_identifier_values)) data.table::set(.ow_result, j = .ow_identifier, value = .ow_wider_identifier_values[[.ow_identifier]][.ow_wider_group_rows]); for (.ow_output in seq_along(.ow_wider_output_names)) data.table::set(.ow_result, j = .ow_wider_output_names[[.ow_output]], value = .ow_wider_values[[.ow_output]]) } else { .ow_result <- .ow_result[.ow_wider_group_rows, .ow_wider_retained, drop = FALSE]; for (.ow_identifier in seq_along(.ow_wider_identifier_values)) .ow_result[[.ow_identifier]] <- .ow_wider_identifier_values[[.ow_identifier]][.ow_wider_group_rows]; .ow_names <- names(.ow_result); for (.ow_output in seq_along(.ow_wider_output_names)) .ow_result[[length(.ow_result) + 1L]] <- .ow_wider_values[[.ow_output]]; names(.ow_result) <- c(.ow_names, .ow_wider_output_names) }",
+          if (!identical(library, "base")) "  .ow_result <- .ow_library_helpers$library_pivot_wider(.ow_result, .ow_wider_retained, .ow_wider_names_position, .ow_wider_values_position, list(keys = .ow_wider_keys, names = .ow_wider_output_names), .ow_library, .ow_exact_integer64_text)" else c(
+            "  if (!requireNamespace(\"data.table\", quietly = TRUE)) stop(\"Open Wrangler Pivot wider requires data.table\", call. = FALSE)",
+            "  .ow_wider_identifier_values <- lapply(.ow_wider_retained, function(.ow_position) { .ow_column <- .ow_result[[.ow_position]]; if (is.double(.ow_column) && !is.object(.ow_column)) .ow_column[is.nan(.ow_column)] <- NA_real_; .ow_column })",
+            "  if (length(.ow_wider_retained) == 0L) { .ow_wider_groups <- if (nrow(.ow_result) == 0L) integer() else rep.int(1L, nrow(.ow_result)) } else {",
+            "    .ow_wider_identifiers <- data.table::as.data.table(.ow_wider_identifier_values)",
+            "    .ow_wider_identifier_names <- paste0(\"ow_identifier_\", seq_along(.ow_wider_retained))",
+            "    data.table::setnames(.ow_wider_identifiers, .ow_wider_identifier_names)",
+            "    .ow_wider_identifiers[, (\"__open_wrangler_internal_row_id_pivot_wider_group\") := .GRP, by = .ow_wider_identifier_names]",
+            "    .ow_wider_groups <- .ow_wider_identifiers[[\"__open_wrangler_internal_row_id_pivot_wider_group\"]]",
+            "  }",
+            "  .ow_wider_group_rows <- which(!duplicated(.ow_wider_groups))",
+            "  .ow_wider_key_ordinals <- match(.ow_wider_names, .ow_wider_keys)",
+            "  if (anyDuplicated(paste0(.ow_wider_groups, \":\", .ow_wider_key_ordinals))) stop(\"Pivot wider found duplicate identifier-and-key rows\", call. = FALSE)",
+            "  .ow_wider_value_source <- .ow_result[[.ow_wider_values_position]]",
+            "  .ow_wider_value_storage <- .ow_wider_value_source; attributes(.ow_wider_value_storage) <- NULL",
+            "  .ow_wider_restore <- function(.ow_storage) { if (is.factor(.ow_wider_value_source)) { attr(.ow_storage, \"levels\") <- levels(.ow_wider_value_source); attr(.ow_storage, \"class\") <- class(.ow_wider_value_source) } else if (inherits(.ow_wider_value_source, \"POSIXct\")) { attr(.ow_storage, \"class\") <- class(.ow_wider_value_source); .ow_tzone <- attr(.ow_wider_value_source, \"tzone\", exact = TRUE); if (!is.null(.ow_tzone)) attr(.ow_storage, \"tzone\") <- .ow_tzone } else if (inherits(.ow_wider_value_source, \"difftime\")) { attr(.ow_storage, \"class\") <- class(.ow_wider_value_source); attr(.ow_storage, \"units\") <- attr(.ow_wider_value_source, \"units\", exact = TRUE) } else if (inherits(.ow_wider_value_source, \"Date\") || inherits(.ow_wider_value_source, \"integer64\")) attr(.ow_storage, \"class\") <- class(.ow_wider_value_source); .ow_storage }",
+            "  .ow_wider_missing <- function(.ow_size) { .ow_storage <- vector(typeof(.ow_wider_value_storage), .ow_size); if (.ow_size != 0L) { if (inherits(.ow_wider_value_source, \"integer64\")) .ow_storage[] <- unclass(bit64::as.integer64(NA_character_))[[1L]] else if (typeof(.ow_storage) == \"integer\") .ow_storage[] <- NA_integer_ else if (typeof(.ow_storage) == \"logical\") .ow_storage[] <- NA else if (typeof(.ow_storage) == \"character\") .ow_storage[] <- NA_character_ else .ow_storage[] <- NA_real_ }; .ow_storage }",
+            "  .ow_wider_values <- lapply(seq_along(.ow_wider_keys), function(.ow_output) { .ow_storage <- .ow_wider_missing(length(.ow_wider_group_rows)); .ow_rows <- which(.ow_wider_key_ordinals == .ow_output); if (length(.ow_rows) != 0L) .ow_storage[.ow_wider_groups[.ow_rows]] <- .ow_wider_value_storage[.ow_rows]; .ow_wider_restore(.ow_storage) })",
+            "  if (inherits(.ow_result, \"data.table\")) { .ow_result <- .ow_result[.ow_wider_group_rows, .ow_wider_retained, with = FALSE]; data.table::setkeyv(.ow_result, NULL); for (.ow_identifier in seq_along(.ow_wider_identifier_values)) data.table::set(.ow_result, j = .ow_identifier, value = .ow_wider_identifier_values[[.ow_identifier]][.ow_wider_group_rows]); for (.ow_output in seq_along(.ow_wider_output_names)) data.table::set(.ow_result, j = .ow_wider_output_names[[.ow_output]], value = .ow_wider_values[[.ow_output]]) } else { .ow_result <- .ow_result[.ow_wider_group_rows, .ow_wider_retained, drop = FALSE]; for (.ow_identifier in seq_along(.ow_wider_identifier_values)) .ow_result[[.ow_identifier]] <- .ow_wider_identifier_values[[.ow_identifier]][.ow_wider_group_rows]; .ow_names <- names(.ow_result); for (.ow_output in seq_along(.ow_wider_output_names)) .ow_result[[length(.ow_result) + 1L]] <- .ow_wider_values[[.ow_output]]; names(.ow_result) <- c(.ow_names, .ow_wider_output_names) }"
+          ),
           "  attr(.ow_result, \"row.names\") <- if (nrow(.ow_result) == 0L) integer() else c(NA_integer_, -as.integer(nrow(.ow_result)))",
           sprintf("  .ow_result_ids <- c(.ow_result_ids[.ow_wider_retained], c(%s))", output_ids)
         )
@@ -9443,13 +9557,15 @@ openwrangler_r_kernel_agent <- local({
           "    if (.ow_lengths[[.ow_selected]] == 0L) return(\"\")",
           "    substr(.ow_utf8, .ow_starts[[.ow_selected]], .ow_starts[[.ow_selected]] + .ow_lengths[[.ow_selected]] - 1L)",
           "  }, character(1L), USE.NAMES = FALSE)",
-          "  if (inherits(.ow_result, \"data.table\")) {",
-          "    data.table::set(.ow_result, j = .ow_regex_name, value = .ow_regex_values)",
-          "  } else {",
-          "    .ow_existing_names <- names(.ow_result)",
-          "    .ow_result[[ncol(.ow_result) + 1L]] <- .ow_regex_values",
-          "    names(.ow_result) <- c(.ow_existing_names, .ow_regex_name)",
-          "  }",
+          if (!identical(library, "base")) "  .ow_result <- .ow_library_helpers$library_assign(.ow_result, .ow_storage_length(.ow_result) + 1L, list(.ow_regex_values), c(names(.ow_result), .ow_regex_name), .ow_library)" else c(
+            "  if (inherits(.ow_result, \"data.table\")) {",
+            "    data.table::set(.ow_result, j = .ow_regex_name, value = .ow_regex_values)",
+            "  } else {",
+            "    .ow_existing_names <- names(.ow_result)",
+            "    .ow_result[[ncol(.ow_result) + 1L]] <- .ow_regex_values",
+            "    names(.ow_result) <- c(.ow_existing_names, .ow_regex_name)",
+            "  }"
+          ),
           sprintf("  .ow_result_ids <- c(.ow_result_ids, %s)", r_string(step$outputId))
         )
       } else if (step$kind %in% c(
@@ -9617,7 +9733,7 @@ openwrangler_r_kernel_agent <- local({
               "  if (inherits(.ow_result, \"data.table\") && !is.null(data.table::key(.ow_result)) && .ow_text_source_name %%in%% data.table::key(.ow_result)) stop(\"Open Wrangler %s cannot replace a data.table key column; choose a new output column\", call. = FALSE)",
               operation_name
             ),
-            "  if (inherits(.ow_result, \"data.table\")) data.table::set(.ow_result, j = .ow_text_position, value = .ow_text_values) else .ow_result[[.ow_text_position]] <- .ow_text_values"
+            if (!identical(library, "base")) "  .ow_result <- .ow_library_helpers$library_assign(.ow_result, .ow_text_position, list(.ow_text_values), names(.ow_result), .ow_library)" else "  if (inherits(.ow_result, \"data.table\")) data.table::set(.ow_result, j = .ow_text_position, value = .ow_text_values) else .ow_result[[.ow_text_position]] <- .ow_text_values"
           )
         } else {
           lines <- c(
@@ -9627,13 +9743,15 @@ openwrangler_r_kernel_agent <- local({
               "  if (ncol(.ow_result) >= %dL) stop(\"Open Wrangler column limit reached\", call. = FALSE)",
               maximum_columns
             ),
-            "  if (inherits(.ow_result, \"data.table\")) {",
-            "    data.table::set(.ow_result, j = .ow_text_name, value = .ow_text_values)",
-            "  } else {",
-            "    .ow_text_existing_names <- names(.ow_result)",
-            "    .ow_result[[ncol(.ow_result) + 1L]] <- .ow_text_values",
-            "    names(.ow_result) <- c(.ow_text_existing_names, .ow_text_name)",
-            "  }",
+            if (!identical(library, "base")) "  .ow_result <- .ow_library_helpers$library_assign(.ow_result, .ow_storage_length(.ow_result) + 1L, list(.ow_text_values), c(names(.ow_result), .ow_text_name), .ow_library)" else c(
+              "  if (inherits(.ow_result, \"data.table\")) {",
+              "    data.table::set(.ow_result, j = .ow_text_name, value = .ow_text_values)",
+              "  } else {",
+              "    .ow_text_existing_names <- names(.ow_result)",
+              "    .ow_result[[ncol(.ow_result) + 1L]] <- .ow_text_values",
+              "    names(.ow_result) <- c(.ow_text_existing_names, .ow_text_name)",
+              "  }"
+            ),
             sprintf("  .ow_result_ids <- c(.ow_result_ids, %s)", r_string(step$outputId))
           )
         }
@@ -9678,6 +9796,8 @@ openwrangler_r_kernel_agent <- local({
         } else {
           c(lines, sprintf("  .ow_numeric_values <- %s", numeric_expression))
         }
+        if (!identical(library, "base")) lines <- c(lines,
+          "  if (!inherits(.ow_result, \"tbl_df\")) .ow_numeric_values <- base::unname(.ow_numeric_values)")
         if (isTRUE(step$inPlace)) {
           lines <- c(
             lines,
@@ -9685,7 +9805,7 @@ openwrangler_r_kernel_agent <- local({
               "  if (inherits(.ow_result, \"data.table\") && !is.null(data.table::key(.ow_result)) && .ow_numeric_source_name %%in%% data.table::key(.ow_result)) stop(\"Open Wrangler %s cannot replace a data.table key column; choose a new output column\", call. = FALSE)",
               operation_name
             ),
-            "  if (inherits(.ow_result, \"data.table\")) data.table::set(.ow_result, j = .ow_numeric_position, value = .ow_numeric_values) else .ow_result[[.ow_numeric_position]] <- .ow_numeric_values"
+            if (!identical(library, "base")) "  .ow_result <- .ow_library_helpers$library_assign(.ow_result, .ow_numeric_position, list(.ow_numeric_values), names(.ow_result), .ow_library)" else "  if (inherits(.ow_result, \"data.table\")) data.table::set(.ow_result, j = .ow_numeric_position, value = .ow_numeric_values) else .ow_result[[.ow_numeric_position]] <- .ow_numeric_values"
           )
         } else {
           lines <- c(
@@ -9695,13 +9815,15 @@ openwrangler_r_kernel_agent <- local({
               "  if (ncol(.ow_result) >= %dL) stop(\"Open Wrangler column limit reached\", call. = FALSE)",
               maximum_columns
             ),
-            "  if (inherits(.ow_result, \"data.table\")) {",
-            "    data.table::set(.ow_result, j = .ow_numeric_name, value = .ow_numeric_values)",
-            "  } else {",
-            "    .ow_numeric_existing_names <- names(.ow_result)",
-            "    .ow_result[[ncol(.ow_result) + 1L]] <- .ow_numeric_values",
-            "    names(.ow_result) <- c(.ow_numeric_existing_names, .ow_numeric_name)",
-            "  }",
+            if (!identical(library, "base")) "  .ow_result <- .ow_library_helpers$library_assign(.ow_result, .ow_storage_length(.ow_result) + 1L, list(.ow_numeric_values), c(names(.ow_result), .ow_numeric_name), .ow_library)" else c(
+              "  if (inherits(.ow_result, \"data.table\")) {",
+              "    data.table::set(.ow_result, j = .ow_numeric_name, value = .ow_numeric_values)",
+              "  } else {",
+              "    .ow_numeric_existing_names <- names(.ow_result)",
+              "    .ow_result[[ncol(.ow_result) + 1L]] <- .ow_numeric_values",
+              "    names(.ow_result) <- c(.ow_numeric_existing_names, .ow_numeric_name)",
+              "  }"
+            ),
             sprintf("  .ow_result_ids <- c(.ow_result_ids, %s)", r_string(step$outputId))
           )
         }
@@ -9805,7 +9927,7 @@ openwrangler_r_kernel_agent <- local({
           lines <- c(
             lines,
             "  if (inherits(.ow_result, \"data.table\") && !is.null(data.table::key(.ow_result)) && .ow_datetime_source_name %in% data.table::key(.ow_result)) stop(\"Open Wrangler Format Datetime cannot replace a data.table key column; choose a new output column\", call. = FALSE)",
-            "  if (inherits(.ow_result, \"data.table\")) data.table::set(.ow_result, j = .ow_datetime_position, value = .ow_datetime_values) else .ow_result[[.ow_datetime_position]] <- .ow_datetime_values"
+            if (!identical(library, "base")) "  .ow_result <- .ow_library_helpers$library_assign(.ow_result, .ow_datetime_position, list(.ow_datetime_values), names(.ow_result), .ow_library)" else "  if (inherits(.ow_result, \"data.table\")) data.table::set(.ow_result, j = .ow_datetime_position, value = .ow_datetime_values) else .ow_result[[.ow_datetime_position]] <- .ow_datetime_values"
           )
         } else {
           lines <- c(
@@ -9815,19 +9937,21 @@ openwrangler_r_kernel_agent <- local({
               "  if (.ow_storage_length(.ow_result) >= %dL) stop(\"Open Wrangler column limit reached\", call. = FALSE)",
               maximum_columns
             ),
-            "  if (inherits(.ow_result, \"data.table\")) {",
-            "    .ow_datetime_frame_classes <- class(.ow_result)",
-            "    class(.ow_result) <- NULL",
-            "    .ow_datetime_existing_names <- attr(.ow_result, \"names\", exact = TRUE)",
-            "    .ow_result[[.ow_storage_length(.ow_result) + 1L]] <- .ow_datetime_values",
-            "    attr(.ow_result, \"names\") <- c(.ow_datetime_existing_names, .ow_datetime_name)",
-            "    class(.ow_result) <- .ow_datetime_frame_classes",
-            "    .ow_result <- base::.Call(.ow_data_table_alloccol, .ow_result, 1024L, FALSE)",
-            "  } else {",
-            "    .ow_datetime_existing_names <- attr(.ow_result, \"names\", exact = TRUE)",
-            "    .ow_result[[.ow_storage_length(.ow_result) + 1L]] <- .ow_datetime_values",
-            "    attr(.ow_result, \"names\") <- c(.ow_datetime_existing_names, .ow_datetime_name)",
-            "  }",
+            if (!identical(library, "base")) "  .ow_result <- .ow_library_helpers$library_assign(.ow_result, .ow_storage_length(.ow_result) + 1L, list(.ow_datetime_values), c(names(.ow_result), .ow_datetime_name), .ow_library)" else c(
+              "  if (inherits(.ow_result, \"data.table\")) {",
+              "    .ow_datetime_frame_classes <- class(.ow_result)",
+              "    class(.ow_result) <- NULL",
+              "    .ow_datetime_existing_names <- attr(.ow_result, \"names\", exact = TRUE)",
+              "    .ow_result[[.ow_storage_length(.ow_result) + 1L]] <- .ow_datetime_values",
+              "    attr(.ow_result, \"names\") <- c(.ow_datetime_existing_names, .ow_datetime_name)",
+              "    class(.ow_result) <- .ow_datetime_frame_classes",
+              "    .ow_result <- base::.Call(.ow_data_table_alloccol, .ow_result, 1024L, FALSE)",
+              "  } else {",
+              "    .ow_datetime_existing_names <- attr(.ow_result, \"names\", exact = TRUE)",
+              "    .ow_result[[.ow_storage_length(.ow_result) + 1L]] <- .ow_datetime_values",
+              "    attr(.ow_result, \"names\") <- c(.ow_datetime_existing_names, .ow_datetime_name)",
+              "  }"
+            ),
             sprintf("  .ow_result_ids <- c(.ow_result_ids, %s)", r_string(step$outputId))
           )
         }
@@ -9911,7 +10035,7 @@ openwrangler_r_kernel_agent <- local({
           )
           lines <- c(
             lines,
-            row_sort_code_lines(step$groupKeys),
+            if (identical(library, "base")) row_sort_code_lines(step$groupKeys) else c(unlist(lapply(step$groupKeys, row_column_lines, variable = ".ow_group_key"), use.names = FALSE), "  .ow_rows <- seq_len(nrow(.ow_result))"),
             sprintf(
               "  .ow_fill_result <- .ow_fill_grouped(.ow_fill_source, .ow_rows, %s, %s, %s)",
               group_key_values,
@@ -9933,7 +10057,7 @@ openwrangler_r_kernel_agent <- local({
           }
           lines <- c(
             lines,
-            row_sort_code_lines(step$orderBy),
+            row_sort_code_lines(step$orderBy, library = library),
             sprintf(
               "  .ow_fill_result <- .ow_fill_directional(.ow_fill_source, .ow_rows, %s, %s)",
               r_string(step$replacement$direction),
@@ -9956,7 +10080,8 @@ openwrangler_r_kernel_agent <- local({
         }
         lines <- c(
           lines,
-          "  if (inherits(.ow_result, \"data.table\")) data.table::set(.ow_result, j = .ow_fill_position, value = .ow_fill_result) else .ow_result[[.ow_fill_position]] <- .ow_fill_result"
+          if (!identical(library, "base")) "  if (!inherits(.ow_result, \"tbl_df\")) .ow_fill_result <- base::unname(.ow_fill_result)",
+          if (!identical(library, "base")) "  .ow_result <- .ow_library_helpers$library_assign(.ow_result, .ow_fill_position, list(.ow_fill_result), names(.ow_result), .ow_library)" else "  if (inherits(.ow_result, \"data.table\")) data.table::set(.ow_result, j = .ow_fill_position, value = .ow_fill_result) else .ow_result[[.ow_fill_position]] <- .ow_fill_result"
         )
       } else if (identical(step$kind, "castColumn")) {
         lines <- c(
@@ -9968,7 +10093,7 @@ openwrangler_r_kernel_agent <- local({
           "  if (inherits(.ow_result, \"data.table\") && !is.null(data.table::key(.ow_result)) && .ow_cast_source_name %in% data.table::key(.ow_result)) stop(\"castColumn cannot replace a data.table key column; clone the column before casting it\", call. = FALSE)",
           sprintf("  .ow_cast_result <- .ow_cast_values(.ow_result[[.ow_cast_position]], .ow_cast_dtype%s)",
             if (is.null(step$inputFormat)) "" else paste0(", ", r_string(step$inputFormat))),
-          "  if (inherits(.ow_result, \"data.table\")) data.table::set(.ow_result, j = .ow_cast_position, value = .ow_cast_result) else .ow_result[[.ow_cast_position]] <- .ow_cast_result"
+          if (!identical(library, "base")) "  .ow_result <- .ow_library_helpers$library_assign(.ow_result, .ow_cast_position, list(.ow_cast_result), names(.ow_result), .ow_library)" else "  if (inherits(.ow_result, \"data.table\")) data.table::set(.ow_result, j = .ow_cast_position, value = .ow_cast_result) else .ow_result[[.ow_cast_position]] <- .ow_cast_result"
         )
       } else if (identical(step$kind, "dropColumns")) {
         positions <- vapply(step$columns, `[[`, integer(1L), "position", USE.NAMES = FALSE)
@@ -9983,11 +10108,13 @@ openwrangler_r_kernel_agent <- local({
           "  .ow_all_positions <- seq_len(ncol(.ow_result))",
           "  .ow_keep_positions <- .ow_all_positions[is.na(match(.ow_all_positions, .ow_drop_positions))]",
           "  if (length(.ow_keep_positions) == 0L) stop(\"Open Wrangler must keep at least one column\", call. = FALSE)",
-          "  if (inherits(.ow_result, \"data.table\")) {",
-          "    .ow_result <- .ow_result[, .ow_keep_positions, with = FALSE]",
-          "  } else {",
-          "    for (.ow_position in base::sort.int(.ow_drop_positions, decreasing = TRUE, method = \"radix\")) .ow_result[[.ow_position]] <- NULL",
-          "  }",
+          if (!identical(library, "base")) "  .ow_result <- .ow_library_helpers$library_columns(.ow_result, .ow_keep_positions, .ow_library)" else c(
+            "  if (inherits(.ow_result, \"data.table\")) {",
+            "    .ow_result <- .ow_result[, .ow_keep_positions, with = FALSE]",
+            "  } else {",
+            "    for (.ow_position in base::sort.int(.ow_drop_positions, decreasing = TRUE, method = \"radix\")) .ow_result[[.ow_position]] <- NULL",
+            "  }"
+          ),
           "  .ow_result_ids <- .ow_result_ids[.ow_keep_positions]"
         )
       } else if (identical(step$kind, "selectColumns")) {
@@ -10000,12 +10127,14 @@ openwrangler_r_kernel_agent <- local({
           sprintf("  .ow_select_positions <- c(%s)", position_code),
           sprintf("  .ow_select_names <- c(%s)", name_code),
           "  if (length(.ow_select_positions) == 0L || any(.ow_select_positions > ncol(.ow_result)) || !identical(names(.ow_result)[.ow_select_positions], .ow_select_names)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
-          "  if (inherits(.ow_result, \"data.table\")) {",
-          "    .ow_result <- .ow_result[, .ow_select_positions, with = FALSE]",
-          "  } else {",
-          "    .ow_result <- .ow_result[.ow_select_positions]",
-          "    names(.ow_result) <- .ow_select_names",
-          "  }",
+          if (!identical(library, "base")) "  .ow_result <- .ow_library_helpers$library_columns(.ow_result, .ow_select_positions, .ow_library)" else c(
+            "  if (inherits(.ow_result, \"data.table\")) {",
+            "    .ow_result <- .ow_result[, .ow_select_positions, with = FALSE]",
+            "  } else {",
+            "    .ow_result <- .ow_result[.ow_select_positions]",
+            "    names(.ow_result) <- .ow_select_names",
+            "  }"
+          ),
           "  .ow_result_ids <- .ow_result_ids[.ow_select_positions]"
         )
       } else {
@@ -10458,7 +10587,8 @@ openwrangler_r_kernel_agent <- local({
         session$boundPlan,
         frame_contract,
         session$fileSource,
-        session$source$descriptor$schema
+        session$source$descriptor$schema,
+        session$library
       )
     )
   }
@@ -10501,11 +10631,16 @@ openwrangler_r_kernel_agent <- local({
       if (identical(kind, "openSession")) {
         payload <- exact_record(
           request$payload,
-          c("sessionId", "variableName", "page"),
+          c("sessionId", "variableName", "page", "library"),
           "request.payload",
           optional_fields = c("cloneFromSessionId", "cloneFromRevision")
         )
         session_id <- identifier(payload$sessionId, "request.payload.sessionId")
+        library <- bounded_text(payload$library, "request.payload.library", 10L)
+        if (!library %in% c("base", "dplyr", "data.table", "collapse")) {
+          abort("invalid_request", "request.payload.library is unsupported")
+        }
+        frame_contract$require_r_library(library)
         variable_name <- bounded_text(
           payload$variableName,
           "request.payload.variableName",
@@ -10567,6 +10702,7 @@ openwrangler_r_kernel_agent <- local({
         result <- materialize(frame_contract, source_capture, page)
         session <- list(
           variableName = variable_name,
+          library = library,
           fileSource = file_source,
           source = source_capture,
           original = NULL,
@@ -10588,6 +10724,7 @@ openwrangler_r_kernel_agent <- local({
           kind = "page",
           sessionId = session_id,
           exportFormats = I(export_lifecycle$formats()),
+          library = library,
           page = result
         )
         preflight_response(response)
@@ -10780,7 +10917,8 @@ openwrangler_r_kernel_agent <- local({
             session$original,
             retained_plan,
             source_environment,
-            session$variableName
+            session$variableName,
+            session$library
           )
           base <- replayed$capture
           retained_bound_plan <- replayed$boundPlan
@@ -10789,7 +10927,8 @@ openwrangler_r_kernel_agent <- local({
             base,
             session$plan[[replace_index]],
             source_environment,
-            session$variableName
+            session$variableName,
+            session$library
           )
           diff_before <- original_selected$capture
         }
@@ -10810,7 +10949,8 @@ openwrangler_r_kernel_agent <- local({
             ))),
             frame_contract,
             session$fileSource,
-            session$source$descriptor$schema
+            session$source$descriptor$schema,
+            session$library
           )
         } else {
           NULL
@@ -10821,7 +10961,8 @@ openwrangler_r_kernel_agent <- local({
           base,
           step,
           source_environment,
-          session$variableName
+          session$variableName,
+          session$library
         )
         candidate <- session
         candidate$draft <- applied$capture
@@ -10860,7 +11001,8 @@ openwrangler_r_kernel_agent <- local({
             candidate_bound_plan,
             frame_contract,
             candidate$fileSource,
-            candidate$source$descriptor$schema
+            candidate$source$descriptor$schema,
+            candidate$library
           )
         )
         if (!is.null(effective_view)) response$effectiveView <- effective_view
@@ -10930,7 +11072,8 @@ openwrangler_r_kernel_agent <- local({
               utils::head(session$boundPlan, step_index),
               frame_contract,
               session$fileSource,
-              session$source$descriptor$schema
+              session$source$descriptor$schema,
+              session$library
             )
           ))
         }
@@ -10949,14 +11092,16 @@ openwrangler_r_kernel_agent <- local({
               session$original,
               utils::head(prefix, step_index - 1L),
               source_environment,
-              session$variableName
+              session$variableName,
+              session$library
             )$capture
             output <- apply_step(
               frame_contract,
               input,
               prefix[[step_index]],
               source_environment,
-              session$variableName
+              session$variableName,
+              session$library
             )$capture
             boundary <- list(revision = session$revision, stepId = step_id, input = input, output = output)
           }
@@ -10967,7 +11112,8 @@ openwrangler_r_kernel_agent <- local({
             session$original,
             utils::head(prefix, step_index - if (identical(side, "input")) 1L else 0L),
             source_environment,
-            session$variableName
+            session$variableName,
+            session$library
           )$capture
           boundary <- NULL
         }
@@ -11085,7 +11231,8 @@ openwrangler_r_kernel_agent <- local({
           session$original,
           retained_plan,
           source_environment,
-          session$variableName
+          session$variableName,
+          session$library
         )
         candidate <- session
         candidate$plan <- retained_plan

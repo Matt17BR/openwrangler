@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { LiveGridPage, RuntimeResponseEnvelope, SessionMetadata } from "../shared/protocol";
 import { openWranglerResponseShapes } from "../shared/protocol";
-import { columnTypes, typedCellKinds } from "../shared/protocol.generated";
+import { columnTypes, rLibraries, typedCellKinds } from "../shared/protocol.generated";
 import {
   isColumnSchemaArray,
   isOpenWranglerResponse,
@@ -92,8 +92,10 @@ describe("protocol-v4 response validation", () => {
   it("keeps the generated primitive value domains directly frozen", () => {
     expect(Object.isFrozen(columnTypes)).toBe(true);
     expect(Object.isFrozen(typedCellKinds)).toBe(true);
+    expect(Object.isFrozen(rLibraries)).toBe(true);
     expect(Reflect.set(columnTypes, 0, "changed")).toBe(false);
     expect(Reflect.set(typedCellKinds, 0, "changed")).toBe(false);
+    expect(Reflect.set(rLibraries, 0, "changed")).toBe(false);
   });
 
   it.each(responses.map((response) => [response.kind, response] as const))(

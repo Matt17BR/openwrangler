@@ -282,10 +282,12 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
     this.assertActive();
     this.assertWorkspaceTrusted();
     const sessionId = options.requestedSessionId ?? this.createId();
+    const library = options.library === undefined ? "base" : options.library;
     this.assertSessionIdentityAvailable(sessionId);
     const request = this.request("openSession", {
       sessionId,
       variableName,
+      library,
       page,
       ...(options.cloneFrom
         ? { cloneFromSessionId: options.cloneFrom.sessionId, cloneFromRevision: options.cloneFrom.revision }
@@ -312,7 +314,15 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
       if (!response.exportFormats) {
         throw new Error("The R process did not report its data-export capabilities.");
       }
-      return Object.freeze({ sessionId, exportFormats: response.exportFormats, page: response.page });
+      if (response.library !== library) {
+        throw new Error("The R process did not confirm the requested dataframe library.");
+      }
+      return Object.freeze({
+        sessionId,
+        library: response.library,
+        exportFormats: response.exportFormats,
+        page: response.page
+      });
     } catch (error) {
       if (error instanceof DetachedBridgeRequestError && error.dispatched) {
         this.abandonedOpenSessions.add(sessionId);

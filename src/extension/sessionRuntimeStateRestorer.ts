@@ -131,7 +131,7 @@ export class SessionRuntimeStateRestorer {
       };
       const preview = await session.delegate.request(previewRequest, confirmedViewOptions(session, options));
       assertCurrent?.();
-      const previewMismatch = responseMismatch(previewRequest, preview, session.runtimeId);
+      const previewMismatch = responseMismatch(previewRequest, preview, session.runtimeId, undefined, session.metadata);
       if (preview.kind !== "stepPreview" || previewMismatch !== undefined) {
         throw cleaningRestoreError(
           `Open Wrangler could not replay cleaning step ${index + 1}.`,
@@ -153,7 +153,7 @@ export class SessionRuntimeStateRestorer {
       };
       const applied = await session.delegate.request(applyRequest, confirmedViewOptions(session, options));
       assertCurrent?.();
-      const applyMismatch = responseMismatch(applyRequest, applied, session.runtimeId);
+      const applyMismatch = responseMismatch(applyRequest, applied, session.runtimeId, undefined, session.metadata);
       if (applied.kind !== "planUpdated" || applyMismatch !== undefined) {
         throw cleaningRestoreError(
           `Open Wrangler could not apply replayed cleaning step ${index + 1}.`,
@@ -194,7 +194,7 @@ export class SessionRuntimeStateRestorer {
       };
       const preview = await session.delegate.request(previewRequest, confirmedViewOptions(session, options));
       assertCurrent?.();
-      const previewMismatch = responseMismatch(previewRequest, preview, session.runtimeId);
+      const previewMismatch = responseMismatch(previewRequest, preview, session.runtimeId, undefined, session.metadata);
       if (preview.kind !== "stepPreview" || previewMismatch !== undefined) {
         throw cleaningRestoreError(
           "Open Wrangler could not restore the draft cleaning step.",
@@ -302,7 +302,8 @@ export class SessionRuntimeStateRestorer {
       assertCurrent?.();
       if (
         response.kind !== "page" ||
-        responseMismatch(pageRequest, response, session.runtimeId, session.metadata.schema) !== undefined
+        responseMismatch(pageRequest, response, session.runtimeId, session.metadata.schema, session.metadata) !==
+          undefined
       ) {
         throw new RuntimeStateRestoreError("Open Wrangler could not restore the confirmed view.");
       }
@@ -381,7 +382,7 @@ export class SessionRuntimeStateRestorer {
     assertCurrent?.();
     const response = await session.delegate.request(request, options);
     assertCurrent?.();
-    const mismatch = responseMismatch(request, response, session.runtimeId, session.metadata.schema);
+    const mismatch = responseMismatch(request, response, session.runtimeId, session.metadata.schema, session.metadata);
     if (mismatch) {
       throw new RuntimeStateRestoreError("Open Wrangler could not validate the saved draft view.");
     }

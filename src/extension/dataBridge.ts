@@ -6,6 +6,7 @@ import type {
   OpenWranglerRequest,
   OpenWranglerResponse,
   PageResponse,
+  RLibrary,
   SessionMode,
   SessionSource
 } from "../shared/protocol";
@@ -99,8 +100,19 @@ export interface SessionRuntimeReplacement {
 export interface FilePlanOpenContext {
   readonly backend: Extract<DataBackend, "pandas" | "polars" | "duckdb" | "r">;
   readonly importOptions: SessionSource["importOptions"];
+  readonly rLibrary?: RLibrary;
   isCurrent(): boolean;
   createBridge(targetDelegate?: OpenWranglerBridge): OpenWranglerBridge;
+}
+
+/** A pinned R source and applied plan; the original editor retains unfinished work. */
+export interface RLibraryCopyContext {
+  readonly source: SessionSource;
+  readonly rLibrary: RLibrary;
+  readonly appliedStepCount: number;
+  readonly rerunsCustomCode: boolean;
+  isCurrent(): boolean;
+  createBridge(library: RLibrary): OpenWranglerBridge;
 }
 
 export interface DuckDBTableDiscovery {
@@ -121,8 +133,11 @@ export interface OpenWranglerBridge {
   request(request: OpenWranglerRequest, options?: BridgeRequestOptions): Promise<OpenWranglerResponse>;
   /** Retains a liveness check for the exact runtime owner of a file session. */
   captureFileSessionOwner?(sessionId: string): (() => boolean) | undefined;
+  /** Retains the exact mapped runtime while a native R editing copy is prepared. */
+  captureSessionOwner?(sessionId: string): (() => boolean) | undefined;
   /** Pins the active confirmed file plan and its target bridge factory, or returns an eligibility diagnostic. */
   captureActiveFilePlan?(): FilePlanOpenContext | ErrorResponse;
+  captureRLibraryCopy?(sessionId: string, revision: number): RLibraryCopyContext | ErrorResponse;
   prepareFileAutoFallback?(
     source: SessionSource,
     options?: BridgeRequestOptions

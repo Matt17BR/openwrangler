@@ -1,4 +1,12 @@
-import type { DataBackend, FilterModel, SessionMetadata, SessionSource, TransformStep } from "../shared/protocol";
+import {
+  isRLibrary,
+  type DataBackend,
+  type FilterModel,
+  type RLibrary,
+  type SessionMetadata,
+  type SessionSource,
+  type TransformStep
+} from "../shared/protocol";
 import { isFilterModel, isRetainedTransformStep } from "../shared/protocolValidation";
 import {
   decodeGridViewState,
@@ -19,25 +27,29 @@ export interface PersistedCleaningState {
 
 export interface PersistedSessionState {
   backend: DataBackend;
+  rLibrary?: RLibrary;
   cleaning: PersistedCleaningState;
   view: PersistedViewingState;
 }
 
 export interface SerializedPersistedSessionState {
   backend: DataBackend;
+  rLibrary?: RLibrary;
   cleaning: PersistedCleaningState;
   view: SerializedGridViewState & { filterModel: FilterModel };
 }
 
 export interface DecodedPersistedSessionState {
   backend: DataBackend;
+  rLibrary?: RLibrary;
   cleaning: PersistedCleaningState;
   view?: PersistedViewingState;
 }
 
-export function persistenceKey(source: SessionSource, backend: DataBackend): string {
+export function persistenceKey(source: SessionSource, backend: DataBackend, rLibrary?: RLibrary): string {
   return JSON.stringify({
     backend,
+    ...(backend === "r" && rLibrary !== undefined && rLibrary !== "base" ? { rLibrary } : {}),
     kind: source.kind,
     path: source.path ?? null,
     uri: source.uri ?? null,
@@ -54,6 +66,7 @@ export function persistedSessionState(
 ): PersistedSessionState {
   return {
     backend: metadata.backend,
+    ...(metadata.backend === "r" ? { rLibrary: metadata.rLibrary } : {}),
     cleaning: {
       steps: metadata.steps,
       draftStep: metadata.draftStep,
@@ -74,6 +87,7 @@ export function serializePersistedSession(state: PersistedSessionState): Seriali
   return serializedViewState
     ? {
         backend: state.backend,
+        ...(state.backend === "r" && state.rLibrary !== undefined ? { rLibrary: state.rLibrary } : {}),
         cleaning: state.cleaning,
         view: { ...serializedViewState, filterModel: state.view.filterModel }
       }
@@ -83,8 +97,9 @@ export function serializePersistedSession(state: PersistedSessionState): Seriali
 export function decodePersistedSession(value: unknown): DecodedPersistedSessionState | undefined {
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, ["backend", "cleaning"], ["view"]) ||
+    !hasExactKeys(value, ["backend", "cleaning"], ["view", "rLibrary"]) ||
     !isPersistableDataBackend(value.backend) ||
+    (Object.hasOwn(value, "rLibrary") && (value.backend !== "r" || !isRLibrary(value.rLibrary))) ||
     !isRecord(value.cleaning) ||
     !hasExactKeys(value.cleaning, ["steps"], ["draftStep", "draftReplacesStepId", "draftBaseFilterModel"]) ||
     !Array.isArray(value.cleaning.steps)
@@ -104,6 +119,7 @@ export function decodePersistedSession(value: unknown): DecodedPersistedSessionS
   const view = decodePersistedView(value.view);
   return {
     backend: value.backend,
+    ...(value.backend === "r" ? { rLibrary: (value.rLibrary ?? "base") as RLibrary } : {}),
     cleaning: {
       steps: steps as TransformStep[],
       draftStep,

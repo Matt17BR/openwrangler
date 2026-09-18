@@ -322,6 +322,20 @@ kernel mutation checks use fewer, longer levels to exercise the full response by
 The frame text owner checks bounded Lowercase/Uppercase conversion, mixed encodings, byte limits, locale behavior
 and ordered input/output refusals. The existing kernel text owner executes the emitted case kernel on multiple batches and failed
 results, checking exact live agreement, source preservation and no publication on failure.
+Library selection extends these existing owners: every supported catalog operation needs live/generated agreement
+for base R, dplyr, data.table and collapse, with expected values and unchanged source. Generated programs must resolve
+their own emitted helpers and dependencies. Focused native cases own package equality, grouping order, duplicate
+names, types, row labels and valid keys; one composed lifecycle per library proves replay and history. Do not repeat
+unrelated large fixtures or installed catalog journeys once for every library. Measure the added catalog cost against
+the existing phase deadline before accepting the change.
+Host checks own the resource-scoped default, requested/confirmed library, old base saved-plan keys, per-library
+persistence and exact-source editing copies. Copy cases include occupied targets, Custom Code confirmation, cancellation,
+original draft/redo retention and either editor closing while its sibling remains usable. Installed evidence must exercise
+the visible library choice and copy path; source mocks alone do not prove that the selected package executes.
+The existing local Linux VS Code Clone lifecycle chooses dplyr through the library picker, confirms the editing copy,
+checks its applied plan and package code, then closes it and continues Undo in the original editor. It runs in the
+default/core profile; other editors, platforms and focused operation profiles retain their existing journeys. The
+native catalog owns the complete per-library operation matrix.
 The existing frame profiling owner checks complete numeric bin membership and bounded categorical counts, including
 filtered populations, both sampled fallback limits and sparse columns that remain exact. It also checks bounded exact
 numeric distinct counts, integer64 identity, duration signed zero and abandonment at the cardinality limit. Text
@@ -691,6 +705,8 @@ selectors also omit the collapse and Rcpp roots, collapse residents and their di
 tibble/data.table residents and source-integrity checks. Default/core and other notebook profiles retain collapse,
 including native flavor labels and unsupported grouped/indexed exclusions; literate preparation retains its structural
 probe. Focused operation runs therefore do not repeat collapse coexistence coverage.
+Local Linux VS Code default/core preparation also includes dplyr 1.2.1 for its library-copy check, using the existing
+June 1 supplemental snapshot. Other notebook profiles, terminal/document preparation and remote runs do not add it.
 On macOS, selected collapse fixtures use the exact CRAN 2.1.8 binary when the selected R executable reports R 4.5.2
 and `aarch64-apple-darwin20`. Preparation verifies the archive's pinned size and SHA-256 before local installation,
 with a two-minute aggregate download deadline. An unavailable or changed archive fails preparation.

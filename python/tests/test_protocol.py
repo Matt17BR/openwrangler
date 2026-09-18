@@ -157,6 +157,16 @@ def test_open_session_accepts_supported_backends_and_scopes_pyspark_to_live_note
     with pytest.raises(ProtocolError, match="pandas, polars, duckdb, or pyspark"):
         decode_envelope(envelope)
 
+    envelope["request"]["backend"] = "r"
+    with pytest.raises(ProtocolError, match="pandas, polars, duckdb, or pyspark"):
+        decode_envelope(envelope)
+    for backend in ["pandas", "polars", "duckdb", "pyspark", "r"]:
+        envelope["request"]["backend"] = backend
+        for library in ["base", "dplyr", "data.table", "collapse"]:
+            envelope["request"]["rLibrary"] = library
+            with pytest.raises(ProtocolError, match="rLibrary"):
+                decode_envelope(envelope)
+
 
 @pytest.mark.parametrize(
     ("field", "value"),

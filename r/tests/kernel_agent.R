@@ -8827,10 +8827,11 @@ formula_datetime_s3_isolation_child <- function(frame_contract_path, kernel_expo
     view = list(filters = I(list()), sorts = I(list()))
   )
   dispatch <- function(kind, payload) {
+    if (identical(kind, "openSession") && !"library" %in% names(payload)) payload$library <- "base"
     request_number <<- request_number + 1L
     encoded <- jsonlite::toJSON(
       list(
-        transportVersion = 16L,
+        transportVersion = 17L,
         requestId = sprintf("11111111-1111-4111-8111-%012d", request_number),
         kind = kind,
         payload = payload
@@ -9594,10 +9595,11 @@ categorical_attributed_metadata_s3_child <- function(frame_contract_path, kernel
     view = list(filters = I(list()), sorts = I(list()))
   )
   dispatch <- function(kind, payload) {
+    if (identical(kind, "openSession") && !"library" %in% names(payload)) payload$library <- "base"
     request_number <<- request_number + 1L
     request <- jsonlite::toJSON(
       list(
-        transportVersion = 16L,
+        transportVersion = 17L,
         requestId = sprintf("99999999-9999-4999-8999-%012d", request_number),
         kind = kind,
         payload = payload
@@ -9941,10 +9943,11 @@ categorical_ascii_locale_child <- function(frame_contract_path, kernel_exports_p
     view = list(filters = I(list()), sorts = I(list()))
   )
   dispatch <- function(kind, payload) {
+    if (identical(kind, "openSession") && !"library" %in% names(payload)) payload$library <- "base"
     request_number <<- request_number + 1L
     encoded <- as.character(jsonlite::toJSON(
       list(
-        transportVersion = 16L,
+        transportVersion = 17L,
         requestId = sprintf("11111111-1111-4111-8111-%012d", request_number),
         kind = kind,
         payload = payload
@@ -10039,12 +10042,13 @@ categorical_ascii_locale_child <- function(frame_contract_path, kernel_exports_p
   on.exit(malformed_agent$dispose(), add = TRUE)
   malformed_request <- jsonlite::toJSON(
     list(
-      transportVersion = 16L,
+      transportVersion = 17L,
       requestId = "22222222-2222-4222-8222-222222222222",
       kind = "openSession",
       payload = list(
         sessionId = "22222222-2222-4222-8222-222222222222",
         variableName = "locale_frame",
+        library = "base",
         page = page
       )
     ),
@@ -12545,9 +12549,10 @@ by_example_utf8_locale_child <- function(frame_contract_path, kernel_exports_pat
     view = list(filters = I(list()), sorts = I(list()))
   )
   dispatch <- function(kind, payload) {
+    if (identical(kind, "openSession") && !"library" %in% names(payload)) payload$library <- "base"
     request <- jsonlite::toJSON(
       list(
-        transportVersion = 16L,
+        transportVersion = 17L,
         requestId = "acdcacdc-acdc-4cdc-8cdc-acdcacdcacdc",
         kind = kind,
         payload = payload
@@ -12792,7 +12797,8 @@ by_example_s3_isolation_child <- function(frame_contract_path, kernel_exports_pa
     expected_names,
     new_name,
     result_kind,
-    evaluator
+    evaluator,
+    library = "base"
   ) {
     real_chunked_by_example(
       value,
@@ -12809,7 +12815,8 @@ by_example_s3_isolation_child <- function(frame_contract_path, kernel_exports_pa
             list(attr(output, "names", exact = TRUE))
         }
         output
-      }
+      },
+      library = library
     )
   }
   agent <- openwrangler_r_kernel_agent$new_agent(instrumented_contract, source_environment)
@@ -12822,9 +12829,10 @@ by_example_s3_isolation_child <- function(frame_contract_path, kernel_exports_pa
     view = list(filters = I(list()), sorts = I(list()))
   )
   dispatch <- function(kind, payload) {
+    if (identical(kind, "openSession") && !"library" %in% names(payload)) payload$library <- "base"
     request <- jsonlite::toJSON(
       list(
-        transportVersion = 16L,
+        transportVersion = 17L,
         requestId = "f1f1f1f1-f1f1-41f1-81f1-f1f1f1f1f1f1",
         kind = kind,
         payload = payload
@@ -13426,7 +13434,7 @@ assert_identical(
 program_null_request_id <- "b6b6b6b6-b6b6-46b6-86b6-b6b6b6b6b6b6"
 program_null_request <- as.character(jsonlite::toJSON(
   list(
-    transportVersion = 16L,
+    transportVersion = 17L,
     requestId = program_null_request_id,
     kind = "previewStep",
     payload = list(
@@ -13503,7 +13511,7 @@ negative_zero_step$params$examples[[1L]]$output <- 0L
 negative_zero_step$params$examples[[2L]]$output <- 0L
 negative_zero_request <- jsonlite::toJSON(
   list(
-    transportVersion = 16L,
+    transportVersion = 17L,
     requestId = "b8b8b8b8-b8b8-48b8-88b8-b8b8b8b8b8b8",
     kind = "previewStep",
     payload = list(
@@ -13672,7 +13680,7 @@ for (case in structural_negative_zero_cases) {
   step$params$program <- case$program
   request <- as.character(jsonlite::toJSON(
     list(
-      transportVersion = 16L,
+      transportVersion = 17L,
       requestId = case$request_id,
       kind = "previewStep",
       payload = list(
@@ -13710,7 +13718,7 @@ for (case in structural_negative_zero_cases) {
 nul_step <- adversarial_valid_step("by-example-nul", "nul-safe")
 nul_request <- jsonlite::toJSON(
   list(
-    transportVersion = 16L,
+    transportVersion = 17L,
     requestId = "b7b7b7b7-b7b7-47b7-87b7-b7b7b7b7b7b7",
     kind = "previewStep",
     payload = list(

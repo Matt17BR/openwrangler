@@ -3062,7 +3062,7 @@ describe("App toolbar", () => {
     ({ App } = await import("../webviews/App"));
   });
 
-  it.each(["file", "notebookVariable"] as const)("offers R engine selection only for a %s source", (kind) => {
+  it.each(["file", "notebookVariable"] as const)("offers R library copies for a %s source", (kind) => {
     render(<App />);
     dispatchAppMessage({
       kind: "sessionOpened",
@@ -3072,24 +3072,27 @@ describe("App toolbar", () => {
         ...metadata,
         backend: "r",
         rDataframeFlavor: "r.data.frame",
+        rLibrary: "base",
         source:
           kind === "file"
             ? { kind, label: "records.csv", path: "/tmp/records.csv", uri: "file:///tmp/records.csv" }
             : { kind, label: "df", variableName: "df", uri: "file:///tmp/notebook.ipynb" }
       }
     });
-    const engine = screen.queryByRole("button", { name: /Change dataframe engine/u });
-    if (kind === "notebookVariable") {
-      expect(engine).toBeNull();
-      return;
-    }
+    const engine = screen.getByRole("button", {
+      name: "Open an editing copy with another R library. Current library: Base R"
+    });
+    expect(engine).toHaveTextContent("Base R");
     expect(engine).toBeEnabled();
     fireEvent.click(engine!);
     expect(webviewPostMessage).toHaveBeenCalledWith({ kind: "changeBackend" });
-    expect(screen.getByRole("button", { name: "Import options" })).toHaveAttribute(
-      "title",
-      "Open a separate R session with new import options"
-    );
+    dispatchAppMessage({ kind: "importOptionsState", busy: true });
+    expect(engine).toBeDisabled();
+    if (kind === "file")
+      expect(screen.getByRole("button", { name: "Import options" })).toHaveAttribute(
+        "title",
+        "Open a separate R session with new import options"
+      );
   });
 
   it("keeps the visible dataframe shape compact while exposing its full meaning", async () => {
@@ -3283,6 +3286,7 @@ describe("App file import options", () => {
         ...metadata,
         backend: "r",
         rDataframeFlavor: "r.data.frame",
+        rLibrary: "base",
         mode: "viewing",
         source,
         capabilities: {
@@ -3467,6 +3471,7 @@ describe("App file import options", () => {
       ...metadata,
       backend: "r",
       rDataframeFlavor: "r.data.frame",
+      rLibrary: "base",
       mode: "viewing",
       source: { kind: "rInteractiveVariable", label: "base_orders", variableName: "base_orders" },
       capabilities: {
@@ -3570,6 +3575,7 @@ describe("App file import options", () => {
         ...metadata,
         backend: "r",
         rDataframeFlavor: "r.data.frame",
+        rLibrary: "base",
         mode: "editing",
         source: { kind: "rInteractiveVariable", label: "orders", variableName: "orders" },
         capabilities: {
@@ -4918,6 +4924,7 @@ describe("App file import options", () => {
       ...metadata,
       backend: "r",
       rDataframeFlavor: "r.data.frame",
+      rLibrary: "base",
       source: { kind: "rInteractiveVariable", label: "orders", variableName: "orders" },
       capabilities: { ...metadata.capabilities, supportedOperations: ["customCode"] }
     };

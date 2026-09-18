@@ -282,8 +282,20 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
   ): Promise<RKernelOpenResult> {
     this.assertActive();
     const sessionId = options.requestedSessionId ?? this.createId();
+    const library = options.library === undefined ? "base" : options.library;
     this.assertSessionIdentityAvailable(sessionId);
-    const request = this.request("openSession", { sessionId, variableName, page });
+    if (options.cloneFrom && !this.mappedSessions.has(options.cloneFrom.sessionId)) {
+      throw new Error("The confirmed R source session no longer belongs to the selected terminal.");
+    }
+    const request = this.request("openSession", {
+      sessionId,
+      variableName,
+      library,
+      page,
+      ...(options.cloneFrom
+        ? { cloneFromSessionId: options.cloneFrom.sessionId, cloneFromRevision: options.cloneFrom.revision }
+        : {})
+    });
     this.openingSessions.add(sessionId);
     const scheduled = this.scheduleKernel(request, { expectExportFormats: true });
     const tracked: ScheduledRequest<RKernelResponse> = {
@@ -305,7 +317,15 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
       if (!response.exportFormats) {
         throw new Error("The interactive R session did not report its export capabilities.");
       }
-      return Object.freeze({ sessionId, exportFormats: response.exportFormats, page: response.page });
+      if (response.library !== library) {
+        throw new Error("The interactive R session did not confirm the requested dataframe library.");
+      }
+      return Object.freeze({
+        sessionId,
+        library: response.library,
+        exportFormats: response.exportFormats,
+        page: response.page
+      });
     } catch (error) {
       if (error instanceof DetachedBridgeRequestError && error.dispatched) {
         this.abandonedOpenSessions.add(sessionId);

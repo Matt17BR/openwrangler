@@ -31,6 +31,10 @@ export type DuckDBConnectionSource =
       kind: "default";
     };
 export type DataBackend = "polars" | "duckdb" | "pandas" | "pyspark" | "r";
+/**
+ * Native R cleaning library, independent of frame class. R open requests may omit it to select base; confirmed R metadata must include it. Other backends forbid it.
+ */
+export type RLibrary = "base" | "dplyr" | "data.table" | "collapse";
 export type SessionMode = "viewing" | "editing";
 export type PageRequest = SessionRequestBase & {
   kind: "getPage";
@@ -565,6 +569,7 @@ export interface OpenSessionRequest {
   requestedSessionId?: string;
   cloneFrom?: SessionCloneSource;
   backend?: DataBackend;
+  rLibrary?: RLibrary;
   mode?: SessionMode;
   pageSize: number;
   columnOffset: number;
@@ -1363,6 +1368,7 @@ export interface SessionMetadata {
    * Required only for a confirmed live R session; forbidden for every other backend.
    */
   rDataframeFlavor?: "r.data.frame" | "r.tibble" | "r.data.table";
+  rLibrary?: RLibrary;
   mode: SessionMode;
   source: SessionSource;
   capabilities: SourceCapabilities;
@@ -1639,6 +1645,7 @@ export const typedCellKinds = Object.freeze([
   "struct",
   "unknown"
 ]) satisfies readonly TypedCellKind[];
+export const rLibraries = Object.freeze(["base", "dplyr", "data.table", "collapse"]) satisfies readonly RLibrary[];
 
 export interface OpenWranglerRequestShape {
   readonly kind: OpenWranglerRequest["kind"];
@@ -1655,7 +1662,7 @@ export const openWranglerRequestShapes = Object.freeze([
   Object.freeze({
     kind: "openSession",
     required: Object.freeze(["kind", "source", "pageSize", "columnOffset", "columnLimit"]),
-    optional: Object.freeze(["requestedSessionId", "cloneFrom", "backend", "mode"])
+    optional: Object.freeze(["requestedSessionId", "cloneFrom", "backend", "rLibrary", "mode"])
   }),
   Object.freeze({
     kind: "getPage",

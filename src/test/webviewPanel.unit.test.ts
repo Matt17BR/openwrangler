@@ -23,6 +23,7 @@ import type {
   OpenWranglerResponse,
   SessionMetadata,
   SessionMode,
+  RLibrary,
   SessionOpenedResponse,
   SessionSource
 } from "../shared/protocol";
@@ -97,6 +98,127 @@ const panelPromptMocks = {
 };
 
 describe("OpenWranglerPanel retained view state", () => {
+  it("offers the existing file reopen path for a selected library's saved work", async () => {
+    const source: SessionSource = {
+      kind: "file",
+      label: "frame.csv",
+      path: "/workspace/frame.csv",
+      uri: "file:///workspace/frame.csv"
+    };
+    const response: SessionOpenedResponse = {
+      ...openedResponse,
+      metadata: { ...metadata, source, backend: "r", rLibrary: "base", rDataframeFlavor: "r.data.frame" }
+    };
+    const createBridge = vi.fn();
+    const captureRLibraryCopy = vi.fn(() => ({
+      source,
+      rLibrary: "base" as const,
+      appliedStepCount: 0,
+      rerunsCustomCode: false,
+      isCurrent: () => true,
+      createBridge
+    }));
+    const harness = createPanelHarness(
+      { request: vi.fn(), captureRLibraryCopy },
+      { source, backend: "r", openResponse: response }
+    );
+    await harness.open();
+    panelPromptMocks.showQuickPick.mockResolvedValue({ backend: "r", rLibrary: "collapse" });
+    panelPromptMocks.showWarningMessage.mockResolvedValue("Open file separately");
+    const execute = vi.spyOn(commands, "executeCommand");
+    await harness.receive({ kind: "changeBackend" });
+    expect(execute).toHaveBeenCalledWith(
+      "openWrangler.internal.openFileWithEngine",
+      source,
+      "r",
+      expect.any(Function),
+      "collapse"
+    );
+    expect(createBridge).not.toHaveBeenCalled();
+    const current = execute.mock.calls.find(
+      ([command]) => command === "openWrangler.internal.openFileWithEngine"
+    )?.[3] as () => boolean;
+    expect(current()).toBe(true);
+    harness.dispose();
+    expect(current()).toBe(false);
+  });
+  it("opens an explicitly selected R library directly and displays only its confirmed identity", async () => {
+    const source: SessionSource = {
+      kind: "rInteractiveVariable",
+      label: "frame",
+      variableName: "frame",
+      uri: "file:///workspace/source.R"
+    };
+    const response: SessionOpenedResponse = {
+      ...openedResponse,
+      metadata: { ...metadata, source, backend: "r", rLibrary: "collapse", rDataframeFlavor: "r.data.table" }
+    };
+    const request = vi.fn(async (): Promise<OpenWranglerResponse> => response);
+    const harness = createPanelHarness({ request }, { source, backend: "r", rLibrary: "collapse", delegateOpen: true });
+    expect(harness.title).not.toContain("collapse");
+    await harness.open();
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "openSession", backend: "r", rLibrary: "collapse", source }),
+      expect.anything()
+    );
+    expect(harness.title).toContain("R · collapse");
+    expect(panelPromptMocks.showQuickPick).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    "confirms Custom Code replay before opening a separate R library copy (origin changed: %s)",
+    async (changed) => {
+      const source: SessionSource = { kind: "rInteractiveVariable", label: "frame", variableName: "frame" };
+      const response: SessionOpenedResponse = {
+        ...openedResponse,
+        metadata: { ...metadata, source, backend: "r", rLibrary: "base", rDataframeFlavor: "r.data.frame" }
+      };
+      let current = true;
+      const copyBridge = { request: vi.fn() };
+      const createBridge = vi.fn(() => copyBridge);
+      const capture = vi.fn(() => ({
+        source,
+        rLibrary: "base" as const,
+        appliedStepCount: 2,
+        rerunsCustomCode: true,
+        isCurrent: () => current,
+        createBridge
+      }));
+      const harness = createPanelHarness(
+        { request: vi.fn(), captureRLibraryCopy: capture },
+        { source, backend: "r", openResponse: response }
+      );
+      await harness.open();
+      const create = vi.spyOn(OpenWranglerPanel, "create").mockReturnValue({} as OpenWranglerPanel);
+      panelPromptMocks.showQuickPick.mockImplementation(async (items) => {
+        expect(capture).toHaveBeenCalledWith("session", 0);
+        return (items as Array<{ rLibrary: RLibrary }>).find((item) => item.rLibrary === "dplyr");
+      });
+      panelPromptMocks.showWarningMessage.mockImplementation(async (_message, options) => {
+        expect(options?.detail).toContain(
+          "Applied Custom Code runs again in the original R environment and may have side effects."
+        );
+        current = !changed;
+        return "Open editing copy";
+      });
+      await harness.receive({ kind: "changeBackend" });
+      if (changed) {
+        expect(createBridge).not.toHaveBeenCalled();
+        expect(create).not.toHaveBeenCalled();
+      } else {
+        expect(createBridge).toHaveBeenCalledExactlyOnceWith("dplyr");
+        expect(create).toHaveBeenCalledExactlyOnceWith(
+          expect.anything(),
+          copyBridge,
+          source,
+          "r",
+          "r",
+          "editing",
+          "dplyr"
+        );
+      }
+    }
+  );
   it.each([
     "runtime",
     "staged save",
@@ -2055,6 +2177,7 @@ describe("OpenWranglerPanel retained view state", () => {
           ...metadata,
           source,
           backend,
+          ...(backend === "r" ? { rLibrary: "base" as const } : {}),
           steps: [{ id: "lower-city", kind: "lowerText", params: { column: { id: "c:0", name: "city" } } }],
           latestStepInputSchema: metadata.schema
         }
@@ -2072,7 +2195,10 @@ describe("OpenWranglerPanel retained view state", () => {
         );
         expect(choice).toMatchObject({
           description: "Open in a separate session",
-          detail: "Keeps this session and its steps. Opens the source with its own saved plan, if any."
+          detail:
+            target === "r"
+              ? "Opens the source with this library's saved plan, if any."
+              : "Keeps this session and its steps. Opens the source with its own saved plan, if any."
         });
         return choice;
       });
@@ -2082,7 +2208,13 @@ describe("OpenWranglerPanel retained view state", () => {
       const handoff = executeCommand.mock.calls.find(
         ([command]) => command === "openWrangler.internal.openFileWithEngine"
       );
-      expect(handoff).toEqual(["openWrangler.internal.openFileWithEngine", source, target, expect.any(Function)]);
+      expect(handoff).toEqual([
+        "openWrangler.internal.openFileWithEngine",
+        source,
+        target,
+        expect.any(Function),
+        ...(target === "r" ? ["base"] : [])
+      ]);
       expect(reconfigureFileSession).not.toHaveBeenCalled();
       expect(panelPromptMocks.showWarningMessage).not.toHaveBeenCalled();
       const isCurrent = handoff?.[3] as () => boolean;
@@ -2144,7 +2276,7 @@ describe("OpenWranglerPanel retained view state", () => {
       };
       const opened: SessionOpenedResponse = {
         ...responseForSource(source),
-        metadata: { ...metadata, backend: "r", source }
+        metadata: { ...metadata, backend: "r", rLibrary: "base", source }
       };
       const executeCommand = vi.spyOn(commands, "executeCommand");
       const reconfigureFileSession = vi.fn();
@@ -2173,7 +2305,8 @@ describe("OpenWranglerPanel retained view state", () => {
         "openWrangler.internal.openFileWithEngine",
         { ...source, importOptions: selected },
         "r",
-        expect.any(Function)
+        expect.any(Function),
+        "base"
       );
       expect(reconfigureFileSession).not.toHaveBeenCalled();
       harness.posted.length = 0;
@@ -2390,8 +2523,15 @@ describe("OpenWranglerPanel retained view state", () => {
       label: string;
       backend: DataBackend;
     }>;
-    expect(choices.map(({ backend }) => backend)).toEqual(["polars", "pandas", "r"]);
-    expect(choices.map(({ label }) => label)).toEqual(["Polars", "Pandas", "R"]);
+    expect(choices.map(({ backend }) => backend)).toEqual(["polars", "pandas", "r", "r", "r", "r"]);
+    expect(choices.map(({ label }) => label)).toEqual([
+      "Polars",
+      "Pandas",
+      "Base R",
+      "R · dplyr",
+      "R · data.table",
+      "R · collapse"
+    ]);
   });
 
   it("requires explicit replay confirmation before switching a session with cleaning state", async () => {
@@ -5169,7 +5309,7 @@ describe("OpenWranglerPanel retained view state", () => {
     const backendMetadata: SessionMetadata = {
       ...metadata,
       backend,
-      ...(backend === "r" ? { rDataframeFlavor: "r.data.frame" as const } : {}),
+      ...(backend === "r" ? { rDataframeFlavor: "r.data.frame" as const, rLibrary: "base" as const } : {}),
       capabilities: { ...metadata.capabilities, supportedOperations: ["customCode"] }
     };
     const opened: SessionOpenedResponse = {
@@ -7241,6 +7381,7 @@ describe("OpenWranglerPanel retained view state", () => {
             ...metadata,
             backend: "r",
             rDataframeFlavor: "r.data.frame",
+            rLibrary: "base",
             mode: "viewing",
             source,
             capabilities: {
@@ -7288,6 +7429,7 @@ describe("OpenWranglerPanel retained view state", () => {
         ...metadata,
         backend: "r",
         rDataframeFlavor: "r.data.frame",
+        rLibrary: "base",
         mode: "viewing",
         source,
         capabilities: {
@@ -7405,6 +7547,7 @@ describe("OpenWranglerPanel retained view state", () => {
         ...metadata,
         backend: "r",
         rDataframeFlavor: "r.data.frame",
+        rLibrary: "base",
         mode: "editing",
         source,
         capabilities: {
@@ -7565,6 +7708,7 @@ describe("OpenWranglerPanel retained view state", () => {
             ...metadata,
             backend: "r",
             rDataframeFlavor: "r.data.frame",
+            rLibrary: "base",
             mode: "editing",
             source
           }
@@ -7601,6 +7745,7 @@ describe("OpenWranglerPanel retained view state", () => {
             ...metadata,
             backend: "r",
             rDataframeFlavor: "r.data.frame",
+            rLibrary: "base",
             mode: "editing",
             source
           }
@@ -8034,6 +8179,7 @@ function createPanelHarness(
     backend?: DataBackend | null;
     backendPreference?: DataBackend | "auto";
     initialMode?: SessionMode;
+    rLibrary?: RLibrary;
     postMessage?: (message: unknown) => Promise<boolean>;
   }
 ): {
@@ -8140,7 +8286,8 @@ function createPanelHarness(
         source,
         backend,
         backendPreference,
-        options?.initialMode
+        options?.initialMode,
+        options?.rLibrary
       );
     } finally {
       if (descriptor) Object.defineProperty(window, "createWebviewPanel", descriptor);
@@ -8155,7 +8302,8 @@ function createPanelHarness(
       backend,
       false,
       backendPreference,
-      options?.initialMode
+      options?.initialMode,
+      options?.rLibrary
     );
   }
   const harness = {

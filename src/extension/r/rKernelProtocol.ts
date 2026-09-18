@@ -10,6 +10,7 @@ import {
   type RFramePageContract
 } from "./rFrameContract";
 import { supportsViewPredicate } from "../../shared/filterModel";
+import { isRLibrary } from "../../shared/protocol";
 import { isFormulaLiteral } from "../../shared/formulaLiteral";
 import { MAX_VIEW_VALUE_TEXT_CHARACTERS, hasAtMostViewValueTextCodePoints } from "../../shared/viewValueLimits";
 import type {
@@ -22,6 +23,7 @@ import type {
   FillMissingReplacement,
   FormulaLiteral,
   PredicateFilter,
+  RLibrary,
   TypedSelectionToken,
   ValueCount
 } from "../../shared/protocol";
@@ -33,7 +35,7 @@ import {
   isTransformStep
 } from "../../shared/protocolValidation";
 
-export const R_KERNEL_TRANSPORT_VERSION = 16 as const;
+export const R_KERNEL_TRANSPORT_VERSION = 17 as const;
 export const R_KERNEL_MAX_REQUEST_BYTES = 16 * 1_024 * 1_024;
 export const R_KERNEL_MAX_RESPONSE_BYTES = 17 * 1_024 * 1_024;
 export const R_KERNEL_EXPORT_CHUNK_BYTES = 1 * 1_024 * 1_024;
@@ -660,6 +662,7 @@ export type RKernelRequest =
       payload: Readonly<{
         sessionId: string;
         variableName: string;
+        library: RLibrary;
         page: RKernelPageWindow;
         cloneFromSessionId?: string;
         cloneFromRevision?: number;
@@ -808,6 +811,7 @@ export type RKernelResponse =
       kind: "page";
       sessionId: string;
       exportFormats?: readonly RKernelExportFormat[];
+      library?: RLibrary;
       page: RFramePageContract;
     }>
   | Readonly<{
@@ -990,19 +994,21 @@ export function decodeRKernelResponseJson(
     const record = exactRecord(
       value,
       context.expectExportFormats
-        ? ["transportVersion", "requestId", "kind", "sessionId", "exportFormats", "page"]
+        ? ["transportVersion", "requestId", "kind", "sessionId", "exportFormats", "library", "page"]
         : ["transportVersion", "requestId", "kind", "sessionId", "page"]
     );
     validateEnvelope(record, expected);
     const exportFormats = context.expectExportFormats
       ? decodeExportFormats(record.exportFormats, "response.exportFormats")
       : undefined;
+    if (context.expectExportFormats && !isRLibrary(record.library)) fail("R kernel response library is invalid.");
     return Object.freeze({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: expected,
       kind: "page" as const,
       sessionId: identifier(record.sessionId, "response.sessionId"),
       ...(exportFormats === undefined ? {} : { exportFormats }),
+      ...(context.expectExportFormats ? { library: record.library as RLibrary } : {}),
       page: decodeRFramePage(record.page)
     });
   }
@@ -1357,11 +1363,12 @@ function validateRequest(request: RKernelRequest): void {
   if (record.kind === "openSession") {
     const payload = exactRecord(
       record.payload,
-      ["sessionId", "variableName", "page"],
+      ["sessionId", "variableName", "library", "page"],
       ["cloneFromSessionId", "cloneFromRevision"],
       "R kernel open payload"
     );
     identifier(payload.sessionId, "request.payload.sessionId");
+    if (!isRLibrary(payload.library)) fail("R kernel request library is invalid.");
     const variableName = boundedText(
       payload.variableName,
       "request.payload.variableName",

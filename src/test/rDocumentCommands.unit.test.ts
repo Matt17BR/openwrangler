@@ -9,6 +9,7 @@ type CommandHandler = (resource?: unknown) => Promise<unknown>;
 const mocks = vi.hoisted(() => ({
   commands: new Map<string, CommandHandler>(),
   openingTimeout: 45_000 as unknown,
+  rLibrary: "base" as string,
   configurationReads: [] as Array<readonly [string, unknown]>,
   registrationAttempt: 0,
   failRegistrationAttempt: undefined as number | undefined,
@@ -84,11 +85,13 @@ vi.mock("vscode", () => {
         return {
           get: (key: string, fallback: unknown) =>
             section === "openWrangler"
-              ? key === "rscriptPath"
-                ? "/configured/Rscript"
-                : key === "sessionOpenTimeoutMs"
-                  ? mocks.openingTimeout
-                  : fallback
+              ? key === "defaultRLibrary"
+                ? mocks.rLibrary
+                : key === "rscriptPath"
+                  ? "/configured/Rscript"
+                  : key === "sessionOpenTimeoutMs"
+                    ? mocks.openingTimeout
+                    : fallback
               : (mocks.reticulateCells ?? fallback)
         };
       },
@@ -153,6 +156,7 @@ describe("R document command", () => {
   beforeEach(() => {
     mocks.commands.clear();
     mocks.openingTimeout = 45_000;
+    mocks.rLibrary = "base";
     mocks.configurationReads.length = 0;
     mocks.registrationAttempt = 0;
     mocks.failRegistrationAttempt = undefined;
@@ -324,11 +328,15 @@ describe("R document command", () => {
     "runs the exact R file with configured deadline %s and binds its document origin",
     async (configured, expected) => {
       mocks.openingTimeout = configured;
+      mocks.rLibrary = "dplyr";
       const document = rDocument("/workspace/analysis/orders.R", 'assign("$(add)", data.frame(id = 1:3))\n');
       mocks.textDocuments.push(document);
       mocks.openTextDocument.mockResolvedValue(document);
       const variable = { name: "$(add)", backend: "r" as const, dataframeFlavor: "r.data.frame" as const };
-      mocks.discovery.mockResolvedValueOnce({ variables: [variable], truncated: false });
+      mocks.discovery.mockImplementationOnce(async () => {
+        mocks.rLibrary = "collapse";
+        return { variables: [variable], truncated: false };
+      });
       mocks.showQuickPick.mockImplementation(async (items) => items[0]);
       const coordinator = coordinatorMock();
       register(coordinator);
@@ -344,7 +352,7 @@ describe("R document command", () => {
       expect(
         mocks.configurationReads
           .filter(([section]) => section === "openWrangler")
-          .every(([, resource]) => resource === document.uri)
+          .every(([, resource]) => (resource as vscode.Uri).toString() === document.uri.toString())
       ).toBe(true);
       expect(mocks.transportOptions).toEqual([
         {
@@ -369,7 +377,10 @@ describe("R document command", () => {
           variableName: variable.name,
           uri: "file:///workspace/analysis/orders.R"
         },
-        "r"
+        "r",
+        "r",
+        undefined,
+        "dplyr"
       );
       expect(mocks.restoreEditorGroupAfterQuickPick).toHaveBeenCalledOnce();
       expect(mocks.restoreEditorGroupAfterQuickPick.mock.invocationCallOrder[0]).toBeLessThan(
@@ -441,7 +452,10 @@ describe("R document command", () => {
         kind: "documentVariable",
         uri: "vscode-remote://ssh-remote+host/workspace/analysis/orders.R"
       }),
-      "r"
+      "r",
+      "r",
+      undefined,
+      "base"
     );
   });
 
@@ -485,7 +499,10 @@ describe("R document command", () => {
       expect.anything(),
       expect.anything(),
       expect.objectContaining({ uri: "file:///workspace/analysis/orders.qmd" }),
-      "r"
+      "r",
+      "r",
+      undefined,
+      "base"
     );
   });
 
@@ -588,7 +605,8 @@ describe("R document command", () => {
     expect(providers.r.runLiterateChunkAndOpen).toHaveBeenCalledWith(
       expect.objectContaining({ pythonExecutionOwner: "r" }),
       providers.rSession,
-      'reticulate::repl_python(quiet = TRUE, input = "orders = make_frame()\\n")'
+      'reticulate::repl_python(quiet = TRUE, input = "orders = make_frame()\\n")',
+      "base"
     );
   });
 
@@ -614,7 +632,8 @@ describe("R document command", () => {
     expect(providers.r.runLiterateChunkAndOpen).toHaveBeenCalledWith(
       expect.anything(),
       providers.rSession,
-      `reticulate::repl_python(quiet = TRUE, input = ${rStringExpression(chunk)})`
+      `reticulate::repl_python(quiet = TRUE, input = ${rStringExpression(chunk)})`,
+      "base"
     );
   });
 
@@ -654,7 +673,11 @@ describe("R document command", () => {
     const editor = textEditor(document, 6);
     mocks.textDocuments.push(document);
     mocks.activeEditor = editor;
-    mocks.getCommands.mockResolvedValue(["quarto.runCurrentCell", "r.runSelection"]);
+    mocks.rLibrary = "dplyr";
+    mocks.getCommands.mockImplementationOnce(async () => {
+      mocks.rLibrary = "collapse";
+      return ["quarto.runCurrentCell", "r.runSelection"];
+    });
     const providers = literateProviders();
     providers.r.captureActiveSession.mockReturnValue(providers.rSession);
     providers.r.runLiterateChunkAndOpen.mockResolvedValueOnce(true);
@@ -666,7 +689,8 @@ describe("R document command", () => {
     expect(providers.r.runLiterateChunkAndOpen).toHaveBeenCalledWith(
       expect.objectContaining({ editor, document, chunk: expect.objectContaining({ language: "r" }) }),
       providers.rSession,
-      "#| label: load-orders\norders <- data.frame(id = 1:3)\n"
+      "#| label: load-orders\norders <- data.frame(id = 1:3)\n",
+      "dplyr"
     );
     expect(mocks.transportOptions).toHaveLength(0);
   });
@@ -723,7 +747,8 @@ describe("R document command", () => {
     expect(providers.r.runLiterateChunkAndOpen).toHaveBeenCalledWith(
       expect.objectContaining({ document, chunk: expect.objectContaining({ language: "r" }) }),
       undefined,
-      "orders <- data.frame(id = 1:3)\n"
+      "orders <- data.frame(id = 1:3)\n",
+      "base"
     );
     expect(mocks.showInformationMessage).not.toHaveBeenCalledWith(expect.stringContaining("Start or select"));
   });
@@ -749,7 +774,8 @@ describe("R document command", () => {
     expect(providers.r.runLiterateChunkAndOpen).toHaveBeenCalledWith(
       expect.anything(),
       providers.rSession,
-      "#| label: load-orders\norders <- data.frame(id = 1:3)\n"
+      "#| label: load-orders\norders <- data.frame(id = 1:3)\n",
+      "base"
     );
   });
 
@@ -834,7 +860,7 @@ describe("R document command", () => {
       expect.objectContaining({ title: "Open Wrangler: Choose the document session" })
     );
     expect(providers.python.openAssociatedLiterateSession).not.toHaveBeenCalled();
-    expect(providers.r.openLiterateSession).toHaveBeenCalledWith(expect.anything(), providers.rSession);
+    expect(providers.r.openLiterateSession).toHaveBeenCalledWith(expect.anything(), providers.rSession, "base");
   });
 
   it("reports the exact missing Jupyter command before dispatch", async () => {

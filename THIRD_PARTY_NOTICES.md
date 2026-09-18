@@ -46,8 +46,11 @@ The bundled pure-Python runtime interoperates with, but does not redistribute, t
 - xlrd: BSD licenses. Loaded when Pandas opens legacy `.xls` workbooks.
 - fastexcel: MIT License. Loaded when Polars opens `.xlsx` or `.xls` workbooks.
 
-The bundled R runtime uses optional packages from the selected R environment for file formats:
+The bundled R runtime uses optional packages from the selected R environment for cleaning and file formats:
 
+- dplyr 1.2.1 or newer: MIT License, for selected dplyr cleaning operations.
+- data.table 1.18.2.1 or newer: Mozilla Public License 2.0, for selected data.table cleaning operations.
+- collapse 2.1.7 or newer: GNU General Public License version 2 or later, with Mozilla Public License 2.0 components, for selected collapse cleaning operations.
 - nanoparquet 0.5.1 or newer: MIT License, for native Parquet input and export.
 - readxl 1.4.5 or newer: MIT License, for native Excel input.
 

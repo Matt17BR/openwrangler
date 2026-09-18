@@ -2081,6 +2081,62 @@ assert_error(
 )
 assert_identical(clone_frame, clone_before, "a failed clone mutated its source")
 
+
+# The chosen library is independent of the admitted frame class. Positional
+# aliases must stay private even when user columns have empty/repeated names.
+for (library in c("dplyr", "data.table", "collapse")) {
+  openwrangler_r_frame_contract$require_r_library(library)
+  for (flavor in c("data.frame", "tibble", "data.table")) {
+    selected_source <- data.frame(id = 1:3, first = c(2L, NA_integer_, 4L), second = c("a", "b", "c"),
+      wide = bit64::as.integer64(c("9223372036854775807", NA, "-9223372036854775807")),
+      row.names = c("source-a", "source-b", "source-c"))
+    if (flavor == "tibble") selected_source <- tibble::as_tibble(selected_source)
+    if (flavor == "data.table") {
+      data.table::setDT(selected_source)
+      data.table::setkeyv(selected_source, "id")
+      data.table::setnames(selected_source, c("id", "", "same", "same"))
+    } else names(selected_source) <- c("id", "", "same", "same")
+    source_bytes <- serialize(selected_source, NULL, version = 3L)
+    renamed <- openwrangler_r_frame_contract$rename_column_at(selected_source, 2L, "", "renamed", library)
+    cloned <- openwrangler_r_frame_contract$clone_column_at(renamed, 4L, "same", "exact copy", library)
+    assert_identical(names(cloned), c("id", "renamed", "same", "same", "exact copy"), "a selected library exposed aliases or repaired public names")
+    assert_identical(cloned[[5L]], selected_source[[4L]], "a selected library clone changed integer64 values or metadata")
+    assert_identical(class(cloned), class(selected_source), "library choice changed frame class")
+    assert_identical(.row_names_info(cloned, 0L), .row_names_info(selected_source, 0L), "column editing changed row labels")
+    filtered <- openwrangler_r_frame_contract$drop_missing_rows_at(selected_source, 2L, "", library = library)$frame
+    expected <- if (flavor == "data.table") selected_source[c(1L, 3L)] else selected_source[c(1L, 3L), , drop = FALSE]
+    assert_identical(.row_names_info(filtered, 0L), .row_names_info(expected, 0L), "selected row filtering changed frame-flavor row labels")
+    assert_identical(filtered[[4L]], expected[[4L]], "selected row filtering changed integer64 values")
+    if (flavor == "data.table") {
+      assert_identical(data.table::key(cloned), "id", "selected column editing lost a retained key")
+      assert_identical(data.table::key(filtered), "id", "selected row filtering lost a retained key")
+    }
+    assert_identical(serialize(selected_source, NULL, version = 3L), source_bytes, "selected library editing mutated its source")
+
+    # Filtering reads the source directly, then capture isolates only its result.
+    # Named columns and nested cells must not turn that read into a mutation.
+    for (threshold in c(0L, 1L, 3L)) {
+      readonly_source <- selected_source
+      readonly_source[["nested"]] <- I(list(c(a = 1L), c(b = 2L), c(c = 3L)))
+      attr(readonly_source[[2L]], "names") <- c("first", "second", "third")
+      readonly_before <- serialize(readonly_source, NULL, version = 3L)
+      readonly_capture <- openwrangler_r_frame_contract$capture_live_frame(function() readonly_source)
+      query <- list(filters = list(list(column = list(id = "r:c:0", name = "id"), type = "integer",
+        predicates = list(list(kind = "predicate", operator = "gt", value = threshold)))), sorts = list())
+      selected <- openwrangler_r_frame_contract$transform_rows(readonly_capture, query, library)
+      expected_rows <- which(readonly_source[[1L]] > threshold)
+      assert_identical(selected$sourcePositions, expected_rows, "selected filtering changed source row positions")
+      assert_identical(selected$frame[[2L]], readonly_source[[2L]][expected_rows], "selected filtering lost element names")
+      assert_identical(names(selected$frame), names(readonly_source), "selected filtering repaired public names")
+      assert_identical(serialize(readonly_source, NULL, version = 3L), readonly_before, "selected filtering mutated a borrowed source column")
+      isolated <- openwrangler_r_frame_contract$capture_frame(selected$frame)
+      isolated_before <- serialize(isolated$snapshot, NULL, version = 3L)
+      data.table::setattr(readonly_source[[5L]][[2L]], "names", "changed after capture")
+      assert_identical(serialize(isolated$snapshot, NULL, version = 3L), isolated_before, "selected filtering retained a mutable source child")
+    }
+  }
+}
+
 }))
 run_frame_contract_case("by-example", local({
 
@@ -8024,12 +8080,21 @@ assert_identical(
 )
 assert_true(identical(committed_table, committed_table_before), "committed row operations mutated the source data.table")
 
+for (library in c("base", "dplyr", "data.table", "collapse")) {
+  openwrangler_r_frame_contract$require_r_library(library)
+  nested_duplicates <- data.frame(id = 1:2, cells = I(list(c(1L, 2L), c(1L, 2L))))
+  assert_error(openwrangler_r_frame_contract$drop_duplicate_rows_at(nested_duplicates, 2L, "cells", library = library),
+    "Duplicate comparison requires scalar columns")
+  assert_error(openwrangler_r_frame_contract$mark_duplicate_rows_at(nested_duplicates, 2L, "cells", "duplicate", library),
+    "Duplicate comparison requires scalar columns")
+}
+
 # Physical columns with repeated labels remain separate comparison keys.
 duplicate_label_frame <- data.table::data.table(rep(1L, 3L), factor(c("same", "same", "different")))
 data.table::setnames(duplicate_label_frame, c("same label", "same label"))
 duplicate_label_before <- serialize(duplicate_label_frame, NULL, version = 3L)
-for (duplicate_label_mode in c("first", "last", "none")) {
-  duplicate_label_result <- openwrangler_r_frame_contract$drop_duplicate_rows_at(duplicate_label_frame, 1:2, c("same label", "same label"), duplicate_label_mode)
+for (library in c("base", "dplyr", "data.table", "collapse")) for (duplicate_label_mode in c("first", "last", "none")) {
+  duplicate_label_result <- openwrangler_r_frame_contract$drop_duplicate_rows_at(duplicate_label_frame, 1:2, c("same label", "same label"), duplicate_label_mode, library)
   duplicate_label_expected <- switch(duplicate_label_mode, first = c(1L, 3L), last = c(2L, 3L), none = 3L)
   assert_identical(duplicate_label_result$sourcePositions, duplicate_label_expected, "Duplicate labels hid a selected physical column")
   assert_identical(names(duplicate_label_result$frame), names(duplicate_label_frame), "Comparison labels escaped into the result")
@@ -8041,8 +8106,8 @@ assert_identical(serialize(duplicate_label_frame, NULL, version = 3L), duplicate
 wide_extrema_text <- c("-9223372036854775807", "9223372036854775807")
 wide_extrema_frame <- data.table::data.table(value = bit64::as.integer64(wide_extrema_text))
 wide_extrema_before <- serialize(wide_extrema_frame, NULL, version = 3L)
-for (wide_extrema_mode in c("first", "last", "none")) {
-  wide_extrema_result <- openwrangler_r_frame_contract$drop_duplicate_rows_at(wide_extrema_frame, 1L, "value", wide_extrema_mode)
+for (library in c("base", "dplyr", "data.table", "collapse")) for (wide_extrema_mode in c("first", "last", "none")) {
+  wide_extrema_result <- openwrangler_r_frame_contract$drop_duplicate_rows_at(wide_extrema_frame, 1L, "value", wide_extrema_mode, library)
   assert_identical(wide_extrema_result$sourcePositions, 1:2, "Distinct integer64 extrema became duplicates")
   assert_identical(as.character(wide_extrema_result$frame$value), wide_extrema_text, "Duplicate comparison changed retained extrema")
   assert_identical(class(wide_extrema_result$frame$value), "integer64", "Duplicate comparison changed native integer64 storage")
@@ -8058,9 +8123,9 @@ wide_missing_frame <- data.frame(
 )
 wide_missing_before <- serialize(wide_missing_frame, NULL, version = 3L)
 wide_missing_expected <- list(first = c(1L, 2L, 5L), last = c(3L, 4L, 5L), none = 5L)
-for (wide_missing_mode in names(wide_missing_expected)) {
+for (library in c("base", "dplyr", "data.table", "collapse")) for (wide_missing_mode in names(wide_missing_expected)) {
   wide_missing_result <- openwrangler_r_frame_contract$drop_duplicate_rows_at(
-    wide_missing_frame, 1:2, c("key", "key"), wide_missing_mode
+    wide_missing_frame, 1:2, c("key", "key"), wide_missing_mode, library
   )
   assert_identical(wide_missing_result$sourcePositions, wide_missing_expected[[wide_missing_mode]], "Integer64 duplicate keys collapsed NA and NaN")
   assert_identical(row.names(wide_missing_result$frame), letters[wide_missing_expected[[wide_missing_mode]]], "Integer64 comparison changed row labels")
@@ -8075,6 +8140,28 @@ for (wide_missing_count in c(0L, 3L)) {
     assert_identical(class(wide_missing_result$frame[[1L]]), "integer64", "Empty duplicate output lost integer64 storage")
   }
 }
+
+# Sorting remains exact even when the selected data.table duplicate policy uses
+# numeric rounding. Restore the caller's setting before the next operation.
+local({
+  previous_rounding <- data.table::getNumericRounding()
+  on.exit(data.table::setNumericRounding(previous_rounding), add = TRUE)
+  data.table::setNumericRounding(2L)
+  source <- data.frame(value = c(1 + .Machine$double.eps, 1), row = 1:2)
+  source_bytes <- serialize(source, NULL, version = 3L)
+  capture <- openwrangler_r_frame_contract$capture_frame(source)
+  for (library in c("dplyr", "data.table", "collapse")) {
+    openwrangler_r_frame_contract$require_r_library(library)
+    sorted <- openwrangler_r_frame_contract$transform_rows(capture,
+      view_query(sorts = list(sort_rule("r:c:0", "value", "asc", "last"))), library)
+    assert_identical(sorted$sourcePositions, c(2L, 1L), "selected sorting rounded neighboring doubles")
+    assert_identical(data.table::getNumericRounding(), 2L, "selected sorting changed global numeric rounding")
+    distinct <- openwrangler_r_frame_contract$drop_duplicate_rows_at(source, 1L, "value", "first", library)
+    assert_identical(distinct$sourcePositions, if (library == "data.table") 1L else 1:2,
+      "selected duplicate comparison did not retain its library policy")
+  }
+  assert_identical(serialize(source, NULL, version = 3L), source_bytes, "selected sorting or duplicate comparison changed source values")
+})
 
 # data.table retains its own comparison policy for ordinary companion columns.
 invisible(local({

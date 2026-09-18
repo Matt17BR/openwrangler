@@ -46,7 +46,7 @@ export function createReleasedRDocumentGrid({
     sessionId: string
   ): Promise<void> {
     const app = await releasedRSessionApp(workbench, testing, sessionId, "the plain R grid session");
-    assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "R");
+    assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "BASE R");
     assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "EDITING");
     const visibleRows = app.getByRole("status", { name: "Loaded rows" });
     await waitForLocatorText(

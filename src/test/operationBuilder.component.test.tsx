@@ -750,6 +750,7 @@ describe("OperationBuilder", () => {
           ...metadata,
           backend: "r",
           rDataframeFlavor: "r.data.frame",
+          rLibrary: "base",
           capabilities: { ...metadata.capabilities, supportedOperations: ["customCode"] }
         }}
         filterModel={{ filters: [], sort: [] }}
@@ -2004,6 +2005,7 @@ describe("OperationBuilder", () => {
           ...metadata,
           backend: "r",
           rDataframeFlavor: "r.data.frame",
+          rLibrary: "base",
           schema: [dateColumn]
         }}
         filterModel={{ filters: [], sort: [] }}

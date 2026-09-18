@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { formatQuickPickName } from "../quickPickName";
-import type { DataBackend, SessionSource } from "../../shared/protocol";
+import type { DataBackend, RLibrary, SessionSource } from "../../shared/protocol";
+import { configuredRLibrary } from "../configuration";
 import { OpenWranglerPanel, restoreEditorGroupAfterQuickPick } from "../webviewPanel";
 import { KernelBridge, shouldRegisterNotebookFormatters } from "./kernelBridge";
 import { SessionCoordinator } from "../sessionCoordinator";
@@ -81,6 +82,7 @@ export const registerNotebookCommands = (context: vscode.ExtensionContext, coord
         vscode.window.showWarningMessage(notebookResolution.error);
         return;
       }
+      const rLibrary = configuredRLibrary(notebook.uri);
 
       let discovered;
       try {
@@ -154,7 +156,8 @@ export const registerNotebookCommands = (context: vscode.ExtensionContext, coord
             selected.variable.backend,
             verifiedRSelection,
             undefined,
-            Promise.resolve(rNotebookDiscoverySourceProtection(discovered as RNotebookVariableDiscovery))
+            Promise.resolve(rNotebookDiscoverySourceProtection(discovered as RNotebookVariableDiscovery)),
+            rLibrary
           );
         } else {
           await openDiscoveredPythonNotebookVariable(
@@ -238,7 +241,8 @@ async function openLiveNotebookVariable(
   backend?: DataBackend,
   verifiedRSelection?: VerifiedRNotebookVariableSelection,
   pythonKernelBinding?: Awaited<ReturnType<typeof bindDiscoveredNotebookVariable>>,
-  sourceProtection?: Promise<SessionSourceProtection>
+  sourceProtection?: Promise<SessionSourceProtection>,
+  rLibrary: RLibrary = configuredRLibrary(notebook.uri)
 ): Promise<boolean> {
   if (!isExactOpenNotebook(notebook)) {
     pythonKernelBinding?.dispose();
@@ -310,7 +314,15 @@ async function openLiveNotebookVariable(
     }
     const bridge = coordinator.createBridge(delegate, notebook, retainedSourceProtection);
     if (prepared.backend) {
-      OpenWranglerPanel.create(context, bridge, prepared.source, prepared.backend);
+      OpenWranglerPanel.create(
+        context,
+        bridge,
+        prepared.source,
+        prepared.backend,
+        prepared.backend,
+        undefined,
+        prepared.backend === "r" ? rLibrary : undefined
+      );
     } else {
       OpenWranglerPanel.create(context, bridge, prepared.source);
     }
@@ -379,6 +391,7 @@ export async function openDiscoveredRNotebookVariable(
   discovery: RNotebookVariableDiscovery,
   variable: RNotebookVariableDescriptor
 ): Promise<void> {
+  const rLibrary = configuredRLibrary(notebook.uri);
   const sourceProtection = Promise.resolve(rNotebookDiscoverySourceProtection(discovery));
   let verified: VerifiedRNotebookVariableSelection;
   try {
@@ -399,7 +412,8 @@ export async function openDiscoveredRNotebookVariable(
     variable.backend,
     verified,
     undefined,
-    sourceProtection
+    sourceProtection,
+    rLibrary
   );
 }
 

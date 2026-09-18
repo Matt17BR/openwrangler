@@ -103,6 +103,26 @@ const metadata: SessionMetadata = {
 };
 
 describe("session persistence", () => {
+  it("keeps the legacy Base R key while separating all selected libraries", () => {
+    const legacy = persistenceKey(metadata.source, "r");
+    expect(persistenceKey(metadata.source, "r", "base")).toBe(legacy);
+    expect(JSON.parse(legacy)).not.toHaveProperty("rLibrary");
+    const keys = ["base", "dplyr", "data.table", "collapse"].map((library) =>
+      persistenceKey(metadata.source, "r", library as NonNullable<SessionMetadata["rLibrary"]>)
+    );
+    expect(new Set(keys).size).toBe(4);
+    const saved = serializePersistedSession(
+      persistedSessionState(
+        { ...metadata, backend: "r", rLibrary: "collapse" },
+        { columnWidths: new Map(), viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
+      )
+    )!;
+    expect(decodePersistedSession(saved)).toMatchObject({ backend: "r", rLibrary: "collapse" });
+    const { rLibrary: _library, ...oldR } = saved;
+    expect(decodePersistedSession(oldR)).toMatchObject({ backend: "r", rLibrary: "base" });
+    expect(decodePersistedSession({ ...saved, backend: "polars" })).toBeUndefined();
+    expect(decodePersistedSession({ ...saved, rLibrary: "r.collapse" })).toBeUndefined();
+  });
   it("uses the canonical Open Wrangler storage key", () => {
     expect(SESSION_STORAGE_KEY).toBe("openWrangler.persistedSessions.v4");
   });

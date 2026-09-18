@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Memento } from "vscode";
-import type { DataBackend, SessionSource } from "../shared/protocol";
+import type { DataBackend, RLibrary, SessionSource } from "../shared/protocol";
 import {
   decodePersistedSession,
   persistenceKey,
@@ -82,9 +82,9 @@ export class SessionPersistenceStore {
     private readonly onPersistenceFailure?: (failure: SessionPersistenceFailure) => void
   ) {}
 
-  retainOwner(ownerId: string, source: SessionSource, backend: DataBackend): void {
+  retainOwner(ownerId: string, source: SessionSource, backend: DataBackend, rLibrary?: RLibrary): void {
     const previousKey = this.retainedOwnerKeys.get(ownerId);
-    const key = isPersistentSession(source, backend) ? persistenceKey(source, backend) : undefined;
+    const key = isPersistentSession(source, backend) ? persistenceKey(source, backend, rLibrary) : undefined;
     if (previousKey === key) return;
     if (previousKey) void this.scheduleOwnerKeyRelease(previousKey);
     if (!key) {
@@ -115,10 +115,11 @@ export class SessionPersistenceStore {
     ownerId: string,
     source: SessionSource,
     backend: DataBackend | undefined,
-    operation: () => Promise<T>
+    operation: () => Promise<T>,
+    rLibrary?: RLibrary
   ): Promise<SessionPersistenceOpeningResult<T>> {
     const owner: OpeningPersistenceOwner = { ownerId, source, active: true };
-    if (backend) this.retainOwner(ownerId, source, backend);
+    if (backend) this.retainOwner(ownerId, source, backend, rLibrary);
     return this.openingOwner.run(owner, async () => {
       try {
         const value = await operation();
@@ -141,8 +142,8 @@ export class SessionPersistenceStore {
     };
   }
 
-  status(source: SessionSource, backend: DataBackend): SessionPersistenceStatus {
-    const status = this.ownerStatuses.get(persistenceKey(source, backend));
+  status(source: SessionSource, backend: DataBackend, rLibrary?: RLibrary): SessionPersistenceStatus {
+    const status = this.ownerStatuses.get(persistenceKey(source, backend, rLibrary));
     return {
       degraded: status?.degraded ?? false,
       epoch: status?.epoch ?? 0,
@@ -150,21 +151,23 @@ export class SessionPersistenceStore {
     };
   }
 
-  load(source: SessionSource, backend: DataBackend): DecodedPersistedSessionState | undefined {
+  load(source: SessionSource, backend: DataBackend, rLibrary?: RLibrary): DecodedPersistedSessionState | undefined {
     if (!this.workspaceState || !isPersistentSession(source, backend)) return undefined;
-    const openingOwner = this.bindOpeningOwner(source, backend);
-    const key = persistenceKey(source, backend);
+    const openingOwner = this.bindOpeningOwner(source, backend, rLibrary);
+    const key = persistenceKey(source, backend, rLibrary);
     const stored = this.readStored(key);
     if (!stored.ok) {
       if (openingOwner && !openingOwner.readFailure) openingOwner.readFailure = stored.failure;
       return undefined;
     }
     const state = decodePersistedSession(loadableSessionValue(stored.value[key]));
-    return state?.backend === backend ? state : undefined;
+    return state?.backend === backend && (backend !== "r" || (state.rLibrary ?? "base") === (rLibrary ?? "base"))
+      ? state
+      : undefined;
   }
 
-  checkAbsent(source: SessionSource, backend: DataBackend): SessionPersistenceAbsenceResult {
-    const key = persistenceKey(source, backend);
+  checkAbsent(source: SessionSource, backend: DataBackend, rLibrary?: RLibrary): SessionPersistenceAbsenceResult {
+    const key = persistenceKey(source, backend, rLibrary);
     if (!this.workspaceState || !isPersistentSession(source, backend)) {
       return {
         kind: "unavailable",
@@ -179,10 +182,11 @@ export class SessionPersistenceStore {
   async save(
     source: SessionSource,
     backend: DataBackend,
-    getState: () => PersistedSessionState | undefined
+    getState: () => PersistedSessionState | undefined,
+    rLibrary?: RLibrary
   ): Promise<SessionPersistenceCommitResult> {
     if (!this.workspaceState || !isPersistentSession(source, backend)) return { kind: "committed" };
-    const key = persistenceKey(source, backend);
+    const key = persistenceKey(source, backend, rLibrary);
     let result: SessionPersistenceCommitResult = { kind: "committed" };
     await this.enqueue(key, async () => {
       const state = getState();
@@ -191,6 +195,8 @@ export class SessionPersistenceStore {
         return;
       }
       if (state.backend !== backend) throw new Error("A presentation save cannot change its backend.");
+      if (backend === "r" && (state.rLibrary ?? "base") !== (rLibrary ?? "base"))
+        throw new Error("A presentation save cannot change its R library.");
       const serialized = serializePersistedSession(state);
       if (!serialized) return;
       const stored = this.readStored(key);
@@ -205,12 +211,18 @@ export class SessionPersistenceStore {
         const previous = pending.hadPreviousState ? decodePersistedSession(pending.previousState) : undefined;
         // Presentation must neither publish the candidate nor invent a confirmed
         // state when this transaction has no valid previous recovery snapshot.
-        if (!previous?.view || previous.backend !== backend) return;
+        if (
+          !previous?.view ||
+          previous.backend !== backend ||
+          (backend === "r" && (previous.rLibrary ?? "base") !== (rLibrary ?? "base"))
+        )
+          return;
         value = {
           pendingCurrentCommit: {
             ...pending,
             previousState: {
               backend,
+              ...(backend === "r" ? { rLibrary: previous.rLibrary ?? "base" } : {}),
               cleaning: previous.cleaning,
               view: { ...serialized.view, filterModel: previous.view.filterModel }
             }
@@ -233,7 +245,7 @@ export class SessionPersistenceStore {
     const serialized = serializePersistedSession(state);
     if (!serialized) return { kind: "staged", transaction };
 
-    const key = persistenceKey(source, state.backend);
+    const key = persistenceKey(source, state.backend, state.rLibrary);
     const token = `current-commit:${++this.commitOrdinal}`;
     let result: SessionPersistenceStageResult = {
       kind: "staged",
@@ -307,8 +319,13 @@ export class SessionPersistenceStore {
           return;
         }
         const state = getState();
-        if (transaction.backend !== state.backend || persistenceKey(transaction.source, state.backend) !== key) {
-          throw new Error("A persistence transaction cannot be committed for a different source or backend.");
+        if (
+          transaction.backend !== state.backend ||
+          persistenceKey(transaction.source, state.backend, state.rLibrary) !== key
+        ) {
+          throw new Error(
+            "A persistence transaction cannot be committed for a different source, backend or R library."
+          );
         }
         const serialized = serializePersistedSession(state);
         if (!serialized) {
@@ -368,7 +385,9 @@ export class SessionPersistenceStore {
     if (!this.workspaceState || !isPersistentSession(source, state.backend)) {
       if (options?.requireAbsent) {
         return unavailable(
-          this.recordFailure(persistenceKey(source, state.backend), "read", { code: "STORAGE_UNAVAILABLE" }),
+          this.recordFailure(persistenceKey(source, state.backend, state.rLibrary), "read", {
+            code: "STORAGE_UNAVAILABLE"
+          }),
           "unchanged"
         );
       }
@@ -379,7 +398,7 @@ export class SessionPersistenceStore {
     const serialized = serializePersistedSession(state);
     if (!serialized) return { kind: "stale" };
 
-    const key = persistenceKey(source, state.backend);
+    const key = persistenceKey(source, state.backend, state.rLibrary);
     const token = `runtime-replacement:${++this.replacementOrdinal}`;
     let result: SessionPersistenceCommitResult = { kind: "stale" };
     await this.enqueue(key, async () => {
@@ -599,10 +618,14 @@ export class SessionPersistenceStore {
     this.ownerStatuses.delete(ownerKey);
   }
 
-  private bindOpeningOwner(source: SessionSource, backend: DataBackend): OpeningPersistenceOwner | undefined {
+  private bindOpeningOwner(
+    source: SessionSource,
+    backend: DataBackend,
+    rLibrary?: RLibrary
+  ): OpeningPersistenceOwner | undefined {
     const owner = this.openingOwner.getStore();
     if (!owner?.active || owner.source !== source) return undefined;
-    this.retainOwner(owner.ownerId, source, backend);
+    this.retainOwner(owner.ownerId, source, backend, rLibrary);
     return owner;
   }
 

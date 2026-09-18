@@ -147,6 +147,12 @@ export class RKernelBridge implements OpenWranglerBridge {
   captureFileSessionOwner(sessionId: string): (() => boolean) | undefined {
     const session = this.sessions.get(sessionId);
     if (!this.fileSource || session?.source.kind !== "file") return undefined;
+    return this.captureSessionOwner(sessionId);
+  }
+
+  captureSessionOwner(sessionId: string): (() => boolean) | undefined {
+    const session = this.sessions.get(sessionId);
+    if (!session) return undefined;
     const generation = this.kernelGeneration;
     const isCurrent = (): boolean =>
       !this.disposed &&
@@ -273,13 +279,16 @@ export class RKernelBridge implements OpenWranglerBridge {
     const invalid = validateOpenRequest(request, this.fileSource);
     if (invalid) return invalid;
     const sessionId = request.requestedSessionId as string;
+    const library = request.rLibrary ?? "base";
+    const mode = request.mode ?? "viewing";
     const cloneSource = request.cloneFrom ? this.sessions.get(request.cloneFrom.sessionId) : undefined;
     if (
       request.cloneFrom &&
       (!cloneSource ||
         cloneSource.revision !== request.cloneFrom.revision ||
         cloneSource.invalidated ||
-        cloneSource.mode !== (request.mode ?? cloneSource.mode) ||
+        (cloneSource.mode !== mode && !(cloneSource.mode === "viewing" && mode === "editing")) ||
+        (cloneSource.rLibrary !== library && mode !== "editing") ||
         !isDeepStrictEqual(cloneSource.source, request.source))
     ) {
       return errorResponse(
@@ -312,7 +321,7 @@ export class RKernelBridge implements OpenWranglerBridge {
       const result = await this.transport.open(
         this.fileSource ? ".ow_csv_source" : (request.source.variableName as string),
         pageWindow(0, request.pageSize, request.columnOffset, request.columnLimit, emptyRViewQuery()),
-        transportOptions(options, sessionId, request.cloneFrom)
+        transportOptions(options, sessionId, request.cloneFrom, library)
       );
       if (generation !== this.kernelGeneration) {
         return kernelChangedError(sessionId);
@@ -320,15 +329,19 @@ export class RKernelBridge implements OpenWranglerBridge {
       if (result.sessionId !== sessionId) {
         throw new Error("The R kernel returned a different session identity from the host-owned identity.");
       }
+      if (result.library !== library) {
+        throw new Error("The R runtime did not confirm the requested dataframe library.");
+      }
       if (this.verifiedVariable && result.page.dataframeFlavor !== this.verifiedVariable.dataframeFlavor) {
         throw new Error("The selected R dataframe changed before Open Wrangler opened it.");
       }
       const session = sessionFromContract(
         sessionId,
         request.source,
-        request.mode ?? "viewing",
+        mode,
         result.page,
-        isExportableRSource(request.source) && this.transport.exportData !== undefined ? result.exportFormats : []
+        isExportableRSource(request.source) && this.transport.exportData !== undefined ? result.exportFormats : [],
+        result.library
       );
       this.sessions.set(sessionId, session);
       return {

@@ -248,6 +248,7 @@ it("reconstructs CRLF and bare-CR edits and flushes crossed snapshots across rec
     firstPage.editor.dispatch({ changes: { from: 0, to: firstPage.editor.state.doc.length, insert: staleCode } });
     holdNextCodePreview = true;
     const replacement = rNotebookSnapshot();
+    replacement.metadata.rLibrary = "collapse";
     replacement.code = replacement.code.replaceAll("\n", "\r");
     const replacementCanonicalCode = replacement.code.replaceAll("\r", "\n");
     registered.setActiveSession(replacement);
@@ -256,7 +257,8 @@ it("reconstructs CRLF and bare-CR edits and flushes crossed snapshots across rec
       kind: "codePreview",
       bufferVersion: 0,
       bufferInvalid: false,
-      code: replacementCanonicalCode
+      code: replacementCanonicalCode,
+      runtimeIdentity: { runtimeLanguage: "r", dataframeFlavor: "r.data.frame", codeDialect: "r.collapse" }
     });
     expect(heldReplacement.bufferId).not.toBe(initialPreview.bufferId);
     await vi.advanceTimersByTimeAsync(CODE_PREVIEW_EDIT_DEBOUNCE_MS);
@@ -274,6 +276,7 @@ it("reconstructs CRLF and bare-CR edits and flushes crossed snapshots across rec
     const secondPage = await mountPage();
     expect(secondPage.editor).not.toBe(firstPage.editor);
     expect(secondPage.editor.state.doc.toString()).toBe(replacementCanonicalCode);
+    expect(secondPage.editor.contentDOM.getAttribute("aria-label")).toBe("Editable generated R code preview");
     expect(document.querySelector<HTMLElement>("[data-code-scope]")?.hidden).toBe(true);
     expect(undo(secondPage.editor)).toBe(false);
 

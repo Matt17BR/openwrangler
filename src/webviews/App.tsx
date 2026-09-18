@@ -13,6 +13,7 @@ import {
   formatSessionRowCount,
   isExactGridPage,
   isDuckDBTableSource,
+  rLibraryLabel,
   sourceDisplayLabel,
   supportsViewingCapability
 } from "../shared/protocol";
@@ -2366,20 +2367,33 @@ export function App() {
                   </span>
                 </details>
               )}
-              {metadata.source.kind === "file" &&
-              !isDuckDBTableSource(metadata.source) &&
-              isSwitchableFileBackend(metadata.backend) ? (
+              {metadata.backend === "r" ||
+              (metadata.source.kind === "file" &&
+                !isDuckDBTableSource(metadata.source) &&
+                isSwitchableFileBackend(metadata.backend)) ? (
                 <button
                   type="button"
                   className="sessionBadge backendBadge backendButton"
                   data-session-badge="backend"
                   disabled={importOptionsDisabled}
                   aria-busy={importOptionsPending || undefined}
-                  aria-label={`Change dataframe engine. Current engine: ${dataBackendLabel(metadata.backend)}`}
-                  title="Change dataframe engine"
+                  aria-label={
+                    metadata.backend === "r" && metadata.rLibrary
+                      ? `Open an editing copy with another R library. Current library: ${rLibraryLabel(metadata.rLibrary)}`
+                      : `Change dataframe engine. Current engine: ${dataBackendLabel(metadata.backend)}`
+                  }
+                  title={
+                    metadata.backend === "r" ? "Open an editing copy with another R library" : "Change dataframe engine"
+                  }
                   onClick={() => vscode.postMessage({ kind: "changeBackend" })}
                 >
-                  <span>{dataBackendLabel(metadata.backend)}</span>
+                  <span>
+                    {metadata.backend === "r" && metadata.rLibrary
+                      ? metadata.rLibrary === "base"
+                        ? "Base R"
+                        : `R · ${rLibraryLabel(metadata.rLibrary)}`
+                      : dataBackendLabel(metadata.backend)}
+                  </span>
                   <span className="codicon codicon-chevron-down" aria-hidden="true" />
                 </button>
               ) : (

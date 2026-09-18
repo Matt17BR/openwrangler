@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 import { operationKinds } from "../../shared/operationCatalog.generated";
 import {
   PROTOCOL_VERSION,
+  isRLibrary,
   type ColumnSchema,
   type DatasetStatsRequest,
   type ErrorResponse,
@@ -11,6 +12,7 @@ import {
   type OpenWranglerRequest,
   type OperationKind,
   type RetainedTransformStep,
+  type RLibrary,
   type SessionMetadata,
   type SessionMode,
   type SessionSource,
@@ -52,6 +54,7 @@ export const R_BRIDGE_CAPABILITIES: SourceCapabilities = Object.freeze({
 
 export interface RBridgeSession {
   readonly sessionId: string;
+  readonly rLibrary: RLibrary;
   readonly source: SessionSource;
   readonly sourceDataframeFlavor: RDataframeFlavor;
   dataframeFlavor: RDataframeFlavor;
@@ -147,6 +150,9 @@ export function validateOpenRequest(
   if (request.backend !== undefined && request.backend !== "r") {
     return errorResponse("unsupported_backend", "An R session requires the R backend.", true, sessionId);
   }
+  if (request.rLibrary !== undefined && (request.backend !== "r" || !isRLibrary(request.rLibrary))) {
+    return errorResponse("invalid_r_library", "Choose a supported R dataframe library.", true, sessionId);
+  }
   if (typeof sessionId !== "string" || sessionId.length === 0) {
     return errorResponse(
       "invalid_session_id",
@@ -176,11 +182,13 @@ export function sessionFromContract(
   source: SessionSource,
   mode: SessionMode,
   contract: RFramePageContract,
-  exportFormats: readonly RKernelExportFormat[]
+  exportFormats: readonly RKernelExportFormat[],
+  rLibrary: RLibrary
 ): RBridgeSession {
   const schema = schemaFromContract(contract);
   return {
     sessionId,
+    rLibrary,
     source: copySource(source),
     sourceDataframeFlavor: contract.dataframeFlavor,
     dataframeFlavor: contract.dataframeFlavor,
@@ -235,6 +243,7 @@ export function metadataFor(session: RBridgeSession, filteredRows: number = sess
     sessionId: session.sessionId,
     revision: session.revision,
     backend: "r",
+    rLibrary: session.rLibrary,
     rDataframeFlavor: session.dataframeFlavor,
     mode: session.mode,
     source: copySource(session.source),
@@ -505,13 +514,15 @@ export function staleResponseError(sessionId: string, viewRequestId?: string): E
 export function transportOptions(
   options: BridgeRequestOptions,
   requestedSessionId?: string,
-  cloneFrom?: Readonly<{ sessionId: string; revision: number }>
+  cloneFrom?: Readonly<{ sessionId: string; revision: number }>,
+  library?: RLibrary
 ): RKernelRequestOptions {
   return {
     cancellation: options.cancellation,
     timeoutMs: options.timeoutMs,
     ...(requestedSessionId ? { requestedSessionId } : {}),
-    ...(cloneFrom ? { cloneFrom } : {})
+    ...(cloneFrom ? { cloneFrom } : {}),
+    ...(library === undefined ? {} : { library })
   };
 }
 

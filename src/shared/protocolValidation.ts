@@ -47,7 +47,7 @@ import {
   validatePivotWiderOutputName
 } from "./pivotWider";
 import { portableRegexContract, validatePortableRegexOutputName } from "./portableRegex";
-import { isDuckDBTableSource, PROTOCOL_VERSION } from "./protocol";
+import { isDuckDBTableSource, isRLibrary, PROTOCOL_VERSION } from "./protocol";
 import { hasAtMostViewValueTextCodePoints } from "./viewValueLimits";
 
 type UnknownRecord = Record<string, unknown>;
@@ -147,6 +147,7 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
         optional(candidate, "cloneFrom", isSessionCloneSource) &&
         (candidate.cloneFrom === undefined || candidate.requestedSessionId !== undefined) &&
         optional(candidate, "backend", (backend) => isOneOf(backend, DATA_BACKENDS)) &&
+        optional(candidate, "rLibrary", (library) => candidate.backend === "r" && isRLibrary(library)) &&
         (candidate.backend !== "pyspark" ||
           (isRecord(candidate.source) &&
             candidate.source.kind === "notebookVariable" &&
@@ -488,7 +489,16 @@ function isSessionMetadata(value: unknown): value is SessionMetadata {
       "filterModel",
       "steps"
     ],
-    ["latestStepInputSchema", "draftStep", "draftReplacesStepId", "stats", "rDataframeFlavor", "rowAxis", "canRedo"]
+    [
+      "latestStepInputSchema",
+      "draftStep",
+      "draftReplacesStepId",
+      "stats",
+      "rDataframeFlavor",
+      "rLibrary",
+      "rowAxis",
+      "canRedo"
+    ]
   );
   return (
     candidate !== undefined &&
@@ -508,6 +518,9 @@ function isSessionMetadata(value: unknown): value is SessionMetadata {
     (candidate.backend === "r"
       ? isOneOf(candidate.rDataframeFlavor, R_DATAFRAME_FLAVORS)
       : !Object.prototype.hasOwnProperty.call(candidate, "rDataframeFlavor")) &&
+    (candidate.backend === "r"
+      ? isRLibrary(candidate.rLibrary)
+      : !Object.prototype.hasOwnProperty.call(candidate, "rLibrary")) &&
     isOneOf(candidate.mode, ["viewing", "editing"]) &&
     isSessionSource(candidate.source) &&
     (candidate.source.duckdbConnection === undefined || candidate.backend === "duckdb") &&

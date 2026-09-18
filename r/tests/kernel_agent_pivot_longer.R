@@ -25,7 +25,7 @@ with_poisoned_concat <- function(classes, expression) {
   force(expression)
 }
 
-run_pivot_longer_case <- function(index, label, frame, selected, verify, poison = character()) {
+run_pivot_longer_case <- function(index, label, frame, selected, verify, poison = character(), library = "base") {
   variable_name <- paste0("pivot_longer_", index)
   current_session <- sprintf("%08x-91a1-491a-891a-%012d", index, index)
   source_before <- serialize(frame, NULL, version = 3L)
@@ -33,9 +33,11 @@ run_pivot_longer_case <- function(index, label, frame, selected, verify, poison 
   opened <- dispatch("openSession", list(
     sessionId = current_session,
     variableName = variable_name,
-    page = page_window(row_limit = 100L, column_limit = 100L)
+    page = page_window(row_limit = 100L, column_limit = 100L),
+    library = library
   ))
   assert_identical(opened$kind, "page", paste(label, "did not open"))
+  assert_identical(opened$library, library, paste(label, "did not confirm its library"))
   step <- list(
     id = paste0("pivot-longer-", index),
     kind = "pivotLonger",
@@ -121,11 +123,17 @@ factor_frame <- data.frame(
   check.names = FALSE,
   row.names = c("factor-three", "factor-one", "factor-two")
 )
-run_pivot_longer_case(1L, "factor data.frame", factor_frame, c("first", "second"), function(output, input) {
-  assert_identical(output$measure, rep(c("first", "second"), each = nrow(input)), "factor pivot changed order")
-  assert_identical(output$reading, ordered(c(as.character(input$first), as.character(input$second)), levels = factor_levels), "factor pivot changed values or metadata")
-  assert_identical(.row_names_info(output, type = 1L), -nrow(output), "factor pivot row names are not positional")
-}, poison = "factor")
+attr(factor_frame$first, "levels") <- I(factor_levels)
+attr(factor_frame$second, "levels") <- I(factor_levels)
+for (library in c("base", "dplyr", "data.table", "collapse")) {
+  run_pivot_longer_case(1L, paste(library, "factor data.frame"), factor_frame, c("first", "second"), function(output, input) {
+    assert_identical(output$measure, rep(c("first", "second"), each = nrow(input)), "factor pivot changed order")
+    expected <- ordered(c(as.character(input$first), as.character(input$second)), levels = factor_levels)
+    attr(expected, "levels") <- attr(input$first, "levels", exact = TRUE)
+    assert_identical(output$reading, expected, "factor pivot changed values or exact level metadata")
+    assert_identical(.row_names_info(output, type = 1L), -nrow(output), "factor pivot row names are not positional")
+  }, poison = "factor", library = library)
+}
 
 wide_frame <- data.frame(
   id = 1:3,

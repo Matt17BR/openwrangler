@@ -106,6 +106,7 @@ export function metadataFor({
     sessionId: runtimeId,
     revision,
     backend,
+    ...(backend === "r" ? { rLibrary: "base" as const, rDataframeFlavor: "r.data.frame" as const } : {}),
     mode: "editing",
     source,
     capabilities: capabilities(),

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import * as vscode from "vscode";
 import type {
@@ -10,17 +11,19 @@ import type {
   DataExportedResponse,
   OpenSessionRequest,
   PageResponse,
+  SessionMetadata,
   SessionMode,
   SessionSource,
   SessionBoundRequest,
   TransformStep
 } from "../shared/protocol";
-import { isDuckDBTableSource, isSessionBoundRequest } from "../shared/protocol";
+import { isDuckDBTableSource, isRLibrary, isSessionBoundRequest } from "../shared/protocol";
 import { sessionModeAction } from "../shared/sessionMode";
 import type { GridViewState } from "../shared/viewState";
 import {
   type BridgeRequestOptions,
   type FilePlanOpenContext,
+  type RLibraryCopyContext,
   type OpenWranglerBridge,
   type SessionPresentation,
   type SessionRuntimeReplacement
@@ -39,6 +42,7 @@ import {
   type TextDocumentSessionOrigin
 } from "./sessionOrigin";
 import { type SessionPersistenceFailure, SessionPersistenceStore } from "./sessionPersistenceStore";
+import { persistenceKey } from "./sessionPersistence";
 import {
   persistenceUnavailableError,
   persistenceReadUnavailableError,
@@ -51,8 +55,11 @@ import { requestViewId } from "./sessionRequestScheduler";
 import { SessionRuntimeCleanup } from "./sessionRuntimeCleanup";
 import {
   SessionRuntimeEstablisher,
+  isRLibraryCopy,
   type RuntimeEstablishedSession,
-  type InitialFilePlan
+  type InitialFilePlan,
+  type InitialRLibraryCopy,
+  type InitialSessionPlan
 } from "./sessionRuntimeEstablisher";
 import { SessionRuntimeRecovery, type RuntimeRecoveryHooks } from "./sessionRuntimeRecovery";
 import {
@@ -94,6 +101,12 @@ export type {
 
 type CoordinatedSession = RuntimeEstablishedSession;
 
+interface RLibraryCopyReservation {
+  readonly key: string;
+  /** File saved plans are global; live copies stay within their captured bridge family. */
+  readonly owner: OpenWranglerBridge | undefined;
+}
+
 export type { TextDocumentSessionOrigin } from "./sessionOrigin";
 
 const SHUTDOWN_TIMEOUT_MS = 2_000;
@@ -101,6 +114,7 @@ const SHUTDOWN_TIMEOUT_MS = 2_000;
 export class SessionCoordinator implements vscode.Disposable {
   private readonly sessions = new Map<string, CoordinatedSession>();
   private readonly pendingOpens = new Map<OpenWranglerBridge, number>();
+  private readonly pendingRLibraryCopies = new Set<RLibraryCopyReservation>();
   private readonly pendingOpenWaiters = new Set<() => void>();
   private readonly activeSessionEmitter = new vscode.EventEmitter<ActiveSessionSnapshot | undefined>();
   private readonly runtimeReplacementEmitter = new vscode.EventEmitter<{
@@ -152,24 +166,18 @@ export class SessionCoordinator implements vscode.Disposable {
     delegate: OpenWranglerBridge,
     origin?: BridgeSessionOrigin,
     sourceProtection?: Promise<SessionSourceProtection>,
-    initialFilePlan?: InitialFilePlan
+    initialPlan?: InitialSessionPlan
   ): OpenWranglerBridge {
     const confirmedOrigin = normalizeSessionOrigin(origin);
     sourceProtection ??= confirmedOrigin?.kind === "textDocument" ? confirmedOrigin.sourceProtection : undefined;
     return {
       request: async (request, options) => {
-        const response = await this.request(
-          delegate,
-          request,
-          options,
-          confirmedOrigin,
-          sourceProtection,
-          initialFilePlan
-        );
-        if (request.kind === "openSession" && response.kind === "sessionOpened") initialFilePlan = undefined;
+        const response = await this.request(delegate, request, options, confirmedOrigin, sourceProtection, initialPlan);
+        if (request.kind === "openSession" && response.kind === "sessionOpened") initialPlan = undefined;
         return response;
       },
       captureActiveFilePlan: () => this.captureActiveFilePlan(),
+      captureRLibraryCopy: (sessionId, revision) => this.captureRLibraryCopy(delegate, sessionId, revision),
       prepareFileAutoFallback: (source, options) =>
         delegate.prepareFileAutoFallback?.(source, options) ?? Promise.resolve(undefined),
       discoverDuckDBTables: (source, options) =>
@@ -263,6 +271,7 @@ export class SessionCoordinator implements vscode.Disposable {
     let target: SessionSource | undefined;
     const plan: InitialFilePlan = {
       backend,
+      ...(backend === "r" ? { rLibrary: session.metadata.rLibrary } : {}),
       importOptions: structuredClone(openRequest.source.importOptions),
       sourceSchema: structuredClone(sourceSchema),
       steps: structuredClone(session.metadata.steps),
@@ -292,6 +301,7 @@ export class SessionCoordinator implements vscode.Disposable {
     };
     return {
       backend,
+      ...(backend === "r" ? { rLibrary: plan.rLibrary } : {}),
       importOptions: structuredClone(plan.importOptions),
       isCurrent: plan.isCurrent,
       createBridge: (targetDelegate) => {
@@ -299,6 +309,102 @@ export class SessionCoordinator implements vscode.Disposable {
         if (backend === "r" ? !targetDelegate || targetDelegate === delegate : targetDelegate !== undefined)
           throw new Error("The copied plan requires its own matching target runtime.");
         return this.createBridge(targetDelegate ?? delegate, undefined, undefined, plan);
+      }
+    };
+  }
+
+  private captureRLibraryCopy(
+    owner: OpenWranglerBridge,
+    sessionId: string,
+    revision: number
+  ): RLibraryCopyContext | ErrorResponse {
+    const session = this.sessions.get(sessionId);
+    if (
+      !session ||
+      this.sessionOwnerDelegates.get(session) !== owner ||
+      session.metadata.backend !== "r" ||
+      !isRLibrary(session.metadata.rLibrary) ||
+      session.publicRevision !== revision
+    )
+      return protocolError(
+        "r_library_copy_unavailable",
+        "Reopen the R library picker from the current dataframe.",
+        true,
+        sessionId
+      );
+    const { delegate, runtimeId, runtimeRevision, publicRevision, openRequest, origin, sourceProtection } = session;
+    const currentLibrary = session.metadata.rLibrary;
+    const runtimeIsCurrent = delegate.captureSessionOwner?.(runtimeId);
+    const current = (): boolean => {
+      const scheduler = session.scheduler.snapshot();
+      return (
+        vscode.workspace.isTrusted &&
+        this.isLiveSession(session) &&
+        !session.closing &&
+        !session.reconfiguring &&
+        !session.reconnecting &&
+        !session.recoveryRequired &&
+        !session.runtimeSettlementBarrier &&
+        !session.liveReconnectRequired &&
+        !session.scheduler.hasPendingRequest(isRuntimeStateMutation) &&
+        !scheduler.terminalOperation &&
+        runtimeIsCurrent?.() === true &&
+        session.delegate === delegate &&
+        session.runtimeId === runtimeId &&
+        session.runtimeRevision === runtimeRevision &&
+        session.publicRevision === publicRevision &&
+        session.openRequest === openRequest &&
+        sessionOriginMismatch(openRequest, origin) === undefined
+      );
+    };
+    const scheduler = session.scheduler.snapshot();
+    if (!current() || scheduler.activeForegroundOperation || scheduler.interactiveQueueLength > 0)
+      return protocolError(
+        "r_library_copy_unavailable",
+        "Wait for the current R operation to finish, then open the library picker again.",
+        true,
+        sessionId
+      );
+    const source = structuredClone(openRequest.source);
+    const steps = structuredClone(session.metadata.steps);
+    return {
+      source,
+      rLibrary: currentLibrary,
+      appliedStepCount: steps.length,
+      rerunsCustomCode: steps.some((step) => step.kind === "customCode"),
+      isCurrent: current,
+      createBridge: (rLibrary) => {
+        if (!isRLibrary(rLibrary) || rLibrary === currentLibrary || !current())
+          throw new Error("The R library choice or original session changed. Open the library picker again.");
+        const targetKey = persistenceKey(source, "r", rLibrary);
+        const plan: InitialRLibraryCopy = {
+          kind: "rLibraryCopy",
+          backend: "r",
+          rLibrary,
+          source,
+          cloneFrom: { sessionId: runtimeId, revision: runtimeRevision },
+          steps,
+          isCurrent: current,
+          assertTargetAvailable: async (target) => {
+            if (!isDeepStrictEqual(source, target)) throw new Error("The R copy source changed.");
+            for (const other of this.sessions.values()) {
+              if (
+                other.metadata.backend === "r" &&
+                (source.kind === "file" || other.delegate === delegate) &&
+                persistenceKey(other.openRequest.source, "r", other.metadata.rLibrary) === targetKey
+              )
+                throw new Error(
+                  "An editor already owns this source with the selected R library. Use that editor instead."
+                );
+            }
+          }
+        };
+        return this.createBridge(
+          delegate,
+          origin?.kind === "notebook" ? origin.document : origin,
+          sourceProtection ? Promise.resolve(sourceProtection) : undefined,
+          plan
+        );
       }
     };
   }
@@ -564,7 +670,7 @@ export class SessionCoordinator implements vscode.Disposable {
     options?: BridgeRequestOptions,
     origin?: CoordinatedSessionOrigin,
     sourceProtection?: Promise<SessionSourceProtection>,
-    initialFilePlan?: InitialFilePlan
+    initialPlan?: InitialSessionPlan
   ): Promise<OpenWranglerResponse> {
     if (this.disposed) {
       return protocolError(
@@ -576,7 +682,7 @@ export class SessionCoordinator implements vscode.Disposable {
       );
     }
     if (request.kind === "openSession") {
-      return this.open(delegate, request, options, origin, sourceProtection, initialFilePlan);
+      return this.open(delegate, request, options, origin, sourceProtection, initialPlan);
     }
     if (!isSessionBoundRequest(request)) {
       return delegate.request(request, options);
@@ -689,8 +795,70 @@ export class SessionCoordinator implements vscode.Disposable {
     options?: BridgeRequestOptions,
     origin?: CoordinatedSessionOrigin,
     sourceProtection?: Promise<SessionSourceProtection>,
-    initialFilePlan?: InitialFilePlan
+    initialPlan?: InitialSessionPlan
   ): Promise<OpenWranglerResponse> {
+    const copy = isRLibraryCopy(initialPlan) ? initialPlan : undefined;
+    const copyOwner = request.source.kind === "file" ? undefined : delegate;
+    let copyToken: RLibraryCopyReservation | undefined;
+    if (copy) {
+      if (
+        request.backend !== "r" ||
+        request.rLibrary !== copy.rLibrary ||
+        request.mode !== "editing" ||
+        !isDeepStrictEqual(request.source, copy.source) ||
+        !copy.isCurrent()
+      )
+        return protocolError(
+          "r_library_copy_changed",
+          "The original R source or library choice changed. Open the library picker again.",
+          true
+        );
+      const copyKey = persistenceKey(copy.source, "r", copy.rLibrary);
+      if (
+        [...this.pendingRLibraryCopies].some(
+          (reservation) => reservation.key === copyKey && reservation.owner === copyOwner
+        ) ||
+        [...this.sessions.values()].some(
+          (session) =>
+            session.metadata.backend === "r" &&
+            (copy.source.kind === "file" || session.delegate === delegate) &&
+            persistenceKey(session.openRequest.source, "r", session.metadata.rLibrary) === copyKey
+        )
+      )
+        return protocolError(
+          "r_library_target_occupied",
+          "An editor already owns or is opening this source with the selected R library. Use that editor instead.",
+          true
+        );
+      if (copy.source.kind === "file") {
+        const absent = this.persistence.checkAbsent(copy.source, "r", copy.rLibrary);
+        if (absent.kind !== "absent")
+          return protocolError(
+            absent.kind === "occupied" ? "r_library_target_occupied" : "persistence_unavailable",
+            absent.kind === "occupied"
+              ? "This file already has saved work with the selected R library. Choose that library again, then select Open file separately."
+              : "Open Wrangler could not read workspace storage. Retry after storage is available.",
+            true
+          );
+      }
+      copyToken = { key: copyKey, owner: copyOwner };
+      this.pendingRLibraryCopies.add(copyToken);
+      request = { ...request, requestedSessionId: randomUUID(), cloneFrom: copy.cloneFrom };
+    }
+    const copyTargetFailure = (metadata?: SessionMetadata): OpenWranglerResponse | undefined => {
+      if ((metadata?.backend ?? request.backend) !== "r") return undefined;
+      const key = persistenceKey(request.source, "r", metadata?.rLibrary ?? request.rLibrary);
+      const reserved = [...this.pendingRLibraryCopies].find(
+        (reservation) => reservation.key === key && reservation.owner === copyOwner
+      );
+      if ((reserved && reserved !== copyToken) || (copyToken && reserved !== copyToken))
+        return protocolError(
+          "r_library_target_occupied",
+          "An editing copy owns this source and R library while it opens. Wait for it to finish, then use its editor.",
+          true
+        );
+      return undefined;
+    };
     this.pendingOpens.set(delegate, (this.pendingOpens.get(delegate) ?? 0) + 1);
     try {
       if (
@@ -712,9 +880,10 @@ export class SessionCoordinator implements vscode.Disposable {
         sourceProtection ??
         captureSessionSourceFiles(request.source));
       return await this.serializeSessionEstablishment(delegate, () =>
-        this.openTracked(delegate, request, options, origin, retainedSource, initialFilePlan)
+        this.openTracked(delegate, request, options, origin, retainedSource, initialPlan, copyTargetFailure)
       );
     } finally {
+      if (copyToken) this.pendingRLibraryCopies.delete(copyToken);
       const remaining = (this.pendingOpens.get(delegate) ?? 1) - 1;
       if (remaining > 0) this.pendingOpens.set(delegate, remaining);
       else this.pendingOpens.delete(delegate);
@@ -729,24 +898,31 @@ export class SessionCoordinator implements vscode.Disposable {
     options?: BridgeRequestOptions,
     origin?: CoordinatedSessionOrigin,
     sourceProtection?: SessionSourceProtection,
-    initialFilePlan?: InitialFilePlan
+    initialPlan?: InitialSessionPlan,
+    copyTargetFailure?: (metadata?: SessionMetadata) => OpenWranglerResponse | undefined
   ): Promise<OpenWranglerResponse> {
     const provisionalOwner = `opening:${++this.persistenceOwnerOrdinal}`;
     try {
-      const attempt = await this.persistence.withOpeningOwner(provisionalOwner, request.source, request.backend, () =>
-        this.runtimeEstablisher.establish(
-          delegate,
-          request,
-          options,
-          origin,
-          {
-            isCoordinatorAvailable: () => !this.disposed,
-            executeSessionRequest: (session, scheduledRequest, scheduledOptions) =>
-              this.executeSessionRequest(session, scheduledRequest, scheduledOptions)
-          },
-          sourceProtection,
-          initialFilePlan
-        )
+      const attempt = await this.persistence.withOpeningOwner(
+        provisionalOwner,
+        request.source,
+        request.backend,
+        () =>
+          this.runtimeEstablisher.establish(
+            delegate,
+            request,
+            options,
+            origin,
+            {
+              isCoordinatorAvailable: () => !this.disposed,
+              copyTargetFailure,
+              executeSessionRequest: (session, scheduledRequest, scheduledOptions) =>
+                this.executeSessionRequest(session, scheduledRequest, scheduledOptions)
+            },
+            sourceProtection,
+            initialPlan
+          ),
+        request.rLibrary
       );
       const result = attempt.value;
       if (attempt.readFailure) {
@@ -757,6 +933,11 @@ export class SessionCoordinator implements vscode.Disposable {
         return persistenceReadUnavailableError();
       }
       if (!result.established) return result.response;
+      const conflict = copyTargetFailure?.(result.session.metadata);
+      if (conflict) {
+        await this.runtimeCleanup.close(result.session, "late-open runtime");
+        return conflict;
+      }
       this.responseCommitter.retainSession(result.session);
       this.sessionOwnerDelegates.set(result.session, delegate);
       this.sessions.set(result.session.publicId, result.session);

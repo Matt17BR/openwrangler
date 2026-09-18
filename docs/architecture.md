@@ -1463,6 +1463,42 @@ R-terminal, and owned `Rscript` transports share the same native frame contract 
 including generated R. The runtime never routes an R frame through Python.
 [Feature parity](feature-parity.md#native-r-support) defines support and limitations for each entry path.
 
+#### Cleaning library selection
+
+An R session confirms one cleaning library: `base`, `dplyr`, `data.table` or `collapse`. The backend stays `r`;
+the library and native frame flavor are independent. Public metadata carries `rLibrary`, and the code dialect is
+`r.<library>`. The private native open request carries `library`; its correlated opening response must confirm the
+same value. Ordinary responses, replay and recovery cannot change it. Non-R messages cannot carry an R library.
+The resource-scoped `openWrangler.defaultRLibrary` supplies new opens; explicit selections and saved file choices
+take precedence. Existing R file records without a library retain base behavior.
+
+Non-base selections use the chosen library for supported dataframe selection, assignment, ordering, duplicate grouping,
+aggregation and reshape operations, preserving source ownership. Base retains the existing R operations, including
+the data.table helper for Pivot Wider. Exact scalar calculations and admission rules remain shared. Live execution
+and standalone generated code use the same native helpers, including the selected package requirement. Package
+calls use temporary unique column names where their public APIs cannot preserve duplicate or empty names; the
+runtime restores public names, frame flavor, row labels and valid keys without overwriting changed vector types.
+Imports, viewing profiles and exports retain their existing native implementations. Selecting a library does not
+promise that every scalar calculation or reader is supplied by that package.
+
+Changing the library of an open editor creates a separate Editing session from the exact captured runtime session
+and revision. If native editing has already isolated an original frame, that frame supplies the copy. Otherwise, the
+native clone verifies and isolates the session's retained source capture when it executes. An untouched direct open
+can still retain a live binding; a session created by copying already retains an isolated snapshot.
+Opening the picker does not freeze live values. The copy replays confirmed
+applied steps, with explicit confirmation that Custom Code runs again. The original
+keeps its draft, redo and viewing state. Applied-step inspection clears when focus moves to another editor, as it does
+for ordinary editor changes. Ordinary grid and profile reads after capture do not invalidate the copy; pending mutations,
+changed revisions, lost execution owners and unsettled runtime work still prevent it from publishing.
+The candidate starts without a draft or redo history and remains private through replay and validation.
+For files, an existing target-library editor, pending copy or saved plan prevents
+replacement. Live copies check editors and pending copies within their captured bridge family; separately opened live
+sessions remain independent, even when they read the same variable. Failure closes only the candidate; closing either published editor preserves the other's runtime ownership.
+For files, **Open file separately** uses the existing file-opening path and that library's saved plan, if any.
+As with file-plan copying, a completed durable save survives later cancellation even if the candidate is not published.
+Native R reports missing or incompatible selected packages with installation guidance for the exact environment;
+it does not invoke the Python installer or silently change libraries.
+
 #### Local files
 
 A file owner captures the exact local path, URI, import options and resource-scoped Rscript executable before launch.
@@ -1553,7 +1589,8 @@ The existing worksheet picker obtains exact sheet names from the managed session
 its request queue. It keeps the existing 15-second deadline, 4096-name and 65536-byte limits, with source, revision,
 trust and owner checks before and after discovery. Choosing a sheet opens a separate source-bound session. Only a
 current recoverable native runtime or missing-package error permits manual sheet entry; stale or malformed metadata
-is refused. The private native transport is version 15; the public protocol is unchanged.
+is refused. The private native transport is version 17. The public protocol remains version 4 and adds the explicit
+R cleaning-library selection and confirmation fields.
 
 All formats load the complete native frame before serving bounded pages. Recovery and generated code reread the
 source; exports keep the existing separate-destination and source-protection checks. Optional reader dependencies
@@ -2074,7 +2111,9 @@ saved cleaning still matches the user's choice; newer saved work or retirement b
 Failed reset storage preserves the previous recovery record and closes the unpublished candidate. Once a reset
 commits, later cancellation does not undo that explicit choice. Normal viewing and cleaning saves then resume.
 
-Native R file sessions use this same source/backend/options persistence key and transaction. Live R notebook,
+Native R file sessions use this same source/backend/options persistence key and transaction. Non-base libraries add
+the library to the key; base R keeps the existing key so older saved plans remain reachable. The saved state and
+confirmed file configuration retain the library through reopening, plan reuse, import changes and recovery. Live R notebook,
 document and terminal sessions remain excluded from workspace replay. R files retain the original input schema
 before saved steps are restored. A failed replay closes its process; an accepted Reset obtains a distinct verified
 delegate before reopening, rather than reusing the retired bridge. Stale or failed candidates close after their native

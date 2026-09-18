@@ -173,7 +173,8 @@ instrumented_frame_contract$by_example_column_at <- function(
   expected_names,
   new_name,
   result_kind,
-  evaluator
+  evaluator,
+  library = "base"
 ) {
   real_by_example_column_at(
     value,
@@ -189,7 +190,8 @@ instrumented_frame_contract$by_example_column_at <- function(
           stop(error)
         }
       )
-    }
+    },
+    library = library
   )
 }
 agent <- openwrangler_r_kernel_agent$new_agent(instrumented_frame_contract, source_environment)
@@ -217,8 +219,9 @@ page_window <- function(
 empty_view <- function() list(filters = I(list()), sorts = I(list()))
 
 dispatch_with <- function(target_agent, kind, payload, id = request_id) {
+  if (identical(kind, "openSession") && !"library" %in% names(payload)) payload$library <- "base"
   encoded <- jsonlite::toJSON(
-    list(transportVersion = 16L, requestId = id, kind = kind, payload = payload),
+    list(transportVersion = 17L, requestId = id, kind = kind, payload = payload),
     auto_unbox = TRUE,
     digits = 17L,
     null = "null",

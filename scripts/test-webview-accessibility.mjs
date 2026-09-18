@@ -2363,6 +2363,7 @@ async function verifyCompactGridWorkspace(browser) {
         const metadata = payload.metadata;
         metadata.backend = "r";
         metadata.rDataframeFlavor = "r.data.frame";
+        metadata.rLibrary = "base";
         if (kind === "draft") {
           metadata.draftStep = metadata.steps[0];
           metadata.steps = [];

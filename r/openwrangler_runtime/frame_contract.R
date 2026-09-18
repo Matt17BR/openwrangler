@@ -1167,6 +1167,447 @@ openwrangler_r_frame_contract <- local({
     unserialize(serialize(value, NULL, version = 3L))
   }
 
+  require_r_library <- function(library) {
+    if (!base::is.character(library) || base::length(library) != 1L || base::is.na(library) ||
+        !library %in% c("base", "dplyr", "data.table", "collapse")) {
+      abort("invalid-library", "Choose base, dplyr, data.table, or collapse for native R cleaning")
+    }
+    if (base::identical(library, "base")) return(base::invisible(NULL))
+    minimum <- base::switch(library, dplyr = "1.2.1", data.table = "1.18.2.1", collapse = "2.1.7")
+    if (!base::requireNamespace(library, quietly = TRUE) ||
+        utils::compareVersion(base::as.character(base::getNamespaceVersion(library)), minimum) < 0L) {
+      abort("missing-package", base::sprintf(
+        "Native R %s cleaning requires %s >= %s in this R runtime. Install or update it with install.packages(\"%s\"), then restart this R runtime and reopen.",
+        library, library, minimum, library
+      ))
+    }
+    base::invisible(NULL)
+  }
+
+  library_frame_metadata <- function(value) {
+    base::list(
+      names = base::names(value)[base::seq_along(value)], class = base::class(value),
+      row.names = base::.row_names_info(value, 0L),
+      key = base::attr(value, "sorted", exact = TRUE)[],
+      element_names = base::lapply(base::seq_along(value), function(i) base::attr(value[[i]], "names", exact = TRUE))
+    )
+  }
+
+  # Mutating verbs receive an isolated frame. Aliases exist only during a package
+  # verb; scalar values and their types are untouched.
+  library_prepare <- function(owned, library) {
+    metadata <- library_frame_metadata(owned)
+    aliases <- base::paste0("ow_c", base::seq_along(owned))
+    if (base::inherits(owned, "data.table")) data.table::setnames(owned, aliases) else base::names(owned) <- aliases
+    if (base::identical(library, "data.table") && !base::inherits(owned, "data.table")) data.table::setDT(owned)
+    base::list(frame = owned, metadata = metadata)
+  }
+
+  library_restore <- function(actual, metadata) {
+    if (!base::is.data.frame(actual)) base::stop("The selected R library did not return a dataframe", call. = FALSE)
+    wanted <- base::length(metadata$names)
+    if (wanted != 0L && base::length(actual) != wanted) base::stop("The selected R library changed the expected column count", call. = FALSE)
+    columns <- if (wanted == 0L) base::list() else base::unclass(actual)
+    base::attributes(columns) <- NULL
+    if (base::identical(metadata$class, c("data.table", "data.frame"))) {
+      base::names(columns) <- metadata$names
+      data.table::setDT(columns)
+      data.table::setnames(columns, metadata$names)
+      data.table::setattr(columns, "row.names", metadata$row.names)
+      data.table::setattr(columns, "sorted", metadata$key)
+      for (i in base::seq_along(columns)) data.table::setattr(columns[[i]], "names", metadata$element_names[[i]])
+    } else {
+      # [[<-.data.frame removes element names. Work on the owned container so
+      # legitimate labels survive without replacing any package-produced data.
+      for (i in base::seq_along(columns)) base::attr(columns[[i]], "names") <- metadata$element_names[[i]]
+      base::attributes(columns) <- base::list(names = metadata$names, class = metadata$class, row.names = metadata$row.names)
+    }
+    columns
+  }
+
+  library_rows <- function(owned, rows, library) {
+    base::force(rows)
+    if (base::length(owned) == 0L && base::identical(rows, base::seq_len(base::nrow(owned)))) return(owned)
+    metadata <- library_frame_metadata(owned)
+    labels <- metadata$row.names
+    if (base::is.integer(labels) && base::length(labels) == 2L && base::is.na(labels[[1L]])) labels <- base::seq_len(base::abs(labels[[2L]]))
+    metadata$row.names <- if (!base::identical(metadata$class, "data.frame") || base::anyDuplicated(rows)) base::.set_row_names(base::length(rows)) else labels[rows]
+    metadata$element_names <- base::lapply(metadata$element_names, function(labels) if (base::is.null(labels)) NULL else labels[rows])
+    if (base::is.unsorted(rows)) metadata$key <- NULL
+    result <- base::switch(library,
+      dplyr = dplyr::dplyr_row_slice(owned, rows),
+      data.table = {
+        # setDT removes element names by reference. Detach only those vectors;
+        # the other input columns stay read-only until the native row selection.
+        columns <- base::lapply(base::seq_along(owned), function(i) {
+          column <- owned[[i]]
+          if (base::is.null(metadata$element_names[[i]])) column else base::unname(column)
+        })
+        base::names(columns) <- metadata$names
+        data.table::setDT(columns)
+        columns[rows]
+      },
+      collapse = collapse::ss(owned, rows),
+      base::stop("Unsupported selected R library", call. = FALSE))
+    library_restore(result, metadata)
+  }
+
+  library_columns <- function(owned, positions, library) {
+    base::force(positions)
+    prepared <- library_prepare(owned, library)
+    metadata <- prepared$metadata
+    metadata$names <- metadata$names[positions]
+    metadata$element_names <- metadata$element_names[positions]
+    if (!base::is.null(metadata$key)) {
+      retained <- metadata$key %in% metadata$names
+      prefix <- if (base::all(retained)) base::length(retained) else base::which(!retained)[[1L]] - 1L
+      metadata$key <- if (prefix == 0L) NULL else metadata$key[base::seq_len(prefix)]
+    }
+    result <- base::switch(library,
+      dplyr = dplyr::select(prepared$frame, dplyr::all_of(base::names(prepared$frame)[positions])),
+      data.table = prepared$frame[, positions, with = FALSE],
+      collapse = collapse::ss(prepared$frame, j = positions),
+      base::stop("Unsupported selected R library", call. = FALSE))
+    library_restore(result, metadata)
+  }
+
+  library_rename <- function(owned, position, new_name, library) {
+    base::force(position)
+    base::force(new_name)
+    prepared <- library_prepare(owned, library)
+    metadata <- prepared$metadata
+    old_name <- metadata$names[[position]]
+    metadata$names[[position]] <- new_name
+    if (!base::is.null(metadata$key)) metadata$key[metadata$key == old_name] <- new_name
+    result <- base::switch(library,
+      dplyr = base::do.call(dplyr::rename, c(base::list(.data = prepared$frame), stats::setNames(base::list(position), "ow_renamed"))),
+      data.table = { data.table::setnames(prepared$frame, position, "ow_renamed"); prepared$frame },
+      collapse = collapse::frename(prepared$frame, "ow_renamed", cols = position, .nse = FALSE),
+      base::stop("Unsupported selected R library", call. = FALSE))
+    library_restore(result, metadata)
+  }
+
+  library_assign <- function(owned, positions, columns, output_names, library) {
+    base::force(positions)
+    base::force(columns)
+    output_names <- output_names[base::seq_along(output_names)]
+    column_names <- base::lapply(columns, function(column) base::attr(column, "names", exact = TRUE))
+    prepared <- library_prepare(owned, library)
+    metadata <- prepared$metadata
+    previous_names <- metadata$names
+    metadata$names <- output_names
+    base::length(metadata$element_names) <- base::length(output_names)
+    for (i in base::seq_along(positions)) metadata$element_names[positions[[i]]] <- column_names[i]
+    if (base::any(previous_names[positions[positions <= base::length(previous_names)]] %in% metadata$key)) metadata$key <- NULL
+    values <- stats::setNames(columns, base::paste0("ow_c", positions))
+    result <- base::switch(library,
+      dplyr = dplyr::mutate(prepared$frame, !!!values),
+      data.table = { for (i in base::seq_along(positions)) data.table::set(prepared$frame, j = base::names(values)[[i]], value = values[[i]]); prepared$frame },
+      collapse = collapse::`ftransform<-`(prepared$frame, value = values),
+      base::stop("Unsupported selected R library", call. = FALSE))
+    library_restore(result, metadata)
+  }
+
+  library_comparison_keys <- function(keys, exact = FALSE, missing_equal = FALSE, integer64_text = NULL) {
+    row_count <- if (base::is.data.frame(keys)) base::nrow(keys) else if (base::length(keys) == 0L) 0L else base::length(keys[[1L]])
+    columns <- base::lapply(base::seq_along(keys), function(i) {
+      column <- base::unname(keys[[i]])
+      if (base::identical(base::class(column), "integer64")) {
+        if (!base::is.function(integer64_text)) base::stop("Native R comparison requires its exact integer64 converter", call. = FALSE)
+        return(integer64_text(column))
+      }
+      if (exact && base::is.double(column)) {
+        values <- base::unclass(column)
+        values[!base::is.na(values) & values == 0] <- 0
+        text <- base::sprintf("%.17g", values)
+        text[base::is.na(values)] <- NA_character_
+        return(text)
+      }
+      if (missing_equal && base::is.double(column)) column[base::is.nan(column)] <- NA_real_
+      column
+    })
+    base::attributes(columns) <- base::list(
+      names = base::paste0("ow_key", base::seq_along(columns)),
+      class = "data.frame", row.names = base::.set_row_names(row_count))
+    columns
+  }
+
+  library_order <- function(keys, directions, library, integer64_text = NULL) {
+    row_count <- if (base::is.data.frame(keys)) base::nrow(keys) else if (base::length(keys) == 0L) 0L else base::length(keys[[1L]])
+    expanded <- base::list()
+    ordering <- base::integer()
+    for (i in base::seq_along(keys)) {
+      column <- base::unname(keys[[i]])
+      if (base::identical(base::class(column), "integer64")) {
+        if (!base::is.function(integer64_text)) base::stop("Native R ordering requires its exact integer64 converter", call. = FALSE)
+        text <- integer64_text(column)
+        text[base::is.na(text)] <- "0"
+        negative <- base::startsWith(text, "-")
+        digits <- base::ifelse(negative, base::substring(text, 2L), text)
+        padded <- base::paste0(base::vapply(19L - base::nchar(digits), function(n) base::paste(base::rep("0", n), collapse = ""), base::character(1L)), digits)
+        signed <- base::ifelse(negative, base::chartr("0123456789", "9876543210", padded), padded)
+        expanded <- c(expanded, base::list(base::as.integer(!negative), signed))
+        ordering <- c(ordering, base::rep.int(directions[[i]], 2L))
+      } else {
+        if (base::is.factor(column)) column <- base::as.integer(column)
+        if (base::is.object(column)) column <- base::unclass(column)
+        column[base::is.na(column)] <- if (base::is.character(column)) "" else 0
+        expanded <- c(expanded, base::list(column))
+        ordering <- c(ordering, directions[[i]])
+      }
+    }
+    expanded[[base::length(expanded) + 1L]] <- base::seq_len(row_count)
+    ordering <- c(ordering, 1L)
+    base::attributes(expanded) <- base::list(names = base::paste0("ow_order", base::seq_along(expanded)), class = "data.frame", row.names = base::.set_row_names(row_count))
+    fields <- base::names(expanded)
+    ordered <- base::switch(library,
+      dplyr = {
+        expressions <- base::lapply(base::seq_along(fields), function(i) {
+          field <- base::as.name(fields[[i]])
+          if (ordering[[i]] == 1L) field else base::substitute(dplyr::desc(column), base::list(column = field))
+        })
+        dplyr::arrange(expanded, !!!expressions, .locale = "C")
+      },
+      data.table = {
+        previous_rounding <- data.table::getNumericRounding()
+        base::on.exit(data.table::setNumericRounding(previous_rounding), add = TRUE)
+        data.table::setNumericRounding(0L)
+        data.table::setDT(expanded)
+        data.table::setorderv(expanded, fields, ordering)
+        expanded
+      },
+      collapse = collapse::roworderv(expanded, cols = fields, decreasing = ordering == -1L),
+      base::stop("Unsupported selected R library", call. = FALSE))
+    ordered[[base::length(ordered)]]
+  }
+
+  library_duplicates <- function(keys, keep, library, integer64_text = NULL) {
+    if (base::any(base::vapply(base::seq_along(keys), function(position) base::is.list(base::.subset2(keys, position)), base::logical(1L)))) {
+      base::stop("Duplicate comparison requires scalar columns; extract or explode the selected nested columns first", call. = FALSE)
+    }
+    keys <- library_comparison_keys(keys, integer64_text = integer64_text)
+    duplicate_direction <- function(from_last) base::switch(library,
+      dplyr = {
+        rows <- base::seq_len(base::nrow(keys))
+        if (from_last) rows <- base::rev(rows)
+        compared <- dplyr::slice(keys, .env$rows)
+        fields <- base::names(compared)
+        compared <- dplyr::mutate(compared, ow_row = .env$rows)
+        retained <- dplyr::distinct(compared, dplyr::across(dplyr::all_of(fields)), .keep_all = TRUE)$ow_row
+        !base::seq_len(base::nrow(keys)) %in% retained
+      },
+      data.table = { data.table::setDT(keys); base::duplicated(keys, fromLast = from_last) },
+      collapse = if (from_last) {
+        reversed <- collapse::ss(keys, base::rev(base::seq_len(base::nrow(keys))))
+        base::rev(collapse::fduplicated(reversed))
+      } else collapse::fduplicated(keys),
+      base::stop("Unsupported selected R library", call. = FALSE))
+    if (base::identical(keep, "first")) return(duplicate_direction(FALSE))
+    if (base::identical(keep, "last")) return(duplicate_direction(TRUE))
+    duplicate_direction(FALSE) | duplicate_direction(TRUE)
+  }
+
+  library_group_apply <- function(keys, library, evaluate_rows, integer64_text = NULL) {
+    keys <- library_comparison_keys(keys, exact = TRUE, missing_equal = TRUE, integer64_text = integer64_text)
+    if (base::nrow(keys) == 0L) return(base::list())
+    fields <- base::names(keys)
+    evaluate <- function(rows) base::list(rows = base::as.integer(rows), result = evaluate_rows(base::as.integer(rows)))
+    groups <- base::switch(library,
+      dplyr = {
+        keys <- dplyr::mutate(keys, ow_row = base::seq_len(base::nrow(keys)))
+        grouped <- dplyr::group_by(keys, dplyr::across(dplyr::all_of(fields)), .drop = TRUE)
+        dplyr::group_map(grouped, function(.x, .y) evaluate(.x$ow_row))
+      },
+      data.table = {
+        data.table::setDT(keys)
+        keys[, base::list(ow_group = base::list(evaluate(.I))), by = fields]$ow_group
+      },
+      collapse = collapse::BY(base::seq_len(base::nrow(keys)), collapse::GRP(keys, sort = FALSE),
+        evaluate, return = "list", use.g.names = FALSE),
+      base::stop("Unsupported selected R library", call. = FALSE))
+    ordered <- groups[base::order(base::vapply(groups, function(group) group$rows[[1L]], base::integer(1L)))]
+    base::lapply(ordered, `[[`, "result")
+  }
+
+  library_helpers_for <- function(requested) {
+    dependencies <- list(
+      abort = character(), require_r_library = "abort", library_frame_metadata = character(),
+      library_prepare = "library_frame_metadata", library_restore = character(),
+      library_rows = c("library_frame_metadata", "library_restore"),
+      library_columns = c("library_prepare", "library_restore"),
+      library_rename = c("library_prepare", "library_restore"),
+      library_assign = c("library_prepare", "library_restore"),
+      library_comparison_keys = character(), library_order = character(),
+      library_duplicates = "library_comparison_keys",
+      library_group_apply = "library_comparison_keys",
+      library_pivot_longer = c("abort", "library_prepare", "library_restore", "library_rows", "library_columns", "library_assign"),
+      library_pivot_wider = c("abort", "library_prepare", "library_restore", "library_rows", "library_columns", "library_assign", "library_group_apply")
+    )
+    required <- unique(requested)
+    if (any(!required %in% names(dependencies))) stop("Unknown native R library helper", call. = FALSE)
+    repeat {
+      expanded <- unique(c(unlist(dependencies[required], use.names = FALSE), required))
+      if (identical(expanded, required)) break
+      required <- expanded
+    }
+    stats::setNames(lapply(required, get, envir = environment(library_helpers_for), inherits = FALSE), required)
+  }
+
+  library_pivot_longer <- function(owned, id_positions, value_positions, variable_name, value_name, library) {
+    base::force(id_positions)
+    base::force(value_positions)
+    base::force(variable_name)
+    base::force(value_name)
+    row_count <- base::nrow(owned)
+    rows <- base::rep.int(base::seq_len(row_count), base::length(value_positions))
+    prepared <- library_prepare(owned, library)
+    metadata <- prepared$metadata
+    source_names <- metadata$names
+    metadata$names <- c(source_names[id_positions], variable_name, value_name)
+    metadata$row.names <- base::.set_row_names(base::length(rows))
+    metadata$key <- NULL
+    metadata$element_names <- c(base::lapply(metadata$element_names[id_positions], function(labels) if (base::is.null(labels)) NULL else labels[rows]), base::list(NULL, NULL))
+    labels <- base::rep(source_names[value_positions], each = row_count)
+    working <- prepared$frame
+    result <- base::switch(library,
+      dplyr = {
+        # dplyr has no reshape verb. Its slice/select/mutate operations construct
+        # the actual output while this bounded vector kernel preserves types.
+        first <- working[[value_positions[[1L]]]]
+        values <- base::vector(base::typeof(first), base::length(rows))
+        cursor <- 0L
+        for (position in value_positions) {
+          storage <- base::unclass(working[[position]])
+          base::attributes(storage) <- NULL
+          if (row_count != 0L) values[cursor + base::seq_len(row_count)] <- storage
+          cursor <- cursor + row_count
+        }
+        attrs <- base::attributes(first)
+        attrs$names <- NULL
+        base::attributes(values) <- attrs
+        retained <- if (base::length(id_positions)) id_positions else value_positions[[1L]]
+        selected <- library_rows(library_columns(working, retained, library), rows, library)
+        if (base::length(id_positions)) {
+          outputs <- base::length(selected) + 1:2
+          selected <- library_assign(selected, outputs, base::list(labels, values),
+            c(base::names(selected), "ow_variable", "ow_value"), library)
+          selected
+        } else {
+          # With no identifiers, replace the one sliced value column instead
+          # of expanding every input value column only to discard them.
+          selected <- library_assign(selected, 1:2, base::list(values, labels),
+            c("ow_value", "ow_variable"), library)
+          library_columns(selected, 2:1, library)
+        }
+      },
+      data.table = {
+        prototype <- working[[value_positions[[1L]]]]
+        reshaped <- data.table::melt(working, id.vars = base::names(working)[id_positions],
+          measure.vars = base::names(working)[value_positions], variable.name = "ow_variable", value.name = "ow_value",
+          variable.factor = FALSE, value.factor = base::is.factor(prototype))
+        if (base::is.factor(prototype)) {
+          source_levels <- base::attr(prototype, "levels", exact = TRUE)
+          plain_levels <- source_levels
+          base::attributes(plain_levels) <- NULL
+          actual_levels <- base::attr(reshaped$ow_value, "levels", exact = TRUE)
+          base::attributes(actual_levels) <- NULL
+          if (!base::identical(base::typeof(reshaped$ow_value), base::typeof(prototype)) ||
+              !base::identical(base::class(reshaped$ow_value), base::class(prototype)) ||
+              !base::identical(actual_levels, plain_levels)) abort("internal-error", "The selected R library changed Pivot longer factor metadata")
+          # melt rebuilds the same level domain without its admitted AsIs
+          # wrapper. Preserve that metadata after checking the native domain.
+          data.table::setattr(reshaped$ow_value, "levels", source_levels)
+        }
+        reshaped
+      },
+      collapse = collapse::pivot(working, ids = base::names(working)[id_positions],
+        values = base::names(working)[value_positions], names = base::list("ow_variable", "ow_value"),
+        factor = base::character(), na.rm = FALSE),
+      base::stop("Unsupported selected R library", call. = FALSE))
+    if (!base::identical(library, "dplyr")) {
+      result <- library_assign(result, base::length(id_positions) + 1L, base::list(labels), base::names(result), library)
+    }
+    library_restore(result, metadata)
+  }
+
+  library_pivot_wider <- function(owned, id_positions, names_position, value_position, domain, library, integer64_text = NULL) {
+    base::force(id_positions)
+    base::force(names_position)
+    base::force(value_position)
+    base::force(domain)
+    names_column <- owned[[names_position]]
+    labels <- if (base::is.factor(names_column)) base::attr(names_column, "levels", exact = TRUE)[base::unclass(names_column)] else base::unclass(names_column)
+    if (base::anyNA(labels) || base::any(!labels %in% domain$keys)) abort("invalid-view-value", "Every Pivot wider names-from value must match one declared output key")
+    row_count <- base::nrow(owned)
+    groups <- if (base::length(id_positions) == 0L) {
+      if (row_count == 0L) base::list() else base::list(base::seq_len(row_count))
+    } else library_group_apply(base::lapply(id_positions, function(i) owned[[i]]), library, function(rows) rows, integer64_text)
+    group_count <- base::length(groups)
+    group_ids <- base::integer(row_count)
+    first_rows <- base::integer(group_count)
+    for (i in base::seq_along(groups)) {
+      group_ids[groups[[i]]] <- i
+      first_rows[[i]] <- groups[[i]][[1L]]
+    }
+    ordinals <- base::match(labels, domain$keys)
+    if (base::anyDuplicated(base::paste(group_ids, ordinals, sep = ":"))) abort("invalid-view-value", "Pivot wider found duplicate identifier-and-key rows")
+    source <- owned[[value_position]]
+    missing_values <- function(count) {
+      storage <- base::vector(base::typeof(source), count)
+      if (base::identical(base::class(source), "integer64")) {
+        storage[] <- base::unclass(bit64::NA_integer64_)[[1L]]
+      } else storage[] <- NA
+      attrs <- base::attributes(source)
+      attrs$names <- NULL
+      base::attributes(storage) <- attrs
+      storage
+    }
+    output_aliases <- base::paste0("ow_value", base::seq_along(domain$keys))
+    pivot_source <- base::structure(base::list(ow_group = group_ids, ow_name = output_aliases[ordinals], ow_value = source),
+      class = "data.frame", row.names = base::.set_row_names(row_count))
+    output_columns <- if (group_count == 0L) {
+      # There are no groups to reshape; collapse::pivot refuses an empty wider
+      # result. The selected assignment/selection verbs still create its schema.
+      base::lapply(domain$keys, function(key) missing_values(0L))
+    } else if (base::identical(library, "dplyr")) {
+      base::lapply(base::seq_along(domain$keys), function(i) {
+        values <- missing_values(group_count)
+        selected <- base::which(ordinals == i)
+        storage <- base::unclass(values)
+        base::attributes(storage) <- NULL
+        source_storage <- base::unclass(source)
+        base::attributes(source_storage) <- NULL
+        storage[group_ids[selected]] <- source_storage[selected]
+        base::attributes(storage) <- base::attributes(values)
+        storage
+      })
+    } else {
+      reshaped <- base::switch(library,
+        data.table = { data.table::setDT(pivot_source); data.table::dcast(pivot_source, ow_group ~ ow_name, value.var = "ow_value") },
+        collapse = collapse::pivot(pivot_source, ids = "ow_group", names = "ow_name", values = "ow_value", how = "wider", check.dups = FALSE, sort = FALSE),
+        base::stop("Unsupported selected R library", call. = FALSE))
+      if (group_count != 0L) reshaped <- library_rows(reshaped, base::match(base::seq_len(group_count), reshaped[[1L]]), library)
+      base::lapply(output_aliases, function(name) if (name %in% base::names(reshaped)) reshaped[[name]] else missing_values(group_count))
+    }
+    result <- library_rows(owned, first_rows, library)
+    # Group keys share the established NA/NaN equality and visible missing value.
+    normalized <- base::lapply(id_positions, function(i) {
+      column <- result[[i]]
+      if (base::is.double(column) && !base::is.object(column)) column[base::is.na(column)] <- NA_real_
+      column
+    })
+    if (base::length(normalized)) result <- library_assign(result, id_positions, normalized, base::names(result), library)
+    outputs <- base::length(result) + base::seq_along(domain$keys)
+    result <- library_assign(result, outputs, output_columns,
+      c(base::names(result), domain$names), library)
+    result <- library_columns(result, c(id_positions, outputs), library)
+    if (base::inherits(result, "data.table")) {
+      data.table::setattr(result, "sorted", NULL)
+      data.table::setattr(result, "row.names", base::.set_row_names(group_count))
+    } else base::attr(result, "row.names") <- base::.set_row_names(group_count)
+    result
+  }
+
   key_column_ids <- function(snapshot, flavor, names, budget) {
     if (flavor != "r.data.table") return(json_array(character()))
     keys <- data_table_key_names(snapshot)
@@ -4164,7 +4605,7 @@ openwrangler_r_frame_contract <- local({
     result
   }
 
-  rename_column_at <- function(value, position, old_name, new_name) {
+  rename_column_at <- function(value, position, old_name, new_name, library = "base") {
     metrics <- new_capture_metrics()
     inspected <- inspect_frame(
       value,
@@ -4196,7 +4637,9 @@ openwrangler_r_frame_contract <- local({
     }
 
     result <- isolated_snapshot(value, inspected$flavor)
-    if (identical(inspected$flavor, "r.data.table")) {
+    if (!identical(library, "base")) {
+      result <- library_rename(result, position, new_name, library)
+    } else if (identical(inspected$flavor, "r.data.table")) {
       data.table::setnames(result, old = position, new = new_name)
     } else {
       result_names <- names(result)
@@ -4218,7 +4661,7 @@ openwrangler_r_frame_contract <- local({
     result
   }
 
-  clone_column_at <- function(value, position, old_name, new_name) {
+  clone_column_at <- function(value, position, old_name, new_name, library = "base") {
     inspected <- inspect_frame(
       value,
       conservative_nullable = TRUE,
@@ -4274,7 +4717,9 @@ openwrangler_r_frame_contract <- local({
       }
     }
     cloned_element_names <- attr(.subset2(result, position), "names", exact = TRUE)
-    if (identical(inspected$flavor, "r.data.table")) {
+    if (!identical(library, "base")) {
+      result <- library_assign(result, column_count + 1L, list(.subset2(result, position)), c(frame_names, new_name), library)
+    } else if (identical(inspected$flavor, "r.data.table")) {
       data.table::setattr(result, "names", frame_names)
       data.table::set(result, j = new_name, value = .subset2(result, position))
       if (!is.null(cloned_element_names)) {
@@ -4292,7 +4737,7 @@ openwrangler_r_frame_contract <- local({
     result
   }
 
-  conditional_column <- function(capture, condition, new_name, result_type, arms) {
+  conditional_column <- function(capture, condition, new_name, result_type, arms, library = "base") {
     validate_capture(capture)
     result_type <- scalar_choice(result_type, c("string", "boolean"), "conditional result type")
     arms <- exact_named_list(arms, c("trueValue", "falseValue", "missingValue"), "conditional arms")
@@ -4336,8 +4781,10 @@ openwrangler_r_frame_contract <- local({
     if (!is.null(arms$trueValue)) values[matched & !missing] <- arms$trueValue
     if (!is.null(arms$falseValue)) values[!matched & !missing] <- arms$falseValue
     if (!is.null(arms$missingValue)) values[missing] <- arms$missingValue
-    result <- clone_column_at(source, filter$position, descriptor$name, new_name)
-    if (identical(frame_flavor(result), "r.data.table")) {
+    result <- clone_column_at(source, filter$position, descriptor$name, new_name, library)
+    if (!identical(library, "base")) {
+      result <- library_assign(result, storage_length(result), list(values), names(result), library)
+    } else if (identical(frame_flavor(result), "r.data.table")) {
       data.table::set(result, j = new_name, value = values)
     } else {
       frame_attributes <- attributes(result)
@@ -4372,10 +4819,12 @@ openwrangler_r_frame_contract <- local({
     result
   }
 
-  dense_rank_column_at <- function(value, position, old_name, new_name, direction) {
-    result <- clone_column_at(value, position, old_name, new_name)
+  dense_rank_column_at <- function(value, position, old_name, new_name, direction, library = "base") {
+    result <- clone_column_at(value, position, old_name, new_name, library)
     ranks <- dense_rank_values(.subset2(result, position), direction)
-    if (identical(frame_flavor(result), "r.data.table")) {
+    if (!identical(library, "base")) {
+      result <- library_assign(result, storage_length(result), list(ranks), names(result), library)
+    } else if (identical(frame_flavor(result), "r.data.table")) {
       data.table::set(result, j = new_name, value = ranks)
     } else {
       frame_attributes <- attributes(result)
@@ -4388,7 +4837,7 @@ openwrangler_r_frame_contract <- local({
     result
   }
 
-  by_example_column_at <- function(value, positions, expected_names, new_name, result_kind, evaluator) {
+  by_example_column_at <- function(value, positions, expected_names, new_name, result_kind, evaluator, library = "base") {
     inspected <- inspect_frame(
       value,
       conservative_nullable = TRUE,
@@ -4723,7 +5172,9 @@ openwrangler_r_frame_contract <- local({
     if (length(final_attributes) > 0L) attributes(transformed) <- final_attributes
 
     transformed_names <- attr(transformed, "names", exact = TRUE)
-    if (identical(inspected$flavor, "r.data.table")) {
+    if (!identical(library, "base")) {
+      result <- library_assign(result, column_count + 1L, list(transformed), c(names(result), new_name), library)
+    } else if (identical(inspected$flavor, "r.data.table")) {
       data.table::set(result, j = new_name, value = transformed)
       result <- repair_data_table_self_reference(result)
       for (position in seq_len(column_count)) {
@@ -5036,7 +5487,8 @@ openwrangler_r_frame_contract <- local({
     inspected,
     retained_positions,
     generated_names,
-    generated_columns
+    generated_columns,
+    library = "base"
   ) {
     generated_count <- length(generated_names)
     if (generated_count != length(generated_columns)) {
@@ -5049,6 +5501,13 @@ openwrangler_r_frame_contract <- local({
       .subset(attr(value, "names", exact = TRUE), retained_positions),
       generated_names
     )
+    if (!identical(library, "base")) {
+      result <- isolated_snapshot(value, inspected$flavor)
+      source_count <- storage_length(result)
+      generated_positions <- source_count + seq_along(generated_columns)
+      result <- library_assign(result, generated_positions, generated_columns, c(names(result), generated_names), library)
+      return(library_columns(result, c(retained_positions, generated_positions), library))
+    }
     if (identical(inspected$flavor, "r.data.table")) {
       result <- isolated_snapshot(value, inspected$flavor)
       result_row_names <- .row_names_info(result, type = 0L)
@@ -5102,7 +5561,8 @@ openwrangler_r_frame_contract <- local({
     generated_source_positions,
     generated_names,
     generated_columns,
-    drop_original
+    drop_original,
+    library = "base"
   ) {
     retained_positions <- if (drop_original) {
       without_values(seq_len(inspected$descriptor$shape$columns), selected_positions)
@@ -5114,7 +5574,8 @@ openwrangler_r_frame_contract <- local({
       inspected,
       retained_positions,
       generated_names,
-      generated_columns
+      generated_columns,
+      library
     )
     categorical_positions <- if (length(generated_names) == 0L) {
       integer()
@@ -5135,7 +5596,8 @@ openwrangler_r_frame_contract <- local({
     positions,
     old_names,
     prefix_separator = "_",
-    drop_original = TRUE
+    drop_original = TRUE,
+    library = "base"
   ) {
     resolved <- resolve_categorical_columns_at(value, positions, old_names, "oneHotEncode")
     positions <- resolved$positions
@@ -5203,7 +5665,8 @@ openwrangler_r_frame_contract <- local({
       vapply(generated, `[[`, integer(1L), "sourcePosition", USE.NAMES = FALSE),
       generated_names,
       generated_columns,
-      drop_original
+      drop_original,
+      library
     )
   }
 
@@ -5213,7 +5676,8 @@ openwrangler_r_frame_contract <- local({
     old_name,
     delimiter,
     prefix = NULL,
-    drop_original = FALSE
+    drop_original = FALSE,
+    library = "base"
   ) {
     resolved <- resolve_categorical_columns_at(value, position, old_name, "multiLabelBinarize")
     position <- resolved$positions[[1L]]
@@ -5313,7 +5777,8 @@ openwrangler_r_frame_contract <- local({
       rep.int(position, length(labels)),
       generated_names,
       generated_columns,
-      drop_original
+      drop_original,
+      library
     )
   }
 
@@ -5325,7 +5790,8 @@ openwrangler_r_frame_contract <- local({
     new_name,
     right_position = NULL,
     right_name = NULL,
-    right_value = NULL
+    right_value = NULL,
+    library = "base"
   ) {
     inspected <- inspect_frame(
       value,
@@ -5525,7 +5991,9 @@ openwrangler_r_frame_contract <- local({
     }
 
     transformed_names <- attr(transformed, "names", exact = TRUE)
-    if (identical(inspected$flavor, "r.data.table")) {
+    if (!identical(library, "base")) {
+      result <- library_assign(result, column_count + 1L, list(transformed), c(names(result), new_name), library)
+    } else if (identical(inspected$flavor, "r.data.table")) {
       result_classes <- class(result)
       class(result) <- NULL
       result_names <- attr(result, "names", exact = TRUE)
@@ -5546,7 +6014,7 @@ openwrangler_r_frame_contract <- local({
     result
   }
 
-  text_length_column_at <- function(value, position, old_name, new_name) {
+  text_length_column_at <- function(value, position, old_name, new_name, library = "base") {
     inspected <- inspect_frame(
       value,
       conservative_nullable = TRUE,
@@ -5588,7 +6056,9 @@ openwrangler_r_frame_contract <- local({
       allowNA = FALSE,
       keepNA = TRUE
     )
-    if (identical(inspected$flavor, "r.data.table")) {
+    if (!identical(library, "base")) {
+      result <- library_assign(result, column_count + 1L, list(lengths), c(names(result), new_name), library)
+    } else if (identical(inspected$flavor, "r.data.table")) {
       data.table::set(result, j = new_name, value = lengths)
     } else {
       original_names <- names(result)
@@ -5634,7 +6104,7 @@ openwrangler_r_frame_contract <- local({
     transformed
   }
 
-  transform_text_column_at <- function(value, position, old_name, new_name, operation, transform) {
+  transform_text_column_at <- function(value, position, old_name, new_name, operation, transform, library = "base") {
     operation_name <- switch(
       operation,
       lowerText = "Lowercase",
@@ -5717,7 +6187,10 @@ openwrangler_r_frame_contract <- local({
         bounded_operation_output(output, operation_name)
       }, character(1L), USE.NAMES = FALSE)
     }
-    if (in_place) {
+    if (!identical(library, "base")) {
+      result <- library_assign(result, if (in_place) position else column_count + 1L, list(transformed),
+        if (in_place) names(result) else c(names(result), new_name), library)
+    } else if (in_place) {
       if (identical(inspected$flavor, "r.data.table")) {
         data.table::set(result, j = position, value = transformed)
       } else {
@@ -5733,12 +6206,12 @@ openwrangler_r_frame_contract <- local({
     result
   }
 
-  lower_text_column_at <- function(value, position, old_name, new_name = NULL) {
-    transform_text_column_at(value, position, old_name, new_name, "lowerText", tolower)
+  lower_text_column_at <- function(value, position, old_name, new_name = NULL, library = "base") {
+    transform_text_column_at(value, position, old_name, new_name, "lowerText", tolower, library)
   }
 
-  upper_text_column_at <- function(value, position, old_name, new_name = NULL) {
-    transform_text_column_at(value, position, old_name, new_name, "upperText", toupper)
+  upper_text_column_at <- function(value, position, old_name, new_name = NULL, library = "base") {
+    transform_text_column_at(value, position, old_name, new_name, "upperText", toupper, library)
   }
 
   capitalize_text_value <- function(value) {
@@ -5750,11 +6223,11 @@ openwrangler_r_frame_contract <- local({
     )
   }
 
-  capitalize_text_column_at <- function(value, position, old_name, new_name = NULL) {
-    transform_text_column_at(value, position, old_name, new_name, "capitalizeText", capitalize_text_value)
+  capitalize_text_column_at <- function(value, position, old_name, new_name = NULL, library = "base") {
+    transform_text_column_at(value, position, old_name, new_name, "capitalizeText", capitalize_text_value, library)
   }
 
-  strip_text_column_at <- function(value, position, old_name, characters = NULL, new_name = NULL) {
+  strip_text_column_at <- function(value, position, old_name, characters = NULL, new_name = NULL, library = "base") {
     if (is.null(characters)) {
       characters <- default_strip_characters
     } else {
@@ -5770,7 +6243,7 @@ openwrangler_r_frame_contract <- local({
       if (length(retained) == 0L) return("")
       paste0(source_characters[seq.int(retained[[1L]], retained[[length(retained)]])], collapse = "")
     }
-    transform_text_column_at(value, position, old_name, new_name, "stripText", strip_value)
+    transform_text_column_at(value, position, old_name, new_name, "stripText", strip_value, library)
   }
 
   split_text_value <- function(value, delimiter, index) {
@@ -5787,7 +6260,7 @@ openwrangler_r_frame_contract <- local({
     if (start > end) "" else substr(value, start, end)
   }
 
-  split_text_column_at <- function(value, position, old_name, delimiter, index, new_name) {
+  split_text_column_at <- function(value, position, old_name, delimiter, index, new_name, library = "base") {
     delimiter <- bounded_utf8(delimiter, "delimiter")
     if (identical(delimiter, "")) {
       abort("invalid-view-query", "splitText.delimiter must be a non-empty string")
@@ -5806,11 +6279,12 @@ openwrangler_r_frame_contract <- local({
       old_name,
       new_name,
       "splitText",
-      function(source) split_text_value(source, delimiter, index)
+      function(source) split_text_value(source, delimiter, index),
+      library
     )
   }
 
-  split_text_columns_at <- function(value, position, old_name, delimiter, new_names) {
+  split_text_columns_at <- function(value, position, old_name, delimiter, new_names, library = "base") {
     delimiter <- bounded_utf8(delimiter, "delimiter")
     if (identical(delimiter, "")) {
       abort("invalid-view-query", "splitTextColumns.delimiter must be a non-empty literal string")
@@ -5871,7 +6345,9 @@ openwrangler_r_frame_contract <- local({
         if (is.na(output)) return(NA_character_)
         bounded_operation_output(output, "Split text into columns")
       }, character(1L), USE.NAMES = FALSE)
-      if (identical(inspected$flavor, "r.data.table")) {
+      if (!identical(library, "base")) {
+        result <- library_assign(result, length(result) + 1L, list(transformed), c(names(result), new_names[[output_index]]), library)
+      } else if (identical(inspected$flavor, "r.data.table")) {
         data.table::set(result, j = new_names[[output_index]], value = transformed)
       } else {
         original_names <- names(result)
@@ -5889,7 +6365,8 @@ openwrangler_r_frame_contract <- local({
     old_names,
     label_name,
     value_name,
-    output_ids
+    output_ids,
+    library = "base"
   ) {
     validate_capture(source_capture)
     inspected <- inspect_frame(
@@ -5961,57 +6438,61 @@ openwrangler_r_frame_contract <- local({
 
     snapshot <- isolated_snapshot(value, inspected$flavor)
     retained_positions <- setdiff(seq_along(schema), positions)
-    row_indices <- if (row_count == 0) integer() else rep.int(seq_len(as.integer(row_count)), length(positions))
-    if (identical(inspected$flavor, "r.data.table")) {
-      result <- snapshot[row_indices, retained_positions, with = FALSE]
-      data.table::setkeyv(result, NULL)
+    if (!identical(library, "base")) {
+      result <- library_pivot_longer(snapshot, retained_positions, positions, label_name, value_name, library)
     } else {
-      result <- snapshot[row_indices, retained_positions, drop = FALSE]
+      row_indices <- if (row_count == 0) integer() else rep.int(seq_len(as.integer(row_count)), length(positions))
+      if (identical(inspected$flavor, "r.data.table")) {
+        result <- snapshot[row_indices, retained_positions, with = FALSE]
+        data.table::setkeyv(result, NULL)
+      } else {
+        result <- snapshot[row_indices, retained_positions, drop = FALSE]
+      }
+      selected_values <- lapply(positions, function(position) snapshot[[position]])
+      selected_storage <- lapply(selected_values, function(column) {
+        attributes(column) <- NULL
+        column
+      })
+      storage_type <- typeof(selected_storage[[1L]])
+      if (any(!vapply(selected_storage, function(column) identical(typeof(column), storage_type), logical(1L)))) {
+        abort("internal-error", "Pivot longer selected columns have incompatible R storage")
+      }
+      pivot_values <- vector(storage_type, as.integer(output_rows))
+      cursor <- 1L
+      for (column in selected_storage) {
+        next_cursor <- cursor + length(column)
+        if (length(column) != 0L) pivot_values[cursor:(next_cursor - 1L)] <- column
+        cursor <- next_cursor
+      }
+      semantics <- selected_semantics[[1L]]
+      first_selected <- selected_values[[1L]]
+      if (identical(semantics$kind, "factor")) {
+        attr(pivot_values, "levels") <- levels(first_selected)
+        attr(pivot_values, "class") <- class(first_selected)
+      } else if (identical(semantics$kind, "datetime")) {
+        attr(pivot_values, "class") <- class(first_selected)
+        timezone <- attr(first_selected, "tzone", exact = TRUE)
+        if (!is.null(timezone)) attr(pivot_values, "tzone") <- timezone
+      } else if (identical(semantics$kind, "difftime")) {
+        attr(pivot_values, "class") <- class(first_selected)
+        attr(pivot_values, "units") <- attr(first_selected, "units", exact = TRUE)
+      } else if (identical(semantics$kind, "date")) {
+        attr(pivot_values, "class") <- class(first_selected)
+      } else if (identical(semantics$kind, "integer64")) {
+        attr(pivot_values, "class") <- class(first_selected)
+      }
+      pivot_labels <- rep(old_names, each = as.integer(row_count))
+      if (identical(inspected$flavor, "r.data.table")) {
+        data.table::set(result, j = label_name, value = pivot_labels)
+        data.table::set(result, j = value_name, value = pivot_values)
+      } else {
+        result_names <- names(result)
+        result[[length(result) + 1L]] <- pivot_labels
+        result[[length(result) + 1L]] <- pivot_values
+        names(result) <- c(result_names, label_name, value_name)
+      }
+      attr(result, "row.names") <- if (output_rows == 0) integer() else c(NA_integer_, -as.integer(output_rows))
     }
-    selected_values <- lapply(positions, function(position) snapshot[[position]])
-    selected_storage <- lapply(selected_values, function(column) {
-      attributes(column) <- NULL
-      column
-    })
-    storage_type <- typeof(selected_storage[[1L]])
-    if (any(!vapply(selected_storage, function(column) identical(typeof(column), storage_type), logical(1L)))) {
-      abort("internal-error", "Pivot longer selected columns have incompatible R storage")
-    }
-    pivot_values <- vector(storage_type, as.integer(output_rows))
-    cursor <- 1L
-    for (column in selected_storage) {
-      next_cursor <- cursor + length(column)
-      if (length(column) != 0L) pivot_values[cursor:(next_cursor - 1L)] <- column
-      cursor <- next_cursor
-    }
-    semantics <- selected_semantics[[1L]]
-    first_selected <- selected_values[[1L]]
-    if (identical(semantics$kind, "factor")) {
-      attr(pivot_values, "levels") <- levels(first_selected)
-      attr(pivot_values, "class") <- class(first_selected)
-    } else if (identical(semantics$kind, "datetime")) {
-      attr(pivot_values, "class") <- class(first_selected)
-      timezone <- attr(first_selected, "tzone", exact = TRUE)
-      if (!is.null(timezone)) attr(pivot_values, "tzone") <- timezone
-    } else if (identical(semantics$kind, "difftime")) {
-      attr(pivot_values, "class") <- class(first_selected)
-      attr(pivot_values, "units") <- attr(first_selected, "units", exact = TRUE)
-    } else if (identical(semantics$kind, "date")) {
-      attr(pivot_values, "class") <- class(first_selected)
-    } else if (identical(semantics$kind, "integer64")) {
-      attr(pivot_values, "class") <- class(first_selected)
-    }
-    pivot_labels <- rep(old_names, each = as.integer(row_count))
-    if (identical(inspected$flavor, "r.data.table")) {
-      data.table::set(result, j = label_name, value = pivot_labels)
-      data.table::set(result, j = value_name, value = pivot_values)
-    } else {
-      result_names <- names(result)
-      result[[length(result) + 1L]] <- pivot_labels
-      result[[length(result) + 1L]] <- pivot_values
-      names(result) <- c(result_names, label_name, value_name)
-    }
-    attr(result, "row.names") <- if (output_rows == 0) integer() else c(NA_integer_, -as.integer(output_rows))
 
     captured <- capture_frame(result, preserve_data_table_element_names = TRUE)
     output_schema <- plain_metadata_storage(captured$descriptor$schema)
@@ -6077,7 +6558,8 @@ openwrangler_r_frame_contract <- local({
     values_old_name,
     output_keys,
     output_names,
-    output_ids
+    output_ids,
+    library = "base"
   ) {
     validate_capture(source_capture)
     inspected <- inspect_frame(
@@ -6157,104 +6639,110 @@ openwrangler_r_frame_contract <- local({
     }
 
     snapshot <- isolated_snapshot(value, inspected$flavor)
-    names_values <- as.character(snapshot[[positions[[1L]]]])
-    if (anyNA(names_values) || any(!names_values %in% output_keys)) {
-      abort("invalid-view-value", "Every Pivot wider names-from value must match one declared output key")
-    }
-    if (!requireNamespace("data.table", quietly = TRUE)) {
-      abort("missing-package", "Pivot wider requires the data.table package")
-    }
-    identifier_values <- lapply(retained_positions, function(position) {
-      column <- snapshot[[position]]
-      semantics <- schema[[position]]$semantics
-      if (identical(semantics$kind, "double") && is.double(column) && !is.object(column)) {
-        column[is.nan(column)] <- NA_real_
-      }
-      column
-    })
-    if (length(retained_positions) == 0L) {
-      group_ids <- if (row_count == 0L) integer() else rep.int(1L, row_count)
+    if (!identical(library, "base")) {
+      result <- library_pivot_wider(snapshot, retained_positions, positions[[1L]], positions[[2L]],
+        list(keys = output_keys, names = output_names), library, integer64_as_character)
+      group_count <- nrow(result)
     } else {
-      identifiers <- data.table::as.data.table(identifier_values)
-      identifier_names <- paste0("ow_identifier_", seq_along(retained_positions))
-      data.table::setnames(identifiers, identifier_names)
-      group_column <- "__open_wrangler_internal_row_id_pivot_wider_group"
-      identifiers[, (group_column) := .GRP, by = identifier_names]
-      group_ids <- identifiers[[group_column]]
-    }
-    group_rows <- which(!duplicated(group_ids))
-    group_count <- length(group_rows)
-    key_ordinals <- match(names_values, output_keys)
-    pair_keys <- paste0(group_ids, ":", key_ordinals)
-    if (anyDuplicated(pair_keys)) {
-      abort("invalid-view-value", "Pivot wider found duplicate identifier-and-key rows")
-    }
-
-    value_source <- snapshot[[positions[[2L]]]]
-    value_storage <- value_source
-    attributes(value_storage) <- NULL
-    restore_value_semantics <- function(storage) {
-      if (identical(value_semantics$kind, "factor")) {
-        attr(storage, "levels") <- levels(value_source)
-        attr(storage, "class") <- class(value_source)
-      } else if (identical(value_semantics$kind, "datetime")) {
-        attr(storage, "class") <- class(value_source)
-        timezone <- attr(value_source, "tzone", exact = TRUE)
-        if (!is.null(timezone)) attr(storage, "tzone") <- timezone
-      } else if (identical(value_semantics$kind, "difftime")) {
-        attr(storage, "class") <- class(value_source)
-        attr(storage, "units") <- attr(value_source, "units", exact = TRUE)
-      } else if (value_semantics$kind %in% c("date", "integer64")) {
-        attr(storage, "class") <- class(value_source)
+      names_values <- as.character(snapshot[[positions[[1L]]]])
+      if (anyNA(names_values) || any(!names_values %in% output_keys)) {
+        abort("invalid-view-value", "Every Pivot wider names-from value must match one declared output key")
       }
-      storage
-    }
-    missing_storage <- function(size) {
-      result <- vector(typeof(value_storage), size)
-      if (size != 0L) {
-        if (identical(value_semantics$kind, "integer64")) {
-          result[] <- unclass(bit64::as.integer64(NA_character_))[[1L]]
-        } else if (typeof(result) == "integer") {
-          result[] <- NA_integer_
-        } else if (typeof(result) == "logical") {
-          result[] <- NA
-        } else if (typeof(result) == "character") {
-          result[] <- NA_character_
-        } else {
-          result[] <- NA_real_
+      if (!requireNamespace("data.table", quietly = TRUE)) {
+        abort("missing-package", "Pivot wider requires the data.table package")
+      }
+      identifier_values <- lapply(retained_positions, function(position) {
+        column <- snapshot[[position]]
+        semantics <- schema[[position]]$semantics
+        if (identical(semantics$kind, "double") && is.double(column) && !is.object(column)) {
+          column[is.nan(column)] <- NA_real_
         }
+        column
+      })
+      if (length(retained_positions) == 0L) {
+        group_ids <- if (row_count == 0L) integer() else rep.int(1L, row_count)
+      } else {
+        identifiers <- data.table::as.data.table(identifier_values)
+        identifier_names <- paste0("ow_identifier_", seq_along(retained_positions))
+        data.table::setnames(identifiers, identifier_names)
+        group_column <- "__open_wrangler_internal_row_id_pivot_wider_group"
+        identifiers[, (group_column) := .GRP, by = identifier_names]
+        group_ids <- identifiers[[group_column]]
       }
-      result
+      group_rows <- which(!duplicated(group_ids))
+      group_count <- length(group_rows)
+      key_ordinals <- match(names_values, output_keys)
+      pair_keys <- paste0(group_ids, ":", key_ordinals)
+      if (anyDuplicated(pair_keys)) {
+        abort("invalid-view-value", "Pivot wider found duplicate identifier-and-key rows")
+      }
+
+      value_source <- snapshot[[positions[[2L]]]]
+      value_storage <- value_source
+      attributes(value_storage) <- NULL
+      restore_value_semantics <- function(storage) {
+        if (identical(value_semantics$kind, "factor")) {
+          attr(storage, "levels") <- levels(value_source)
+          attr(storage, "class") <- class(value_source)
+        } else if (identical(value_semantics$kind, "datetime")) {
+          attr(storage, "class") <- class(value_source)
+          timezone <- attr(value_source, "tzone", exact = TRUE)
+          if (!is.null(timezone)) attr(storage, "tzone") <- timezone
+        } else if (identical(value_semantics$kind, "difftime")) {
+          attr(storage, "class") <- class(value_source)
+          attr(storage, "units") <- attr(value_source, "units", exact = TRUE)
+        } else if (value_semantics$kind %in% c("date", "integer64")) {
+          attr(storage, "class") <- class(value_source)
+        }
+        storage
+      }
+      missing_storage <- function(size) {
+        result <- vector(typeof(value_storage), size)
+        if (size != 0L) {
+          if (identical(value_semantics$kind, "integer64")) {
+            result[] <- unclass(bit64::as.integer64(NA_character_))[[1L]]
+          } else if (typeof(result) == "integer") {
+            result[] <- NA_integer_
+          } else if (typeof(result) == "logical") {
+            result[] <- NA
+          } else if (typeof(result) == "character") {
+            result[] <- NA_character_
+          } else {
+            result[] <- NA_real_
+          }
+        }
+        result
+      }
+      output_values <- lapply(seq_along(output_keys), function(output_index) {
+        storage <- missing_storage(group_count)
+        matching_rows <- which(key_ordinals == output_index)
+        if (length(matching_rows) != 0L) storage[group_ids[matching_rows]] <- value_storage[matching_rows]
+        restore_value_semantics(storage)
+      })
+      if (identical(inspected$flavor, "r.data.table")) {
+        result <- snapshot[group_rows, retained_positions, with = FALSE]
+        data.table::setkeyv(result, NULL)
+        for (identifier_index in seq_along(identifier_values)) {
+          data.table::set(
+            result,
+            j = identifier_index,
+            value = identifier_values[[identifier_index]][group_rows]
+          )
+        }
+        for (output_index in seq_along(output_names)) {
+          data.table::set(result, j = output_names[[output_index]], value = output_values[[output_index]])
+        }
+      } else {
+        result <- snapshot[group_rows, retained_positions, drop = FALSE]
+        for (identifier_index in seq_along(identifier_values)) {
+          result[[identifier_index]] <- identifier_values[[identifier_index]][group_rows]
+        }
+        original_names <- names(result)
+        for (output_index in seq_along(output_names)) result[[length(result) + 1L]] <- output_values[[output_index]]
+        names(result) <- c(original_names, output_names)
+      }
+      attr(result, "row.names") <- if (group_count == 0L) integer() else c(NA_integer_, -as.integer(group_count))
     }
-    output_values <- lapply(seq_along(output_keys), function(output_index) {
-      storage <- missing_storage(group_count)
-      matching_rows <- which(key_ordinals == output_index)
-      if (length(matching_rows) != 0L) storage[group_ids[matching_rows]] <- value_storage[matching_rows]
-      restore_value_semantics(storage)
-    })
-    if (identical(inspected$flavor, "r.data.table")) {
-      result <- snapshot[group_rows, retained_positions, with = FALSE]
-      data.table::setkeyv(result, NULL)
-      for (identifier_index in seq_along(identifier_values)) {
-        data.table::set(
-          result,
-          j = identifier_index,
-          value = identifier_values[[identifier_index]][group_rows]
-        )
-      }
-      for (output_index in seq_along(output_names)) {
-        data.table::set(result, j = output_names[[output_index]], value = output_values[[output_index]])
-      }
-    } else {
-      result <- snapshot[group_rows, retained_positions, drop = FALSE]
-      for (identifier_index in seq_along(identifier_values)) {
-        result[[identifier_index]] <- identifier_values[[identifier_index]][group_rows]
-      }
-      original_names <- names(result)
-      for (output_index in seq_along(output_names)) result[[length(result) + 1L]] <- output_values[[output_index]]
-      names(result) <- c(original_names, output_names)
-    }
-    attr(result, "row.names") <- if (group_count == 0L) integer() else c(NA_integer_, -as.integer(group_count))
 
     captured <- capture_frame(result, preserve_data_table_element_names = TRUE)
     output_schema <- plain_metadata_storage(captured$descriptor$schema)
@@ -6321,7 +6809,8 @@ openwrangler_r_frame_contract <- local({
     pattern,
     group,
     new_name,
-    participation_pattern = pattern
+    participation_pattern = pattern,
+    library = "base"
   ) {
     pattern <- bounded_utf8(pattern, "pattern", 16384L)
     if (
@@ -6408,7 +6897,9 @@ openwrangler_r_frame_contract <- local({
       output <- substr(source, starts[[selected]], starts[[selected]] + lengths[[selected]] - 1L)
       bounded_operation_output(output, "Regex extraction")
     }, character(1L), USE.NAMES = FALSE)
-    if (identical(inspected$flavor, "r.data.table")) {
+    if (!identical(library, "base")) {
+      result <- library_assign(result, length(result) + 1L, list(transformed), c(names(result), new_name), library)
+    } else if (identical(inspected$flavor, "r.data.table")) {
       data.table::set(result, j = new_name, value = transformed)
     } else {
       original_names <- names(result)
@@ -6560,7 +7051,8 @@ openwrangler_r_frame_contract <- local({
     find,
     replacement,
     regex = FALSE,
-    new_name = NULL
+    new_name = NULL,
+    library = "base"
   ) {
     find <- bounded_utf8(find, "find")
     replacement <- bounded_utf8(replacement, "replacement")
@@ -6604,7 +7096,8 @@ openwrangler_r_frame_contract <- local({
       old_name,
       new_name,
       "findReplace",
-      replace_value
+      replace_value,
+      library
     )
   }
 
@@ -6754,7 +7247,8 @@ openwrangler_r_frame_contract <- local({
     old_name,
     operation,
     digits = 0,
-    new_name = NULL
+    new_name = NULL,
+    library = "base"
   ) {
     inspected <- inspect_frame(
       value,
@@ -6827,7 +7321,11 @@ openwrangler_r_frame_contract <- local({
         ceilNumber = base::ceiling(source_values)
       )
     }
-    if (in_place) {
+    if (!identical(library, "base")) {
+      if (!identical(inspected$flavor, "r.tibble")) transformed <- unname(transformed)
+      result <- library_assign(result, if (in_place) position else column_count + 1L, list(transformed),
+        if (in_place) names(result) else c(names(result), new_name), library)
+    } else if (in_place) {
       if (identical(inspected$flavor, "r.data.table")) {
         data.table::set(result, j = position, value = transformed)
       } else {
@@ -6843,23 +7341,23 @@ openwrangler_r_frame_contract <- local({
     result
   }
 
-  round_number_column_at <- function(value, position, old_name, digits = 0, new_name = NULL) {
-    transform_numeric_column_at(value, position, old_name, "roundNumber", digits, new_name)
+  round_number_column_at <- function(value, position, old_name, digits = 0, new_name = NULL, library = "base") {
+    transform_numeric_column_at(value, position, old_name, "roundNumber", digits, new_name, library)
   }
 
-  min_max_scale_column_at <- function(value, position, old_name, new_name = NULL) {
-    transform_numeric_column_at(value, position, old_name, "minMaxScale", 0, new_name)
+  min_max_scale_column_at <- function(value, position, old_name, new_name = NULL, library = "base") {
+    transform_numeric_column_at(value, position, old_name, "minMaxScale", 0, new_name, library)
   }
 
-  floor_number_column_at <- function(value, position, old_name, new_name = NULL) {
-    transform_numeric_column_at(value, position, old_name, "floorNumber", 0, new_name)
+  floor_number_column_at <- function(value, position, old_name, new_name = NULL, library = "base") {
+    transform_numeric_column_at(value, position, old_name, "floorNumber", 0, new_name, library)
   }
 
-  ceil_number_column_at <- function(value, position, old_name, new_name = NULL) {
-    transform_numeric_column_at(value, position, old_name, "ceilNumber", 0, new_name)
+  ceil_number_column_at <- function(value, position, old_name, new_name = NULL, library = "base") {
+    transform_numeric_column_at(value, position, old_name, "ceilNumber", 0, new_name, library)
   }
 
-  format_datetime_column_at <- function(value, position, old_name, format, new_name = NULL) {
+  format_datetime_column_at <- function(value, position, old_name, format, new_name = NULL, library = "base") {
     inspected <- inspect_frame(
       value,
       conservative_nullable = TRUE,
@@ -7020,7 +7518,10 @@ openwrangler_r_frame_contract <- local({
       start <- end + 1L
     }
 
-    if (in_place) {
+    if (!identical(library, "base")) {
+      target <- if (in_place) position else length(result) + 1L
+      result <- library_assign(result, target, list(transformed), if (in_place) names(result) else c(names(result), new_name), library)
+    } else if (in_place) {
       if (identical(inspected$flavor, "r.data.table")) {
         data.table::set(result, j = position, value = transformed)
       } else {
@@ -7248,7 +7749,7 @@ openwrangler_r_frame_contract <- local({
     list(column = result, addedFactorLevel = FALSE)
   }
 
-  fill_missing_column_at <- function(value, position, old_name, replacement) {
+  fill_missing_column_at <- function(value, position, old_name, replacement, library = "base") {
     inspected <- inspect_frame(
       value,
       conservative_nullable = TRUE,
@@ -7277,7 +7778,10 @@ openwrangler_r_frame_contract <- local({
     }
     filled <- fill_missing_value(value[[position]], descriptor, replacement)
     result <- isolated_snapshot(value, inspected$flavor)
-    if (identical(inspected$flavor, "r.data.table")) {
+    if (!identical(library, "base")) {
+      if (!identical(inspected$flavor, "r.tibble")) filled$column <- unname(filled$column)
+      result <- library_assign(result, position, list(filled$column), names(result), library)
+    } else if (identical(inspected$flavor, "r.data.table")) {
       data.table::set(result, j = position, value = filled$column)
     } else {
       result[[position]] <- filled$column
@@ -7290,7 +7794,8 @@ openwrangler_r_frame_contract <- local({
     position,
     old_name,
     fallback_positions,
-    fallback_names
+    fallback_names,
+    library = "base"
   ) {
     inspected <- inspect_frame(
       value,
@@ -7413,7 +7918,10 @@ openwrangler_r_frame_contract <- local({
     }
 
     result <- isolated_snapshot(value, inspected$flavor)
-    if (identical(inspected$flavor, "r.data.table")) {
+    if (!identical(library, "base")) {
+      if (!identical(inspected$flavor, "r.tibble")) result_values <- unname(result_values)
+      result <- library_assign(result, position, list(result_values), names(result), library)
+    } else if (identical(inspected$flavor, "r.data.table")) {
       data.table::set(result, j = position, value = result_values)
     } else {
       result[[position]] <- result_values
@@ -7464,7 +7972,8 @@ openwrangler_r_frame_contract <- local({
     order_directions,
     order_nulls,
     direction,
-    max_gap = NULL
+    max_gap = NULL,
+    library = "base"
   ) {
     inspected <- inspect_frame(
       value,
@@ -7532,30 +8041,45 @@ openwrangler_r_frame_contract <- local({
       max_gap <- as.integer(max_gap)
     }
 
-    row_positions <- seq_len(inspected$descriptor$shape$rows)
-    for (rule_index in rev(seq_along(order_positions))) {
-      rule_position <- order_positions[[rule_index]]
-      column <- value[[rule_position]][row_positions]
-      missing <- is.na(column)
-      missing_positions <- row_positions[missing]
-      present_positions <- which(!missing)
-      present_order <- order_present_values(
-        column[present_positions],
-        inspected$descriptor$schema[[rule_position]]$semantics,
-        identical(order_directions[[rule_index]], "desc")
-      )
-      ordered_present <- row_positions[present_positions[present_order]]
-      row_positions <- if (identical(order_nulls[[rule_index]], "first")) {
-        c(missing_positions, ordered_present)
-      } else {
-        c(ordered_present, missing_positions)
+    if (!identical(library, "base")) {
+      keys <- list()
+      directions <- integer()
+      for (index in seq_along(order_positions)) {
+        column <- value[[order_positions[[index]]]]
+        missing <- is.na(column)
+        keys <- c(keys, list(if (identical(order_nulls[[index]], "first")) !missing else missing, column))
+        directions <- c(directions, 1L, if (identical(order_directions[[index]], "desc")) -1L else 1L)
+      }
+      row_positions <- library_order(keys, directions, library, integer64_as_character)
+    } else {
+      row_positions <- seq_len(inspected$descriptor$shape$rows)
+      for (rule_index in rev(seq_along(order_positions))) {
+        rule_position <- order_positions[[rule_index]]
+        column <- value[[rule_position]][row_positions]
+        missing <- is.na(column)
+        missing_positions <- row_positions[missing]
+        present_positions <- which(!missing)
+        present_order <- order_present_values(
+          column[present_positions],
+          inspected$descriptor$schema[[rule_position]]$semantics,
+          identical(order_directions[[rule_index]], "desc")
+        )
+        ordered_present <- row_positions[present_positions[present_order]]
+        row_positions <- if (identical(order_nulls[[rule_index]], "first")) {
+          c(missing_positions, ordered_present)
+        } else {
+          c(ordered_present, missing_positions)
+        }
       }
     }
 
     result_values <- fill_directional_values(value[[position]], row_positions, direction, max_gap)
 
     result <- isolated_snapshot(value, inspected$flavor)
-    if (identical(inspected$flavor, "r.data.table")) {
+    if (!identical(library, "base")) {
+      if (!identical(inspected$flavor, "r.tibble")) result_values <- unname(result_values)
+      result <- library_assign(result, position, list(result_values), names(result), library)
+    } else if (identical(inspected$flavor, "r.data.table")) {
       data.table::set(result, j = position, value = result_values)
     } else {
       result[[position]] <- result_values
@@ -7608,7 +8132,8 @@ openwrangler_r_frame_contract <- local({
     old_name,
     coordinate_position,
     coordinate_name,
-    max_gap = NULL
+    max_gap = NULL,
+    library = "base"
   ) {
     inspected <- inspect_frame(
       value,
@@ -7669,7 +8194,9 @@ openwrangler_r_frame_contract <- local({
     if (anyDuplicated(coordinate_values)) {
       abort("invalid-view-value", "interpolation coordinates must be unique")
     }
-    row_positions <- order(coordinate_values, method = "radix")
+    row_positions <- if (identical(library, "base")) order(coordinate_values, method = "radix") else {
+      library_order(list(coordinate_values), 1L, library, integer64_as_character)
+    }
     result_values <- value[[position]]
     ordered_values <- result_values[row_positions]
     ordered_missing <- is.na(ordered_values)
@@ -7737,7 +8264,10 @@ openwrangler_r_frame_contract <- local({
     }
 
     result <- isolated_snapshot(value, inspected$flavor)
-    if (identical(inspected$flavor, "r.data.table")) {
+    if (!identical(library, "base")) {
+      if (!identical(inspected$flavor, "r.tibble")) result_values <- unname(result_values)
+      result <- library_assign(result, position, list(result_values), names(result), library)
+    } else if (identical(inspected$flavor, "r.data.table")) {
       data.table::set(result, j = position, value = result_values)
     } else {
       result[[position]] <- result_values
@@ -7751,7 +8281,8 @@ openwrangler_r_frame_contract <- local({
     old_name,
     key_positions,
     key_names,
-    statistic
+    statistic,
+    library = "base"
   ) {
     inspected <- inspect_frame(
       value,
@@ -7827,51 +8358,19 @@ openwrangler_r_frame_contract <- local({
       abort("invalid-view-query", "the grouped statistic is incompatible with the selected R column")
     }
 
-    row_positions <- seq_len(inspected$descriptor$shape$rows)
-    for (key_index in rev(seq_along(key_positions))) {
-      key_position <- key_positions[[key_index]]
-      key_values <- value[[key_position]][row_positions]
-      key_missing <- is.na(key_values)
-      present_positions <- which(!key_missing)
-      present_order <- order_present_values(
-        key_values[present_positions],
-        inspected$descriptor$schema[[key_position]]$semantics,
-        FALSE
-      )
-      row_positions <- c(row_positions[key_missing], row_positions[present_positions[present_order]])
-    }
-
     result_values <- value[[position]]
-    row_count <- length(row_positions)
-    if (row_count > 0L && anyNA(result_values)) {
-      same_group <- rep(TRUE, max(0L, row_count - 1L))
-      if (row_count > 1L) {
-        left_rows <- row_positions[-row_count]
-        right_rows <- row_positions[-1L]
-        for (key_position in key_positions) {
-          left <- value[[key_position]][left_rows]
-          right <- value[[key_position]][right_rows]
-          left_missing <- is.na(left)
-          right_missing <- is.na(right)
-          equal <- (left_missing & right_missing) | (!left_missing & !right_missing & left == right)
-          equal[is.na(equal)] <- FALSE
-          same_group <- same_group & equal
-        }
-      }
-      group_starts <- c(1L, which(!same_group) + 1L)
-      group_ends <- c(group_starts[-1L] - 1L, row_count)
-      for (group_index in seq_along(group_starts)) {
-        group_rows <- row_positions[group_starts[[group_index]]:group_ends[[group_index]]]
+    if (length(result_values) > 0L && anyNA(result_values)) {
+      evaluate_group <- function(group_rows) {
         missing_rows <- group_rows[is.na(result_values[group_rows])]
-        if (length(missing_rows) == 0L) next
+        if (length(missing_rows) == 0L) return(NULL)
         present <- result_values[group_rows[!is.na(result_values[group_rows])]]
-        if (length(present) == 0L) next
+        if (length(present) == 0L) return(NULL)
 
         fill <- NULL
         if (identical(statistic, "mean")) {
           has_positive_infinity <- any(is.infinite(present) & present > 0)
           has_negative_infinity <- any(is.infinite(present) & present < 0)
-          if (has_positive_infinity && has_negative_infinity) next
+          if (has_positive_infinity && has_negative_infinity) return(NULL)
           if (has_positive_infinity) {
             fill <- Inf
           } else if (has_negative_infinity) {
@@ -7894,7 +8393,7 @@ openwrangler_r_frame_contract <- local({
             } else {
               lower / 2 + upper / 2
             }
-            if (is.nan(midpoint)) next
+            if (is.nan(midpoint)) return(NULL)
             if (identical(target_kind, "integer")) {
               if (!is.finite(midpoint) || midpoint != floor(midpoint)) {
                 abort("invalid-view-value", "a grouped integer median is not an integer")
@@ -7910,15 +8409,25 @@ openwrangler_r_frame_contract <- local({
           candidates <- unique(present)
           counts <- tabulate(match(present, candidates), nbins = length(candidates))
           winners <- which(counts == max(counts))
-          if (length(winners) != 1L) next
+          if (length(winners) != 1L) return(NULL)
           fill <- candidates[[winners[[1L]]]]
         }
-        result_values[missing_rows] <- fill
+        list(rows = missing_rows, value = fill)
       }
+      fills <- if (identical(library, "base")) {
+        semantics <- lapply(key_positions, function(index) inspected$descriptor$schema[[index]]$semantics)
+        lapply(group_rows(value, key_positions, semantics), evaluate_group)
+      } else {
+        library_group_apply(lapply(key_positions, function(index) value[[index]]), library, evaluate_group, integer64_as_character)
+      }
+      for (fill in fills) if (!is.null(fill)) result_values[fill$rows] <- fill$value
     }
 
     result <- isolated_snapshot(value, inspected$flavor)
-    if (identical(inspected$flavor, "r.data.table")) {
+    if (!identical(library, "base")) {
+      if (!identical(inspected$flavor, "r.tibble")) result_values <- unname(result_values)
+      result <- library_assign(result, position, list(result_values), names(result), library)
+    } else if (identical(inspected$flavor, "r.data.table")) {
       data.table::set(result, j = position, value = result_values)
     } else {
       result[[position]] <- result_values
@@ -8125,7 +8634,7 @@ openwrangler_r_frame_contract <- local({
     abort("internal-error", "castColumn encountered an unknown target dtype")
   }
 
-  cast_column_at <- function(value, position, old_name, dtype, input_format = NULL) {
+  cast_column_at <- function(value, position, old_name, dtype, input_format = NULL, library = "base") {
     inspected <- inspect_frame(
       value,
       conservative_nullable = TRUE,
@@ -8185,7 +8694,9 @@ openwrangler_r_frame_contract <- local({
       "castColumn",
       input_format
     )
-    if (identical(inspected$flavor, "r.data.table")) {
+    if (!identical(library, "base")) {
+      result <- library_assign(result, position, list(converted), names(result), library)
+    } else if (identical(inspected$flavor, "r.data.table")) {
       data.table::set(result, j = position, value = converted)
       if (!identical(data.table::key(result) %||% character(), source_key)) {
         abort("internal-error", "castColumn changed a retained data.table key")
@@ -8196,7 +8707,7 @@ openwrangler_r_frame_contract <- local({
     result
   }
 
-  drop_columns_at <- function(value, positions, expected_names) {
+  drop_columns_at <- function(value, positions, expected_names, library = "base") {
     inspected <- inspect_frame(
       value,
       conservative_nullable = TRUE,
@@ -8234,7 +8745,9 @@ openwrangler_r_frame_contract <- local({
     }
 
     keep_positions <- without_values(seq_len(column_count), positions)
-    if (identical(inspected$flavor, "r.data.table")) {
+    if (!identical(library, "base")) {
+      result <- library_columns(isolated_snapshot(value, inspected$flavor), keep_positions, library)
+    } else if (identical(inspected$flavor, "r.data.table")) {
       result <- isolated_snapshot(value, inspected$flavor)[, keep_positions, with = FALSE]
     } else {
       result <- isolated_snapshot(value, inspected$flavor)
@@ -8243,7 +8756,7 @@ openwrangler_r_frame_contract <- local({
     result
   }
 
-  select_columns_at <- function(value, positions, expected_names) {
+  select_columns_at <- function(value, positions, expected_names, library = "base") {
     inspected <- inspect_frame(
       value,
       conservative_nullable = TRUE,
@@ -8278,7 +8791,9 @@ openwrangler_r_frame_contract <- local({
     }
 
     result <- isolated_snapshot(value, inspected$flavor)
-    if (identical(inspected$flavor, "r.data.table")) {
+    if (!identical(library, "base")) {
+      result <- library_columns(result, positions, library)
+    } else if (identical(inspected$flavor, "r.data.table")) {
       result <- result[, positions, with = FALSE]
     } else {
       result <- result[positions]
@@ -8569,7 +9084,8 @@ openwrangler_r_frame_contract <- local({
     aggregation_positions,
     aggregation_names,
     operations,
-    aliases
+    aliases,
+    library = "base"
   ) {
     inspected <- inspect_frame(
       value,
@@ -8664,23 +9180,40 @@ openwrangler_r_frame_contract <- local({
       }
     }
 
-    groups <- group_rows(value, key_positions, key_semantics)
-    first_rows <- if (length(groups) == 0L) integer() else {
-      vapply(groups, `[[`, integer(1L), 1L, USE.NAMES = FALSE)
+    if (!identical(library, "base")) {
+      grouped <- library_group_apply(lapply(key_positions, function(index) value[[index]]), library, function(rows) {
+        list(first = rows[[1L]], columns = lapply(seq_along(aggregation_positions), function(index) {
+          aggregate_group_column(value[[aggregation_positions[[index]]]], aggregation_semantics[[index]],
+            list(rows), operations[[index]], aliases[[index]])
+        }))
+      }, integer64_as_character)
+      first_rows <- vapply(grouped, `[[`, integer(1L), "first")
+      aggregation_columns <- lapply(seq_along(aggregation_positions), function(index) {
+        prototype <- aggregate_group_column(value[[aggregation_positions[[index]]]], aggregation_semantics[[index]],
+          list(), operations[[index]], aliases[[index]])
+        column <- prototype[rep(NA_integer_, length(grouped))]
+        for (group_index in seq_along(grouped)) column[group_index] <- grouped[[group_index]]$columns[[index]]
+        column
+      })
+    } else {
+      groups <- group_rows(value, key_positions, key_semantics)
+      first_rows <- if (length(groups) == 0L) integer() else {
+        vapply(groups, `[[`, integer(1L), 1L, USE.NAMES = FALSE)
+      }
+      aggregation_columns <- lapply(seq_along(aggregation_positions), function(index) {
+        aggregate_group_column(
+          value[[aggregation_positions[[index]]]],
+          aggregation_semantics[[index]],
+          groups,
+          operations[[index]],
+          aliases[[index]]
+        )
+      })
     }
     key_columns <- lapply(key_positions, function(position) {
       column <- value[[position]][first_rows]
       if (is.double(column) && !is.object(column)) column[is.na(column)] <- NA_real_
       column
-    })
-    aggregation_columns <- lapply(seq_along(aggregation_positions), function(index) {
-      aggregate_group_column(
-        value[[aggregation_positions[[index]]]],
-        aggregation_semantics[[index]],
-        groups,
-        operations[[index]],
-        aliases[[index]]
-      )
     })
     result_columns <- c(key_columns, aggregation_columns)
     result_names <- c(key_names, aliases)
@@ -9405,12 +9938,12 @@ openwrangler_r_frame_contract <- local({
     result
   }
 
-  nested_operation_frame <- function(value, schema, position, fields = NULL, new_names = NULL, identity_domain = 0) {
+  nested_operation_frame <- function(value, schema, position, fields = NULL, new_names = NULL, identity_domain = 0, library = "base", owned = FALSE) {
     # This shared live/generated owner receives an already checked frame. It
     # checks captured nested prototypes and materialization budgets before any
     # expanded column or row-index allocation.
     column_count <- storage_length(value)
-    frame_names <- attr(value, "names", exact = TRUE)
+    frame_names <- attr(value, "names", exact = TRUE)[seq_len(column_count)]
     if (length(schema) != column_count || position < 1L || position > column_count ||
         !identical(frame_names, vapply(plain_metadata_storage(schema), `[[`, character(1L), "name"))) {
       abort("stale-column", "nested operation source columns changed")
@@ -9463,6 +9996,20 @@ openwrangler_r_frame_contract <- local({
     has_names <- vapply(seq_along(output_semantics), function(index) charge_flat_nested_output(source, output_semantics[[index]], output_fields[[index]], output_rows, budget), logical(1L))
     # Pointer arrays and frame/name metadata belong to the same output budget.
     spend_operation_output_budget(budget, column_fixed_bytes * (column_count + if (explode) 0L else length(fields)), "nested operation frame metadata")
+    if (!identical(library, "base")) {
+      flattened <- lapply(seq_along(output_semantics), function(index) {
+        flatten_native_cells(source, output_semantics[[index]], output_fields[[index]], as.integer(output_rows), has_names[[index]])
+      })
+      result <- if (owned) value else isolated_snapshot(value, if (inherits(value, "data.table")) "r.data.table" else "r.data.frame")
+      if (!owned && inherits(value, "data.table")) {
+        for (index in seq_len(column_count)) data.table::setattr(result[[index]], "names", attr(value[[index]], "names", exact = TRUE))
+      }
+      if (explode) result <- library_rows(result, rep.int(seq_len(row_count), counts), library)
+      targets <- if (explode) position else column_count + seq_along(fields)
+      result <- library_assign(result, targets, flattened, if (explode) frame_names else c(frame_names, new_names), library)
+      if (explode) attr(result, "row.names") <- .set_row_names(output_rows)
+      return(result)
+    }
     columns <- plain_metadata_storage(value)
     if (explode) {
       indices <- rep.int(seq_len(row_count), counts)
@@ -9574,7 +10121,7 @@ openwrangler_r_frame_contract <- local({
     list(inspected = inspected, positions = positions)
   }
 
-  subset_rows_at <- function(value, inspected, row_positions) {
+  subset_rows_at <- function(value, inspected, row_positions, library = "base") {
     row_count <- inspected$descriptor$shape$rows
     if (
       !is.numeric(row_positions) ||
@@ -9589,7 +10136,9 @@ openwrangler_r_frame_contract <- local({
     }
     row_positions <- as.integer(row_positions)
     snapshot <- isolated_snapshot(value, inspected$flavor)
-    result <- if (identical(inspected$flavor, "r.data.table")) {
+    result <- if (!identical(library, "base")) {
+      library_rows(snapshot, row_positions, library)
+    } else if (identical(inspected$flavor, "r.data.table")) {
       snapshot[row_positions]
     } else {
       snapshot[row_positions, , drop = FALSE]
@@ -9597,20 +10146,20 @@ openwrangler_r_frame_contract <- local({
     list(frame = result, sourcePositions = row_positions)
   }
 
-  drop_missing_rows_at <- function(value, positions, expected_names, how = "any") {
+  drop_missing_rows_at <- function(value, positions, expected_names, how = "any", library = "base") {
     resolved <- resolve_row_operation_columns(value, positions, expected_names, "drop-missing")
     if (!is.character(how) || length(how) != 1L || is.na(how) || !how %in% c("any", "all")) {
       abort("invalid-view-query", "dropMissingRows how must be any or all")
     }
     if (length(resolved$positions) == 0L) {
-      return(subset_rows_at(value, resolved$inspected, seq_len(resolved$inspected$descriptor$shape$rows)))
+      return(subset_rows_at(value, resolved$inspected, seq_len(resolved$inspected$descriptor$shape$rows), library))
     }
     present <- lapply(resolved$positions, function(position) {
       column <- .subset2(value, position)
       if (is.list(column)) !vapply(plain_metadata_storage(column), is.null, logical(1L)) else !is.na(column)
     })
     keep <- if (identical(how, "all")) Reduce(`|`, present) else Reduce(`&`, present)
-    subset_rows_at(value, resolved$inspected, which(keep))
+    subset_rows_at(value, resolved$inspected, which(keep), library)
   }
 
   duplicate_row_mask <- function(value, keep, integer64_text) {
@@ -9644,19 +10193,23 @@ openwrangler_r_frame_contract <- local({
     }
   }
 
-  mark_duplicate_rows_at <- function(value, positions, expected_names, new_name) {
+  mark_duplicate_rows_at <- function(value, positions, expected_names, new_name, library = "base") {
     resolved <- resolve_row_operation_columns(value, positions, expected_names, "mark-duplicates")
     if (length(resolved$positions) == 0L) {
       abort("invalid-view-query", "markDuplicates requires a non-empty column selection")
     }
-    result <- clone_column_at(value, resolved$positions[[1L]], expected_names[[1L]], new_name)
+    result <- clone_column_at(value, resolved$positions[[1L]], expected_names[[1L]], new_name, library)
     compared <- if (identical(resolved$inspected$flavor, "r.data.table")) {
       result[, resolved$positions, with = FALSE]
     } else {
       result[resolved$positions]
     }
-    flags <- duplicate_row_mask(compared, "none", integer64_as_character)
-    if (identical(resolved$inspected$flavor, "r.data.table")) {
+    flags <- if (identical(library, "base")) duplicate_row_mask(compared, "none", integer64_as_character) else {
+      library_duplicates(compared, "none", library, integer64_as_character)
+    }
+    if (!identical(library, "base")) {
+      result <- library_assign(result, length(result), list(flags), names(result), library)
+    } else if (identical(resolved$inspected$flavor, "r.data.table")) {
       data.table::set(result, j = new_name, value = flags)
     } else {
       frame_attributes <- attributes(result)
@@ -9669,21 +10222,23 @@ openwrangler_r_frame_contract <- local({
     result
   }
 
-  drop_duplicate_rows_at <- function(value, positions, expected_names, keep = "first") {
+  drop_duplicate_rows_at <- function(value, positions, expected_names, keep = "first", library = "base") {
     resolved <- resolve_row_operation_columns(value, positions, expected_names, "drop-duplicates")
     if (!is.character(keep) || length(keep) != 1L || is.na(keep) || !keep %in% c("first", "last", "none")) {
       abort("invalid-view-query", "dropDuplicates keep must be first, last, or none")
     }
     if (length(resolved$positions) == 0L) {
-      return(subset_rows_at(value, resolved$inspected, seq_len(resolved$inspected$descriptor$shape$rows)))
+      return(subset_rows_at(value, resolved$inspected, seq_len(resolved$inspected$descriptor$shape$rows), library))
     }
     compared <- if (identical(resolved$inspected$flavor, "r.data.table")) {
       value[, resolved$positions, with = FALSE]
     } else {
       value[resolved$positions]
     }
-    duplicates <- duplicate_row_mask(compared, keep, integer64_as_character)
-    subset_rows_at(value, resolved$inspected, which(!duplicates))
+    duplicates <- if (identical(library, "base")) duplicate_row_mask(compared, keep, integer64_as_character) else {
+      library_duplicates(compared, keep, library, integer64_as_character)
+    }
+    subset_rows_at(value, resolved$inspected, which(!duplicates), library)
   }
 
   validate_capture <- function(capture) {
@@ -10409,12 +10964,27 @@ openwrangler_r_frame_contract <- local({
     list(rows = row_positions, totalRows = length(row_positions), resolved = resolved)
   }
 
-  transform_rows <- function(capture, view_query) {
+  transform_rows <- function(capture, view_query, library = "base") {
     validate_capture(capture)
     frame <- read_capture_frame(capture, validated = TRUE)
-    view <- view_row_positions(capture, frame, view_query, apply_sorts = TRUE)
+    view <- view_row_positions(capture, frame, view_query, apply_sorts = identical(library, "base"))
     source_positions <- if (is.null(view$rows)) seq_len(capture$descriptor$shape$rows) else view$rows
-    result <- if (identical(capture$descriptor$dataframeFlavor, "r.data.table")) {
+    result <- if (!identical(library, "base")) {
+      if (length(view$resolved$sorts) != 0L && length(source_positions) != 0L) {
+        keys <- list()
+        directions <- integer()
+        for (rule in view$resolved$sorts) {
+          column <- frame[[rule$position]][source_positions]
+          missing <- is.na(column)
+          keys <- c(keys, list(if (identical(rule$nulls, "first")) !missing else missing, column))
+          directions <- c(directions, 1L, if (identical(rule$direction, "desc")) -1L else 1L)
+        }
+        source_positions <- source_positions[library_order(keys, directions, library, integer64_as_character)]
+      }
+      selected <- library_rows(frame, source_positions, library)
+      if (inherits(selected, "data.table") && length(view$resolved$sorts) != 0L) data.table::setkeyv(selected, NULL)
+      selected
+    } else if (identical(capture$descriptor$dataframeFlavor, "r.data.table")) {
       subset <- frame[source_positions]
       if (length(view$resolved$sorts) != 0L) data.table::setkey(subset, NULL)
       subset
@@ -10860,6 +11430,7 @@ openwrangler_r_frame_contract <- local({
       maximum_operation_output_chunk_rows = maximum_operation_output_chunk_rows
     ),
     nested_operation_helpers = list(
+      isolated_snapshot = isolated_snapshot,
       nested_scalar_vector = nested_scalar_vector,
       charge_repeated_native_column = charge_repeated_native_column,
       charge_flat_nested_output = charge_flat_nested_output,
@@ -10909,6 +11480,8 @@ openwrangler_r_frame_contract <- local({
       `validate_native_atomic_values` = `validate_native_atomic_values`,
       `without_values` = `without_values`
     ),
+    require_r_library = require_r_library,
+    library_helpers_for = library_helpers_for,
     capture_frame = capture_frame,
     capture_categorical_result = capture_categorical_result,
     capture_custom_code_result = capture_custom_code_result,

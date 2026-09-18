@@ -1,10 +1,10 @@
 import * as path from "path";
 import * as vscode from "vscode";
-import type { DataBackend, SessionSource } from "../../shared/protocol";
+import { isRLibrary, type DataBackend, type RLibrary, type SessionSource } from "../../shared/protocol";
 import { isSessionSource } from "../../shared/protocolValidation";
 import { FileBackendUnavailableError, type CancellationTokenLike, type OpenWranglerBridge } from "../dataBridge";
 import { OpenWranglerPanel } from "../webviewPanel";
-import { getSetting } from "../configuration";
+import { configuredRLibrary, getSetting } from "../configuration";
 import { formatQuickPickName } from "../quickPickName";
 import { confirmedFileConfiguration } from "./confirmedFileConfigurations";
 import { detectImportOptions } from "./importOptions";
@@ -68,6 +68,7 @@ export class OpenWranglerCustomEditorProvider implements vscode.CustomReadonlyEd
     token: vscode.CancellationToken
   ): Promise<void> {
     if (token.isCancellationRequested) return;
+    const defaultLibrary = configuredRLibrary(document.uri);
     const valid = await validateFileTarget(document.uri, false, token);
     if (token.isCancellationRequested) return;
     if (!valid) {
@@ -99,7 +100,9 @@ export class OpenWranglerCustomEditorProvider implements vscode.CustomReadonlyEd
         source,
         selected.backend,
         true,
-        confirmed?.backendPreference ?? configuredBackend
+        confirmed?.backendPreference ?? configuredBackend,
+        undefined,
+        selected.backend === "r" ? (confirmed?.rLibrary ?? defaultLibrary) : undefined
       );
       handedOff = true;
     } catch (error) {
@@ -122,9 +125,11 @@ export const registerFileCommands = (
   const openSource = async (
     source: SessionSource,
     backendPreference: FileDataBackend | "auto",
-    isCurrent: () => boolean = () => true
+    isCurrent: () => boolean = () => true,
+    rLibrary?: RLibrary
   ): Promise<void> => {
     if (!isCurrent()) return;
+    const library = rLibrary ?? configuredRLibrary(source.uri ? vscode.Uri.parse(source.uri) : undefined);
     let selected: Awaited<ReturnType<typeof selectFileBridge>> | undefined;
     let handedOff = false;
     try {
@@ -136,7 +141,15 @@ export const registerFileCommands = (
       });
       if (!isCurrent()) return;
       if (!selected.isCurrent()) throw new Error("The file runtime selection changed. Open the file again.");
-      OpenWranglerPanel.create(context, selected.bridge, source, selected.backend, backendPreference);
+      OpenWranglerPanel.create(
+        context,
+        selected.bridge,
+        source,
+        selected.backend,
+        backendPreference,
+        undefined,
+        selected.backend === "r" ? library : undefined
+      );
       handedOff = true;
     } catch (error) {
       if (isCurrent()) await vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
@@ -147,7 +160,7 @@ export const registerFileCommands = (
   context.subscriptions.push(
     vscode.commands.registerCommand(
       "openWrangler.internal.openFileWithEngine",
-      async (source: unknown, backend: unknown, isCurrent: unknown) => {
+      async (source: unknown, backend: unknown, isCurrent: unknown, rLibrary: unknown) => {
         if (
           !isSessionSource(source) ||
           source.kind !== "file" ||
@@ -156,12 +169,14 @@ export const registerFileCommands = (
           !source.uri ||
           typeof backend !== "string" ||
           !fileDataBackends.has(backend as FileDataBackend) ||
-          typeof isCurrent !== "function"
+          typeof isCurrent !== "function" ||
+          (rLibrary !== undefined && (backend !== "r" || !isRLibrary(rLibrary)))
         )
           return;
         const current = isCurrent as () => boolean;
         const captured = structuredClone(source);
         const uri = vscode.Uri.parse(captured.uri as string, true);
+        const library = isRLibrary(rLibrary) ? rLibrary : configuredRLibrary(uri);
         if (
           !current() ||
           uri.scheme !== "file" ||
@@ -170,7 +185,7 @@ export const registerFileCommands = (
           !current()
         )
           return;
-        await openSource(captured, backend as FileDataBackend, current);
+        await openSource(captured, backend as FileDataBackend, current, library);
       }
     )
   );
@@ -347,7 +362,15 @@ export const registerFileCommands = (
           targetBridge = await createRBridge(source, captured.createBridge);
         } else targetBridge = captured.createBridge();
         if (disposed || !captured.isCurrent()) return;
-        OpenWranglerPanel.create(context, targetBridge, source, captured.backend, captured.backend, "editing");
+        OpenWranglerPanel.create(
+          context,
+          targetBridge,
+          source,
+          captured.backend,
+          captured.backend,
+          "editing",
+          captured.rLibrary
+        );
         handedOff = true;
       } catch (error) {
         if (!disposed) await vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
@@ -373,10 +396,11 @@ export const registerFileCommands = (
         await vscode.commands.executeCommand("openWrangler.openPath");
         return;
       }
+      const library = configuredRLibrary(target);
       if (!(await validateFileTarget(target))) return;
 
       const configuredBackend = getConfiguredBackend();
-      await openSource(fileSource(target, await detectImportOptions(target)), configuredBackend);
+      await openSource(fileSource(target, await detectImportOptions(target)), configuredBackend, undefined, library);
     })
   );
 
@@ -397,10 +421,16 @@ export const registerFileCommands = (
       if (!selected) {
         return;
       }
+      const library = configuredRLibrary(selected);
       if (!(await validateFileTarget(selected))) return;
 
       const configuredBackend = getConfiguredBackend();
-      await openSource(fileSource(selected, await detectImportOptions(selected)), configuredBackend);
+      await openSource(
+        fileSource(selected, await detectImportOptions(selected)),
+        configuredBackend,
+        undefined,
+        library
+      );
     })
   );
 };

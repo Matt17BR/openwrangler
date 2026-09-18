@@ -1,10 +1,10 @@
-import type { DataBackend, SessionMetadata } from "./protocol.generated";
+import { isRLibrary, type DataBackend, type RLibrary, type SessionMetadata } from "./protocol";
 
 type RDataframeFlavor = NonNullable<SessionMetadata["rDataframeFlavor"]>;
 
 export type RuntimeLanguage = "python" | "r";
 export type DataframeFlavor = "pandas" | "polars" | "duckdb" | "pyspark" | RDataframeFlavor;
-export type CodeDialect = "python.pandas" | "python.polars" | "python.duckdb" | "r.base";
+export type CodeDialect = "python.pandas" | "python.polars" | "python.duckdb" | `r.${RLibrary}`;
 
 export interface RuntimeIdentity {
   readonly runtimeLanguage: RuntimeLanguage;
@@ -43,23 +43,31 @@ export function runtimeIdentityForDataBackend(backend: Exclude<DataBackend, "r">
 }
 
 export function runtimeIdentityForSessionMetadata(
-  metadata: Pick<SessionMetadata, "backend" | "rDataframeFlavor">
+  metadata: Pick<SessionMetadata, "backend" | "rDataframeFlavor" | "rLibrary">
 ): RuntimeIdentity {
   if (metadata.backend !== "r") return runtimeIdentityForDataBackend(metadata.backend);
   if (!isRDataframeFlavor(metadata.rDataframeFlavor)) {
     throw new TypeError("An R session must identify its native dataframe flavor.");
   }
+  if (!isRLibrary(metadata.rLibrary)) {
+    throw new TypeError("An R session must identify its confirmed cleaning library.");
+  }
   return Object.freeze({
     runtimeLanguage: "r" as const,
     dataframeFlavor: metadata.rDataframeFlavor,
-    codeDialect: "r.base" as const
+    codeDialect: `r.${metadata.rLibrary}` as const
   });
 }
 
 export function isRuntimeIdentity(value: unknown): value is RuntimeIdentity {
   if (!hasExactKeys(value, ["runtimeLanguage", "dataframeFlavor", "codeDialect"])) return false;
   if (isRDataframeFlavor(value.dataframeFlavor)) {
-    return value.runtimeLanguage === "r" && value.codeDialect === "r.base";
+    return (
+      value.runtimeLanguage === "r" &&
+      typeof value.codeDialect === "string" &&
+      value.codeDialect.startsWith("r.") &&
+      isRLibrary(value.codeDialect.slice(2))
+    );
   }
   if (!isPythonDataframeFlavor(value.dataframeFlavor)) return false;
   const expected = runtimeIdentityForDataBackend(value.dataframeFlavor);
@@ -77,6 +85,9 @@ export function codeDialectLanguageLabel(codeDialect: CodeDialect | null): "Pyth
     case "python.duckdb":
       return "Python";
     case "r.base":
+    case "r.dplyr":
+    case "r.data.table":
+    case "r.collapse":
       return "R";
     case null:
       return undefined;

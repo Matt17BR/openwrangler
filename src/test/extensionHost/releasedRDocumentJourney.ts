@@ -301,7 +301,7 @@ export function createReleasedRDocumentJourney({
         rows
       );
       const app = await releasedRSessionApp(workbench, testing, active.sessionId, "the exact native file grid");
-      assert.equal(await app.locator('[data-session-badge="backend"]').innerText(), "R");
+      assert.equal(await app.locator('[data-session-badge="backend"]').innerText(), "BASE R");
       for (let column = 0; column < Math.min(2, names.length); column += 1) {
         const cell = app.locator(`td[data-grid-row="0"][data-grid-column="${column}"] .gridCellText`);
         await cell.waitFor({ state: "visible", timeout: 10_000 });

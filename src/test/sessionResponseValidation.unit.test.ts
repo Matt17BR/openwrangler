@@ -415,6 +415,41 @@ describe("session response validation", () => {
     for (const [expected, candidate] of cases) {
       expect(sessionOpenedResponseMismatch(request, candidate, true)).toBe(expected);
     }
+    const rResponse: SessionOpenedResponse = {
+      ...response,
+      metadata: { ...metadata, backend: "r", rLibrary: "collapse", rDataframeFlavor: "r.data.frame" }
+    };
+    expect(
+      sessionOpenedResponseMismatch({ ...request, backend: "r", rLibrary: "collapse" }, rResponse, true)
+    ).toBeUndefined();
+    expect(sessionOpenedResponseMismatch({ ...request, backend: "r", rLibrary: "dplyr" }, rResponse, true)).toContain(
+      "instead of requested library dplyr"
+    );
+    expect(sessionOpenedResponseMismatch({ ...request, backend: "r" }, rResponse)).toContain(
+      "instead of requested library base"
+    );
+    const pageRequest: SessionBoundRequest = {
+      kind: "getPage",
+      sessionId: runtimeSessionId,
+      revision: metadata.revision,
+      viewRequestId: "r-library",
+      filterModel: metadata.filterModel,
+      offset: 0,
+      limit: page.limit,
+      columnOffset: 0,
+      columnLimit: 2
+    };
+    const rPage: OpenWranglerResponse = {
+      kind: "page",
+      metadata: rResponse.metadata,
+      page,
+      revision: metadata.revision,
+      viewRequestId: "r-library"
+    };
+    expect(responseMismatch(pageRequest, rPage, runtimeSessionId, schema, rResponse.metadata)).toBeUndefined();
+    expect(responseMismatch(pageRequest, rPage, runtimeSessionId, schema, { backend: "r", rLibrary: "base" })).toBe(
+      "metadata changed the confirmed R library"
+    );
   });
 
   it("pins the selected DuckDB connection through source copies and runtime opening", () => {

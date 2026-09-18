@@ -7,12 +7,13 @@ import type {
   OpenWranglerRequest,
   OpenWranglerResponse,
   OperationKind,
+  RLibrary,
   SessionMetadata,
   SessionMode,
   SessionOpenedResponse,
   SessionSource
 } from "../shared/protocol";
-import { isDuckDBTableSource, sourceDisplayLabel } from "../shared/protocol";
+import { isDuckDBTableSource, rLibraries, rLibraryLabel, sourceDisplayLabel } from "../shared/protocol";
 import {
   isRecoveryViewContextId,
   RECOVERY_VIEW_CONTEXT_PREFIX,
@@ -25,7 +26,12 @@ import type { ViewFilterRemovalTarget } from "../shared/filterModel";
 import { encodeGridViewState, type GridViewState } from "../shared/viewState";
 import type { SessionOpenProgressStage } from "../shared/sessionOpenProgress";
 import type { BridgeRequestOptions, OpenWranglerBridge, SessionRuntimeReplacement } from "./dataBridge";
-import { getSetting, readWebviewBootstrapSettings, type WebviewBootstrapSettings } from "./configuration";
+import {
+  configuredRLibrary,
+  getSetting,
+  readWebviewBootstrapSettings,
+  type WebviewBootstrapSettings
+} from "./configuration";
 import { rememberConfirmedFileConfiguration } from "./files/confirmedFileConfigurations";
 import { ImportCancelledError, promptImportOptions } from "./files/importOptions";
 import { dependencyGuardRecoveryGuidance } from "./pythonDependencyState";
@@ -122,7 +128,8 @@ export class OpenWranglerPanel {
     private readonly backend?: DataBackend,
     openImmediately = true,
     private backendPreference: DataBackend | "auto" = backend ?? "auto",
-    private readonly initialMode?: SessionMode
+    private readonly initialMode?: SessionMode,
+    private rLibrary?: RLibrary
   ) {
     this.panel.iconPath = {
       light: vscode.Uri.joinPath(this.context.extensionUri, "media", "action-icon-light.svg"),
@@ -420,7 +427,8 @@ export class OpenWranglerPanel {
     source: SessionSource,
     backend?: DataBackend,
     backendPreference: DataBackend | "auto" = backend ?? "auto",
-    initialMode?: SessionMode
+    initialMode?: SessionMode,
+    rLibrary?: RLibrary
   ): OpenWranglerPanel {
     const panel = vscode.window.createWebviewPanel(
       "openWrangler.session",
@@ -433,12 +441,25 @@ export class OpenWranglerPanel {
       }
     );
 
-    return new OpenWranglerPanel(panel, context, bridge, source, backend, true, backendPreference, initialMode);
+    return new OpenWranglerPanel(
+      panel,
+      context,
+      bridge,
+      source,
+      backend,
+      true,
+      backendPreference,
+      initialMode,
+      rLibrary
+    );
   }
 
   async open(): Promise<void> {
     if (this.opening) return this.opening;
     if (this.disposed || this.sessionId) return;
+    if (this.backend === "r" && this.rLibrary === undefined) {
+      this.rLibrary = configuredRLibrary(this.source.uri ? vscode.Uri.parse(this.source.uri) : undefined);
+    }
     const { pageSize, columnLimit } = fetchGridBlockSize(this.backend);
     const isFile = this.source.kind === "file" || this.source.kind === "documentVariable";
     const mode =
@@ -461,6 +482,7 @@ export class OpenWranglerPanel {
         kind: "openSession",
         source: this.source,
         backend: this.backend,
+        ...(this.backend === "r" ? { rLibrary: this.rLibrary } : {}),
         pageSize,
         columnOffset: 0,
         columnLimit,
@@ -1181,7 +1203,8 @@ export class OpenWranglerPanel {
             originalSource === this.source &&
             originalSessionId === this.sessionId &&
             originalRevision === this.sessionRevision &&
-            !cancellation.token.isCancellationRequested
+            !cancellation.token.isCancellationRequested,
+          this.snapshot?.metadata.rLibrary ?? this.rLibrary
         );
         return;
       }
@@ -1221,7 +1244,7 @@ export class OpenWranglerPanel {
         this.snapshotViewContextId = undefined;
         this.latestPageViewRequestId = undefined;
         this.unpublishedAuthoritativeSnapshot = true;
-        await this.rememberConfirmedFileImportOptions(response.metadata.source, response.metadata.backend);
+        await this.rememberConfirmedFileImportOptions(response.metadata);
       }
       if (this.disposed || generation !== this.openAttemptGeneration) return;
       if (response.kind === "sessionOpened") {
@@ -1270,7 +1293,7 @@ export class OpenWranglerPanel {
     if (
       this.disposed ||
       generation !== this.openAttemptGeneration ||
-      this.source.kind !== "file" ||
+      (this.source.kind !== "file" && this.snapshot?.metadata.backend !== "r") ||
       isDuckDBTableSource(this.source) ||
       !this.sessionId ||
       !this.snapshot ||
@@ -1299,7 +1322,9 @@ export class OpenWranglerPanel {
         sessionId === this.sessionId &&
         revision === this.sessionRevision &&
         !cancellation.token.isCancellationRequested;
-      const compatibleBackends: Array<FileDataBackend | "r"> = automaticBackends(source);
+      const currentBackend = this.snapshot.metadata.backend;
+      const copy = currentBackend === "r" ? this.bridge.captureRLibraryCopy?.(sessionId, revision) : undefined;
+      const compatibleBackends: Array<FileDataBackend | "r"> = source.kind === "file" ? automaticBackends(source) : [];
       if (
         fileSourceUri(source)?.scheme === "file" &&
         /\.(csv|tsv|parquet|jsonl|ndjson|xlsx|xls)$/iu.test(source.path ?? "")
@@ -1307,33 +1332,57 @@ export class OpenWranglerPanel {
         if (!current()) return;
         if (supportsRFileExecution()) compatibleBackends.push("r");
       }
-      const currentBackend = this.snapshot.metadata.backend;
-      const backend =
-        retry?.backend ??
-        (
-          await vscode.window.showQuickPick(
-            compatibleBackends.map((candidate) => ({
-              label: backendDisplayName(candidate),
-              description:
-                candidate === currentBackend
-                  ? "Current"
-                  : candidate === "r" || currentBackend === "r"
-                    ? "Open in a separate session"
-                    : undefined,
-              detail:
-                candidate !== currentBackend && (candidate === "r" || currentBackend === "r")
-                  ? "Keeps this session and its steps. Opens the source with its own saved plan, if any."
-                  : undefined,
-              backend: candidate
-            })),
+      if (currentBackend === "r" && !compatibleBackends.includes("r")) compatibleBackends.push("r");
+      const currentLibrary = this.snapshot.metadata.rLibrary;
+      const selected = retry
+        ? { backend: retry.backend, rLibrary: undefined }
+        : await vscode.window.showQuickPick(
+            compatibleBackends.flatMap<vscode.QuickPickItem & { backend: FileDataBackend | "r"; rLibrary?: RLibrary }>(
+              (candidate) =>
+                candidate === "r"
+                  ? rLibraries.map((library) => ({
+                      label: library === "base" ? "Base R" : `R · ${rLibraryLabel(library)}`,
+                      description:
+                        currentBackend === "r" && currentLibrary === library
+                          ? "Current"
+                          : currentBackend === "r"
+                            ? "Open an editing copy"
+                            : "Open in a separate session",
+                      detail:
+                        currentBackend === "r"
+                          ? "Replays applied steps from this session's captured source. Original draft, redo and view stay in this editor."
+                          : "Opens the source with this library's saved plan, if any.",
+                      backend: candidate,
+                      rLibrary: library
+                    }))
+                  : [
+                      {
+                        label: backendDisplayName(candidate),
+                        description:
+                          candidate === currentBackend
+                            ? "Current"
+                            : currentBackend === "r"
+                              ? "Open in a separate session"
+                              : undefined,
+                        detail:
+                          candidate !== currentBackend && currentBackend === "r"
+                            ? "Keeps this session and its steps. Opens the source with its own saved plan, if any."
+                            : undefined,
+                        backend: candidate,
+                        rLibrary: undefined
+                      }
+                    ]
+            ),
             {
-              title: "Dataframe engine",
-              placeHolder: `Current engine: ${backendDisplayName(currentBackend)}`,
+              title: currentBackend === "r" ? "Open an editing copy with another R library" : "Dataframe engine",
+              placeHolder: currentLibrary
+                ? `Current R library: ${rLibraryLabel(currentLibrary)}`
+                : `Current engine: ${backendDisplayName(currentBackend)}`,
               matchOnDescription: true
             },
             cancellation.token
-          )
-        )?.backend;
+          );
+      const backend = selected?.backend;
       if (!backend || !current()) {
         return;
       }
@@ -1347,10 +1396,56 @@ export class OpenWranglerPanel {
         });
         return;
       }
-      if (backend === currentBackend) return;
+      if (backend === currentBackend && (backend !== "r" || selected?.rLibrary === currentLibrary)) return;
+
+      if (backend === "r" && currentBackend === "r" && (!copy || "kind" in copy)) {
+        await this.post(
+          copy ?? {
+            kind: "error",
+            code: "r_library_copy_unavailable",
+            message:
+              "This R session cannot open an editing copy right now. Wait for pending work to finish and try again.",
+            recoverable: true,
+            sessionId
+          }
+        );
+        return;
+      }
+      if (backend === "r" && currentBackend === "r" && copy && !("kind" in copy) && selected?.rLibrary) {
+        const targetLibrary = selected.rLibrary;
+        const confirmation = await vscode.window.showWarningMessage(
+          `Open an editing copy with ${rLibraryLabel(targetLibrary)}?`,
+          {
+            modal: true,
+            detail: `The copy starts from this session's captured source and replays ${copy.appliedStepCount} applied ${copy.appliedStepCount === 1 ? "step" : "steps"}. Your original draft, redo history and view stay here. The copy starts without a draft or redo history.${copy.rerunsCustomCode ? " Applied Custom Code runs again in the original R environment and may have side effects." : ""}${source.kind === "file" ? " Open file separately opens the file from disk with this library's saved work, if any." : ""}`
+          },
+          "Open editing copy",
+          ...(source.kind === "file" ? ["Open file separately"] : [])
+        );
+        if (confirmation === "Open file separately" && source.kind === "file" && current()) {
+          await vscode.commands.executeCommand(
+            "openWrangler.internal.openFileWithEngine",
+            source,
+            "r",
+            current,
+            targetLibrary
+          );
+          return;
+        }
+        if (confirmation !== "Open editing copy" || !current() || !copy.isCurrent()) return;
+        const copyBridge = copy.createBridge(targetLibrary);
+        OpenWranglerPanel.create(this.context, copyBridge, copy.source, "r", "r", "editing", targetLibrary);
+        return;
+      }
 
       if (backend === "r" || currentBackend === "r") {
-        await vscode.commands.executeCommand("openWrangler.internal.openFileWithEngine", source, backend, current);
+        await vscode.commands.executeCommand(
+          "openWrangler.internal.openFileWithEngine",
+          source,
+          backend,
+          current,
+          ...(selected?.rLibrary ? [selected.rLibrary] : [])
+        );
         return;
       }
       if (!this.bridge.reconfigureFileSession) return;
@@ -1429,7 +1524,7 @@ export class OpenWranglerPanel {
         this.snapshotViewContextId = undefined;
         this.latestPageViewRequestId = undefined;
         this.unpublishedAuthoritativeSnapshot = true;
-        await this.rememberConfirmedFileImportOptions(response.metadata.source, response.metadata.backend);
+        await this.rememberConfirmedFileImportOptions(response.metadata);
         if (OpenWranglerPanel.activePanel === this) this.bridge.setActiveSession?.(this.sessionId);
       } else {
         await this.postUnpublishedAuthoritativeSnapshot();
@@ -1681,7 +1776,7 @@ export class OpenWranglerPanel {
         if (OpenWranglerPanel.activePanel === this) this.bridge.setActiveSession?.(this.sessionId);
       }
       if (request.kind === "openSession" && response.kind === "sessionOpened") {
-        await this.rememberConfirmedFileImportOptions(response.metadata.source, response.metadata.backend);
+        await this.rememberConfirmedFileImportOptions(response.metadata);
       }
       if (response.kind === "page" || response.kind === "stepPreview" || response.kind === "planUpdated") {
         if (response.kind !== "page") this.invalidateRendererSynchronization();
@@ -2211,7 +2306,10 @@ export class OpenWranglerPanel {
     await this.postViewState();
   }
 
-  private async rememberConfirmedFileImportOptions(source: SessionSource, backend: DataBackend): Promise<void> {
+  private async rememberConfirmedFileImportOptions(metadata: SessionMetadata): Promise<void> {
+    const { source, backend, rLibrary } = metadata;
+    this.rLibrary = rLibrary;
+    this.panel.title = `Open Wrangler: ${sourceDisplayLabel(source)}${backend === "r" && rLibrary ? ` (${rLibrary === "base" ? "Base R" : `R · ${rLibraryLabel(rLibrary)}`})` : ""}`;
     const uri = fileSourceUri(source);
     if (!uri) return;
     try {
@@ -2220,7 +2318,8 @@ export class OpenWranglerPanel {
         uri,
         source.importOptions,
         backend,
-        this.backendPreference
+        this.backendPreference,
+        rLibrary
       );
     } catch (error) {
       try {

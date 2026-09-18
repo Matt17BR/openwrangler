@@ -46,7 +46,10 @@ describe("notebook command origin provenance", () => {
           context,
           coordinatedBridge,
           expect.objectContaining({ uri: origin.uri.toString(), duckdbConnection: { kind: "variable", name: "con" } }),
-          "duckdb"
+          "duckdb",
+          "duckdb",
+          undefined,
+          undefined
         );
       } else {
         expect(coordinator.createBridge).not.toHaveBeenCalled();
@@ -105,7 +108,10 @@ describe("notebook command origin provenance", () => {
         variableName: "spark_frame",
         uri: origin.uri.toString()
       },
-      "pyspark"
+      "pyspark",
+      "pyspark",
+      undefined,
+      undefined
     );
     expect(notebookMocks.executeCode).not.toHaveBeenCalled();
   });
@@ -132,7 +138,10 @@ describe("notebook command origin provenance", () => {
           variableName: "duck_relation",
           uri: origin.uri.toString()
         },
-        "duckdb"
+        "duckdb",
+        "duckdb",
+        undefined,
+        undefined
       );
     }
   );

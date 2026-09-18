@@ -16,7 +16,8 @@ export function responseMismatch(
   request: SessionBoundRequest,
   response: OpenWranglerResponse,
   runtimeSessionId: string,
-  confirmedPageSchema?: readonly ColumnSchema[]
+  confirmedPageSchema?: readonly ColumnSchema[],
+  confirmedRuntime?: Pick<SessionMetadata, "backend" | "rLibrary">
 ): string | undefined {
   const expectedViewRequestId = requestViewId(request);
   if (response.kind === "error") {
@@ -33,6 +34,11 @@ export function responseMismatch(
       return `cancellation did not retain view request ${expectedViewRequestId}`;
     }
     return undefined;
+  }
+  if (confirmedRuntime && "metadata" in response) {
+    if (response.metadata.backend !== confirmedRuntime.backend)
+      return "metadata changed the confirmed dataframe backend";
+    if (response.metadata.rLibrary !== confirmedRuntime.rLibrary) return "metadata changed the confirmed R library";
   }
 
   switch (request.kind) {
@@ -144,6 +150,9 @@ export function sessionOpenedResponseMismatch(
   }
   if (request.backend && response.metadata.backend !== request.backend) {
     return `metadata reported backend ${response.metadata.backend} instead of requested backend ${request.backend}`;
+  }
+  if (request.backend === "r" && response.metadata.rLibrary !== (request.rLibrary ?? "base")) {
+    return `metadata reported R library ${response.metadata.rLibrary} instead of requested library ${request.rLibrary ?? "base"}`;
   }
   if (strictIdentity && request.mode && response.metadata.mode !== request.mode) {
     return `metadata reported mode ${response.metadata.mode} instead of requested mode ${request.mode}`;

@@ -1,8 +1,8 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { formatQuickPickName } from "../quickPickName";
-import type { SessionSource } from "../../shared/protocol";
-import { runtimeRequestTimeoutMs } from "../configuration";
+import type { RLibrary, SessionSource } from "../../shared/protocol";
+import { configuredRLibrary, runtimeRequestTimeoutMs } from "../configuration";
 import { DetachedBridgeRequestError } from "../dataBridge";
 import { configuredRscriptPath, supportsRscriptExecution } from "./rscriptPath";
 import { type TextDocumentSessionOrigin, SessionCoordinator } from "../sessionCoordinator";
@@ -57,6 +57,9 @@ export function registerRDocumentCommands(
           return false;
         }
 
+        const rLibrary = configuredRLibrary(
+          resource instanceof vscode.Uri ? resource : vscode.window.activeTextEditor?.document.uri
+        );
         const document = await resolveRDocument(resource);
         if (!document) return false;
         const origin = captureRDocumentOrigin(document);
@@ -203,7 +206,7 @@ export function registerRDocumentCommands(
         const delegate = new RKernelBridge(context, transport);
         try {
           const bridge = coordinator.createBridge(delegate, origin);
-          OpenWranglerPanel.create(context, bridge, source, "r");
+          OpenWranglerPanel.create(context, bridge, source, "r", "r", undefined, rLibrary);
           return true;
         } catch (error) {
           let cleanupError: unknown;
@@ -248,6 +251,7 @@ async function routeActiveLiterateDocument(providers: LiterateDocumentVariablePr
     );
     return false;
   }
+  const rLibrary = configuredRLibrary(origin.document.uri);
   const chunk = origin.chunk;
   if (
     !chunk ||
@@ -256,7 +260,7 @@ async function routeActiveLiterateDocument(providers: LiterateDocumentVariablePr
     !chunk.enabled ||
     (chunk.language !== "python" && chunk.language !== "r")
   ) {
-    return await openExistingLiterateSessionOrExplain(origin, providers);
+    return await openExistingLiterateSessionOrExplain(origin, providers, rLibrary);
   }
 
   if (chunk.language === "r" && origin.kind === "quarto" && origin.pythonExecutionOwner !== "r") {
@@ -338,7 +342,7 @@ async function routeActiveLiterateDocument(providers: LiterateDocumentVariablePr
         return false;
       }
     }
-    return await providers.r.runLiterateChunkAndOpen(origin, rSession, code);
+    return await providers.r.runLiterateChunkAndOpen(origin, rSession, code, rLibrary);
   }
 
   return await providers.python.runLiterateChunkAndOpen(origin);
@@ -346,7 +350,8 @@ async function routeActiveLiterateDocument(providers: LiterateDocumentVariablePr
 
 async function openExistingLiterateSessionOrExplain(
   origin: LiterateDocumentOrigin,
-  providers: LiterateDocumentVariableProviders
+  providers: LiterateDocumentVariableProviders,
+  rLibrary: RLibrary
 ): Promise<boolean> {
   const hasPython = providers.python.hasAssociatedLiterateSession(origin);
   const rSession = providers.r.captureActiveSession();
@@ -370,12 +375,12 @@ async function openExistingLiterateSessionOrExplain(
     if (!isCurrentLiterateDocumentOrigin(origin) || !selected || !items.includes(selected)) return false;
     return selected.owner === "python"
       ? await providers.python.openAssociatedLiterateSession(origin)
-      : await providers.r.openLiterateSession(origin, rSession);
+      : await providers.r.openLiterateSession(origin, rSession, rLibrary);
   }
   if (hasPython) {
     return await providers.python.openAssociatedLiterateSession(origin);
   }
-  if (rSession) return await providers.r.openLiterateSession(origin, rSession);
+  if (rSession) return await providers.r.openLiterateSession(origin, rSession, rLibrary);
   const fenceHint =
     origin.chunk?.language && !origin.chunk.supportedFence
       ? " Use a backtick fence in R Markdown."

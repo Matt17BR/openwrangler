@@ -57,6 +57,7 @@ const rCloneDraftMetadata: SessionMetadata = {
   ...metadata,
   backend: "r",
   rDataframeFlavor: "r.data.frame",
+  rLibrary: "base",
   source: { kind: "rInteractiveVariable", label: "orders", variableName: "orders" },
   revision: 1,
   capabilities: { ...metadata.capabilities, lazy: false, cancel: false },

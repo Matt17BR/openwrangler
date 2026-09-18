@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { DataBackend } from "../shared/protocol";
+import { isRLibrary, rLibraries, rLibraryLabel, type DataBackend, type RLibrary } from "../shared/protocol";
 import {
   CODE_PREVIEW_MAX_UTF8_BYTES,
   canonicalizeCodePreviewText,
@@ -36,20 +36,45 @@ describe("host runtime identity", () => {
     }
   );
 
-  it.each(["r.data.frame", "r.tibble", "r.data.table"] as const)(
-    "keeps the native %s flavor separate from its R runtime",
-    (rDataframeFlavor) => {
-      const actual = runtimeIdentityForSessionMetadata({ backend: "r", rDataframeFlavor });
-      expect(actual).toEqual({ runtimeLanguage: "r", dataframeFlavor: rDataframeFlavor, codeDialect: "r.base" });
-      expect(isRuntimeIdentity(actual)).toBe(true);
+  it.each(
+    rLibraries.flatMap((rLibrary) =>
+      (["r.data.frame", "r.tibble", "r.data.table"] as const).map(
+        (rDataframeFlavor) => [rLibrary, rDataframeFlavor] as const
+      )
+    )
+  )("keeps the %s library separate from native %s frames", (rLibrary, rDataframeFlavor) => {
+    const actual = runtimeIdentityForSessionMetadata({ backend: "r", rDataframeFlavor, rLibrary });
+    expect(actual).toEqual({ runtimeLanguage: "r", dataframeFlavor: rDataframeFlavor, codeDialect: `r.${rLibrary}` });
+    expect(isRuntimeIdentity(actual)).toBe(true);
+    expect(codeDialectLanguageLabel(actual.codeDialect)).toBe("R");
+  });
+
+  it("labels only the canonical R cleaning libraries", () => {
+    expect(rLibraries.map(rLibraryLabel)).toEqual(["Base R", "dplyr", "data.table", "collapse"]);
+    for (const library of rLibraries) expect(isRLibrary(library)).toBe(true);
+    for (const invalid of [undefined, null, "", "R", "r.base", "tidyverse", "data.frame", "DPLYR", 0]) {
+      expect(isRLibrary(invalid)).toBe(false);
     }
-  );
+  });
 
   it("rejects R metadata without an exact dataframe flavor", () => {
     expect(() => runtimeIdentityForSessionMetadata({ backend: "r" })).toThrow(
       "An R session must identify its native dataframe flavor"
     );
   });
+
+  it.each([undefined, null, "", "r.base", "tidyverse", "data.frame", "DPLYR"])(
+    "rejects R metadata without a confirmed cleaning library: %j",
+    (rLibrary) => {
+      expect(() =>
+        runtimeIdentityForSessionMetadata({
+          backend: "r",
+          rDataframeFlavor: "r.tibble",
+          rLibrary: rLibrary as RLibrary
+        })
+      ).toThrow("An R session must identify its confirmed cleaning library");
+    }
+  );
 
   it("does not derive an identity from an unresolved automatic backend", () => {
     expect(() => runtimeIdentityForDataBackend("auto" as PythonDataBackend)).toThrow(
@@ -74,6 +99,9 @@ describe("host runtime identity", () => {
     { runtimeLanguage: "python", dataframeFlavor: "pandas", codeDialect: null },
     { runtimeLanguage: "r", dataframeFlavor: "r.tibble", codeDialect: null },
     { runtimeLanguage: "r", dataframeFlavor: "r.data.frame", codeDialect: "python.pandas" },
+    { runtimeLanguage: "r", dataframeFlavor: "r.data.frame", codeDialect: "r.tidyverse" },
+    { runtimeLanguage: "r", dataframeFlavor: "r.data.frame", codeDialect: "r.data.frame" },
+    { runtimeLanguage: "python", dataframeFlavor: "pandas", codeDialect: "r.dplyr" },
     { runtimeLanguage: "python", dataframeFlavor: "r.data.table", codeDialect: "r.base" },
     { runtimeLanguage: "python", dataframeFlavor: "auto", codeDialect: "python.pandas" }
   ])("rejects a malformed or inconsistent identity: %j", (candidate) => {
@@ -86,7 +114,11 @@ describe("private Code Preview messages", () => {
   const bufferId = "abcdefab-cdef-4abc-8def-abcdefabcdef";
   const polarsIdentity = runtimeIdentityForDataBackend("polars");
   const pysparkIdentity = runtimeIdentityForDataBackend("pyspark");
-  const rIdentity = runtimeIdentityForSessionMetadata({ backend: "r", rDataframeFlavor: "r.tibble" });
+  const rIdentity = runtimeIdentityForSessionMetadata({
+    backend: "r",
+    rDataframeFlavor: "r.tibble",
+    rLibrary: "dplyr"
+  });
 
   it.each([
     [null, true],

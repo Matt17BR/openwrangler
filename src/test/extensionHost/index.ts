@@ -1816,13 +1816,15 @@ const previewReleasedRClone = createReleasedRClonePreview({
 
 const exerciseReleasedRCloneEditingLifecycle = createReleasedRCloneEditingJourney({
   arrangePackagedProductSidebar,
+  disposePackagedSessionPanel,
   previewReleasedRClone,
   recordAcceptanceProgress,
   releasedRCloneFailureSnapshot,
   releasedRCloneMutationRevisionAdvanced,
   releasedRSessionApp,
   waitFor,
-  waitForReleasedRCloneState
+  waitForReleasedRCloneState,
+  waitForVisibleEditorDialog
 });
 
 const { releasedRVisibleRows, releasedRFirstVisibleRow } = createReleasedRPageBoundary({ GRID_COLUMN_WINDOW });
@@ -1960,7 +1962,7 @@ async function exerciseReleasedREditingJourney(
     opened.metadata.schema.slice(0, 4).map((column) => column.name),
     ["row_id", "group", "score", "label"]
   );
-  assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "R");
+  assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "BASE R");
   assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "EDITING");
   await app.getByRole("button", { name: "Add step", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
   await app.getByRole("button", { name: "Export", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
