@@ -17,13 +17,14 @@ export const REMOTE_JUPYTER_DIRECT_DEPENDENCIES = Object.freeze([
   "polars"
 ]);
 export const REMOTE_R_JUPYTER_DIRECT_DEPENDENCIES = Object.freeze(["jupyter-server"]);
-export const REMOTE_JUPYTER_MINIMUM_SAFE_SERVER_VERSION = "2.20.0";
+export const REMOTE_JUPYTER_MINIMUM_SAFE_SERVER_VERSION = "2.21.0";
 export const REMOTE_JUPYTER_LOCK_TOOL_VERSION = "0.11.32";
 export const REMOTE_JUPYTER_LOCK_PYTHON_VERSION = "3.12";
 export const REMOTE_JUPYTER_LOCK_PLATFORM = "x86_64-manylinux_2_28";
 export const REMOTE_JUPYTER_LOCK_EXCLUDE_NEWER = "2026-07-27T00:00:00Z";
 export const REMOTE_JUPYTER_FSSPEC_EXCLUDE_NEWER = "fsspec=2026-07-29T00:00:00Z";
 const TORNADO_SECURITY_CUTOFF = "tornado=2026-09-07T00:00:00Z";
+const JUPYTER_SERVER_SECURITY_CUTOFF = "jupyter-server=2026-08-28T00:00:00Z";
 
 const PACKAGE_NAME = /^[a-z][a-z0-9-]*$/u;
 const PACKAGE_VERSION = /^[0-9]+(?:[._+-][0-9A-Za-z]+)*$/u;
@@ -214,6 +215,8 @@ function fixtureCompileArguments(inputPath, outputPath) {
     REMOTE_JUPYTER_LOCK_EXCLUDE_NEWER,
     "--exclude-newer-package",
     TORNADO_SECURITY_CUTOFF,
+    "--exclude-newer-package",
+    JUPYTER_SERVER_SECURITY_CUTOFF,
     "--no-cache",
     "--no-config",
     "--no-progress",
