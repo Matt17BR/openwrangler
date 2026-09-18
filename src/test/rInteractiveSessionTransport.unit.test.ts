@@ -598,7 +598,8 @@ describe("interactive R session transport", () => {
     }
   });
 
-  it.for([false, true])(
+  // Windows rejects this open-target overwrite; rPrivateArtifactBoundary.unit.test.ts owns that refusal.
+  it.skipIf(process.platform === "win32").for([false, true])(
     "retains notification cleanup ownership after replacement (unsafe earlier path: %s)",
     async (unsafeEarlierPath, context) => {
       const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-notification-read-unit-"));

@@ -357,24 +357,46 @@ describe("R private artifact boundary", () => {
     ["during read", true],
     ["after final stat", true]
   ] as const)(
-    "rejects atomic replacement %s without changing immutable ownership (replaceable: %s)",
+    "handles an attempted atomic replacement %s without changing immutable ownership (replaceable: %s)",
     async (stage, allowAtomicReplacement) => {
       const artifactPath = resolve(directory, "notification.json");
       const nextPath = resolve(directory, "notification.json.tmp");
       await writeFile(artifactPath, "owned", { mode: 0o600 });
       await writeFile(nextPath, "newer", { mode: 0o644 });
+      const original = await lstat(artifactPath, { bigint: true });
+      const candidate = await lstat(nextPath, { bigint: true });
       const base = createNodeRPrivateArtifactOperations();
       let renamed = false;
+      let renameRefusal: NodeJS.ErrnoException | undefined;
       let closed = 0;
       const replace = async () => {
-        await rename(nextPath, artifactPath);
-        renamed = true;
+        try {
+          await rename(nextPath, artifactPath);
+          renamed = true;
+        } catch (error) {
+          const refusal = error as NodeJS.ErrnoException;
+          if (
+            process.platform !== "win32" ||
+            (refusal.code !== "EPERM" && refusal.code !== "EBUSY") ||
+            refusal.syscall !== "rename" ||
+            refusal.path !== nextPath ||
+            (refusal as NodeJS.ErrnoException & { dest?: string }).dest !== artifactPath
+          )
+            throw error;
+          renameRefusal = refusal;
+        }
       };
       const operations: RPrivateArtifactOperations = {
         ...base,
         async open(filePath, flags) {
           const handle = await base.open(filePath, flags);
-          if (stage === "after open") await replace();
+          try {
+            if (stage === "after open") await replace();
+          } catch (error) {
+            closed += 1;
+            await handle.close();
+            throw error;
+          }
           let stats = 0;
           return {
             async stat(options) {
@@ -386,7 +408,7 @@ describe("R private artifact boundary", () => {
             },
             async read(...args) {
               const result = await handle.read(...args);
-              if (stage === "during read" && !renamed) await replace();
+              if (stage === "during read" && !renamed && !renameRefusal) await replace();
               return result;
             },
             truncate: (length) => handle.truncate(length),
@@ -397,18 +419,42 @@ describe("R private artifact boundary", () => {
           };
         }
       };
-      const error = await captureFailure(() =>
-        readRPrivateArtifact({
-          filePath: artifactPath,
-          maximumBytes: 5,
-          label: "test R notification",
-          allowAtomicReplacement,
-          operations
-        })
+      const result = await readRPrivateArtifact({
+        filePath: artifactPath,
+        maximumBytes: 5,
+        label: "test R notification",
+        allowAtomicReplacement,
+        operations
+      }).then(
+        (contents) => ({ contents, error: undefined }),
+        (error: unknown) => ({ contents: undefined, error })
       );
-      expect(renamed).toBe(true);
       expect(closed).toBe(1);
-      expect(rPrivateArtifactFailureRequiresContainerPreservation(error)).toBe(!allowAtomicReplacement);
+      if (renameRefusal) {
+        // MoveFileEx cannot replace this open target. The unchanged read remains valid.
+        expect(renamed).toBe(false);
+        expect(result.error, String(renameRefusal)).toBeUndefined();
+        expect(result.contents).toEqual(Buffer.from("owned"));
+        for (const [filePath, identity, contents] of [
+          [artifactPath, original, "owned"],
+          [nextPath, candidate, "newer"]
+        ] as const) {
+          expect(await lstat(filePath, { bigint: true })).toMatchObject({
+            dev: identity.dev,
+            ino: identity.ino,
+            nlink: identity.nlink
+          });
+          expect(await readFile(filePath, "utf8")).toBe(contents);
+        }
+        await rename(nextPath, artifactPath);
+      } else {
+        expect(renamed, String(result.error)).toBe(true);
+        expect(result.error).toBeInstanceOf(Error);
+        expect(result.contents).toBeUndefined();
+        expect(rPrivateArtifactFailureRequiresContainerPreservation(result.error)).toBe(!allowAtomicReplacement);
+      }
+      expect(await lstat(artifactPath, { bigint: true })).toMatchObject({ dev: candidate.dev, ino: candidate.ino });
+      await expect(lstat(nextPath)).rejects.toMatchObject({ code: "ENOENT" });
       expect(
         await readRPrivateArtifact({
           filePath: artifactPath,
@@ -432,6 +478,7 @@ describe("R private artifact boundary", () => {
     if (replacement === "changed descriptor mode" && process.platform === "win32")
       context.skip("POSIX file-mode transition");
     const artifactPath = resolve(directory, "notification.json");
+    const retainedPath = resolve(directory, "retired");
     const nextPath = resolve(directory, "next");
     const otherPath = resolve(directory, "other");
     await writeFile(artifactPath, "owned", { mode: 0o600 });
@@ -449,6 +496,7 @@ describe("R private artifact boundary", () => {
     else await writeFile(nextPath, "newer", { mode: 0o600 });
     const base = createNodeRPrivateArtifactOperations();
     let swapped = false;
+    let changedOwnerObserved = false;
     const operations: RPrivateArtifactOperations = {
       ...base,
       async open(filePath, flags) {
@@ -467,17 +515,20 @@ describe("R private artifact boundary", () => {
       },
       async lstat(filePath) {
         if (filePath === artifactPath && !swapped) {
-          swapped = true;
           if (replacement === "changed descriptor mode") await chmod(artifactPath, 0o644);
-          if (replacement === "retained old inode" || replacement === "directory")
-            await rename(artifactPath, resolve(directory, "retired"));
+          if (process.platform === "win32" || replacement === "retained old inode" || replacement === "directory")
+            await rename(artifactPath, retainedPath);
           await rename(nextPath, artifactPath);
+          swapped = true;
         }
         const metadata = await base.lstat(filePath);
         if (replacement !== "changed owner") return metadata;
         return new Proxy(metadata, {
           get(target, property) {
-            if (property === "uid") return target.uid + 1n;
+            if (property === "uid") {
+              changedOwnerObserved = true;
+              return target.uid + 1n;
+            }
             const value = Reflect.get(target, property, target) as unknown;
             return typeof value === "function" ? value.bind(target) : value;
           }
@@ -496,9 +547,14 @@ describe("R private artifact boundary", () => {
     expect(swapped).toBe(true);
     if (replacement === "unreadable retired descriptor")
       expect((error as Error).cause).toEqual(new Error("retired descriptor stat failed"));
+    if (replacement === "changed owner") expect(changedOwnerObserved).toBe(true);
+    if (replacement === "symlink" || replacement === "hardlink" || replacement === "directory")
+      expect((error as Error).message).toBe("Open Wrangler rejected an invalid test R notification artifact.");
     expect(rPrivateArtifactFailureRequiresContainerPreservation(error)).toBe(true);
     expect(await lstat(artifactPath)).toBeDefined();
     expect(await readFile(otherPath, "utf8")).toBe("other");
+    if (process.platform === "win32" || replacement === "retained old inode" || replacement === "directory")
+      expect(await readFile(retainedPath, "utf8")).toBe("owned");
   });
 
   it.skipIf(process.platform === "win32").each([false, true])(
