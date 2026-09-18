@@ -39,10 +39,11 @@ Explode List and Extract Struct Fields.
 
 ## Released-product comparison
 
-The latest reviewed [dated report](performance/2026-09-16-released-products/review.md) compares released Open Wrangler 2.5.0
-and Microsoft Data Wrangler through public interfaces in an isolated local VS Code instance. It records paired Pandas
-and Polars routes, separate Open Wrangler engine observations, and output differences. Before 2.6 and every later
-stable release, rerun the advertised comparison on the final integrated product and refresh public screenshots under
+The latest reviewed [dated report](performance/2026-09-17-release-preparation/review.md) measures the development package
+prepared for Open Wrangler 2.6 and Microsoft Data Wrangler through public interfaces in an isolated local VS Code
+instance. It records paired Pandas and Polars routes, separate Open Wrangler engine observations, failures and output
+differences. It precedes immutable release qualification. For every stable release, rerun the advertised comparison
+on the final integrated product and refresh public screenshots under
 the [stable-release checklist](releasing.md#stable-release-media-and-comparison-checklist). Preserve earlier dated
 reports and update this pointer when the new results are reviewed and merged. The retired
 [2.4.0 attempt](https://github.com/Matt17BR/openwrangler/issues/1419) remains incomplete; its automation is not being resumed.
@@ -56,9 +57,9 @@ demonstrating a task advantage. At narrow widths, open native sidebars and Code 
 scrolling or panel resizing.
 
 The corrections, wide and narrow workflow checks, keyboard/accessibility checks and earlier media landed in
-[#1539](https://github.com/Matt17BR/openwrangler/pull/1539). The remaining delivery check uses
-[#1554](https://github.com/Matt17BR/openwrangler/issues/1554) to review the final product's public images and captions.
-The design issue retains the observations and tradeoffs; it does not require another redesign or duplicate capture.
+[#1539](https://github.com/Matt17BR/openwrangler/pull/1539). The refreshed public images and reviewed captions landed in
+[#1574](https://github.com/Matt17BR/openwrangler/pull/1574), completing the selected design issue. The issue retains the
+observations and tradeoffs; it does not require another redesign or duplicate capture.
 
 A materially different [future visual direction](https://github.com/Matt17BR/openwrangler/milestone/17) remains
 unselected. The implemented improvements do not establish that direction or authorize a major-version bump.

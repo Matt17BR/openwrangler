@@ -1,0 +1,5659 @@
+{
+  "collectionDate": "2026-09-18",
+  "status": "All six planned validations and 18 original fixed attempts completed on the final integrated development package. Each fresh editor exited naturally with status zero. Earlier cohorts remain separate; no replacement attempts.",
+  "products": {
+    "ow": {
+      "version": "2.6.0 development package",
+      "source": "7a72f24fb019eed9d55673e1f53b870dc7ede12d",
+      "vsixSha256": "ab5a38ba5ede9866fa6234910acae4eaa3e8902a9a7941f01777615143f2ddd6",
+      "releaseQualifiedAtCollection": false,
+      "productionEquivalentTo": "231ed13939cf350d72ce28913b15da03ff77b11a",
+      "equivalence": "Only two unit-test files differ; production sources are unchanged."
+    },
+    "dw": {
+      "version": "1.24.2",
+      "reportedFileBackend": "Pandas"
+    }
+  },
+  "environment": {
+    "editor": "VS Code 1.137.0",
+    "editorCommit": "645f29cc3176500b4b5762ba887cf2a7f0ffdf2c",
+    "os": "Ubuntu 26.04.1 LTS",
+    "kernel": "Linux 7.0.0-31-generic x86_64",
+    "cpu": "Intel Core Ultra 9 185H",
+    "logicalCpus": 22,
+    "ramKiB": 63963960,
+    "display": "private Xvfb, software rendering",
+    "viewport": [1280, 900],
+    "pandas": "3.0.5",
+    "polars": "1.44.1",
+    "jupyterExtension": "2025.9.1",
+    "pythonExtension": "2026.4.0",
+    "python": "3.12.14",
+    "pyarrow": "25.0.1",
+    "power": {
+      "start": {
+        "battery": "36",
+        "status": "Charging",
+        "AC": "1",
+        "EPP": "power"
+      },
+      "end": {
+        "battery": "40",
+        "status": "Charging",
+        "AC": "1",
+        "EPP": "power"
+      },
+      "interpretation": "AC connected and charging from 36% to 40%, with energy performance preference power. The earlier September 18 file cohort ran on battery; September 17 power was not recorded. This is not a controlled old/new performance comparison."
+    }
+  },
+  "inputs": [
+    {
+      "file": "data/six-columns-100000.csv",
+      "rows": 100000,
+      "bytes": 5294554,
+      "sha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+      "missing_by_column": {
+        "id": 0,
+        "amount": 10000,
+        "category": 5883,
+        "active": 5264,
+        "day": 0,
+        "event_at": 0
+      },
+      "amount_profile": {
+        "present": 90000,
+        "missing": 10000,
+        "min": 1,
+        "max": 999,
+        "sum": 45000000,
+        "mean": 500,
+        "distinct_present": 900
+      },
+      "drop_missing_amount": {
+        "rows": 90000,
+        "retained_id_sum": 4500000000,
+        "retained_id_rule": "ascending i in range(N) where i % 10 != 0",
+        "amount_missing": 0,
+        "other_cells": "unchanged at each retained id",
+        "category_missing": 5294,
+        "active_missing": 4737
+      },
+      "verification": "every serialized cell, order, null counts and amount aggregates checked"
+    },
+    {
+      "file": "data/six-columns-1000000.csv",
+      "rows": 1000000,
+      "bytes": 53945240,
+      "sha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+      "missing_by_column": {
+        "id": 0,
+        "amount": 100000,
+        "category": 58824,
+        "active": 52632,
+        "day": 0,
+        "event_at": 0
+      },
+      "amount_profile": {
+        "present": 900000,
+        "missing": 100000,
+        "min": 1,
+        "max": 999,
+        "sum": 450000000,
+        "mean": 500,
+        "distinct_present": 900
+      },
+      "drop_missing_amount": {
+        "rows": 900000,
+        "retained_id_sum": 450000000000,
+        "retained_id_rule": "ascending i in range(N) where i % 10 != 0",
+        "amount_missing": 0,
+        "other_cells": "unchanged at each retained id",
+        "category_missing": 52941,
+        "active_missing": 47368
+      },
+      "verification": "every serialized cell, order, null counts and amount aggregates checked"
+    }
+  ],
+  "method": {
+    "clock": "Public final Open to visible result and confirming row selection, milliseconds. openStart retains the original monotonic controller reading; endpoint fields ending in Ms are elapsed intervals.",
+    "samplesPerRouteAndSize": 3,
+    "budgetMs": 60000,
+    "pollMs": 100,
+    "automaticRetries": 0,
+    "editorLifecycle": "One first Open per fresh private VS Code process, same prepared profile; native public closing and natural owned process shutdown between attempts.",
+    "preparationExcluded": "Installation, Trust, interpreter selection, backend settings before launch, editor startup and file-dialog selection. CSV hashing warms the file cache; no explicit runtime warmup. A product may begin runtime preparation before final Open.",
+    "productOrderByRepetition": [
+      ["ow-pandas", "dw", "ow-polars"],
+      ["dw", "ow-polars", "ow-pandas"],
+      ["ow-polars", "ow-pandas", "dw"]
+    ],
+    "sizeOrder": [100000, 1000000],
+    "visibleHeaderColumns": ["id", "amount", "category"],
+    "collectorSha256": {
+      "launch.py": "d4d1cd806ae8a037d8839c8d400d3785b9db50e249584aca0b411d7ca83a1b4f",
+      "control.cjs": "d9eaeeb16ab3bcad1db6bb3e0c8c17969a097c3c561b640b341314c5591c8570",
+      "public-controls.cjs": "39b4f63a37c7da6452cedfce941f7b43a757b058755d3e9fed79cc3b01755da9",
+      "measure-file-profiles.cjs": "7a80849f9a0b5eae3c5f70b966c9ef52a03e71613b0b7b6f1b05c1ec8bc069b8",
+      "measure-notebook.cjs": "1412483ef414e9442fa7ad15cc3561968e76cec5be568f0e265fea561d1552e6",
+      "r-ui-helpers.cjs": "93cb11e43011566111e31d587041e4e93b4e9519412b53a1a3d968a375b986f6",
+      "spark-ui-helpers.cjs": "ce45cf3d5ab1d6813327248e7402f2f0e559247b2d9a93e21f7c6cf491db111d",
+      "measure-native-open.cjs": "d6af83bb1fea34a383cf9ebdd1dd7927350ddce9581bc02a64ed45b42051d419"
+    },
+    "observedAvailability": "Profiles may compute automatically while opening. Selected-panel reveal and other recorded layout actions remain inside the clock; statistics below the fold are not all simultaneously visible.",
+    "scope": "Only this complete final-source file cohort contributes to the primary file table. Both prior full cohorts, the selective refresh and the old-package diagnostic remain separate. Three attempts per route and size do not establish tail latency, a general speed ranking or a controlled old/new speedup; polling intervals are not accuracy bounds.",
+    "fixedId": "One-based position in the original frozen fixed schedule; route, rows and sample retain the original key."
+  },
+  "setup": "Workspace Trust and each product first-use runtime selection completed through public UI using a separate setup CSV. The measured attempts each used a fresh VS Code process with that prepared profile. Data Wrangler public setup identified Pandas 3.0.5. Installation, setup openings and runtime selection are excluded from the measurement table.",
+  "validations": [
+    {
+      "validationId": "01",
+      "route": "ow-pandas",
+      "rows": 100000,
+      "sample": "validation",
+      "startedUtc": "2026-09-18T10:10:19.089Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 2740.658372,
+        "amount": 2741.0139690000005,
+        "category": 2741.146673
+      },
+      "layoutActions": [
+        {
+          "action": "Open Column profiles",
+          "ms": 3118.720682
+        }
+      ],
+      "beforeScreenshot": "ow-pandas-100000-validation-1789726219089-before.png",
+      "openStart": 3861.577649,
+      "gridReadyMs": 2455.4191680000004,
+      "identity": {
+        "column": 2,
+        "firstRow": 2,
+        "nextRow": 3,
+        "firstValue": 0,
+        "nextValue": 1
+      },
+      "threeHeadersReadyMs": 2741.1573290000006,
+      "interactiveMs": 2756.77884,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "selectionStartMs": 2763.9797829999998,
+      "firstAmountStatsMs": 3153.606372,
+      "completeAmountStatsMs": 3153.6155550000003,
+      "selectionToFirstStatsMs": 389.6265890000004,
+      "selectionToCompleteStatsMs": 389.63577200000054,
+      "cachedSwitchStartMs": 3326.6944920000005,
+      "cachedSwitchReadyMs": 3518.039181,
+      "cachedSwitchMs": 191.34468899999956,
+      "ok": true,
+      "afterScreenshot": "ow-pandas-100000-validation-1789726219089-after.png",
+      "finalSidebars": {
+        "primary": false,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "naturalShutdown": true,
+      "ownedProcessesSettled": true,
+      "settlement": {
+        "editorExit": 0,
+        "editorForcedCleanup": false,
+        "artifactUnchanged": true,
+        "remainingOwnedPids": [],
+        "sourceFilesUnchanged": [
+          {
+            "file": "six-columns-100000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "six-columns-1000000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "ow-pandas-100000-validation.csv",
+            "unchanged": true
+          }
+        ],
+        "exitRequestedAt": "2026-09-18T10:10:25.458Z",
+        "cdpDisconnectedAt": "2026-09-18T10:10:25.811Z"
+      }
+    },
+    {
+      "validationId": "02",
+      "route": "dw",
+      "rows": 100000,
+      "sample": "validation",
+      "startedUtc": "2026-09-18T10:10:27.790Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 3849.504127,
+        "amount": 3849.698244,
+        "category": 3849.8142589999998
+      },
+      "layoutActions": [
+        {
+          "action": "Hide bottom panel",
+          "ms": 4087.852433
+        }
+      ],
+      "beforeScreenshot": "dw-100000-validation-1789726227791-before.png",
+      "openStart": 2799.961738,
+      "gridReadyMs": 3582.674411,
+      "identity": {
+        "column": 2,
+        "firstRow": 2,
+        "nextRow": 3,
+        "firstValue": 0,
+        "nextValue": 1
+      },
+      "threeHeadersReadyMs": 3849.8259470000003,
+      "interactiveMs": 3861.537787,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "selectionStartMs": 3875.2695519999997,
+      "firstAmountStatsMs": 4254.505471,
+      "completeAmountStatsMs": 4254.520537,
+      "selectionToFirstStatsMs": 379.23591900000065,
+      "selectionToCompleteStatsMs": 379.2509850000006,
+      "cachedSwitchStartMs": 4468.295065,
+      "cachedSwitchReadyMs": 4638.7478280000005,
+      "cachedSwitchMs": 170.45276300000023,
+      "ok": true,
+      "afterScreenshot": "dw-100000-validation-1789726227791-after.png",
+      "finalSidebars": {
+        "primary": true,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "naturalShutdown": true,
+      "ownedProcessesSettled": true,
+      "settlement": {
+        "editorExit": 0,
+        "editorForcedCleanup": false,
+        "artifactUnchanged": true,
+        "remainingOwnedPids": [],
+        "sourceFilesUnchanged": [
+          {
+            "file": "six-columns-100000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "six-columns-1000000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "dw-100000-validation.csv",
+            "unchanged": true
+          }
+        ],
+        "exitRequestedAt": "2026-09-18T10:10:34.440Z",
+        "cdpDisconnectedAt": "2026-09-18T10:10:34.790Z"
+      }
+    },
+    {
+      "validationId": "03",
+      "route": "ow-polars",
+      "rows": 100000,
+      "sample": "validation",
+      "startedUtc": "2026-09-18T10:10:36.869Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 1961.409662,
+        "amount": 1961.5203089999995,
+        "category": 1961.6488069999996
+      },
+      "layoutActions": [
+        {
+          "action": "Open Column profiles",
+          "ms": 2333.013169
+        }
+      ],
+      "beforeScreenshot": "ow-polars-100000-validation-1789726236869-before.png",
+      "openStart": 3123.20787,
+      "gridReadyMs": 1670.723121,
+      "identity": {
+        "column": 2,
+        "firstRow": 2,
+        "nextRow": 3,
+        "firstValue": 0,
+        "nextValue": 1
+      },
+      "threeHeadersReadyMs": 1961.6655929999997,
+      "interactiveMs": 1975.7265740000003,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "selectionStartMs": 1981.7866919999997,
+      "firstAmountStatsMs": 2370.3482489999997,
+      "completeAmountStatsMs": 2370.365001,
+      "selectionToFirstStatsMs": 388.561557,
+      "selectionToCompleteStatsMs": 388.57830900000044,
+      "cachedSwitchStartMs": 2530.3982379999998,
+      "cachedSwitchReadyMs": 2707.9340999999995,
+      "cachedSwitchMs": 177.53586199999972,
+      "ok": true,
+      "afterScreenshot": "ow-polars-100000-validation-1789726236869-after.png",
+      "finalSidebars": {
+        "primary": false,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "naturalShutdown": true,
+      "ownedProcessesSettled": true,
+      "settlement": {
+        "editorExit": 0,
+        "editorForcedCleanup": false,
+        "artifactUnchanged": true,
+        "remainingOwnedPids": [],
+        "sourceFilesUnchanged": [
+          {
+            "file": "six-columns-100000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "six-columns-1000000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "ow-polars-100000-validation.csv",
+            "unchanged": true
+          }
+        ],
+        "exitRequestedAt": "2026-09-18T10:10:41.918Z",
+        "cdpDisconnectedAt": "2026-09-18T10:10:42.163Z"
+      }
+    },
+    {
+      "validationId": "04",
+      "route": "ow-pandas",
+      "rows": 1000000,
+      "sample": "validation",
+      "startedUtc": "2026-09-18T10:10:44.066Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 3506.757359,
+        "amount": 3506.963699,
+        "category": 3507.1340929999997
+      },
+      "layoutActions": [
+        {
+          "action": "Open Column profiles",
+          "ms": 3908.530638
+        }
+      ],
+      "beforeScreenshot": "ow-pandas-1000000-validation-1789726244066-before.png",
+      "openStart": 3097.919009,
+      "gridReadyMs": 2998.552882,
+      "identity": {
+        "column": 2,
+        "firstRow": 2,
+        "nextRow": 3,
+        "firstValue": 0,
+        "nextValue": 1
+      },
+      "threeHeadersReadyMs": 3507.1498379999994,
+      "interactiveMs": 3530.0820669999994,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "selectionStartMs": 3537.516195,
+      "firstAmountStatsMs": 3948.444219,
+      "completeAmountStatsMs": 3948.4586979999995,
+      "selectionToFirstStatsMs": 410.9280239999998,
+      "selectionToCompleteStatsMs": 410.9425029999993,
+      "cachedSwitchStartMs": 4113.740405,
+      "cachedSwitchReadyMs": 4267.455019,
+      "cachedSwitchMs": 153.71461400000044,
+      "ok": true,
+      "afterScreenshot": "ow-pandas-1000000-validation-1789726244066-after.png",
+      "finalSidebars": {
+        "primary": false,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "naturalShutdown": true,
+      "ownedProcessesSettled": true,
+      "settlement": {
+        "editorExit": 0,
+        "editorForcedCleanup": false,
+        "artifactUnchanged": true,
+        "remainingOwnedPids": [],
+        "sourceFilesUnchanged": [
+          {
+            "file": "six-columns-100000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "six-columns-1000000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "ow-pandas-1000000-validation.csv",
+            "unchanged": true
+          }
+        ],
+        "exitRequestedAt": "2026-09-18T10:10:50.694Z",
+        "cdpDisconnectedAt": "2026-09-18T10:10:51.348Z"
+      }
+    },
+    {
+      "validationId": "05",
+      "route": "dw",
+      "rows": 1000000,
+      "sample": "validation",
+      "startedUtc": "2026-09-18T10:10:53.487Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 4702.0309290000005,
+        "amount": 4702.264557,
+        "category": 4702.413535
+      },
+      "layoutActions": [
+        {
+          "action": "Hide bottom panel",
+          "ms": 4379.492741
+        }
+      ],
+      "beforeScreenshot": "dw-1000000-validation-1789726253487-before.png",
+      "openStart": 3224.715828,
+      "gridReadyMs": 3885.8134750000004,
+      "identity": {
+        "column": 2,
+        "firstRow": 2,
+        "nextRow": 3,
+        "firstValue": 0,
+        "nextValue": 1
+      },
+      "interactiveMs": 4163.063866,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "selectionStartMs": 4181.311739000001,
+      "firstAmountStatsMs": 4591.24271,
+      "completeAmountStatsMs": 4591.246126,
+      "threeHeadersReadyMs": 4702.440243000001,
+      "selectionToFirstStatsMs": 409.9309709999998,
+      "selectionToCompleteStatsMs": 409.93438699999933,
+      "cachedSwitchStartMs": 4960.498707000001,
+      "cachedSwitchReadyMs": 5162.8782169999995,
+      "cachedSwitchMs": 202.37950999999885,
+      "ok": true,
+      "afterScreenshot": "dw-1000000-validation-1789726253487-after.png",
+      "finalSidebars": {
+        "primary": true,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "naturalShutdown": true,
+      "ownedProcessesSettled": true,
+      "settlement": {
+        "editorExit": 0,
+        "editorForcedCleanup": false,
+        "artifactUnchanged": true,
+        "remainingOwnedPids": [],
+        "sourceFilesUnchanged": [
+          {
+            "file": "six-columns-100000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "six-columns-1000000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "dw-1000000-validation.csv",
+            "unchanged": true
+          }
+        ],
+        "exitRequestedAt": "2026-09-18T10:11:01.051Z",
+        "cdpDisconnectedAt": "2026-09-18T10:11:01.412Z"
+      }
+    },
+    {
+      "validationId": "06",
+      "route": "ow-polars",
+      "rows": 1000000,
+      "sample": "validation",
+      "startedUtc": "2026-09-18T10:11:05.460Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 2397.020731,
+        "amount": 2397.188281,
+        "category": 2553.09337
+      },
+      "layoutActions": [
+        {
+          "action": "Open Column profiles",
+          "ms": 2358.6700189999997
+        }
+      ],
+      "beforeScreenshot": "ow-polars-1000000-validation-1789726265460-before.png",
+      "openStart": 3230.926852,
+      "gridReadyMs": 1622.381941,
+      "identity": {
+        "column": 2,
+        "firstRow": 2,
+        "nextRow": 3,
+        "firstValue": 0,
+        "nextValue": 1
+      },
+      "interactiveMs": 1952.1640940000002,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "selectionStartMs": 1958.718225,
+      "firstAmountStatsMs": 2423.7758980000003,
+      "completeAmountStatsMs": 2423.78216,
+      "threeHeadersReadyMs": 2553.1245590000003,
+      "selectionToFirstStatsMs": 465.05767300000025,
+      "selectionToCompleteStatsMs": 465.06393500000013,
+      "cachedSwitchStartMs": 2763.5384799999997,
+      "cachedSwitchReadyMs": 2952.6906459999996,
+      "cachedSwitchMs": 189.15216599999985,
+      "ok": true,
+      "afterScreenshot": "ow-polars-1000000-validation-1789726265460-after.png",
+      "finalSidebars": {
+        "primary": false,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "naturalShutdown": true,
+      "ownedProcessesSettled": true,
+      "settlement": {
+        "editorExit": 0,
+        "editorForcedCleanup": false,
+        "artifactUnchanged": true,
+        "remainingOwnedPids": [],
+        "sourceFilesUnchanged": [
+          {
+            "file": "six-columns-100000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "six-columns-1000000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "ow-polars-1000000-validation.csv",
+            "unchanged": true
+          }
+        ],
+        "exitRequestedAt": "2026-09-18T10:11:10.744Z",
+        "cdpDisconnectedAt": "2026-09-18T10:11:10.989Z"
+      }
+    }
+  ],
+  "completion": {
+    "validationAttempts": 6,
+    "validationsComplete": 6,
+    "fixedAttempts": 18,
+    "complete": 18,
+    "failed": 0,
+    "sourceHashesUnchanged": true,
+    "artifactUnchanged": true,
+    "collectorUnchanged": true,
+    "naturalShutdownForEveryFixedAttempt": true,
+    "noRemainingOwnedProcesses": true,
+    "noReplacementAttempts": true,
+    "scheduleMatchesFrozenPlan": true
+  },
+  "summary": [
+    {
+      "route": "ow-pandas",
+      "rows": 100000,
+      "planned": 3,
+      "completed": 3,
+      "durationsMs": {
+        "gridReadyMs": {
+          "median": 2254.729731,
+          "min": 2214.5442989999997,
+          "max": 2262.8000059999995
+        },
+        "interactiveMs": {
+          "median": 2548.0599830000006,
+          "min": 2511.4908659999996,
+          "max": 2557.6769299999996
+        },
+        "threeHeadersReadyMs": {
+          "median": 2530.8885270000005,
+          "min": 2494.537264,
+          "max": 2540.822295
+        },
+        "firstAmountStatsMs": {
+          "median": 2936.4786930000005,
+          "min": 2923.144906,
+          "max": 2977.8931619999994
+        },
+        "completeAmountStatsMs": {
+          "median": 2936.486789,
+          "min": 2923.156885,
+          "max": 2977.906014
+        },
+        "cachedSwitchMs": {
+          "median": 169.61084699999992,
+          "min": 166.80746100000033,
+          "max": 184.4111899999998
+        }
+      }
+    },
+    {
+      "route": "ow-polars",
+      "rows": 100000,
+      "planned": 3,
+      "completed": 3,
+      "durationsMs": {
+        "gridReadyMs": {
+          "median": 1604.5192380000003,
+          "min": 1482.6509450000003,
+          "max": 1618.9817120000002
+        },
+        "interactiveMs": {
+          "median": 1915.9124079999997,
+          "min": 1791.8727740000004,
+          "max": 1941.45541
+        },
+        "threeHeadersReadyMs": {
+          "median": 1896.6064389999997,
+          "min": 1772.0849200000002,
+          "max": 1922.627779
+        },
+        "firstAmountStatsMs": {
+          "median": 2308.6080239999997,
+          "min": 2216.710145,
+          "max": 2371.2012069999996
+        },
+        "completeAmountStatsMs": {
+          "median": 2308.625353,
+          "min": 2216.719728,
+          "max": 2371.210869
+        },
+        "cachedSwitchMs": {
+          "median": 176.86445100000037,
+          "min": 173.88583299999937,
+          "max": 188.05185699999947
+        }
+      }
+    },
+    {
+      "route": "dw",
+      "rows": 100000,
+      "planned": 3,
+      "completed": 3,
+      "durationsMs": {
+        "gridReadyMs": {
+          "median": 3463.732737,
+          "min": 3358.6673029999997,
+          "max": 3555.6503169999996
+        },
+        "interactiveMs": {
+          "median": 3736.3802580000006,
+          "min": 3660.996584,
+          "max": 3857.9311339999995
+        },
+        "threeHeadersReadyMs": {
+          "median": 3722.6349030000006,
+          "min": 3643.9973649999997,
+          "max": 3840.040779
+        },
+        "firstAmountStatsMs": {
+          "median": 4169.14249,
+          "min": 4121.632124,
+          "max": 4279.3273039999995
+        },
+        "completeAmountStatsMs": {
+          "median": 4169.163270000001,
+          "min": 4121.641007,
+          "max": 4279.333761
+        },
+        "cachedSwitchMs": {
+          "median": 189.35081600000012,
+          "min": 185.97050899999977,
+          "max": 205.2941260000007
+        }
+      }
+    },
+    {
+      "route": "ow-pandas",
+      "rows": 1000000,
+      "planned": 3,
+      "completed": 3,
+      "durationsMs": {
+        "gridReadyMs": {
+          "median": 3076.510831,
+          "min": 3023.9398530000008,
+          "max": 3117.9743079999994
+        },
+        "interactiveMs": {
+          "median": 3488.819449,
+          "min": 3412.7045850000004,
+          "max": 3519.8656879999994
+        },
+        "threeHeadersReadyMs": {
+          "median": 3470.5324639999994,
+          "min": 3395.517256,
+          "max": 3505.277738
+        },
+        "firstAmountStatsMs": {
+          "median": 3876.5254449999998,
+          "min": 3804.7863100000004,
+          "max": 3902.57934
+        },
+        "completeAmountStatsMs": {
+          "median": 3876.538057,
+          "min": 3804.7939730000007,
+          "max": 3902.5891829999996
+        },
+        "cachedSwitchMs": {
+          "median": 170.4436069999997,
+          "min": 169.87112100000013,
+          "max": 186.68591400000014
+        }
+      }
+    },
+    {
+      "route": "ow-polars",
+      "rows": 1000000,
+      "planned": 3,
+      "completed": 3,
+      "durationsMs": {
+        "gridReadyMs": {
+          "median": 1520.1531389999996,
+          "min": 1482.9124330000004,
+          "max": 1585.4609550000005
+        },
+        "interactiveMs": {
+          "median": 1842.974028,
+          "min": 1801.6398,
+          "max": 1883.519738
+        },
+        "threeHeadersReadyMs": {
+          "median": 2635.9437329999996,
+          "min": 2494.258089,
+          "max": 2669.9103970000006
+        },
+        "firstAmountStatsMs": {
+          "median": 2391.470027,
+          "min": 2361.8662600000007,
+          "max": 2419.087112
+        },
+        "completeAmountStatsMs": {
+          "median": 2391.486765,
+          "min": 2361.8872900000006,
+          "max": 2419.1061010000003
+        },
+        "cachedSwitchMs": {
+          "median": 177.79777999999988,
+          "min": 175.47036599999956,
+          "max": 190.47829099999944
+        }
+      }
+    },
+    {
+      "route": "dw",
+      "rows": 1000000,
+      "planned": 3,
+      "completed": 3,
+      "durationsMs": {
+        "gridReadyMs": {
+          "median": 3868.991816,
+          "min": 3760.7608429999996,
+          "max": 4159.88127
+        },
+        "interactiveMs": {
+          "median": 4184.742579,
+          "min": 4052.2938339999996,
+          "max": 4444.47984
+        },
+        "threeHeadersReadyMs": {
+          "median": 4473.4123739999995,
+          "min": 4356.259576,
+          "max": 4737.163619000001
+        },
+        "firstAmountStatsMs": {
+          "median": 4678.897266,
+          "min": 4559.750876,
+          "max": 4943.323899000001
+        },
+        "completeAmountStatsMs": {
+          "median": 4678.909088,
+          "min": 4559.760259000001,
+          "max": 4943.334731000001
+        },
+        "cachedSwitchMs": {
+          "median": 181.98144300000058,
+          "min": 179.22147100000075,
+          "max": 192.40018899999995
+        }
+      }
+    }
+  ],
+  "samples": [
+    {
+      "fixedId": "01",
+      "route": "ow-pandas",
+      "rows": 100000,
+      "sample": 1,
+      "startedUtc": "2026-09-18T10:11:59.395Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 2494.1671570000003,
+        "amount": 2494.3694680000003,
+        "category": 2494.5213479999998
+      },
+      "layoutActions": [
+        {
+          "action": "Open Column profiles",
+          "ms": 2882.6736589999996
+        }
+      ],
+      "beforeScreenshot": "ow-pandas-100000-1-before.png",
+      "openStart": 3145.567211,
+      "gridReadyMs": 2214.5442989999997,
+      "identity": {
+        "column": 2,
+        "firstRow": 2,
+        "nextRow": 3,
+        "firstValue": 0,
+        "nextValue": 1
+      },
+      "threeHeadersReadyMs": 2494.537264,
+      "interactiveMs": 2511.4908659999996,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "selectionStartMs": 2518.548733,
+      "firstAmountStatsMs": 2923.144906,
+      "completeAmountStatsMs": 2923.156885,
+      "selectionToFirstStatsMs": 404.5961729999999,
+      "selectionToCompleteStatsMs": 404.6081519999998,
+      "cachedSwitchStartMs": 3099.3771110000002,
+      "cachedSwitchReadyMs": 3268.987958,
+      "cachedSwitchMs": 169.61084699999992,
+      "ok": true,
+      "afterScreenshot": "ow-pandas-100000-1-after.png",
+      "finalSidebars": {
+        "primary": false,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "naturalShutdown": true,
+      "ownedProcessesSettled": true,
+      "settlement": {
+        "editorExit": 0,
+        "editorForcedCleanup": false,
+        "artifactUnchanged": true,
+        "remainingOwnedPids": [],
+        "sourceFilesUnchanged": [
+          {
+            "file": "six-columns-100000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "six-columns-1000000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "ow-pandas-100000-1.csv",
+            "unchanged": true
+          }
+        ],
+        "exitRequestedAt": "2026-09-18T10:12:04.967Z",
+        "cdpDisconnectedAt": "2026-09-18T10:12:05.223Z"
+      }
+    },
+    {
+      "fixedId": "02",
+      "route": "dw",
+      "rows": 100000,
+      "sample": 1,
+      "startedUtc": "2026-09-18T10:12:07.202Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 3839.7354719999994,
+        "amount": 3839.916999,
+        "category": 3840.03021
+      },
+      "layoutActions": [
+        {
+          "action": "Hide bottom panel",
+          "ms": 4070.180314
+        }
+      ],
+      "beforeScreenshot": "dw-100000-1-before.png",
+      "openStart": 2690.500906,
+      "gridReadyMs": 3555.6503169999996,
+      "identity": {
+        "column": 2,
+        "firstRow": 2,
+        "nextRow": 3,
+        "firstValue": 0,
+        "nextValue": 1
+      },
+      "threeHeadersReadyMs": 3840.040779,
+      "interactiveMs": 3857.9311339999995,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "selectionStartMs": 3873.9236709999996,
+      "firstAmountStatsMs": 4279.3273039999995,
+      "completeAmountStatsMs": 4279.333761,
+      "selectionToFirstStatsMs": 405.4036329999999,
+      "selectionToCompleteStatsMs": 405.4100900000003,
+      "cachedSwitchStartMs": 4424.164006,
+      "cachedSwitchReadyMs": 4610.134515,
+      "cachedSwitchMs": 185.97050899999977,
+      "ok": true,
+      "afterScreenshot": "dw-100000-1-after.png",
+      "finalSidebars": {
+        "primary": true,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "naturalShutdown": true,
+      "ownedProcessesSettled": true,
+      "settlement": {
+        "editorExit": 0,
+        "editorForcedCleanup": false,
+        "artifactUnchanged": true,
+        "remainingOwnedPids": [],
+        "sourceFilesUnchanged": [
+          {
+            "file": "six-columns-100000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "six-columns-1000000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "dw-100000-1.csv",
+            "unchanged": true
+          }
+        ],
+        "exitRequestedAt": "2026-09-18T10:12:13.776Z",
+        "cdpDisconnectedAt": "2026-09-18T10:12:14.142Z"
+      }
+    },
+    {
+      "fixedId": "03",
+      "route": "ow-polars",
+      "rows": 100000,
+      "sample": 1,
+      "startedUtc": "2026-09-18T10:12:16.208Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 1922.3521109999997,
+        "amount": 1922.4819219999995,
+        "category": 1922.6167460000001
+      },
+      "layoutActions": [
+        {
+          "action": "Open Column profiles",
+          "ms": 2324.2306059999996
+        }
+      ],
+      "beforeScreenshot": "ow-polars-100000-1-before.png",
+      "openStart": 3446.829067,
+      "gridReadyMs": 1604.5192380000003,
+      "identity": {
+        "column": 2,
+        "firstRow": 2,
+        "nextRow": 3,
+        "firstValue": 0,
+        "nextValue": 1
+      },
+      "threeHeadersReadyMs": 1922.627779,
+      "interactiveMs": 1941.45541,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "selectionStartMs": 1948.9044239999998,
+      "firstAmountStatsMs": 2371.2012069999996,
+      "completeAmountStatsMs": 2371.210869,
+      "selectionToFirstStatsMs": 422.2967829999998,
+      "selectionToCompleteStatsMs": 422.30644500000017,
+      "cachedSwitchStartMs": 2563.5327350000002,
+      "cachedSwitchReadyMs": 2751.5845919999997,
+      "cachedSwitchMs": 188.05185699999947,
+      "ok": true,
+      "afterScreenshot": "ow-polars-100000-1-after.png",
+      "finalSidebars": {
+        "primary": false,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "naturalShutdown": true,
+      "ownedProcessesSettled": true,
+      "settlement": {
+        "editorExit": 0,
+        "editorForcedCleanup": false,
+        "artifactUnchanged": true,
+        "remainingOwnedPids": [],
+        "sourceFilesUnchanged": [
+          {
+            "file": "six-columns-100000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "six-columns-1000000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "ow-polars-100000-1.csv",
+            "unchanged": true
+          }
+        ],
+        "exitRequestedAt": "2026-09-18T10:12:21.476Z",
+        "cdpDisconnectedAt": "2026-09-18T10:12:21.729Z"
+      }
+    },
+    {
+      "fixedId": "04",
+      "route": "dw",
+      "rows": 100000,
+      "sample": 2,
+      "startedUtc": "2026-09-18T10:12:23.801Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 3257.5604340000004,
+        "amount": 3722.480884,
+        "category": 3722.613949
+      },
+      "layoutActions": [
+        {
+          "action": "Hide bottom panel",
+          "ms": 3948.091497
+        }
+      ],
+      "beforeScreenshot": "dw-100000-2-before.png",
+      "openStart": 3066.401415,
+      "gridReadyMs": 3463.732737,
+      "identity": {
+        "column": 2,
+        "firstRow": 2,
+        "nextRow": 3,
+        "firstValue": 0,
+        "nextValue": 1
+      },
+      "threeHeadersReadyMs": 3722.6349030000006,
+      "interactiveMs": 3736.3802580000006,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "selectionStartMs": 3752.3951250000005,
+      "firstAmountStatsMs": 4169.14249,
+      "completeAmountStatsMs": 4169.163270000001,
+      "selectionToFirstStatsMs": 416.7473649999997,
+      "selectionToCompleteStatsMs": 416.76814500000046,
+      "cachedSwitchStartMs": 4415.537478,
+      "cachedSwitchReadyMs": 4620.831604000001,
+      "cachedSwitchMs": 205.2941260000007,
+      "ok": true,
+      "afterScreenshot": "dw-100000-2-after.png",
+      "finalSidebars": {
+        "primary": true,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "naturalShutdown": true,
+      "ownedProcessesSettled": true,
+      "settlement": {
+        "editorExit": 0,
+        "editorForcedCleanup": false,
+        "artifactUnchanged": true,
+        "remainingOwnedPids": [],
+        "sourceFilesUnchanged": [
+          {
+            "file": "six-columns-100000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "six-columns-1000000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "dw-100000-2.csv",
+            "unchanged": true
+          }
+        ],
+        "exitRequestedAt": "2026-09-18T10:12:30.606Z",
+        "cdpDisconnectedAt": "2026-09-18T10:12:30.948Z"
+      }
+    },
+    {
+      "fixedId": "05",
+      "route": "ow-polars",
+      "rows": 100000,
+      "sample": 2,
+      "startedUtc": "2026-09-18T10:12:32.970Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 1771.6948650000004,
+        "amount": 1771.8868200000006,
+        "category": 1772.0655780000006
+      },
+      "layoutActions": [
+        {
+          "action": "Open Column profiles",
+          "ms": 2182.1446370000003
+        }
+      ],
+      "beforeScreenshot": "ow-polars-100000-2-before.png",
+      "openStart": 3379.999454,
+      "gridReadyMs": 1482.6509450000003,
+      "identity": {
+        "column": 2,
+        "firstRow": 2,
+        "nextRow": 3,
+        "firstValue": 0,
+        "nextValue": 1
+      },
+      "threeHeadersReadyMs": 1772.0849200000002,
+      "interactiveMs": 1791.8727740000004,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "selectionStartMs": 1801.5792900000006,
+      "firstAmountStatsMs": 2216.710145,
+      "completeAmountStatsMs": 2216.719728,
+      "selectionToFirstStatsMs": 415.1308549999994,
+      "selectionToCompleteStatsMs": 415.14043799999945,
+      "cachedSwitchStartMs": 2379.747354,
+      "cachedSwitchReadyMs": 2556.6118050000005,
+      "cachedSwitchMs": 176.86445100000037,
+      "ok": true,
+      "afterScreenshot": "ow-polars-100000-2-after.png",
+      "finalSidebars": {
+        "primary": false,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "naturalShutdown": true,
+      "ownedProcessesSettled": true,
+      "settlement": {
+        "editorExit": 0,
+        "editorForcedCleanup": false,
+        "artifactUnchanged": true,
+        "remainingOwnedPids": [],
+        "sourceFilesUnchanged": [
+          {
+            "file": "six-columns-100000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "six-columns-1000000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "ow-polars-100000-2.csv",
+            "unchanged": true
+          }
+        ],
+        "exitRequestedAt": "2026-09-18T10:12:37.973Z",
+        "cdpDisconnectedAt": "2026-09-18T10:12:38.221Z"
+      }
+    },
+    {
+      "fixedId": "06",
+      "route": "ow-pandas",
+      "rows": 100000,
+      "sample": 2,
+      "startedUtc": "2026-09-18T10:12:40.165Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 2540.522153,
+        "amount": 2540.6746679999997,
+        "category": 2540.811162
+      },
+      "layoutActions": [
+        {
+          "action": "Open Column profiles",
+          "ms": 2941.807675
+        }
+      ],
+      "beforeScreenshot": "ow-pandas-100000-2-before.png",
+      "openStart": 2984.362758,
+      "gridReadyMs": 2262.8000059999995,
+      "identity": {
+        "column": 2,
+        "firstRow": 2,
+        "nextRow": 3,
+        "firstValue": 0,
+        "nextValue": 1
+      },
+      "threeHeadersReadyMs": 2540.822295,
+      "interactiveMs": 2557.6769299999996,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "selectionStartMs": 2564.258323,
+      "firstAmountStatsMs": 2977.8931619999994,
+      "completeAmountStatsMs": 2977.906014,
+      "selectionToFirstStatsMs": 413.6348389999994,
+      "selectionToCompleteStatsMs": 413.6476910000001,
+      "cachedSwitchStartMs": 3142.5164129999994,
+      "cachedSwitchReadyMs": 3309.3238739999997,
+      "cachedSwitchMs": 166.80746100000033,
+      "ok": true,
+      "afterScreenshot": "ow-pandas-100000-2-after.png",
+      "finalSidebars": {
+        "primary": false,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "naturalShutdown": true,
+      "ownedProcessesSettled": true,
+      "settlement": {
+        "editorExit": 0,
+        "editorForcedCleanup": false,
+        "artifactUnchanged": true,
+        "remainingOwnedPids": [],
+        "sourceFilesUnchanged": [
+          {
+            "file": "six-columns-100000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "six-columns-1000000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "ow-pandas-100000-2.csv",
+            "unchanged": true
+          }
+        ],
+        "exitRequestedAt": "2026-09-18T10:12:45.582Z",
+        "cdpDisconnectedAt": "2026-09-18T10:12:45.841Z"
+      }
+    },
+    {
+      "fixedId": "07",
+      "route": "ow-polars",
+      "rows": 100000,
+      "sample": 3,
+      "startedUtc": "2026-09-18T10:12:48.083Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 1896.277823,
+        "amount": 1896.4425889999998,
+        "category": 1896.591108
+      },
+      "layoutActions": [
+        {
+          "action": "Open Column profiles",
+          "ms": 2272.7082459999997
+        }
+      ],
+      "beforeScreenshot": "ow-polars-100000-3-before.png",
+      "openStart": 3369.124319,
+      "gridReadyMs": 1618.9817120000002,
+      "identity": {
+        "column": 2,
+        "firstRow": 2,
+        "nextRow": 3,
+        "firstValue": 0,
+        "nextValue": 1
+      },
+      "threeHeadersReadyMs": 1896.6064389999997,
+      "interactiveMs": 1915.9124079999997,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "selectionStartMs": 1923.504308,
+      "firstAmountStatsMs": 2308.6080239999997,
+      "completeAmountStatsMs": 2308.625353,
+      "selectionToFirstStatsMs": 385.1037159999996,
+      "selectionToCompleteStatsMs": 385.12104499999987,
+      "cachedSwitchStartMs": 2493.0703230000004,
+      "cachedSwitchReadyMs": 2666.9561559999997,
+      "cachedSwitchMs": 173.88583299999937,
+      "ok": true,
+      "afterScreenshot": "ow-polars-100000-3-after.png",
+      "finalSidebars": {
+        "primary": false,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "naturalShutdown": true,
+      "ownedProcessesSettled": true,
+      "settlement": {
+        "editorExit": 0,
+        "editorForcedCleanup": false,
+        "artifactUnchanged": true,
+        "remainingOwnedPids": [],
+        "sourceFilesUnchanged": [
+          {
+            "file": "six-columns-100000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "six-columns-1000000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "ow-polars-100000-3.csv",
+            "unchanged": true
+          }
+        ],
+        "exitRequestedAt": "2026-09-18T10:12:52.956Z",
+        "cdpDisconnectedAt": "2026-09-18T10:12:53.212Z"
+      }
+    },
+    {
+      "fixedId": "08",
+      "route": "ow-pandas",
+      "rows": 100000,
+      "sample": 3,
+      "startedUtc": "2026-09-18T10:12:55.230Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 2530.608831,
+        "amount": 2530.7723230000006,
+        "category": 2530.8735890000003
+      },
+      "layoutActions": [
+        {
+          "action": "Open Column profiles",
+          "ms": 2904.1291260000003
+        }
+      ],
+      "beforeScreenshot": "ow-pandas-100000-3-before.png",
+      "openStart": 2740.97666,
+      "gridReadyMs": 2254.729731,
+      "identity": {
+        "column": 2,
+        "firstRow": 2,
+        "nextRow": 3,
+        "firstValue": 0,
+        "nextValue": 1
+      },
+      "threeHeadersReadyMs": 2530.8885270000005,
+      "interactiveMs": 2548.0599830000006,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "selectionStartMs": 2554.201141,
+      "firstAmountStatsMs": 2936.4786930000005,
+      "completeAmountStatsMs": 2936.486789,
+      "selectionToFirstStatsMs": 382.27755200000047,
+      "selectionToCompleteStatsMs": 382.28564800000004,
+      "cachedSwitchStartMs": 3114.264485,
+      "cachedSwitchReadyMs": 3298.675675,
+      "cachedSwitchMs": 184.4111899999998,
+      "ok": true,
+      "afterScreenshot": "ow-pandas-100000-3-after.png",
+      "finalSidebars": {
+        "primary": false,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "naturalShutdown": true,
+      "ownedProcessesSettled": true,
+      "settlement": {
+        "editorExit": 0,
+        "editorForcedCleanup": false,
+        "artifactUnchanged": true,
+        "remainingOwnedPids": [],
+        "sourceFilesUnchanged": [
+          {
+            "file": "six-columns-100000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "six-columns-1000000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "ow-pandas-100000-3.csv",
+            "unchanged": true
+          }
+        ],
+        "exitRequestedAt": "2026-09-18T10:13:00.376Z",
+        "cdpDisconnectedAt": "2026-09-18T10:13:00.625Z"
+      }
+    },
+    {
+      "fixedId": "09",
+      "route": "dw",
+      "rows": 100000,
+      "sample": 3,
+      "startedUtc": "2026-09-18T10:13:02.557Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 3643.533495,
+        "amount": 3643.809893,
+        "category": 3643.9762720000003
+      },
+      "layoutActions": [
+        {
+          "action": "Hide bottom panel",
+          "ms": 3904.105347
+        }
+      ],
+      "beforeScreenshot": "dw-100000-3-before.png",
+      "openStart": 3095.58545,
+      "gridReadyMs": 3358.6673029999997,
+      "identity": {
+        "column": 2,
+        "firstRow": 2,
+        "nextRow": 3,
+        "firstValue": 0,
+        "nextValue": 1
+      },
+      "threeHeadersReadyMs": 3643.9973649999997,
+      "interactiveMs": 3660.996584,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "selectionStartMs": 3677.8474039999996,
+      "firstAmountStatsMs": 4121.632124,
+      "completeAmountStatsMs": 4121.641007,
+      "selectionToFirstStatsMs": 443.7847200000001,
+      "selectionToCompleteStatsMs": 443.79360300000053,
+      "cachedSwitchStartMs": 4354.483614000001,
+      "cachedSwitchReadyMs": 4543.834430000001,
+      "cachedSwitchMs": 189.35081600000012,
+      "ok": true,
+      "afterScreenshot": "dw-100000-3-after.png",
+      "finalSidebars": {
+        "primary": true,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "naturalShutdown": true,
+      "ownedProcessesSettled": true,
+      "settlement": {
+        "editorExit": 0,
+        "editorForcedCleanup": false,
+        "artifactUnchanged": true,
+        "remainingOwnedPids": [],
+        "sourceFilesUnchanged": [
+          {
+            "file": "six-columns-100000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "six-columns-1000000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "dw-100000-3.csv",
+            "unchanged": true
+          }
+        ],
+        "exitRequestedAt": "2026-09-18T10:13:09.494Z",
+        "cdpDisconnectedAt": "2026-09-18T10:13:09.843Z"
+      }
+    },
+    {
+      "fixedId": "10",
+      "route": "ow-pandas",
+      "rows": 1000000,
+      "sample": 1,
+      "startedUtc": "2026-09-18T10:13:11.859Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 3395.2679420000004,
+        "amount": 3395.385599,
+        "category": 3395.5090790000004
+      },
+      "layoutActions": [
+        {
+          "action": "Open Column profiles",
+          "ms": 3770.6269870000006
+        }
+      ],
+      "beforeScreenshot": "ow-pandas-1000000-1-before.png",
+      "openStart": 4323.073922,
+      "gridReadyMs": 3023.9398530000008,
+      "identity": {
+        "column": 2,
+        "firstRow": 2,
+        "nextRow": 3,
+        "firstValue": 0,
+        "nextValue": 1
+      },
+      "threeHeadersReadyMs": 3395.517256,
+      "interactiveMs": 3412.7045850000004,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "selectionStartMs": 3419.033964,
+      "firstAmountStatsMs": 3804.7863100000004,
+      "completeAmountStatsMs": 3804.7939730000007,
+      "selectionToFirstStatsMs": 385.7523460000002,
+      "selectionToCompleteStatsMs": 385.76000900000054,
+      "cachedSwitchStartMs": 3958.3083640000004,
+      "cachedSwitchReadyMs": 4128.179485000001,
+      "cachedSwitchMs": 169.87112100000013,
+      "ok": true,
+      "afterScreenshot": "ow-pandas-1000000-1-after.png",
+      "finalSidebars": {
+        "primary": false,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "naturalShutdown": true,
+      "ownedProcessesSettled": true,
+      "settlement": {
+        "editorExit": 0,
+        "editorForcedCleanup": false,
+        "artifactUnchanged": true,
+        "remainingOwnedPids": [],
+        "sourceFilesUnchanged": [
+          {
+            "file": "six-columns-100000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "six-columns-1000000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "ow-pandas-1000000-1.csv",
+            "unchanged": true
+          }
+        ],
+        "exitRequestedAt": "2026-09-18T10:13:19.425Z",
+        "cdpDisconnectedAt": "2026-09-18T10:13:20.084Z"
+      }
+    },
+    {
+      "fixedId": "11",
+      "route": "dw",
+      "rows": 1000000,
+      "sample": 1,
+      "startedUtc": "2026-09-18T10:13:22.319Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 4472.8070339999995,
+        "amount": 4473.248991,
+        "category": 4473.399568999999
+      },
+      "layoutActions": [
+        {
+          "action": "Hide bottom panel",
+          "ms": 4455.042993000001
+        }
+      ],
+      "beforeScreenshot": "dw-1000000-1-before.png",
+      "openStart": 3396.660289,
+      "gridReadyMs": 3868.991816,
+      "identity": {
+        "column": 2,
+        "firstRow": 2,
+        "nextRow": 3,
+        "firstValue": 0,
+        "nextValue": 1
+      },
+      "interactiveMs": 4184.742579,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "selectionStartMs": 4202.361569000001,
+      "threeHeadersReadyMs": 4473.4123739999995,
+      "firstAmountStatsMs": 4678.897266,
+      "completeAmountStatsMs": 4678.909088,
+      "selectionToFirstStatsMs": 476.53569699999935,
+      "selectionToCompleteStatsMs": 476.54751899999974,
+      "cachedSwitchStartMs": 4873.050827000001,
+      "cachedSwitchReadyMs": 5065.451016000001,
+      "cachedSwitchMs": 192.40018899999995,
+      "ok": true,
+      "afterScreenshot": "dw-1000000-1-after.png",
+      "finalSidebars": {
+        "primary": true,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "naturalShutdown": true,
+      "ownedProcessesSettled": true,
+      "settlement": {
+        "editorExit": 0,
+        "editorForcedCleanup": false,
+        "artifactUnchanged": true,
+        "remainingOwnedPids": [],
+        "sourceFilesUnchanged": [
+          {
+            "file": "six-columns-100000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "six-columns-1000000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "dw-1000000-1.csv",
+            "unchanged": true
+          }
+        ],
+        "exitRequestedAt": "2026-09-18T10:13:30.002Z",
+        "cdpDisconnectedAt": "2026-09-18T10:13:30.364Z"
+      }
+    },
+    {
+      "fixedId": "12",
+      "route": "ow-polars",
+      "rows": 1000000,
+      "sample": 1,
+      "startedUtc": "2026-09-18T10:13:34.470Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 2202.6784780000007,
+        "amount": 2338.1013780000003,
+        "category": 2494.2139370000004
+      },
+      "layoutActions": [
+        {
+          "action": "Open Column profiles",
+          "ms": 2187.453045
+        }
+      ],
+      "beforeScreenshot": "ow-polars-1000000-1-before.png",
+      "openStart": 4293.547766,
+      "gridReadyMs": 1482.9124330000004,
+      "identity": {
+        "column": 2,
+        "firstRow": 2,
+        "nextRow": 3,
+        "firstValue": 0,
+        "nextValue": 1
+      },
+      "interactiveMs": 1801.6398,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "selectionStartMs": 1809.7367530000001,
+      "firstAmountStatsMs": 2361.8662600000007,
+      "completeAmountStatsMs": 2361.8872900000006,
+      "threeHeadersReadyMs": 2494.258089,
+      "selectionToFirstStatsMs": 552.1295070000006,
+      "selectionToCompleteStatsMs": 552.1505370000004,
+      "cachedSwitchStartMs": 2698.1970060000003,
+      "cachedSwitchReadyMs": 2875.994786,
+      "cachedSwitchMs": 177.79777999999988,
+      "ok": true,
+      "afterScreenshot": "ow-polars-1000000-1-after.png",
+      "finalSidebars": {
+        "primary": false,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "naturalShutdown": true,
+      "ownedProcessesSettled": true,
+      "settlement": {
+        "editorExit": 0,
+        "editorForcedCleanup": false,
+        "artifactUnchanged": true,
+        "remainingOwnedPids": [],
+        "sourceFilesUnchanged": [
+          {
+            "file": "six-columns-100000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "six-columns-1000000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "ow-polars-1000000-1.csv",
+            "unchanged": true
+          }
+        ],
+        "exitRequestedAt": "2026-09-18T10:13:40.792Z",
+        "cdpDisconnectedAt": "2026-09-18T10:13:41.050Z"
+      }
+    },
+    {
+      "fixedId": "13",
+      "route": "dw",
+      "rows": 1000000,
+      "sample": 2,
+      "startedUtc": "2026-09-18T10:13:43.001Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 4355.861357,
+        "amount": 4356.089193,
+        "category": 4356.241013999999
+      },
+      "layoutActions": [
+        {
+          "action": "Hide bottom panel",
+          "ms": 4340.655588
+        }
+      ],
+      "beforeScreenshot": "dw-1000000-2-before.png",
+      "openStart": 3131.090278,
+      "gridReadyMs": 3760.7608429999996,
+      "identity": {
+        "column": 2,
+        "firstRow": 2,
+        "nextRow": 3,
+        "firstValue": 0,
+        "nextValue": 1
+      },
+      "interactiveMs": 4052.2938339999996,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "selectionStartMs": 4067.232007,
+      "threeHeadersReadyMs": 4356.259576,
+      "firstAmountStatsMs": 4559.750876,
+      "completeAmountStatsMs": 4559.760259000001,
+      "selectionToFirstStatsMs": 492.518869,
+      "selectionToCompleteStatsMs": 492.5282520000005,
+      "cachedSwitchStartMs": 4751.810396999999,
+      "cachedSwitchReadyMs": 4931.031868,
+      "cachedSwitchMs": 179.22147100000075,
+      "ok": true,
+      "afterScreenshot": "dw-1000000-2-after.png",
+      "finalSidebars": {
+        "primary": true,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "naturalShutdown": true,
+      "ownedProcessesSettled": true,
+      "settlement": {
+        "editorExit": 0,
+        "editorForcedCleanup": false,
+        "artifactUnchanged": true,
+        "remainingOwnedPids": [],
+        "sourceFilesUnchanged": [
+          {
+            "file": "six-columns-100000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "six-columns-1000000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "dw-1000000-2.csv",
+            "unchanged": true
+          }
+        ],
+        "exitRequestedAt": "2026-09-18T10:13:50.434Z",
+        "cdpDisconnectedAt": "2026-09-18T10:13:50.811Z"
+      }
+    },
+    {
+      "fixedId": "14",
+      "route": "ow-polars",
+      "rows": 1000000,
+      "sample": 2,
+      "startedUtc": "2026-09-18T10:13:54.810Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 2226.2057149999996,
+        "amount": 2371.7397699999997,
+        "category": 2635.909738
+      },
+      "layoutActions": [
+        {
+          "action": "Open Column profiles",
+          "ms": 2209.0417709999997
+        }
+      ],
+      "beforeScreenshot": "ow-polars-1000000-2-before.png",
+      "openStart": 3757.365274,
+      "gridReadyMs": 1520.1531389999996,
+      "identity": {
+        "column": 2,
+        "firstRow": 2,
+        "nextRow": 3,
+        "firstValue": 0,
+        "nextValue": 1
+      },
+      "interactiveMs": 1842.974028,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "selectionStartMs": 1851.0335810000001,
+      "firstAmountStatsMs": 2391.470027,
+      "completeAmountStatsMs": 2391.486765,
+      "threeHeadersReadyMs": 2635.9437329999996,
+      "selectionToFirstStatsMs": 540.4364459999997,
+      "selectionToCompleteStatsMs": 540.453184,
+      "cachedSwitchStartMs": 2859.544668,
+      "cachedSwitchReadyMs": 3050.0229589999994,
+      "cachedSwitchMs": 190.47829099999944,
+      "ok": true,
+      "afterScreenshot": "ow-polars-1000000-2-after.png",
+      "finalSidebars": {
+        "primary": false,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "naturalShutdown": true,
+      "ownedProcessesSettled": true,
+      "settlement": {
+        "editorExit": 0,
+        "editorForcedCleanup": false,
+        "artifactUnchanged": true,
+        "remainingOwnedPids": [],
+        "sourceFilesUnchanged": [
+          {
+            "file": "six-columns-100000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "six-columns-1000000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "ow-polars-1000000-2.csv",
+            "unchanged": true
+          }
+        ],
+        "exitRequestedAt": "2026-09-18T10:14:00.804Z",
+        "cdpDisconnectedAt": "2026-09-18T10:14:01.052Z"
+      }
+    },
+    {
+      "fixedId": "15",
+      "route": "ow-pandas",
+      "rows": 1000000,
+      "sample": 2,
+      "startedUtc": "2026-09-18T10:14:03.032Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 3470.2650179999996,
+        "amount": 3470.3947000000003,
+        "category": 3470.5231989999997
+      },
+      "layoutActions": [
+        {
+          "action": "Open Column profiles",
+          "ms": 3833.6483510000003
+        }
+      ],
+      "beforeScreenshot": "ow-pandas-1000000-2-before.png",
+      "openStart": 2772.650575,
+      "gridReadyMs": 3076.510831,
+      "identity": {
+        "column": 2,
+        "firstRow": 2,
+        "nextRow": 3,
+        "firstValue": 0,
+        "nextValue": 1
+      },
+      "threeHeadersReadyMs": 3470.5324639999994,
+      "interactiveMs": 3488.819449,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "selectionStartMs": 3495.066147,
+      "firstAmountStatsMs": 3876.5254449999998,
+      "completeAmountStatsMs": 3876.538057,
+      "selectionToFirstStatsMs": 381.45929799999976,
+      "selectionToCompleteStatsMs": 381.4719100000002,
+      "cachedSwitchStartMs": 4035.3186739999996,
+      "cachedSwitchReadyMs": 4205.762280999999,
+      "cachedSwitchMs": 170.4436069999997,
+      "ok": true,
+      "afterScreenshot": "ow-pandas-1000000-2-after.png",
+      "finalSidebars": {
+        "primary": false,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "naturalShutdown": true,
+      "ownedProcessesSettled": true,
+      "settlement": {
+        "editorExit": 0,
+        "editorForcedCleanup": false,
+        "artifactUnchanged": true,
+        "remainingOwnedPids": [],
+        "sourceFilesUnchanged": [
+          {
+            "file": "six-columns-100000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "six-columns-1000000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "ow-pandas-1000000-2.csv",
+            "unchanged": true
+          }
+        ],
+        "exitRequestedAt": "2026-09-18T10:14:09.217Z",
+        "cdpDisconnectedAt": "2026-09-18T10:14:09.864Z"
+      }
+    },
+    {
+      "fixedId": "16",
+      "route": "ow-polars",
+      "rows": 1000000,
+      "sample": 3,
+      "startedUtc": "2026-09-18T10:14:11.920Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 2261.801689,
+        "amount": 2395.5667060000005,
+        "category": 2669.864762
+      },
+      "layoutActions": [
+        {
+          "action": "Open Column profiles",
+          "ms": 2241.645364
+        }
+      ],
+      "beforeScreenshot": "ow-polars-1000000-3-before.png",
+      "openStart": 3064.658321,
+      "gridReadyMs": 1585.4609550000005,
+      "identity": {
+        "column": 2,
+        "firstRow": 2,
+        "nextRow": 3,
+        "firstValue": 0,
+        "nextValue": 1
+      },
+      "interactiveMs": 1883.519738,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "selectionStartMs": 1893.872558,
+      "firstAmountStatsMs": 2419.087112,
+      "completeAmountStatsMs": 2419.1061010000003,
+      "threeHeadersReadyMs": 2669.9103970000006,
+      "selectionToFirstStatsMs": 525.2145540000001,
+      "selectionToCompleteStatsMs": 525.2335430000003,
+      "cachedSwitchStartMs": 2881.0739160000003,
+      "cachedSwitchReadyMs": 3056.544282,
+      "cachedSwitchMs": 175.47036599999956,
+      "ok": true,
+      "afterScreenshot": "ow-polars-1000000-3-after.png",
+      "finalSidebars": {
+        "primary": false,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "naturalShutdown": true,
+      "ownedProcessesSettled": true,
+      "settlement": {
+        "editorExit": 0,
+        "editorForcedCleanup": false,
+        "artifactUnchanged": true,
+        "remainingOwnedPids": [],
+        "sourceFilesUnchanged": [
+          {
+            "file": "six-columns-100000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "six-columns-1000000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "ow-polars-1000000-3.csv",
+            "unchanged": true
+          }
+        ],
+        "exitRequestedAt": "2026-09-18T10:14:17.221Z",
+        "cdpDisconnectedAt": "2026-09-18T10:14:17.573Z"
+      }
+    },
+    {
+      "fixedId": "17",
+      "route": "ow-pandas",
+      "rows": 1000000,
+      "sample": 3,
+      "startedUtc": "2026-09-18T10:14:19.519Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 3504.9999619999994,
+        "amount": 3505.155821,
+        "category": 3505.264826
+      },
+      "layoutActions": [
+        {
+          "action": "Open Column profiles",
+          "ms": 3860.6558099999997
+        }
+      ],
+      "beforeScreenshot": "ow-pandas-1000000-3-before.png",
+      "openStart": 2929.639743,
+      "gridReadyMs": 3117.9743079999994,
+      "identity": {
+        "column": 2,
+        "firstRow": 2,
+        "nextRow": 3,
+        "firstValue": 0,
+        "nextValue": 1
+      },
+      "threeHeadersReadyMs": 3505.277738,
+      "interactiveMs": 3519.8656879999994,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "selectionStartMs": 3525.370832,
+      "firstAmountStatsMs": 3902.57934,
+      "completeAmountStatsMs": 3902.5891829999996,
+      "selectionToFirstStatsMs": 377.2085079999997,
+      "selectionToCompleteStatsMs": 377.21835099999953,
+      "cachedSwitchStartMs": 4061.112928,
+      "cachedSwitchReadyMs": 4247.798842,
+      "cachedSwitchMs": 186.68591400000014,
+      "ok": true,
+      "afterScreenshot": "ow-pandas-1000000-3-after.png",
+      "finalSidebars": {
+        "primary": false,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "naturalShutdown": true,
+      "ownedProcessesSettled": true,
+      "settlement": {
+        "editorExit": 0,
+        "editorForcedCleanup": false,
+        "artifactUnchanged": true,
+        "remainingOwnedPids": [],
+        "sourceFilesUnchanged": [
+          {
+            "file": "six-columns-100000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "six-columns-1000000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "ow-pandas-1000000-3.csv",
+            "unchanged": true
+          }
+        ],
+        "exitRequestedAt": "2026-09-18T10:14:25.999Z",
+        "cdpDisconnectedAt": "2026-09-18T10:14:26.544Z"
+      }
+    },
+    {
+      "fixedId": "18",
+      "route": "dw",
+      "rows": 1000000,
+      "sample": 3,
+      "startedUtc": "2026-09-18T10:14:28.593Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 4736.822521,
+        "amount": 4736.982839,
+        "category": 4737.153114999999
+      },
+      "layoutActions": [
+        {
+          "action": "Hide bottom panel",
+          "ms": 4724.722712999999
+        }
+      ],
+      "beforeScreenshot": "dw-1000000-3-before.png",
+      "openStart": 3253.385159,
+      "gridReadyMs": 4159.88127,
+      "identity": {
+        "column": 2,
+        "firstRow": 2,
+        "nextRow": 3,
+        "firstValue": 0,
+        "nextValue": 1
+      },
+      "interactiveMs": 4444.47984,
+      "profileBeforeSelection": {
+        "first": false,
+        "full": false
+      },
+      "selectionStartMs": 4458.618866000001,
+      "threeHeadersReadyMs": 4737.163619000001,
+      "firstAmountStatsMs": 4943.323899000001,
+      "completeAmountStatsMs": 4943.334731000001,
+      "selectionToFirstStatsMs": 484.7050330000002,
+      "selectionToCompleteStatsMs": 484.7158650000001,
+      "cachedSwitchStartMs": 5158.674147,
+      "cachedSwitchReadyMs": 5340.65559,
+      "cachedSwitchMs": 181.98144300000058,
+      "ok": true,
+      "afterScreenshot": "dw-1000000-3-after.png",
+      "finalSidebars": {
+        "primary": true,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "naturalShutdown": true,
+      "ownedProcessesSettled": true,
+      "settlement": {
+        "editorExit": 0,
+        "editorForcedCleanup": false,
+        "artifactUnchanged": true,
+        "remainingOwnedPids": [],
+        "sourceFilesUnchanged": [
+          {
+            "file": "six-columns-100000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "six-columns-1000000.csv",
+            "unchanged": true
+          },
+          {
+            "file": "dw-1000000-3.csv",
+            "unchanged": true
+          }
+        ],
+        "exitRequestedAt": "2026-09-18T10:14:36.507Z",
+        "cdpDisconnectedAt": "2026-09-18T10:14:36.855Z"
+      }
+    }
+  ],
+  "priorCohorts": [
+    {
+      "collectionDate": "2026-09-17",
+      "status": "18 original fixed attempts completed with natural shutdown; excluded setup and validation failures remain separate. No replacements.",
+      "products": {
+        "ow": {
+          "version": "2.6.0 development package",
+          "source": "3dee131000be69272dd8917abb41b4b285db3789",
+          "vsixSha256": "68bc2eb380f41bbf00cf8ca58a8a0a1be3141dec79d92cef9f0ac9170ba000ac",
+          "releaseQualifiedAtCollection": false
+        },
+        "dw": {
+          "version": "1.24.2",
+          "reportedFileBackend": "Pandas"
+        }
+      },
+      "environment": {
+        "editor": "VS Code 1.137.0",
+        "editorCommit": "645f29cc3176500b4b5762ba887cf2a7f0ffdf2c",
+        "os": "Ubuntu 26.04.1 LTS",
+        "kernel": "Linux 7.0.0-31-generic x86_64",
+        "cpu": "Intel Core Ultra 9 185H",
+        "logicalCpus": 22,
+        "ramKiB": 63963960,
+        "display": "private Xvfb, software rendering",
+        "viewport": [1280, 900],
+        "pandas": "3.0.5",
+        "polars": "1.44.1",
+        "jupyterExtension": "2025.9.1",
+        "pythonExtension": "2026.4.0",
+        "python": "3.12.14",
+        "pyarrow": "25.0.1"
+      },
+      "inputs": [
+        {
+          "file": "data/six-columns-100000.csv",
+          "rows": 100000,
+          "bytes": 5294554,
+          "sha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+          "missing_by_column": {
+            "id": 0,
+            "amount": 10000,
+            "category": 5883,
+            "active": 5264,
+            "day": 0,
+            "event_at": 0
+          },
+          "amount_profile": {
+            "present": 90000,
+            "missing": 10000,
+            "min": 1,
+            "max": 999,
+            "sum": 45000000,
+            "mean": 500,
+            "distinct_present": 900
+          },
+          "drop_missing_amount": {
+            "rows": 90000,
+            "retained_id_sum": 4500000000,
+            "retained_id_rule": "ascending i in range(N) where i % 10 != 0",
+            "amount_missing": 0,
+            "other_cells": "unchanged at each retained id",
+            "category_missing": 5294,
+            "active_missing": 4737
+          },
+          "verification": "every serialized cell, order, null counts and amount aggregates checked"
+        },
+        {
+          "file": "data/six-columns-1000000.csv",
+          "rows": 1000000,
+          "bytes": 53945240,
+          "sha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+          "missing_by_column": {
+            "id": 0,
+            "amount": 100000,
+            "category": 58824,
+            "active": 52632,
+            "day": 0,
+            "event_at": 0
+          },
+          "amount_profile": {
+            "present": 900000,
+            "missing": 100000,
+            "min": 1,
+            "max": 999,
+            "sum": 450000000,
+            "mean": 500,
+            "distinct_present": 900
+          },
+          "drop_missing_amount": {
+            "rows": 900000,
+            "retained_id_sum": 450000000000,
+            "retained_id_rule": "ascending i in range(N) where i % 10 != 0",
+            "amount_missing": 0,
+            "other_cells": "unchanged at each retained id",
+            "category_missing": 52941,
+            "active_missing": 47368
+          },
+          "verification": "every serialized cell, order, null counts and amount aggregates checked"
+        }
+      ],
+      "method": {
+        "clock": "Public final Open to visible result and confirming row selection, milliseconds",
+        "samplesPerRouteAndSize": 3,
+        "budgetMs": 60000,
+        "pollMs": 100,
+        "automaticRetries": 0,
+        "editorLifecycle": "One first Open per fresh private VS Code process, same prepared profile; native public closing and natural owned process shutdown between attempts.",
+        "preparationExcluded": "Installation, Trust, interpreter selection, backend settings before launch, editor startup and file-dialog selection. CSV hashing warms the file cache; no explicit runtime warmup. A product may begin runtime preparation before final Open.",
+        "productOrderByRepetition": [
+          ["ow-pandas", "dw", "ow-polars"],
+          ["dw", "ow-polars", "ow-pandas"],
+          ["ow-polars", "ow-pandas", "dw"]
+        ],
+        "sizeOrder": [100000, 1000000],
+        "visibleHeaderColumns": ["id", "amount", "category"],
+        "collectorSha256": {
+          "control.cjs": "d9eaeeb16ab3bcad1db6bb3e0c8c17969a097c3c561b640b341314c5591c8570",
+          "launch.py": "d4d1cd806ae8a037d8839c8d400d3785b9db50e249584aca0b411d7ca83a1b4f",
+          "public-controls.cjs": "39b4f63a37c7da6452cedfce941f7b43a757b058755d3e9fed79cc3b01755da9",
+          "measure-file-profiles.cjs": "7a80849f9a0b5eae3c5f70b966c9ef52a03e71613b0b7b6f1b05c1ec8bc069b8",
+          "measure-notebook.cjs": "79d554042782099a53975ddb77b82a0aa54d094d31a1f162e44f99d087ae5d6b",
+          "measure-native-open.cjs": "db8ab00afb6a6ecb71f78b7a4c7e314b9c13ccd9f405253afda7b8c0d2ec1421"
+        },
+        "observedAvailability": "Profiles may compute automatically while opening. Selected-panel reveal and other recorded layout actions remain inside the clock; statistics below the fold are not all simultaneously visible.",
+        "scope": "Small fixed-order local sample with software rendering and warm disk cache, not a cold-start or general speed ranking. Poll intervals are not accuracy bounds; the products expose different statistics and may do different work."
+      },
+      "excludedValidation": [
+        {
+          "record": "file-validation-native-close/validation-01",
+          "route": "ow-pandas",
+          "rows": 100000,
+          "sample": "validation",
+          "startedUtc": "2026-09-17T14:03:59.692Z",
+          "ok": true,
+          "sourceUnchanged": true
+        },
+        {
+          "record": "file-validation-native-close/validation-02",
+          "route": "dw",
+          "rows": 100000,
+          "sample": "validation",
+          "startedUtc": "2026-09-17T14:04:04.675Z",
+          "ok": false,
+          "sourceUnchanged": true,
+          "error": "TimeoutError: locator.hover: Timeout 5000ms exceeded.",
+          "disposition": "Collector/setup failure before fixed sampling; preserved without changing a fixed ID."
+        },
+        {
+          "record": "file-validation-owned-editor/validation-01",
+          "route": "ow-pandas",
+          "rows": 100000,
+          "sample": "validation",
+          "startedUtc": "2026-09-17T14:01:48.608Z",
+          "ok": false,
+          "sourceUnchanged": true,
+          "error": "TimeoutError: locator.fill: Timeout 5000ms exceeded.",
+          "disposition": "Collector/setup failure before fixed sampling; preserved without changing a fixed ID."
+        },
+        {
+          "record": "file-validation-settled-close/dw100k-after-interruption",
+          "route": "dw",
+          "rows": 100000,
+          "sample": "validation",
+          "startedUtc": "2026-09-17T14:09:47.957Z",
+          "ok": false,
+          "failedAtMs": 59999.585771,
+          "sourceUnchanged": true,
+          "error": "Error: 60-second observation budget exceeded",
+          "disposition": "Correct selected DW viewer remained Connecting to runtime for60s; cause unestablished. Excluded validation, never a substituted fixed sample."
+        },
+        {
+          "record": "file-validation-settled-close/validation-01",
+          "route": "ow-pandas",
+          "rows": 100000,
+          "sample": "validation",
+          "startedUtc": "2026-09-17T14:05:57.944Z",
+          "ok": true,
+          "sourceUnchanged": true
+        },
+        {
+          "record": "file-validation-settled-close/validation-03",
+          "route": "ow-polars",
+          "rows": 100000,
+          "sample": "validation",
+          "startedUtc": "2026-09-17T14:28:20.368Z",
+          "ok": false,
+          "failedAtMs": 1091.958133,
+          "sourceUnchanged": true,
+          "error": "Error: Unexpected Open Wrangler engine",
+          "disposition": "Collector/setup failure before fixed sampling; preserved without changing a fixed ID."
+        },
+        {
+          "record": "file-validation-settled-close/validation-04",
+          "route": "ow-pandas",
+          "rows": 1000000,
+          "sample": "validation",
+          "startedUtc": "2026-09-17T14:30:43.302Z",
+          "ok": true,
+          "sourceUnchanged": true
+        },
+        {
+          "record": "file-validation-settled-close/validation-05",
+          "route": "dw",
+          "rows": 1000000,
+          "sample": "validation",
+          "startedUtc": "2026-09-17T14:31:54.428Z",
+          "ok": true,
+          "sourceUnchanged": true
+        },
+        {
+          "record": "file-validation-settled-close/validation-06",
+          "route": "ow-polars",
+          "rows": 1000000,
+          "sample": "validation",
+          "startedUtc": "2026-09-17T14:33:50.702Z",
+          "ok": true,
+          "sourceUnchanged": true
+        },
+        {
+          "record": "fresh-editor-file/validation-01",
+          "route": "ow-pandas",
+          "rows": 100000,
+          "sample": "validation",
+          "startedUtc": "2026-09-17T13:50:01.898Z",
+          "ok": true,
+          "sourceUnchanged": true
+        },
+        {
+          "record": "fresh-editor-file/validation-02",
+          "route": "dw",
+          "rows": 100000,
+          "sample": "validation",
+          "startedUtc": "2026-09-17T13:58:17.881Z",
+          "ok": false,
+          "failedAtMs": 59999.850806,
+          "sourceUnchanged": true,
+          "error": "Error: 60-second observation budget exceeded",
+          "disposition": "Observer selected an old hidden editor while the new viewer had loaded. No valid latency."
+        }
+      ],
+      "excludedInterruption": {
+        "record": "file-validation-settled-close/validation-02",
+        "outcome": "Launcher/controller interrupted by SIGTERM before a result was recorded; signal origin unknown. Remaining owned editor/display were explicitly cleaned up; source/artifact hashes unchanged. No latency or product failure inferred."
+      },
+      "setupCorrections": [
+        "Require one new exact selected viewer and retire prior owners instead of selecting the first matching frame.",
+        "Wait for native tab retirement; avoid unfocused command-palette cleanup and stale fixed tab counts.",
+        "Write the configured engine before editor launch; asynchronous in-editor setting reload opened Pandas during a Polars validation.",
+        "Quit through File, End to the verified focused Exit item, then Enter. Earlier immediate mouse activation or direct DOM-focus Enter left the menu open. Forced shutdown failures are retained outside the fixed cohort."
+      ],
+      "completion": {
+        "fixedAttempts": 18,
+        "complete": 18,
+        "failed": 0,
+        "sourceHashesUnchanged": true,
+        "artifactUnchanged": true,
+        "collectorUnchanged": true,
+        "naturalShutdownForEveryFixedAttempt": true,
+        "noRemainingOwnedProcesses": true,
+        "noReplacementAttempts": true
+      },
+      "summary": [
+        {
+          "route": "ow-pandas",
+          "rows": 100000,
+          "planned": 3,
+          "completed": 3,
+          "durationsMs": {
+            "gridReadyMs": {
+              "median": 1128.2530619999998,
+              "min": 1117.238722,
+              "max": 1140.622734
+            },
+            "interactiveMs": {
+              "median": 1269.312464,
+              "min": 1234.848782,
+              "max": 1285.947134
+            },
+            "threeHeadersReadyMs": {
+              "median": 1262.0319279999999,
+              "min": 1227.6711139999998,
+              "max": 1279.8562670000001
+            },
+            "firstAmountStatsMs": {
+              "median": 1430.3026479999999,
+              "min": 1424.643365,
+              "max": 1472.0819099999999
+            },
+            "completeAmountStatsMs": {
+              "median": 1430.307033,
+              "min": 1424.6482809999998,
+              "max": 1472.091132
+            },
+            "cachedSwitchMs": {
+              "median": 82.52013299999999,
+              "min": 72.11758800000007,
+              "max": 96.17991500000016
+            }
+          }
+        },
+        {
+          "route": "ow-polars",
+          "rows": 100000,
+          "planned": 3,
+          "completed": 3,
+          "durationsMs": {
+            "gridReadyMs": {
+              "median": 738.465713,
+              "min": 732.551262,
+              "max": 828.893624
+            },
+            "interactiveMs": {
+              "median": 847.4120669999998,
+              "min": 828.082641,
+              "max": 941.4509769999997
+            },
+            "threeHeadersReadyMs": {
+              "median": 841.110079,
+              "min": 819.6236709999998,
+              "max": 935.964189
+            },
+            "firstAmountStatsMs": {
+              "median": 1050.843933,
+              "min": 995.7775740000002,
+              "max": 1109.05376
+            },
+            "completeAmountStatsMs": {
+              "median": 1050.851177,
+              "min": 995.7879739999998,
+              "max": 1109.061571
+            },
+            "cachedSwitchMs": {
+              "median": 67.02860499999997,
+              "min": 67.01333000000022,
+              "max": 72.71077300000024
+            }
+          }
+        },
+        {
+          "route": "dw",
+          "rows": 100000,
+          "planned": 3,
+          "completed": 3,
+          "durationsMs": {
+            "gridReadyMs": {
+              "median": 1541.328256,
+              "min": 1497.6653469999999,
+              "max": 1764.295185
+            },
+            "interactiveMs": {
+              "median": 1692.2514170000002,
+              "min": 1662.5167120000003,
+              "max": 1907.11886
+            },
+            "threeHeadersReadyMs": {
+              "median": 1686.194576,
+              "min": 1656.396849,
+              "max": 1902.047974
+            },
+            "firstAmountStatsMs": {
+              "median": 1874.60119,
+              "min": 1852.3594840000003,
+              "max": 2157.936841
+            },
+            "completeAmountStatsMs": {
+              "median": 1874.605871,
+              "min": 1852.3641140000002,
+              "max": 2157.951625
+            },
+            "cachedSwitchMs": {
+              "median": 91.19755799999984,
+              "min": 86.25149600000032,
+              "max": 134.63914499999987
+            }
+          }
+        },
+        {
+          "route": "ow-pandas",
+          "rows": 1000000,
+          "planned": 3,
+          "completed": 3,
+          "durationsMs": {
+            "gridReadyMs": {
+              "median": 1826.6397220000001,
+              "min": 1500.6824119999999,
+              "max": 1855.1731359999999
+            },
+            "interactiveMs": {
+              "median": 2045.9181440000002,
+              "min": 1667.1739049999999,
+              "max": 2088.3031899999996
+            },
+            "threeHeadersReadyMs": {
+              "median": 2038.9165389999998,
+              "min": 1661.1347519999997,
+              "max": 2081.527276
+            },
+            "firstAmountStatsMs": {
+              "median": 2265.330771,
+              "min": 1820.8961149999998,
+              "max": 2362.233661
+            },
+            "completeAmountStatsMs": {
+              "median": 2265.3377,
+              "min": 1820.9003729999997,
+              "max": 2362.2411409999995
+            },
+            "cachedSwitchMs": {
+              "median": 71.95807599999989,
+              "min": 66.77231399999982,
+              "max": 75.93175400000018
+            }
+          }
+        },
+        {
+          "route": "ow-polars",
+          "rows": 1000000,
+          "planned": 3,
+          "completed": 3,
+          "durationsMs": {
+            "gridReadyMs": {
+              "median": 770.4272930000002,
+              "min": 744.1862889999998,
+              "max": 829.8184969999998
+            },
+            "interactiveMs": {
+              "median": 904.341156,
+              "min": 861.483283,
+              "max": 989.2878999999998
+            },
+            "threeHeadersReadyMs": {
+              "median": 1311.0854520000003,
+              "min": 1282.499046,
+              "max": 1429.860932
+            },
+            "firstAmountStatsMs": {
+              "median": 1206.081909,
+              "min": 1166.86501,
+              "max": 1324.6966819999998
+            },
+            "completeAmountStatsMs": {
+              "median": 1206.0896860000003,
+              "min": 1166.874326,
+              "max": 1324.70858
+            },
+            "cachedSwitchMs": {
+              "median": 83.98880000000008,
+              "min": 64.97244600000022,
+              "max": 89.37667099999999
+            }
+          }
+        },
+        {
+          "route": "dw",
+          "rows": 1000000,
+          "planned": 3,
+          "completed": 3,
+          "durationsMs": {
+            "gridReadyMs": {
+              "median": 2011.080677,
+              "min": 2009.531695,
+              "max": 2125.004672
+            },
+            "interactiveMs": {
+              "median": 2157.737776,
+              "min": 2145.27593,
+              "max": 2368.693784
+            },
+            "threeHeadersReadyMs": {
+              "median": 2520.450365,
+              "min": 2486.253726,
+              "max": 2525.778193
+            },
+            "firstAmountStatsMs": {
+              "median": 2405.2153080000003,
+              "min": 2382.7975720000004,
+              "max": 2625.1464460000007
+            },
+            "completeAmountStatsMs": {
+              "median": 2405.2170709999996,
+              "min": 2382.7999660000005,
+              "max": 2625.1503710000006
+            },
+            "cachedSwitchMs": {
+              "median": 62.82292300000063,
+              "min": 61.00371300000006,
+              "max": 87.77841700000045
+            }
+          }
+        }
+      ],
+      "samples": [
+        {
+          "fixedId": "01",
+          "route": "ow-pandas",
+          "rows": 100000,
+          "sample": 1,
+          "startedUtc": "2026-09-17T14:34:26.764Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 1261.923296,
+            "amount": 1261.9777880000001,
+            "category": 1262.02803
+          },
+          "layoutActions": [
+            {
+              "action": "Open Column profiles",
+              "ms": 1394.412002
+            }
+          ],
+          "gridReadyMs": 1117.238722,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "threeHeadersReadyMs": 1262.0319279999999,
+          "interactiveMs": 1269.312464,
+          "selectionStartMs": 1271.931865,
+          "firstAmountStatsMs": 1430.3026479999999,
+          "completeAmountStatsMs": 1430.307033,
+          "selectionToFirstStatsMs": 158.37078299999985,
+          "selectionToCompleteStatsMs": 158.37516800000003,
+          "cachedSwitchStartMs": 1543.6604899999998,
+          "cachedSwitchReadyMs": 1626.1806229999997,
+          "cachedSwitchMs": 82.52013299999999,
+          "ok": true,
+          "finalSidebars": {
+            "primary": false,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true
+        },
+        {
+          "fixedId": "02",
+          "route": "dw",
+          "rows": 100000,
+          "sample": 1,
+          "startedUtc": "2026-09-17T14:34:30.682Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 1901.83986,
+            "amount": 1901.9647909999999,
+            "category": 1902.03928
+          },
+          "layoutActions": [
+            {
+              "action": "Hide bottom panel",
+              "ms": 2032.634277
+            }
+          ],
+          "gridReadyMs": 1764.295185,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "threeHeadersReadyMs": 1902.047974,
+          "interactiveMs": 1907.11886,
+          "selectionStartMs": 1912.8773569999998,
+          "firstAmountStatsMs": 2157.936841,
+          "completeAmountStatsMs": 2157.951625,
+          "selectionToFirstStatsMs": 245.05948400000034,
+          "selectionToCompleteStatsMs": 245.0742680000003,
+          "cachedSwitchStartMs": 2303.43267,
+          "cachedSwitchReadyMs": 2394.630228,
+          "cachedSwitchMs": 91.19755799999984,
+          "ok": true,
+          "finalSidebars": {
+            "primary": true,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true
+        },
+        {
+          "fixedId": "03",
+          "route": "ow-polars",
+          "rows": 100000,
+          "sample": 1,
+          "startedUtc": "2026-09-17T14:34:37.110Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 935.849688,
+            "amount": 935.904158,
+            "category": 935.9605570000001
+          },
+          "layoutActions": [
+            {
+              "action": "Open Column profiles",
+              "ms": 1071.3088729999997
+            }
+          ],
+          "gridReadyMs": 828.893624,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "threeHeadersReadyMs": 935.964189,
+          "interactiveMs": 941.4509769999997,
+          "selectionStartMs": 944.1784359999999,
+          "firstAmountStatsMs": 1109.05376,
+          "completeAmountStatsMs": 1109.061571,
+          "selectionToFirstStatsMs": 164.8753240000001,
+          "selectionToCompleteStatsMs": 164.88313500000004,
+          "cachedSwitchStartMs": 1182.6902149999999,
+          "cachedSwitchReadyMs": 1249.7188199999998,
+          "cachedSwitchMs": 67.02860499999997,
+          "ok": true,
+          "finalSidebars": {
+            "primary": false,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true
+        },
+        {
+          "fixedId": "04",
+          "route": "dw",
+          "rows": 100000,
+          "sample": 2,
+          "startedUtc": "2026-09-17T14:34:41.045Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 1656.26391,
+            "amount": 1656.34759,
+            "category": 1656.3922530000002
+          },
+          "layoutActions": [
+            {
+              "action": "Hide bottom panel",
+              "ms": 1764.6228130000002
+            }
+          ],
+          "gridReadyMs": 1497.6653469999999,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "threeHeadersReadyMs": 1656.396849,
+          "interactiveMs": 1662.5167120000003,
+          "selectionStartMs": 1667.329187,
+          "firstAmountStatsMs": 1852.3594840000003,
+          "completeAmountStatsMs": 1852.3641140000002,
+          "selectionToFirstStatsMs": 185.03029700000025,
+          "selectionToCompleteStatsMs": 185.03492700000015,
+          "cachedSwitchStartMs": 1920.694699,
+          "cachedSwitchReadyMs": 2006.9461950000002,
+          "cachedSwitchMs": 86.25149600000032,
+          "ok": true,
+          "finalSidebars": {
+            "primary": true,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true
+        },
+        {
+          "fixedId": "05",
+          "route": "ow-polars",
+          "rows": 100000,
+          "sample": 2,
+          "startedUtc": "2026-09-17T14:34:47.231Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 840.989709,
+            "amount": 841.0471699999998,
+            "category": 841.1061329999998
+          },
+          "layoutActions": [
+            {
+              "action": "Open Column profiles",
+              "ms": 1030.5602329999997
+            }
+          ],
+          "gridReadyMs": 738.465713,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "threeHeadersReadyMs": 841.110079,
+          "interactiveMs": 847.4120669999998,
+          "selectionStartMs": 850.3362589999997,
+          "firstAmountStatsMs": 1050.843933,
+          "completeAmountStatsMs": 1050.851177,
+          "selectionToFirstStatsMs": 200.5076740000004,
+          "selectionToCompleteStatsMs": 200.5149180000003,
+          "cachedSwitchStartMs": 1123.1516729999998,
+          "cachedSwitchReadyMs": 1195.862446,
+          "cachedSwitchMs": 72.71077300000024,
+          "ok": true,
+          "finalSidebars": {
+            "primary": false,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true
+        },
+        {
+          "fixedId": "06",
+          "route": "ow-pandas",
+          "rows": 100000,
+          "sample": 2,
+          "startedUtc": "2026-09-17T14:34:50.993Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 1279.6740609999997,
+            "amount": 1279.777008,
+            "category": 1279.8480569999997
+          },
+          "layoutActions": [
+            {
+              "action": "Open Column profiles",
+              "ms": 1446.1422939999998
+            }
+          ],
+          "gridReadyMs": 1140.622734,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "threeHeadersReadyMs": 1279.8562670000001,
+          "interactiveMs": 1285.947134,
+          "selectionStartMs": 1288.302412,
+          "firstAmountStatsMs": 1472.0819099999999,
+          "completeAmountStatsMs": 1472.091132,
+          "selectionToFirstStatsMs": 183.77949799999988,
+          "selectionToCompleteStatsMs": 183.78872,
+          "cachedSwitchStartMs": 1586.94344,
+          "cachedSwitchReadyMs": 1659.061028,
+          "cachedSwitchMs": 72.11758800000007,
+          "ok": true,
+          "finalSidebars": {
+            "primary": false,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true
+        },
+        {
+          "fixedId": "07",
+          "route": "ow-polars",
+          "rows": 100000,
+          "sample": 3,
+          "startedUtc": "2026-09-17T14:34:54.917Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 819.5363590000002,
+            "amount": 819.5897530000002,
+            "category": 819.6191840000001
+          },
+          "layoutActions": [
+            {
+              "action": "Open Column profiles",
+              "ms": 981.3892959999998
+            }
+          ],
+          "gridReadyMs": 732.551262,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "threeHeadersReadyMs": 819.6236709999998,
+          "interactiveMs": 828.082641,
+          "selectionStartMs": 830.1519480000002,
+          "firstAmountStatsMs": 995.7775740000002,
+          "completeAmountStatsMs": 995.7879739999998,
+          "selectionToFirstStatsMs": 165.625626,
+          "selectionToCompleteStatsMs": 165.63602599999967,
+          "cachedSwitchStartMs": 1060.3426869999998,
+          "cachedSwitchReadyMs": 1127.356017,
+          "cachedSwitchMs": 67.01333000000022,
+          "ok": true,
+          "finalSidebars": {
+            "primary": false,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true
+        },
+        {
+          "fixedId": "08",
+          "route": "ow-pandas",
+          "rows": 100000,
+          "sample": 3,
+          "startedUtc": "2026-09-17T14:34:58.572Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 1227.5798829999999,
+            "amount": 1227.630282,
+            "category": 1227.6673919999998
+          },
+          "layoutActions": [
+            {
+              "action": "Open Column profiles",
+              "ms": 1407.83052
+            }
+          ],
+          "gridReadyMs": 1128.2530619999998,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "threeHeadersReadyMs": 1227.6711139999998,
+          "interactiveMs": 1234.848782,
+          "selectionStartMs": 1237.664193,
+          "firstAmountStatsMs": 1424.643365,
+          "completeAmountStatsMs": 1424.6482809999998,
+          "selectionToFirstStatsMs": 186.97917199999983,
+          "selectionToCompleteStatsMs": 186.9840879999997,
+          "cachedSwitchStartMs": 1498.696739,
+          "cachedSwitchReadyMs": 1594.8766540000001,
+          "cachedSwitchMs": 96.17991500000016,
+          "ok": true,
+          "finalSidebars": {
+            "primary": false,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true
+        },
+        {
+          "fixedId": "09",
+          "route": "dw",
+          "rows": 100000,
+          "sample": 3,
+          "startedUtc": "2026-09-17T14:35:02.416Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 1686.084651,
+            "amount": 1686.1576160000002,
+            "category": 1686.1901890000001
+          },
+          "layoutActions": [
+            {
+              "action": "Hide bottom panel",
+              "ms": 1782.328789
+            }
+          ],
+          "gridReadyMs": 1541.328256,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "threeHeadersReadyMs": 1686.194576,
+          "interactiveMs": 1692.2514170000002,
+          "selectionStartMs": 1698.597778,
+          "firstAmountStatsMs": 1874.60119,
+          "completeAmountStatsMs": 1874.605871,
+          "selectionToFirstStatsMs": 176.00341200000003,
+          "selectionToCompleteStatsMs": 176.00809299999992,
+          "cachedSwitchStartMs": 1985.5677349999999,
+          "cachedSwitchReadyMs": 2120.2068799999997,
+          "cachedSwitchMs": 134.63914499999987,
+          "ok": true,
+          "finalSidebars": {
+            "primary": true,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true
+        },
+        {
+          "fixedId": "10",
+          "route": "ow-pandas",
+          "rows": 1000000,
+          "sample": 1,
+          "startedUtc": "2026-09-17T14:35:08.671Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 1661.0201599999998,
+            "amount": 1661.0745489999997,
+            "category": 1661.1313789999997
+          },
+          "layoutActions": [
+            {
+              "action": "Open Column profiles",
+              "ms": 1800.6709159999998
+            }
+          ],
+          "gridReadyMs": 1500.6824119999999,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "threeHeadersReadyMs": 1661.1347519999997,
+          "interactiveMs": 1667.1739049999999,
+          "selectionStartMs": 1669.691188,
+          "firstAmountStatsMs": 1820.8961149999998,
+          "completeAmountStatsMs": 1820.9003729999997,
+          "selectionToFirstStatsMs": 151.20492699999977,
+          "selectionToCompleteStatsMs": 151.2091849999997,
+          "cachedSwitchStartMs": 1887.5099870000001,
+          "cachedSwitchReadyMs": 1959.468063,
+          "cachedSwitchMs": 71.95807599999989,
+          "ok": true,
+          "finalSidebars": {
+            "primary": false,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true
+        },
+        {
+          "fixedId": "11",
+          "route": "dw",
+          "rows": 1000000,
+          "sample": 1,
+          "startedUtc": "2026-09-17T14:35:13.331Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 2278.7537629999997,
+            "amount": 2486.1381329999995,
+            "category": 2486.2261790000002
+          },
+          "layoutActions": [
+            {
+              "action": "Hide bottom panel",
+              "ms": 2272.604513
+            }
+          ],
+          "gridReadyMs": 2009.531695,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "interactiveMs": 2145.27593,
+          "selectionStartMs": 2153.967719,
+          "firstAmountStatsMs": 2382.7975720000004,
+          "completeAmountStatsMs": 2382.7999660000005,
+          "threeHeadersReadyMs": 2486.253726,
+          "selectionToFirstStatsMs": 228.82985300000018,
+          "selectionToCompleteStatsMs": 228.83224700000028,
+          "cachedSwitchStartMs": 2568.70324,
+          "cachedSwitchReadyMs": 2656.4816570000003,
+          "cachedSwitchMs": 87.77841700000045,
+          "ok": true,
+          "finalSidebars": {
+            "primary": true,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true
+        },
+        {
+          "fixedId": "12",
+          "route": "ow-polars",
+          "rows": 1000000,
+          "sample": 1,
+          "startedUtc": "2026-09-17T14:35:19.799Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 1142.7954449999997,
+            "amount": 1282.4074139999998,
+            "category": 1282.48511
+          },
+          "layoutActions": [
+            {
+              "action": "Open Column profiles",
+              "ms": 1008.7256579999998
+            }
+          ],
+          "gridReadyMs": 744.1862889999998,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "interactiveMs": 861.483283,
+          "selectionStartMs": 864.4066269999998,
+          "firstAmountStatsMs": 1166.86501,
+          "completeAmountStatsMs": 1166.874326,
+          "threeHeadersReadyMs": 1282.499046,
+          "selectionToFirstStatsMs": 302.45838300000014,
+          "selectionToCompleteStatsMs": 302.46769900000027,
+          "cachedSwitchStartMs": 1413.3923209999998,
+          "cachedSwitchReadyMs": 1478.364767,
+          "cachedSwitchMs": 64.97244600000022,
+          "ok": true,
+          "finalSidebars": {
+            "primary": false,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true
+        },
+        {
+          "fixedId": "13",
+          "route": "dw",
+          "rows": 1000000,
+          "sample": 2,
+          "startedUtc": "2026-09-17T14:35:23.922Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 2356.4323219999997,
+            "amount": 2525.675147,
+            "category": 2525.77286
+          },
+          "layoutActions": [
+            {
+              "action": "Hide bottom panel",
+              "ms": 2520.908295
+            }
+          ],
+          "gridReadyMs": 2125.004672,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "interactiveMs": 2368.693784,
+          "selectionStartMs": 2378.4783930000003,
+          "threeHeadersReadyMs": 2525.778193,
+          "firstAmountStatsMs": 2625.1464460000007,
+          "completeAmountStatsMs": 2625.1503710000006,
+          "selectionToFirstStatsMs": 246.66805300000033,
+          "selectionToCompleteStatsMs": 246.6719780000003,
+          "cachedSwitchStartMs": 2695.827929,
+          "cachedSwitchReadyMs": 2758.6508520000007,
+          "cachedSwitchMs": 62.82292300000063,
+          "ok": true,
+          "finalSidebars": {
+            "primary": true,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true
+        },
+        {
+          "fixedId": "14",
+          "route": "ow-polars",
+          "rows": 1000000,
+          "sample": 2,
+          "startedUtc": "2026-09-17T14:35:30.234Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 1082.3353780000002,
+            "amount": 1196.35675,
+            "category": 1311.069449
+          },
+          "layoutActions": [
+            {
+              "action": "Open Column profiles",
+              "ms": 1077.2781020000002
+            }
+          ],
+          "gridReadyMs": 770.4272930000002,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "interactiveMs": 904.341156,
+          "selectionStartMs": 908.1805830000003,
+          "firstAmountStatsMs": 1206.081909,
+          "completeAmountStatsMs": 1206.0896860000003,
+          "threeHeadersReadyMs": 1311.0854520000003,
+          "selectionToFirstStatsMs": 297.9013259999997,
+          "selectionToCompleteStatsMs": 297.90910299999996,
+          "cachedSwitchStartMs": 1427.933923,
+          "cachedSwitchReadyMs": 1511.9227230000001,
+          "cachedSwitchMs": 83.98880000000008,
+          "ok": true,
+          "finalSidebars": {
+            "primary": false,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true
+        },
+        {
+          "fixedId": "15",
+          "route": "ow-pandas",
+          "rows": 1000000,
+          "sample": 2,
+          "startedUtc": "2026-09-17T14:35:34.196Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 2081.4048489999996,
+            "amount": 2081.463071,
+            "category": 2081.523371
+          },
+          "layoutActions": [
+            {
+              "action": "Open Column profiles",
+              "ms": 2330.2190339999997
+            }
+          ],
+          "gridReadyMs": 1826.6397220000001,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "threeHeadersReadyMs": 2081.527276,
+          "interactiveMs": 2088.3031899999996,
+          "selectionStartMs": 2090.7149900000004,
+          "firstAmountStatsMs": 2362.233661,
+          "completeAmountStatsMs": 2362.2411409999995,
+          "selectionToFirstStatsMs": 271.5186709999998,
+          "selectionToCompleteStatsMs": 271.5261509999991,
+          "cachedSwitchStartMs": 2438.151345,
+          "cachedSwitchReadyMs": 2504.923659,
+          "cachedSwitchMs": 66.77231399999982,
+          "ok": true,
+          "finalSidebars": {
+            "primary": false,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true
+        },
+        {
+          "fixedId": "16",
+          "route": "ow-polars",
+          "rows": 1000000,
+          "sample": 3,
+          "startedUtc": "2026-09-17T14:35:39.349Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 1161.43448,
+            "amount": 1280.9877529999999,
+            "category": 1429.8335429999997
+          },
+          "layoutActions": [
+            {
+              "action": "Open Column profiles",
+              "ms": 1144.329009
+            }
+          ],
+          "gridReadyMs": 829.8184969999998,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "interactiveMs": 989.2878999999998,
+          "selectionStartMs": 993.5445239999999,
+          "firstAmountStatsMs": 1324.6966819999998,
+          "completeAmountStatsMs": 1324.70858,
+          "threeHeadersReadyMs": 1429.860932,
+          "selectionToFirstStatsMs": 331.1521579999999,
+          "selectionToCompleteStatsMs": 331.1640560000001,
+          "cachedSwitchStartMs": 1587.493629,
+          "cachedSwitchReadyMs": 1676.8703,
+          "cachedSwitchMs": 89.37667099999999,
+          "ok": true,
+          "finalSidebars": {
+            "primary": false,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true
+        },
+        {
+          "fixedId": "17",
+          "route": "ow-pandas",
+          "rows": 1000000,
+          "sample": 3,
+          "startedUtc": "2026-09-17T14:35:43.426Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 2038.7465470000002,
+            "amount": 2038.837294,
+            "category": 2038.908523
+          },
+          "layoutActions": [
+            {
+              "action": "Open Column profiles",
+              "ms": 2246.794235
+            }
+          ],
+          "gridReadyMs": 1855.1731359999999,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "threeHeadersReadyMs": 2038.9165389999998,
+          "interactiveMs": 2045.9181440000002,
+          "selectionStartMs": 2048.278636,
+          "firstAmountStatsMs": 2265.330771,
+          "completeAmountStatsMs": 2265.3377,
+          "selectionToFirstStatsMs": 217.0521349999999,
+          "selectionToCompleteStatsMs": 217.05906400000003,
+          "cachedSwitchStartMs": 2333.203255,
+          "cachedSwitchReadyMs": 2409.135009,
+          "cachedSwitchMs": 75.93175400000018,
+          "ok": true,
+          "finalSidebars": {
+            "primary": false,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true
+        },
+        {
+          "fixedId": "18",
+          "route": "dw",
+          "rows": 1000000,
+          "sample": 3,
+          "startedUtc": "2026-09-17T14:35:48.577Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 2276.914119,
+            "amount": 2520.324515,
+            "category": 2520.426879
+          },
+          "layoutActions": [
+            {
+              "action": "Hide bottom panel",
+              "ms": 2272.137251
+            }
+          ],
+          "gridReadyMs": 2011.080677,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "interactiveMs": 2157.737776,
+          "selectionStartMs": 2167.5744019999997,
+          "firstAmountStatsMs": 2405.2153080000003,
+          "completeAmountStatsMs": 2405.2170709999996,
+          "threeHeadersReadyMs": 2520.450365,
+          "selectionToFirstStatsMs": 237.64090600000054,
+          "selectionToCompleteStatsMs": 237.64266899999984,
+          "cachedSwitchStartMs": 2619.518931,
+          "cachedSwitchReadyMs": 2680.522644,
+          "cachedSwitchMs": 61.00371300000006,
+          "ok": true,
+          "finalSidebars": {
+            "primary": true,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true
+        }
+      ]
+    },
+    {
+      "collectionDate": "2026-09-18",
+      "status": "All six validations and 18 original fixed attempts completed, with natural status-zero editor shutdown and no replacements. Current summaries use only this paired cohort; earlier cohorts and diagnostics remain separate below.",
+      "products": {
+        "ow": {
+          "version": "2.6.0 development package",
+          "source": "87870b0f0a301e8f2d52cae369adb82192a7a1b0",
+          "vsixSha256": "1ec1c3185578141ce1cb27709eb5ccb32864f40f47587d95fa3984a0064e2c2a",
+          "releaseQualifiedAtCollection": false,
+          "featurePullRequest": "https://github.com/Matt17BR/openwrangler/pull/1596",
+          "executableSourceMatches": "f9f0e38d6ad7e31ada8d5be79f27b0933fbf482d",
+          "sourceIdentityNote": "The measured package was built from the exact development source above. The difference through f9f0e38d contains only documentation, CI and test changes; product executable source is unchanged. This does not identify a rebuilt or release-qualified artifact."
+        },
+        "dw": {
+          "version": "1.24.2",
+          "reportedFileBackend": "Pandas"
+        }
+      },
+      "environment": {
+        "editor": "VS Code 1.137.0",
+        "editorCommit": "645f29cc3176500b4b5762ba887cf2a7f0ffdf2c",
+        "os": "Ubuntu 26.04.1 LTS",
+        "kernel": "Linux 7.0.0-31-generic x86_64",
+        "cpu": "Intel Core Ultra 9 185H",
+        "logicalCpus": 22,
+        "ramKiB": 63963960,
+        "display": "private Xvfb, software rendering",
+        "viewport": [1280, 900],
+        "pandas": "3.0.5",
+        "polars": "1.44.1",
+        "jupyterExtension": "2025.9.1",
+        "pythonExtension": "2026.4.0",
+        "python": "3.12.14",
+        "pyarrow": "25.0.1",
+        "power": {
+          "start": {
+            "BAT0": {
+              "type": "Battery",
+              "status": "Discharging",
+              "capacity": "47"
+            },
+            "AC": {
+              "type": "Mains",
+              "online": "0"
+            },
+            "energyPerformancePreference": "power"
+          },
+          "cpuPolicyObservedBeforeCohort": "powersave; energy performance preference power",
+          "millionRowBeforeAndAfter": "All 12 validation/fixed before-and-after records report AC offline and energy performance preference power; battery capacity falls from 37% to 36%. Individual records retain these observations.",
+          "historicalPowerState": "Unknown for September 17; no controlled power-state or old/new comparison."
+        }
+      },
+      "inputs": [
+        {
+          "file": "data/six-columns-100000.csv",
+          "rows": 100000,
+          "bytes": 5294554,
+          "sha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+          "missing_by_column": {
+            "id": 0,
+            "amount": 10000,
+            "category": 5883,
+            "active": 5264,
+            "day": 0,
+            "event_at": 0
+          },
+          "amount_profile": {
+            "present": 90000,
+            "missing": 10000,
+            "min": 1,
+            "max": 999,
+            "sum": 45000000,
+            "mean": 500,
+            "distinct_present": 900
+          },
+          "drop_missing_amount": {
+            "rows": 90000,
+            "retained_id_sum": 4500000000,
+            "retained_id_rule": "ascending i in range(N) where i % 10 != 0",
+            "amount_missing": 0,
+            "other_cells": "unchanged at each retained id",
+            "category_missing": 5294,
+            "active_missing": 4737
+          },
+          "verification": "every serialized cell, order, null counts and amount aggregates checked"
+        },
+        {
+          "file": "data/six-columns-1000000.csv",
+          "rows": 1000000,
+          "bytes": 53945240,
+          "sha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+          "missing_by_column": {
+            "id": 0,
+            "amount": 100000,
+            "category": 58824,
+            "active": 52632,
+            "day": 0,
+            "event_at": 0
+          },
+          "amount_profile": {
+            "present": 900000,
+            "missing": 100000,
+            "min": 1,
+            "max": 999,
+            "sum": 450000000,
+            "mean": 500,
+            "distinct_present": 900
+          },
+          "drop_missing_amount": {
+            "rows": 900000,
+            "retained_id_sum": 450000000000,
+            "retained_id_rule": "ascending i in range(N) where i % 10 != 0",
+            "amount_missing": 0,
+            "other_cells": "unchanged at each retained id",
+            "category_missing": 52941,
+            "active_missing": 47368
+          },
+          "verification": "every serialized cell, order, null counts and amount aggregates checked"
+        }
+      ],
+      "method": {
+        "clock": "Public final Open to visible result and confirming row selection, milliseconds",
+        "samplesPerRouteAndSize": 3,
+        "budgetMs": 60000,
+        "pollMs": 100,
+        "automaticRetries": 0,
+        "editorLifecycle": "One first Open per fresh private VS Code process, same prepared profile; native public closing and natural owned process shutdown between attempts.",
+        "preparationExcluded": "Installation, Trust, interpreter selection, backend settings before launch, editor startup and file-dialog selection. CSV hashing warms the file cache; no explicit runtime warmup. A product may begin runtime preparation before final Open.",
+        "productOrderByRepetition": [
+          ["ow-pandas", "dw", "ow-polars"],
+          ["dw", "ow-polars", "ow-pandas"],
+          ["ow-polars", "ow-pandas", "dw"]
+        ],
+        "sizeOrder": [100000, 1000000],
+        "visibleHeaderColumns": ["id", "amount", "category"],
+        "collectorSha256": {
+          "launch.py": "d4d1cd806ae8a037d8839c8d400d3785b9db50e249584aca0b411d7ca83a1b4f",
+          "control.cjs": "d9eaeeb16ab3bcad1db6bb3e0c8c17969a097c3c561b640b341314c5591c8570",
+          "public-controls.cjs": "39b4f63a37c7da6452cedfce941f7b43a757b058755d3e9fed79cc3b01755da9",
+          "measure-file-profiles.cjs": "7a80849f9a0b5eae3c5f70b966c9ef52a03e71613b0b7b6f1b05c1ec8bc069b8",
+          "measure-notebook.cjs": "1412483ef414e9442fa7ad15cc3561968e76cec5be568f0e265fea561d1552e6",
+          "r-ui-helpers.cjs": "93cb11e43011566111e31d587041e4e93b4e9519412b53a1a3d968a375b986f6",
+          "spark-ui-helpers.cjs": "ce45cf3d5ab1d6813327248e7402f2f0e559247b2d9a93e21f7c6cf491db111d",
+          "measure-native-open.cjs": "d6af83bb1fea34a383cf9ebdd1dd7927350ddce9581bc02a64ed45b42051d419"
+        },
+        "observedAvailability": "Profiles may compute automatically while opening. Selected-panel reveal and other recorded layout actions remain inside the clock; statistics below the fold are not all simultaneously visible.",
+        "scope": "One fresh paired cohort under current laptop conditions. Earlier complete and selective cohorts and the old-package diagnostic are not pooled. Three attempts per route and size do not establish tail latency, a general speed ranking or a controlled old/new speedup; polling intervals are not accuracy bounds."
+      },
+      "setup": "Workspace Trust completed through public UI. Before validation, Data Wrangler used its public Connect using local Python interpreter flow with the exact prepared Python 3.12.14 interpreter; its visible status reported Pandas 3.0.5 and ID1 selection succeeded. An initial setup locator was corrected before connection and before any measured attempt.",
+      "validations": [
+        {
+          "route": "ow-pandas",
+          "rows": 100000,
+          "sample": "validation",
+          "startedUtc": "2026-09-18T00:57:28.622Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 2555.78798,
+            "amount": 2555.9156489999996,
+            "category": 2556.040588
+          },
+          "layoutActions": [
+            {
+              "action": "Open Column profiles",
+              "ms": 2945.6596469999995
+            }
+          ],
+          "gridReadyMs": 2273.259562,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "threeHeadersReadyMs": 2556.0510219999996,
+          "interactiveMs": 2576.9653179999996,
+          "selectionStartMs": 2583.789352,
+          "firstAmountStatsMs": 2979.929379,
+          "completeAmountStatsMs": 2979.9437040000003,
+          "selectionToFirstStatsMs": 396.1400270000004,
+          "selectionToCompleteStatsMs": 396.1543520000005,
+          "cachedSwitchStartMs": 3174.757686,
+          "cachedSwitchReadyMs": 3336.9649099999997,
+          "cachedSwitchMs": 162.20722399999977,
+          "ok": true,
+          "finalSidebars": {
+            "primary": false,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true
+        },
+        {
+          "route": "dw",
+          "rows": 100000,
+          "sample": "validation",
+          "startedUtc": "2026-09-18T00:57:37.041Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 3101.4816680000004,
+            "amount": 3627.5281189999996,
+            "category": 3627.715652
+          },
+          "layoutActions": [
+            {
+              "action": "Hide bottom panel",
+              "ms": 3839.8882059999996
+            }
+          ],
+          "gridReadyMs": 3347.8592529999996,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "threeHeadersReadyMs": 3627.7361250000004,
+          "interactiveMs": 3640.0188099999996,
+          "selectionStartMs": 3654.4050610000004,
+          "firstAmountStatsMs": 4062.284173,
+          "completeAmountStatsMs": 4062.2937439999996,
+          "selectionToFirstStatsMs": 407.8791119999996,
+          "selectionToCompleteStatsMs": 407.8886829999992,
+          "cachedSwitchStartMs": 4276.572431,
+          "cachedSwitchReadyMs": 4467.427352,
+          "cachedSwitchMs": 190.8549210000001,
+          "ok": true,
+          "finalSidebars": {
+            "primary": true,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true
+        },
+        {
+          "route": "ow-polars",
+          "rows": 100000,
+          "sample": "validation",
+          "startedUtc": "2026-09-18T00:57:46.024Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 1746.170728,
+            "amount": 1746.3779679999998,
+            "category": 1746.5315550000005
+          },
+          "layoutActions": [
+            {
+              "action": "Open Column profiles",
+              "ms": 2189.2886559999997
+            }
+          ],
+          "gridReadyMs": 1448.5234790000004,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "threeHeadersReadyMs": 1746.547721,
+          "interactiveMs": 1763.5184200000003,
+          "selectionStartMs": 1771.3067490000003,
+          "firstAmountStatsMs": 2221.732107,
+          "completeAmountStatsMs": 2221.7397280000005,
+          "selectionToFirstStatsMs": 450.4253579999995,
+          "selectionToCompleteStatsMs": 450.43297900000016,
+          "cachedSwitchStartMs": 2410.4262100000005,
+          "cachedSwitchReadyMs": 2585.567868,
+          "cachedSwitchMs": 175.14165799999955,
+          "ok": true,
+          "finalSidebars": {
+            "primary": false,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true
+        },
+        {
+          "route": "ow-pandas",
+          "rows": 1000000,
+          "sample": "validation",
+          "startedUtc": "2026-09-18T01:20:26.849Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 3283.120895,
+            "amount": 3283.3151229999994,
+            "category": 3283.472097
+          },
+          "layoutActions": [
+            {
+              "action": "Open Column profiles",
+              "ms": 3629.8484799999997
+            }
+          ],
+          "gridReadyMs": 2879.0225009999995,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "threeHeadersReadyMs": 3283.4983979999997,
+          "interactiveMs": 3301.3808549999994,
+          "selectionStartMs": 3307.5700939999997,
+          "firstAmountStatsMs": 3670.337017,
+          "completeAmountStatsMs": 3670.3456100000003,
+          "selectionToFirstStatsMs": 362.76692300000013,
+          "selectionToCompleteStatsMs": 362.7755160000006,
+          "cachedSwitchStartMs": 3829.2204300000003,
+          "cachedSwitchReadyMs": 4022.868273,
+          "cachedSwitchMs": 193.64784299999974,
+          "ok": true,
+          "finalSidebars": {
+            "primary": false,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true,
+          "power": {
+            "before": {
+              "acOnline": "0",
+              "epp": "power",
+              "battery": "37"
+            },
+            "after": {
+              "acOnline": "0",
+              "epp": "power",
+              "battery": "37"
+            }
+          }
+        },
+        {
+          "route": "dw",
+          "rows": 1000000,
+          "sample": "validation",
+          "startedUtc": "2026-09-18T01:20:36.361Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 4492.415915,
+            "amount": 4743.195264,
+            "category": 4743.3703590000005
+          },
+          "layoutActions": [
+            {
+              "action": "Hide bottom panel",
+              "ms": 4732.892610999999
+            }
+          ],
+          "gridReadyMs": 4183.043884999999,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "interactiveMs": 4507.705784,
+          "selectionStartMs": 4523.410798999999,
+          "threeHeadersReadyMs": 4743.389259,
+          "firstAmountStatsMs": 4949.632799000001,
+          "completeAmountStatsMs": 4949.642435,
+          "selectionToFirstStatsMs": 426.2220000000016,
+          "selectionToCompleteStatsMs": 426.23163600000044,
+          "cachedSwitchStartMs": 5172.563397,
+          "cachedSwitchReadyMs": 5370.607585,
+          "cachedSwitchMs": 198.04418799999985,
+          "ok": true,
+          "finalSidebars": {
+            "primary": true,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true,
+          "power": {
+            "before": {
+              "acOnline": "0",
+              "epp": "power",
+              "battery": "37"
+            },
+            "after": {
+              "acOnline": "0",
+              "epp": "power",
+              "battery": "37"
+            }
+          }
+        },
+        {
+          "route": "ow-polars",
+          "rows": 1000000,
+          "sample": "validation",
+          "startedUtc": "2026-09-18T01:20:48.548Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 2197.0478620000004,
+            "amount": 2350.221321,
+            "category": 2614.8467600000004
+          },
+          "layoutActions": [
+            {
+              "action": "Open Column profiles",
+              "ms": 2177.700766000001
+            }
+          ],
+          "gridReadyMs": 1500.3151510000007,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "interactiveMs": 1785.7079220000005,
+          "selectionStartMs": 1796.328399,
+          "firstAmountStatsMs": 2373.0344560000003,
+          "completeAmountStatsMs": 2373.052197000001,
+          "threeHeadersReadyMs": 2614.873428000001,
+          "selectionToFirstStatsMs": 576.7060570000003,
+          "selectionToCompleteStatsMs": 576.7237980000009,
+          "cachedSwitchStartMs": 2816.7716330000003,
+          "cachedSwitchReadyMs": 2986.9251780000004,
+          "cachedSwitchMs": 170.15354500000012,
+          "ok": true,
+          "finalSidebars": {
+            "primary": false,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true,
+          "power": {
+            "before": {
+              "acOnline": "0",
+              "epp": "power",
+              "battery": "37"
+            },
+            "after": {
+              "acOnline": "0",
+              "epp": "power",
+              "battery": "37"
+            }
+          }
+        }
+      ],
+      "completion": {
+        "validationAttempts": 6,
+        "validationsComplete": 6,
+        "fixedAttempts": 18,
+        "complete": 18,
+        "failed": 0,
+        "sourceHashesUnchanged": true,
+        "artifactUnchanged": true,
+        "collectorUnchanged": true,
+        "naturalShutdownForEveryFixedAttempt": true,
+        "noRemainingOwnedProcesses": true,
+        "noReplacementAttempts": true
+      },
+      "summary": [
+        {
+          "route": "ow-pandas",
+          "rows": 100000,
+          "planned": 3,
+          "completed": 3,
+          "durationsMs": {
+            "gridReadyMs": {
+              "median": 2362.962305,
+              "min": 2252.376499,
+              "max": 2488.7036679999997
+            },
+            "interactiveMs": {
+              "median": 2692.219535,
+              "min": 2578.5780640000003,
+              "max": 2771.1496309999998
+            },
+            "threeHeadersReadyMs": {
+              "median": 2675.2806630000005,
+              "min": 2560.8650530000004,
+              "max": 2754.298231
+            },
+            "firstAmountStatsMs": {
+              "median": 3124.2367460000005,
+              "min": 3022.0961530000004,
+              "max": 3186.7038179999995
+            },
+            "completeAmountStatsMs": {
+              "median": 3124.2503670000006,
+              "min": 3022.106817,
+              "max": 3186.718074
+            },
+            "cachedSwitchMs": {
+              "median": 198.72882800000025,
+              "min": 188.67916100000002,
+              "max": 207.58206000000064
+            }
+          }
+        },
+        {
+          "route": "ow-polars",
+          "rows": 100000,
+          "planned": 3,
+          "completed": 3,
+          "durationsMs": {
+            "gridReadyMs": {
+              "median": 1607.7298819999996,
+              "min": 1543.1531969999996,
+              "max": 1679.9907899999998
+            },
+            "interactiveMs": {
+              "median": 1905.9391379999997,
+              "min": 1828.3267610000003,
+              "max": 2012.3069930000001
+            },
+            "threeHeadersReadyMs": {
+              "median": 1888.7528320000001,
+              "min": 1812.8571739999998,
+              "max": 1994.752896
+            },
+            "firstAmountStatsMs": {
+              "median": 2333.26793,
+              "min": 2235.6929609999997,
+              "max": 2427.385792
+            },
+            "completeAmountStatsMs": {
+              "median": 2333.2813290000004,
+              "min": 2235.700234,
+              "max": 2427.399445
+            },
+            "cachedSwitchMs": {
+              "median": 173.3094860000001,
+              "min": 166.49954900000012,
+              "max": 189.9304430000002
+            }
+          }
+        },
+        {
+          "route": "dw",
+          "rows": 100000,
+          "planned": 3,
+          "completed": 3,
+          "durationsMs": {
+            "gridReadyMs": {
+              "median": 3274.985416,
+              "min": 3273.6746350000003,
+              "max": 3395.9045069999997
+            },
+            "interactiveMs": {
+              "median": 3579.396908,
+              "min": 3566.25007,
+              "max": 3669.2511470000004
+            },
+            "threeHeadersReadyMs": {
+              "median": 3563.8039460000005,
+              "min": 3554.466125,
+              "max": 3653.741372
+            },
+            "firstAmountStatsMs": {
+              "median": 4041.154403,
+              "min": 4039.925937,
+              "max": 4137.984058
+            },
+            "completeAmountStatsMs": {
+              "median": 4041.1704219999997,
+              "min": 4039.940648,
+              "max": 4137.999927000001
+            },
+            "cachedSwitchMs": {
+              "median": 188.46908000000076,
+              "min": 182.34017199999926,
+              "max": 191.61454500000036
+            }
+          }
+        },
+        {
+          "route": "ow-pandas",
+          "rows": 1000000,
+          "planned": 3,
+          "completed": 3,
+          "durationsMs": {
+            "gridReadyMs": {
+              "median": 3046.4783760000005,
+              "min": 2992.7884499999996,
+              "max": 3049.200562
+            },
+            "interactiveMs": {
+              "median": 3443.6047409999996,
+              "min": 3392.523455,
+              "max": 3483.170758
+            },
+            "threeHeadersReadyMs": {
+              "median": 3422.4118030000004,
+              "min": 3376.403825,
+              "max": 3465.592219
+            },
+            "firstAmountStatsMs": {
+              "median": 3876.505966,
+              "min": 3788.4772829999997,
+              "max": 3884.926689
+            },
+            "completeAmountStatsMs": {
+              "median": 3876.514412,
+              "min": 3788.490579,
+              "max": 3884.9544809999998
+            },
+            "cachedSwitchMs": {
+              "median": 173.31209299999955,
+              "min": 165.61379400000033,
+              "max": 174.91465899999957
+            }
+          }
+        },
+        {
+          "route": "ow-polars",
+          "rows": 1000000,
+          "planned": 3,
+          "completed": 3,
+          "durationsMs": {
+            "gridReadyMs": {
+              "median": 1533.0087830000002,
+              "min": 1498.8952079999995,
+              "max": 1589.281856
+            },
+            "interactiveMs": {
+              "median": 1855.8124360000002,
+              "min": 1808.005826,
+              "max": 1902.0482040000002
+            },
+            "threeHeadersReadyMs": {
+              "median": 2498.9759289999997,
+              "min": 2386.5091069999994,
+              "max": 2556.5163150000008
+            },
+            "firstAmountStatsMs": {
+              "median": 2368.884544,
+              "min": 2276.0750649999995,
+              "max": 2446.869307
+            },
+            "completeAmountStatsMs": {
+              "median": 2368.889697,
+              "min": 2276.079126,
+              "max": 2446.885899
+            },
+            "cachedSwitchMs": {
+              "median": 177.27640900000006,
+              "min": 177.1925570000003,
+              "max": 198.33014900000035
+            }
+          }
+        },
+        {
+          "route": "dw",
+          "rows": 1000000,
+          "planned": 3,
+          "completed": 3,
+          "durationsMs": {
+            "gridReadyMs": {
+              "median": 4026.055889,
+              "min": 3952.3453860000004,
+              "max": 4095.621909
+            },
+            "interactiveMs": {
+              "median": 4393.6320749999995,
+              "min": 4247.097123,
+              "max": 4411.930391
+            },
+            "threeHeadersReadyMs": {
+              "median": 4675.316304,
+              "min": 4555.428261000001,
+              "max": 4693.470185
+            },
+            "firstAmountStatsMs": {
+              "median": 4884.302526,
+              "min": 4771.573163999999,
+              "max": 4896.722164000001
+            },
+            "completeAmountStatsMs": {
+              "median": 4884.312103,
+              "min": 4771.582367000001,
+              "max": 4896.730769
+            },
+            "cachedSwitchMs": {
+              "median": 187.57282100000157,
+              "min": 186.7520489999988,
+              "max": 196.98155100000076
+            }
+          }
+        }
+      ],
+      "samples": [
+        {
+          "fixedId": "01",
+          "route": "ow-pandas",
+          "rows": 100000,
+          "sample": 1,
+          "startedUtc": "2026-09-18T00:58:33.793Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 2675.015757,
+            "amount": 2675.157706,
+            "category": 2675.269427
+          },
+          "layoutActions": [
+            {
+              "action": "Open Column profiles",
+              "ms": 3070.679018
+            }
+          ],
+          "gridReadyMs": 2362.962305,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "threeHeadersReadyMs": 2675.2806630000005,
+          "interactiveMs": 2692.219535,
+          "selectionStartMs": 2699.65401,
+          "firstAmountStatsMs": 3124.2367460000005,
+          "completeAmountStatsMs": 3124.2503670000006,
+          "selectionToFirstStatsMs": 424.5827360000003,
+          "selectionToCompleteStatsMs": 424.59635700000035,
+          "cachedSwitchStartMs": 3299.443021,
+          "cachedSwitchReadyMs": 3498.1718490000003,
+          "cachedSwitchMs": 198.72882800000025,
+          "ok": true,
+          "finalSidebars": {
+            "primary": false,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true
+        },
+        {
+          "fixedId": "02",
+          "route": "dw",
+          "rows": 100000,
+          "sample": 1,
+          "startedUtc": "2026-09-18T00:58:41.502Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 3062.142404,
+            "amount": 3554.3152580000005,
+            "category": 3554.451167
+          },
+          "layoutActions": [
+            {
+              "action": "Hide bottom panel",
+              "ms": 3807.791172
+            }
+          ],
+          "gridReadyMs": 3273.6746350000003,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "threeHeadersReadyMs": 3554.466125,
+          "interactiveMs": 3566.25007,
+          "selectionStartMs": 3583.4932500000004,
+          "firstAmountStatsMs": 4039.925937,
+          "completeAmountStatsMs": 4039.940648,
+          "selectionToFirstStatsMs": 456.43268699999953,
+          "selectionToCompleteStatsMs": 456.44739799999934,
+          "cachedSwitchStartMs": 4221.8574690000005,
+          "cachedSwitchReadyMs": 4404.197641,
+          "cachedSwitchMs": 182.34017199999926,
+          "ok": true,
+          "finalSidebars": {
+            "primary": true,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true
+        },
+        {
+          "fixedId": "03",
+          "route": "ow-polars",
+          "rows": 100000,
+          "sample": 1,
+          "startedUtc": "2026-09-18T00:58:50.602Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 1994.4413829999994,
+            "amount": 1994.602285,
+            "category": 1994.7384080000002
+          },
+          "layoutActions": [
+            {
+              "action": "Open Column profiles",
+              "ms": 2393.826314
+            }
+          ],
+          "gridReadyMs": 1679.9907899999998,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "threeHeadersReadyMs": 1994.752896,
+          "interactiveMs": 2012.3069930000001,
+          "selectionStartMs": 2020.8860299999997,
+          "firstAmountStatsMs": 2427.385792,
+          "completeAmountStatsMs": 2427.399445,
+          "selectionToFirstStatsMs": 406.4997620000004,
+          "selectionToCompleteStatsMs": 406.51341500000035,
+          "cachedSwitchStartMs": 2586.712334,
+          "cachedSwitchReadyMs": 2776.642777,
+          "cachedSwitchMs": 189.9304430000002,
+          "ok": true,
+          "finalSidebars": {
+            "primary": false,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true
+        },
+        {
+          "fixedId": "04",
+          "route": "dw",
+          "rows": 100000,
+          "sample": 2,
+          "startedUtc": "2026-09-18T00:58:57.870Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 3044.9729169999996,
+            "amount": 3563.585388,
+            "category": 3563.784239
+          },
+          "layoutActions": [
+            {
+              "action": "Hide bottom panel",
+              "ms": 3806.2369780000004
+            }
+          ],
+          "gridReadyMs": 3274.985416,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "threeHeadersReadyMs": 3563.8039460000005,
+          "interactiveMs": 3579.396908,
+          "selectionStartMs": 3596.008158,
+          "firstAmountStatsMs": 4041.154403,
+          "completeAmountStatsMs": 4041.1704219999997,
+          "selectionToFirstStatsMs": 445.1462449999999,
+          "selectionToCompleteStatsMs": 445.1622639999996,
+          "cachedSwitchStartMs": 4259.446696999999,
+          "cachedSwitchReadyMs": 4451.061242,
+          "cachedSwitchMs": 191.61454500000036,
+          "ok": true,
+          "finalSidebars": {
+            "primary": true,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true
+        },
+        {
+          "fixedId": "05",
+          "route": "ow-polars",
+          "rows": 100000,
+          "sample": 2,
+          "startedUtc": "2026-09-18T00:59:06.967Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 1812.2812839999997,
+            "amount": 1812.6705929999998,
+            "category": 1812.8446169999997
+          },
+          "layoutActions": [
+            {
+              "action": "Open Column profiles",
+              "ms": 2198.65916
+            }
+          ],
+          "gridReadyMs": 1543.1531969999996,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "threeHeadersReadyMs": 1812.8571739999998,
+          "interactiveMs": 1828.3267610000003,
+          "selectionStartMs": 1834.8951939999997,
+          "firstAmountStatsMs": 2235.6929609999997,
+          "completeAmountStatsMs": 2235.700234,
+          "selectionToFirstStatsMs": 400.797767,
+          "selectionToCompleteStatsMs": 400.8050400000002,
+          "cachedSwitchStartMs": 2390.2723379999998,
+          "cachedSwitchReadyMs": 2563.581824,
+          "cachedSwitchMs": 173.3094860000001,
+          "ok": true,
+          "finalSidebars": {
+            "primary": false,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true
+        },
+        {
+          "fixedId": "06",
+          "route": "ow-pandas",
+          "rows": 100000,
+          "sample": 2,
+          "startedUtc": "2026-09-18T00:59:14.072Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 2560.517705,
+            "amount": 2560.7216020000005,
+            "category": 2560.854658
+          },
+          "layoutActions": [
+            {
+              "action": "Open Column profiles",
+              "ms": 2981.1423729999997
+            }
+          ],
+          "gridReadyMs": 2252.376499,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "threeHeadersReadyMs": 2560.8650530000004,
+          "interactiveMs": 2578.5780640000003,
+          "selectionStartMs": 2585.5946030000005,
+          "firstAmountStatsMs": 3022.0961530000004,
+          "completeAmountStatsMs": 3022.106817,
+          "selectionToFirstStatsMs": 436.50154999999995,
+          "selectionToCompleteStatsMs": 436.5122139999994,
+          "cachedSwitchStartMs": 3201.174792,
+          "cachedSwitchReadyMs": 3389.853953,
+          "cachedSwitchMs": 188.67916100000002,
+          "ok": true,
+          "finalSidebars": {
+            "primary": false,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true
+        },
+        {
+          "fixedId": "07",
+          "route": "ow-polars",
+          "rows": 100000,
+          "sample": 3,
+          "startedUtc": "2026-09-18T00:59:21.659Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 1888.539995,
+            "amount": 1888.663646,
+            "category": 1888.743681
+          },
+          "layoutActions": [
+            {
+              "action": "Open Column profiles",
+              "ms": 2295.368432
+            }
+          ],
+          "gridReadyMs": 1607.7298819999996,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "threeHeadersReadyMs": 1888.7528320000001,
+          "interactiveMs": 1905.9391379999997,
+          "selectionStartMs": 1914.625212,
+          "firstAmountStatsMs": 2333.26793,
+          "completeAmountStatsMs": 2333.2813290000004,
+          "selectionToFirstStatsMs": 418.64271800000006,
+          "selectionToCompleteStatsMs": 418.65611700000045,
+          "cachedSwitchStartMs": 2520.9748659999996,
+          "cachedSwitchReadyMs": 2687.4744149999997,
+          "cachedSwitchMs": 166.49954900000012,
+          "ok": true,
+          "finalSidebars": {
+            "primary": false,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true
+        },
+        {
+          "fixedId": "08",
+          "route": "ow-pandas",
+          "rows": 100000,
+          "sample": 3,
+          "startedUtc": "2026-09-18T00:59:28.635Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 2754.0701329999997,
+            "amount": 2754.1863909999997,
+            "category": 2754.282071
+          },
+          "layoutActions": [
+            {
+              "action": "Open Column profiles",
+              "ms": 3147.9983849999994
+            }
+          ],
+          "gridReadyMs": 2488.7036679999997,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "threeHeadersReadyMs": 2754.298231,
+          "interactiveMs": 2771.1496309999998,
+          "selectionStartMs": 2777.588558,
+          "firstAmountStatsMs": 3186.7038179999995,
+          "completeAmountStatsMs": 3186.718074,
+          "selectionToFirstStatsMs": 409.1152599999996,
+          "selectionToCompleteStatsMs": 409.12951599999997,
+          "cachedSwitchStartMs": 3378.1795829999996,
+          "cachedSwitchReadyMs": 3585.7616430000003,
+          "cachedSwitchMs": 207.58206000000064,
+          "ok": true,
+          "finalSidebars": {
+            "primary": false,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true
+        },
+        {
+          "fixedId": "09",
+          "route": "dw",
+          "rows": 100000,
+          "sample": 3,
+          "startedUtc": "2026-09-18T00:59:36.676Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 3653.273388,
+            "amount": 3653.553096,
+            "category": 3653.7217619999997
+          },
+          "layoutActions": [
+            {
+              "action": "Hide bottom panel",
+              "ms": 3905.5366870000003
+            }
+          ],
+          "gridReadyMs": 3395.9045069999997,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "threeHeadersReadyMs": 3653.741372,
+          "interactiveMs": 3669.2511470000004,
+          "selectionStartMs": 3693.6179349999998,
+          "firstAmountStatsMs": 4137.984058,
+          "completeAmountStatsMs": 4137.999927000001,
+          "selectionToFirstStatsMs": 444.36612300000024,
+          "selectionToCompleteStatsMs": 444.381992000001,
+          "cachedSwitchStartMs": 4326.716203,
+          "cachedSwitchReadyMs": 4515.185283000001,
+          "cachedSwitchMs": 188.46908000000076,
+          "ok": true,
+          "finalSidebars": {
+            "primary": true,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true
+        },
+        {
+          "fixedId": "10",
+          "route": "ow-pandas",
+          "rows": 1000000,
+          "sample": 1,
+          "startedUtc": "2026-09-18T01:21:20.939Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 3376.1423599999994,
+            "amount": 3376.277281,
+            "category": 3376.3950439999994
+          },
+          "layoutActions": [
+            {
+              "action": "Open Column profiles",
+              "ms": 3748.425097
+            }
+          ],
+          "gridReadyMs": 2992.7884499999996,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "threeHeadersReadyMs": 3376.403825,
+          "interactiveMs": 3392.523455,
+          "selectionStartMs": 3398.9639789999997,
+          "firstAmountStatsMs": 3788.4772829999997,
+          "completeAmountStatsMs": 3788.490579,
+          "selectionToFirstStatsMs": 389.51330400000006,
+          "selectionToCompleteStatsMs": 389.52660000000014,
+          "cachedSwitchStartMs": 3955.1867669999997,
+          "cachedSwitchReadyMs": 4120.800561,
+          "cachedSwitchMs": 165.61379400000033,
+          "ok": true,
+          "finalSidebars": {
+            "primary": false,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true,
+          "power": {
+            "before": {
+              "acOnline": "0",
+              "epp": "power",
+              "battery": "37"
+            },
+            "after": {
+              "acOnline": "0",
+              "epp": "power",
+              "battery": "37"
+            }
+          }
+        },
+        {
+          "fixedId": "11",
+          "route": "dw",
+          "rows": 1000000,
+          "sample": 1,
+          "startedUtc": "2026-09-18T01:21:30.015Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 4693.09088,
+            "amount": 4693.3184710000005,
+            "category": 4693.459204000001
+          },
+          "layoutActions": [
+            {
+              "action": "Hide bottom panel",
+              "ms": 4683.642297
+            }
+          ],
+          "gridReadyMs": 4095.621909,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "interactiveMs": 4393.6320749999995,
+          "selectionStartMs": 4413.9449939999995,
+          "threeHeadersReadyMs": 4693.470185,
+          "firstAmountStatsMs": 4896.722164000001,
+          "completeAmountStatsMs": 4896.730769,
+          "selectionToFirstStatsMs": 482.7771700000012,
+          "selectionToCompleteStatsMs": 482.7857750000003,
+          "cachedSwitchStartMs": 5100.891833,
+          "cachedSwitchReadyMs": 5288.464654000001,
+          "cachedSwitchMs": 187.57282100000157,
+          "ok": true,
+          "finalSidebars": {
+            "primary": true,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true,
+          "power": {
+            "before": {
+              "acOnline": "0",
+              "epp": "power",
+              "battery": "37"
+            },
+            "after": {
+              "acOnline": "0",
+              "epp": "power",
+              "battery": "37"
+            }
+          }
+        },
+        {
+          "fixedId": "12",
+          "route": "ow-polars",
+          "rows": 1000000,
+          "sample": 1,
+          "startedUtc": "2026-09-18T01:21:42.101Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 2246.4158299999995,
+            "amount": 2246.5591600000002,
+            "category": 2386.4719739999996
+          },
+          "layoutActions": [
+            {
+              "action": "Open Column profiles",
+              "ms": 2208.2984979999997
+            }
+          ],
+          "gridReadyMs": 1498.8952079999995,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "interactiveMs": 1808.005826,
+          "selectionStartMs": 1813.7322529999997,
+          "firstAmountStatsMs": 2276.0750649999995,
+          "completeAmountStatsMs": 2276.079126,
+          "threeHeadersReadyMs": 2386.5091069999994,
+          "selectionToFirstStatsMs": 462.34281199999987,
+          "selectionToCompleteStatsMs": 462.3468730000004,
+          "cachedSwitchStartMs": 2579.740104,
+          "cachedSwitchReadyMs": 2757.016513,
+          "cachedSwitchMs": 177.27640900000006,
+          "ok": true,
+          "finalSidebars": {
+            "primary": false,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true,
+          "power": {
+            "before": {
+              "acOnline": "0",
+              "epp": "power",
+              "battery": "37"
+            },
+            "after": {
+              "acOnline": "0",
+              "epp": "power",
+              "battery": "37"
+            }
+          }
+        },
+        {
+          "fixedId": "13",
+          "route": "dw",
+          "rows": 1000000,
+          "sample": 2,
+          "startedUtc": "2026-09-18T01:21:49.825Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 4394.738704,
+            "amount": 4675.090362,
+            "category": 4675.294462
+          },
+          "layoutActions": [
+            {
+              "action": "Hide bottom panel",
+              "ms": 4664.230918
+            }
+          ],
+          "gridReadyMs": 4026.055889,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "interactiveMs": 4411.930391,
+          "selectionStartMs": 4431.24077,
+          "threeHeadersReadyMs": 4675.316304,
+          "firstAmountStatsMs": 4884.302526,
+          "completeAmountStatsMs": 4884.312103,
+          "selectionToFirstStatsMs": 453.06175600000006,
+          "selectionToCompleteStatsMs": 453.07133299999987,
+          "cachedSwitchStartMs": 5093.169126,
+          "cachedSwitchReadyMs": 5290.1506770000005,
+          "cachedSwitchMs": 196.98155100000076,
+          "ok": true,
+          "finalSidebars": {
+            "primary": true,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true,
+          "power": {
+            "before": {
+              "acOnline": "0",
+              "epp": "power",
+              "battery": "37"
+            },
+            "after": {
+              "acOnline": "0",
+              "epp": "power",
+              "battery": "37"
+            }
+          }
+        },
+        {
+          "fixedId": "14",
+          "route": "ow-polars",
+          "rows": 1000000,
+          "sample": 2,
+          "startedUtc": "2026-09-18T01:22:02.038Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 2288.784028,
+            "amount": 2426.9648260000004,
+            "category": 2556.4879820000006
+          },
+          "layoutActions": [
+            {
+              "action": "Open Column profiles",
+              "ms": 2272.744726
+            }
+          ],
+          "gridReadyMs": 1533.0087830000002,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "interactiveMs": 1855.8124360000002,
+          "selectionStartMs": 1864.8505540000006,
+          "firstAmountStatsMs": 2446.869307,
+          "completeAmountStatsMs": 2446.885899,
+          "threeHeadersReadyMs": 2556.5163150000008,
+          "selectionToFirstStatsMs": 582.0187529999994,
+          "selectionToCompleteStatsMs": 582.0353449999993,
+          "cachedSwitchStartMs": 2772.753665,
+          "cachedSwitchReadyMs": 2949.9462220000005,
+          "cachedSwitchMs": 177.1925570000003,
+          "ok": true,
+          "finalSidebars": {
+            "primary": false,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true,
+          "power": {
+            "before": {
+              "acOnline": "0",
+              "epp": "power",
+              "battery": "37"
+            },
+            "after": {
+              "acOnline": "0",
+              "epp": "power",
+              "battery": "37"
+            }
+          }
+        },
+        {
+          "fixedId": "15",
+          "route": "ow-pandas",
+          "rows": 1000000,
+          "sample": 2,
+          "startedUtc": "2026-09-18T01:22:11.348Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 3465.354499,
+            "amount": 3465.474512,
+            "category": 3465.5832309999996
+          },
+          "layoutActions": [
+            {
+              "action": "Open Column profiles",
+              "ms": 3848.319241
+            }
+          ],
+          "gridReadyMs": 3049.200562,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "threeHeadersReadyMs": 3465.592219,
+          "interactiveMs": 3483.170758,
+          "selectionStartMs": 3490.496325,
+          "firstAmountStatsMs": 3884.926689,
+          "completeAmountStatsMs": 3884.9544809999998,
+          "selectionToFirstStatsMs": 394.4303639999998,
+          "selectionToCompleteStatsMs": 394.4581559999997,
+          "cachedSwitchStartMs": 4018.005242,
+          "cachedSwitchReadyMs": 4191.317335,
+          "cachedSwitchMs": 173.31209299999955,
+          "ok": true,
+          "finalSidebars": {
+            "primary": false,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true,
+          "power": {
+            "before": {
+              "acOnline": "0",
+              "epp": "power",
+              "battery": "37"
+            },
+            "after": {
+              "acOnline": "0",
+              "epp": "power",
+              "battery": "37"
+            }
+          }
+        },
+        {
+          "fixedId": "16",
+          "route": "ow-polars",
+          "rows": 1000000,
+          "sample": 3,
+          "startedUtc": "2026-09-18T01:22:20.387Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 2344.572909,
+            "amount": 2344.708231,
+            "category": 2498.9488189999997
+          },
+          "layoutActions": [
+            {
+              "action": "Open Column profiles",
+              "ms": 2299.276305
+            }
+          ],
+          "gridReadyMs": 1589.281856,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "interactiveMs": 1902.0482040000002,
+          "selectionStartMs": 1909.1355589999998,
+          "firstAmountStatsMs": 2368.884544,
+          "completeAmountStatsMs": 2368.889697,
+          "threeHeadersReadyMs": 2498.9759289999997,
+          "selectionToFirstStatsMs": 459.7489850000002,
+          "selectionToCompleteStatsMs": 459.75413800000024,
+          "cachedSwitchStartMs": 2717.3154849999996,
+          "cachedSwitchReadyMs": 2915.645634,
+          "cachedSwitchMs": 198.33014900000035,
+          "ok": true,
+          "finalSidebars": {
+            "primary": false,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true,
+          "power": {
+            "before": {
+              "acOnline": "0",
+              "epp": "power",
+              "battery": "37"
+            },
+            "after": {
+              "acOnline": "0",
+              "epp": "power",
+              "battery": "37"
+            }
+          }
+        },
+        {
+          "fixedId": "17",
+          "route": "ow-pandas",
+          "rows": 1000000,
+          "sample": 3,
+          "startedUtc": "2026-09-18T01:22:27.711Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 3422.169714,
+            "amount": 3422.2999240000004,
+            "category": 3422.4043070000002
+          },
+          "layoutActions": [
+            {
+              "action": "Open Column profiles",
+              "ms": 3836.598356
+            }
+          ],
+          "gridReadyMs": 3046.4783760000005,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "threeHeadersReadyMs": 3422.4118030000004,
+          "interactiveMs": 3443.6047409999996,
+          "selectionStartMs": 3451.6835539999997,
+          "firstAmountStatsMs": 3876.505966,
+          "completeAmountStatsMs": 3876.514412,
+          "selectionToFirstStatsMs": 424.82241200000044,
+          "selectionToCompleteStatsMs": 424.83085800000026,
+          "cachedSwitchStartMs": 4031.5225269999996,
+          "cachedSwitchReadyMs": 4206.437185999999,
+          "cachedSwitchMs": 174.91465899999957,
+          "ok": true,
+          "finalSidebars": {
+            "primary": false,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true,
+          "power": {
+            "before": {
+              "acOnline": "0",
+              "epp": "power",
+              "battery": "37"
+            },
+            "after": {
+              "acOnline": "0",
+              "epp": "power",
+              "battery": "36"
+            }
+          }
+        },
+        {
+          "fixedId": "18",
+          "route": "dw",
+          "rows": 1000000,
+          "sample": 3,
+          "startedUtc": "2026-09-18T01:22:36.638Z",
+          "pollMs": 100,
+          "headerColumns": ["id", "amount", "category"],
+          "inputSha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+          "profileKind": "display availability from final Open; automatic work during opening included",
+          "headerReady": {
+            "id": 4554.837578000001,
+            "amount": 4555.222114,
+            "category": 4555.407788
+          },
+          "layoutActions": [
+            {
+              "action": "Hide bottom panel",
+              "ms": 4544.030075000001
+            }
+          ],
+          "gridReadyMs": 3952.3453860000004,
+          "identity": {
+            "column": 2,
+            "firstRow": 2,
+            "nextRow": 3,
+            "firstValue": 0,
+            "nextValue": 1
+          },
+          "interactiveMs": 4247.097123,
+          "selectionStartMs": 4266.584029,
+          "threeHeadersReadyMs": 4555.428261000001,
+          "firstAmountStatsMs": 4771.573163999999,
+          "completeAmountStatsMs": 4771.582367000001,
+          "selectionToFirstStatsMs": 504.9891349999998,
+          "selectionToCompleteStatsMs": 504.99833800000124,
+          "cachedSwitchStartMs": 5006.710315,
+          "cachedSwitchReadyMs": 5193.462363999999,
+          "cachedSwitchMs": 186.7520489999988,
+          "ok": true,
+          "finalSidebars": {
+            "primary": true,
+            "secondary": false,
+            "bottom": false
+          },
+          "sourceUnchanged": true,
+          "naturalShutdown": true,
+          "ownedProcessesSettled": true,
+          "power": {
+            "before": {
+              "acOnline": "0",
+              "epp": "power",
+              "battery": "36"
+            },
+            "after": {
+              "acOnline": "0",
+              "epp": "power",
+              "battery": "36"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "earlierSelectiveRefresh": {
+    "collectionDate": "2026-09-18",
+    "status": "One validation and three fixed 100,000-row Pandas observations completed before collection changed to a new paired cohort. The planned million-row observations were not started. These records are retained and excluded from every current paired summary.",
+    "product": {
+      "version": "2.6.0 development package",
+      "source": "87870b0f0a301e8f2d52cae369adb82192a7a1b0",
+      "vsixSha256": "1ec1c3185578141ce1cb27709eb5ccb32864f40f47587d95fa3984a0064e2c2a",
+      "releaseQualifiedAtCollection": false
+    },
+    "method": "Same file collector, endpoint, budget and fresh-editor lifecycle; this was an OW Pandas-only refresh, not a paired comparison.",
+    "collectorSha256": {
+      "control.cjs": "d9eaeeb16ab3bcad1db6bb3e0c8c17969a097c3c561b640b341314c5591c8570",
+      "launch.py": "d4d1cd806ae8a037d8839c8d400d3785b9db50e249584aca0b411d7ca83a1b4f",
+      "public-controls.cjs": "39b4f63a37c7da6452cedfce941f7b43a757b058755d3e9fed79cc3b01755da9",
+      "measure-file-profiles.cjs": "7a80849f9a0b5eae3c5f70b966c9ef52a03e71613b0b7b6f1b05c1ec8bc069b8",
+      "measure-notebook.cjs": "1412483ef414e9442fa7ad15cc3561968e76cec5be568f0e265fea561d1552e6",
+      "r-ui-helpers.cjs": "93cb11e43011566111e31d587041e4e93b4e9519412b53a1a3d968a375b986f6",
+      "spark-ui-helpers.cjs": "ce45cf3d5ab1d6813327248e7402f2f0e559247b2d9a93e21f7c6cf491db111d",
+      "measure-native-open.cjs": "d6af83bb1fea34a383cf9ebdd1dd7927350ddce9581bc02a64ed45b42051d419"
+    },
+    "validations": [
+      {
+        "route": "ow-pandas",
+        "rows": 100000,
+        "sample": "validation",
+        "startedUtc": "2026-09-18T00:46:08.223Z",
+        "pollMs": 100,
+        "headerColumns": ["id", "amount", "category"],
+        "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+        "profileKind": "display availability from final Open; automatic work during opening included",
+        "headerReady": {
+          "id": 2423.157149000006,
+          "amount": 2423.3150620000015,
+          "category": 2423.451666000001
+        },
+        "layoutActions": [
+          {
+            "action": "Open Column profiles",
+            "ms": 2829.695314000004
+          }
+        ],
+        "gridReadyMs": 2157.1498930000016,
+        "identity": {
+          "column": 2,
+          "firstRow": 2,
+          "nextRow": 3,
+          "firstValue": 0,
+          "nextValue": 1
+        },
+        "threeHeadersReadyMs": 2423.460368,
+        "interactiveMs": 2441.0028310000052,
+        "selectionStartMs": 2447.3916920000047,
+        "firstAmountStatsMs": 2876.467199000006,
+        "completeAmountStatsMs": 2876.489594000006,
+        "selectionToFirstStatsMs": 429.0755070000014,
+        "selectionToCompleteStatsMs": 429.09790200000134,
+        "cachedSwitchStartMs": 3062.7976960000015,
+        "cachedSwitchReadyMs": 3263.7746410000036,
+        "cachedSwitchMs": 200.97694500000216,
+        "ok": true,
+        "finalSidebars": {
+          "primary": false,
+          "secondary": false,
+          "bottom": false
+        },
+        "sourceUnchanged": true,
+        "naturalShutdown": true,
+        "ownedProcessesSettled": true
+      }
+    ],
+    "samples": [
+      {
+        "fixedId": "01",
+        "route": "ow-pandas",
+        "rows": 100000,
+        "sample": 1,
+        "startedUtc": "2026-09-18T00:47:13.091Z",
+        "pollMs": 100,
+        "headerColumns": ["id", "amount", "category"],
+        "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+        "profileKind": "display availability from final Open; automatic work during opening included",
+        "headerReady": {
+          "id": 2700.9112840000003,
+          "amount": 2701.122559,
+          "category": 2701.271867
+        },
+        "layoutActions": [
+          {
+            "action": "Open Column profiles",
+            "ms": 3113.890607
+          }
+        ],
+        "gridReadyMs": 2434.6191080000003,
+        "identity": {
+          "column": 2,
+          "firstRow": 2,
+          "nextRow": 3,
+          "firstValue": 0,
+          "nextValue": 1
+        },
+        "threeHeadersReadyMs": 2701.289784,
+        "interactiveMs": 2718.9949030000002,
+        "selectionStartMs": 2725.4710250000003,
+        "firstAmountStatsMs": 3150.181164,
+        "completeAmountStatsMs": 3150.190021,
+        "selectionToFirstStatsMs": 424.7101389999998,
+        "selectionToCompleteStatsMs": 424.7189959999996,
+        "cachedSwitchStartMs": 3333.715868,
+        "cachedSwitchReadyMs": 3510.2361239999996,
+        "cachedSwitchMs": 176.5202559999998,
+        "ok": true,
+        "finalSidebars": {
+          "primary": false,
+          "secondary": false,
+          "bottom": false
+        },
+        "sourceUnchanged": true,
+        "naturalShutdown": true,
+        "ownedProcessesSettled": true
+      },
+      {
+        "fixedId": "02",
+        "route": "ow-pandas",
+        "rows": 100000,
+        "sample": 2,
+        "startedUtc": "2026-09-18T00:48:12.039Z",
+        "pollMs": 100,
+        "headerColumns": ["id", "amount", "category"],
+        "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+        "profileKind": "display availability from final Open; automatic work during opening included",
+        "headerReady": {
+          "id": 2612.2034159999994,
+          "amount": 2612.325371,
+          "category": 2612.4078369999997
+        },
+        "layoutActions": [
+          {
+            "action": "Open Column profiles",
+            "ms": 3028.9951009999995
+          }
+        ],
+        "gridReadyMs": 2318.738717,
+        "identity": {
+          "column": 2,
+          "firstRow": 2,
+          "nextRow": 3,
+          "firstValue": 0,
+          "nextValue": 1
+        },
+        "threeHeadersReadyMs": 2612.416464,
+        "interactiveMs": 2632.8045700000002,
+        "selectionStartMs": 2641.3927869999998,
+        "firstAmountStatsMs": 3066.2761309999996,
+        "completeAmountStatsMs": 3066.2847599999996,
+        "selectionToFirstStatsMs": 424.88334399999985,
+        "selectionToCompleteStatsMs": 424.8919729999998,
+        "cachedSwitchStartMs": 3236.986721,
+        "cachedSwitchReadyMs": 3411.628471,
+        "cachedSwitchMs": 174.64174999999977,
+        "ok": true,
+        "finalSidebars": {
+          "primary": false,
+          "secondary": false,
+          "bottom": false
+        },
+        "sourceUnchanged": true,
+        "naturalShutdown": true,
+        "ownedProcessesSettled": true
+      },
+      {
+        "fixedId": "03",
+        "route": "ow-pandas",
+        "rows": 100000,
+        "sample": 3,
+        "startedUtc": "2026-09-18T00:48:19.677Z",
+        "pollMs": 100,
+        "headerColumns": ["id", "amount", "category"],
+        "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+        "profileKind": "display availability from final Open; automatic work during opening included",
+        "headerReady": {
+          "id": 2583.7480459999997,
+          "amount": 2583.848435,
+          "category": 2583.9651139999996
+        },
+        "layoutActions": [
+          {
+            "action": "Open Column profiles",
+            "ms": 2944.093766
+          }
+        ],
+        "gridReadyMs": 2322.890525,
+        "identity": {
+          "column": 2,
+          "firstRow": 2,
+          "nextRow": 3,
+          "firstValue": 0,
+          "nextValue": 1
+        },
+        "threeHeadersReadyMs": 2583.971542,
+        "interactiveMs": 2599.9896129999997,
+        "selectionStartMs": 2608.367942,
+        "firstAmountStatsMs": 2979.744477,
+        "completeAmountStatsMs": 2979.7509200000004,
+        "selectionToFirstStatsMs": 371.37653500000033,
+        "selectionToCompleteStatsMs": 371.38297800000055,
+        "cachedSwitchStartMs": 3147.2475030000005,
+        "cachedSwitchReadyMs": 3323.1297839999997,
+        "cachedSwitchMs": 175.88228099999924,
+        "ok": true,
+        "finalSidebars": {
+          "primary": false,
+          "secondary": false,
+          "bottom": false
+        },
+        "sourceUnchanged": true,
+        "naturalShutdown": true,
+        "ownedProcessesSettled": true
+      }
+    ],
+    "unstarted": [
+      {
+        "route": "ow-pandas",
+        "rows": 1000000,
+        "sample": "validation"
+      },
+      {
+        "route": "ow-pandas",
+        "rows": 1000000,
+        "sample": 1
+      },
+      {
+        "route": "ow-pandas",
+        "rows": 1000000,
+        "sample": 2
+      },
+      {
+        "route": "ow-pandas",
+        "rows": 1000000,
+        "sample": 3
+      }
+    ]
+  },
+  "oldArtifactDiagnostic": {
+    "collectionDate": "2026-09-18",
+    "purpose": "One observation of the original package under the current collector and host conditions, separate from all fixed cohorts. No replacement or causal before/after comparison.",
+    "product": {
+      "version": "2.6.0 development package",
+      "source": "3dee131000be69272dd8917abb41b4b285db3789",
+      "vsixSha256": "68bc2eb380f41bbf00cf8ca58a8a0a1be3141dec79d92cef9f0ac9170ba000ac",
+      "releaseQualifiedAtCollection": false
+    },
+    "powerObservation": "Battery Discharging48%, ACoffline, CPU powersave/EPPpower; prior power state unknown. No power settings changed.",
+    "interpretation": "The older artifact also took longer than its historical median. One control does not isolate a cause, prove a product regression or establish the absence of one; it does not establish power state as the sole cause. The subsequent complete comparison remeasured all three routes instead of pooling new OW times with historical DW or Polars times.",
+    "sample": {
+      "route": "ow-pandas",
+      "rows": 100000,
+      "sample": "validation",
+      "startedUtc": "2026-09-18T00:51:54.142Z",
+      "pollMs": 100,
+      "headerColumns": ["id", "amount", "category"],
+      "inputSha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+      "profileKind": "display availability from final Open; automatic work during opening included",
+      "headerReady": {
+        "id": 2385.6082590000005,
+        "amount": 2385.7653900000005,
+        "category": 2385.9075660000017
+      },
+      "layoutActions": [
+        {
+          "action": "Open Column profiles",
+          "ms": 2788.7431990000005
+        }
+      ],
+      "gridReadyMs": 2105.2578250000006,
+      "identity": {
+        "column": 2,
+        "firstRow": 2,
+        "nextRow": 3,
+        "firstValue": 0,
+        "nextValue": 1
+      },
+      "threeHeadersReadyMs": 2385.9176890000017,
+      "interactiveMs": 2403.4955550000013,
+      "selectionStartMs": 2410.920091,
+      "firstAmountStatsMs": 2823.0391740000014,
+      "completeAmountStatsMs": 2823.0577950000006,
+      "selectionToFirstStatsMs": 412.1190830000014,
+      "selectionToCompleteStatsMs": 412.13770400000067,
+      "cachedSwitchStartMs": 3003.1181749999996,
+      "cachedSwitchReadyMs": 3183.605872,
+      "cachedSwitchMs": 180.48769700000048,
+      "ok": true,
+      "finalSidebars": {
+        "primary": false,
+        "secondary": false,
+        "bottom": false
+      },
+      "sourceUnchanged": true,
+      "naturalShutdown": true,
+      "ownedProcessesSettled": true
+    }
+  }
+}

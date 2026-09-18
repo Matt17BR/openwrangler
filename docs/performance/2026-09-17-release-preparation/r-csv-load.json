@@ -1,0 +1,32 @@
+{
+  "productSource": "3dee131000be69272dd8917abb41b4b285db3789",
+  "runtimeSha256": "89a8925585561e20df79c12193b0983389f56884c596b178ff2f455a3808a0d4",
+  "fixtureSha256": "3c774e63651f34f6f382d0986cca634e9a236f075397cb1c221e84c7a878ab2e",
+  "fixtureBytes": 164057870,
+  "rows": 3000000,
+  "columns": 6,
+  "samples": 1,
+  "cache": "OS cache warmed by preflight source hashing",
+  "timed": "load_csv_source using its default UTF-8 options",
+  "excluded": [
+    "process startup",
+    "runtime source loading",
+    "garbage collection before loading",
+    "admission",
+    "profiling",
+    "UI",
+    "result serialization",
+    "output comparison"
+  ],
+  "workerCapSeconds": 60,
+  "wholeWorkerSecondsIncludingWrite": 19.376327048999883,
+  "completeOutputMatchesRetainedNativeFrame": true,
+  "sourcesUnchanged": true,
+  "result": {
+    "r": "R version 4.5.2 (2025-10-31)",
+    "elapsedSeconds": 17.929,
+    "peakKiB": 754088
+  },
+  "memoryScope": "Process lifetime VmHWM through loading; includes setup, no baseline subtraction; sampled before result validation and serialization",
+  "comparison": "One final default UTF-8 reader observation; no speedup claim"
+}
