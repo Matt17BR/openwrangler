@@ -665,6 +665,8 @@ Preview. The [Windows check](https://github.com/Matt17BR/openwrangler/actions/ru
 also covers configured CSV, the other supported file formats, process recovery and owned cleanup. Native Job Object
 controls verify Windows process containment separately.
 These installed results predate the package-repair flow and do not qualify its installation or retry UI.
+Package-repair validation, including a real CRAN installation in a disposable Linux library, is recorded in
+[#1609](https://github.com/Matt17BR/openwrangler/issues/1609).
 Parser options beyond this reader contract remain unsupported.
 
 ### First stable R notebook scope
