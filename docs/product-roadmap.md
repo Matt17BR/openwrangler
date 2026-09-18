@@ -28,14 +28,16 @@ Local R file support remains Preview. The milestone links the required outcomes 
 
 [R cleaning library selection](https://github.com/Matt17BR/openwrangler/issues/1583) is implemented on main:
 base R, dplyr, data.table and collapse drive built-in cleaning and matching generated code.
-Final integrated verification still requires native current/minimum checks, source-preserving copy and recovery
-behavior, and the affected installed-editor evidence.
+The selected implementation and source-preserving copy and recovery checks are complete. Stable publication still
+requires matching native current/minimum results and the final candidate
+[qualification checks](releasing.md#release-candidate).
 
 The [public media and performance refresh](https://github.com/Matt17BR/openwrangler/issues/1554) delivered reviewed
-screenshots and comparison results. Complete and verify the
-[large R file responsiveness corrections](https://github.com/Matt17BR/openwrangler/issues/1616), then refresh the
-affected public media and measurements against the final integrated product before candidate freeze.
-Then qualify one immutable 2.6.0 candidate under [Releasing](releasing.md#release-candidate).
+screenshots and comparison results. The
+[large R file responsiveness corrections](https://github.com/Matt17BR/openwrangler/issues/1616) are verified and merged.
+The final file and R measurements are recorded in the [latest comparison](#released-product-comparison);
+the later corrections do not change the displayed public screenshot states.
+The remaining release gate is one immutable 2.6.0 candidate under [Releasing](releasing.md#release-candidate).
 Qualification and publication remain separate; no release date or automatic publication is promised.
 The [operation support guide](feature-parity.md#cleaning-operations) records the engine-specific scope of
 Explode List and Extract Struct Fields.
@@ -48,10 +50,11 @@ requests remain unmeasured and must justify any new request mode.
 
 ## Released-product comparison
 
-The latest reviewed [dated report](performance/2026-09-17-release-preparation/review.md) measures the development package
-prepared for Open Wrangler 2.6 and Microsoft Data Wrangler through public interfaces in an isolated local VS Code
-instance. It records paired Pandas and Polars routes, separate Open Wrangler engine observations, failures and output
-differences. It precedes immutable release qualification. For every stable release, rerun the advertised comparison
+The latest reviewed [dated report](performance/2026-09-19-release-preparation/review.md) measures the final development
+package prepared for Open Wrangler 2.6 and Microsoft Data Wrangler through public interfaces in an isolated local
+VS Code instance. It records paired CSV routes and native R managed-document observations, with setup failures and
+measurement limits. Earlier notebook, DuckDB and Spark results retain their original source attribution in the linked
+prior report. The comparison precedes immutable release qualification. For every stable release, rerun the advertised comparison
 on the final integrated product and refresh public screenshots under
 the [stable-release checklist](releasing.md#stable-release-media-and-comparison-checklist). Preserve earlier dated
 reports and update this pointer when the new results are reviewed and merged. The retired

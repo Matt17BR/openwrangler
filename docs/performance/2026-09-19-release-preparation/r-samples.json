@@ -1,0 +1,358 @@
+{
+  "collectionDate": "2026-09-19",
+  "localTimezone": "Europe/Berlin",
+  "status": "complete",
+  "product": {
+    "name": "Open Wrangler",
+    "version": "2.6.0",
+    "sourceCommit": "8ed1a631d94ff17475a3264757b7904715f14210",
+    "vsixSha256": "2b1292d5c682137fe71ba3c9f4c95df39e8a5645fa7c85b0a3ec7e59eb275395",
+    "artifactKind": "development VSIX; not a qualified release candidate"
+  },
+  "host": {
+    "editor": {
+      "name": "Visual Studio Code",
+      "version": "1.137.0",
+      "commit": "645f29cc3176500b4b5762ba887cf2a7f0ffdf2c"
+    },
+    "operatingSystem": "Ubuntu 26.04.1 LTS",
+    "architecture": "x86_64",
+    "kernel": "7.0.0-31-generic",
+    "cpu": "Intel(R) Core(TM) Ultra 9 185H",
+    "memoryTotal": "63963940 kB",
+    "display": {
+      "width": 1280,
+      "height": 900,
+      "rendering": "private Xvfb software rendering"
+    }
+  },
+  "runtime": {
+    "R": "4.5.2",
+    "packages": {
+      "jsonlite": "2.0.0",
+      "rlang": "1.3.0",
+      "data.table": "1.18.4",
+      "dplyr": "1.2.1",
+      "collapse": "2.1.7",
+      "arrow": "25.0.0",
+      "clock": "0.7.4",
+      "bit64": "4.8.2"
+    }
+  },
+  "method": {
+    "priorMethod": "../2026-09-17-release-preparation/review.md#opening-native-duckdb-r-and-spark-frames",
+    "route": "Base R managed document",
+    "planCreatedUtc": "2026-09-18T23:31:17.696777+00:00",
+    "order": [
+      {
+        "rows": 100000,
+        "sample": "validation"
+      },
+      {
+        "rows": 100000,
+        "sample": 1
+      },
+      {
+        "rows": 100000,
+        "sample": 2
+      },
+      {
+        "rows": 100000,
+        "sample": 3
+      },
+      {
+        "rows": 1000000,
+        "sample": "validation"
+      },
+      {
+        "rows": 1000000,
+        "sample": 1
+      },
+      {
+        "rows": 1000000,
+        "sample": 2
+      },
+      {
+        "rows": 1000000,
+        "sample": 3
+      }
+    ],
+    "observationBoundSeconds": 60,
+    "pollMilliseconds": 100,
+    "replacementAttempts": 0,
+    "openStart": "Choosing r_frame after fresh Run R Document and full native input checks",
+    "openEnd": "Pointer selection confirms ID 1 in the six-column grid",
+    "profileStart": "Selecting amount and opening its column profile",
+    "profileEnd": "Required counts, numeric statistics and completed 20-bin distribution are displayed",
+    "profileInterpretation": "Display availability; statistics may already have computed during opening. Large R median remains unavailable.",
+    "excluded": "Installation, Trust, document execution, CSV parsing and native input checks before opening; shutdown afterward",
+    "managedFileCoverage": false
+  },
+  "preparation": {
+    "installedOwMatchesVsix": true,
+    "filesChecked": 82,
+    "syntheticInputsOnly": true
+  },
+  "inputs": [
+    {
+      "rows": 100000,
+      "csv": {
+        "name": "six-columns-100000.csv",
+        "sha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+        "unchanged": true
+      },
+      "document": {
+        "name": "r-100000.R",
+        "sha256": "19155eb7a84dca977060a1a6ca53bb3c228cfabfb9d9164045dca413e548b60d",
+        "unchanged": true
+      }
+    },
+    {
+      "rows": 1000000,
+      "csv": {
+        "name": "six-columns-1000000.csv",
+        "sha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+        "unchanged": true
+      },
+      "document": {
+        "name": "r-1000000.R",
+        "sha256": "528fa859f2ae9bcaac48e06097bf61f572a5d45a28167f6c144d391d6ae07bad",
+        "unchanged": true
+      }
+    }
+  ],
+  "power": {
+    "before": {
+      "utc": "2026-09-18T23:31:17.697075+00:00",
+      "mainsOnline": true,
+      "battery": {
+        "status": "Charging",
+        "capacity": "37"
+      },
+      "cpu": {
+        "scaling_governor": "powersave",
+        "energy_performance_preference": "power"
+      }
+    },
+    "after": {
+      "utc": "2026-09-18T23:35:53.855508+00:00",
+      "mainsOnline": true,
+      "battery": {
+        "status": "Charging",
+        "capacity": "40"
+      },
+      "cpu": {
+        "scaling_governor": "powersave",
+        "energy_performance_preference": "power"
+      }
+    }
+  },
+  "setupObservations": [
+    {
+      "stage": "before validation or fixed attempts",
+      "result": "Workspace Trust modal remained open after Escape; a sidebar click timed out against it. Closing its named editor through the public button allowed setup to finish."
+    }
+  ],
+  "summary": [
+    {
+      "rows": 100000,
+      "fixedPlanned": 3,
+      "fixedCompleted": 3,
+      "measures": {
+        "openSeconds": {
+          "median": 1.1037584869999992,
+          "minimum": 1.0953513519999978,
+          "maximum": 1.162023960000006
+        },
+        "openInteractiveSeconds": {
+          "median": 1.388042060000007,
+          "minimum": 1.3828115240000043,
+          "maximum": 1.446864492000008
+        },
+        "profileSeconds": {
+          "median": 1.3492953130000096,
+          "minimum": 1.3124948850000073,
+          "maximum": 1.4156293980000045
+        }
+      }
+    },
+    {
+      "rows": 1000000,
+      "fixedPlanned": 3,
+      "fixedCompleted": 3,
+      "measures": {
+        "openSeconds": {
+          "median": 1.1714039100000226,
+          "minimum": 1.1545185740000161,
+          "maximum": 1.179129270000005
+        },
+        "openInteractiveSeconds": {
+          "median": 1.438193602000014,
+          "minimum": 1.4336344469999895,
+          "maximum": 1.4697580460000026
+        },
+        "profileSeconds": {
+          "median": 1.463359341000003,
+          "minimum": 1.4452079760000052,
+          "maximum": 1.5381339639999787
+        }
+      }
+    }
+  ],
+  "samples": [
+    {
+      "product": "ow",
+      "engine": "r",
+      "rows": 100000,
+      "sample": "validation",
+      "startedUtc": "2026-09-18T23:32:46.976Z",
+      "pollMs": 100,
+      "collectorVersion": "native-open-6-no-scroll-base-r",
+      "profileKind": "selected-profile display; may already be computed",
+      "openMs": 1181.1490289999929,
+      "openInteractiveMs": 1459.7699979999888,
+      "profileMs": 1360.205946999995,
+      "ok": true,
+      "cleanupComplete": true,
+      "gridRowCountIncludingHeader": 100001,
+      "selectedRowId": 1,
+      "publicBackendIndications": {
+        "labels": ["BASE R"],
+        "unavailable": false
+      }
+    },
+    {
+      "product": "ow",
+      "engine": "r",
+      "rows": 100000,
+      "sample": 1,
+      "startedUtc": "2026-09-18T23:33:12.147Z",
+      "pollMs": 100,
+      "collectorVersion": "native-open-6-no-scroll-base-r",
+      "profileKind": "selected-profile display; may already be computed",
+      "openMs": 1162.023960000006,
+      "openInteractiveMs": 1446.8644920000079,
+      "profileMs": 1312.4948850000073,
+      "ok": true,
+      "cleanupComplete": true,
+      "gridRowCountIncludingHeader": 100001,
+      "selectedRowId": 1
+    },
+    {
+      "product": "ow",
+      "engine": "r",
+      "rows": 100000,
+      "sample": 2,
+      "startedUtc": "2026-09-18T23:33:17.752Z",
+      "pollMs": 100,
+      "collectorVersion": "native-open-6-no-scroll-base-r",
+      "profileKind": "selected-profile display; may already be computed",
+      "openMs": 1095.3513519999979,
+      "openInteractiveMs": 1382.8115240000043,
+      "profileMs": 1349.2953130000096,
+      "ok": true,
+      "cleanupComplete": true,
+      "gridRowCountIncludingHeader": 100001,
+      "selectedRowId": 1
+    },
+    {
+      "product": "ow",
+      "engine": "r",
+      "rows": 100000,
+      "sample": 3,
+      "startedUtc": "2026-09-18T23:33:23.307Z",
+      "pollMs": 100,
+      "collectorVersion": "native-open-6-no-scroll-base-r",
+      "profileKind": "selected-profile display; may already be computed",
+      "openMs": 1103.7584869999991,
+      "openInteractiveMs": 1388.042060000007,
+      "profileMs": 1415.6293980000046,
+      "ok": true,
+      "cleanupComplete": true,
+      "gridRowCountIncludingHeader": 100001,
+      "selectedRowId": 1
+    },
+    {
+      "product": "ow",
+      "engine": "r",
+      "rows": 1000000,
+      "sample": "validation",
+      "startedUtc": "2026-09-18T23:33:52.645Z",
+      "pollMs": 100,
+      "collectorVersion": "native-open-6-no-scroll-base-r",
+      "profileKind": "selected-profile display; may already be computed",
+      "openMs": 1130.8813429999864,
+      "openInteractiveMs": 1403.518745999987,
+      "profileMs": 1459.0658640000038,
+      "ok": true,
+      "cleanupComplete": true,
+      "gridRowCountIncludingHeader": 1000001,
+      "selectedRowId": 1,
+      "publicBackendIndications": {
+        "labels": ["BASE R"],
+        "unavailable": false
+      }
+    },
+    {
+      "product": "ow",
+      "engine": "r",
+      "rows": 1000000,
+      "sample": 1,
+      "startedUtc": "2026-09-18T23:34:30.499Z",
+      "pollMs": 100,
+      "collectorVersion": "native-open-6-no-scroll-base-r",
+      "profileKind": "selected-profile display; may already be computed",
+      "openMs": 1179.129270000005,
+      "openInteractiveMs": 1469.7580460000027,
+      "profileMs": 1538.1339639999787,
+      "ok": true,
+      "cleanupComplete": true,
+      "gridRowCountIncludingHeader": 1000001,
+      "selectedRowId": 1
+    },
+    {
+      "product": "ow",
+      "engine": "r",
+      "rows": 1000000,
+      "sample": 2,
+      "startedUtc": "2026-09-18T23:34:47.485Z",
+      "pollMs": 100,
+      "collectorVersion": "native-open-6-no-scroll-base-r",
+      "profileKind": "selected-profile display; may already be computed",
+      "openMs": 1171.4039100000227,
+      "openInteractiveMs": 1438.193602000014,
+      "profileMs": 1445.2079760000051,
+      "ok": true,
+      "cleanupComplete": true,
+      "gridRowCountIncludingHeader": 1000001,
+      "selectedRowId": 1
+    },
+    {
+      "product": "ow",
+      "engine": "r",
+      "rows": 1000000,
+      "sample": 3,
+      "startedUtc": "2026-09-18T23:35:04.383Z",
+      "pollMs": 100,
+      "collectorVersion": "native-open-6-no-scroll-base-r",
+      "profileKind": "selected-profile display; may already be computed",
+      "openMs": 1154.518574000016,
+      "openInteractiveMs": 1433.6344469999894,
+      "profileMs": 1463.359341000003,
+      "ok": true,
+      "cleanupComplete": true,
+      "gridRowCountIncludingHeader": 1000001,
+      "selectedRowId": 1
+    }
+  ],
+  "settlement": {
+    "editorExit": 0,
+    "editorStopped": true,
+    "editorForcedCleanup": false,
+    "displayStopped": true,
+    "artifactUnchanged": true,
+    "measuredSourceFilesUnchanged": true,
+    "remainingOwnedProcessCount": 0,
+    "publicTabClosureAndExitPassed": true
+  }
+}
