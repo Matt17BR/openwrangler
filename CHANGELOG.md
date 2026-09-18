@@ -4,18 +4,12 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ## [Unreleased]
 
-### Added
-
-- R opens timezone-free and nanosecond Parquet timestamps without rounding or assigning a timezone. Base R and dplyr support cleaning and matching generated R; data.table and collapse retain viewing and export. These columns require Arrow and clock and have explicit operation limits.
-
-### Changed
-
-- The engine picker identifies Python and R choices consistently and shows whether a choice switches the current tab, opens a new tab or creates an editing copy.
-
 ## [2.6.0] - 2026-09-18
 
 ### Added
 
+- R opens timezone-free Parquet timestamps without assigning a timezone and preserves nanosecond timestamps exactly. Base R and dplyr support their documented cleaning operations and matching generated R; data.table and collapse support viewing and export, with an editing copy available through the engine picker.
+- Local R files with unmet package requirements offer **Install required packages**, with the selected Rscript environment and target library shown before installation. Successful validation retries the same file.
 - Select base R, dplyr, data.table or collapse for built-in cleaning and generated R. Changing the library opens an editing copy with applied steps, preserving the original draft and redo history.
 - Local R file support is Preview on Linux, macOS and Windows: CSV, TSV, flat Parquet and JSONL/NDJSON, and selected Excel worksheets, with native cleaning, generated R and saved plans. Choosing R from a Python file session preserves the original in a separate tab.
 - R CSV/TSV imports honor UTF-8, explicitly lossy UTF-8, UTF-16LE/BE, ISO-8859-1 and Windows-1252, distinct ASCII delimiter and quote choices, headerless input and CR records, with matching generated code. Quoted text retains its embedded line endings.
@@ -29,6 +23,8 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Changed
 
+- The engine picker identifies Python and R choices consistently and shows whether a choice switches the current tab, opens a new tab or creates an editing copy.
+- R Parquet import and export require `arrow`; imports and zero-column exports also need `nanoparquet`. Exact timestamp columns also require `clock`.
 - Auto can open supported local files in R when no compatible Python interpreter or file engine is available.
 - Data sources groups file opening and discovered Python/R dataframes; Operations contains the cleaning catalog.
 - Formula steps show their saved output names in Cleaning Steps tooltips and accessible names.
@@ -47,6 +43,8 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- R `POSIXct` display, copied cells and Convert Type to text use consistent microsecond rounding, including generated R. This fixes a one-microsecond display error without changing source values, explicit Format Datetime or existing One Hot column names.
+- R Parquet export refuses durations that cannot convert exactly from their R units to nanoseconds, including sub-nanosecond values, NaN, infinity and overflow, instead of changing them silently.
 - Applying a cleaning step preserves new grid selections and keyboard focus instead of clearing them with a delayed view restoration. Opening Code Preview also keeps the current selection.
 - Normal dataframe-discovery updates no longer cause an R terminal session cleanup error.
 - R text profiles and Lowercase/Uppercase avoid repeated scalar conversion, preserving error handling and generated-code behavior.
