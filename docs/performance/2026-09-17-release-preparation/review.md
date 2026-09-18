@@ -4,8 +4,8 @@ Local measurements of Open Wrangler's 2.6 development package and Microsoft Data
 The CSV, paired Python notebook, DuckDB and Spark observations use the September 18 package from source
 `7a72f24fb019eed9d55673e1f53b870dc7ede12d`, including
 [PR #1599](https://github.com/Matt17BR/openwrangler/pull/1599). Its production source matches `231ed139`; the two
-intervening differences are tests. The Base R rows were refreshed with `21630ef06005462c7414a635e4465f742a9e0008`
-after the native R changes in [PR #1607](https://github.com/Matt17BR/openwrangler/pull/1607).
+intervening differences are tests. The Base R rows were refreshed with `2796cc745d69f1cbaa2836ac5640bc17887cdc3a`
+after the native R timestamp-display and process-bootstrap corrections.
 The linked raw records identify each package checksum and retain earlier cohorts. These measurements precede release
 qualification.
 
@@ -154,8 +154,8 @@ replaced. These routes have different setup and execution costs, so the table do
 | ------------------------ | --------: | -------------------------: | ------------------------------------: |
 | DuckDB notebook relation |   100,000 |                     2.64 s |                                0.37 s |
 | DuckDB notebook relation | 1 million |                     2.91 s |                                0.37 s |
-| Base R managed document  |   100,000 |                     1.08 s |                                0.45 s |
-| Base R managed document  | 1 million |                     1.09 s |                                0.58 s |
+| Base R managed document  |   100,000 |                     1.44 s |                                1.05 s |
+| Base R managed document  | 1 million |                     1.86 s |                                0.94 s |
 | Local PySpark notebook   |   100,000 |                     1.72 s |                                1.53 s |
 | Local PySpark notebook   | 1 million |                     1.71 s |                                2.88 s |
 
@@ -182,14 +182,20 @@ retained executed notebooks. These checks do not establish a final all-cell comp
 frame. The separate Pandas/Polars comparison above performed that stronger before-and-after check.
 
 The DuckDB/Spark collection ran on AC while charging from 22% to 34%, with energy performance preference `power`.
-The final R refresh ran on AC at 99%, with preference `balance_performance` and the `powersave` governor. Its R
-dependencies also differ from the earlier collection. The lower R times do not establish a controlled speedup.
+The final R refresh ran on battery from 69% to 68%, with AC disconnected, preference `balance_power` and the `powersave`
+governor. Its power conditions, R dependencies and source differ from earlier collections. These observations do not
+establish a controlled speedup or regression.
 Both collections used private editor lifecycles separate from the paired Python notebooks. Public tab closure and
 **File > Exit** preceded cleanup; exits were zero, no owned processes remained, and source files and packages were
 unchanged. The final R editor needed no forced cleanup.
 
 <details>
 <summary>Earlier native correction and failures retained</summary>
+
+The complete `21630ef0` R cohort remains separate in the raw records. Its medians were 1.08 and 1.09 seconds through
+selection, and 0.45 and 0.58 seconds through the selected profile, at 100,000 and one million rows respectively.
+It ran on AC at 99% with `balance_performance`. A later `a1ec175e` preparation stopped after a process-bootstrap
+portability failure was reproduced, before any of its two validations or six fixed measurements started.
 
 The complete earlier `7a72f24f` native cohort remains in the raw records. Its Base R medians were 1.91 and 1.92 seconds
 through selection at 100,000 and one million rows, and 0.98 seconds through the selected profile at both sizes. Those
