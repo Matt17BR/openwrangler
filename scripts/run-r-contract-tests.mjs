@@ -643,18 +643,25 @@ export function createPosixProcessTracker(
     latch(error);
     // The latched failure is surfaced through the phase and settlement paths.
   }
-  const interval = setInterval(() => {
-    try {
-      observe();
-    } catch {
-      clearInterval(interval);
-    }
-  }, observationIntervalMs);
-  interval.unref?.();
+  let observationTimer;
+  const scheduleObservation = () => {
+    observationTimer = setTimeout(() => {
+      try {
+        observe();
+        scheduleObservation();
+      } catch {
+        // The failed observation is latched and must not be retried.
+      }
+    }, observationIntervalMs);
+    observationTimer.unref?.();
+  };
+  scheduleObservation();
   return Object.freeze({
     failure: failurePromise,
     observe,
     isSettled: (observer) => {
+      // Settlement owns fresh polling from its first check through final stop.
+      clearTimeout(observationTimer);
       observe();
       return observed.size === 0 && observer.isSettled();
     },
@@ -680,7 +687,7 @@ export function createPosixProcessTracker(
       if (failure) throw failure;
     },
     stop: () => {
-      clearInterval(interval);
+      clearTimeout(observationTimer);
       observed.clear();
     }
   });
