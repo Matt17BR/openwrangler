@@ -11718,6 +11718,7 @@ openwrangler_r_frame_contract <- local({
       `clock_is_column` = `clock_is_column`,
       `clock_require` = `clock_require`,
       `clock_validate` = `clock_validate`,
+      `require_package` = `require_package`,
       `ensure_integer64_bindings` = `ensure_integer64_bindings`,
       `integer64_formula_bindings` = `integer64_formula_bindings`,
       `integer64_from_integer` = `integer64_from_integer`,
