@@ -6,6 +6,81 @@ import { SessionRequestScheduler, sessionRequestPriority } from "../extension/se
 const filterModel: FilterModel = { filters: [], sort: [] };
 
 describe("SessionRequestScheduler", () => {
+  it.each(["background", "selected"] as const)(
+    "admits queued pages alongside selected profiles and keeps mutations exclusive when %s settles first",
+    async (first) => {
+      const execution = controlledExecution();
+      const scheduler = new SessionRequestScheduler(execution.execute);
+      const background = scheduler.enqueue(datasetStats("background"));
+      const initialPage = scheduler.enqueue(pageRequest("initial-page"));
+      const selected = scheduler.enqueue(summary("selected"), { priority: "interactive" });
+      const page = scheduler.enqueue(pageRequest("page"));
+      expect(execution.order).toEqual(["background", "initial-page"]);
+
+      execution.resolve("initial-page");
+      await initialPage;
+      await Promise.resolve();
+      expect(execution.order).toEqual(["background", "initial-page", "selected", "page"]);
+      expect(scheduler.checkpoint("getSummary", "selected")).toMatchObject({
+        state: "active",
+        lane: "foreground"
+      });
+      expect(scheduler.hasPendingRequest((request) => request.kind === "getSummary")).toBe(true);
+
+      const mutation = scheduler.enqueue(applyDraft());
+      const laterPage = scheduler.enqueue(pageRequest("after-mutation"));
+      execution.resolve("page");
+      await page;
+      execution.resolve(first);
+      await (first === "background" ? background : selected);
+      await Promise.resolve();
+      expect(execution.order).toEqual(["background", "initial-page", "selected", "page"]);
+      expect(scheduler.snapshot().quiescent).toBe(false);
+
+      const last = first === "background" ? "selected" : "background";
+      execution.resolve(last);
+      await (last === "background" ? background : selected);
+      await vi.waitFor(() => expect(execution.order.at(-1)).toBe("applyDraft"));
+      execution.resolve("applyDraft");
+      await mutation;
+      await vi.waitFor(() => expect(execution.order.at(-1)).toBe("after-mutation"));
+      execution.resolve("after-mutation");
+      await laterPage;
+      await scheduler.waitForIdle();
+    }
+  );
+
+  it("retains an active selected profile through cancellation and close while another selected profile waits", async () => {
+    const execution = controlledExecution();
+    const scheduler = new SessionRequestScheduler(execution.execute);
+    const selected = scheduler.enqueue(summary("selected"), { priority: "interactive" });
+    const queued = scheduler.enqueue(summary("queued"), { priority: "interactive" });
+    const page = scheduler.enqueue(pageRequest("page"));
+    const close = scheduler.enqueue(closeSession());
+    let idle = false;
+    void scheduler.waitForIdle().then(() => {
+      idle = true;
+    });
+    scheduler.cancelViewRequests(["selected", "queued"]);
+    await expect(queued).resolves.toMatchObject({ kind: "cancelled", viewRequestId: "queued" });
+    expect(execution.order).toEqual(["selected", "page"]);
+    expect(scheduler.isCancelled("selected")).toBe(true);
+    execution.resolve("page");
+    await page;
+    await Promise.resolve();
+    expect(scheduler.snapshot()).toMatchObject({ activeForegroundOperation: true, terminalOperation: true });
+    expect(idle).toBe(false);
+    expect(execution.order).not.toContain("closeSession");
+    execution.resolve("selected");
+    await selected;
+    await vi.waitFor(() => expect(execution.order.at(-1)).toBe("closeSession"));
+    expect(scheduler.isCancelled("selected")).toBe(false);
+    expect(idle).toBe(false);
+    execution.resolve("closeSession");
+    await close;
+    await vi.waitFor(() => expect(idle).toBe(true));
+  });
+
   it("lets interactive reads overtake queued profiling while mutations remain exclusive", async () => {
     const execution = controlledExecution();
     const scheduler = new SessionRequestScheduler(execution.execute);
@@ -52,6 +127,7 @@ describe("SessionRequestScheduler", () => {
 
     scheduler.prioritizeViewRequest("summary-selected");
     await vi.waitFor(() => expect(execution.order).toEqual(["stats-active", "summary-selected"]));
+    const activePage = scheduler.enqueue(pageRequest("page-active"));
     const obsoleteProfile = scheduler.enqueue(summary("profile-obsolete"));
     const obsolete = scheduler.enqueue(columnValues("values-obsolete"));
     const retainedPage = scheduler.enqueue(pageRequest("page-retained"));
@@ -94,6 +170,8 @@ describe("SessionRequestScheduler", () => {
     expect(scheduler.checkpoint("getPage", "page-retained")).toMatchObject({ state: "queued" });
     expect(scheduler.checkpoint("getPage", "clipboard-obsolete")).toBeUndefined();
 
+    execution.resolve("page-active");
+    await activePage;
     execution.resolve("summary-selected");
     await selected;
     await vi.waitFor(() => expect(scheduler.isCancelled("summary-selected")).toBe(false));

@@ -51,6 +51,9 @@ export class SessionRuntimeRequestExecutor {
     const requestWasCancelled = (): boolean =>
       options?.cancellation?.isCancellationRequested === true ||
       session.scheduler.isCancelled(requestViewId(publicRequest));
+    const rendererProfileRead = isRecoverableRendererProfileRead(publicRequest) && options?.viewContextId !== undefined;
+    const rendererProfileReadIsCurrent = (): boolean =>
+      rendererProfileRead && !requestWasCancelled() && isCurrentLogicalView(session, options);
     const liveSourceRecoveryIsCurrent = (): boolean => {
       if (requestWasCancelled()) return false;
       if (publicRequest.kind === "getPage") {
@@ -70,6 +73,11 @@ export class SessionRuntimeRequestExecutor {
       );
     const ephemeralPage = publicRequest.kind === "getPage" && options?.ephemeralPage === true;
     const hasExecutionTrust = (): boolean => publicRequest.kind !== "redoStep" || vscode.workspace.isTrusted;
+    const recoveryIsStillCurrent = rendererProfileRead
+      ? rendererProfileReadIsCurrent
+      : publicRequest.kind === "redoStep"
+        ? hasExecutionTrust
+        : undefined;
     const untrustedResponse = (): ErrorResponse =>
       protocolError(
         "workspace_untrusted",
@@ -99,12 +107,12 @@ export class SessionRuntimeRequestExecutor {
     if (!hasExecutionTrust()) return untrustedResponse();
     if (ephemeralPage && !liveSourceRecoveryIsCurrent()) return staleReadResponse();
     if (publicRequest.kind !== "closeSession" && session.recoveryRequired) {
+      if (rendererProfileRead && !rendererProfileReadIsCurrent()) return staleReadResponse();
       const recovered =
         hooks.isCoordinatorAvailable() &&
         !session.closing &&
-        (await (publicRequest.kind === "redoStep"
-          ? hooks.replay(runtimeRecoveryOptions(), hasExecutionTrust)
-          : hooks.replay(runtimeRecoveryOptions())));
+        (await hooks.replay(runtimeRecoveryOptions(), recoveryIsStillCurrent));
+      if (rendererProfileRead && !rendererProfileReadIsCurrent()) return staleReadResponse();
       if (!recovered) {
         if (!hasExecutionTrust()) return untrustedResponse();
         return protocolError(
@@ -121,15 +129,11 @@ export class SessionRuntimeRequestExecutor {
     let requestRuntimeRevision = session.runtimeRevision;
     let previousFilterModel = session.metadata.filterModel;
     const isBackground = sessionRequestPriority(publicRequest, options) === "background";
-    const rendererBackgroundRead =
-      isBackground && isRecoverableRendererBackgroundRead(publicRequest) && options?.viewContextId !== undefined;
-    const rendererBackgroundReadIsCurrent = (): boolean =>
-      rendererBackgroundRead && !requestWasCancelled() && isCurrentLogicalView(session, options);
     const canRecoverUnknownSession = (): boolean =>
       hasExecutionTrust() &&
       hooks.isCoordinatorAvailable() &&
       !session.closing &&
-      (!isBackground || rendererBackgroundReadIsCurrent());
+      (rendererProfileRead ? rendererProfileReadIsCurrent() : !isBackground);
     const canRecoverTransport = (): boolean => canRecoverUnknownSession() && isIdempotentReadRequest(publicRequest);
     const stepInspectionIsCurrent = (): boolean =>
       publicRequest.kind !== "inspectStep" || session.latestStepInspectionKey === stepInspectionKey(publicRequest);
@@ -143,7 +147,7 @@ export class SessionRuntimeRequestExecutor {
       hasExecutionTrust() && hooks.isCoordinatorAvailable() && !session.closing && rKernelChangeResponseIsCurrent();
     const canRecoverRKernelChange = (): boolean =>
       rKernelRecoveryCanPublish() && (isRuntimeStateMutation(publicRequest) || isIdempotentReadRequest(publicRequest));
-    const staleBackgroundResponse = (): OpenWranglerResponse =>
+    const staleProfileResponse = (): OpenWranglerResponse =>
       protocolError(
         "stale_response",
         "Ignored a cancelled or superseded profiling request before runtime recovery.",
@@ -178,17 +182,22 @@ export class SessionRuntimeRequestExecutor {
         throw error;
       }
       if (isRuntimeStateMutation(publicRequest)) session.recoveryRequired = true;
-      if (rendererBackgroundRead && !requestWasCancelled() && !isCurrentLogicalView(session, options)) {
-        return staleBackgroundResponse();
+      if (rendererProfileRead && !requestWasCancelled() && !isCurrentLogicalView(session, options)) {
+        return staleProfileResponse();
       }
       if (ephemeralPage && !liveSourceRecoveryIsCurrent()) return staleReadResponse();
       const recovered =
         canRecoverTransport() &&
-        (await hooks.replayAfterRuntimeLoss(requestRuntimeId, automaticRecoveryOptions(options)));
+        (await hooks.replayAfterRuntimeLoss(
+          requestRuntimeId,
+          automaticRecoveryOptions(options),
+          undefined,
+          recoveryIsStillCurrent
+        ));
       if (!recovered) throw error;
-      if (rendererBackgroundRead && !rendererBackgroundReadIsCurrent()) {
+      if (rendererProfileRead && !rendererProfileReadIsCurrent()) {
         if (requestWasCancelled()) throw error;
-        return staleBackgroundResponse();
+        return staleProfileResponse();
       }
       if (ephemeralPage && !liveSourceRecoveryIsCurrent()) return staleReadResponse();
       requestRuntimeId = session.runtimeId;
@@ -211,25 +220,23 @@ export class SessionRuntimeRequestExecutor {
       );
       if (unknownMismatch) return invalidRuntimeResponse(publicRequest, session.publicId, unknownMismatch);
       const confirmedUnknownResponse = { ...response };
-      if (rendererBackgroundRead && !requestWasCancelled() && !isCurrentLogicalView(session, options)) {
-        return staleBackgroundResponse();
+      if (rendererProfileRead && !requestWasCancelled() && !isCurrentLogicalView(session, options)) {
+        return staleProfileResponse();
       }
       if (ephemeralPage && !liveSourceRecoveryIsCurrent()) return staleReadResponse();
       const recovered =
         canRecoverUnknownSession() &&
-        (await (publicRequest.kind === "redoStep"
-          ? hooks.replayAfterRuntimeLoss(
-              requestRuntimeId,
-              automaticRecoveryOptions(options),
-              undefined,
-              hasExecutionTrust
-            )
-          : hooks.replayAfterRuntimeLoss(requestRuntimeId, automaticRecoveryOptions(options))));
+        (await hooks.replayAfterRuntimeLoss(
+          requestRuntimeId,
+          automaticRecoveryOptions(options),
+          undefined,
+          recoveryIsStillCurrent
+        ));
       if (!recovered && !hasExecutionTrust()) return untrustedResponse();
       if (recovered) {
-        if (rendererBackgroundRead && !rendererBackgroundReadIsCurrent()) {
+        if (rendererProfileRead && !rendererProfileReadIsCurrent()) {
           if (requestWasCancelled()) return { ...confirmedUnknownResponse, sessionId: session.publicId };
-          return staleBackgroundResponse();
+          return staleProfileResponse();
         }
         if (ephemeralPage && !liveSourceRecoveryIsCurrent()) return staleReadResponse();
         session.recoveryRequired = false;
@@ -389,7 +396,7 @@ function isIdempotentReadRequest(request: SessionBoundRequest): boolean {
   );
 }
 
-function isRecoverableRendererBackgroundRead(request: SessionBoundRequest): boolean {
+function isRecoverableRendererProfileRead(request: SessionBoundRequest): boolean {
   return request.kind === "getSummary" || request.kind === "getDatasetStats";
 }
 
