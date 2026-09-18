@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { access, link, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
@@ -158,6 +158,24 @@ describe("captured native R file dependency repair", () => {
     expect(processes("install")).toEqual([]);
   });
 
+  it("refuses a probe result linked to a file outside its private directory", async () => {
+    const completion = deferred();
+    const external = join(fixture, "external-probe.json");
+    await writeFile(external, JSON.stringify({ ...baseline, requirements: [] }));
+    schedule({ mode: "probe", completion });
+    const result = repairRFileDependencies(target, missing, "base");
+    await vi.waitFor(() => expect(processes("probe")).toHaveLength(1));
+    const output = join(dirname(processes("probe")[0]!.scriptPath), "before.json");
+    await vi.waitFor(async () => await access(output));
+    await rm(output);
+    await link(external, output);
+    completion.resolve();
+    await expect(result).rejects.toThrow(/invalid.*artifact/u);
+    expect(choices).not.toHaveBeenCalled();
+    expect(processes("install")).toEqual([]);
+    await expect(access(external)).resolves.toBeUndefined();
+  });
+
   it("confirms the captured environment and validates it freshly after installation", async () => {
     const configuration = vi.spyOn(vscode.workspace, "getConfiguration").mockImplementation(() => {
       throw new Error("must not reselect R");
@@ -270,6 +288,22 @@ describe("captured native R file dependency repair", () => {
     if (guidance) expect((error as Error).message).toContain(guidance);
     else expect((error as Error).message).not.toContain("private diagnostic");
     expect(processes("probe")).toHaveLength(1);
+  });
+
+  it("does not expose installation diagnostics linked outside the private directory", async () => {
+    const completion = deferred();
+    const external = join(fixture, "external-report.json");
+    await writeFile(external, JSON.stringify(["unrelated private text"]));
+    schedule({ mode: "probe" }, { mode: "install", completion, failure: new Error("Installation failed"), report: [] });
+    const result = repairRFileDependencies(target, missing, "base");
+    await vi.waitFor(() => expect(processes("install")).toHaveLength(1));
+    const report = join(dirname(processes("install")[0]!.scriptPath), "install-result.json");
+    await vi.waitFor(async () => await access(report));
+    await rm(report);
+    await link(external, report);
+    completion.resolve();
+    await expect(result).rejects.toThrow(/^Installation failed$/u);
+    await expect(access(external)).resolves.toBeUndefined();
   });
 
   it("confirms a personal-library fallback explicitly when the first library is read-only", async () => {

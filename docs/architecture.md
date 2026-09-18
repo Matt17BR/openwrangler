@@ -1524,6 +1524,8 @@ shutting down the coordinator, prevents new writes and reopening. Once installat
 detaches its waiter without terminating package writes; its terminal and settlement remain owned until exit. Closing
 that terminal or VS Code can still interrupt the process. This flow has no package journal or automatic resume guarantee.
 Failure leaves the error view available for retry, with bounded diagnostics rather than uploaded terminal output.
+Probe results and installer diagnostics use the existing private-artifact reader: the byte limit and single-link
+file identity are checked on the opened descriptor and pathname before and after reading.
 
 On Windows, the bundled PowerShell supervisor creates `Rscript` suspended, assigns it to a private Job Object with
 kill-on-close, then resumes it. Only the selected stdin/stdout/stderr handles cross into the child. The host relays

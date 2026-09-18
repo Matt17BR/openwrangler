@@ -1,4 +1,4 @@
-import { access, chmod, constants, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { access, chmod, constants, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
@@ -14,6 +14,7 @@ import {
   type RDependencyRequirement
 } from "./rDependencyRequirements";
 import { startRDependencyProcess } from "./rDependencyProcess";
+import { readRPrivateArtifact } from "./rPrivateArtifactBoundary";
 import type { RProcessFileSource } from "./rProcessTransport";
 
 const CRAN_REPOSITORY = "https://cloud.r-project.org";
@@ -73,10 +74,13 @@ export async function repairRFileDependencies(
       });
       settlements.push(process.settlement);
       await process.completion;
-      const info = await stat(output);
-      if (!info.isFile() || info.size > MAX_PROBE_BYTES)
-        throw new Error("The R package check returned an invalid result.");
-      return decodeRDependencyProbe(JSON.parse(await readFile(output, "utf8")), target.cwd.fsPath);
+      const bytes = await readRPrivateArtifact({
+        filePath: output,
+        maximumBytes: MAX_PROBE_BYTES,
+        label: "R package check"
+      });
+      if (!bytes) throw new Error("The R package check returned no result.");
+      return decodeRDependencyProbe(JSON.parse(bytes.toString("utf8")), target.cwd.fsPath);
     };
     const before = await probe(target.environment, "before");
     if (!current()) return false;
@@ -371,9 +375,14 @@ async function existingAncestorIdentity(
 
 async function installFailureDetail(reportPath: string): Promise<string> {
   try {
-    const info = await stat(reportPath);
-    if (!info.isFile() || info.size > 8192) return "";
-    const messages: unknown = JSON.parse(await readFile(reportPath, "utf8"));
+    const bytes = await readRPrivateArtifact({
+      filePath: reportPath,
+      maximumBytes: 8192,
+      label: "R package installation diagnostic",
+      missing: "returnUndefined"
+    });
+    if (!bytes) return "";
+    const messages: unknown = JSON.parse(bytes.toString("utf8"));
     if (
       !Array.isArray(messages) ||
       messages.length > 6 ||
