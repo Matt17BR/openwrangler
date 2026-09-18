@@ -528,6 +528,7 @@ function cancellationProbe(kind) {
     };
     import { runRContractPhasesWithSignalForwarding } from ${JSON.stringify(runner)};
     const kind = ${JSON.stringify(kind)};
+    const detached = kind === 'detached' || kind === 'late-detached';
     const output = [];
     let child;
     let exit;
@@ -547,9 +548,12 @@ function cancellationProbe(kind) {
     let startedNext = false;
     let spawnedAt;
     let detachedPid;
+    let detachedRequested = false;
     const descendantCode = "process.on('SIGTERM', () => { console.log('DETACHED_SIGTERM'); process.exit(0); }); console.log('DETACHED_READY:' + process.pid); setTimeout(() => process.exit(0), 4000);";
+    const spawnDetached = "require('node:child_process').spawn(process.execPath, ['-e', " + JSON.stringify(descendantCode) + "], {detached:true, stdio:'inherit'}).unref();";
     const childCode = [
-      ...(kind === 'detached' ? ["require('node:child_process').spawn(process.execPath, ['-e', " + JSON.stringify(descendantCode) + "], {detached:true, stdio:'inherit'}).unref();"] : []),
+      ...(kind === 'detached' ? [spawnDetached] : []),
+      ...(kind === 'late-detached' ? ["process.on('SIGUSR2', () => {" + spawnDetached + "});"] : []),
       "process.on('SIGINT', () => { console.log('RECEIVED:SIGINT'); if (!" + JSON.stringify(kind === 'ignoring' || kind === 'unverifiable') + ") process.exit(0); });",
       "process.on('SIGTERM', () => { console.log('RECEIVED:SIGTERM'); if (!" + JSON.stringify(kind === 'ignoring' || kind === 'unverifiable') + ") process.exit(0); });",
       "console.log('READY');",
@@ -566,6 +570,7 @@ function cancellationProbe(kind) {
       await runRContractPhasesWithSignalForwarding(phases, {
         ...(kind === 'output' ? {maximumOutputBytes: 100} : {}),
         ...(kind === 'unverifiable' ? {readProcessIdentity: readIdentity} : {}),
+        ...(kind === 'late-detached' ? {observationIntervalMs: 60_000} : {}),
         spawnProcess: (...args) => {
           if (child) { startedNext = true; return spawn(...args); }
           spawnedAt = performance.now();
@@ -578,18 +583,24 @@ function cancellationProbe(kind) {
         writeOutput: chunk => {
           output.push(String(chunk));
           if (kind === 'unverifiable' && output.join('').includes('READY')) identityUnreadable = true;
-          if (kind === 'detached') {
+          if (detached) {
             const match = /DETACHED_READY:([0-9]+)/u.exec(output.join(''));
             if (match) detachedPid = Number(match[1]);
           }
-          if (!triggered && (kind === 'detached' ? detachedPid : output.join('').includes('READY') && kind.startsWith('SIG'))) {
+          // READY arrives after initial tracking. No background tick can discover
+          // the late child before cancellation forces fresh settlement/signaling.
+          if (kind === 'late-detached' && !detachedRequested && output.join('').split('\\n').includes('READY')) {
+            detachedRequested = true;
+            assert.equal(child.kill('SIGUSR2'), true);
+          }
+          if (!triggered && (detached ? detachedPid : output.join('').includes('READY') && kind.startsWith('SIG'))) {
             triggered = true;
             if (detachedPid) {
               const stat = (processGroupOf)(detachedPid);
               assert.equal(stat, detachedPid, 'the descendant owns a different process group');
               assert.notEqual(detachedPid, child.pid);
             }
-            process.kill(process.pid, kind === 'detached' ? 'SIGTERM' : kind);
+            process.kill(process.pid, detached ? 'SIGTERM' : kind);
           }
         }
       });
@@ -607,8 +618,8 @@ function cancellationProbe(kind) {
     if (kind === 'ignoring' || kind === 'unverifiable') assert.equal(state.signal, 'SIGKILL');
     else if (kind === 'output') assert.equal(state.code, 0);
     else assert.match(output.join(''), kind.startsWith('SIG') ? new RegExp('RECEIVED:' + kind) : /RECEIVED:SIGTERM/);
-    if (kind === 'detached') assert.match(output.join(''), /DETACHED_SIGTERM/);
-    if (kind.startsWith('SIG') || kind === 'output' || kind === 'detached' || kind === 'unverifiable') assert.equal(startedNext, false);
+    if (detached) assert.match(output.join(''), /DETACHED_SIGTERM/);
+    if (kind.startsWith('SIG') || kind === 'output' || detached || kind === 'unverifiable') assert.equal(startedNext, false);
     else assert.equal(startedNext, true, 'a settled timeout can proceed to the next selected phase');
     console.log('verified ' + kind);
   `;
@@ -641,7 +652,7 @@ test(
   },
   async (context) => {
     const kinds = ["SIGINT", "SIGTERM", "timeout", "ignoring", "output", "detached"];
-    if (process.platform === "linux") kinds.push("unverifiable");
+    if (process.platform === "linux") kinds.push("unverifiable", "late-detached");
     for (const kind of kinds) {
       await context.test(kind, () => cancellationProbe(kind));
     }

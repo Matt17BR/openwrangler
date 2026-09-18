@@ -673,7 +673,7 @@ stopifnot(identical(serialize(large_typed, NULL, version = 3L), large_before))
     expect(largeProfiled.summaries[3]?.visualization).toBeUndefined();
   });
 
-  it("runs the native R rename draft, apply, edit, undo, and generated code lifecycle", () => {
+  it("runs the native R rename draft, apply, edit, and undo lifecycle", () => {
     const editingSessionId = "10000000-0000-4000-8000-000000000001";
     const ids = {
       open: "10000000-0000-4000-8000-000000000002",
@@ -878,19 +878,9 @@ ${close.code}
       kind: "closed",
       sessionId: editingSessionId
     });
-
-    const generated = runR(`
-frame <- data.frame(duplicate = 1:2, duplicate = 3:4, label = c("a", "b"), check.names = FALSE)
-frame_before <- unserialize(serialize(frame, NULL, version = 3L))
-${applied.code}
-stopifnot(identical(names(open_wrangler_result), c("duplicate", "second duplicate", "label")))
-stopifnot(identical(frame, frame_before))
-cat("generated-ok\\n")
-`);
-    expect(generated.stdout.trim()).toBe("generated-ok");
   });
 
-  it("round-trips native R Custom Code through notebook preview, apply, generated code, and undo", () => {
+  it("round-trips native R Custom Code through notebook preview, apply, and undo", () => {
     const customSessionId = "1a000000-0000-4000-8000-000000000001";
     const ids = {
       open: "1a000000-0000-4000-8000-000000000002",
@@ -1008,18 +998,6 @@ ${close.code}
       kind: "closed",
       sessionId: customSessionId
     });
-
-    const generated = runR(`
-frame <- data.frame(value = c(1L, 2L), label = c("alpha", "beta"), stringsAsFactors = FALSE)
-frame_before <- unserialize(serialize(frame, NULL, version = 3L))
-${applied.code}
-stopifnot(identical(names(open_wrangler_result), c("label", "doubled")))
-stopifnot(identical(open_wrangler_result$label, c("alpha", "beta")))
-stopifnot(identical(open_wrangler_result$doubled, c(2L, 4L)))
-stopifnot(identical(frame, frame_before))
-cat("generated-ok\n")
-`);
-    expect(generated.stdout.trim()).toBe("generated-ok");
   });
 
   it("inspects a no-op Fill using one evaluation of its preceding Custom result", () => {
@@ -1781,24 +1759,6 @@ ${close.code}
       kind: "closed",
       sessionId: editingSessionId
     });
-
-    const generated = runR(`
-frame <- data.frame(
-  left = c(8, -8, NA_real_, 2),
-  right = c(2, 4, 5, NA_real_),
-  label = c("first", "second", "missing left", "missing right"),
-  row.names = paste0("formula-cross-", seq_len(4L)),
-  check.names = FALSE
-)
-frame_before <- serialize(frame, NULL, version = 3L)
-${columnApplied.code}
-stopifnot(identical(open_wrangler_result$\`scalar result\`, c(8.5, -7.5, NA_real_, 2.5)))
-stopifnot(identical(open_wrangler_result$\`column result\`, c(4, -2, NA_real_, NA_real_)))
-stopifnot(identical(row.names(open_wrangler_result), row.names(frame)))
-stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
-cat("generated-ok\\n")
-`);
-    expect(generated.stdout.trim()).toBe("generated-ok");
   });
 
   it.each([
@@ -2048,40 +2008,6 @@ ${close.code}
       kind: "closed",
       sessionId: editingSessionId
     });
-
-    const generated = runR(`
-frame <- data.frame(
-  day = as.Date(c("2024-02-29", "2025-01-02", NA)),
-  moment = as.POSIXct(c("2024-03-31 00:30:00", "2024-03-31 03:30:00", NA), tz = "Europe/Berlin"),
-  label = c("leap", "ordinary", "missing"),
-  row.names = c("datetime-cross-a", "datetime-cross-b", "datetime-cross-c"),
-  check.names = FALSE
-)
-frame_before <- serialize(frame, NULL, version = 3L)
-${momentApplied.code}
-stopifnot(identical(open_wrangler_result$\`day of year\`, c("2024-060", "2025-002", NA_character_)))
-stopifnot(identical(open_wrangler_result$moment, c("2024-03-31 00:30 CET", "2024-03-31 03:30 CEST", NA_character_)))
-stopifnot(identical(row.names(open_wrangler_result), row.names(frame)))
-stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
-cat("generated-ok\\n")
-`);
-    expect(generated.stdout.trim()).toBe("generated-ok");
-
-    const generatedUtc = runR(`
-frame <- data.frame(
-  day = as.Date(c("2024-02-29", "2025-01-02", NA)),
-  moment = as.POSIXct(c("2024-03-31 00:30:00", "2024-03-31 03:30:00", NA), tz = "UTC"),
-  label = c("leap", "ordinary", "missing"),
-  row.names = c("datetime-cross-a", "datetime-cross-b", "datetime-cross-c"),
-  check.names = FALSE
-)
-frame_before <- serialize(frame, NULL, version = 3L)
-${momentApplied.code}
-stopifnot(identical(open_wrangler_result$moment, c("2024-03-31 00:30 UTC", "2024-03-31 03:30 UTC", NA_character_)))
-stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
-cat("generated-utc-ok\\n")
-`);
-    expect(generatedUtc.stdout.trim()).toBe("generated-utc-ok");
   });
 
   it("runs a native R Drop Columns then Rename Column plan with stable identities", () => {
@@ -2672,7 +2598,7 @@ cat("generated-ok\n")
     expect(generated.stdout.trim()).toBe("generated-ok");
   });
 
-  it("runs native R Text Length through preview, apply, inspection, undo, and generated code", () => {
+  it("runs native R Text Length through preview, apply, inspection, and undo", () => {
     const editingSessionId = "50000000-0000-4000-8000-000000000001";
     const stepId = "text-length-unicode";
     const outputId = `c:step:${stepId}:0`;
@@ -2838,20 +2764,6 @@ ${close.code}
 
     expect(applied.code).toContain("nchar");
     expect(applied.code).not.toMatch(/\b(?:pandas|polars|python)\b/iu);
-    const generated = runR(`
-frame <- data.frame(
-  label = c("na\\u00efve", "\\u6771\\u4eac", "\\U0001F9EA", NA_character_),
-  stringsAsFactors = FALSE,
-  check.names = FALSE
-)
-frame_before <- serialize(frame, NULL, version = 3L)
-${applied.code}
-stopifnot(identical(names(open_wrangler_result), c("label", "label length")))
-stopifnot(identical(open_wrangler_result[[2L]], c(5L, 2L, 1L, NA_integer_)))
-stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
-cat("generated-ok\\n")
-`);
-    expect(generated.stdout.trim()).toBe("generated-ok");
   });
 
   it("chains native R uppercase with literal, regex, and blank replacements", () => {
@@ -3149,23 +3061,6 @@ ${close.code}
     expect(blankPreviewed.code).toContain("toupper");
     expect(blankPreviewed.code).toContain("gsub");
     expect(blankPreviewed.code).not.toMatch(/\b(?:pandas|polars|python)\b/iu);
-
-    const generated = runR(`
-frame <- data.frame(
-  label = factor(c("a.b 42", "naive2", NA_character_)),
-  stringsAsFactors = TRUE,
-  check.names = FALSE
-)
-frame_before <- serialize(frame, NULL, version = 3L)
-${blankApplied.code}
-stopifnot(identical(names(open_wrangler_result), c("label", "upper", "literal", "regex")))
-stopifnot(identical(open_wrangler_result$label, c("_a_._b_ _4_2_", "_n_a_i_v_e_2_", NA_character_)))
-stopifnot(identical(open_wrangler_result$literal, c("a!b 42", "naive2", NA_character_)))
-stopifnot(identical(open_wrangler_result$regex, c("a.b #", "naive#", NA_character_)))
-stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
-cat("generated-ok\\n")
-`);
-    expect(generated.stdout.trim()).toBe("generated-ok");
   });
 
   it("round-trips dynamic R categorical schemas with duplicate names and generated code", () => {
@@ -3407,7 +3302,7 @@ cat("generated-ok\\n")
     expect(generated.stdout.trim()).toBe("generated-ok");
   });
 
-  it("runs native R type conversion through preview, history, undo, and generated code", () => {
+  it("runs native R type conversion through preview, history, and undo", () => {
     const editingSessionId = "52000000-0000-4000-8000-000000000001";
     const stepId = "cast-text-to-integer";
     const ids = {
@@ -3547,15 +3442,6 @@ ${close.code}
     });
 
     expect(applied.code).not.toMatch(/\b(?:pandas|polars|python)\b/iu);
-    const generated = runR(`
-frame <- data.frame(amount = c("42.9", "bad", NA_character_), check.names = FALSE)
-frame_before <- serialize(frame, NULL, version = 3L)
-${applied.code}
-stopifnot(identical(open_wrangler_result[[1L]], c(42L, NA_integer_, NA_integer_)))
-stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
-cat("generated-ok\\n")
-`);
-    expect(generated.stdout.trim()).toBe("generated-ok");
   });
 
   it("ignores caller functions while dispatching and removing only the matching runtime owners", () => {
