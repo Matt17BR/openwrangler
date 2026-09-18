@@ -49,6 +49,82 @@ custom_assert_true <- function(value, message) {
   if (!isTRUE(value)) stop(message, call. = FALSE)
 }
 
+# A Custom Code result can introduce an exact timestamp into an ordinary frame.
+local({
+  clock_capture <- NULL
+  clock_contract <- openwrangler_r_frame_contract
+  clock_contract$capture_frame <- function(value, ...) {
+    clock_capture <<- openwrangler_r_frame_contract$capture_frame(value, ...)
+    clock_capture
+  }
+  for (library in c("base", "dplyr", "data.table", "collapse")) {
+    environment <- new.env(parent = baseenv()); environment$frame <- data.frame(id = 1:3)
+    before <- environment$frame
+    custom <- openwrangler_r_kernel_agent$new_agent(clock_contract, environment)
+    opened <- dispatch_with(custom, "openSession", list(sessionId = session_id, variableName = "frame", page = page_window(), library = library))
+    preview <- dispatch_with(custom, "previewStep", list(sessionId = session_id, revision = 0L, page = page_window(),
+      step = list(id = "add-clock", kind = "customCode", params = list(code = paste0(
+        'result <- df; result$at <- clock::naive_time_parse(c("2026-01-01T00:00:00.000000001", ',
+        '"2026-01-01T00:00:00.000000002", NA_character_), format = "%Y-%m-%dT%H:%M:%S", precision = "nanosecond")'
+      )))))
+    if (library %in% c("data.table", "collapse")) {
+      assert_identical(preview$code, "unsupported_library", "Custom Code admitted a clock column with an unsupported library")
+      current <- dispatch_with(custom, "getPage", list(sessionId = session_id, page = page_window()))
+      assert_identical(current$page, opened$page, "Refused Custom Code changed the published frame")
+      copy <- dispatch_with(custom, "openSession", list(sessionId = second_session_id, variableName = "frame", page = page_window(),
+        library = library, cloneFromSessionId = session_id, cloneFromRevision = 0L))
+      assert_identical(copy$kind, "page", "Refused Custom Code advanced the confirmed revision")
+      dispatch_with(custom, "closeSession", list(sessionId = second_session_id))
+    } else {
+      assert_identical(preview$kind, "stepPreview", "Custom Code failed to introduce an exact clock column")
+      applied <- dispatch_with(custom, "applyDraft", list(sessionId = session_id, revision = preview$revision, page = page_window()))
+      sorted <- dispatch_with(custom, "previewStep", list(sessionId = session_id, revision = applied$revision, page = page_window(),
+        step = list(id = "sort-clock", kind = "sortRows", params = list(rules = I(list(list(
+          column = list(id = preview$page$schema[[2L]]$id, name = "at"), direction = "desc", nulls = "last"
+        )))))))
+      assert_identical(sorted$kind, "stepPreview", "Sort failed after Custom Code introduced a clock column")
+      result <- get("snapshot", envir = clock_capture, inherits = FALSE)
+      assert_identical(result$id, c(2L, 1L, 3L), "Custom clock sort lost nanosecond order or null position")
+      generated <- new.env(parent = baseenv()); generated$frame <- before
+      eval(parse(text = sorted$code), generated)
+      assert_identical(generated$open_wrangler_result, result, "Generated Custom clock introduction and later sort differ from live output")
+      assert_identical(generated$frame, before, "Generated Custom clock workflow changed its source")
+    }
+    assert_identical(environment$frame, before, "Custom clock workflow changed its source")
+    custom$dispose()
+  }
+  for (case in list(
+    list(source = "clock", code = 'clock::time_point_cast(df$at, "microsecond")'),
+    list(source = "clock", code = 'clock::as_sys_time(df$at)'),
+    list(source = "clock", code = 'clock::as_date_time(clock::as_sys_time(df$at), zone = "UTC")'),
+    list(source = "POSIXct", code = 'clock::time_point_cast(clock::as_naive_time(clock::as_sys_time(df$at)), "nanosecond")')
+  )) {
+    environment <- new.env(parent = baseenv())
+    at <- clock::naive_time_parse(c("2026-01-01T00:00:00.000000001", "2026-01-01T00:00:00.000000002", NA_character_), precision = "nanosecond")
+    if (case$source == "POSIXct") at <- as.POSIXct(c("2026-01-01", "2026-01-02", NA_character_), tz = "UTC")
+    environment$frame <- data.frame(id = 1:3, at = at)
+    before <- environment$frame
+    custom <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, environment)
+    reference <- list(id = "r:c:1", name = "at")
+    page <- page_window(
+      sorts = list(list(column = reference, direction = "desc", nulls = "last")),
+      filters = list(list(column = reference, type = "datetime", predicates = I(list(list(
+        kind = "predicate", operator = "equals", value = if (case$source == "clock") "2026-01-01T00:00:00.000000001" else "2026-01-01T00:00:00Z"
+      )))))
+    )
+    opened <- dispatch_with(custom, "openSession", list(sessionId = session_id, variableName = "frame", page = page, library = "base"))
+    assert_identical(opened$kind, "page", "Clock view reconciliation source failed to open")
+    preview <- dispatch_with(custom, "previewStep", list(sessionId = session_id, revision = 0L, page = page,
+      step = list(id = "change-clock-meaning", kind = "customCode", params = list(code = paste0("result <- df; result$at <- ", case$code)))))
+    assert_identical(preview$kind, "stepPreview", "Custom Code rejected a precise timestamp meaning change")
+    assert_identical(preview$effectiveView$filters, list(), "Custom Code retained a filter whose precise timestamp meaning changed")
+    assert_identical(preview$effectiveView$sorts, unclass(page$view$sorts), "Custom Code dropped a still-valid timestamp sort")
+    assert_identical(preview$page$page$totalRows, 3L, "A stale timestamp filter constrained the new Custom Code output")
+    assert_identical(environment$frame, before, "Clock view reconciliation changed its source")
+    custom$dispose()
+  }
+})
+
 # Generated nested guards reuse native validators in a private base environment.
 local({
   original <- data.frame(id = 1:3)
@@ -702,23 +778,28 @@ custom_zero_discard <- custom_dispatch(
 )
 assert_identical(custom_zero_discard$action, "discard", "zero-row Custom Code draft did not discard")
 
-custom_boundary_rows <- 11116L
-custom_boundary_text_bytes <- 6029L
+custom_boundary_rows <- 10070L
+custom_boundary_text_bytes <- 6640L
+custom_boundary_stamp <- clock::naive_time_parse("2026-01-01T00:00:00.000000001", precision = "nanosecond")
+custom_boundary_classes <- class(custom_boundary_stamp)
 custom_boundary_bytes <-
-  1024 + 512 +
-  (8 + nchar("aa", type = "bytes")) +
+  1024 + 2 * 512 +
+  (2 * 8 + nchar("aaat", type = "bytes")) +
   (8 + nchar("data.frame", type = "bytes")) +
   8 +
-  as.double(custom_boundary_rows) * (8 + custom_boundary_text_bytes)
+  length(custom_boundary_classes) * 8 + sum(nchar(custom_boundary_classes, type = "bytes")) +
+  3 * 48 + 16 + 2 * 8 + nchar("lowerupper", type = "bytes") +
+  as.double(custom_boundary_rows) * (8 + custom_boundary_text_bytes + 16) + 2
 assert_identical(
   custom_boundary_bytes,
   64 * 1024^2,
   "the kernel Custom Code boundary fixture is not exactly 64 MiB"
 )
 custom_boundary_code <- paste(
-  ".ow_boundary_text <- base::paste(base::rep.int(\"x\", 6029L), collapse = \"\")",
-  "result <- base::data.frame(aa = base::rep.int(.ow_boundary_text, 11116L), check.names = FALSE)",
-  "if (base::exists(\"custom_boundary_plus_one\", inherits = TRUE)) base::names(result) <- \"aaa\"",
+  ".ow_boundary_text <- base::paste(base::rep.int(\"x\", 6640L), collapse = \"\")",
+  'result <- base::data.frame(aa = base::rep.int(.ow_boundary_text, 10070L), at = base::rep(clock::naive_time_parse("2026-01-01T00:00:00.000000001", precision = "nanosecond"), 10070L), check.names = FALSE)',
+  'result$aa[[10070L]] <- base::paste0(result$aa[[10070L]], "xx")',
+  "if (base::exists(\"custom_boundary_plus_one\", inherits = TRUE)) base::names(result)[[1L]] <- \"aaa\"",
   sep = "\n"
 )
 custom_boundary_preview <- custom_preview(
@@ -726,7 +807,7 @@ custom_boundary_preview <- custom_preview(
   custom_zero_discard$revision,
   "exact-operation-boundary",
   custom_boundary_code,
-  page = page_window(row_limit = 1L, column_limit = 1L)
+  page = page_window(row_limit = 1L, column_offset = 1L, column_limit = 1L)
 )
 assert_identical(
   custom_boundary_preview$kind,
@@ -738,6 +819,8 @@ assert_identical(
   custom_boundary_rows,
   "the exact-budget live Custom Code output changed height"
 )
+assert_identical(custom_boundary_preview$page$page$rows[[1L]]$values[[1L]]$raw,
+  format(clock::as_duration(custom_boundary_stamp)), "exact-budget live output changed its clock ticks")
 custom_boundary_generated_pass <- new.env(parent = baseenv())
 custom_boundary_generated_pass$orders <- custom_environment$orders
 eval(parse(text = custom_boundary_preview$code), envir = custom_boundary_generated_pass)
@@ -748,9 +831,13 @@ assert_identical(
 )
 assert_identical(
   names(custom_boundary_generated_pass$open_wrangler_result),
-  "aa",
+  c("aa", "at"),
   "generated exact-budget Custom Code changed its output schema"
 )
+assert_identical(custom_boundary_generated_pass$open_wrangler_result$at[c(1L, custom_boundary_rows)],
+  rep(custom_boundary_stamp, 2L), "generated exact-budget output changed its clock endpoint ticks")
+assert_identical(custom_boundary_generated_pass$orders, custom_environment$orders,
+  "generated exact-budget output changed its source")
 custom_boundary_generated_fail <- new.env(parent = baseenv())
 custom_boundary_generated_fail$orders <- custom_environment$orders
 custom_boundary_generated_fail$custom_boundary_plus_one <- TRUE
@@ -763,7 +850,8 @@ custom_boundary_generated_error <- tryCatch(
   error = identity
 )
 custom_assert_true(
-  inherits(custom_boundary_generated_error, "error"),
+  inherits(custom_boundary_generated_error, "error") &&
+    grepl("operation output budget", conditionMessage(custom_boundary_generated_error), fixed = TRUE),
   "generated Custom Code accepted an output one byte over 64 MiB"
 )
 assert_identical(
@@ -771,6 +859,8 @@ assert_identical(
   "sentinel",
   "generated over-budget Custom Code replaced the prior publication"
 )
+assert_identical(custom_boundary_generated_fail$orders, custom_environment$orders,
+  "generated over-budget output changed its source")
 custom_boundary_discard <- custom_dispatch(
   "discardDraft",
   list(
@@ -788,6 +878,8 @@ custom_boundary_live_error <- custom_preview(
   page = page_window(row_limit = 1L, column_limit = 1L)
 )
 assert_custom_recoverable_error(custom_boundary_live_error, "Custom Code output one byte over 64 MiB")
+custom_assert_true(grepl("operation output budget", custom_boundary_live_error$message, fixed = TRUE),
+  "live over-budget output failed for an unrelated reason")
 rm("custom_boundary_plus_one", envir = custom_environment)
 rm(custom_boundary_generated_pass, custom_boundary_generated_fail)
 

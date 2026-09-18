@@ -230,7 +230,7 @@ function activeFrameContract(): RFramePageContract {
     })
   ]);
   return {
-    contractVersion: 6,
+    contractVersion: 7,
     dataframeFlavor: "r.data.frame",
     shape: { rows: 2, columns: 1 },
     frameSemantics: { classes: ["data.frame"], rowNames: "positional", keyColumnIds: [] },

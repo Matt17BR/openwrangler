@@ -1920,6 +1920,34 @@ describe("native state and presentation commands", () => {
     expect(posted.at(-1)).toMatchObject({ inspection: null });
     expect(posted.at(-1)).toMatchObject({ bufferInvalid: false, editable: false });
 
+    for (const rLibrary of ["data.table", "collapse"] as const) {
+      const restricted = rNotebookSnapshot();
+      restricted.code = "";
+      restricted.metadata = {
+        ...restricted.metadata,
+        rLibrary,
+        steps: [],
+        capabilities: { ...restricted.metadata.capabilities, supportedOperations: [] }
+      };
+      registered.setActiveSession(restricted);
+      expect(posted.at(-1)).toMatchObject({
+        code: expect.stringContaining("Choose Base R or dplyr in the engine picker"),
+        editable: false,
+        runtimeIdentity: { runtimeLanguage: "r", codeDialect: `r.${rLibrary}` }
+      });
+      expect(treeChildren("openWrangler.operations")).toEqual([
+        expect.objectContaining({
+          label: "Cleaning unavailable",
+          description: expect.stringContaining("Choose Base R or dplyr"),
+          command: undefined
+        })
+      ]);
+      await expect(command("openWrangler.copyCode")()).resolves.toBe(false);
+      expect(nativeMocks.showInformationMessage).toHaveBeenLastCalledWith(
+        expect.stringContaining("Choose Base R or dplyr")
+      );
+    }
+
     const viewingOnly = noDraftSnapshot();
     viewingOnly.metadata = { ...viewingOnly.metadata, backend: "pyspark", mode: "viewing" };
     viewingOnly.code = "# A viewing-only backend cannot expose editable generated code.";

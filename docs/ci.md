@@ -48,6 +48,9 @@ version, and every run installs and verifies a fresh private library. GitHub sco
 so reuse is limited to its later jobs, updates and reruns; the weekly R 4.4 job uses a separate lock.
 The locks classify dplyr, data.table and collapse as runtime dependencies for selectable R cleaning libraries.
 Selecting base R in the product does not require those optional libraries; qualification prepares the supported choices.
+The same locks include Arrow and clock for exact timestamp import/export and retain nanoparquet for physical file
+metadata and zero-column export. Both R minors keep the existing dated snapshot; the new packages do not update
+the previously locked dependencies.
 
 Source contracts, package validation, and the separate required CodeQL gate run for every change. Source and the
 package job run the same scope proof against their own checkouts. Only `docs_only=true` omits ESLint, Node 24 type

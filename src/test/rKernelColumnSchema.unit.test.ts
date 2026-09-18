@@ -79,6 +79,64 @@ describe("R kernel column schema evolution", () => {
     ).toThrow("cannot also be a directional ordering column");
   });
 
+  it("preserves clock siblings and ordering keys while refusing unsupported clock fills and casts", () => {
+    const clock = { ...schema[2]!, rawType: "clock_naive_time[ns]", type: "datetime" as const };
+    const withClock: readonly ColumnSchema[] = [...schema.slice(0, 2), clock];
+    const fill = (
+      replacement: FillMissingValuesTransformStep["params"]["replacement"],
+      column = reference(0)
+    ): FillMissingValuesTransformStep => ({
+      id: "fill",
+      kind: "fillMissingValues",
+      params: { column, replacement }
+    });
+    expect(schemaAfterFillMissing(withClock, fill({ kind: "mean" }), []).at(-1)).toEqual(clock);
+    expect(
+      schemaAfterFillMissing(
+        withClock,
+        fill({
+          kind: "directional",
+          direction: "forward",
+          orderBy: [{ column: reference(2), direction: "asc", nulls: "last" }]
+        }),
+        []
+      )
+    ).toEqual(withClock);
+    expect(() =>
+      schemaAfterFillMissing(withClock, fill({ kind: "datetime", value: "2026-09-18T12:00:00" }, reference(2)), [])
+    ).toThrow("clock datetime columns");
+    expect(() =>
+      schemaAfterFillMissing(withClock, fill({ kind: "linearInterpolation", coordinate: reference(2) }), [])
+    ).toThrow("interpolation coordinates");
+    expect(() =>
+      schemaAfterFillMissing(withClock, fill({ kind: "groupedStatistic", statistic: "mean", keys: [reference(2)] }), [])
+    ).toThrow("grouped-fill keys");
+    expect(() =>
+      schemaAfterFillMissing(withClock, fill({ kind: "fallbackColumns", columns: [reference(2)] }), [])
+    ).toThrow("clock datetime fallback");
+    expect(
+      schemaAfterClone(withClock, {
+        id: "clone",
+        kind: "cloneColumn",
+        params: { column: reference(2), newName: "time_copy" }
+      }).at(-1)
+    ).toMatchObject({ rawType: clock.rawType, type: "datetime", nullable: true });
+    expect(
+      schemaAfterSelect(withClock, {
+        id: "select",
+        kind: "selectColumns",
+        params: { columns: [reference(2), reference(0)] }
+      })[0]
+    ).toEqual({ ...clock, position: 0 });
+    expect(() =>
+      schemaAfterCast(
+        withClock,
+        { id: "cast", kind: "castColumn", params: { column: reference(2), dtype: "datetime" } },
+        []
+      )
+    ).toThrow("cannot safely convert");
+  });
+
   it("maps safe native R casts without relaxing key or raw-type checks", () => {
     const cast: CastColumnTransformStep = {
       id: "cast",

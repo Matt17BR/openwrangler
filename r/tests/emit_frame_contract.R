@@ -24,6 +24,8 @@ make_base <- function() {
     local_instant = local_instant,
     elapsed = as.difftime(c(1, 2, NA), units = "days"),
     wide = bit64::as.integer64(c("9223372036854775806", "-9223372036854775807", NA)),
+    civil_nanos = clock::naive_time_parse(c("2023-11-14T22:13:20.000000000", "2023-11-14T22:13:20.000000001", NA), precision = "nanosecond"),
+    precise_instant = clock::as_sys_time(clock::naive_time_parse(c("1677-09-21T00:12:43.145224192", "1969-12-31T23:59:59.999999999", NA), precision = "nanosecond")),
     check.names = FALSE
   )
 }

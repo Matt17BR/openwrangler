@@ -5,6 +5,7 @@ import {
   assertRColumnValuesContract,
   assertRDatasetStatsContract,
   assertRSummaryContract,
+  reconcileRViewFilterModel,
   requireRTransformColumn,
   resolveNamedRColumn,
   resolveRTransformFilterModel,
@@ -13,6 +14,45 @@ import {
 } from "../extension/r/rKernelViewContract";
 
 describe("R kernel view contract", () => {
+  it("drops filters when clock timestamp units or meaning change while preserving sorting and compatible renames", () => {
+    const column = { ...schema[0]!, type: "datetime" as const, rawType: "clock_naive_time[ns]" };
+    const selection = {
+      kind: "typedSelection" as const,
+      version: 1 as const,
+      columnType: "datetime" as const,
+      cell: {
+        kind: "datetime" as const,
+        raw: "1700000000000000001",
+        display: "2023-11-14T22:13:20.000000001",
+        isNull: false,
+        isNaN: false
+      }
+    };
+    const model: FilterModel = {
+      filters: [
+        {
+          column: column.name,
+          type: "datetime",
+          predicates: [],
+          valueFilter: { kind: "values", selectedValues: [selection], includeNulls: false, includeNaN: false }
+        }
+      ],
+      sort: [{ column: column.name, direction: "asc", nulls: "last" }]
+    };
+    for (const rawType of ["clock_naive_time[us]", "clock_sys_time[ns]", "POSIXct"]) {
+      const changed = { ...column, rawType, name: "renamed" };
+      expect(reconcileRViewFilterModel(model, [column], [changed])).toEqual({
+        filters: [],
+        sort: [{ ...model.sort[0]!, column: "renamed" }]
+      });
+      expect(reconcileRViewFilterModel(model, [{ ...column, rawType }], [column]).filters).toEqual([]);
+    }
+    const renamed = { ...column, name: "renamed" };
+    expect(reconcileRViewFilterModel(model, [column], [renamed]).filters).toEqual([
+      { ...model.filters[0]!, column: "renamed" }
+    ]);
+  });
+
   it("binds name-addressed views to immutable stable column identities", () => {
     const view = resolveRViewQuery(
       {

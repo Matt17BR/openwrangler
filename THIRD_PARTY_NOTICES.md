@@ -51,7 +51,9 @@ The bundled R runtime uses optional packages from the selected R environment for
 - dplyr 1.2.1 or newer: MIT License, for selected dplyr cleaning operations.
 - data.table 1.18.2.1 or newer: Mozilla Public License 2.0, for selected data.table cleaning operations.
 - collapse 2.1.7 or newer: GNU General Public License version 2 or later, with Mozilla Public License 2.0 components, for selected collapse cleaning operations.
-- nanoparquet 0.5.1 or newer: MIT License, for native Parquet input and export.
+- Apache Arrow for R 23.0.1.1 or newer: Apache License 2.0, for native Parquet data input and export.
+- clock 0.7.4 or newer: MIT License, for timezone-free and precise native R timestamps.
+- nanoparquet 0.5.1 or newer: MIT License, for Parquet metadata checks and zero-column row-count preservation.
 - readxl 1.4.5 or newer: MIT License, for native Excel input.
 
 These packages are not shipped in the VSIX.

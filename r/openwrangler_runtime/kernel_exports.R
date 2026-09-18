@@ -167,7 +167,7 @@ openwrangler_r_kernel_exports <- local({
       if (!format %in% formats()) {
         fail(
           "missing_package",
-          "Parquet export requires nanoparquet 0.5.1 or newer in the selected R runtime",
+          "Parquet export requires a supported Arrow package in the selected R runtime. Run install.packages('arrow'), then reopen the dataframe.",
           TRUE
         )
       }

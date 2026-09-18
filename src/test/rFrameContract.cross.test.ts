@@ -73,6 +73,29 @@ describe.skipIf(!enabled)("R to TypeScript frame contract", () => {
       kind: "datetime",
       timezone: null
     });
+    const civilIndex = frame.schema.findIndex((column) => column.name === "civil_nanos");
+    const preciseIndex = frame.schema.findIndex((column) => column.name === "precise_instant");
+    expect(frame.schema[civilIndex]).toMatchObject({
+      rawType: "clock_naive_time[ns]",
+      type: "datetime",
+      semantics: { kind: "clock_datetime", clock: "naive", precision: "nanosecond" }
+    });
+    expect(frame.schema[preciseIndex]).toMatchObject({
+      rawType: "clock_sys_time[ns]",
+      type: "datetime",
+      semantics: { kind: "clock_datetime", clock: "sys", precision: "nanosecond" }
+    });
+    expect(frame.page.rows.map((row) => row.values[civilIndex]?.raw)).toEqual([
+      "1700000000000000000",
+      "1700000000000000001",
+      null
+    ]);
+    expect(frame.page.rows[1]?.values[civilIndex]?.display).toBe("2023-11-14T22:13:20.000000001");
+    expect(frame.page.rows.map((row) => row.values[preciseIndex]?.raw)).toEqual(["-9223372036854775808", "-1", null]);
+    expect(frame.page.rows[0]?.values[preciseIndex]).toMatchObject({
+      display: "1677-09-21T00:12:43.145224192Z",
+      isNull: false
+    });
     const wideIndex = frame.schema.findIndex((column) => column.name === "wide");
     const amountIndex = frame.schema.findIndex((column) => column.name === "duplicate" && column.type === "float");
     expect(frame.page.rows[0]?.values[wideIndex]).toMatchObject({

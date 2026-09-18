@@ -362,7 +362,7 @@ cat("exact-literals:ok")
       await writeR(
         interactive,
         `base::local({${[
-          `candidate <- nanoparquet::read_parquet(${JSON.stringify(parquetPath)}, options = nanoparquet::parquet_options(class = "data.frame"))`,
+          `candidate <- as.data.frame(arrow::read_parquet(${JSON.stringify(parquetPath)}))`,
           "stopifnot(identical(candidate$order_id, c(3400001L, 3400002L)))",
           'stopifnot(identical(as.character(candidate$label), c("alpha", "beta")))',
           'stopifnot(identical(active_orders$label, c("ALPHA", "BETA")))',

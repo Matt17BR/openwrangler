@@ -2071,7 +2071,7 @@ function openResponse(requestId: string, sessionId: string, includeFormats = tru
     sessionId,
     ...(includeFormats ? { library, exportFormats: ["csv"] } : {}),
     page: {
-      contractVersion: 6,
+      contractVersion: 7,
       dataframeFlavor: "r.data.frame",
       shape: { rows: 1, columns: 1 },
       frameSemantics: { classes: ["data.frame"], rowNames: "positional", keyColumnIds: [] },

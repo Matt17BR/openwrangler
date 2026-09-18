@@ -454,6 +454,8 @@ export const R_ACCEPTANCE_PACKAGE_VERSIONS = Object.freeze({
   "data.table": "1.18.2.1",
   collapse: "2.1.7",
   nanoparquet: "0.5.1",
+  arrow: "23.0.1.1",
+  clock: "0.7.4",
   readxl: "1.4.5",
   bit64: "4.6.0.1", // packageVersion() renders the archive's 4.6.0-1 with dots.
   dplyr: "1.2.1"

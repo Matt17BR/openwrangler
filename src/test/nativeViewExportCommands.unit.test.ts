@@ -424,7 +424,7 @@ describe("native export commands", () => {
     });
 
     expect(nativeMocks.showQuickPick).toHaveBeenCalledWith(
-      [{ label: "CSV", description: "Rounds timestamps to microseconds; no time-zone offset", format: "csv" }],
+      [{ label: "CSV", description: "POSIXct timestamps can lose precision and time-zone information", format: "csv" }],
       {
         title: "Export Cleaned Data",
         placeHolder: "Choose a format for all applied steps. Viewing filters and sorts are excluded."

@@ -146,7 +146,7 @@ VS Code on Linux, macOS and Windows since [2.5.0](https://github.com/Matt17BR/op
 Open Wrangler works directly in R, with no conversion through Python.
 
 Preview cleaning steps, inspect history, copy or save generated R, and insert it back into the originating notebook.
-CSV export is available; Parquet export requires `nanoparquet` and has type and precision limits.
+CSV export is available; Parquet export requires `arrow` and has type and precision limits.
 
 In **2.6**, choose base R, dplyr, data.table or collapse for built-in cleaning and generated R. Set
 `openWrangler.defaultRLibrary` before opening a new dataframe, or use the engine picker for a file. The toolbar
@@ -164,10 +164,16 @@ Parquet, JSONL/NDJSON or an Excel worksheet, or set `openWrangler.defaultBackend
 Auto also tries R when no compatible Python interpreter or file engine is available. An explicit Python engine choice
 or a file-read error does not switch to R. CSV/TSV import options include UTF-16 and single-byte encodings,
 ASCII delimiter/quote choices and headerless input. Quoted text retains its embedded line endings.
-Parquet needs `nanoparquet`; Excel needs `readxl`. R loads the complete file into memory and requires an installed
+Parquet needs `arrow` and `nanoparquet`; exact timestamps also need `clock`. Excel needs `readxl`.
+R loads the complete file into memory and requires an installed
 Rscript; it does not need Python. The **Open Wrangler R** output channel records the selected
 Rscript path. Choosing R from a Python session opens a separate tab and
 preserves the existing steps. Changing an R file's import options also opens a separate session.
+
+All four R choices open and display timezone-free and nanosecond Parquet timestamps exactly. Base R and dplyr also
+support cleaning these columns. With data.table or collapse selected, viewing and export remain available; choose
+base R or dplyr in the engine picker to create a cleaning copy. Some temporal operations remain unsupported.
+See the [timestamp limits](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#frames-cleaning-and-export-limits).
 
 Custom Code can call installed R packages such as `dplyr`, `data.table` and `collapse`, and return a supported
 base `data.frame`, tibble or `data.table`. In **2.6**, the result can change between these frame classes.

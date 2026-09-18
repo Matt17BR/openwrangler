@@ -122,7 +122,7 @@ Copy or save the displayed code; cleaned-data export uses all applied steps and 
   </tr>
   <tr>
     <td>Copy generated code or save it as a Python or R script. Notebook sessions and Open Wrangler-managed R documents can also insert it into the source that opened the dataframe.</td>
-    <td>Pandas, Polars, DuckDB, and local R editing sessions can export cleaned data without overwriting the source. R uses nanoparquet for Parquet files.</td>
+    <td>Pandas, Polars, DuckDB, and local R editing sessions can export cleaned data without overwriting the source. R uses Arrow for Parquet data and preserves exact clock timestamps.</td>
   </tr>
 </table>
 

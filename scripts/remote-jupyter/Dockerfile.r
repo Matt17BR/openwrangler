@@ -10,6 +10,8 @@ ARG TIBBLE_VERSION=3.3.1
 ARG DATA_TABLE_VERSION=1.18.2.1
 ARG COLLAPSE_VERSION=2.1.7
 ARG NANOPARQUET_VERSION=0.5.1
+ARG ARROW_VERSION=23.0.1.1
+ARG CLOCK_VERSION=0.7.4
 
 ENV R_REPOSITORY=${R_REPOSITORY} \
     R_SUPPLEMENTAL_REPOSITORY=${R_SUPPLEMENTAL_REPOSITORY} \
@@ -19,9 +21,11 @@ ENV R_REPOSITORY=${R_REPOSITORY} \
     TIBBLE_VERSION=${TIBBLE_VERSION} \
     DATA_TABLE_VERSION=${DATA_TABLE_VERSION} \
     COLLAPSE_VERSION=${COLLAPSE_VERSION} \
-    NANOPARQUET_VERSION=${NANOPARQUET_VERSION}
+    NANOPARQUET_VERSION=${NANOPARQUET_VERSION} \
+    ARROW_VERSION=${ARROW_VERSION} \
+    CLOCK_VERSION=${CLOCK_VERSION}
 
-RUN Rscript --vanilla -e 'repository <- Sys.getenv("R_REPOSITORY"); supplemental_repository <- Sys.getenv("R_SUPPLEMENTAL_REPOSITORY"); packages <- c("IRkernel", "jsonlite", "rlang", "tibble", "data.table"); install.packages(packages, repos = repository, Ncpus = 2L); install.packages(c("collapse", "nanoparquet"), repos = supplemental_repository, Ncpus = 2L); expected <- c(IRkernel = Sys.getenv("IRKERNEL_VERSION"), jsonlite = Sys.getenv("JSONLITE_VERSION"), rlang = Sys.getenv("RLANG_VERSION"), tibble = Sys.getenv("TIBBLE_VERSION"), data.table = Sys.getenv("DATA_TABLE_VERSION"), collapse = Sys.getenv("COLLAPSE_VERSION"), nanoparquet = Sys.getenv("NANOPARQUET_VERSION")); actual <- vapply(names(expected), function(package) as.character(utils::packageVersion(package)), character(1)); stopifnot(as.character(getRversion()) == "4.5.2", identical(actual, expected)); IRkernel::installspec(user = FALSE, prefix = "/opt/openwrangler/venv", name = "openwrangler-r-remote-acceptance", displayname = "R (Open Wrangler Remote)")'
+RUN Rscript --vanilla -e 'repository <- Sys.getenv("R_REPOSITORY"); supplemental_repository <- Sys.getenv("R_SUPPLEMENTAL_REPOSITORY"); packages <- c("IRkernel", "jsonlite", "rlang", "tibble", "data.table", "arrow", "clock"); install.packages(packages, repos = repository, Ncpus = 2L); install.packages(c("collapse", "nanoparquet"), repos = supplemental_repository, Ncpus = 2L); expected <- c(IRkernel = Sys.getenv("IRKERNEL_VERSION"), jsonlite = Sys.getenv("JSONLITE_VERSION"), rlang = Sys.getenv("RLANG_VERSION"), tibble = Sys.getenv("TIBBLE_VERSION"), data.table = Sys.getenv("DATA_TABLE_VERSION"), collapse = Sys.getenv("COLLAPSE_VERSION"), nanoparquet = Sys.getenv("NANOPARQUET_VERSION"), arrow = Sys.getenv("ARROW_VERSION"), clock = Sys.getenv("CLOCK_VERSION")); actual <- vapply(names(expected), function(package) as.character(utils::packageVersion(package)), character(1)); stopifnot(as.character(getRversion()) == "4.5.2", identical(actual, expected)); IRkernel::installspec(user = FALSE, prefix = "/opt/openwrangler/venv", name = "openwrangler-r-remote-acceptance", displayname = "R (Open Wrangler Remote)")'
 
 COPY inject-token.py server.py /opt/openwrangler/
 RUN chmod 0555 /opt/openwrangler/inject-token.py /opt/openwrangler/server.py \

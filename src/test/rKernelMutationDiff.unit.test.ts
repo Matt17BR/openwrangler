@@ -249,7 +249,7 @@ function reference(position: number): { id: string; name: string } {
 
 function pageContract(values: readonly [string, string][]): RFramePageContract {
   return {
-    contractVersion: 6,
+    contractVersion: 7,
     dataframeFlavor: "r.data.frame",
     shape: { rows: values.length, columns: 2 },
     frameSemantics: { classes: ["data.frame"], rowNames: "positional", keyColumnIds: [] },

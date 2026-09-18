@@ -518,7 +518,7 @@ function frameContract(columns: readonly ColumnSchema[], rowIds: readonly string
     throw new Error(`Unsupported R test column type: ${column.type}`);
   });
   return {
-    contractVersion: 6,
+    contractVersion: 7,
     dataframeFlavor: "r.data.frame",
     shape: { rows: rowIds.length, columns: columns.length },
     frameSemantics: { classes: ["data.frame"], rowNames: "positional", keyColumnIds: [] },

@@ -24,7 +24,7 @@ describes the durable ownership and safety boundaries. It intentionally leaves o
 - `protocol/openwrangler.v4.schema.json` is the canonical coordinator-facing request and response schema. Its
   generator emits five checked-in artifacts: TypeScript protocol types, TypeScript operation catalog, TypeScript
   limits, Python operation catalog, and Python limits. It does not generate the full Python runtime protocol. Native R
-  has a separate private transport v16 and frame contract v6, which `RKernelBridge` adapts to and from coordinator
+  has a separate private transport v17 and frame contract v7, which `RKernelBridge` adapts to and from coordinator
   protocol v4.
 
 Native tree views, Code Preview and file custom editors keep their original lazy provider registrations until shutdown.
@@ -1556,22 +1556,29 @@ Source and destination identity checks still protect the input from exports.
 
 #### Parquet, JSONL and Excel files
 
-Parquet input uses `nanoparquet` 0.5.1 or newer. It admits flat Boolean, text, floating-point, signed integer and Date
+Parquet input uses Arrow 23.0.1.1 or newer for one data read. `nanoparquet` 0.5.1 or newer validates physical and
+logical footer metadata before that read. It admits flat Boolean, text, floating-point, signed integer and Date
 columns, with reader-preserved factor metadata. Integer64 input also requires `bit64`. Modern `INT` and
 [legacy integer annotations](https://github.com/apache/parquet-format/blob/master/LogicalTypes.md#deprecated-integer-convertedtype)
 accept 8, 16 and 32 bits only on physical INT32, and 64 bits only on physical INT64. Legacy annotations apply only when
 the logical annotation is absent; a local TIMESTAMP never falls back to its legacy timestamp annotation.
-Signed annotated INT64 retains exact `integer64` values beyond 2^53. When the reader returns INT64 as double, including
-unannotated and some unsigned input, its values must have magnitude below 2^53 before conversion to `integer64`.
-Native integer/date missing sentinels require null-count evidence; absent statistics do not establish that a missing
-value was a source null. Unsigned limits follow the reader's actual storage: negative wraparound and missing-sentinel
-results are refused. Field refusals identify the column index, bounded escaped name, physical/logical/converted
+Signed and unsigned INT64 retain exact `integer64` values within the signed R range, excluding its missing sentinel.
+Arrow validity masks distinguish source nulls from present values that collide with R integer/date missing sentinels;
+missing footer statistics no longer force refusal. Unsigned values outside the native signed range are refused.
+Field refusals identify the column index, bounded escaped name, physical/logical/converted
 annotations and the unsupported representation, with guidance to select a compatible engine or explicitly convert the field.
-Decimal, binary, nested, local-time and INT96 fields remain unsupported.
-UTC-adjusted millisecond and microsecond timestamps require magnitude below 2^51 ticks and a tick round trip.
-They load in UTC; named timezone metadata is not restored. Reader-preserved durations require the same tick bound and
-a consistent seconds/milliseconds/microseconds/nanoseconds scale. Duration-containing files need a second full native
-read to verify their raw ticks, adding I/O and temporary frame allocation. Other files use one data read.
+Decimal, binary, nested and INT96 fields remain unsupported. The INT96 guard prevents Arrow's nanosecond conversion
+from silently wrapping dates outside that representation's range.
+UTC-adjusted millisecond and microsecond timestamps retain the existing POSIXct path when their magnitude is below
+2^51 ticks and they pass a tick round trip. Other millisecond/microsecond timestamps and all nanosecond timestamps
+use `clock` 0.7.4 or newer: unadjusted values remain `clock_naive_time`, and adjusted values become `clock_sys_time`.
+The reader converts Arrow timestamp text directly to clock storage and verifies exact original ticks and nulls.
+It never first converts these values through POSIXct doubles or integer64 missing sentinels. Nanosecond timestamps
+retain the full signed 64-bit range, including a present minimum value. Named timezone metadata is not restored;
+adjusted values display in UTC. Clock millisecond/microsecond values must be within ISO calendar years 0000 to 9999,
+matching the display and filter parser; direct notebook columns use the same bound. Reader-preserved durations retain
+the below-2^51 tick bound and a consistent
+seconds/milliseconds/microseconds/nanoseconds scale, checked against Arrow arrays without a second data read.
 
 JSONL/NDJSON input uses `jsonlite` and admits flat object records with one scalar type per column. Missing keys and
 JSON null become missing values; field order follows first occurrence. Blank lines are skipped. Numeric token text
@@ -1600,6 +1607,24 @@ are checked by the emitted loader itself, so live and generated failures give th
 
 The producer and host independently validate canonical frame classes, column IDs, row names, typed values and
 bounded metadata. Factors, ordered factors, Date, POSIXct, difftime and integer64 retain explicit native metadata.
+Top-level clock naive/sys time columns have a separate `clock_datetime` kind with explicit millisecond, microsecond
+or nanosecond precision. Their exact two-field record storage and class chain are validated; arbitrary vctrs records
+and clock values nested inside List/Struct columns are not admitted. Public datetime cells carry signed decimal tick
+strings and exact ISO display text. `rawType` records both precision and civil/instant meaning, so saved-plan
+compatibility and filter reconciliation cannot reinterpret ticks after a type change. Sorting can retain its column
+reference; filters on changed clock types are discarded.
+
+Clock columns require a base data.frame or tibble. All four selected libraries can open, view, profile, filter, sort
+and export these frames through the shared native owners. data.table and collapse sessions expose an empty cleaning
+operation catalog while clock columns remain, with help directing users to the existing base/dplyr editing-copy path.
+Their native step dispatcher also refuses before any mutation. The session keeps its selected library and existing
+mode/export/copy contract; it does not silently execute another library's transformations. Actual data.table frames
+containing clock records remain unsupported.
+Base R and dplyr support structural cleaning, exact filtering/sorting and missing/duplicate handling.
+Temporal formatting, casts, Fill, grouping, pivoting and By Example
+do not acquire clock semantics implicitly; unsupported operations refuse before publication. Other operations remain
+available when clock columns are not inputs or grouping/identifier keys.
+
 Plain-double `NA`, `NaN` and both infinities remain distinct. Non-finite classed temporal values, fractional Dates,
 reserved integer missing-value sentinels used as values, recursive containers, unsupported attributes and malformed names
 are refused. Ordinary `collapse::qDF()`, `qTBL()` and `qDT()` outputs use the three supported frame paths;
@@ -1705,7 +1730,7 @@ and native floating columns refuse integer-cell selection tokens.
 #### Export and transport
 
 Cleaned-data export requires Editing mode with no outstanding draft; Apply or Discard first. The writer runs in the
-same owning R process, including nanoparquet for Parquet. Document transport streams an identified private file;
+same owning R process, including Arrow for Parquet. Document transport streams an identified private file;
 notebook and terminal transports read offset-checked chunks from the exact native owner before the host's atomic save.
 CSV and Parquet export refuse remaining List or Struct columns before creating an artifact. Extract the needed fields
 and drop the parent, or Explode a typed List, to produce an exportable scalar frame.
@@ -1735,12 +1760,19 @@ cleanup. Native text can contain only a date at midnight and omits both the time
 An explicit column time zone is used; a missing or empty zone uses the R process's
 time zone, unlike the grid's UTC default. CSV therefore does not guarantee exact timestamp preservation or record
 the zone needed to interpret the exported local time. The R CSV format choice displays these limits before export.
+Clock columns instead export their exact ISO text, with `Z` for sys time and no offset for naive time.
 
-Native R Parquet export retains nanoparquet's microsecond timestamp representation. Before writing, it scans all
-POSIXct values in bounded slices and refuses non-missing non-finite values, range overflow or precision loss.
-The check reconstructs seconds from the writer's integer microseconds independently of any reader's rounding.
-Some reader-created floating values therefore fail even if that reader previously reproduced them. Refusal leaves
-the source and confirmed session unchanged and publishes no artifact.
+Native R Parquet export uses Arrow and retains microseconds for POSIXct and nanoseconds for difftime.
+Before writing, it scans both types in slices of at most 65,536 values and refuses NaN, infinity, signed 64-bit
+overflow or precision loss. Duration values must round-trip between their declared units and seconds.
+The check reconstructs seconds from the writer's integer ticks independently of reader rounding. Some reader-created
+floating values therefore fail even if that reader previously reproduced them.
+Duration output uses an explicit nanosecond type because Arrow's default whole-second conversion truncates fractions.
+Refusal leaves the source and confirmed session unchanged and publishes no artifact.
+Clock columns export exact decimal ticks through Arrow int64 to a timestamp array with the original precision and
+civil/UTC meaning. A present minimum signed 64-bit tick stays distinct from missing. Temporary unique constructor
+names preserve duplicate, empty and API-reserved user headers. Zero-column frames use the existing nanoparquet writer
+to preserve their row count; Arrow's zero-column writer discards it. This exception does not change the data reader.
 
 Native R charges metadata and cells against a 16 MiB page budget while constructing the page. Response encoding
 stays inside the correlated request error boundary: oversized ASCII string expansion is refused before assembling

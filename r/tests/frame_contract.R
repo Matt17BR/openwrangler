@@ -205,6 +205,19 @@ property_decimal_text <- function(seed) {
 }
 
 property_values <- vapply(seq_len(160L), property_decimal_text, character(1L), USE.NAMES = FALSE)
+canonicalize <- get("normalize_integer_text", contract_environment)
+keys <- vapply(c(property_values, unlist(lapply(signed_decimal_cases, function(case) c(case$left, case$right)))),
+  canonicalize, character(1L), label = "test key", USE.NAMES = FALSE)
+compare_keys <- get("compare_integer_keys", contract_environment)
+for (target in c("-9223372036854775808", "-123", "-1", "0", "+00123", "9223372036854775807")) {
+  expected <- vapply(keys, oracle_compare_signed_decimal_text, integer(1L), right = target, USE.NAMES = FALSE)
+  for (operator in c("equals", "notEquals", "lt", "lte", "gt", "gte")) {
+    mask <- switch(operator, equals = expected == 0L, notEquals = expected != 0L,
+      lt = expected < 0L, lte = expected <= 0L, gt = expected > 0L, gte = expected >= 0L)
+    assert_identical(compare_keys(keys, target, operator), mask, "vector integer keys disagreed with the independent decimal oracle")
+    assert_identical(compare_keys(character(), target, operator), logical(), "empty vector integer comparison changed shape")
+  }
+}
 for (index in seq_along(property_values)) {
   partner_index <- ((index * 53L) %% length(property_values)) + 1L
   left <- property_values[[index]]
@@ -229,6 +242,167 @@ for (index in seq_along(property_values)) {
 
 }))
 run_frame_contract_case("capture-and-export", local({
+
+# Exact clock timestamps retain their native records, including a present INT64_MIN.
+local({
+  require_package("clock")
+  require_package("arrow")
+  fc <- openwrangler_r_frame_contract
+  text <- c("1677-09-21T00:12:43.145224192", "1969-12-31T23:59:59.999999999",
+    "2026-03-29T02:30:00.000000000", "2026-03-29T02:30:00.000000001", NA_character_,
+    "2026-03-29T02:30:00.000000000", "2262-04-11T23:47:16.854775807")
+  ticks <- c("-9223372036854775808", "-1", "1774751400000000000", "1774751400000000001",
+    NA_character_, "1774751400000000000", "9223372036854775807")
+  civil <- clock::naive_time_parse(text, precision = "nanosecond")
+  frame <- data.frame(id = seq_along(text), civil = civil, instant = clock::as_sys_time(civil),
+    score = seq_along(text), check.names = FALSE, row.names = paste0("clock-", seq_along(text)))
+  before <- serialize(frame, NULL, version = 3L)
+  for (flavor in c("data.frame", "tibble")) {
+    source <- if (flavor == "tibble") tibble::as_tibble(frame) else frame
+    source_before <- serialize(source, NULL, version = 3L)
+    capture <- fc$capture_frame(source)
+    page <- fc$materialize_page(capture)
+    assert_identical(page$shape$rows, 7L, "clock records were counted as two rows")
+    assert_identical(page$schema[[2L]]$semantics, list(kind = "clock_datetime", storageMode = "list",
+      classes = I(class(civil)), clock = "naive", precision = "nanosecond"), "clock metadata changed")
+    assert_identical(page$schema[[2L]]$rawType, "clock_naive_time[ns]", "civil timestamp lost its raw type")
+    assert_identical(page$schema[[3L]]$rawType, "clock_sys_time[ns]", "instant lost its raw type")
+    for (row in seq_along(text)) {
+      if (is.na(text[[row]])) {
+        assert_true(page$page$rows[[row]]$values[[2L]]$isNull, "clock missing value became present")
+      } else {
+        assert_identical(page$page$rows[[row]]$values[[2L]]$raw, ticks[[row]], "clock tick identity changed")
+        assert_identical(page$page$rows[[row]]$values[[2L]]$display, text[[row]], "civil display changed precision or timezone")
+        assert_identical(page$page$rows[[row]]$values[[3L]]$display, paste0(text[[row]], "Z"), "instant display omitted UTC")
+      }
+    }
+    reference <- list(id = "r:c:1", name = "civil")
+    query <- list(filters = list(), sorts = list(list(column = reference, direction = "desc", nulls = "last")))
+    for (library in c("base", "dplyr")) {
+      sorted <- fc$transform_rows(capture, query, library)$frame
+      assert_identical(sorted$id, c(7L, 4L, 3L, 6L, 2L, 1L, 5L), "clock order lost adjacent ticks, sign, nulls or stable ties")
+      cloned <- fc$clone_column_at(source, 2L, "civil", "copy", library)
+      renamed <- fc$rename_column_at(cloned, 5L, "copy", "renamed", library)
+      selected <- fc$select_columns_at(renamed, c(5L, 1L, 3L), c("renamed", "id", "instant"), library)
+      assert_identical(selected[[1L]], civil, "clock clone/select/rename changed its record")
+      dropped <- fc$drop_columns_at(source, 4L, "score", library)
+      assert_identical(dropped$civil, civil, "dropping a sibling changed clock values")
+      assert_identical(fc$drop_missing_rows_at(source, 2L, "civil", library = library)$frame$id,
+        c(1L, 2L, 3L, 4L, 6L, 7L), "clock missingness used internal list fields")
+      assert_identical(fc$drop_duplicate_rows_at(source, 2L, "civil", library = library)$frame$id,
+        c(1L, 2L, 3L, 4L, 5L, 7L), "clock duplicate keys merged adjacent ticks")
+      marked <- fc$mark_duplicate_rows_at(source, 2L, "civil", "duplicate", library)
+      assert_identical(marked$duplicate, c(FALSE, FALSE, TRUE, FALSE, FALSE, TRUE, FALSE), "clock duplicate marking changed exact equality")
+      sibling <- fc$rename_column_at(source, 4L, "score", "amount", library)
+      assert_identical(sibling$civil, civil, "an ordinary sibling edit changed clock metadata")
+      calculated <- fc$formula_column_at(source, 4L, "score", "add", "total", right_value = 1L, library = library)
+      assert_identical(calculated$civil, civil, "an ordinary Formula changed clock values or metadata")
+      assert_identical(calculated$total, seq_along(text) + 1L, "an ordinary Formula beside clocks changed its result")
+    }
+    predicate_query <- function(value) list(filters = list(list(column = reference, type = "datetime",
+      predicates = list(list(kind = "predicate", operator = "equals", value = value)))), sorts = list())
+    filtered <- fc$materialize_view_page(capture, predicate_query(text[[4L]]))
+    assert_identical(vapply(filtered$page$rows, `[[`, character(1L), "id"), "r:r:3", "clock equality lost a nanosecond")
+    for (suffix in c("Z", "+01:00", "-0100")) {
+      assert_error(fc$materialize_view_page(capture, predicate_query(paste0(text[[4L]], suffix))), "invalid-view-value")
+    }
+    values <- fc$materialize_column_values(capture, reference)
+    selected_value <- Filter(function(value) identical(value$selectionValue$cell$raw, ticks[[4L]]), values$values)[[1L]]
+    assert_identical(fc$materialize_view_page(capture, predicate_query(selected_value$selectionValue))$page$totalRows,
+      1L, "typed clock selection lost its exact ticks")
+    stale <- selected_value$selectionValue
+    stale$cell$display <- paste0(stale$cell$display, "Z")
+    assert_error(fc$materialize_view_page(capture, predicate_query(stale)), "invalid-view-value")
+    summary <- fc$materialize_summaries(capture, list(reference))[[1L]]
+    assert_identical(summary$distinctCount, 5L, "clock distinct counts merged nanoseconds or INT64_MIN")
+    assert_identical(summary$nullCount, 1L, "clock INT64_MIN became a missing value")
+    assert_identical(summary$visualization, list(kind = "datetime", min = text[[1L]], max = text[[7L]]), "clock extrema lost exact ordering")
+    assert_identical(serialize(source, NULL, version = 3L), source_before, "clock operations mutated their source")
+    for (unsupported in c("data.table", "collapse")) {
+      assert_error(fc$clone_column_at(source, 2L, "civil", "copy", unsupported), "base or dplyr")
+    }
+    assert_error(fc$cast_column_at(source, 2L, "civil", "string"), "cannot convert")
+    assert_error(fc$format_datetime_column_at(source, 2L, "civil", "%Y", "year"), "Date or POSIXct")
+    assert_error(fc$fill_missing_directional_at(source, 2L, "civil", 1L, "id", "asc", "last", "forward"), "clock timestamp targets")
+  }
+  changing <- frame
+  live <- fc$capture_live_frame(function() changing)
+  invisible(fc$materialize_page(live))
+  changing$civil <- clock::time_point_cast(changing$civil, "microsecond")
+  assert_error(fc$materialize_page(live), "source-changed")
+  for (precision in c("millisecond", "microsecond", "nanosecond")) {
+    for (meaning in c("naive", "sys")) {
+      digits <- switch(precision, millisecond = 3L, microsecond = 6L, nanosecond = 9L)
+      value <- clock::naive_time_parse(c(paste0("1969-12-31T23:59:59.", strrep("9", digits)),
+        substr(text[[4L]], 1L, 20L + digits), NA_character_), precision = precision)
+      if (meaning == "sys") value <- clock::as_sys_time(value)
+      expected_ticks <- switch(precision, millisecond = c("-1", "1774751400000", NA_character_),
+        microsecond = c("-1", "1774751400000000", NA_character_), nanosecond = ticks[c(2L, 4L, 5L)])
+      input <- data.frame(stamp = value)
+      capture <- fc$capture_frame(input)
+      path <- tempfile(fileext = ".parquet")
+      fc$write_parquet(capture, path)
+      returned <- arrow::read_parquet(path, as_data_frame = FALSE)
+      assert_identical(returned[[1L]]$cast(arrow::int64())$cast(arrow::utf8())$as_vector(), expected_ticks, "Parquet changed clock ticks")
+      unit <- switch(precision, millisecond = "ms", microsecond = "us", nanosecond = "ns")
+      assert_identical(returned[[1L]]$type$ToString(), paste0("timestamp[", unit, if (meaning == "sys") ", tz=UTC" else "", "]"), "Parquet changed timestamp meaning or precision")
+      unlink(path)
+      for (rows in list(integer(), c(3L, 3L))) {
+        empty <- fc$capture_frame(input[rows, , drop = FALSE])
+        assert_identical(empty$descriptor$shape$rows, length(rows), "empty or all-missing clock frame changed shape")
+      }
+    }
+  }
+  for (precision in c("millisecond", "microsecond")) {
+    digits <- if (precision == "millisecond") 3L else 6L
+    limits <- clock::naive_time_parse(c("0000-01-01T00:00:00",
+      paste0("9999-12-31T23:59:59.", strrep("9", digits))), precision = precision)
+    invisible(fc$capture_frame(data.frame(stamp = limits)))
+    delta <- if (precision == "millisecond") clock::duration_milliseconds(c(-1L, 1L)) else clock::duration_microseconds(c(-1L, 1L))
+    for (value in list(limits + delta, clock::as_sys_time(limits + delta))) {
+      assert_error(fc$capture_frame(data.frame(stamp = value)), "outside supported ISO years")
+    }
+  }
+  capture <- fc$capture_frame(frame)
+  path <- tempfile(fileext = ".csv")
+  fc$write_csv(capture, path)
+  csv <- readLines(path)
+  assert_true(grepl(paste0('"', text[[4L]], '"'), csv[[5L]], fixed = TRUE) &&
+    grepl(paste0('"', text[[4L]], 'Z"'), csv[[5L]], fixed = TRUE), "CSV lost civil or instant nanoseconds")
+  unlink(path)
+  named <- frame[c(2L, 3L, 1L, 4L)]
+  names(named) <- c("schema", "metadata", "", "schema")
+  path <- tempfile(fileext = ".parquet")
+  fc$write_parquet(fc$capture_frame(named), path)
+  returned <- arrow::read_parquet(path, as_data_frame = FALSE)
+  assert_identical(returned$ColumnNames(), names(named), "Parquet reinterpreted reserved, duplicate or empty headers")
+  assert_identical(returned[[1L]]$cast(arrow::int64())$cast(arrow::utf8())$as_vector(), ticks, "Parquet lost present INT64_MIN")
+  unlink(path)
+  for (change in list(
+    function(value) { attr(value, "precision") <- 7L; value },
+    function(value) { attr(value, "clock") <- 0L; value },
+    function(value) { attr(value, "class") <- c("unknown", class(value)); value },
+    function(value) { attr(value, "hidden") <- new.env(); value },
+    function(value) { fields <- unclass(value); fields[[1L]][[1L]] <- 0.5; attributes(fields) <- attributes(value); fields },
+    function(value) { fields <- unclass(value); fields[[1L]][[1L]] <- NA_real_; attributes(fields) <- attributes(value); fields }
+  )) {
+    bad <- structure(list(stamp = change(civil)), names = "stamp", row.names = seq_along(civil), class = "data.frame")
+    assert_error(fc$capture_frame(bad), "clock timestamp")
+  }
+  nested <- data.frame(id = 1L); nested$items <- list(civil)
+  assert_error(fc$capture_frame(nested), "atomic")
+  local({
+    column <- rep(civil[3L], 65536L)
+    wide <- structure(setNames(rep(list(column), 65L), paste0("stamp_", seq_len(65L))),
+      class = "data.frame", row.names = c(NA_integer_, -65536L))
+    before <- serialize(wide, NULL, version = 3L)
+    captured <- fc$capture_frame(wide)
+    assert_identical(captured$descriptor$shape$rows, 65536L, "scalar clock source inherited a nested-copy size limit")
+    assert_identical(captured$snapshot, wide, "large scalar clock capture changed its values or metadata")
+    assert_identical(serialize(wide, NULL, version = 3L), before, "large scalar clock capture changed its source")
+  })
+  assert_identical(serialize(frame, NULL, version = 3L), before, "clock export or validation mutated its source")
+})
 
 # Ordinary flat containers stay native while scalar siblings remain pageable.
 local({
@@ -522,7 +696,7 @@ base_page <- openwrangler_r_frame_contract$materialize_page(
   column_limit = 20L
 )
 assert_identical(base_page$dataframeFlavor, "r.data.frame", "base data.frame flavor changed")
-assert_identical(base_page$contractVersion, 6L, "R frame contract version changed")
+assert_identical(base_page$contractVersion, 7L, "R frame contract version changed")
 assert_identical(base_page$shape, list(rows = 3L, columns = 10L), "base frame shape changed")
 assert_identical(base_page$frameSemantics$rowNames, "positional", "automatic row names were not positional")
 assert_true(is.null(base_page$page$rows[[1L]]$rowLabel), "automatic row names leaked into the page")
@@ -607,15 +781,7 @@ if (!is.null(integer64_capture_s3_status) && integer64_capture_s3_status != 0L) 
 }
 unlink(integer64_capture_s3_script)
 
-assert_true(
-  !openwrangler_r_frame_contract$nanoparquet_version_supported(NULL) &&
-    !openwrangler_r_frame_contract$nanoparquet_version_supported("not-a-version") &&
-    !openwrangler_r_frame_contract$nanoparquet_version_supported("0.5.0") &&
-    openwrangler_r_frame_contract$nanoparquet_version_supported("0.5.1") &&
-    openwrangler_r_frame_contract$nanoparquet_version_supported("1.0.0"),
-  "nanoparquet version gating changed"
-)
-assert_true(openwrangler_r_frame_contract$parquet_export_available(), "nanoparquet was not detected")
+assert_true(openwrangler_r_frame_contract$parquet_export_available(), "Arrow was not detected")
 assert_identical(
   openwrangler_r_frame_contract$export_formats(),
   c("csv", "parquet"),
@@ -916,7 +1082,8 @@ assert_identical(as.character(parquet_frame[[6L]]), as.character(base_frame[[6L]
 assert_identical(as.numeric(parquet_frame[[7L]]), as.numeric(base_frame[[7L]]), "Parquet export changed Date values")
 assert_identical(as.numeric(parquet_frame[[8L]]), as.numeric(base_frame[[8L]]), "Parquet export changed POSIXct instants")
 assert_identical(as.numeric(parquet_frame[[9L]], units = "secs"), as.numeric(base_frame[[9L]], units = "secs"), "Parquet export changed difftime values")
-assert_identical(as.character(parquet_frame[[10L]]), as.character(base_frame[[10L]]), "Parquet export lost integer64 precision")
+assert_identical(arrow::read_parquet(parquet_target, as_data_frame = FALSE)[[10L]]$cast(arrow::utf8())$as_vector(),
+  as.character(base_frame[[10L]]), "Parquet export lost integer64 precision")
 unlink(parquet_target)
 
 local({
@@ -944,13 +1111,15 @@ local({
     source <- data.frame(at = structure(fixtures[[name]], class = c("POSIXct", "POSIXt"), tzone = "UTC"))
     before <- serialize(source, NULL, version = 3L)
     target <- tempfile(fileext = ".parquet")
-    native_target <- tempfile(fileext = ".parquet")
-    on.exit(unlink(c(target, native_target)), add = TRUE)
+    on.exit(unlink(target), add = TRUE)
     details <- openwrangler_r_frame_contract$write_parquet(openwrangler_r_frame_contract$capture_frame(source), target)
-    nanoparquet::write_parquet(source, native_target)
+    physical <- arrow::read_parquet(target, as_data_frame = FALSE)[[1L]]
+    assert_identical(physical$type$ToString(), "timestamp[us, tz=UTC]", "timestamp export changed its physical precision")
+    expected_ticks <- format(trunc(fixtures[[name]] * 1e6), scientific = FALSE, trim = TRUE, digits = 22L)
+    expected_ticks[is.na(fixtures[[name]])] <- NA_character_
     assert_identical(
-      readBin(target, "raw", n = details$bytes),
-      readBin(native_target, "raw", n = file.info(native_target)$size),
+      physical$cast(arrow::int64())$cast(arrow::utf8())$as_vector(),
+      expected_ticks,
       "timestamp validation changed an exact native microsecond encoding"
     )
     result <- nanoparquet::read_parquet(target, options = nanoparquet::parquet_options(class = "data.frame"))
@@ -961,8 +1130,56 @@ local({
       assert_identical(as.numeric(result$at), fixtures[[name]], "timestamp export changed exact native instants")
     }
     assert_identical(serialize(source, NULL, version = 3L), before, "timestamp validation changed the source")
-    unlink(c(target, native_target))
+    unlink(target)
   }
+})
+
+local({
+  unit_seconds <- c(secs = 1, mins = 60, hours = 3600, days = 86400, weeks = 604800)
+  fixtures <- list(ordinary = c(0.25, -1.25, 0, NA_real_), empty = numeric(), missing = c(NA_real_, NA_real_))
+  for (unit in names(unit_seconds)) {
+    unit_fixtures <- fixtures
+    if (unit == "secs") unit_fixtures$nanoseconds <- c(1e-9, -1e-9, NA_real_)
+    for (name in names(unit_fixtures)) {
+      values <- unit_fixtures[[name]]
+      source <- data.frame(elapsed = structure(values, class = "difftime", units = unit))
+      before <- serialize(source, NULL, version = 3L)
+      target <- tempfile(fileext = ".parquet")
+      on.exit(unlink(target), add = TRUE)
+      openwrangler_r_frame_contract$write_parquet(openwrangler_r_frame_contract$capture_frame(source), target)
+      physical <- arrow::read_parquet(target, as_data_frame = FALSE)[[1L]]
+      assert_identical(physical$type$ToString(), "duration[ns]", "duration export changed its physical precision")
+      expected_ticks <- format(values * unit_seconds[[unit]] * 1e9, scientific = FALSE, trim = TRUE, digits = 22L)
+      expected_ticks[is.na(values)] <- NA_character_
+      assert_identical(physical$cast(arrow::int64())$cast(arrow::utf8())$as_vector(), expected_ticks,
+        "duration export changed exact nanosecond ticks or missing values")
+      assert_identical(as.double(physical$as_vector(), units = "secs"), values * unit_seconds[[unit]],
+        "duration export changed fractional native seconds")
+      assert_identical(serialize(source, NULL, version = 3L), before, "duration export changed source units or values")
+      unlink(target)
+    }
+  }
+  invalid <- lapply(c(1e-10, -1e-10, NaN, Inf, -Inf, 2^63 / 1e9, -2^63 / 1e9 - 1), as.difftime, units = "secs")
+  # This seconds/nanoseconds conversion is exact, but returning to minutes changes the stored magnitude.
+  invalid[[length(invalid) + 1L]] <- as.difftime(2.5e-8, units = "mins")
+  for (duration in invalid) {
+    source <- data.frame(elapsed = duration)
+    before <- serialize(source, NULL, version = 3L)
+    target <- tempfile(fileext = ".parquet")
+    on.exit(unlink(target), add = TRUE)
+    assert_error(openwrangler_r_frame_contract$write_parquet(openwrangler_r_frame_contract$capture_frame(source), target),
+      "exactly as Parquet nanosecond durations")
+    assert_true(!file.exists(target), "a refused duration export retained an artifact")
+    assert_identical(serialize(source, NULL, version = 3L), before, "duration refusal changed its source")
+  }
+  source <- data.frame(elapsed = as.difftime(c(rep(0.25, 65536L), 1e-10), units = "secs"))
+  before <- serialize(source, NULL, version = 3L)
+  target <- tempfile(fileext = ".parquet")
+  on.exit(unlink(target), add = TRUE)
+  assert_error(openwrangler_r_frame_contract$write_parquet(openwrangler_r_frame_contract$capture_frame(source), target),
+    "exactly as Parquet nanosecond durations")
+  assert_true(!file.exists(target), "an off-page invalid duration created a Parquet artifact")
+  assert_identical(serialize(source, NULL, version = 3L), before, "off-page duration refusal changed its source")
 })
 
 zero_column_frame <- data.frame(row.names = seq_len(3L))
@@ -6466,6 +6683,34 @@ assert_identical(collision_frame, data.frame(first = 1L, second = 2L), "a failed
 }))
 run_frame_contract_case("profiling", local({
 
+# Match the managed process runtime, which cannot resolve attached-package functions.
+runtime_environment <- new.env(parent = baseenv())
+sys.source("r/openwrangler_runtime/frame_contract.R", envir = runtime_environment, keep.source = FALSE)
+openwrangler_r_frame_contract <- runtime_environment$openwrangler_r_frame_contract
+contract_environment <- environment(openwrangler_r_frame_contract$materialize_summaries)
+
+local({
+  extrema <- clock::naive_time_parse(c("1677-09-21T00:12:43.145224192", "2026-01-01T00:00:00.000000001",
+    "2262-04-11T23:47:16.854775807", NA_character_), precision = "nanosecond")
+  small <- data.frame(civil = extrema, instant = clock::as_sys_time(extrema))
+  small_capture <- openwrangler_r_frame_contract$capture_frame(small)
+  small_summaries <- openwrangler_r_frame_contract$materialize_summaries(small_capture,
+    list(list(id = "r:c:0", name = "civil"), list(id = "r:c:1", name = "instant")))
+  assert_identical(small_summaries[[1L]]$visualization, list(kind = "datetime", min = "1677-09-21T00:12:43.145224192",
+    max = "2262-04-11T23:47:16.854775807"), "isolated small clock profiling lost exact civil extrema")
+  assert_identical(small_summaries[[2L]]$visualization, list(kind = "datetime", min = "1677-09-21T00:12:43.145224192Z",
+    max = "2262-04-11T23:47:16.854775807Z"), "isolated small clock profiling lost exact UTC extrema")
+  column <- rep(extrema[2L], 100003L)
+  column[c(65536L, 100003L, 100002L)] <- extrema[c(1L, 3L, 4L)]
+  frame <- data.frame(stamp = column)
+  before <- serialize(frame, NULL, version = 3L)
+  capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
+  summary <- openwrangler_r_frame_contract$materialize_summaries(capture, list(list(id = "r:c:0", name = "stamp")))[[1L]]
+  assert_identical(summary$nullCount, 1L, "chunked clock profiling missed a null beyond the sample bound")
+  assert_identical(summary$visualization, list(kind = "datetime", min = "1677-09-21T00:12:43.145224192",
+    max = "2262-04-11T23:47:16.854775807"), "chunked clock profiling sampled or rounded exact extrema")
+  assert_identical(serialize(frame, NULL, version = 3L), before, "chunked clock profiling changed its live source")
+})
 
 
 base_frame <- frame_contract_base_frame()

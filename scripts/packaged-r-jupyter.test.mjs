@@ -39,6 +39,8 @@ const notebookPackages = [
   "data.table",
   "collapse",
   "nanoparquet",
+  "arrow",
+  "clock",
   "readxl",
   "bit64"
 ];
@@ -53,7 +55,9 @@ const editorPackages = [
   "tibble",
   "data.table",
   "collapse",
-  "nanoparquet"
+  "nanoparquet",
+  "arrow",
+  "clock"
 ];
 const artifactPayload = "exact artifact";
 const artifactPin = Object.freeze({
@@ -604,9 +608,13 @@ for (const [scope, selection, packages] of [
   ...["value-operations", "categorical-operations", "pivot-wider"].map((purpose) => [
     purpose,
     { purpose },
-    ["IRkernel", "jsonlite", "rlang", "tibble", "data.table", "nanoparquet"]
+    ["IRkernel", "jsonlite", "rlang", "tibble", "data.table", "nanoparquet", "arrow", "clock"]
   ]),
-  ["terminal", { purpose: "interactive-terminal" }, ["jsonlite", "rlang", "tibble", "data.table", "nanoparquet"]]
+  [
+    "terminal",
+    { purpose: "interactive-terminal" },
+    ["jsonlite", "rlang", "tibble", "data.table", "nanoparquet", "arrow", "clock"]
+  ]
 ]) {
   test(`prepared R dependency inputs and receipt agree for ${scope}`, async (t) => {
     const fixture = provisioning(t);

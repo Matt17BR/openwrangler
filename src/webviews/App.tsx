@@ -32,7 +32,7 @@ import { encodeGridViewState, type GridViewState, type SerializedGridViewState }
 import type { SessionOpenProgressStage } from "../shared/sessionOpenProgress";
 import type { SessionPresentation } from "../shared/sessionRecovery";
 import { canEditLatestStep, canStartOperation, operationByKind, supportsOperation } from "../shared/operations";
-import { sessionModeAction } from "../shared/sessionMode";
+import { cleaningUnavailableReason, sessionModeAction } from "../shared/sessionMode";
 import { ActiveFilterBar, type FilterBarRequestLifecycle } from "./filters/ActiveFilterBar";
 import { FilterPanel } from "./filters/FilterPanel";
 import {
@@ -2233,7 +2233,11 @@ export function App() {
                   aria-describedby={projectionStatusId}
                   title={
                     projectionActionTitle ??
-                    (metadata.draftStep ? "Apply or discard the current draft before adding another step." : undefined)
+                    (metadata.draftStep
+                      ? "Apply or discard the current draft before adding another step."
+                      : !canStartOperation(metadata)
+                        ? cleaningUnavailableReason(metadata)
+                        : undefined)
                   }
                   onClick={() => requestOperationIntent({ action: "open" })}
                 >

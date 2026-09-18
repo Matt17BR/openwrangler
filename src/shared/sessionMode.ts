@@ -46,6 +46,9 @@ export function sessionModeLabel(metadata: SessionMetadata): string {
 }
 
 export function sessionModeDescription(metadata: SessionMetadata): string {
+  if (rCleaningRestricted(metadata)) {
+    return "This R library supports viewing precise timestamps. Choose Base R or dplyr in the engine picker to add cleaning steps.";
+  }
   if (metadata.mode === "editing") {
     const editingDescription = "Editing builds a separate cleaning plan. Open Wrangler keeps the source unchanged.";
     if (!isLiveSessionModeSwitchSource(metadata)) return editingDescription;
@@ -71,6 +74,9 @@ export function sessionModeDescription(metadata: SessionMetadata): string {
 }
 
 export function cleaningUnavailableReason(metadata: SessionMetadata): string {
+  if (rCleaningRestricted(metadata)) {
+    return "Choose Base R or dplyr in the engine picker to clean precise timestamps.";
+  }
   if (metadata.mode === "editing") {
     return metadata.draftStep
       ? "Apply or discard the current draft before adding another cleaning step."
@@ -92,6 +98,10 @@ export function cleaningUnavailableReason(metadata: SessionMetadata): string {
     return "Saved notebook snapshots are viewing only. Rerun the cell and open its live variable to add cleaning steps.";
   }
   return "Reopen this dataframe in Editing mode to add cleaning steps.";
+}
+
+function rCleaningRestricted(metadata: SessionMetadata): boolean {
+  return metadata.backend === "r" && metadata.capabilities.supportedOperations?.length === 0;
 }
 
 function viewingModeBlockedReason(metadata: SessionMetadata): string | undefined {

@@ -25,6 +25,8 @@
       "data.table",
       "bit64",
       "rlang",
+      "arrow",
+      "clock",
       "nanoparquet",
       "readxl",
       "collapse"
@@ -68,6 +70,55 @@
         "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.4/src/contrib/Rcpp_1.1.2.tar.gz",
         "bytes": 2220663,
         "sha256": "30c4dbdf3545d07eb992ef030e708823af123ee37858e41cfcd3f3a4dca7e85c"
+      }
+    },
+    {
+      "name": "arrow",
+      "version": "25.0.0",
+      "direct": true,
+      "needsCompilation": true,
+      "license": "Apache License (>= 2.0)",
+      "dependencies": {
+        "depends": [],
+        "imports": [
+          "R6",
+          "assertthat",
+          "bit64",
+          "glue",
+          "purrr",
+          "rlang",
+          "tidyselect",
+          "vctrs"
+        ],
+        "linkingTo": [
+          "cpp11"
+        ]
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.4/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.4/src/contrib/arrow_25.0.0.tar.gz",
+        "bytes": 22317604,
+        "sha256": "a1077014fb62ca78da760f8857c0a4ea8f3225474d33dd85482c0b01a53a14cb"
+      }
+    },
+    {
+      "name": "assertthat",
+      "version": "0.2.1",
+      "direct": false,
+      "needsCompilation": false,
+      "license": "GPL-3",
+      "dependencies": {
+        "depends": [],
+        "imports": [],
+        "linkingTo": []
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.4/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.4/src/contrib/assertthat_0.2.1.tar.gz",
+        "bytes": 53218,
+        "sha256": "68450f05314545d76fc5c25e8ede5992001877e98e2f4f536f63799f8be4daa1"
       }
     },
     {
@@ -168,6 +219,34 @@
         "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.4/src/contrib/clipr_0.8.1.tar.gz",
         "bytes": 53268,
         "sha256": "c0209e9a77acdd5d50711a8707cff5e9fa72fa8c53424d6e53c3defb5dcd8c7d"
+      }
+    },
+    {
+      "name": "clock",
+      "version": "0.7.4",
+      "direct": true,
+      "needsCompilation": true,
+      "license": "MIT + file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [
+          "cli",
+          "lifecycle",
+          "rlang",
+          "tzdb",
+          "vctrs"
+        ],
+        "linkingTo": [
+          "cpp11",
+          "tzdb"
+        ]
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.4/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.4/src/contrib/clock_0.7.4.tar.gz",
+        "bytes": 1929031,
+        "sha256": "eabe8cee6b91a8614d465ff5077396b820844bf60ae428e0e7ec83606b7241ef"
       }
     },
     {
@@ -509,6 +588,33 @@
         "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.4/src/contrib/progress_1.2.3.tar.gz",
         "bytes": 86993,
         "sha256": "2041acdccde9ab180be0ba7d573a779c2eb767371245fadc4c65ebc4a2c98094"
+      }
+    },
+    {
+      "name": "purrr",
+      "version": "1.2.2",
+      "direct": false,
+      "needsCompilation": true,
+      "license": "MIT + file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [
+          "cli",
+          "lifecycle",
+          "magrittr",
+          "rlang",
+          "vctrs"
+        ],
+        "linkingTo": [
+          "cli"
+        ]
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.4/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.4/src/contrib/purrr_1.2.2.tar.gz",
+        "bytes": 553603,
+        "sha256": "e43780d6ea0782d14d47e5ee6badda50ad724966f22fbced6d057c204ce9bf8a"
       }
     },
     {
