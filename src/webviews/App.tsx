@@ -2383,12 +2383,10 @@ export function App() {
                   aria-busy={importOptionsPending || undefined}
                   aria-label={
                     metadata.backend === "r" && metadata.rLibrary
-                      ? `Open an editing copy with another R library. Current library: ${rLibraryLabel(metadata.rLibrary)}`
+                      ? `Change dataframe engine. Current engine: ${metadata.rLibrary === "base" ? "Base R" : `R · ${rLibraryLabel(metadata.rLibrary)}`}`
                       : `Change dataframe engine. Current engine: ${dataBackendLabel(metadata.backend)}`
                   }
-                  title={
-                    metadata.backend === "r" ? "Open an editing copy with another R library" : "Change dataframe engine"
-                  }
+                  title="Change dataframe engine"
                   onClick={() => vscode.postMessage({ kind: "changeBackend" })}
                 >
                   <span>

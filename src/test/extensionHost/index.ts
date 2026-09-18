@@ -7720,7 +7720,7 @@ async function exercisePackagedBackendSwitchJourney(
     const picker = workbench.locator(".quick-input-widget:visible").filter({ hasText: "Dataframe engine" }).last();
     await picker.waitFor({ state: "visible", timeout: 10_000 });
     const labels = picker.locator(".quick-input-list [role='option'] .label-name:visible");
-    const matchingLabels = labels.filter({ hasText: new RegExp(`^${next}$`, "u") });
+    const matchingLabels = labels.filter({ hasText: new RegExp(`^Python · ${next}$`, "u") });
     assert.equal(await matchingLabels.count(), 1, `The engine picker must expose one exact ${next} option.`);
     await matchingLabels.first().click();
     await picker.waitFor({ state: "hidden", timeout: 10_000 });

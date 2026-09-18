@@ -635,7 +635,9 @@ The [architecture](architecture.md#native-r) defines frame, precision, source an
 In **2.6**, local R files use a base `data.frame` with the existing R cleaning operations. File sessions can restore saved plans;
 live R notebook, document and terminal sessions do not use workspace persistence.
 Select R explicitly in the engine picker or `openWrangler.defaultBackend`, or let Auto select R when no compatible
-Python interpreter or file engine is available. Switching between R and Python opens a separate session and retains the original plan.
+Python interpreter or file engine is available. The engine picker identifies Python and R choices and shows their action.
+Switching between Python file engines replays work in the current tab. Crossing between Python and R opens the file in
+a new tab, restoring steps saved for the selected engine and R library; the original tab keeps its work.
 R import-options changes also create a separate session. **Open Another File with This Plan** also accepts confirmed built-in R file plans.
 
 R CSV/TSV imports accept UTF-8, explicit UTF-8-lossy, UTF-16LE/BE, ISO-8859-1 and Windows-1252, with distinct ASCII

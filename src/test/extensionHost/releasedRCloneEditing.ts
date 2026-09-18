@@ -218,14 +218,11 @@ export function createReleasedRCloneEditingJourney({
       app = await releasedRSessionApp(workbench, testing, sessionId, "the R source before choosing a cleaning library");
       await app
         .getByRole("button", {
-          name: "Open an editing copy with another R library. Current library: Base R",
+          name: "Change dataframe engine. Current engine: Base R",
           exact: true
         })
         .click();
-      const picker = workbench
-        .locator(".quick-input-widget:visible")
-        .filter({ hasText: "Open an editing copy with another R library" })
-        .last();
+      const picker = workbench.locator(".quick-input-widget:visible").filter({ hasText: "Dataframe engine" }).last();
       await picker.waitFor({ state: "visible", timeout: 10_000 });
       const choices = picker.getByRole("option");
       await choices.nth(3).waitFor({ state: "visible", timeout: 10_000 });
@@ -261,7 +258,7 @@ export function createReleasedRCloneEditingJourney({
       const copyApp = await releasedRSessionApp(workbench, testing, copied.sessionId, "the confirmed dplyr editor");
       await copyApp
         .getByRole("button", {
-          name: "Open an editing copy with another R library. Current library: dplyr",
+          name: "Change dataframe engine. Current engine: R · dplyr",
           exact: true
         })
         .waitFor({ state: "visible", timeout: 10_000 });

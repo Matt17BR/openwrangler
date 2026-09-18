@@ -3080,7 +3080,7 @@ describe("App toolbar", () => {
       }
     });
     const engine = screen.getByRole("button", {
-      name: "Open an editing copy with another R library. Current library: Base R"
+      name: "Change dataframe engine. Current engine: Base R"
     });
     expect(engine).toHaveTextContent("Base R");
     expect(engine).toBeEnabled();
