@@ -2415,12 +2415,11 @@ openwrangler_r_frame_contract <- local({
     present <- !missing$null & !missing$nan
     present_indices <- which(present)
     native_numeric <- semantics$kind %in% c("double", "datetime", "difftime")
-    keys <- if (native_numeric) NULL else rep("", storage_length(column))
-    if (!is.null(keys)) keys[present_indices] <- profile_value_keys(column, semantics, present_indices)
+    keys <- if (native_numeric) NULL else profile_value_keys(column, semantics, present_indices)
     result <- rep(FALSE, storage_length(column))
     if (length(present_indices) == 0L) return(result)
     if (operator %in% c("contains", "startsWith", "endsWith")) {
-      values <- if (semantics$kind == "factor") as.character(column[present_indices]) else column[present_indices]
+      values <- keys
       target <- predicate$valueKey
       result[present_indices] <- if (identical(operator, "contains")) {
         grepl(ascii_fold(target), ascii_fold(values), fixed = TRUE)
@@ -2433,11 +2432,11 @@ openwrangler_r_frame_contract <- local({
     }
     compare <- function(target, comparison_operator) {
       if (semantics$kind %in% c("integer64", "clock_datetime")) {
-        compare_integer_keys(keys[present_indices], target, comparison_operator)
+        compare_integer_keys(keys, target, comparison_operator)
       } else if (descriptor$type %in% c("integer", "float", "date", "datetime", "duration")) {
         left <- if (identical(semantics$kind, "double")) column[present_indices] else if (native_numeric) {
           numeric_profile_values(column, semantics, present_indices)
-        } else suppressWarnings(as.double(keys[present_indices]))
+        } else suppressWarnings(as.double(keys))
         right <- if (native_numeric) target else suppressWarnings(as.double(target))
         switch(
           comparison_operator,
@@ -2451,12 +2450,12 @@ openwrangler_r_frame_contract <- local({
       } else {
         switch(
           comparison_operator,
-          equals = keys[present_indices] == target,
-          notEquals = keys[present_indices] != target,
-          gt = keys[present_indices] > target,
-          gte = keys[present_indices] >= target,
-          lt = keys[present_indices] < target,
-          lte = keys[present_indices] <= target
+          equals = keys == target,
+          notEquals = keys != target,
+          gt = keys > target,
+          gte = keys >= target,
+          lt = keys < target,
+          lte = keys <= target
         )
       }
     }
