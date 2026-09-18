@@ -69,9 +69,10 @@ describe("released native R editor tooling", () => {
     for (const selector of ["core-operations", "native-frames"] as const) {
       expect(releasedRAcceptanceCoverageProfile({ ...request, selector }).openCollapseSessions).toBe(false);
     }
-    expect(releasedRAcceptanceCoverageProfile({ ...request, platform: "linux" })).toEqual(
-      RELEASED_R_COMPREHENSIVE_COVERAGE
-    );
+    expect(releasedRAcceptanceCoverageProfile({ ...request, platform: "linux" })).toEqual({
+      ...RELEASED_R_COMPREHENSIVE_COVERAGE,
+      nativeFrameEditing: "one-operation-per-flavor"
+    });
     expect(releasedRAcceptanceCoverageProfile({ ...request, platform: "darwin" })).toEqual(
       RELEASED_R_PLATFORM_LIFECYCLE_COVERAGE
     );

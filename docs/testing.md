@@ -768,8 +768,12 @@ no message payloads or alert text, and its listeners are removed after the actio
 input delivery, not host admission. The original click and 30-second wait remain unchanged; diagnostic reads and
 cleanup have separate two-second limits.
 
-The Linux comprehensive journey retains the broader operation catalog, final-page/last-column assertion, separate
-native Viewing opens and both native-flavor operations. Rename owns the shared Preview/Discard check; Drop and Clone
+The ordinary Linux comprehensive journey retains the broader operation catalog, final-page/last-column assertion
+and separate native Viewing opens. Its additional editing round keeps tibble Rename and keyed data.table Drop,
+each followed by Discard. It omits the opposite pair of previews: keyed data.table Rename and tibble Drop semantics
+remain covered by the [native kernel](../r/tests/kernel_agent.R) and [frame](../r/tests/frame_contract.R) owners.
+On Linux VS Code, the optional `native-frames` selector still runs both operations on both flavors; hosted and release
+defaults do not select it. The core Rename owns the shared Preview/Discard check; Drop and Clone
 proceed from Preview to Apply, inspection and Undo. Clone also retains Edit. Select keeps its ordered form,
 Preview/Apply, generated code and Undo. Its ordered input/output inspection schemas are checked by the
 [native transport tests](../src/test/rKernelTransport.cross.test.ts). Text Length keeps its form,

@@ -99,7 +99,9 @@ export function releasedRCoreAcceptanceCoverageProfile(
   if (platform === "win32") {
     return Object.freeze({ ...RELEASED_R_REPRESENTATIVE_COVERAGE, openCollapseSessions: true });
   }
-  return RELEASED_R_COMPREHENSIVE_COVERAGE;
+  return platform === "linux"
+    ? Object.freeze({ ...RELEASED_R_COMPREHENSIVE_COVERAGE, nativeFrameEditing: "one-operation-per-flavor" })
+    : RELEASED_R_COMPREHENSIVE_COVERAGE;
 }
 
 export function releasedRCandidateCoreAcceptanceCoverageProfile(
